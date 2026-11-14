@@ -30,6 +30,7 @@ use crate::value::hex_newtype;
 use crate::{
     ContainerKind, EnvValue, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
     RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName, ServiceNetwork,
+    VolumeDriver,
 };
 
 hex_newtype!(
@@ -249,10 +250,11 @@ pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<Shown> {
     host
 }
 
-/// What `spec` reaches on its Machine beyond its own Environment: privileges, devices,
-/// capabilities, PID mode, sysctls, host ports, Bind Mounts, Docker volumes it names
-/// itself, the Ingress holder's network, and a privileged hook. Only a Device or a
-/// passkey's own prompt approves any of it.
+/// What `spec` reaches on its Machine beyond its own Environment: privileges, devices and
+/// device reservations, capabilities, PID mode, sysctls, host ports, Bind Mounts, Docker
+/// volumes it names itself or that are not [`plain_local`], the Ingress
+/// holder's network, and a privileged hook. Only a Device or a passkey's own prompt
+/// approves any of it.
 pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
     let container = &spec.container;
     let mut host = Vec::new();
@@ -265,6 +267,18 @@ pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
             .and_words(":")
             .and_text(device.container_path.as_str())
     }));
+    host.extend(
+        container
+            .resources
+            .device_reservations
+            .iter()
+            .map(|reservation| match &reservation.driver {
+                Some(driver) => Shown::words("reserves ")
+                    .and_text(driver)
+                    .and_words(" devices"),
+                None => Shown::words("reserves devices"),
+            }),
+    );
     host.extend(
         container
             .cap_add
@@ -286,19 +300,30 @@ pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
         }
         PortPublication::Ingress { .. } => None,
     }));
-    host.extend(spec.volume_graph().volumes().iter().filter_map(
-        |volume| match volume.source.kind() {
+    host.extend(spec.volume_graph().volumes().iter().filter_map(|volume| {
+        match volume.source.kind() {
             RawVolumeSource::Bind { machine_path, .. } => {
                 Some(Shown::words("binds ").and_text(machine_path.as_str()))
             }
             RawVolumeSource::External { name } => {
                 Some(Shown::words("uses volume ").and_text(name.as_str()))
             }
+            RawVolumeSource::Ordinary { name, driver, .. } if !plain_local(driver) => Some(
+                Shown::words("volume ")
+                    .and_text(name.as_str())
+                    .and_words(" with driver ")
+                    .and_text(driver.name())
+                    .and_words(if driver.options().is_empty() {
+                        ""
+                    } else {
+                        " options"
+                    }),
+            ),
             RawVolumeSource::Ordinary { .. }
             | RawVolumeSource::Provisioned { .. }
             | RawVolumeSource::Tmpfs { .. } => None,
-        },
-    ));
+        }
+    }));
     match container.network {
         Some(ServiceNetwork::IngressHolder) => host.push(Shown::words("joins the ingress network")),
         Some(ServiceNetwork::Unrecognized) => host.push(Shown::words("joins an unknown network")),
@@ -314,18 +339,50 @@ pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
     host
 }
 
+/// Whether `driver` is Docker's `local` driver making a plain Volume, or a tmpfs with
+/// only size, mode and ownership options. Any other option, such as `o=bind`, can mount a
+/// host path or device.
+fn plain_local(driver: &VolumeDriver) -> bool {
+    const TMPFS: [&str; 6] = ["size", "mode", "uid", "gid", "nr_inodes", "nr_blocks"];
+    let options = driver.options();
+    let option = |key: &str| options.get(key).map(String::as_str);
+    driver.name() == "local"
+        && (options.is_empty()
+            || (option("type") == Some("tmpfs")
+                && option("device").is_none_or(|device| device == "tmpfs")
+                && options
+                    .keys()
+                    .all(|key| ["type", "device", "o"].contains(&key.as_str()))
+                && option("o").is_none_or(|mount| {
+                    mount.split(',').all(|part| {
+                        TMPFS.contains(&part.split_once('=').map_or(part, |(key, _)| key))
+                    })
+                })))
+}
+
 /// What [`AuthorityRefusal::Mismatch`] names when a session approved a Container with
 /// [`host_reach`].
 pub const HOST_ACCESS: &str = "host access";
 
-/// Refuse `spec` when it has any [`host_reach`]. A browser key under a session grant signs
+/// Refuse `spec`, to run in `namespace`, when it has any [`host_reach`] or mounts a
+/// managed Volume scoped to another Namespace. A browser key under a session grant signs
 /// whatever plan Cloud's page hands it, so a Container it approves stays inside its own
 /// Environment, and anything more needs a Device or a passkey's own prompt.
 ///
 /// # Errors
 /// Returns [`AuthorityRefusal::Mismatch`] naming [`HOST_ACCESS`].
-pub fn refuse_host_reach(spec: &RequestedServiceSpec) -> Result<(), AuthorityRefusal> {
-    if host_reach(spec).is_empty() {
+pub fn refuse_host_reach(
+    spec: &ResolvedServiceSpec,
+    namespace: &Namespace,
+) -> Result<(), AuthorityRefusal> {
+    let spec = spec.to_requested();
+    let foreign = spec.volume_graph().volumes().iter().any(|volume| {
+        volume
+            .source
+            .scope_namespace()
+            .is_some_and(|scope| scope != namespace)
+    });
+    if host_reach(&spec).is_empty() && !foreign {
         return Ok(());
     }
     Err(AuthorityRefusal::Mismatch { field: HOST_ACCESS })
@@ -667,7 +724,7 @@ pub fn verify(
             expires_at: body.expires_at,
         })?;
         if let Some(creation) = facts.creation {
-            refuse_host_reach(&creation.spec.to_requested())?;
+            refuse_host_reach(creation.spec, facts.namespace)?;
         }
     }
     super::validity::verify(body.issued_at, body.expires_at, facts.now)?;

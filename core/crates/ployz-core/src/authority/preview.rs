@@ -433,7 +433,7 @@ impl PreviewRule {
         let spec = creation.spec.to_requested();
         self.verify_sealed(&spec, service, review)?;
         if review.is_some_and(|review| matches!(review.signer, ReviewSigner::Session(_))) {
-            super::deploy::refuse_host_reach(&spec)?;
+            super::deploy::refuse_host_reach(creation.spec, facts.namespace)?;
         }
         let digest = template(&spec, facts.namespace, service)?;
         let setup = match review {

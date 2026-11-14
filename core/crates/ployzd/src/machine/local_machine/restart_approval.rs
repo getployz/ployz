@@ -156,6 +156,7 @@ impl LocalMachine {
                 service: &identity.name,
                 container: &observed.container_id,
                 kind: observed.kind,
+                spec: &observed.resolved_spec,
                 step,
                 now,
             },
@@ -174,6 +175,21 @@ impl LocalMachine {
         );
         Ok(pinned(want, observed.container_id))
     }
+}
+
+/// What a person reads when a restart step is refused.
+pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
+    if *refusal
+        == (AuthorityRefusal::Mismatch {
+            field: ployz_core::authority::deploy::HOST_ACCESS,
+        })
+    {
+        return "This service reaches the server itself, so only an approved device can restart or start it. Run ployz service restart on that device.".to_owned();
+    }
+    format!(
+        "{} needs a Device-signed restart approval",
+        ployz_core::RESTART_APPROVAL_CAPABILITY
+    )
 }
 
 /// `want` aimed at `container` by its ID, so the step acts on the Container verified.

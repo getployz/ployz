@@ -843,7 +843,7 @@ impl AutoDeployRule {
                 return Err(mismatch("the signer"));
             }
             if matches!(approval.by(), Approver::Browser { .. }) {
-                super::deploy::refuse_host_reach(&creation.spec.to_requested())?;
+                super::deploy::refuse_host_reach(creation.spec, facts.namespace)?;
             }
         }
         Ok(image)

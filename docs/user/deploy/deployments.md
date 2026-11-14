@@ -158,8 +158,9 @@ Approve web, worker? [y/N]
 ```
 
 The first line of each service names the image and anything the service asks of the server:
-privileged mode, devices, added capabilities, PID mode, sysctls, host ports, bind mounts, Docker
-volumes it names itself, the ingress network and its pre-deploy hook. An image you wrote by digest
+privileged mode, devices and GPUs, added capabilities, PID mode, sysctls, host ports, bind mounts,
+Docker volumes it names itself or gives a driver or options beyond a plain or tmpfs volume, the
+ingress network and its pre-deploy hook. An image you wrote by digest
 shows its whole digest. The lines under it list every setting the signature covers that isn't Ployz's default, by its name in the spec:
 variables, the start command and entrypoint, user, mounts, config files, ports, privileges, the
 hook and the rest. A setting added to Ployz later shows there too, and so does a `false` or empty

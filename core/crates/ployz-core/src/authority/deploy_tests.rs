@@ -822,6 +822,33 @@ fn reaching_specs() -> Vec<(&'static str, Value)> {
             }),
         ),
         (
+            "GPU reservation",
+            edit(&|spec| {
+                spec["container"]["resources"] =
+                    json!({"device_reservations": [{"driver": "nvidia", "count": 1}]});
+            }),
+        ),
+        (
+            "local driver binding a host path",
+            edit(&|spec| {
+                spec["volumes"][0]["source"]["driver"] = json!({"name": "local",
+                    "options": {"type": "none", "o": "bind", "device": "/"}});
+            }),
+        ),
+        (
+            "tmpfs driver options binding a host path",
+            edit(&|spec| {
+                spec["volumes"][0]["source"]["driver"] = json!({"name": "local",
+                    "options": {"type": "tmpfs", "o": "bind,size=1m", "device": "/"}});
+            }),
+        ),
+        (
+            "third-party driver",
+            edit(&|spec| {
+                spec["volumes"][0]["source"]["driver"] = json!({"name": "rexray/ebs"});
+            }),
+        ),
+        (
             "Ingress holder network",
             edit(&|spec| spec["container"]["network"] = json!("ingress_holder")),
         ),
@@ -860,6 +887,32 @@ fn a_session_approves_no_host_reach() {
             "{reach}: a Device approves it"
         );
     }
+}
+
+/// A managed Volume carries the Namespace it was scoped to. A session never mounts one
+/// scoped to another Environment, so it can't reach that Environment's data.
+#[test]
+fn a_session_mounts_no_other_environments_volume() {
+    let spec = requested(contained_json());
+    let mut theirs = spec.clone();
+    theirs.mount_graph = theirs
+        .mount_graph
+        .scope_to_namespace(&Namespace::parse("other").unwrap())
+        .unwrap();
+    let made = theirs
+        .to_resolved(
+            ServiceId::parse("c".repeat(32)).unwrap(),
+            ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let (signed, machine) = browser_approval_of(vec![ActionFamily::Deploy], &made.to_requested());
+    assert_eq!(
+        verify(&signed, &machine.facts(Some(service(&made)))).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: HOST_ACCESS },
+    );
+    let ours = resolved(&spec);
+    let (signed, machine) = browser_approval_of(vec![ActionFamily::Deploy], &spec);
+    assert!(verify(&signed, &machine.facts(Some(service(&ours)))).is_ok());
 }
 
 /// The dashboard refuses before it signs, naming every Service and what each reaches.
