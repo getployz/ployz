@@ -1867,3 +1867,208 @@ fn a_sealed_value_the_spec_cannot_open_is_a_refusal_but_an_unreadable_key_is_an_
         assert_eq!(refused, reason, "{label}");
     }
 }
+
+mod reserved_lifecycle {
+    //! A stop or removal of a reserved Container against the route that places it.
+
+    use std::{collections::BTreeMap, sync::Mutex, time::Duration};
+
+    use ployz_core::{
+        AnonymousVolumes, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Drain,
+        EnsuredContainer, MachineName, QualifiedService, StopOptions,
+    };
+
+    use super::*;
+    use crate::docker::{
+        ContainerRuntime,
+        test_support::{FakeDocker, fake_runtime_with},
+    };
+
+    struct Fixture {
+        data_dir: std::path::PathBuf,
+        local: LocalMachine,
+        runtime: ContainerRuntime,
+    }
+
+    impl Fixture {
+        async fn start() -> Self {
+            let data_dir =
+                std::env::temp_dir().join(format!("ployzd-reserved-lock-{}", MachineId::random()));
+            let mut store = LocalMachineStore::open(&data_dir).unwrap();
+            store
+                .enroll(ployz_core::EnrollRequest {
+                    role: ployz_core::EnrollAs::Founder {
+                        initial_policy: Default::default(),
+                        name: MachineName::parse("local").unwrap(),
+                        cluster_network: "10.210.0.0/16".parse().unwrap(),
+                        public_ip: None,
+                        advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                            "192.0.2.1:51820".parse().unwrap(),
+                        )],
+                        grant: None,
+                    },
+                    wireguard_mtu: None,
+                    pinned: Default::default(),
+                })
+                .unwrap();
+            let owner = RecordOwner::spawn(store).unwrap();
+            let (runtime, _fake) = fake_runtime_with(FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                ..Default::default()
+            })
+            .await;
+            let local = LocalMachine::new(owner)
+                .with_containers(Some(runtime.clone()))
+                .with_zpool("true");
+            Self {
+                data_dir,
+                local,
+                runtime,
+            }
+        }
+
+        async fn create(&self, spec: &ResolvedServiceSpec) -> ployz_core::ContainerId {
+            self.local
+                .create_container(
+                    ContainerKind::ServiceContainer,
+                    &Namespace::system(),
+                    spec,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap()
+                .container_id
+        }
+
+        /// Whether `want` is still unanswered while the door lifecycle lock is held, and
+        /// its answer once the lock is released.
+        async fn under_the_lock(&self, want: ContainerWant) -> (bool, EnsuredContainer) {
+            let held = self.runtime.door_lifecycle().await;
+            let local = self.local.clone();
+            let ensuring = tokio::spawn(async move { local.ensure_container(want).await });
+            // real-wait: the want reaches the lock through the fake Docker's TCP socket,
+            // which emits no event.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let waited = !ensuring.is_finished();
+            drop(held);
+            let answer = ensuring.await.unwrap().unwrap();
+            (waited, answer)
+        }
+
+        fn finish(self) {
+            std::fs::remove_dir_all(self.data_dir).unwrap();
+        }
+    }
+
+    fn stopped(id: ployz_core::ContainerId) -> ContainerWant {
+        ContainerWant::Stopped {
+            container: ContainerLocator::Id(id),
+            drain: Drain::NONE,
+            stop: StopOptions::default(),
+        }
+    }
+
+    fn gone(id: ployz_core::ContainerId) -> ContainerWant {
+        ContainerWant::Gone {
+            container: ContainerLocator::Id(id),
+            drain: Drain::NONE,
+            anonymous_volumes: AnonymousVolumes::Remove,
+        }
+    }
+
+    fn router() -> ResolvedServiceSpec {
+        crate::images::private_access_router(
+            "10.210.0.0/16".parse().unwrap(),
+            &ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+            ployz_core::PrivateAccessStateId::random(),
+        )
+    }
+
+    fn holder() -> ResolvedServiceSpec {
+        crate::images::DoorSpecs::public(ServiceId::parse("c".repeat(32)).unwrap()).holder
+    }
+
+    #[tokio::test]
+    async fn a_stop_or_removal_of_a_door_waits_for_the_doors_route_under_way() {
+        let fixture = Fixture::start().await;
+        let id = fixture.create(&holder()).await;
+        assert_eq!(
+            fixture
+                .runtime
+                .inspect_managed(&id, &fixture.local.record().id())
+                .await
+                .unwrap()
+                .identity(),
+            QualifiedService::system_ingress_holder()
+        );
+
+        let (waited, stop) = fixture.under_the_lock(stopped(id)).await;
+        assert!(
+            waited,
+            "a door's stop answered while the route held the lock"
+        );
+        assert!(matches!(
+            stop,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Present(_),
+                ..
+            }
+        ));
+        let (waited, removal) = fixture.under_the_lock(gone(id)).await;
+        assert!(
+            waited,
+            "a door's removal answered while the route held the lock"
+        );
+        assert!(matches!(
+            removal,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Absent { .. },
+                ..
+            }
+        ));
+        fixture.finish();
+    }
+
+    #[tokio::test]
+    async fn a_stop_or_removal_of_the_router_waits_for_the_placement_route_under_way() {
+        let fixture = Fixture::start().await;
+        let id = fixture.create(&router()).await;
+        assert_eq!(
+            fixture
+                .runtime
+                .inspect_managed(&id, &fixture.local.record().id())
+                .await
+                .unwrap()
+                .identity(),
+            QualifiedService::system_tailscale()
+        );
+
+        let (waited, stop) = fixture.under_the_lock(stopped(id)).await;
+        assert!(
+            waited,
+            "the router's stop answered while its route held the lock"
+        );
+        assert!(matches!(
+            stop,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Present(_),
+                ..
+            }
+        ));
+        let (waited, removal) = fixture.under_the_lock(gone(id)).await;
+        assert!(
+            waited,
+            "the router's removal answered while its route held the lock"
+        );
+        assert!(matches!(
+            removal,
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Absent { .. },
+                ..
+            }
+        ));
+        fixture.finish();
+    }
+}

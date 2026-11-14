@@ -256,12 +256,11 @@ fn normalize(text: &str) -> String {
         .unwrap()
     });
     // The Docker daemon words its own failure by version and image store, not Ployz.
-    static DOCKER: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"Error response from daemon: .*connection reset by peer").unwrap()
-    });
+    static DOCKER: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"Error response from daemon: .*( null)$").unwrap());
     let text = VARIABLE.replace_all(text, "<id>");
     DOCKER
-        .replace_all(&text, "Error response from daemon: <docker's words>")
+        .replace_all(&text, "Error response from daemon: <docker's words>$1")
         .into_owned()
 }
 
@@ -288,5 +287,18 @@ async fn every_case_is_answered_as_it_was_by_every_caller_in_every_state() {
         golden == text,
         "an admission answer changed; rerun with PLOYZ_BLESS=1 and review {GOLDEN}\n{}",
         changed.join("\n")
+    );
+}
+
+#[test]
+fn a_docker_daemons_own_words_normalize_alike() {
+    let pulled = |words: &str| {
+        normalize(&format!(
+            "error Unavailable: peer image pull failed: Error response from daemon: {words} null"
+        ))
+    };
+    assert_eq!(
+        pulled(r#"Get "http://127.0.0.1:41000/v2/": EOF"#),
+        pulled(r#"failed to resolve reference "x/nginx": read: connection reset by peer"#)
     );
 }
