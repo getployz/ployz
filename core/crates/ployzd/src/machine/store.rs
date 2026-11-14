@@ -324,10 +324,23 @@ impl LocalMachineStore {
         })
     }
 
-    /// Run `edit` on a copy of the record and keep what it left: a copy equal to the record
-    /// writes nothing, and a refusal from `edit` or a failed write leaves the record, and
-    /// the file, as they were. The store holds the copy only once the file does.
+    /// Run `edit` on a copy of the record and keep what it left: the file is written even
+    /// when the copy equals the record, which recreates a file that went missing, and a
+    /// refusal from `edit` or a failed write leaves the record, and the file, as they were.
+    /// The store holds the copy only once the file does.
     fn commit<R, E: From<StoreError>>(
+        &mut self,
+        edit: impl FnOnce(&mut LocalMachineRecord) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let mut updated = self.record.clone();
+        let answer = edit(&mut updated)?;
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(answer)
+    }
+
+    /// As [`Self::commit`], except a copy equal to the record writes nothing.
+    fn commit_if_changed<R, E: From<StoreError>>(
         &mut self,
         edit: impl FnOnce(&mut LocalMachineRecord) -> Result<R, E>,
     ) -> Result<R, E> {
@@ -352,7 +365,7 @@ impl LocalMachineStore {
 
     fn refresh_runtime(&mut self) -> Result<(), StoreError> {
         let runtime = local_runtime(&self.data_dir);
-        self.commit(|record| {
+        self.commit_if_changed(|record| {
             if let LocalMachineBody::Joining { machine, .. }
             | LocalMachineBody::Participating { machine, .. } = &mut record.body
             {
@@ -925,7 +938,7 @@ impl LocalMachineStore {
             accepted: ClientKey::from(key),
         });
         let held = self.record.management_clients.get(&label) == Some(&slot);
-        self.commit::<_, StoreError>(|record| {
+        self.commit_if_changed::<_, StoreError>(|record| {
             record.management_clients.insert(label, slot);
             if let (Some(evidence), Some(snapshot)) = (evidence, record.trusted_snapshot.as_mut()) {
                 snapshot.add_key(key.code(), evidence);
@@ -956,7 +969,7 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn remove_passkey(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
-        self.commit(|record| {
+        self.commit_if_changed(|record| {
             let trusted = record.passkeys.len();
             record.passkeys.retain(|held| held.passkey.code() != code);
             if record.passkeys.len() == trusted {
@@ -980,7 +993,7 @@ impl LocalMachineStore {
         evidence: Option<super::Evidence>,
     ) -> Result<bool, StoreError> {
         let code = trusted.passkey.code();
-        self.commit(|record| {
+        self.commit_if_changed(|record| {
             if record
                 .passkeys
                 .iter()
@@ -1001,7 +1014,7 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn set_push_target(&mut self, url: Option<Url>) -> Result<(), StoreError> {
-        self.commit(|record| {
+        self.commit_if_changed(|record| {
             record.push_target = url;
             Ok(())
         })
@@ -1012,7 +1025,7 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub(crate) fn pin_machines(&mut self, machines: &[Machine]) -> Result<(), StoreError> {
-        self.commit(|record| {
+        self.commit_if_changed(|record| {
             let pinned: Vec<_> = machines
                 .iter()
                 .filter(|machine| record.accepts_machine(machine) && !record.pins_machine(machine))
@@ -1038,7 +1051,7 @@ impl LocalMachineStore {
         } else {
             Some(SealingKey::load(&self.data_dir)?.map(|key| key.public_key()))
         };
-        self.commit(|record| {
+        self.commit_if_changed(|record| {
             if let Some(cluster) = held_cluster {
                 record.trusted_machines.clear();
                 record.membership_cluster = cluster;
@@ -1055,7 +1068,7 @@ impl LocalMachineStore {
 
     /// Drop `code`'s evidence, as a person removing the key asked.
     fn forget_evidence(&mut self, code: DeviceCode) -> Result<(), StoreError> {
-        self.commit(|record| {
+        self.commit_if_changed(|record| {
             if let Some(snapshot) = record.trusted_snapshot.as_mut() {
                 snapshot.remove_key(code);
             }

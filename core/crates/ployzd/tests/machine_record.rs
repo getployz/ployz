@@ -713,6 +713,28 @@ fn selected_endpoint_is_best_effort_local_state() {
 }
 
 #[test]
+fn selected_endpoint_write_recreates_a_missing_record_file() {
+    let dir = TestDir::new("ployzd-endpoint-recreates-record");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    let id = store.record().id();
+    let peer = MachineId::random();
+    let endpoint = SelectedEndpoint(SocketAddr::from(([192, 0, 2, 4], 51820)));
+    store.persist_selected_endpoint(peer, endpoint).unwrap();
+
+    fs::remove_file(dir.0.join("machine.json")).unwrap();
+    store.persist_selected_endpoint(peer, endpoint).unwrap();
+    assert!(dir.0.join("machine.json").exists());
+    drop(store);
+
+    let reopened = LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(reopened.record().id(), id);
+    assert_eq!(
+        reopened.record().selected_endpoints.get(&peer),
+        Some(&endpoint)
+    );
+}
+
+#[test]
 fn opening_joining_without_a_machine_or_key_fails() {
     let dir = TestDir::new("ployzd-joining-without-machine");
     fs::create_dir_all(&dir.0).unwrap();
