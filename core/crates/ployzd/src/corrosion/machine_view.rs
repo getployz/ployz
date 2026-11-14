@@ -16,7 +16,10 @@ use ployz_core::{Machine, MachineId};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{Error, REFRESH_INTERVAL, ReplicatedObservations, ReplicatedStore, Subscription};
+use super::{
+    ChangeWatch, Debounce, REFRESH_INTERVAL, ReplicatedObservations, ReplicatedStore, Retry, Wake,
+    WatchPolicy,
+};
 
 /// Wait before reopening a failed subscription.
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -63,89 +66,36 @@ impl MachineView {
     }
 }
 
-enum Wake {
-    Changed,
-    Refresh,
-    Resubscribe(Error),
-    Shutdown,
-}
-
 async fn run(
     replicated: ReplicatedStore,
     publish: watch::Sender<MachinesSnapshot>,
     shutdown: CancellationToken,
 ) {
-    loop {
+    let (replicated, publish) = (&replicated, &publish);
+    let mut changes = ChangeWatch::new(
+        "Machine view",
         // Read before subscribing: queries can work while subscriptions cannot, and
         // a fresh subscription may follow missed changes.
-        refresh(&replicated, &publish).await;
-        let subscription = tokio::select! {
-            subscription = replicated.subscribe_machine_changes() => subscription,
-            () = shutdown.cancelled() => return,
-        };
-        let mut subscription = match subscription {
-            Ok(subscription) => subscription,
-            Err(error) => {
-                tracing::warn!(error = %ployz_core::error_chain::inline(&error), "Machine view subscription failed, retrying");
-                tokio::select! {
-                    () = tokio::time::sleep(RETRY_INTERVAL) => continue,
-                    () = shutdown.cancelled() => return,
-                }
-            }
-        };
-        // A row written between the read above and Corrosion registering the
-        // subscription arrives in the drained initial snapshot, not as a change.
-        refresh(&replicated, &publish).await;
-        loop {
-            match wait(&mut subscription, &shutdown).await {
-                Wake::Changed | Wake::Refresh => refresh(&replicated, &publish).await,
-                Wake::Resubscribe(error) => {
-                    tracing::warn!(error = %ployz_core::error_chain::inline(&error), "Machine view subscription ended, reopening");
-                    tokio::select! {
-                        () = tokio::time::sleep(RETRY_INTERVAL) => break,
-                        () = shutdown.cancelled() => return,
-                    }
-                }
-                Wake::Shutdown => return,
-            }
-        }
-    }
-}
-
-async fn wait(subscription: &mut Subscription, shutdown: &CancellationToken) -> Wake {
-    let first = tokio::select! {
-        biased;
-        () = shutdown.cancelled() => return Wake::Shutdown,
-        changed = subscription.changed() => changed,
-        () = tokio::time::sleep(REFRESH_INTERVAL) => {
-            // A snapshot that never finished within the interval is a stuck stream.
-            return if subscription.snapshot_in_progress() {
-                Wake::Resubscribe(Error::Protocol("subscription snapshot stalled".into()))
-            } else {
-                Wake::Refresh
-            };
-        }
-    };
-    if let Err(error) = first {
-        return Wake::Resubscribe(error);
-    }
-    let quiet = tokio::time::sleep(DEBOUNCE);
-    tokio::pin!(quiet);
-    let limit = tokio::time::sleep(DEBOUNCE_LIMIT);
-    tokio::pin!(limit);
-    loop {
-        tokio::select! {
-            biased;
-            () = shutdown.cancelled() => return Wake::Shutdown,
-            () = &mut limit => return Wake::Changed,
-            changed = subscription.changed() => {
-                if let Err(error) = changed {
-                    return Wake::Resubscribe(error);
-                }
-                quiet.as_mut().reset(tokio::time::Instant::now() + DEBOUNCE);
-            }
-            () = &mut quiet => return Wake::Changed,
-        }
+        move || async move {
+            refresh(replicated, publish).await;
+            Ok(vec![replicated.subscribe_machine_changes().await?])
+        },
+        WatchPolicy {
+            debounce: Some(Debounce {
+                quiet: DEBOUNCE,
+                limit: DEBOUNCE_LIMIT,
+                settle_snapshots: false,
+            }),
+            refresh: REFRESH_INTERVAL,
+            retry: Retry::InPlace(RETRY_INTERVAL),
+        },
+        shutdown,
+    );
+    // The first wake, like each one after a reopen, reads what arrived between the read
+    // above and Corrosion registering the subscription, which is in the drained initial
+    // snapshot and not a change.
+    while let Ok(Wake::Changed | Wake::Tick) = changes.next().await {
+        refresh(replicated, publish).await;
     }
 }
 
@@ -268,37 +218,5 @@ mod tests {
         .await
         .expect("the view stops on shutdown");
         server.abort();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_steady_stream_of_changes_cannot_defer_the_re_read_past_the_limit() {
-        // Change rows faster than the quiet window for longer than the limit.
-        let (changes, received) = tokio::sync::mpsc::unbounded_channel();
-        let writer = tokio::spawn(async move {
-            for _ in 0..60 {
-                changes
-                    .send(Ok(bytes::Bytes::from_static(b"{\"change\":null}\n")))
-                    .unwrap();
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        });
-        let mut subscription = crate::corrosion::api::Subscription::streaming(
-            tokio_stream::wrappers::UnboundedReceiverStream::new(received),
-        );
-        let started = tokio::time::Instant::now();
-
-        let wake = tokio::time::timeout(
-            Duration::from_millis(2900),
-            super::wait(&mut subscription, &CancellationToken::new()),
-        )
-        .await
-        .expect("the limit wakes the view while writes continue");
-        assert!(matches!(wake, super::Wake::Changed));
-        assert_eq!(started.elapsed(), super::DEBOUNCE_LIMIT);
-        assert!(
-            !writer.is_finished(),
-            "the wake arrived while writes were still flowing"
-        );
-        writer.abort();
     }
 }

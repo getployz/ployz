@@ -16,8 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
-        AdminClient, CertificateRow, Error as CorrosionError, IngressRouteAck, IngressRouteChange,
-        MachineView, ReplicatedStore, Subscription,
+        AdminClient, CertificateRow, ChangeWatch, Debounce, Error as CorrosionError,
+        IngressRouteAck, IngressRouteChange, MachineView, ReplicatedStore, Retry, Wake,
+        WatchPolicy,
     },
     filesystem::set_ployz_group,
     route_acks::{DownMachines, load_down},
@@ -33,6 +34,8 @@ pub(crate) fn access_log_path(run_dir: &Path) -> PathBuf {
     run_dir.join(RUNTIME_DIR).join(ACCESS_LOG)
 }
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
+/// Longest a steady stream of changes can defer a pass; the quiet window resets, this does not.
+const WATCH_DEBOUNCE_LIMIT: Duration = Duration::from_secs(2);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 const WATCH_RESNAPSHOT: Duration = Duration::from_secs(5);
 
@@ -344,183 +347,183 @@ where
     let mut routed = ProxyRoutes::new();
     let mut down = DownMachines::new(machine.id);
     let mut certificates = CaddyCertificates::default();
-    'watch: loop {
-        let subscriptions = async {
-            tokio::try_join!(
-                replicated.subscribe_container_changes(),
-                replicated.subscribe_certificate_changes(),
-            )
+    let mut changes = ChangeWatch::new(
+        "ingress",
+        || {
+            let replicated = replicated.clone();
+            async move {
+                Ok(vec![
+                    replicated.subscribe_container_changes().await?,
+                    replicated.subscribe_certificate_changes().await?,
+                    replicated.subscribe_machine_changes().await?,
+                ])
+            }
+        },
+        WatchPolicy {
+            debounce: Some(Debounce {
+                quiet: WATCH_DEBOUNCE,
+                limit: WATCH_DEBOUNCE_LIMIT,
+                settle_snapshots: true,
+            }),
+            refresh: WATCH_RESNAPSHOT,
+            retry: Retry::InPlace(WATCH_RETRY),
+        },
+        shutdown.clone(),
+    );
+    // The first wake is the subscriptions opening, so the first pass reads after they exist.
+    if !woke(changes.next().await)? {
+        return Ok(());
+    }
+    loop {
+        down.update(load_down().await);
+        // Read each pass, since turning the role off doesn't restart the daemon.
+        let takes_ingress = !matches!(
+            replicated.machine(machine.id.as_str()).await,
+            Ok(Some(Machine {
+                accepts_ingress: false,
+                ..
+            }))
+        );
+        let input = match (
+            replicated.containers().await,
+            replicated.certificate_state().await,
+        ) {
+            (Ok(containers), Ok(rows)) => {
+                let containers = service_containers(containers.observations);
+                let (routes, mut projection) = next_pass(
+                    &machine,
+                    &containers,
+                    &rows,
+                    |machine| down.contains(machine),
+                    &routed,
+                );
+                certificates.quarantine(&mut projection);
+                Ok((
+                    newest_local_ingress(&machine, &containers),
+                    serves_nothing(&machine.id, takes_ingress, &containers),
+                    routed_addresses(&projection, &routes),
+                    projection,
+                    routes,
+                ))
+            }
+            (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
         };
-        let changes = tokio::select! {
-            changes = subscriptions => changes,
-            () = shutdown.cancelled() => return Ok(()),
-        };
-        let (mut container_changes, mut certificate_changes) = match changes {
-            Ok(changes) => changes,
-            Err(error) => {
-                if wait_to_retry(&error, &shutdown).await {
+        match input {
+            Ok((caddy, no_caddy, addresses, projection, routes)) => {
+                let input = CaddyInput { projection, caddy };
+                // A stopped Caddy no longer serves what it loaded.
+                let (pass, result) = if !no_caddy && load.skip(&input, true) {
+                    (PassOutcome::Cached { addresses }, Ok(()))
+                } else {
+                    match connect().await {
+                        Ok(admin) if load.skip(&input, admin.is_some()) => {
+                            let pass = if admin.is_some() {
+                                PassOutcome::Cached { addresses }
+                            } else {
+                                PassOutcome::Written { input }
+                            };
+                            (pass, Ok(()))
+                        }
+                        // Caddy starts from a file written without its admin, so that file
+                        // pins only certificates this Caddy has loaded.
+                        Ok(None) => {
+                            let validated = certificates.loaded_only(&input.projection);
+                            let applied = apply_caddy::<A>(&validated, &config_file, None).await;
+                            let pass = if applied.is_ok() {
+                                PassOutcome::Written { input }
+                            } else {
+                                PassOutcome::Unknown
+                            };
+                            (pass, applied)
+                        }
+                        // A failure after the load leaves its certificates loaded.
+                        Ok(Some(admin)) => {
+                            let result =
+                                apply_caddy(&input.projection, &config_file, Some(&admin)).await;
+                            let applied = match &result {
+                                Ok(()) => {
+                                    certificates.accept(&input.projection);
+                                    Applied::Ok
+                                }
+                                Err(ApplyError::AfterServing(_, file)) => {
+                                    certificates.accept(&input.projection);
+                                    Applied::AfterServing(*file)
+                                }
+                                Err(ApplyError::BeforeServing(caddy::Error::Admin(_))) => {
+                                    Applied::BeforeServing(
+                                        certificates.find_refused(&input.projection, &admin).await,
+                                    )
+                                }
+                                Err(ApplyError::BeforeServing(_)) => {
+                                    Applied::BeforeServing(Probe::Unchanged)
+                                }
+                            };
+                            let pass = PassOutcome::Loaded {
+                                input,
+                                addresses,
+                                applied,
+                            };
+                            (pass, result)
+                        }
+                        Err(error) => (PassOutcome::Unknown, Err(ApplyError::BeforeServing(error))),
+                    }
+                };
+                let through_admin = pass.through_admin();
+                let refused = pass.found_refusal();
+                load = load.after(pass);
+                let addresses = load.claim(through_admin, no_caddy);
+                route_publishes.send_if_modified(|publishes| {
+                    let changed = publishes.addresses != addresses;
+                    publishes.addresses = addresses;
+                    changed
+                });
+                // Derive again without the refused.
+                if refused {
                     continue;
                 }
-                return Ok(());
-            }
-        };
-        loop {
-            down.update(load_down().await);
-            // Read each pass, since turning the role off doesn't restart the daemon.
-            let takes_ingress = !matches!(
-                replicated.machine(machine.id.as_str()).await,
-                Ok(Some(Machine {
-                    accepts_ingress: false,
-                    ..
-                }))
-            );
-            let input = match (
-                replicated.containers().await,
-                replicated.certificate_state().await,
-            ) {
-                (Ok(containers), Ok(rows)) => {
-                    let containers = service_containers(containers.observations);
-                    let (routes, mut projection) = next_pass(
-                        &machine,
-                        &containers,
-                        &rows,
-                        |machine| down.contains(machine),
-                        &routed,
-                    );
-                    certificates.quarantine(&mut projection);
-                    Ok((
-                        newest_local_ingress(&machine, &containers),
-                        serves_nothing(&machine.id, takes_ingress, &containers),
-                        routed_addresses(&projection, &routes),
-                        projection,
-                        routes,
-                    ))
-                }
-                (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
-            };
-            match input {
-                Ok((caddy, no_caddy, addresses, projection, routes)) => {
-                    let input = CaddyInput { projection, caddy };
-                    // A stopped Caddy no longer serves what it loaded.
-                    let (pass, result) = if !no_caddy && load.skip(&input, true) {
-                        (PassOutcome::Cached { addresses }, Ok(()))
-                    } else {
-                        match connect().await {
-                            Ok(admin) if load.skip(&input, admin.is_some()) => {
-                                let pass = if admin.is_some() {
-                                    PassOutcome::Cached { addresses }
-                                } else {
-                                    PassOutcome::Written { input }
-                                };
-                                (pass, Ok(()))
-                            }
-                            // Caddy starts from a file written without its admin, so that file
-                            // pins only certificates this Caddy has loaded.
-                            Ok(None) => {
-                                let validated = certificates.loaded_only(&input.projection);
-                                let applied =
-                                    apply_caddy::<A>(&validated, &config_file, None).await;
-                                let pass = if applied.is_ok() {
-                                    PassOutcome::Written { input }
-                                } else {
-                                    PassOutcome::Unknown
-                                };
-                                (pass, applied)
-                            }
-                            // A failure after the load leaves its certificates loaded.
-                            Ok(Some(admin)) => {
-                                let result =
-                                    apply_caddy(&input.projection, &config_file, Some(&admin))
-                                        .await;
-                                let applied = match &result {
-                                    Ok(()) => {
-                                        certificates.accept(&input.projection);
-                                        Applied::Ok
-                                    }
-                                    Err(ApplyError::AfterServing(_, file)) => {
-                                        certificates.accept(&input.projection);
-                                        Applied::AfterServing(*file)
-                                    }
-                                    Err(ApplyError::BeforeServing(caddy::Error::Admin(_))) => {
-                                        Applied::BeforeServing(
-                                            certificates
-                                                .find_refused(&input.projection, &admin)
-                                                .await,
-                                        )
-                                    }
-                                    Err(ApplyError::BeforeServing(_)) => {
-                                        Applied::BeforeServing(Probe::Unchanged)
-                                    }
-                                };
-                                let pass = PassOutcome::Loaded {
-                                    input,
-                                    addresses,
-                                    applied,
-                                };
-                                (pass, result)
-                            }
-                            Err(error) => {
-                                (PassOutcome::Unknown, Err(ApplyError::BeforeServing(error)))
-                            }
-                        }
-                    };
-                    let through_admin = pass.through_admin();
-                    let refused = pass.found_refusal();
-                    load = load.after(pass);
-                    let addresses = load.claim(through_admin, no_caddy);
-                    route_publishes.send_if_modified(|publishes| {
-                        let changed = publishes.addresses != addresses;
-                        publishes.addresses = addresses;
-                        changed
-                    });
-                    // Derive again without the refused.
-                    if refused {
-                        continue;
-                    }
-                    if let Err(error) = result {
-                        eprintln!(
-                            "failed to update Ingress Proxy configuration: {error}",
-                            error = ployz_core::error_chain::inline(&error),
-                        );
-                        if wait_before_retry(&shutdown).await {
-                            continue;
-                        }
-                        return Ok(());
-                    }
-                    let acks = route_acks(&routes);
-                    let published = acks
-                        .iter()
-                        .map(|(service, ack)| (service.clone(), ack.containers.clone()))
-                        .collect();
-                    if publish_route_acks(&replicated, &machine.id, &mut acked, acks).await {
-                        route_publishes.send_modify(|publishes| {
-                            publishes.count += 1;
-                            publishes.routes = published;
-                        });
-                    }
-                    routed = routes;
-                }
-                Err(error) => {
+                if let Err(error) = result {
                     eprintln!(
-                        "failed to rebuild ingress projection: {error}",
+                        "failed to update Ingress Proxy configuration: {error}",
                         error = ployz_core::error_chain::inline(&error),
                     );
+                    if wait_before_retry(&shutdown).await {
+                        continue;
+                    }
+                    return Ok(());
                 }
+                let acks = route_acks(&routes);
+                let published = acks
+                    .iter()
+                    .map(|(service, ack)| (service.clone(), ack.containers.clone()))
+                    .collect();
+                if publish_route_acks(&replicated, &machine.id, &mut acked, acks).await {
+                    route_publishes.send_modify(|publishes| {
+                        publishes.count += 1;
+                        publishes.routes = published;
+                    });
+                }
+                routed = routes;
             }
-            match wait_for_debounced_change(
-                &mut container_changes,
-                &mut certificate_changes,
-                &shutdown,
-            )
-            .await
-            {
-                Ok(DebouncedChange::Changed) => {}
-                Ok(DebouncedChange::Resubscribe) => continue 'watch,
-                Ok(DebouncedChange::Shutdown) => return Ok(()),
-                Err(error) if wait_to_retry(&error, &shutdown).await => continue 'watch,
-                Err(_) => return Ok(()),
+            Err(error) => {
+                eprintln!(
+                    "failed to rebuild ingress projection: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
             }
         }
+        if !woke(changes.next().await)? {
+            return Ok(());
+        }
+    }
+}
+
+/// Whether the watch woke the pass, and not shutdown. A watch that reopens in place has no
+/// error to give.
+fn woke(wake: Result<Wake, CorrosionError>) -> io::Result<bool> {
+    match wake {
+        Ok(Wake::Changed | Wake::Tick) => Ok(true),
+        Ok(Wake::Shutdown) => Ok(false),
+        Err(error) => Err(io::Error::other(error)),
     }
 }
 
@@ -674,66 +677,6 @@ pub(crate) async fn apply_caddy<A: CaddyAdmin>(
     remove_stale_certificate_files(config_file, &projection.sites)
         .map_err(|error| ApplyError::AfterServing(error.into(), CaddyFile::Current))?;
     Ok(())
-}
-
-enum DebouncedChange {
-    Changed,
-    Resubscribe,
-    Shutdown,
-}
-
-async fn wait_for_debounced_change(
-    container_changes: &mut Subscription,
-    certificate_changes: &mut Subscription,
-    shutdown: &CancellationToken,
-) -> Result<DebouncedChange, CorrosionError> {
-    tokio::select! {
-        changed = container_changes.changed() => changed?,
-        changed = certificate_changes.changed() => changed?,
-        () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
-            return Ok(if container_changes.snapshot_in_progress()
-                || certificate_changes.snapshot_in_progress()
-            {
-                DebouncedChange::Resubscribe
-            } else {
-                DebouncedChange::Changed
-            });
-        }
-        () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
-    }
-    let quiet = tokio::time::sleep(WATCH_DEBOUNCE);
-    tokio::pin!(quiet);
-    loop {
-        tokio::select! {
-            biased;
-            () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
-            changed = container_changes.changed() => changed?,
-            changed = certificate_changes.changed() => changed?,
-            () = &mut quiet => {
-                if !container_changes.snapshot_in_progress()
-                    && !certificate_changes.snapshot_in_progress()
-                {
-                    return Ok(DebouncedChange::Changed);
-                }
-                tokio::select! {
-                    () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
-                    changed = container_changes.changed() => changed?,
-                    changed = certificate_changes.changed() => changed?,
-                    () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
-                        return Ok(DebouncedChange::Resubscribe);
-                    }
-                }
-            }
-        }
-        quiet
-            .as_mut()
-            .reset(tokio::time::Instant::now() + WATCH_DEBOUNCE);
-    }
-}
-
-async fn wait_to_retry(error: &CorrosionError, shutdown: &CancellationToken) -> bool {
-    tracing::warn!(error = %ployz_core::error_chain::inline(error), "ingress watcher failed, retrying");
-    wait_before_retry(shutdown).await
 }
 
 async fn wait_before_retry(shutdown: &CancellationToken) -> bool {

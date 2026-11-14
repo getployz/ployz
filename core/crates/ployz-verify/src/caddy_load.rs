@@ -34,7 +34,8 @@
 //!   claim, with its keep rule (`CaddyLoad::refused_by`: the newest container
 //!   confirmed the load and the Caddyfile holds it), and the record write
 //!   (`CaddyLoad::claim`). The model holds the real `CaddyLoad` and calls these;
-//! - the retry wait, the read's `Err` arm that only logs, and the debounce wait.
+//! - the retry wait, the read's `Err` arm that only logs, and the `ChangeWatch` wake
+//!   (`changes.next()`), which holds the debounce wait.
 //!
 //! Caddy is an actor outside the watcher. It holds its container id, what its process
 //! serves and the Caddyfile on disk. It restarts in place under the same id (`docker
@@ -216,10 +217,12 @@ impl End {
 /// Where the watcher is in `watch_caddy`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Pc {
-    /// `ingress.rs` `watch_caddy`: `wait_for_debounced_change`, or `wait_before_retry`
-    /// after a failed pass. Caddy and the store act here.
+    /// `ingress.rs` `watch_caddy`: `changes.next()` on its `ChangeWatch` (`woke`), which
+    /// debounces a change in the container, certificate or Machine subscription and
+    /// reopens a failed one in place, or `wait_before_retry` after a failed pass. Caddy
+    /// and the store act here.
     Wait,
-    /// `ingress.rs` `watch_caddy`: the top of the inner loop, `replicated.containers()`
+    /// `ingress.rs` `watch_caddy`: the top of the pass loop, `replicated.containers()`
     /// and `certificate_state()`, reached from the wait or from `Probe::Refused`'s
     /// `continue`.
     Read,
@@ -257,7 +260,8 @@ enum Pc {
         probe: Option<Probe>,
     },
     /// `ingress.rs` `watch_caddy`: `load.after(pass)`, the record write
-    /// (`route_publishes.send_if_modified`), then `wait_before_retry` or the acks.
+    /// (`route_publishes.send_if_modified`), then `wait_before_retry` or the acks and
+    /// `changes.next()`.
     Record(Pass),
 }
 
@@ -1306,7 +1310,7 @@ fn reads_as(model: &CaddyLoad, before: &State, action: Action) -> String {
             before.derived()
         ),
         Action::Read(Call::Err) => {
-            "watcher: the read fails; the Err arm logs and goes to wait_for_debounced_change (watch_caddy)".to_owned()
+            "watcher: the read fails; the Err arm logs and goes to changes.next() (watch_caddy)".to_owned()
         }
         Action::Cached => format!(
             "watcher: `loaded` = !no_caddy && load.skip(input, true): {} (watch_caddy, CaddyLoad::skip)",
