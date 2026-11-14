@@ -145,10 +145,25 @@ pub(crate) struct ProjectedCertificate {
     pub(super) last_error: Option<String>,
 }
 
+/// What one listener of a site does with a request for its hostname.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Serve<'a> {
+    /// Proxies to the endpoints, or answers NOT_RUNNING when there are none.
+    Proxy(&'a [IngressEndpoint]),
+    /// Sends the visitor to the HTTPS route, which proxies to the endpoints.
+    RedirectToHttps(&'a [IngressEndpoint]),
+    Unrouted(Unrouted),
+}
+
+/// Why a listener routes a hostname nowhere.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Unrouted {
+    /// Nothing is published for the hostname: only its challenge or its pinned material is left.
+    NotDeployed,
+}
+
 impl IngressSite {
-    /// Ordered endpoints published for one HTTP protocol, when published.
-    #[must_use]
-    pub(super) fn route(&self, protocol: HttpProtocol) -> Option<&[IngressEndpoint]> {
+    fn route(&self, protocol: HttpProtocol) -> Option<&[IngressEndpoint]> {
         let publication = self.publication.as_ref()?;
         match protocol {
             HttpProtocol::Http => publication.http.as_deref(),
@@ -156,19 +171,56 @@ impl IngressSite {
         }
     }
 
-    /// The HTTPS route with the certificate Caddy serves it under. Without material,
-    /// Caddy renders no HTTPS site, so the route proxies nothing.
+    /// The public HTTP listener's answer, when it has a site for the hostname. An HTTPS-only
+    /// hostname redirects HTTP to HTTPS; a challenge-only site publishes nothing else.
     #[must_use]
-    pub(super) fn https(&self) -> Option<(&CertificateMaterial, &[IngressEndpoint])> {
-        self.material().zip(self.route(HttpProtocol::Https))
+    pub(super) fn http(&self) -> Option<Serve<'_>> {
+        if let Some(endpoints) = self.route(HttpProtocol::Http) {
+            return Some(Serve::Proxy(endpoints));
+        }
+        if let Some((_, Serve::Proxy(endpoints))) = self.https() {
+            return Some(Serve::RedirectToHttps(endpoints));
+        }
+        self.challenge()
+            .map(|_| Serve::Unrouted(Unrouted::NotDeployed))
+    }
+
+    /// The public HTTPS listener's answer with the material Caddy pins for it, when it has a
+    /// site for the hostname: for its HTTPS route, or for a hostname no Service publishes any
+    /// more, so HTTPS still completes the handshake and answers like HTTP. Without material,
+    /// Caddy renders no HTTPS site, so the route proxies nothing. An HTTP-only hostname pins
+    /// nothing.
+    #[must_use]
+    pub(super) fn https(&self) -> Option<(&CertificateMaterial, Serve<'_>)> {
+        let material = self.material()?;
+        match self.route(HttpProtocol::Https) {
+            Some(endpoints) => Some((material, Serve::Proxy(endpoints))),
+            None if self.publication.is_none() => {
+                Some((material, Serve::Unrouted(Unrouted::NotDeployed)))
+            }
+            None => None,
+        }
+    }
+
+    /// The endpoints the loopback listener proxies to. The door terminates TLS itself, so
+    /// material does not matter: the HTTPS route is what the visitor asked for through the
+    /// door, and an HTTP-only hostname serves its HTTP route to the visitor the door sends on.
+    #[must_use]
+    pub(super) fn door(&self) -> Option<&[IngressEndpoint]> {
+        self.route(HttpProtocol::Https)
+            .or_else(|| self.route(HttpProtocol::Http))
     }
 
     /// Ordered endpoints Caddy proxies to for one HTTP protocol.
     #[must_use]
     pub(super) fn proxied(&self, protocol: HttpProtocol) -> Option<&[IngressEndpoint]> {
-        match protocol {
-            HttpProtocol::Http => self.route(HttpProtocol::Http),
-            HttpProtocol::Https => self.https().map(|(_, endpoints)| endpoints),
+        let serve = match protocol {
+            HttpProtocol::Http => self.http(),
+            HttpProtocol::Https => self.https().map(|(_, serve)| serve),
+        };
+        match serve {
+            Some(Serve::Proxy(endpoints)) => Some(endpoints),
+            _ => None,
         }
     }
 
@@ -179,13 +231,10 @@ impl IngressSite {
             .and_then(|certificate| certificate.challenge.as_ref())
     }
 
-    /// The material Caddy pins for this hostname: for its HTTPS route, or for a hostname
-    /// no Service publishes any more, so HTTPS still completes the handshake and answers
-    /// like HTTP. An HTTP-only hostname pins nothing, as before.
+    /// The material Caddy pins for this hostname, which the HTTPS listener serves it under.
     #[must_use]
     pub(super) fn pinned(&self) -> Option<&CertificateMaterial> {
-        self.material()
-            .filter(|_| self.publication.is_none() || self.route(HttpProtocol::Https).is_some())
+        self.https().map(|(material, _)| material)
     }
 
     #[must_use]
@@ -356,4 +405,174 @@ pub(super) fn prepare_directory(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o750))?;
     set_ployz_group(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU16;
+
+    use ployz_core::{ContainerAddress, IngressHost, QualifiedService};
+
+    use super::{
+        IngressEndpoint, IngressPublication, IngressSite, ProjectedCertificate, PublicationTrace,
+        Serve, Unrouted,
+    };
+    use crate::{
+        corrosion::CertificateChallenge, ingress::projection::HttpProtocol,
+        ingress::tests::test_material,
+    };
+
+    fn endpoint(port: u16) -> IngressEndpoint {
+        IngressEndpoint {
+            address: ContainerAddress("10.210.1.2".parse().unwrap()),
+            port: NonZeroU16::new(port).unwrap(),
+        }
+    }
+
+    /// A site with what its HTTP listener, HTTPS listener and the door answer.
+    type Case<'a> = (
+        &'a str,
+        IngressSite,
+        Option<Serve<'a>>,
+        Option<Serve<'a>>,
+        Option<&'a [IngressEndpoint]>,
+    );
+
+    fn proxied(serve: Option<Serve<'_>>) -> Option<&[IngressEndpoint]> {
+        match serve {
+            Some(Serve::Proxy(endpoints)) => Some(endpoints),
+            _ => None,
+        }
+    }
+
+    fn site(
+        http: Option<Vec<IngressEndpoint>>,
+        https: Option<Vec<IngressEndpoint>>,
+        published: bool,
+        material: bool,
+        challenge: bool,
+    ) -> IngressSite {
+        IngressSite {
+            hostname: IngressHost::parse("web.example.com").unwrap(),
+            publication: published.then(|| IngressPublication {
+                owner: QualifiedService::parse("app/web").unwrap(),
+                http,
+                https,
+                trace: PublicationTrace::default(),
+            }),
+            certificate: (material || challenge).then(|| ProjectedCertificate {
+                challenge: challenge.then(|| {
+                    CertificateChallenge::parse(
+                        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0",
+                        "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    )
+                    .unwrap()
+                }),
+                material: material.then(test_material),
+                last_error: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn each_listener_answers_by_what_the_site_publishes_and_holds() {
+        let one = [endpoint(8080)];
+        let other = [endpoint(8443)];
+        let some = |endpoints: &[IngressEndpoint]| Some(endpoints.to_vec());
+        let not_deployed = Serve::Unrouted(Unrouted::NotDeployed);
+
+        // (http route, https route, published, material, challenge) -> http, https, door
+        let cases: Vec<Case> = vec![
+            (
+                "http only",
+                site(some(&one), None, true, false, false),
+                Some(Serve::Proxy(&one)),
+                None,
+                Some(&one),
+            ),
+            (
+                "http only with material pins nothing",
+                site(some(&one), None, true, true, false),
+                Some(Serve::Proxy(&one)),
+                None,
+                Some(&one),
+            ),
+            (
+                "http only, no endpoints",
+                site(Some(Vec::new()), None, true, false, false),
+                Some(Serve::Proxy(&[])),
+                None,
+                Some(&[]),
+            ),
+            (
+                "https only with material redirects http",
+                site(None, some(&other), true, true, false),
+                Some(Serve::RedirectToHttps(&other)),
+                Some(Serve::Proxy(&other)),
+                Some(&other),
+            ),
+            (
+                "https only without material has no public site",
+                site(None, some(&other), true, false, false),
+                None,
+                None,
+                Some(&other),
+            ),
+            (
+                "https only without material keeps its challenge",
+                site(None, some(&other), true, false, true),
+                Some(not_deployed),
+                None,
+                Some(&other),
+            ),
+            (
+                "both protocols",
+                site(some(&one), some(&other), true, true, false),
+                Some(Serve::Proxy(&one)),
+                Some(Serve::Proxy(&other)),
+                Some(&other),
+            ),
+            (
+                "unpublished with material",
+                site(None, None, false, true, false),
+                None,
+                Some(not_deployed),
+                None,
+            ),
+            (
+                "unpublished challenge only",
+                site(None, None, false, false, true),
+                Some(not_deployed),
+                None,
+                None,
+            ),
+            (
+                "unpublished with material and challenge",
+                site(None, None, false, true, true),
+                Some(not_deployed),
+                Some(not_deployed),
+                None,
+            ),
+        ];
+        for (name, site, http, https, door) in cases {
+            assert_eq!(site.http(), http, "{name}: http");
+            assert_eq!(site.https().map(|(_, serve)| serve), https, "{name}: https");
+            assert_eq!(site.door(), door, "{name}: door");
+            assert_eq!(
+                site.pinned().is_some(),
+                https.is_some(),
+                "{name}: pinned material"
+            );
+            assert_eq!(
+                site.proxied(HttpProtocol::Http),
+                proxied(http),
+                "{name}: proxied http"
+            );
+            assert_eq!(
+                site.proxied(HttpProtocol::Https),
+                proxied(https),
+                "{name}: proxied https"
+            );
+        }
+    }
 }

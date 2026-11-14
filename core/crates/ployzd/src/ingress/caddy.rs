@@ -25,7 +25,10 @@ use crate::{
     filesystem::{atomic_write, set_ployz_group},
     ingress::{
         certificates::certificate_file_stem,
-        projection::{IngressEndpoint, IngressProjection, IngressSite, prepare_directory},
+        error_page::{ErrorPage, write_error_page},
+        projection::{
+            IngressEndpoint, IngressProjection, IngressSite, Serve, Unrouted, prepare_directory,
+        },
     },
 };
 
@@ -41,8 +44,6 @@ const CONNECTION_FIELDS: [&str; 3] = ["remote_ip", "remote", "client_ip"];
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Set to any value to turn on Caddy's debug log: every upstream selection, failure and retry.
 pub(crate) const DEBUG_ENV: &str = "PLOYZ_INGRESS_DEBUG";
-/// Browsers get this page; other clients get JSON or plain text with the same code.
-const ERROR_PAGE: &str = include_str!("error_page.html");
 
 /// Failure while rendering or applying Caddy configuration.
 #[derive(Debug, Error)]
@@ -263,12 +264,13 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     let hostname_verify = verify_handle(HOSTNAME_VERIFY_PATH, local_machine);
     let headers = trace::headers_import(local_machine);
     let unpublished = trace::unpublished_import(local_machine);
+    let not_deployed = ErrorPage::NotDeployed.directive();
     let _ = write!(
         output,
         "# Health check endpoint to verify Caddy reachability on this Machine.\n\
 http:// {{\n\
 {headers}{unpublished}{ingress_verify}{hostname_verify}\
-\terror NOT_DEPLOYED 404\n\
+{not_deployed}\
 \timport error_page {local_machine}\n\
 \timport ployz_log\n\
 }}\n\
@@ -277,7 +279,7 @@ http:// {{\n\
 # and Caddy would answer an unmatched request 200 with an empty body.\n\
 https:// {{\n\
 {headers}{unpublished}\
-\terror NOT_DEPLOYED 404\n\
+{not_deployed}\
 \timport error_page {local_machine}\n\
 \timport ployz_log\n\
 }}\n\
@@ -328,43 +330,16 @@ https:// {{\n\
         INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_BIND_V6,
     );
     write_loopback_sites(&mut output, projection, &unpublished, &hostname_verify);
-    if projection.sites.iter().any(|site| {
-        site.proxied(HttpProtocol::Http).is_some()
-            || site.challenge().is_some()
-            || site.pinned().is_some()
-    }) {
+    if projection
+        .sites
+        .iter()
+        .any(|site| site.http().is_some() || site.https().is_some())
+    {
         output.push_str("\n# Sites generated from Service ports.\n");
     }
     for site in &projection.sites {
-        let https = site.https();
-        let published = |endpoints| {
-            let publication = site
-                .publication
-                .as_ref()
-                .expect("a routed site has a publication");
-            format!(
-                "{}\timport ployz_requests {} {}\n",
-                trace::published_import(local_machine, &publication.trace, endpoints),
-                publication.owner.namespace,
-                publication.owner.name
-            )
-        };
-        // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
-        // A challenge-only http site publishes nothing else, so it answers like the catch-all.
-        let http = match (site.proxied(HttpProtocol::Http), https) {
-            (Some(endpoints), _) => Some((published(endpoints), proxy(endpoints))),
-            // The redirect's trace reports the https route it sends visitors to.
-            (None, Some((_, endpoints))) => {
-                Some((published(endpoints), REDIRECT_TO_HTTPS.to_owned()))
-            }
-            (None, None) => site.challenge().map(|_| {
-                (
-                    format!("{unpublished}\timport ployz_log\n"),
-                    "\terror NOT_DEPLOYED 404\n".to_owned(),
-                )
-            }),
-        };
-        if let Some((trace, answer)) = http {
+        if let Some(serve) = site.http() {
+            let (trace, answer) = answer(site, serve, local_machine, &unpublished);
             // The hostname's own site shadows the catch-all, so it answers the verify probe too.
             write_site(
                 &mut output,
@@ -376,20 +351,13 @@ https:// {{\n\
                 &answer,
             );
         }
-        let Some(material) = site.pinned() else {
+        let Some((material, serve)) = site.https() else {
             continue;
         };
         let stem = certificate_file_stem(&site.hostname, material);
         let certs = ingress_certs_dir();
         let tls = format!("\ttls {certs}/{stem}.crt {certs}/{stem}.key\n");
-        // Pinned material with no HTTPS route left answers like the HTTP catch-all.
-        let (trace, answer) = match https {
-            Some((_, route)) => (published(route), proxy(route)),
-            None => (
-                format!("{unpublished}\timport ployz_log\n"),
-                "\terror NOT_DEPLOYED 404\n".to_owned(),
-            ),
-        };
+        let (trace, answer) = answer(site, serve, local_machine, &unpublished);
         write_site(
             &mut output,
             local_machine,
@@ -404,6 +372,42 @@ https:// {{\n\
     output
 }
 
+/// The trace and `ployz_requests` imports of a routed site, which reports its Service.
+fn published(site: &IngressSite, machine: &MachineId, endpoints: &[IngressEndpoint]) -> String {
+    let publication = site
+        .publication
+        .as_ref()
+        .expect("a routed site has a publication");
+    format!(
+        "{}\timport ployz_requests {} {}\n",
+        trace::published_import(machine, &publication.trace, endpoints),
+        publication.owner.namespace,
+        publication.owner.name
+    )
+}
+
+/// The trace imports and the answer of one public listener's site. The redirect's trace
+/// reports the HTTPS route it sends visitors to, and an unrouted site publishes nothing, so it
+/// answers like the catch-all.
+fn answer(
+    site: &IngressSite,
+    serve: Serve<'_>,
+    machine: &MachineId,
+    unpublished: &str,
+) -> (String, String) {
+    match serve {
+        Serve::Proxy(endpoints) => (published(site, machine, endpoints), proxy(endpoints)),
+        Serve::RedirectToHttps(endpoints) => (
+            published(site, machine, endpoints),
+            REDIRECT_TO_HTTPS.to_owned(),
+        ),
+        Serve::Unrouted(Unrouted::NotDeployed) => (
+            format!("{unpublished}\timport ployz_log\n"),
+            ErrorPage::NotDeployed.directive(),
+        ),
+    }
+}
+
 /// The loopback sites the Tunnel door reaches: one per routed hostname, with or without
 /// Certificate Material, since the door terminates TLS itself, and a catch-all that answers
 /// a hostname it does not route like the public one.
@@ -416,35 +420,21 @@ fn write_loopback_sites(
     let local_machine = &projection.machine.id;
     let port = INGRESS_LOOPBACK_PORT;
     let loopback = format!("\timport loopback_site {local_machine}\n");
+    let not_deployed = ErrorPage::NotDeployed.directive();
     let _ = write!(
         output,
         "\n# Unknown hostnames through the Tunnel door.\n\
 http://:{port} {{\n\
-{loopback}{unpublished}{hostname_verify}\
-\terror NOT_DEPLOYED 404\n\
+{loopback}{unpublished}{hostname_verify}{not_deployed}\
 \timport error_page {local_machine}\n\
 \timport ployz_log\n\
 }}\n"
     );
     for site in &projection.sites {
-        // The https route is what the visitor asked for through the door; an http-only
-        // hostname serves its http route to the visitor the door sends on.
-        let Some(endpoints) = site
-            .route(HttpProtocol::Https)
-            .or_else(|| site.route(HttpProtocol::Http))
-        else {
+        let Some(endpoints) = site.door() else {
             continue;
         };
-        let publication = site
-            .publication
-            .as_ref()
-            .expect("a routed site has a publication");
-        let trace = format!(
-            "{}\timport ployz_requests {} {}\n",
-            trace::published_import(local_machine, &publication.trace, endpoints),
-            publication.owner.namespace,
-            publication.owner.name
-        );
+        let trace = published(site, local_machine, endpoints);
         write_site(
             output,
             local_machine,
@@ -506,66 +496,6 @@ fn write_log_snippets(output: &mut String) {
     );
 }
 
-/// The `error_page` snippet: one code per failure, negotiated as HTML, JSON or plain text.
-///
-/// Ployz's own errors carry their code as the message. Any proxy failure is `NO_RESPONSE`: a
-/// refused or timed-out dial is 502, then passive health empties the pool and the rest are 503.
-fn write_error_page(output: &mut String) {
-    output.push_str(
-        r##"(error_page) {
-	handle_errors {
-		map "{err.status_code} {err.message}" {ployz_error} {ployz_message} {ployz_docs} {
-			"503 NOT_RUNNING" NOT_RUNNING "The app isn't running." "#this-app-isnt-running"
-			"404 NOT_DEPLOYED" NOT_DEPLOYED "Nothing is deployed at this domain." "#nothing-is-deployed-here"
-			~^50[234] NO_RESPONSE "The app didn't respond." "#this-app-didnt-respond"
-			default INTERNAL_ERROR "Something went wrong." ""
-		}
-		map {http.request.host} {ployz_host} {
-			~^([a-zA-Z0-9.:-]+)$ "${1}"
-			default "this domain"
-		}
-		# Headers set on the failed route do not reach this response.
-		import ployz_headers {args[0]}
-		header {
-			ployz-error {ployz_error}
-			cache-control no-store
-		}
-		@not_running vars {ployz_error} NOT_RUNNING
-		header @not_running {
-			retry-after 10
-			refresh 10
-		}
-		@json header Accept *json*
-		handle @json {
-			header content-type application/json
-			respond `{"error":{"status":{err.status_code},"code":"{ployz_error}","message":"{ployz_message}","request_id":"{http.request.uuid}","docs":"https://ployz.dev/docs/troubleshooting/app-not-reachable?utm_source=error-page&utm_medium=json&utm_campaign={ployz_error}&utm_content=docs{ployz_docs}"}}` {err.status_code}
-		}
-		@html header Accept *text/html*
-		handle @html {
-			header content-type "text/html; charset=utf-8"
-			respond <<ERROR_PAGE
-"##,
-    );
-    output.push_str(ERROR_PAGE);
-    output.push_str(
-        r##"ERROR_PAGE {err.status_code}
-		}
-		handle {
-			header content-type "text/plain; charset=utf-8"
-			respond <<TEXT
-				{err.status_code} {ployz_error}: {ployz_message}
-				Request: {http.request.uuid}
-				https://ployz.dev/docs/troubleshooting/app-not-reachable?utm_source=error-page&utm_medium=text&utm_campaign={ployz_error}&utm_content=docs{ployz_docs}
-
-				TEXT {err.status_code}
-		}
-	}
-}
-
-"##,
-    );
-}
-
 /// A site handle that answers `path` with this Machine's id.
 fn verify_handle(path: &str, machine: &MachineId) -> String {
     format!("\thandle {path} {{\n\t\trespond \"{machine}\" 200\n\t}}\n")
@@ -622,7 +552,7 @@ fn loopback_proxy(endpoints: &[IngressEndpoint]) -> String {
 
 fn proxy_with(endpoints: &[IngressEndpoint], snippet: &str) -> String {
     if endpoints.is_empty() {
-        return "\terror NOT_RUNNING 503\n".to_owned();
+        return ErrorPage::NotRunning.directive();
     }
     format!(
         "\treverse_proxy {} {{\n\t\timport {snippet}\n\t}}\n\

@@ -45,7 +45,7 @@ use stateright::{Model, Property};
 use crate::harness::{self, Variant, everywhere};
 
 /// The ployz bridge's name in Docker's messages (`DOCKER_NETWORK_NAME`,
-/// core/crates/ployzd/src/network.rs).
+/// core/crates/ployzd/src/docker/mod.rs).
 const NETWORK: &str = "ployz";
 
 /// Docker's refusal of a disconnect or connect of a member between restarts.

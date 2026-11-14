@@ -8,7 +8,7 @@ use std::{collections::BTreeSet, net::Ipv4Addr};
 use bollard::models::{ContainerSummary, EndpointIpamConfig, EndpointSettings};
 use ployz_core::MachineSubnet;
 
-use crate::network::DOCKER_NETWORK_NAME;
+use super::DOCKER_NETWORK_NAME;
 
 /// The ployz endpoint of a Container, with `ipv4` pinned. Only a Container that
 /// [`super::takes_bridge_ipv6`] takes IPv6.

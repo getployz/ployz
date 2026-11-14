@@ -1759,12 +1759,7 @@ mod ingress_doors {
             .await
             .unwrap()
             .iter()
-            .map(|entry| {
-                (
-                    entry.facts.id,
-                    crate::ingress::at_rest(&entry.facts.runtime),
-                )
-            })
+            .map(|entry| (entry.facts.id, entry.facts.runtime.at_rest()))
             .collect()
     }
 

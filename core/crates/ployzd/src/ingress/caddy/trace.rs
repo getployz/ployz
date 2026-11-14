@@ -6,7 +6,10 @@
 use ployz_core::{INGRESS_LOOPBACK_BIND, INGRESS_LOOPBACK_PORT, MachineId};
 use std::fmt::Write as _;
 
-use crate::ingress::projection::{IngressEndpoint, PublicationTrace};
+use crate::ingress::{
+    error_page::ErrorPage,
+    projection::{IngressEndpoint, PublicationTrace},
+};
 
 /// Path the trace page answers on every routed hostname.
 pub(crate) const TRACE_PATH: &str = "/.well-known/ployz/trace";
@@ -107,18 +110,16 @@ const TRACE_FIELDS: &[TraceField] = &[
 pub(super) enum TraceStatus {
     /// This Server's Caddy has at least one endpoint for the hostname.
     Ok,
-    /// The hostname is published here but has no endpoint to proxy to.
-    NotRunning,
-    /// Nothing is published for the hostname on this Server.
-    NotDeployed,
+    /// The page the hostname answers with: NOT_RUNNING when it is published here but has no
+    /// endpoint to proxy to, NOT_DEPLOYED when nothing is published for it on this Server.
+    Failing(ErrorPage),
 }
 
 impl TraceStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
-            Self::NotRunning => "NOT_RUNNING",
-            Self::NotDeployed => "NOT_DEPLOYED",
+            Self::Failing(page) => page.as_str(),
         }
     }
 }
@@ -130,7 +131,12 @@ pub(super) fn headers_import(machine: &MachineId) -> String {
 
 /// `import ployz_trace` for a site that answers nothing published.
 pub(super) fn unpublished_import(machine: &MachineId) -> String {
-    import(machine, "\"\"", "\"\"", TraceStatus::NotDeployed)
+    import(
+        machine,
+        "\"\"",
+        "\"\"",
+        TraceStatus::Failing(ErrorPage::NotDeployed),
+    )
 }
 
 /// `import ployz_trace` for a published site proxying to `endpoints`.
@@ -154,7 +160,7 @@ pub(super) fn published_import(
             .join(",")
     };
     let status = if endpoints.is_empty() {
-        TraceStatus::NotRunning
+        TraceStatus::Failing(ErrorPage::NotRunning)
     } else {
         TraceStatus::Ok
     };

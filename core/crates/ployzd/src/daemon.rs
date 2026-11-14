@@ -9,9 +9,7 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::{
-    CORROSION_API_ADDRESS, LocalMachinePhase, MACHINE_START_WAIT, MachineLayout, VOLUME_SEND_PORT,
-};
+use ployz_core::{CORROSION_API_ADDRESS, LocalMachinePhase, MachineLayout, VOLUME_SEND_PORT};
 use sd_notify::NotifyState;
 use thiserror::Error;
 use tokio::{
@@ -238,7 +236,9 @@ impl Daemon {
                 let record = interrupted.record().clone();
                 // Removing the network and Corrosion waits on Docker, which IO load slows
                 // past TimeoutStartSec, and each timed-out start begins it again.
-                let _extend = extend_systemd_start_timeout("finishing the interrupted reset");
+                let _extend = crate::systemd_timeout::extend_systemd_start_timeout(
+                    "finishing the interrupted reset",
+                );
                 finish_interrupted_reset(
                     interrupted,
                     NetworkPlane::cleanup_retained(&record),
@@ -896,7 +896,7 @@ async fn start_corrosion(
         )
     });
     // MACHINE_START_WAIT covers Corrosion image pull and wait_ready via EXTEND_TIMEOUT.
-    let _extend = extend_systemd_start_timeout("starting Corrosion");
+    let _extend = crate::systemd_timeout::extend_systemd_start_timeout("starting Corrosion");
     Ok(Some(
         CorrosionConfig::new(
             paths.data_dir,
@@ -946,52 +946,6 @@ fn notify(state: NotifyState<'_>) {
             "systemd notification failed: {error}",
             error = ployz_core::error_chain::inline(&error),
         );
-    }
-}
-
-const SYSTEMD_START_TIMEOUT_EXTENSION: Duration = Duration::from_secs(30);
-/// systemd counts each extension from when it reads it, so a renewal sent as the last one runs
-/// out loses to a late wakeup under the IO load that makes a start slow.
-const SYSTEMD_START_TIMEOUT_RENEWAL: Duration = Duration::from_secs(15);
-const _: () = assert!(
-    SYSTEMD_START_TIMEOUT_RENEWAL.as_secs() * 2 <= SYSTEMD_START_TIMEOUT_EXTENSION.as_secs()
-);
-
-#[must_use]
-pub(crate) struct SystemdStartTimeoutExtend {
-    task: JoinHandle<()>,
-}
-
-impl Drop for SystemdStartTimeoutExtend {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-/// Keeps extending the start timeout while `what` runs, up to MACHINE_START_WAIT.
-pub(crate) fn extend_systemd_start_timeout(what: &'static str) -> SystemdStartTimeoutExtend {
-    let usec = u32::try_from(SYSTEMD_START_TIMEOUT_EXTENSION.as_micros())
-        .expect("30s start-timeout extension fits u32 microseconds");
-    let deadline = Instant::now() + MACHINE_START_WAIT;
-    SystemdStartTimeoutExtend {
-        task: tokio::spawn(async move {
-            loop {
-                if Instant::now() >= deadline {
-                    eprintln!(
-                        "stopped extending the systemd start timeout: {what} is taking too long"
-                    );
-                    return;
-                }
-                if let Err(error) = sd_notify::notify(&[NotifyState::ExtendTimeoutUsec(usec)]) {
-                    eprintln!(
-                        "failed to extend the systemd start timeout: {error}",
-                        error = ployz_core::error_chain::inline(&error),
-                    );
-                    return;
-                }
-                tokio::time::sleep(SYSTEMD_START_TIMEOUT_RENEWAL).await;
-            }
-        }),
     }
 }
 

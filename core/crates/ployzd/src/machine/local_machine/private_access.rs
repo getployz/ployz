@@ -122,7 +122,7 @@ fn retirees(routers: &[ContainerObservation], kept: Option<ContainerId>) -> Vec<
         .filter(|router| Some(router.container_id) != kept)
         .map(|router| Retiree {
             id: router.container_id,
-            running: !crate::ingress::at_rest(&router.runtime),
+            running: !router.runtime.at_rest(),
         })
         .collect()
 }

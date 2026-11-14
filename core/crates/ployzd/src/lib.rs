@@ -57,6 +57,7 @@ pub mod sealing_key;
 mod sealing_recovery;
 pub mod socket_activation;
 mod storage;
+pub(crate) mod systemd_timeout;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]
 mod test_dir;
