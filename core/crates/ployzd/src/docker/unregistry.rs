@@ -9,8 +9,8 @@ use std::{
 
 use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use ployz_core::{
-    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, RpcError,
-    labels,
+    ImageIngestDestination, ImageIngestOpened, ImageIngestReason, ManagementAddress, PinnedImage,
+    RpcError, labels,
 };
 use tokio::{net::TcpStream, sync::Mutex};
 
@@ -18,7 +18,11 @@ use crate::network::UNREGISTRY_PORT;
 
 use super::{DesiredContainer, Error, LocalDocker, ManagedService};
 
-pub const IMAGE: &str = "ghcr.io/psviderski/unregistry:0.4.1";
+/// The helper runs with host networking and the containerd socket, and any image route
+/// can write the tag, so only the index digest names it.
+pub const IMAGE: PinnedImage = PinnedImage::new(
+    "ghcr.io/psviderski/unregistry:0.4.1@sha256:7297f3bb6f503515991e81e249dab81c23d2c350323fc209e3eaa8507a5970b1",
+);
 const NAME: &str = "ployz-unregistry";
 const CONTAINER_SOCKET_PARENT: &str = "/run/ployz-containerd";
 const READY_RETRY: Duration = Duration::from_millis(10);
@@ -121,7 +125,7 @@ impl ImageIngest {
             return Ok(());
         };
         let _reconciliation = self.reconciliation.lock().await;
-        ManagedService::new(docker.clone(), NAME, IMAGE)
+        ManagedService::new(docker.clone(), NAME)
             .remove()
             .await
             .map_err(Into::into)
@@ -173,8 +177,9 @@ impl LocalDocker {
         management_address: Ipv6Addr,
         socket: &Path,
     ) -> Result<(), Error> {
-        ManagedService::new(self.clone(), NAME, IMAGE)
+        ManagedService::new(self.clone(), NAME)
             .ensure(DesiredContainer::new(
+                IMAGE,
                 unregistry_config(socket, management_address),
                 &[],
             ))
@@ -191,7 +196,6 @@ fn unregistry_config(socket: &Path, management_address: Ipv6Addr) -> ContainerCr
         .to_string_lossy();
     let container_socket = format!("{CONTAINER_SOCKET_PARENT}/{socket_name}");
     ContainerCreateBody {
-        image: Some(IMAGE.into()),
         env: Some(vec![
             format!("UNREGISTRY_ADDR=[{management_address}]:{UNREGISTRY_PORT}"),
             "UNREGISTRY_CONTAINERD_NAMESPACE=moby".into(),
@@ -375,7 +379,6 @@ mod tests {
         let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let config = unregistry_config(&socket, "fdcc::2".parse().unwrap());
 
-        assert_eq!(config.image.as_deref(), Some(IMAGE));
         assert_eq!(
             config.env,
             Some(vec![

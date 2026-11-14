@@ -426,6 +426,39 @@ async fn join_consumption_uses_the_shared_persisted_approval_clock_floor() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// Cloud relays the pending body to the person, so it can add a Machine of its own to the
+/// bootstrap peers they sign. The admitter seals no capsule for it.
+#[tokio::test]
+async fn an_approval_naming_a_bootstrap_peer_this_machine_never_listed_is_refused() {
+    let (entry, _, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let request = request("joiner", WireGuardPublicKey([2; 32]));
+    assert!(entry.register(request.clone()).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    let mut clouds = body.bootstrap.first().unwrap().clone();
+    clouds.id = MachineId::random();
+    clouds.public_key = WireGuardPublicKey([7; 32]);
+    body.bootstrap.push(clouds);
+    entry
+        .approve_join(ApproveJoinRequest {
+            approval: Signed::sign(&body, &signer).unwrap(),
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        entry.register(request).await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Mismatch {
+            field: "bootstrap peers"
+        }))
+    ));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 async fn approved_registration(
     entry: &LocalMachine,
     joiner: &LocalMachineStore,

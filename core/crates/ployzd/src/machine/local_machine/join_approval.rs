@@ -226,7 +226,21 @@ impl LocalMachine {
                 .and_then(|proposal| proposal.approval.clone())
         });
         if let Some(approval) = approval {
-            self.verify_join(&approval, &join::JoinAllocation::from(machine), network)?;
+            let body =
+                self.verify_join(&approval, &join::JoinAllocation::from(machine), network)?;
+            // Cloud relays the body a person signs, so it could add a Machine of its own that
+            // the joiner would then trust as a peer. Seal only to a joiner whose starting
+            // peers are this Machine's own.
+            let ours = body.bootstrap.iter().all(|allocation| {
+                peers.iter().any(|peer| {
+                    peer.id == allocation.id && peer.public_key == allocation.public_key
+                })
+            });
+            if !ours {
+                return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
+                    field: "bootstrap peers",
+                }));
+            }
             return Ok(approval);
         }
         let record = self.record();

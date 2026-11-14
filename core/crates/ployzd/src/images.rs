@@ -5,23 +5,35 @@
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    Ciphertext, IngressPorts, Namespace, PrivateAccessStateId, QualifiedService,
+    Ciphertext, IngressPorts, Namespace, PinnedImage, PrivateAccessStateId, QualifiedService,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, caddy_service_spec, holder_service_spec,
     private_access_sealed_key, private_access_service_spec, private_access_state,
     tunnel_sealed_token, tunnel_service_spec,
 };
 
 /// Caddy v2.11.9, resolved 2026-11-07.
-pub(crate) const CADDY: &str = "docker.io/library/caddy:2@sha256:ce773ec7a742ce15ee6bf2bb5f65882b9e2a4487b10733e6f1484f86e6b5d8bc";
+pub(crate) const CADDY: &str = PinnedImage::new(
+    "docker.io/library/caddy:2@sha256:ce773ec7a742ce15ee6bf2bb5f65882b9e2a4487b10733e6f1484f86e6b5d8bc",
+)
+.as_str();
 
 /// The holder sleeps and owns the Ingress Proxy's network namespace and host ports.
-pub(crate) const PAUSE: &str = "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a";
+pub(crate) const PAUSE: &str = PinnedImage::new(
+    "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a",
+)
+.as_str();
 
 /// cloudflared 2026.10.7, resolved 2026-11-08. The Tunnel Connector.
-pub(crate) const CLOUDFLARED: &str = "docker.io/cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
+pub(crate) const CLOUDFLARED: &str = PinnedImage::new(
+    "docker.io/cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba",
+)
+.as_str();
 
 /// Tailscale 1.104.4, resolved 2026-11-08. The Private Access router.
-pub(crate) const TAILSCALE: &str = "docker.io/tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c";
+pub(crate) const TAILSCALE: &str = PinnedImage::new(
+    "docker.io/tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c",
+)
+.as_str();
 
 /// The reserved Ingress door specs this daemon builds for one set of Doors: the
 /// holder, the Caddy that joins it, and the Tunnel Connector when the Tunnel Door

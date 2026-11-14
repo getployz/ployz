@@ -28,7 +28,7 @@ impl LocalDocker {
     pub(super) async fn bridge(&self) -> Result<Bridge, Error> {
         let network = self
             .client
-            .inspect_network(crate::network::DOCKER_NETWORK_NAME, None)
+            .inspect_network(super::DOCKER_NETWORK_NAME, None)
             .await?;
         let configs = network
             .ipam
@@ -46,7 +46,7 @@ impl LocalDocker {
                     .all(true)
                     .filters(&HashMap::from([(
                         "network",
-                        vec![crate::network::DOCKER_NETWORK_NAME],
+                        vec![super::DOCKER_NETWORK_NAME],
                     )]))
                     .build(),
             ))

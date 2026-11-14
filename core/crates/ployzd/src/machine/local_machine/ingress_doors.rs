@@ -839,7 +839,7 @@ impl LocalMachine {
             if matches!(runtime, ContainerRuntimeObservation::Running { .. }) {
                 return Ok(());
             }
-            if crate::ingress::at_rest(&runtime) || tokio::time::Instant::now() >= deadline {
+            if runtime.at_rest() || tokio::time::Instant::now() >= deadline {
                 return Err(Error::DoorNotRunning {
                     container_id: *id,
                     runtime,

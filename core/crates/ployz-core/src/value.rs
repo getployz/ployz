@@ -424,6 +424,53 @@ validated_string_newtype!(
     })
 );
 
+/// An image Ployz runs on its own, such as a helper container or BuildKit, named by
+/// its content. A Machine's image store holds tags anyone with an image route can
+/// write, so a tag cannot say what one of these runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PinnedImage(&'static str);
+
+impl PinnedImage {
+    /// Panics unless `reference` ends in `@sha256:` and 64 lowercase hex digits after
+    /// a repository, so a `const` built from a tag alone fails to compile.
+    #[must_use]
+    pub const fn new(reference: &'static str) -> Self {
+        const MARKER: &[u8] = b"@sha256:";
+        let bytes = reference.as_bytes();
+        assert!(
+            bytes.len() > MARKER.len() + 64,
+            "a pinned image names a repository and a sha256 digest"
+        );
+        let (_, tail) = bytes.split_at(bytes.len() - MARKER.len() - 64);
+        let (mut marker, mut digest) = tail.split_at(MARKER.len());
+        let mut expected = MARKER;
+        while let ([byte, rest @ ..], [want, wanted @ ..]) = (marker, expected) {
+            assert!(*byte == *want, "a pinned image ends in @sha256:<digest>");
+            marker = rest;
+            expected = wanted;
+        }
+        while let [byte, rest @ ..] = digest {
+            assert!(
+                byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'),
+                "a pinned image's digest is 64 lowercase hex digits"
+            );
+            digest = rest;
+        }
+        Self(reference)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl fmt::Display for PinnedImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
 validated_string_newtype!(
     /// An Uploaded Source's content digest: lowercase hex sha256 of its paths, bytes,
     /// modes and links.

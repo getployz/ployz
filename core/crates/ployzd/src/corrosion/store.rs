@@ -1,10 +1,13 @@
 //! Replicated publication, subscriptions, and observer-relative reads.
 
+pub(super) mod crsql;
 mod decode;
+pub(super) mod tombstone;
 use decode::{
-    INCOMPLETE_JSON_DOCUMENT, actor_id, decode_container, decode_machine, decode_observations,
-    decode_volume, id_and_json, is_incomplete_document, text,
+    INCOMPLETE_JSON_DOCUMENT, RowPolicy, actor_id, decode_container, decode_ingress_route,
+    decode_machine, decode_observations, decode_volume, id_and_json, is_incomplete_document, text,
 };
+use tombstone::Tombstone;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,7 +20,7 @@ use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
     ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
     IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity,
-    QualifiedService, RecoverySeed, SealingPublicKey, forgotten_key,
+    QualifiedService, RecoverySeed, SealingPublicKey,
 };
 use serde_json::json;
 
@@ -99,28 +102,6 @@ impl MachinePublicationGuard<'_> {
         Ok(completed)
     }
 
-    /// This Machine as it publishes: its record with what it observes of itself now.
-    pub(crate) fn publishable_machine(
-        &self,
-        local: &LocalMachineRecord,
-        overlay: RuntimeOverlay,
-    ) -> Option<Machine> {
-        match local.body() {
-            LocalMachineBody::Participating { machine, .. } => {
-                let mut machine = machine.clone();
-                machine.runtime.running_builds = overlay.running_builds;
-                machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
-                machine.runtime.sealing = overlay.sealing;
-                machine.runtime.device_enforcement = Some(true);
-                machine.runtime.management_identity = Some(local.management_secret().public_key());
-                Some(machine)
-            }
-            LocalMachineBody::Uninitialized { .. }
-            | LocalMachineBody::Joining { .. }
-            | LocalMachineBody::Resetting { .. } => None,
-        }
-    }
-
     pub(crate) async fn publish(&self, machine: &Machine) -> Result<(), Error> {
         self.store.publish_local_machine_unlocked(machine).await
     }
@@ -134,7 +115,7 @@ impl MachinePublicationGuard<'_> {
     /// Management Identity: its `forgotten-id:` tombstone goes in the same transaction,
     /// and a rerun of a failed add keeps its Server (#3342). A row a Register wrote names
     /// no identity, so forgetting it leaves that tombstone. A row a Register kept carries
-    /// the mark, which outside tests only a publish of [`Self::publishable_machine`]
+    /// the mark, which outside tests only a publish of [`publishable_machine`]
     /// writes, and that row names a Management Identity. So forgetting a kept row leaves
     /// `forgotten:<identity>`, which the #2927 fence reads. A tombstone keyed by a
     /// Management Identity stays, so a joined Server that was forgotten is still not
@@ -143,13 +124,7 @@ impl MachinePublicationGuard<'_> {
         let row = RegisterRow::new(machine);
         self.store
             .api
-            .execute([
-                Statement::new(
-                    "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?",
-                    [json!(row.0.id)],
-                ),
-                registration_upsert(&row)?,
-            ])
+            .execute([Tombstone::Id(row.0.id).clear(), registration_upsert(&row)?])
             .await?;
         Ok(row.0)
     }
@@ -185,30 +160,7 @@ impl MachinePublicationGuard<'_> {
     /// Machine lists the id again as before. One transaction, so no reader sees the
     /// row gone and the tombstone absent.
     pub(crate) async fn forget(&self, machine_id: &MachineId) -> Result<(), Error> {
-        let identity_tombstone = Statement::new(
-            "INSERT INTO cluster (key, value) \
-             SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
-             FROM machines \
-             WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [json!(machine_id)],
-        );
-        let id_tombstone = Statement::new(
-            "INSERT INTO cluster (key, value) \
-             SELECT 'forgotten-id:' || id, id \
-             FROM machines \
-             WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [json!(machine_id)],
-        );
-        self.store
-            .api
-            .execute(
-                [identity_tombstone, id_tombstone]
-                    .into_iter()
-                    .chain(removal(machine_id)),
-            )
-            .await
+        self.store.api.execute(forget_statements(machine_id)).await
     }
 
     pub(crate) async fn local_containers(
@@ -294,6 +246,27 @@ impl MachinePublicationGuard<'_> {
     }
 }
 
+/// This Machine as it publishes: its record with what it observes of itself now.
+pub(crate) fn publishable_machine(
+    local: &LocalMachineRecord,
+    overlay: RuntimeOverlay,
+) -> Option<Machine> {
+    match local.body() {
+        LocalMachineBody::Participating { machine, .. } => {
+            let mut machine = machine.clone();
+            machine.runtime.running_builds = overlay.running_builds;
+            machine.runtime.pool_committable_bytes = overlay.pool_committable_bytes;
+            machine.runtime.sealing = overlay.sealing;
+            machine.runtime.device_enforcement = Some(true);
+            machine.runtime.management_identity = Some(local.management_secret().public_key());
+            Some(machine)
+        }
+        LocalMachineBody::Uninitialized { .. }
+        | LocalMachineBody::Joining { .. }
+        | LocalMachineBody::Resetting { .. } => None,
+    }
+}
+
 /// Write `machine`'s row, as this Machine's own publish, unless its id is forgotten
 /// and not listed.
 ///
@@ -306,20 +279,21 @@ impl MachinePublicationGuard<'_> {
 ///
 /// The row gets `"self_published": true`, a key outside [`Machine`]'s fields that
 /// readers ignore. In the daemon only this statement writes it, and outside tests only
-/// the publisher reaches it, with [`MachinePublicationGuard::publishable_machine`].
+/// the publisher reaches it, with [`publishable_machine`].
 /// [`MachinePublicationGuard::mark_leaving`] edits the row in place and keeps it. A
 /// Register under the same WireGuard key keeps a row that has it
 /// ([`registration_upsert`]), so keep the name out of [`Machine`]: a field by that name
 /// would let a Register write it.
 fn machine_upsert(machine: &Machine) -> Result<Statement, Error> {
     Ok(Statement::new(
-        "INSERT INTO machines (id, info) \
-         SELECT ?1, json_set(?2, '$.self_published', json('true')) \
-         WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-         OR (NOT EXISTS (SELECT 1 FROM cluster \
-                         WHERE key LIKE 'forgotten:%' AND value = ?1) \
-             AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
-         ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+        format!(
+            "INSERT INTO machines (id, info) \
+             SELECT ?1, json_set(?2, '$.self_published', json('true')) \
+             WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+             OR ({}) \
+             ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+            Tombstone::not_forgotten_sql("?1"),
+        ),
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }
@@ -349,15 +323,16 @@ impl RegisterRow {
 fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
     let RegisterRow(machine) = row;
     Ok(Statement::new(
-        "INSERT INTO machines (id, info) SELECT ?1, ?2 \
-         WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-         OR (NOT EXISTS (SELECT 1 FROM cluster \
-                         WHERE key LIKE 'forgotten:%' AND value = ?1) \
-             AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
-         ON CONFLICT (id) DO UPDATE SET info = excluded.info \
-         WHERE json_extract(machines.info, '$.self_published') IS NULL \
-            OR json_extract(machines.info, '$.public_key') \
-               IS NOT json_extract(excluded.info, '$.public_key')",
+        format!(
+            "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+             WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+             OR ({}) \
+             ON CONFLICT (id) DO UPDATE SET info = excluded.info \
+             WHERE json_extract(machines.info, '$.self_published') IS NULL \
+                OR json_extract(machines.info, '$.public_key') \
+                   IS NOT json_extract(excluded.info, '$.public_key')",
+            Tombstone::not_forgotten_sql("?1"),
+        ),
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
 }
@@ -514,7 +489,7 @@ impl ReplicatedStore {
     /// it or the id its tombstone names is listed again, Forgotten when only the
     /// tombstone remains, NoAnswer when nothing mentions it.
     pub async fn forgotten(&self, identity: ManagementIdentity) -> Result<ForgottenAnswer, Error> {
-        let key = forgotten_key(&identity);
+        let key = Tombstone::Identity(identity).key();
         let query = self
             .api
             .query(Statement::new(
@@ -790,6 +765,7 @@ impl ReplicatedStore {
             .await?;
         let mut snapshot = decode_observations(
             id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
+            RowPolicy::FailRead,
             |id, encoded| decode_machine(id.as_str(), encoded),
         )?;
         snapshot
@@ -814,6 +790,7 @@ impl ReplicatedStore {
         Ok(snapshot)
     }
 
+    #[cfg(test)]
     pub async fn publish_container(&self, observation: &ContainerObservation) -> Result<(), Error> {
         if self.container(&observation.container_id).await? == Some(observation.clone()) {
             return Ok(());
@@ -938,6 +915,7 @@ impl ReplicatedStore {
     /// # Errors
     ///
     /// Returns if the row cannot be read or written.
+    #[cfg(test)]
     pub async fn publish_volume(&self, volume: &DockerVolume) -> Result<(), Error> {
         if self.volume(&volume.id).await?.as_ref() == Some(volume) {
             return Ok(());
@@ -993,7 +971,9 @@ impl ReplicatedStore {
                 text(&encoded, "replicated volume JSON")?.to_owned(),
             ));
         }
-        decode_observations(rows, decode_volume)
+        decode_observations(rows, RowPolicy::FailRead, |id, encoded| {
+            decode_volume(id, encoded)
+        })
     }
 
     async fn local_volumes(&self, machine_id: &MachineId) -> Result<LocalVolumeSnapshot, Error> {
@@ -1352,22 +1332,18 @@ impl ReplicatedStore {
         statement: Statement,
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
         let query = self.api.query(statement).await?;
-        Ok(query
-            .rows(["machine_id", "service_id", "containers"])?
-            .into_iter()
-            .filter_map(|[machine_id, service_id, containers]| {
-                let machine_id = MachineId::parse(machine_id.as_str()?).ok()?;
-                let service = QualifiedService::parse(service_id.as_str()?).ok()?;
-                let containers = containers
-                    .as_str()
-                    .and_then(|containers| serde_json::from_str(containers).ok());
-                let row = match containers {
-                    Some(containers) => IngressRouteRow::Acked(IngressRouteAck { containers }),
-                    None => IngressRouteRow::UnknownContainers,
-                };
-                Some(((machine_id, service), row))
-            })
-            .collect())
+        let mut routes = BTreeMap::new();
+        for [machine_id, service_id, containers] in
+            query.rows(["machine_id", "service_id", "containers"])?
+        {
+            match decode_ingress_route(&machine_id, &service_id, &containers) {
+                Ok((key, row)) => {
+                    routes.insert(key, row);
+                }
+                Err(skipped) => skipped.log(),
+            }
+        }
+        Ok(routes)
     }
 
     pub(crate) async fn publish_ingress_routes(
@@ -1429,46 +1405,46 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        let mut observations = Vec::new();
-        let mut incomplete_ids = Vec::new();
+        let mut rows = Vec::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
             let encoded = text(&encoded, "certificate body")?;
             let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
                 continue;
             };
-            if is_incomplete_document(encoded) {
-                incomplete_ids.push(hostname);
-            } else if let Some(row) = decode_certificate_row(&hostname, encoded) {
-                observations.push((hostname, row));
-            }
+            rows.push((hostname, encoded.to_owned()));
         }
-        Ok(ReplicatedObservations {
-            observations,
-            incomplete_ids,
-        })
+        decode_observations(
+            rows,
+            RowPolicy::Skip {
+                table: "certificate",
+            },
+            |hostname, encoded| {
+                if is_incomplete_document(encoded) {
+                    return Ok(None);
+                }
+                Ok(Some((hostname.clone(), CertificateRow::decode(encoded)?)))
+            },
+        )
     }
 
+    /// Every certificate row that decodes, an incomplete one as its empty body.
     pub async fn certificate_state(
         &self,
     ) -> Result<BTreeMap<CertificateHost, CertificateRow>, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT hostname, body FROM certificates ORDER BY hostname",
-                [],
-            ))
-            .await?;
-        let mut rows = BTreeMap::new();
-        for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let encoded = text(&encoded, "certificate body")?;
-            let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
-                continue;
-            };
-            if let Some(row) = decode_certificate_row(&hostname, encoded) {
-                rows.insert(hostname, row);
-            }
-        }
-        Ok(rows)
+        let rows = self.certificate_rows().await?;
+        let incomplete = rows.incomplete_ids.into_iter().filter_map(|hostname| {
+            CertificateRow::decode(INCOMPLETE_JSON_DOCUMENT)
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        %hostname,
+                        error = %ployz_core::error_chain::inline(error),
+                        "skipping certificate row"
+                    );
+                })
+                .ok()
+                .map(|row| (hostname, row))
+        });
+        Ok(rows.observations.into_iter().chain(incomplete).collect())
     }
 
     pub(crate) async fn subscribe_certificate_changes(&self) -> Result<Subscription, Error> {
@@ -1511,148 +1487,7 @@ impl ReplicatedStore {
             Some((changes.changed().await, changes))
         }))
     }
-
-    /// This Machine's own Corrosion actor, which only this Machine's writes advance.
-    pub(crate) async fn local_actor(&self) -> Result<String, Error> {
-        let query = self
-            .api
-            .query(Statement::new("SELECT crsql_site_id() AS site_id", []))
-            .await?;
-        match query.rows(["site_id"])?.as_slice() {
-            [[actor]] => actor_id(actor),
-            _ => Err(Error::Protocol("invalid local actor row".into())),
-        }
-    }
-
-    /// Whether this store has ever held a row for a Machine other than `own`. A removed
-    /// row keeps its cr-sqlite key, so only a store created afresh, before gossip
-    /// reaches it, reads `false` once another Machine exists.
-    pub(crate) async fn held_another_machine(&self, own: &MachineId) -> Result<bool, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT EXISTS (SELECT 1 FROM machines__crsql_pks WHERE id != ?) AS held",
-                [json!(own)],
-            ))
-            .await?;
-        match query.rows(["held"])?.as_slice() {
-            [[held]] if held.as_i64() == Some(0) => Ok(false),
-            [[held]] if held.as_i64() == Some(1) => Ok(true),
-            _ => Err(Error::Protocol("invalid held-another-Machine row".into())),
-        }
-    }
-
-    /// Which of `ids` name a Machine whose row this store held and then deleted, as `server
-    /// rm` does: a deleted row keeps its cr-sqlite key.
-    pub(crate) async fn removed_machines(
-        &self,
-        ids: &[MachineId],
-    ) -> Result<BTreeSet<MachineId>, Error> {
-        if ids.is_empty() {
-            return Ok(BTreeSet::new());
-        }
-        let query = self
-            .api
-            .query(Statement::new(
-                format!(
-                    "SELECT id FROM machines__crsql_pks WHERE id IN ({}) \
-                     AND NOT EXISTS (SELECT 1 FROM machines WHERE machines.id = machines__crsql_pks.id)",
-                    vec!["?"; ids.len()].join(", "),
-                ),
-                ids.iter().map(|id| json!(id)),
-            ))
-            .await?;
-        query
-            .rows(["id"])?
-            .into_iter()
-            .map(|[id]| Ok(MachineId::parse(text(&id, "removed Machine ID")?)?))
-            .collect()
-    }
-
-    /// Each actor's highest version this store holds with no hole below it: a catch-up
-    /// target.
-    pub async fn version(&self) -> Result<BTreeMap<String, i64>, Error> {
-        let query = self.api.query(Statement::new(VERSION_QUERY, [])).await?;
-        query
-            .rows(["site_id", "db_version"])?
-            .into_iter()
-            .map(|[actor, version]| {
-                let actor = actor_id(&actor)?;
-                let version = version
-                    .as_i64()
-                    .ok_or_else(|| Error::Protocol("invalid actor version".into()))?;
-                Ok((actor, version))
-            })
-            .collect()
-    }
-
-    /// Checks replication bookkeeping through the target in one SQLite snapshot.
-    /// Superseded versions can complete before replacement data arrives; callers
-    /// requiring a particular record or condition must still verify it.
-    ///
-    /// # Errors
-    /// Returns an error for invalid targets, failed store queries, or malformed responses.
-    pub(crate) async fn has_reached_version(
-        &self,
-        target: &BTreeMap<String, i64>,
-    ) -> Result<bool, Error> {
-        let mut placeholders = Vec::with_capacity(target.len());
-        let mut params = Vec::with_capacity(target.len() * 2);
-        for (actor, version) in target {
-            let bytes = hex::decode(actor.replace('-', ""))
-                .map_err(|_| Error::InvalidCatchUpTarget("invalid actor ID"))?;
-            if bytes.len() != 16 || *version < 0 {
-                return Err(Error::InvalidCatchUpTarget(
-                    "actor must be 16 bytes and version must be nonnegative",
-                ));
-            }
-            if *version == 0 {
-                continue;
-            }
-            placeholders.push("(?, ?)");
-            params.extend([json!(bytes), json!(version)]);
-        }
-        if params.is_empty() {
-            return Ok(true);
-        }
-        let query = format!(
-            "WITH target(actor_id, version) AS (VALUES {})
-             SELECT NOT EXISTS (
-                 SELECT 1 FROM target
-                 LEFT JOIN crsql_db_versions AS current ON current.site_id = target.actor_id
-                 WHERE COALESCE(current.db_version, 0) < target.version
-                 OR EXISTS (
-                     SELECT 1 FROM __corro_bookkeeping_gaps
-                     WHERE actor_id = target.actor_id AND start <= target.version
-                 )
-                 OR EXISTS (
-                     SELECT 1 FROM __corro_seq_bookkeeping
-                     WHERE site_id = target.actor_id AND db_version <= target.version
-                 )
-             ) AS reached",
-            placeholders.join(", ")
-        );
-        let result = self.api.query(Statement::new(query, params)).await?;
-        match result.rows(["reached"])?.as_slice() {
-            [[value]] if value.as_i64() == Some(0) => Ok(false),
-            [[value]] if value.as_i64() == Some(1) => Ok(true),
-            _ => Err(Error::Protocol("invalid replication status row".into())),
-        }
-    }
 }
-
-/// A dead actor's hole is shared by every live store and never fills, so a target past
-/// it could never be reached (#3611).
-pub(super) const VERSION_QUERY: &str = "SELECT site_id, db_version FROM (
-     SELECT current.site_id, MIN(
-         current.db_version,
-         COALESCE((SELECT MIN(start) FROM __corro_bookkeeping_gaps
-                   WHERE actor_id = current.site_id) - 1, current.db_version),
-         COALESCE((SELECT MIN(db_version) FROM __corro_seq_bookkeeping
-                   WHERE site_id = current.site_id) - 1, current.db_version)
-     ) AS db_version
-     FROM crsql_db_versions AS current
- ) WHERE db_version > 0";
 
 #[derive(Default)]
 pub(crate) struct LocalContainerSnapshot {
@@ -1833,18 +1668,6 @@ fn certificate_host(hostname: &str) -> Option<CertificateHost> {
         .ok()
 }
 
-fn decode_certificate_row(hostname: &CertificateHost, encoded: &str) -> Option<CertificateRow> {
-    CertificateRow::decode(encoded)
-        .inspect_err(|error| {
-            tracing::warn!(
-                %hostname,
-                error = %ployz_core::error_chain::inline(error),
-                "skipping certificate row"
-            );
-        })
-        .ok()
-}
-
 /// How many times an ACME write reads its row before it answers [`AcmeWrite::Moved`]. Only
 /// repeated misses use it up: a re-read can still answer `Kept` or `Changed`. A cap, not a
 /// guarantee: each miss means a write landed on this replica between one read and its write, and
@@ -1887,6 +1710,15 @@ fn acme_written(counts: Vec<usize>) -> Result<AcmeWrite, Error> {
             "a certificate write changed {counts:?} rows"
         ))),
     }
+}
+
+/// The statements of a forget, in the order they run in one transaction: both tombstones,
+/// then the removal.
+fn forget_statements(machine_id: &MachineId) -> Vec<Statement> {
+    Tombstone::forget(machine_id)
+        .into_iter()
+        .chain(removal(machine_id))
+        .collect()
 }
 
 /// The deletes that take a Machine and everything it published out of the Cluster.
@@ -2003,5 +1835,89 @@ mod runtime_watch_changes_tests {
             "{error}"
         );
         writer.abort();
+    }
+}
+
+#[cfg(test)]
+mod statement_tests {
+    use ployz_core::MachineId;
+    use serde_json::json;
+
+    use super::*;
+
+    fn machine() -> Machine {
+        crate::corrosion::store_tests::participating_record().0
+    }
+
+    fn sent(statement: &Statement) -> serde_json::Value {
+        serde_json::to_value(statement).unwrap()
+    }
+
+    #[test]
+    fn the_guarded_upserts_send_the_text_every_daemon_has_sent_since_the_guard() {
+        let machine = machine();
+        let body = serde_json::to_string(&machine).unwrap();
+        assert_eq!(
+            sent(&machine_upsert(&machine).unwrap()),
+            json!({
+                "query": "INSERT INTO machines (id, info) \
+                          SELECT ?1, json_set(?2, '$.self_published', json('true')) \
+                          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+                          OR (NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
+                          AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+                          ON CONFLICT (id) DO UPDATE SET info = excluded.info",
+                "params": [machine.id, body],
+            })
+        );
+        let row = RegisterRow::new(machine.clone());
+        let body = serde_json::to_string(&row.0).unwrap();
+        assert_eq!(
+            sent(&registration_upsert(&row).unwrap()),
+            json!({
+                "query": "INSERT INTO machines (id, info) SELECT ?1, ?2 \
+                          WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
+                          OR (NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
+                          AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+                          ON CONFLICT (id) DO UPDATE SET info = excluded.info \
+                          WHERE json_extract(machines.info, '$.self_published') IS NULL \
+                          OR json_extract(machines.info, '$.public_key') \
+                          IS NOT json_extract(excluded.info, '$.public_key')",
+                "params": [machine.id, body],
+            })
+        );
+    }
+
+    #[test]
+    fn a_forget_sends_both_tombstone_inserts_before_the_removal() {
+        let id = MachineId::parse("b".repeat(32)).unwrap();
+        let sent = forget_statements(&id).iter().map(sent).collect::<Vec<_>>();
+        let [identity_tombstone, id_tombstone, removed @ ..] = sent.as_slice() else {
+            panic!("a forget sends two tombstones and a removal: {sent:?}");
+        };
+        assert_eq!(
+            [identity_tombstone.clone(), id_tombstone.clone()],
+            [
+                json!({
+                    "query": "INSERT INTO cluster (key, value) \
+                              SELECT 'forgotten:' || json_extract(info, '$.runtime.management_identity'), id \
+                              FROM machines \
+                              WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NOT NULL \
+                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    "params": [id],
+                }),
+                json!({
+                    "query": "INSERT INTO cluster (key, value) \
+                              SELECT 'forgotten-id:' || id, id \
+                              FROM machines \
+                              WHERE id = ? AND json_extract(info, '$.runtime.management_identity') IS NULL \
+                              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    "params": [id],
+                }),
+            ]
+        );
+        assert_eq!(
+            removed.to_vec(),
+            removal(&id).iter().map(self::sent).collect::<Vec<_>>()
+        );
     }
 }

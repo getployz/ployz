@@ -194,6 +194,12 @@ impl<'de> Deserialize<'de> for ContainerRuntimeObservation {
 }
 
 impl ContainerRuntimeObservation {
+    /// True when the container's process isn't running and can serve nothing.
+    #[must_use]
+    pub fn at_rest(&self) -> bool {
+        matches!(self, Self::Created | Self::Exited { .. } | Self::Dead)
+    }
+
     /// Eligible for traffic: Running with health Healthy, Failing or NotConfigured.
     #[must_use]
     pub fn may_serve(&self) -> bool {
@@ -695,6 +701,39 @@ mod tests {
         ServiceContainer, Value,
     };
     use crate::{ContainerId, MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName};
+
+    #[test]
+    fn at_rest_is_created_exited_or_dead() {
+        for (runtime, at_rest) in [
+            (ContainerRuntimeObservation::Created, true),
+            (ContainerRuntimeObservation::Exited { code: 0 }, true),
+            (ContainerRuntimeObservation::Exited { code: 137 }, true),
+            (ContainerRuntimeObservation::Dead, true),
+            (
+                ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Healthy,
+                },
+                false,
+            ),
+            (
+                ContainerRuntimeObservation::Running {
+                    health: HealthObservation::Unhealthy,
+                },
+                false,
+            ),
+            (ContainerRuntimeObservation::Paused, false),
+            (ContainerRuntimeObservation::Restarting, false),
+            (ContainerRuntimeObservation::Removing, false),
+            (
+                ContainerRuntimeObservation::Unknown {
+                    raw: json!({ "state": "future" }),
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(runtime.at_rest(), at_rest, "{runtime}");
+        }
+    }
 
     #[test]
     fn may_serve_is_running_with_healthy_failing_or_not_configured() {

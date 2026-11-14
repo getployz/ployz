@@ -6,15 +6,18 @@ use std::sync::{Arc, Mutex};
 use super::*;
 use crate::docker::test_support::*;
 
-const IMAGE: &str = "GET /images/example.test/service/json";
+const PINNED: PinnedImage = PinnedImage::new(
+    "example.test/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+);
+const IMAGE: &str = "GET /images/example.test/service@sha256:1111111111111111111111111111111111111111111111111111111111111111/json";
 const CREATE: &str = "POST /containers/create";
 const START: &str = "POST /containers/svc/start";
 const INSPECT: &str = "GET /containers/svc/json";
 
 fn desired(command: &str) -> DesiredContainer {
     DesiredContainer::new(
+        PINNED,
         ContainerCreateBody {
-            image: Some("example.test/service".to_owned()),
             cmd: Some(vec![command.to_owned()]),
             ..Default::default()
         },
@@ -45,7 +48,7 @@ async fn local_docker() -> (LocalDocker, FakeDocker) {
 #[tokio::test]
 async fn a_service_on_the_host_docker_creates_starts_and_replaces() {
     let (docker, fake) = local_docker().await;
-    let service = ManagedService::new(docker.client.clone(), "svc", "example.test/service");
+    let service = ManagedService::new(docker.client.clone(), "svc");
 
     assert_eq!(
         service.ensure(desired("one")).await.unwrap(),
@@ -77,7 +80,7 @@ async fn a_service_on_the_host_docker_creates_starts_and_replaces() {
 #[tokio::test]
 async fn a_service_on_the_endpoint_creates_through_the_local_docker() {
     let (docker, fake) = local_docker().await;
-    let service = ManagedService::new(docker.clone(), "svc", "example.test/service");
+    let service = ManagedService::new(docker.clone(), "svc");
     let network = ["GET /networks/ployz", "GET /containers/json"];
 
     service.ensure(desired("one")).await.unwrap();

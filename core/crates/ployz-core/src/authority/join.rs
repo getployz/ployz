@@ -201,23 +201,39 @@ pub fn verify(
     Ok(body)
 }
 
+/// A join approval a joining Machine accepted, with the Devices it trusts from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinerApproval {
+    pub body: JoinApproval,
+    /// The Devices of `body` the joiner trusts: all of them with no pin, and with one only
+    /// those the pin also names, so Cloud cannot add a Device of its own beside the person's.
+    pub devices: Vec<DeviceKey>,
+}
+
 /// Verify a join at the joining Machine, which holds no keys of its own yet. `pinned` are the
 /// Devices the person named; with none, the approval's own Devices are trusted, so the
 /// capsule it travelled in is what vouches for it. `cluster` is the Sealing Key the capsule
 /// opened to, and `machine` the allocation the joiner was handed.
 ///
 /// # Errors
-/// Refuses an unreadable body, an untrusted signature, expiry and any allocation, recipient,
-/// Cluster, network or admitting-Machine mismatch.
+/// Refuses an unreadable body, an untrusted signature, expiry, any allocation, recipient,
+/// Cluster, network or admitting-Machine mismatch, and a signer outside the Devices the
+/// joiner trusts from the approval.
 pub fn verify_as_joiner(
     signed: &Signed<JoinApproval>,
     pinned: Option<&[DeviceKey]>,
     machine: &Machine,
     cluster: Option<SealingPublicKey>,
     now: Timestamp,
-) -> Result<JoinApproval, AuthorityRefusal> {
+) -> Result<JoinerApproval, AuthorityRefusal> {
     let own = signed.open()?;
     let body = verify_signature(signed, pinned.unwrap_or(&own.devices), now)?;
+    let devices: Vec<DeviceKey> = body
+        .devices
+        .iter()
+        .copied()
+        .filter(|device| pinned.is_none_or(|pinned| pinned.contains(device)))
+        .collect();
     if body.machine != JoinAllocation::from(machine)
         || body.sealing_recipient != machine.public_key
         || cluster != Some(body.cluster)
@@ -228,7 +244,12 @@ pub fn verify_as_joiner(
             field: "a joining Machine",
         });
     }
-    Ok(body)
+    if !devices.contains(&body.signer) {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "approved Devices",
+        });
+    }
+    Ok(JoinerApproval { body, devices })
 }
 
 /// Whether `row` carries a join approval that one of `devices` signed for exactly this Machine
@@ -353,8 +374,10 @@ mod tests {
         let signed = sign(&approval(&joiner), 1);
 
         for pinned in [None, Some(&[device(1)][..])] {
-            let body = verify_as_joiner(&signed, pinned, &joiner, Some(cluster(5)), now()).unwrap();
-            assert_eq!(body, approval(&joiner));
+            let joined =
+                verify_as_joiner(&signed, pinned, &joiner, Some(cluster(5)), now()).unwrap();
+            assert_eq!(joined.body, approval(&joiner));
+            assert_eq!(joined.devices, vec![device(1)]);
         }
     }
 
@@ -448,6 +471,98 @@ mod tests {
             now().plus(60_000 + crate::authority::validity::CLOCK_SKEW_MILLIS + 1),
         );
         assert_eq!(late, Err(AuthorityRefusal::Expired));
+    }
+
+    #[test]
+    fn a_joiner_trusts_the_approvals_devices_only_as_far_as_the_pin_names_them() {
+        let joiner = joiner();
+        let body = JoinApproval {
+            devices: vec![device(1), device(3)],
+            ..approval(&joiner)
+        };
+        let signed = sign(&body, 1);
+
+        let trusted = |pinned: Option<&[DeviceKey]>| {
+            verify_as_joiner(&signed, pinned, &joiner, Some(cluster(5)), now())
+                .unwrap()
+                .devices
+        };
+
+        assert_eq!(trusted(None), vec![device(1), device(3)], "no pin");
+        assert_eq!(
+            trusted(Some(&[device(1), device(2)])),
+            vec![device(1)],
+            "the pin leaves out Device 3 and the approval leaves out Device 2"
+        );
+    }
+
+    #[test]
+    fn a_joiner_refuses_an_approval_that_leaves_out_its_own_signer_as_approved_devices() {
+        let joiner = joiner();
+        let leaves_out_signer = JoinApproval {
+            devices: vec![device(3)],
+            ..approval(&joiner)
+        };
+        let signed = sign(&leaves_out_signer, 1);
+        let approved_devices = AuthorityRefusal::Mismatch {
+            field: "approved Devices",
+        };
+
+        assert_eq!(
+            verify_as_joiner(
+                &signed,
+                Some(&[device(1)]),
+                &joiner,
+                Some(cluster(5)),
+                now()
+            ),
+            Err(approved_devices)
+        );
+        assert!(
+            matches!(
+                verify_as_joiner(&signed, None, &joiner, Some(cluster(5)), now()),
+                Err(AuthorityRefusal::UnknownKey { .. })
+            ),
+            "with no pin the signature already fails on a signer the approval does not list"
+        );
+
+        let pinned_elsewhere = JoinApproval {
+            devices: vec![device(1), device(3)],
+            ..approval(&joiner)
+        };
+        assert_eq!(
+            verify_as_joiner(
+                &sign(&pinned_elsewhere, 1),
+                Some(&[device(1)]),
+                &joiner,
+                Some(cluster(5)),
+                now()
+            )
+            .map(|joined| joined.devices),
+            Ok(vec![device(1)])
+        );
+    }
+
+    #[test]
+    fn a_joiner_names_the_allocation_before_the_approved_devices() {
+        let joiner = joiner();
+        let both_wrong = JoinApproval {
+            devices: vec![device(3)],
+            ..approval(&joiner)
+        };
+
+        assert_eq!(
+            verify_as_joiner(
+                &sign(&both_wrong, 1),
+                Some(&[device(1)]),
+                &joiner,
+                Some(cluster(6)),
+                now()
+            ),
+            Err(AuthorityRefusal::Mismatch {
+                field: "a joining Machine"
+            })
+        );
     }
 
     fn row_carrying(approved: &Machine, body: &JoinApproval, seed: u8) -> Machine {

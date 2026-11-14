@@ -282,7 +282,7 @@ Each of the 57 rows was made unreachable alone this way, and each turned these t
 
 ## Bounds and blind spots
 
-**The model has no clock.** Nothing in this code waits on time: each step is a call, a write or another actor's move, and the bounds count events, not seconds. `extend_systemd_start_timeout` (`core/crates/ployzd/src/daemon.rs:939-964`) extends a timeout and bounds no duration; a start that runs past it is killed, which the model's crash covers.
+**The model has no clock.** Nothing in this code waits on time: each step is a call, a write or another actor's move, and the bounds count events, not seconds. `extend_systemd_start_timeout` (`core/crates/ployzd/src/systemd_timeout.rs`) extends a timeout and bounds no duration; a start that runs past it is killed, which the model's crash covers.
 
 **The bounds,** each with the state counts and the tests that go red when it drops or lifts by one, from fresh runs at this PR's head. Every lift but the two noted below kept every test green, and `scratch_rows` printed the same broken `always` properties and unreached rows as the clean head for each model.
 

@@ -77,6 +77,9 @@ use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 #[cfg(test)]
 use ployz_core::{Namespace, ServiceId};
 
+/// The Docker network every Service Container and the Ingress Proxy join.
+pub const DOCKER_NETWORK_NAME: &str = "ployz";
+
 /// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
 /// reach it by DNAT with their own address (#2837). So does a container created
 /// with [`labels::BRIDGE_IPV6`] `true`, for IPv6 egress (#3372). A container that
@@ -1460,7 +1463,7 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
         .as_ref()?
         .networks
         .as_ref()?
-        .get(crate::network::DOCKER_NETWORK_NAME)?
+        .get(DOCKER_NETWORK_NAME)?
         .ip_address
         .as_deref()?
         .parse::<Ipv4Addr>()
@@ -1872,7 +1875,7 @@ mod tests {
         assert_eq!(regular_host.log_config, Some(container_log_config()));
         assert_eq!(
             regular_host.network_mode.as_deref(),
-            Some(crate::network::DOCKER_NETWORK_NAME)
+            Some(DOCKER_NETWORK_NAME)
         );
         assert_eq!(regular_host.dns, Some(vec![gateway.0.to_string()]));
         assert_eq!(regular_host.dns_search, Some(vec!["shop.internal".into()]));
@@ -2140,7 +2143,7 @@ mod tests {
             );
             body.networking_config
                 .and_then(|config| config.endpoints_config)
-                .and_then(|endpoints| endpoints.get(crate::network::DOCKER_NETWORK_NAME).cloned())
+                .and_then(|endpoints| endpoints.get(DOCKER_NETWORK_NAME).cloned())
         };
 
         assert_eq!(endpoint(&ingress.namespace), None);

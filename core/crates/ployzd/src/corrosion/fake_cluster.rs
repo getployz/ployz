@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::broadcast};
 
-use super::{ApiClient, ReplicatedStore};
+use super::{ApiClient, ReplicatedStore, store::tombstone::Tombstone};
 
 #[derive(Clone)]
 struct ClusterKv {
@@ -528,7 +528,7 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
             events(&["hostname", "body"], Vec::new())
         }
         "SELECT body FROM certificates WHERE hostname = ?" => events(&["body"], None::<Vec<Value>>),
-        super::store::VERSION_QUERY => events(&["site_id", "db_version"], Vec::new()),
+        super::store::crsql::VERSION_QUERY => events(&["site_id", "db_version"], Vec::new()),
         query => panic!("unexpected query {query}"),
     })
 }
@@ -577,7 +577,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 }
             }
             // The fake keeps no tombstones; a forget here only removes the rows below.
-            query if query.starts_with("INSERT INTO cluster (key, value) SELECT 'forgotten") => {}
+            query if Tombstone::is_forget(query) => {}
             query if query.starts_with("INSERT INTO volumes (machine_id, name, volume)") => {
                 kv.volumes.insert(
                     (
@@ -649,7 +649,7 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                 set_leaving(&mut kv, text_param(&statement.params, 0), false);
             }
             // This fake keeps no tombstones, so a Register has none to take back.
-            "DELETE FROM cluster WHERE key = 'forgotten-id:' || ?" => {}
+            query if Tombstone::is_clear(query) => {}
             "DELETE FROM volumes WHERE machine_id = ?" => {
                 let machine_id = text_param(&statement.params, 0);
                 kv.volumes.retain(|(owner, _), _| owner != machine_id);

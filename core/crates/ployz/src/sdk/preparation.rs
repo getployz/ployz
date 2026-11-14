@@ -476,7 +476,7 @@ fn freeze(
             identities.insert(
                 name.clone(),
                 json!({
-                    "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE,
+                    "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE.as_str(),
                     "source": source, "root": root_dir, "build": config.settings.build,
                 }),
             );
