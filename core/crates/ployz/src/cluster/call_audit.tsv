@@ -65,6 +65,7 @@ src/global_catch_up.rs::bridge_capacity	op::Inspect	read	unary	budget(target_rea
 src/global_catch_up.rs::list_target	op::ListContainers	read	unary	budget(target_read_timeout)	redial	read
 src/global_slot/lifecycle.rs::participating	op::Inspect	read	unary	budget(target_read_timeout)	redial	read
 src/handlers/cloud.rs::check_enrolled	op::Inspect	read_once	single	setup-read(5s)	-	once
+src/handlers/cloud.rs::enroll_current_identity	op::Inspect	call	unary	-	redial	read
 src/handlers/cloud.rs::ensure_uninitialized	op::Inspect	call_repeatable	setup	wait(WAIT)	redial	read
 src/handlers/cloud.rs::sealing	op::Inspect	call_repeatable	setup	wait(WAIT)	redial	read
 src/handlers/cloud.rs::set_cloud_management_client	op::SetManagementClient	call_repeatable	setup	wait(WAIT)	redial	keyed

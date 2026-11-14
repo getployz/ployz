@@ -397,7 +397,19 @@ async fn enroll_current_identity(
                     runtime: Default::default(),
                     capabilities: Vec::new(),
                 };
-                if super::device::sign_waiting_join(&mut entry, &config, &expected, false).await? {
+                let entry_id = entry
+                    .call::<op::Inspect>(InspectRequest::default(), Call::read())
+                    .await?
+                    .id;
+                // This join's pin is this computer's Device alone, whatever the route.
+                let from = if entry.answers_for_itself(&entry_id) {
+                    super::device::JoinEntry::Chosen {
+                        pins_its_devices: false,
+                    }
+                } else {
+                    super::device::JoinEntry::Relayed
+                };
+                if super::device::sign_waiting_join(&mut entry, &config, &expected, from).await? {
                     cloud_enroll::enroll(command, url, token, &identity, progress).await?
                 } else {
                     return Err(error.into());

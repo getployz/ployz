@@ -503,7 +503,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
             }
         })
         .await;
-    let error = sign_waiting_join(&mut client, &config, &expected, false)
+    let error = sign_waiting_join(&mut client, &config, &expected, JoinEntry::Relayed)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("does not match"));
@@ -601,7 +601,7 @@ async fn sign_relayed(
             }
         })
         .await;
-    let signed = sign_waiting_join(&mut client, config, &expected, false).await;
+    let signed = sign_waiting_join(&mut client, config, &expected, JoinEntry::Relayed).await;
     server.abort();
     let sent = sent.lock().unwrap().clone();
     (signed, sent)
@@ -680,14 +680,45 @@ fn a_join_from_an_entry_the_person_chose_keeps_its_devices_and_drops_its_passkey
         ployz_core::SealingPublicKey::from_bytes([2; 32]),
     );
 
-    let left_out = narrow_pinned_join(&mut body, own, true, |_| {
-        panic!("an entry the person chose vouches for its own Cluster")
-    })
+    let left_out = narrow_pinned_join(
+        &mut body,
+        own,
+        JoinEntry::Chosen {
+            pins_its_devices: true,
+        },
+        |_| panic!("an entry the person chose vouches for its own Cluster"),
+    )
     .unwrap();
 
     assert!(left_out.is_empty());
     assert_eq!(body.devices, [own, key(40)]);
     assert!(body.passkeys.is_empty());
+}
+
+/// A Cloud-token join run over the person's own route pins only this computer's Device, so
+/// it needs no Cluster pin, and signs for that Device alone.
+#[test]
+fn a_join_whose_pin_is_this_device_alone_signs_for_it_alone_over_a_chosen_route() {
+    let joiner = machine('a', "joiner");
+    let own = key(1);
+    let (_, mut body) = relayed_join(
+        &joiner,
+        vec![own, key(40)],
+        ployz_core::SealingPublicKey::from_bytes([2; 32]),
+    );
+
+    let left_out = narrow_pinned_join(
+        &mut body,
+        own,
+        JoinEntry::Chosen {
+            pins_its_devices: false,
+        },
+        |_| panic!("an entry the person chose vouches for its own Cluster"),
+    )
+    .unwrap();
+
+    assert_eq!(left_out, [key(40)]);
+    assert_eq!(body.devices, [own]);
 }
 
 #[tokio::test]

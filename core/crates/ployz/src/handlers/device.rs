@@ -451,14 +451,23 @@ fn join_summary(body: &ployz_core::authority::JoinApproval) -> String {
     )
 }
 
-/// Sign the join waiting for `expected`, for a joiner pinned to this Device and, when
-/// `entry_answers`, to the Devices the entry trusts. The body is narrowed to what that pin
-/// installs, so the summary shows what the Server will trust.
+/// Where the join this CLI signs came from, which decides what the signed body may name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum JoinEntry {
+    /// Through Cloud, which could name a Cluster or a Device of its own.
+    Relayed,
+    /// Over a route the person chose, so the body is the entry's own word. `pins_its_devices`
+    /// when the joiner's pin also holds the Devices the entry trusts, as `server add` sends.
+    Chosen { pins_its_devices: bool },
+}
+
+/// Sign the join waiting for `expected`, narrowed to what the joiner's pin installs, so the
+/// summary shows what the Server will trust.
 pub(super) async fn sign_waiting_join(
     client: &mut Client,
     config: &Path,
     expected: &ployz_core::RegisterRequest,
-    entry_answers: bool,
+    entry: JoinEntry,
 ) -> Result<bool, Error> {
     let Some(signing) = DeviceSigning::load(&key::path(config))? else {
         return Ok(false);
@@ -478,7 +487,7 @@ pub(super) async fn sign_waiting_join(
             "The waiting join does not match the Server identity, keys, allocation, or policy requested. Nothing was approved.",
         ));
     }
-    let left_out = narrow_pinned_join(&mut body, signing.device_key(), entry_answers, |cluster| {
+    let left_out = narrow_pinned_join(&mut body, signing.device_key(), entry, |cluster| {
         crate::sealing_pin::Pins::beside(config).knows(cluster)
     })?;
     show_join(&body);
@@ -495,25 +504,28 @@ pub(super) async fn sign_waiting_join(
 }
 
 /// Narrow a pinned join's `body` to what its joiner installs, answering the Devices left out.
-/// The joiner trusts no passkey. Over a route the person chose, the body is the entry's own
-/// word. Through Cloud, which could name a Cluster or a Device of its own, it signs only for
-/// this Device and only a Cluster this computer pinned.
+/// The joiner trusts no passkey, and only the pinned Devices the body names. A relayed body
+/// is signed only for a Cluster this computer pinned.
 fn narrow_pinned_join(
     body: &mut ployz_core::authority::JoinApproval,
     own: DeviceKey,
-    entry_answers: bool,
+    entry: JoinEntry,
     pinned: impl FnOnce(ployz_core::SealingPublicKey) -> Result<bool, crate::sealing_pin::PinError>,
 ) -> Result<Vec<DeviceKey>, Error> {
     body.passkeys.clear();
-    if entry_answers {
-        return Ok(Vec::new());
-    }
-    if !pinned(body.cluster)? {
+    if entry == JoinEntry::Relayed && !pinned(body.cluster)? {
         return Err(Error::conflict(format!(
             "Server {} would join a Cluster this computer hasn't pinned, and the join was relayed through Ployz Cloud, which can't vouch for it. Pin your Cluster's key from one of its Servers, then add the Server again. Nothing was approved.",
             body.machine.name
         ))
         .hint(Hint::Next(crate::sealing_pin::PIN_COMMAND.to_owned())));
+    }
+    if entry
+        == (JoinEntry::Chosen {
+            pins_its_devices: true,
+        })
+    {
+        return Ok(Vec::new());
     }
     if !body.devices.contains(&own) {
         return Err(Error::conflict(format!(
@@ -539,7 +551,7 @@ fn left_out_summary(left_out: &[DeviceKey]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Not trusting device {codes} on the new Server: the join came through Ployz Cloud, so this computer can vouch only for itself. Approve them there afterwards with ployz device approve <code>."
+        "Not trusting device {codes} on the new Server: only this computer's device is pinned for the join. Approve them there afterwards with ployz device approve <code>."
     )
 }
 
