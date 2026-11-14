@@ -917,7 +917,14 @@ async fn fake_docker_service_built(
     let mut service = MachineService::with_cluster(store.clone(), None)
         .with_optional_containers(Some(runtime.clone()));
     // `true` lists no pools, which reads as ZFS ready whatever the host has.
-    service.local = service.local.with_zpool("true");
+    service.local =
+        service
+            .local
+            .with_zpool("true")
+            .with_pacing(crate::machine::local_machine::Pacing {
+                router_settle: std::time::Duration::from_millis(300),
+                router_poll: std::time::Duration::from_millis(200),
+            });
     (data_dir, store, service, fake, runtime)
 }
 

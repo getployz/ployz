@@ -544,7 +544,7 @@ pub(super) async fn verify_running_daemon(
             Unit::Ployz.name()
         )));
     }
-    match installed_release(&paths.daemon()).await? {
+    match installed_release(paths).await? {
         Some(observed) if &observed == target => {}
         Some(observed) => Err(Error::Verification(format!(
             "activated daemon reported {observed}, expected {target}"

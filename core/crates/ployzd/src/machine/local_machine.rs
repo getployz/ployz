@@ -83,6 +83,7 @@ pub struct LocalMachine {
     proc_root: PathBuf,
     settled: container::SettledCreations,
     approvals: Arc<restart_approval::ConsumptionLog>,
+    pacing: private_access::Pacing,
     #[cfg(test)]
     peers: Option<PeerInspect>,
     #[cfg(test)]
@@ -111,6 +112,8 @@ pub(crate) use activation::{PendingActivation, Retired};
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
+#[cfg(test)]
+pub(crate) use private_access::Pacing;
 mod join_approval;
 pub(crate) use join_approval::reverify_join_proposals;
 mod management_client;
@@ -433,6 +436,7 @@ impl LocalMachine {
             zpool: PathBuf::from("zpool"),
             proc_root: PathBuf::from("/proc"),
             settled: container::SettledCreations::default(),
+            pacing: private_access::Pacing::default(),
             #[cfg(test)]
             peers: None,
             #[cfg(test)]
@@ -446,6 +450,13 @@ impl LocalMachine {
     #[must_use]
     pub(crate) fn pausing_ensure_for_test(mut self, pause: container::EnsurePause) -> Self {
         self.ensure_pause = Some(pause);
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_pacing(mut self, pacing: private_access::Pacing) -> Self {
+        self.pacing = pacing;
         self
     }
 

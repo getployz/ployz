@@ -453,6 +453,24 @@ async fn run_worker_case(root: &Path, case: &str) {
         }
         _ => {}
     }
+    // 1.2.2 wrote ployz.service and ployz.socket, and the plugin units only where it had them.
+    let seeded: &[&str] = match case {
+        "readiness-restored" => &[
+            "ployz.service",
+            "ployz.socket",
+            "ployz-volume-plugin.socket",
+            "ployz-volume-plugin.service",
+        ],
+        "soak-restored" | "restore-failed" | "other-line" => &["ployz.service", "ployz.socket"],
+        _ => &[],
+    };
+    if !seeded.is_empty() {
+        fs::create_dir_all(&paths.systemd_dir).unwrap();
+    }
+    for unit in seeded {
+        fs::write(paths.systemd_dir.join(unit), format!("1.2.2 {unit}\n")).unwrap();
+    }
+    let units_before = unit_files(&paths);
     let before = fs::read(paths.daemon()).unwrap();
     let attempt_id = MachineUpgradeAttemptId::parse("a".repeat(32)).unwrap();
     let target = MachineVersion::parse("1.2.3").unwrap();
@@ -530,6 +548,13 @@ async fn run_worker_case(root: &Path, case: &str) {
         "readiness-restored" => {
             assert_eq!(outcome, failed(&format!("{unready}; restored 1.2.2")));
             assert_eq!(installed, before);
+            assert_eq!(unit_files(&paths), units_before);
+            assert_eq!(reloads(root), 2, "the release's activation and the restore");
+            // The restored release's uninstall stays: it removes a superset of the units.
+            assert_eq!(
+                fs::read(paths.bin_dir.join("ployz-uninstall")).unwrap(),
+                fs::read(root.join("payload/ployz-uninstall")).unwrap()
+            );
             // The plugin units were running before the Upgrade, so they come back even if the
             // bad release stopped them.
             assert_eq!(
@@ -557,6 +582,9 @@ async fn run_worker_case(root: &Path, case: &str) {
             ));
             assert_eq!(installed, before);
             assert_eq!(transitions(root), restored);
+            let units = unit_files(&paths);
+            assert_eq!(units, units_before, "a unit the release added goes again");
+            assert_eq!(units.iter().filter(|(_, text)| text.is_some()).count(), 2);
         }
         "activation-restored" => {
             assert!(matches!(
@@ -575,6 +603,7 @@ async fn run_worker_case(root: &Path, case: &str) {
                     "restart ployz.socket ployz.service",
                 ]
             );
+            assert_eq!(reloads(root), 0, "no unit changed, so nothing to reload");
         }
         "restore-failed" => {
             assert_eq!(
@@ -602,6 +631,7 @@ async fn run_worker_case(root: &Path, case: &str) {
             assert_eq!(outcome, failed(unready));
             assert_eq!(installed, upgraded);
             assert_eq!(transitions(root), started);
+            assert_ne!(unit_files(&paths), units_before, "no restore across lines");
         }
         other => panic!("unknown upgrade worker case {other}"),
     }
@@ -610,6 +640,29 @@ async fn run_worker_case(root: &Path, case: &str) {
             .active()
             .unwrap()
     );
+}
+
+/// The four unit files `install-units` writes, `None` where one is absent.
+fn unit_files(paths: &InstallPaths) -> Vec<(String, Option<String>)> {
+    [
+        "ployz.service",
+        "ployz.socket",
+        "ployz-volume-plugin.socket",
+        "ployz-volume-plugin.service",
+    ]
+    .map(|name| {
+        let text = fs::read_to_string(paths.systemd_dir.join(name)).ok();
+        (name.to_owned(), text)
+    })
+    .into()
+}
+
+fn reloads(root: &Path) -> usize {
+    fs::read_to_string(root.join("systemctl.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| *line == "daemon-reload")
+        .count()
 }
 
 /// The systemd commands that start, stop, or reset units, in order.

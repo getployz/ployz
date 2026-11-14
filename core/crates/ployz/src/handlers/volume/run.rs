@@ -26,11 +26,20 @@ use crate::cli::{approval as approval_arg, positional, switch, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::ui::{Cell, Fields, Table, Tone};
 
-const POLL: Duration = if cfg!(test) {
-    Duration::from_millis(10)
-} else {
-    Duration::from_secs(2)
-};
+/// How a waiting command looks at its run. `Default` is production's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Pacing {
+    /// How long between two reads of a run that has not ended.
+    pub(crate) poll: Duration,
+}
+
+impl Default for Pacing {
+    fn default() -> Self {
+        Self {
+            poll: Duration::from_secs(2),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -352,9 +361,10 @@ pub(crate) async fn get(
 pub(crate) async fn settle(
     credential: &Credential,
     mut run: VolumeRun,
+    pacing: Pacing,
 ) -> Result<VolumeRun, StoreCallError> {
     while !run.state.ended() {
-        tokio::time::sleep(POLL).await;
+        tokio::time::sleep(pacing.poll).await;
         let now = get(credential, &run.id).await?;
         for line in news(&run, &now) {
             crate::ui::note(format_args!("{line}"));
@@ -902,7 +912,7 @@ fn request_located(
         run.id
     ));
     let run = runtime
-        .block_on(settle(credential, run))
+        .block_on(settle(credential, run, Pacing::default()))
         .map_err(|error| store.fail(error))?;
     ended(&run, &started, follow, change)
 }

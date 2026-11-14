@@ -7,6 +7,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::Path,
     process::{Command, Output},
+    time::Duration,
 };
 
 use tempfile::TempDir;
@@ -48,6 +49,14 @@ pub(super) fn run_contract_child_with_environment<const N: usize>(
 pub(super) fn write_script(path: &Path, body: &str) {
     fs::write(path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Waits short enough for a test that runs a soak or a version command to its limit.
+pub(super) fn quick_pacing() -> super::Pacing {
+    super::Pacing {
+        soak: Duration::from_millis(100),
+        version_command_timeout: Duration::from_millis(100),
+    }
 }
 
 pub(super) fn fixture(name: &str) -> TempDir {

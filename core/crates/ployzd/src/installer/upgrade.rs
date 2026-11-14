@@ -274,10 +274,9 @@ async fn request_locked(
     if admission.active()? {
         return Err(Error::Busy);
     }
-    let installed =
-        super::release::installed_release(&InstallPaths::system(data_dir, run_dir).daemon())
-            .await
-            .map_err(Error::Resolve)?;
+    let installed = super::release::installed_release(&InstallPaths::system(data_dir, run_dir))
+        .await
+        .map_err(Error::Resolve)?;
     let target = super::release::resolve_release(
         &request.release,
         &ReleaseSource::Published,

@@ -21,6 +21,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
+    time::Duration,
 };
 
 use ployz_core::{
@@ -130,8 +131,27 @@ pub enum Error {
     },
 }
 
+/// The waits the installer bounds itself with. `Default` is production's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Pacing {
+    /// How long a ready daemon must keep running before an Upgrade succeeds.
+    pub(super) soak: Duration,
+    /// How long a daemon's `version` command may run.
+    pub(super) version_command_timeout: Duration,
+}
+
+impl Default for Pacing {
+    fn default() -> Self {
+        Self {
+            soak: Duration::from_secs(30),
+            version_command_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct InstallPaths {
+    pub(super) pacing: Pacing,
     pub(super) layout: MachineLayout,
     pub(super) bin_dir: PathBuf,
     pub(super) systemd_dir: PathBuf,
@@ -158,6 +178,7 @@ impl InstallPaths {
     /// The production Machine, with the data and run directories spelled as the caller was handed them.
     fn system(data_dir: impl Into<PathBuf>, run_dir: impl Into<PathBuf>) -> Self {
         Self {
+            pacing: Pacing::default(),
             bin_dir: PathBuf::from(DEFAULT_BIN_DIR),
             systemd_dir: PathBuf::from(DEFAULT_SYSTEMD_DIR),
             layout: MachineLayout::production_in(run_dir, data_dir),
@@ -197,6 +218,7 @@ impl InstallPaths {
     #[cfg(test)]
     fn at(root: &Path) -> Self {
         Self {
+            pacing: test_support::quick_pacing(),
             layout: MachineLayout::new(root.join("run"), root.join("data"), root.join("etc")),
             bin_dir: root.join("bin"),
             systemd_dir: root.join("systemd"),
@@ -287,7 +309,7 @@ async fn install_locked(
 ) -> Result<InstallOutcome, Error> {
     let installation_only = matches!(request.mode, InstallMode::InstallationOnly);
     verify_system(installation_only)?;
-    let installed = installed_release(&paths.daemon()).await?;
+    let installed = installed_release(paths).await?;
     let target = resolve_release(&request.release, source, installed.as_ref()).await?;
 
     progress(MachineUpgradeStage::Preparing)?;
@@ -508,6 +530,14 @@ mod tests {
 
     use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
+
+    #[test]
+    fn production_waits_are_bounded_by_the_numbers_an_operator_sees() {
+        let pacing = InstallPaths::production().pacing;
+        assert_eq!(pacing.soak, Duration::from_secs(30));
+        assert_eq!(pacing.version_command_timeout, Duration::from_secs(10));
+        assert_eq!(pacing, Pacing::default());
+    }
 
     /// The text `UpgradeFailure` records and the CLI prints for each way a host step stops.
     #[test]
