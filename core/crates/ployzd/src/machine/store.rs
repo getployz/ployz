@@ -589,29 +589,17 @@ impl LocalMachineStore {
                 },
             ));
         };
-        let body = approval.open().map_err(StoreError::JoinRefused)?;
         // A pinned join's body may come through Cloud under a Sealing Key of Cloud's own, so
         // its passkeys aren't trusted. The install line already runs Cloud's script.
         let carries_passkeys = pin.is_none();
-        let trusted = pin.map_or(body.devices, |pin| pin.devices);
-        let body = ployz_core::authority::join::verify_signature(
+        let body = ployz_core::authority::join::verify_as_joiner(
             &approval,
-            &trusted,
+            pin.as_ref().map(|pin| pin.devices.as_slice()),
+            &machine,
+            sealing_key.as_ref().map(SealingKey::public_key),
             ployz_core::authority::Timestamp::now(),
         )
         .map_err(StoreError::JoinRefused)?;
-        if body.machine != ployz_core::authority::join::JoinAllocation::from(&machine)
-            || body.sealing_recipient != machine.public_key
-            || sealing_key.as_ref().map(SealingKey::public_key) != Some(body.cluster)
-            || !body.network.contains(&ipnet::Ipv4Net::from(machine.subnet))
-            || body.admitting_machines.is_empty()
-        {
-            return Err(StoreError::JoinRefused(
-                ployz_core::authority::AuthorityRefusal::Mismatch {
-                    field: "a joining Machine",
-                },
-            ));
-        }
         visible_peers = body
             .bootstrap
             .iter()

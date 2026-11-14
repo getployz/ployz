@@ -201,6 +201,61 @@ pub fn verify(
     Ok(body)
 }
 
+/// Verify a join at the joining Machine, which holds no keys of its own yet. `pinned` are the
+/// Devices the person named; with none, the approval's own Devices are trusted, so the
+/// capsule it travelled in is what vouches for it. `cluster` is the Sealing Key the capsule
+/// opened to, and `machine` the allocation the joiner was handed.
+///
+/// # Errors
+/// Refuses an unreadable body, an untrusted signature, expiry and any allocation, recipient,
+/// Cluster, network or admitting-Machine mismatch.
+pub fn verify_as_joiner(
+    signed: &Signed<JoinApproval>,
+    pinned: Option<&[DeviceKey]>,
+    machine: &Machine,
+    cluster: Option<SealingPublicKey>,
+    now: Timestamp,
+) -> Result<JoinApproval, AuthorityRefusal> {
+    let own = signed.open()?;
+    let body = verify_signature(signed, pinned.unwrap_or(&own.devices), now)?;
+    if body.machine != JoinAllocation::from(machine)
+        || body.sealing_recipient != machine.public_key
+        || cluster != Some(body.cluster)
+        || !body.network.contains(&Ipv4Net::from(machine.subnet))
+        || body.admitting_machines.is_empty()
+    {
+        return Err(AuthorityRefusal::Mismatch {
+            field: "a joining Machine",
+        });
+    }
+    Ok(body)
+}
+
+/// Whether `row` carries a join approval that one of `devices` signed for exactly this Machine
+/// in `cluster`. An observation about a replicated row: it never authorizes an effect, so a
+/// row it refuses is left out and nothing it admits is acted on without a check of its own.
+#[must_use]
+pub fn admits_row(
+    row: &Machine,
+    devices: impl IntoIterator<Item = DeviceKey>,
+    cluster: Option<SealingPublicKey>,
+) -> bool {
+    let Some(signed) = &row.join_approval else {
+        return false;
+    };
+    let Ok(signers) = signed.verified_signers(devices.into_iter().map(SigningPublicKey::from))
+    else {
+        return false;
+    };
+    let Ok(body) = signed.open() else {
+        return false;
+    };
+    super::Member::from(&body.machine).matches(row)
+        && body.sealing_recipient == row.public_key
+        && signers.contains(&body.signer.into())
+        && cluster == Some(body.cluster)
+}
+
 /// Verify the signature and expiry against pinned Devices.
 ///
 /// # Errors
@@ -229,6 +284,236 @@ pub fn verify_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::authority::Signer;
+
+    const NOW: u64 = 1_000_000;
+
+    fn now() -> Timestamp {
+        Timestamp::from_millis(NOW).unwrap()
+    }
+
+    fn signer(seed: u8) -> Signer {
+        Signer::from_seed(&[seed; 32])
+    }
+
+    fn device(seed: u8) -> DeviceKey {
+        signer(seed).public().into()
+    }
+
+    fn cluster(seed: u8) -> SealingPublicKey {
+        SealingPublicKey::from_bytes([seed; 32])
+    }
+
+    fn machine(name: &str, subnet: &str, key: u8) -> Machine {
+        Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            id: MachineId::parse("a".repeat(32)).unwrap(),
+            name: MachineName::parse(name).unwrap(),
+            subnet: subnet.parse().unwrap(),
+            public_key: WireGuardPublicKey([key; 32]),
+            public_ip: None,
+            advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.2:51820".parse().unwrap())],
+            runtime: Default::default(),
+            join_approval: None,
+            build_concurrency: None,
+        }
+    }
+
+    /// The approval Device 1 signs for `joiner` into Cluster 5, admitted by one Machine.
+    fn approval(joiner: &Machine) -> JoinApproval {
+        JoinApproval {
+            cluster: cluster(5),
+            machine: joiner.into(),
+            network: "10.210.0.0/16".parse().unwrap(),
+            sealing_recipient: joiner.public_key,
+            devices: vec![device(1)],
+            passkeys: Vec::new(),
+            admitting_machines: vec![MachineId::parse("b".repeat(32)).unwrap()],
+            bootstrap: vec![(&machine("entry", "10.210.0.0/24", 9)).into()],
+            issued_at: now(),
+            expires_at: now().plus(60_000),
+            signer: device(1),
+        }
+    }
+
+    fn sign(body: &JoinApproval, seed: u8) -> Signed<JoinApproval> {
+        Signed::sign(body, &signer(seed)).unwrap()
+    }
+
+    fn joiner() -> Machine {
+        machine("joining", "10.210.1.0/24", 7)
+    }
+
+    #[test]
+    fn a_joiner_admits_an_approval_for_its_own_allocation_pinned_or_not() {
+        let joiner = joiner();
+        let signed = sign(&approval(&joiner), 1);
+
+        for pinned in [None, Some(&[device(1)][..])] {
+            let body = verify_as_joiner(&signed, pinned, &joiner, Some(cluster(5)), now()).unwrap();
+            assert_eq!(body, approval(&joiner));
+        }
+    }
+
+    #[test]
+    fn a_joiner_refuses_an_approval_whose_signer_is_not_the_pinned_device() {
+        let joiner = joiner();
+        let signed = sign(&approval(&joiner), 1);
+
+        let refused = verify_as_joiner(
+            &signed,
+            Some(&[device(2)]),
+            &joiner,
+            Some(cluster(5)),
+            now(),
+        );
+
+        assert!(
+            refused.is_err(),
+            "a pin names who may approve, not the capsule"
+        );
+    }
+
+    #[test]
+    fn a_joiner_refuses_an_approval_that_does_not_name_it_in_every_field() {
+        let joiner = joiner();
+        let mismatch = AuthorityRefusal::Mismatch {
+            field: "a joining Machine",
+        };
+        let renamed = machine("renamed", "10.210.1.0/24", 7);
+        let moved = machine("joining", "10.210.2.0/24", 7);
+        let rekeyed = machine("joining", "10.210.1.0/24", 8);
+
+        let cases: Vec<(&str, JoinApproval, Option<SealingPublicKey>)> = vec![
+            ("another allocation", approval(&renamed), Some(cluster(5))),
+            ("another subnet", approval(&moved), Some(cluster(5))),
+            (
+                "another WireGuard key",
+                approval(&rekeyed),
+                Some(cluster(5)),
+            ),
+            (
+                "another sealing recipient",
+                JoinApproval {
+                    sealing_recipient: WireGuardPublicKey([8; 32]),
+                    ..approval(&joiner)
+                },
+                Some(cluster(5)),
+            ),
+            ("another Cluster", approval(&joiner), Some(cluster(6))),
+            ("no opened Sealing Key", approval(&joiner), None),
+            (
+                "a network without its subnet",
+                JoinApproval {
+                    network: "10.99.0.0/16".parse().unwrap(),
+                    ..approval(&joiner)
+                },
+                Some(cluster(5)),
+            ),
+        ];
+        for (name, body, opened) in cases {
+            let refused = verify_as_joiner(&sign(&body, 1), None, &joiner, opened, now());
+            assert_eq!(refused, Err(mismatch.clone()), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_joiner_refuses_an_approval_with_no_single_admitting_machine_or_past_its_expiry() {
+        let joiner = joiner();
+        let none = JoinApproval {
+            admitting_machines: Vec::new(),
+            ..approval(&joiner)
+        };
+        let two = JoinApproval {
+            admitting_machines: vec![joiner.id, MachineId::parse("b".repeat(32)).unwrap()],
+            ..approval(&joiner)
+        };
+        for body in [none, two] {
+            assert_eq!(
+                verify_as_joiner(&sign(&body, 1), None, &joiner, Some(cluster(5)), now()),
+                Err(AuthorityRefusal::Mismatch {
+                    field: "one admitting Machine"
+                })
+            );
+        }
+
+        let late = verify_as_joiner(
+            &sign(&approval(&joiner), 1),
+            None,
+            &joiner,
+            Some(cluster(5)),
+            now().plus(60_000 + crate::authority::validity::CLOCK_SKEW_MILLIS + 1),
+        );
+        assert_eq!(late, Err(AuthorityRefusal::Expired));
+    }
+
+    fn row_carrying(approved: &Machine, body: &JoinApproval, seed: u8) -> Machine {
+        Machine {
+            join_approval: Some(sign(body, seed)),
+            ..approved.clone()
+        }
+    }
+
+    #[test]
+    fn a_row_is_admitted_only_by_an_approval_for_exactly_that_machine_in_this_cluster() {
+        let joiner = joiner();
+        let body = approval(&joiner);
+        let trusted = || [device(1)];
+
+        let admitted = row_carrying(&joiner, &body, 1);
+        assert!(admits_row(&admitted, trusted(), Some(cluster(5))));
+        // Endpoints and policy may change after the join; only identity, key and subnet bind.
+        let moved_endpoint = Machine {
+            advertised_endpoints: Vec::new(),
+            ..admitted.clone()
+        };
+        assert!(admits_row(&moved_endpoint, trusted(), Some(cluster(5))));
+
+        assert!(
+            !admits_row(&joiner, trusted(), Some(cluster(5))),
+            "no approval"
+        );
+        assert!(
+            !admits_row(&admitted, [device(2)], Some(cluster(5))),
+            "untrusted signer"
+        );
+        assert!(!admits_row(&admitted, [], Some(cluster(5))), "no Devices");
+        assert!(
+            !admits_row(&admitted, trusted(), Some(cluster(6))),
+            "another Cluster"
+        );
+        assert!(
+            !admits_row(&admitted, trusted(), None),
+            "no Cluster known yet"
+        );
+        let signed_by_another = row_carrying(&joiner, &body, 2);
+        assert!(
+            !admits_row(&signed_by_another, trusted(), Some(cluster(5))),
+            "signed by 2"
+        );
+
+        let other_subnet = machine("joining", "10.210.2.0/24", 7);
+        let wrong_row = Machine {
+            join_approval: admitted.join_approval.clone(),
+            ..other_subnet
+        };
+        assert!(
+            !admits_row(&wrong_row, trusted(), Some(cluster(5))),
+            "another subnet"
+        );
+        let other_key = Machine {
+            join_approval: admitted.join_approval,
+            ..machine("joining", "10.210.1.0/24", 8)
+        };
+        assert!(
+            !admits_row(&other_key, trusted(), Some(cluster(5))),
+            "another key"
+        );
+    }
+
     #[test]
     fn join_code_exposes_one_hundred_bits_and_binds_both_identity_and_key() {
         let machine = MachineId::random();

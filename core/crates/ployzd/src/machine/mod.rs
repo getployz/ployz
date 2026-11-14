@@ -420,20 +420,7 @@ impl LocalMachineRecord {
         if !self.filters_peers || self.pins_machine(machine) {
             return true;
         }
-        let Some(approval) = &machine.join_approval else {
-            return false;
-        };
-        let Ok(signers) = approval.verified_signers(self.devices().map(Into::into)) else {
-            return false;
-        };
-        let Ok(body) = approval.open() else {
-            return false;
-        };
-
-        ployz_core::authority::Member::from(&body.machine).matches(machine)
-            && body.sealing_recipient == machine.public_key
-            && signers.contains(&body.signer.into())
-            && self.membership_cluster == Some(body.cluster)
+        ployz_core::authority::join::admits_row(machine, self.devices(), self.membership_cluster)
     }
 
     /// Whether this Machine holds evidence for `machine` as a Member: itself, a Member an
@@ -454,22 +441,10 @@ impl LocalMachineRecord {
         if snapshot.holds_member(&member) {
             return true;
         }
-        let Some(approval) = &machine.join_approval else {
-            return false;
-        };
         let evidenced = self
             .held_devices()
             .filter(|key| snapshot.holds_key(key.code()));
-        let Ok(signers) = approval.verified_signers(evidenced.map(Into::into)) else {
-            return false;
-        };
-        let Ok(body) = approval.open() else {
-            return false;
-        };
-        ployz_core::authority::Member::from(&body.machine).matches(machine)
-            && body.sealing_recipient == machine.public_key
-            && signers.contains(&body.signer.into())
-            && cluster == Some(body.cluster)
+        ployz_core::authority::join::admits_row(machine, evidenced, cluster)
     }
 
     /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
