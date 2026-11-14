@@ -34,8 +34,6 @@ use super::{
     spec_store::ConfigOperation,
 };
 
-const CONTAINER_NAME_ATTEMPTS: u8 = 4;
-
 /// How a Container leaves through [`ContainerRuntime::retire`].
 pub(super) enum How {
     /// A request to remove it, as asked.
@@ -53,8 +51,8 @@ pub(crate) struct ContainerCreated {
 
 /// Resolved container inputs shared by every Machine-local creation entry path.
 pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
-    /// Optional identity of this currently existing creation.
-    pub(crate) creation_key: Option<&'spec str>,
+    /// Identity of this currently existing creation.
+    pub(crate) creation_key: &'spec str,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
     pub(crate) r#gen: Gen,
     /// How creation obtains the image.
@@ -74,7 +72,7 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
 /// A request once admission has consumed its futures: what the rest of creation reads.
 struct Creating<'a> {
     machine: &'a Machine,
-    creation_key: Option<&'a str>,
+    creation_key: &'a str,
     deployment_id: Option<&'a ployz_core::DeploymentLogId>,
     r#gen: Gen,
     image: ImagePull<'a>,
@@ -97,7 +95,7 @@ impl ContainerRuntime {
         self.create_with_admission(
             &machine,
             ContainerRequest {
-                creation_key: None,
+                creation_key: &format!("test:{}", MachineId::random()),
                 deployment_id: None,
                 r#gen: Gen::FIRST,
                 image: ImagePull::Policy(None),
@@ -137,11 +135,11 @@ impl ContainerRuntime {
             admission,
             storage,
         } = request;
-        if let Some(key) = creation_key {
+        {
             // Wait for an in-flight create to persist its spec before comparing a retry.
             let mut operation = self.specs.config_operation().await;
             if let Some(existing) = self
-                .matching_creation(&mut operation, machine, namespace, kind, spec, key)
+                .matching_creation(&mut operation, machine, namespace, kind, spec, creation_key)
                 .await
                 .map_err(E::from)?
             {
@@ -204,10 +202,16 @@ impl ContainerRuntime {
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
-        if let Some(key) = creation_key
-            && let Some(existing) = self
-                .matching_creation(&mut config_operation, machine, namespace, kind, spec, key)
-                .await?
+        if let Some(existing) = self
+            .matching_creation(
+                &mut config_operation,
+                machine,
+                namespace,
+                kind,
+                spec,
+                creation_key,
+            )
+            .await?
         {
             return Ok(existing);
         }
@@ -276,14 +280,13 @@ impl ContainerRuntime {
         labels::stamp_run(
             body.labels.get_or_insert_default(),
             deployment_id,
-            creation_key,
+            Some(creation_key),
             r#gen,
         );
         Ok(body)
     }
 
-    /// Creates the Container, under its slot's name when it has a key, then writes its
-    /// spec. A Container with no spec is removed again, so none outlives a failed write.
+    /// Creates the Container under its slot's name, then writes its spec. A Container with no spec is removed again, so none outlives a failed write.
     async fn create_and_record(
         &self,
         creating: &Creating<'_>,
@@ -298,31 +301,26 @@ impl ContainerRuntime {
             spec,
             ..
         } = *creating;
-        let (created, display_name) = match creation_key {
-            Some(key) => {
-                let display_name = creation_name(&machine.id, namespace, &spec.name, kind, key);
-                let options = CreateContainerOptionsBuilder::default()
-                    .name(&display_name)
-                    .build();
-                match self.docker.create_container(Some(options), body).await {
-                    Ok(created) => (created, display_name),
-                    Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
-                        return self
-                            .matching_creation(
-                                config_operation,
-                                machine,
-                                namespace,
-                                kind,
-                                spec,
-                                key,
-                            )
-                            .await?
-                            .ok_or(Error::SlotNameOccupied(display_name));
-                    }
-                    Err(error) => return Err(error),
-                }
+        let display_name = creation_name(&machine.id, namespace, &spec.name, kind, creation_key);
+        let options = CreateContainerOptionsBuilder::default()
+            .name(&display_name)
+            .build();
+        let created = match self.docker.create_container(Some(options), body).await {
+            Ok(created) => created,
+            Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
+                return self
+                    .matching_creation(
+                        config_operation,
+                        machine,
+                        namespace,
+                        kind,
+                        spec,
+                        creation_key,
+                    )
+                    .await?
+                    .ok_or(Error::SlotNameOccupied(display_name));
             }
-            None => self.create_unkeyed(kind, spec, body).await?,
+            Err(error) => return Err(error),
         };
         let container_id =
             ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
@@ -331,12 +329,8 @@ impl ContainerRuntime {
             })?;
         // A daemon killed here leaves a Container no spec describes.
         crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
-        let slot =
-            creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
-        if let Err(error) = config_operation
-            .put(&container_id, slot.as_ref(), spec)
-            .await
-        {
+        let slot = super::spec_store::CreationSlot::new(namespace, kind, creation_key);
+        if let Err(error) = config_operation.put(&container_id, Some(&slot), spec).await {
             self.remove_if_present(&container_id).await?;
             return Err(error.into());
         }
@@ -344,36 +338,6 @@ impl ContainerRuntime {
             container_id,
             display_name,
         })
-    }
-
-    /// Creates a Container under a random name, retrying a name Docker already holds.
-    async fn create_unkeyed(
-        &self,
-        kind: ContainerKind,
-        spec: &ResolvedServiceSpec,
-        body: ContainerCreateBody,
-    ) -> Result<(bollard::models::ContainerCreateResponse, String), Error> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let suffix = MachineId::random().as_str()[..4].to_owned();
-            let display_name = match kind {
-                ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
-                ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
-            };
-            let options = CreateContainerOptionsBuilder::default()
-                .name(&display_name)
-                .build();
-            match self
-                .docker
-                .create_container(Some(options), body.clone())
-                .await
-            {
-                Ok(created) => break Ok((created, display_name)),
-                Err(Error::Docker(error)) if retry_name_conflict(attempt, &error) => {}
-                Err(error) => break Err(error),
-            }
-        }
     }
 
     /// The Container an earlier create under `key` left behind, so a resend adopts it
@@ -1034,10 +998,6 @@ fn idempotent_lifecycle_result(
     }
 }
 
-fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
-    attempt < CONTAINER_NAME_ATTEMPTS && classify(error) == Status::Conflict
-}
-
 pub(crate) fn same_creation(
     observed: &ContainerObservation,
     namespace: &Namespace,
@@ -1223,7 +1183,7 @@ mod tests {
 
     async fn stamped_labels(
         kind: ContainerKind,
-        creation_key: Option<&str>,
+        creation_key: &str,
         deployment_id: Option<&ployz_core::DeploymentLogId>,
         generation: Gen,
     ) -> serde_json::Value {
@@ -1269,7 +1229,7 @@ mod tests {
         };
         let service = stamped_labels(
             ContainerKind::ServiceContainer,
-            Some("plan:0"),
+            "plan:0",
             Some(&deployment),
             Gen::new(3),
         )
@@ -1286,7 +1246,7 @@ mod tests {
                 "ployz.gen": "3",
             })
         );
-        let hook = stamped_labels(ContainerKind::PreDeployHook, None, None, Gen::FIRST).await;
+        let hook = stamped_labels(ContainerKind::PreDeployHook, "plan:1", None, Gen::FIRST).await;
         assert_eq!(
             without_service_id(hook),
             serde_json::json!({
@@ -1295,6 +1255,7 @@ mod tests {
                 "ployz.service.name": "api",
                 "ployz.service.hook": "pre-deploy",
                 "ployz.network.ipv6": "true",
+                "ployz.creation.key": "plan:1",
                 "ployz.gen": Gen::FIRST.to_string(),
             })
         );
@@ -1316,7 +1277,7 @@ mod tests {
             .create_with_admission::<_, _, Error>(
                 &machine,
                 ContainerRequest {
-                    creation_key: Some("plan:0"),
+                    creation_key: "plan:0",
                     ..container_request(
                         ContainerKind::ServiceContainer,
                         &namespace,
@@ -1400,7 +1361,7 @@ mod tests {
                 .unwrap();
         }
         let request = || ContainerRequest {
-            creation_key: Some("plan:0"),
+            creation_key: "plan:0",
             ..container_request(
                 ContainerKind::ServiceContainer,
                 &namespace,
@@ -1473,6 +1434,7 @@ mod tests {
     }
 
     /// A Container the create under `key` left, with no spec and Docker state `status`.
+    /// With no key it is one made before creations were keyed, so it carries no key label.
     async fn specless(
         key: Option<&'static str>,
         status: &str,
@@ -1499,7 +1461,7 @@ mod tests {
             .create_with_admission::<_, _, Error>(
                 &machine,
                 ContainerRequest {
-                    creation_key: key,
+                    creation_key: key.unwrap_or("legacy"),
                     ..container_request(
                         ContainerKind::ServiceContainer,
                         &namespace,
@@ -1519,6 +1481,13 @@ mod tests {
             .unwrap();
         for container in containers.lock().unwrap().values_mut() {
             container["State"] = serde_json::json!({ "Status": status });
+            if key.is_none() {
+                container
+                    .pointer_mut("/Config/Labels")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .unwrap()
+                    .remove(labels::CREATION_KEY);
+            }
         }
         (
             runtime,
@@ -2062,7 +2031,7 @@ mod tests {
     async fn a_container_created_since_the_scan_voids_the_start() {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
         let creates = runtime.docker.creates();
-        let stranded = fake.existing_container.lock().unwrap().clone();
+        let stranded = fake.existing_container.lock().unwrap().take();
         runtime
             .create_with_admission::<_, _, Error>(
                 &machine(),
@@ -2163,22 +2132,6 @@ mod tests {
         assert!(started(&fake));
     }
 
-    #[test]
-    fn name_conflicts_retry_with_a_fresh_four_character_suffix() {
-        let conflict = bollard::errors::Error::DockerResponseServerError {
-            status_code: 409,
-            message: "name already in use".into(),
-        };
-        let server_error = bollard::errors::Error::DockerResponseServerError {
-            status_code: 500,
-            message: "failed".into(),
-        };
-
-        assert!(retry_name_conflict(1, &conflict));
-        assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
-        assert!(!retry_name_conflict(1, &server_error));
-    }
-
     #[tokio::test]
     async fn removing_a_container_drops_its_record_after_docker_removed_it() {
         let (runtime, fake, container_id) =
@@ -2229,7 +2182,7 @@ mod tests {
             .create_with_admission::<_, _, Error>(
                 &machine(),
                 ContainerRequest {
-                    creation_key: Some("plan:0"),
+                    creation_key: "plan:0",
                     ..container_request(
                         ContainerKind::ServiceContainer,
                         &namespace,

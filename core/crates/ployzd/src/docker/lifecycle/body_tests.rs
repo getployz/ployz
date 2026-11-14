@@ -71,7 +71,7 @@ async fn keyed_config(
     let namespace = Namespace::parse("app").unwrap();
     let app = app_spec();
     let mut request = container_request(kind, &namespace, &app, std::future::ready(None));
-    request.creation_key = Some(creation_key);
+    request.creation_key = creation_key;
     let created = runtime
         .create_with_admission(&machine, request)
         .await

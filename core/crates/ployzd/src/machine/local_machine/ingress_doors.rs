@@ -868,7 +868,7 @@ impl LocalMachine {
                 ContainerKind::ServiceContainer,
                 &Namespace::system(),
                 spec,
-                Some(key),
+                key,
                 None,
                 Gen::FIRST,
                 ImagePull::Prepared,
