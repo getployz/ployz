@@ -99,6 +99,61 @@ async fn a_member_from_before_the_first_f6_start_is_legacy() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A Device or passkey Cloud could plant under 0.3 makes no Full call and signs nothing
+/// while the Server awaits activation. With Full it could start a container that mounts
+/// `/run/ployz`, approve itself over the local socket and keep Full after activation.
+#[test]
+fn a_key_from_before_the_first_f6_start_is_untrusted_while_awaiting() {
+    let (directory, mut store, _) = founded_store("ployzd-planted-key");
+    let planted = DeviceKey::from(Signer::from_seed(&[3; 32]).public());
+    let planted_passkey = crate::machine::test_support::passkey(4);
+    store.approve_device(planted, None).unwrap();
+    store
+        .approve_passkey(
+            ployz_core::authority::TrustedPasskey {
+                passkey: planted_passkey.clone(),
+                approved_by: ployz_core::authority::PasskeyApprover::Routed,
+            },
+            None,
+        )
+        .unwrap();
+    drop(store);
+    crate::machine::test_support::written_before_f7(&directory, false);
+    let record = directory.join("machine.json");
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("trusted_snapshot");
+    std::fs::write(&record, serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let mut store = LocalMachineStore::open(&directory).unwrap();
+
+    let record = store.record();
+    assert!(record.awaits_activation());
+    assert_ne!(
+        record.management_scope(&planted.into()),
+        Some(ployz_core::ManagementScope::Full)
+    );
+    let trusted = record.trusted_keys();
+    assert!(!trusted.devices.contains(&planted));
+    assert!(
+        trusted
+            .passkeys
+            .iter()
+            .all(|held| held.passkey.code() != planted_passkey.code())
+    );
+    let console = DeviceKey::from(Signer::from_seed(&[1; 32]).public());
+    store
+        .approve_device(console, Some(crate::machine::Evidence::LocalSocket))
+        .unwrap();
+    assert_eq!(
+        store.record().management_scope(&console.into()),
+        Some(ployz_core::ManagementScope::Full),
+        "a key a person installs at the console is trusted before activation"
+    );
+    drop(store);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[tokio::test]
 async fn a_starting_set_outside_the_snapshot_is_refused() {
     let (entry, raw, founder, directory, server) = participating_awaiting().await;
