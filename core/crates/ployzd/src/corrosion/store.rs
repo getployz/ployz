@@ -3,8 +3,8 @@
 mod decode;
 pub(super) mod tombstone;
 use decode::{
-    INCOMPLETE_JSON_DOCUMENT, actor_id, decode_container, decode_machine, decode_observations,
-    decode_volume, id_and_json, is_incomplete_document, text,
+    INCOMPLETE_JSON_DOCUMENT, RowPolicy, actor_id, decode_container, decode_ingress_route,
+    decode_machine, decode_observations, decode_volume, id_and_json, is_incomplete_document, text,
 };
 use tombstone::Tombstone;
 
@@ -765,6 +765,7 @@ impl ReplicatedStore {
             .await?;
         let mut snapshot = decode_observations(
             id_and_json(query.rows(["id", "info"])?, |id| Ok(MachineId::parse(id)?))?,
+            RowPolicy::FailRead,
             |id, encoded| decode_machine(id.as_str(), encoded),
         )?;
         snapshot
@@ -869,22 +870,18 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        let mut observations = Vec::new();
-        let mut incomplete_ids = Vec::new();
+        let mut rows = Vec::new();
         for [id, machine_id, encoded] in query.rows(["id", "machine_id", "container"])? {
-            let id = ContainerId::parse(text(&id, "container ID")?)?;
-            match decode_container(
-                &id,
-                text(&machine_id, "container Machine ID")?,
-                text(&encoded, "replicated container JSON")?,
-            )? {
-                Some(observation) => observations.push(observation),
-                None => incomplete_ids.push(id),
-            }
+            rows.push((
+                ContainerId::parse(text(&id, "container ID")?)?,
+                (
+                    text(&machine_id, "container Machine ID")?.to_owned(),
+                    text(&encoded, "replicated container JSON")?.to_owned(),
+                ),
+            ));
         }
-        Ok(ReplicatedObservations {
-            observations,
-            incomplete_ids,
+        decode_observations(rows, RowPolicy::FailRead, |id, (machine_id, encoded)| {
+            decode_container(id, machine_id, encoded)
         })
     }
 
@@ -968,7 +965,9 @@ impl ReplicatedStore {
                 text(&encoded, "replicated volume JSON")?.to_owned(),
             ));
         }
-        decode_observations(rows, decode_volume)
+        decode_observations(rows, RowPolicy::FailRead, |id, encoded| {
+            decode_volume(id, encoded)
+        })
     }
 
     async fn local_volumes(&self, machine_id: &MachineId) -> Result<LocalVolumeSnapshot, Error> {
@@ -1327,22 +1326,18 @@ impl ReplicatedStore {
         statement: Statement,
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
         let query = self.api.query(statement).await?;
-        Ok(query
-            .rows(["machine_id", "service_id", "containers"])?
-            .into_iter()
-            .filter_map(|[machine_id, service_id, containers]| {
-                let machine_id = MachineId::parse(machine_id.as_str()?).ok()?;
-                let service = QualifiedService::parse(service_id.as_str()?).ok()?;
-                let containers = containers
-                    .as_str()
-                    .and_then(|containers| serde_json::from_str(containers).ok());
-                let row = match containers {
-                    Some(containers) => IngressRouteRow::Acked(IngressRouteAck { containers }),
-                    None => IngressRouteRow::UnknownContainers,
-                };
-                Some(((machine_id, service), row))
-            })
-            .collect())
+        let mut routes = BTreeMap::new();
+        for [machine_id, service_id, containers] in
+            query.rows(["machine_id", "service_id", "containers"])?
+        {
+            match decode_ingress_route(&machine_id, &service_id, &containers) {
+                Ok((key, row)) => {
+                    routes.insert(key, row);
+                }
+                Err(skipped) => skipped.log(),
+            }
+        }
+        Ok(routes)
     }
 
     pub(crate) async fn publish_ingress_routes(
@@ -1404,46 +1399,46 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        let mut observations = Vec::new();
-        let mut incomplete_ids = Vec::new();
+        let mut rows = Vec::new();
         for [hostname, encoded] in query.rows(["hostname", "body"])? {
             let encoded = text(&encoded, "certificate body")?;
             let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
                 continue;
             };
-            if is_incomplete_document(encoded) {
-                incomplete_ids.push(hostname);
-            } else if let Some(row) = decode_certificate_row(&hostname, encoded) {
-                observations.push((hostname, row));
-            }
+            rows.push((hostname, encoded.to_owned()));
         }
-        Ok(ReplicatedObservations {
-            observations,
-            incomplete_ids,
-        })
+        decode_observations(
+            rows,
+            RowPolicy::Skip {
+                table: "certificate",
+            },
+            |hostname, encoded| {
+                if is_incomplete_document(encoded) {
+                    return Ok(None);
+                }
+                Ok(Some((hostname.clone(), CertificateRow::decode(encoded)?)))
+            },
+        )
     }
 
+    /// Every certificate row that decodes, an incomplete one as its empty body.
     pub async fn certificate_state(
         &self,
     ) -> Result<BTreeMap<CertificateHost, CertificateRow>, Error> {
-        let query = self
-            .api
-            .query(Statement::new(
-                "SELECT hostname, body FROM certificates ORDER BY hostname",
-                [],
-            ))
-            .await?;
-        let mut rows = BTreeMap::new();
-        for [hostname, encoded] in query.rows(["hostname", "body"])? {
-            let encoded = text(&encoded, "certificate body")?;
-            let Some(hostname) = certificate_host(text(&hostname, "certificate hostname")?) else {
-                continue;
-            };
-            if let Some(row) = decode_certificate_row(&hostname, encoded) {
-                rows.insert(hostname, row);
-            }
-        }
-        Ok(rows)
+        let rows = self.certificate_rows().await?;
+        let incomplete = rows.incomplete_ids.into_iter().filter_map(|hostname| {
+            CertificateRow::decode(INCOMPLETE_JSON_DOCUMENT)
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        %hostname,
+                        error = %ployz_core::error_chain::inline(error),
+                        "skipping certificate row"
+                    );
+                })
+                .ok()
+                .map(|row| (hostname, row))
+        });
+        Ok(rows.observations.into_iter().chain(incomplete).collect())
     }
 
     pub(crate) async fn subscribe_certificate_changes(&self) -> Result<Subscription, Error> {
@@ -1805,18 +1800,6 @@ impl RuntimeWatchChanges {
 fn certificate_host(hostname: &str) -> Option<CertificateHost> {
     CertificateHost::parse(hostname)
         .inspect_err(|error| tracing::warn!(%error, "skipping certificate row"))
-        .ok()
-}
-
-fn decode_certificate_row(hostname: &CertificateHost, encoded: &str) -> Option<CertificateRow> {
-    CertificateRow::decode(encoded)
-        .inspect_err(|error| {
-            tracing::warn!(
-                %hostname,
-                error = %ployz_core::error_chain::inline(error),
-                "skipping certificate row"
-            );
-        })
         .ok()
 }
 
