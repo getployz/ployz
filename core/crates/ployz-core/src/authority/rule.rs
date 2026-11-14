@@ -793,7 +793,8 @@ impl AutoDeployRule {
     /// Check a new Container under this rule: everything [`Self::verify_step`] checks,
     /// then that `claim` reports an image built with secrets sealed from this Machine's
     /// attest key, that the spec runs exactly that image, and that the spec with its
-    /// image left out is the template the rule approves. Returns the image.
+    /// image left out is the template the rule approves. A commit a session approved runs
+    /// no [`host_reach`](super::deploy::refuse_host_reach). Returns the image.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
@@ -835,12 +836,15 @@ impl AutoDeployRule {
         if template != approved {
             return Err(mismatch("a payload"));
         }
-        // A session opens only its own Environment's Sealed values, as under a deploy
-        // approval.
-        if let CommitNow::Approved(approval) = facts.commit
-            && !super::deploy::sealed_scope_allows(approval.by(), creation.spec)
-        {
-            return Err(mismatch("the signer"));
+        // A session opens only its own Environment's Sealed values and reaches nothing on
+        // the host, as under a deploy approval.
+        if let CommitNow::Approved(approval) = facts.commit {
+            if !super::deploy::sealed_scope_allows(approval.by(), creation.spec) {
+                return Err(mismatch("the signer"));
+            }
+            if matches!(approval.by(), Approver::Browser { .. }) {
+                super::deploy::refuse_host_reach(&creation.spec.to_requested())?;
+            }
         }
         Ok(image)
     }

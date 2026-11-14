@@ -20,7 +20,7 @@ use ployz_core::{
     authority::{
         AuthorityRefusal, CheckedReview, CommitAuthority, CommitSha, PreviewFacts, PreviewKey,
         PreviewProof, PreviewRule, RestartStep, Timestamp,
-        deploy::Creation,
+        deploy::{self, Creation},
         preview::{verify_accepted_review, verify_review},
         rule::verify_signature,
     },
@@ -395,6 +395,11 @@ pub(crate) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         } => "Previews for this environment are off.",
         AuthorityRefusal::Mismatch { field: "a Service" } => {
             "The preview rule doesn't cover this service."
+        }
+        AuthorityRefusal::Mismatch {
+            field: deploy::HOST_ACCESS,
+        } => {
+            "This service reaches the server itself, so only an approved device or your passkey can review it."
         }
         AuthorityRefusal::Mismatch { field: "a Machine" } => {
             "The preview rule was approved before this server joined. Approve it again."

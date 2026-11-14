@@ -29,7 +29,7 @@ use super::{
 use crate::value::hex_newtype;
 use crate::{
     ContainerKind, EnvValue, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
-    RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName,
+    RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName, ServiceNetwork,
 };
 
 hex_newtype!(
@@ -230,8 +230,30 @@ impl ApprovedChange {
     }
 }
 
-/// What `spec` asks of the host beyond an ordinary Container.
+/// What `spec` asks of the host beyond an ordinary Container: its [`host_reach`], with the
+/// hook's command before a privileged hook.
 pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<Shown> {
+    let mut host = host_reach(spec);
+    if let Some(hook) = &spec.pre_deploy {
+        let privileged = usize::from(hook.privileged == Some(true));
+        host.insert(
+            host.len().saturating_sub(privileged),
+            hook.command
+                .as_slice()
+                .iter()
+                .fold(Shown::words("hook"), |shown, word| {
+                    shown.and_words(" ").and_text(word)
+                }),
+        );
+    }
+    host
+}
+
+/// What `spec` reaches on its Machine beyond its own Environment: privileges, devices,
+/// capabilities, PID mode, sysctls, host ports, Bind Mounts, Docker volumes it names
+/// itself, the Ingress holder's network, and a privileged hook. Only a Device or a
+/// passkey's own prompt approves any of it.
+pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
     let container = &spec.container;
     let mut host = Vec::new();
     if container.privileged {
@@ -269,26 +291,44 @@ pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<Shown> {
             RawVolumeSource::Bind { machine_path, .. } => {
                 Some(Shown::words("binds ").and_text(machine_path.as_str()))
             }
-            RawVolumeSource::External { .. }
-            | RawVolumeSource::Ordinary { .. }
+            RawVolumeSource::External { name } => {
+                Some(Shown::words("uses volume ").and_text(name.as_str()))
+            }
+            RawVolumeSource::Ordinary { .. }
             | RawVolumeSource::Provisioned { .. }
             | RawVolumeSource::Tmpfs { .. } => None,
         },
     ));
-    if let Some(hook) = &spec.pre_deploy {
-        host.push(
-            hook.command
-                .as_slice()
-                .iter()
-                .fold(Shown::words("hook"), |shown, word| {
-                    shown.and_words(" ").and_text(word)
-                }),
-        );
-        if hook.privileged == Some(true) {
-            host.push(Shown::words("privileged hook"));
-        }
+    match container.network {
+        Some(ServiceNetwork::IngressHolder) => host.push(Shown::words("joins the ingress network")),
+        Some(ServiceNetwork::Unrecognized) => host.push(Shown::words("joins an unknown network")),
+        None => {}
+    }
+    if spec
+        .pre_deploy
+        .as_ref()
+        .is_some_and(|hook| hook.privileged == Some(true))
+    {
+        host.push(Shown::words("privileged hook"));
     }
     host
+}
+
+/// What [`AuthorityRefusal::Mismatch`] names when a session approved a Container with
+/// [`host_reach`].
+pub const HOST_ACCESS: &str = "host access";
+
+/// Refuse `spec` when it has any [`host_reach`]. A browser key under a session grant signs
+/// whatever plan Cloud's page hands it, so a Container it approves stays inside its own
+/// Environment, and anything more needs a Device or a passkey's own prompt.
+///
+/// # Errors
+/// Returns [`AuthorityRefusal::Mismatch`] naming [`HOST_ACCESS`].
+pub fn refuse_host_reach(spec: &RequestedServiceSpec) -> Result<(), AuthorityRefusal> {
+    if host_reach(spec).is_empty() {
+        return Ok(());
+    }
+    Err(AuthorityRefusal::Mismatch { field: HOST_ACCESS })
 }
 
 /// A Device, or a browser key under a session grant, approves one Deploy: the Services it
@@ -344,6 +384,9 @@ pub enum BrowserDraftError {
     /// Every Service named by a tag, so one refusal lists each to write by digest.
     #[error("{}", tagged_message(.0))]
     Tag(Vec<TaggedImage>),
+    /// Every Service with [`host_reach`], so one refusal lists each.
+    #[error("{}", reach_message(.0))]
+    HostReach(Vec<ReachingService>),
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
 }
@@ -369,6 +412,31 @@ fn tagged_message(tagged: &[TaggedImage]) -> String {
                 .map(|TaggedImage { service, image }| format!("{service}'s {image}"))
                 .collect::<Vec<_>>()
                 .join(", ")
+        ),
+    }
+}
+
+/// A Service with [`host_reach`], as [`BrowserDraftError::HostReach`] lists it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReachingService {
+    pub service: ServiceName,
+    pub host: Vec<String>,
+}
+
+fn reach_message(reaching: &[ReachingService]) -> String {
+    let shown = |ReachingService { service, host }: &ReachingService| {
+        format!("{service} ({})", host.join(", "))
+    };
+    match reaching {
+        [one] => format!(
+            "{} reaches the server itself, so only an approved device can approve it. Run ployz \
+             deploy on that device.",
+            shown(one)
+        ),
+        _ => format!(
+            "These services reach the server itself, so only an approved device can approve them: \
+             {}. Run ployz deploy on that device.",
+            reaching.iter().map(shown).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -449,7 +517,8 @@ impl DeployApproval {
     /// can't ask a registry, so a tag is refused rather than pinned.
     ///
     /// # Errors
-    /// Refuses a Service built from source, an image named by a tag, and a spec with no
+    /// Refuses a Service built from source, an image named by a tag, a spec with
+    /// [`host_reach`], which a session's Machines refuse, and a spec with no
     /// [`PayloadDigest`] in `namespace`.
     pub fn browser_draft(
         terms: DeployTerms,
@@ -472,6 +541,17 @@ impl DeployApproval {
             .collect();
         if !tagged.is_empty() {
             return Err(BrowserDraftError::Tag(tagged));
+        }
+        let reaching: Vec<ReachingService> = target
+            .iter()
+            .map(|spec| ReachingService {
+                service: spec.name.clone(),
+                host: host_reach(spec).into_iter().map(String::from).collect(),
+            })
+            .filter(|reaching| !reaching.host.is_empty())
+            .collect();
+        if !reaching.is_empty() {
+            return Err(BrowserDraftError::HostReach(reaching));
         }
         let (body, changes) = Self::draft(terms, namespace, target, &BTreeMap::new())?;
         Ok(BrowserDraft {
@@ -552,7 +632,8 @@ pub struct DeployApproved {
 ///
 /// For a creation it recomputes the [`PayloadDigest`] of the requested spec and requires
 /// the one the approval names for that Service, a hook in that spec for a hook creation,
-/// and a content-addressed image. For a step on an existing Container it checks the
+/// and a content-addressed image. A browser key under a session grant approves no
+/// creation with [`host_reach`], whether made or started again. For a step on an existing Container it checks the
 /// signature, Cluster, Machine, Namespace and window only. Consumption is the Machine's.
 ///
 /// # Errors
@@ -585,6 +666,9 @@ pub fn verify(
             issued_at: body.issued_at,
             expires_at: body.expires_at,
         })?;
+        if let Some(creation) = facts.creation {
+            refuse_host_reach(&creation.spec.to_requested())?;
+        }
     }
     super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
     if let Some(creation) = facts.creation {

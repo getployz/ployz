@@ -158,9 +158,9 @@ Approve web, worker? [y/N]
 ```
 
 The first line of each service names the image and anything the service asks of the server:
-privileged mode, added capabilities, PID mode, sysctls, host ports, bind mounts and its
-pre-deploy hook. An image you wrote by digest shows its whole digest. The lines under it list
-every setting the signature covers that isn't Ployz's default, by its name in the spec:
+privileged mode, devices, added capabilities, PID mode, sysctls, host ports, bind mounts, Docker
+volumes it names itself, the ingress network and its pre-deploy hook. An image you wrote by digest
+shows its whole digest. The lines under it list every setting the signature covers that isn't Ployz's default, by its name in the spec:
 variables, the start command and entrypoint, user, mounts, config files, ports, privileges, the
 hook and the rest. A setting added to Ployz later shows there too, and so does a `false` or empty
 value that overrides one the hook would inherit. A text value with anything but letters, digits
@@ -235,6 +235,18 @@ service. Write that service's image by digest once, and later deploys from the d
 ```text
 The dashboard can't check what web's tag nginx:1.29-alpine points to. Write web's image by digest, which docker buildx imagetools inspect nginx:1.29-alpine prints.
 ```
+
+The dashboard approves only services that stay inside their environment. A service that asks the
+server for more, anything on its first line but the hook's command, deploys only from an approved
+device. The dashboard names each one and signs nothing:
+
+```text
+web (privileged, binds /srv/web) reaches the server itself, so only an approved device can approve it. Run ployz deploy on that device.
+```
+
+Run `ployz deploy` on an approved device to deploy it. **Redeploy** and **Roll back** of a service
+like that built from GitHub fail on each server with
+`This service reaches the server itself, so only an approved device can approve its commit. Run ployz deployment redeploy on that device.`
 
 `ployz deploy` pins a public tag for you, but only for that deploy: your settings keep the tag,
 so the next deploy from the dashboard asks again. A service that a Ployz from before 0.4
