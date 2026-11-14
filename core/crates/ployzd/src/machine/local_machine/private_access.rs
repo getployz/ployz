@@ -498,6 +498,102 @@ fn unix_seconds() -> i32 {
 mod tests {
     use super::*;
     use ployz_core::HealthObservation;
+    use serde_json::json;
+
+    fn id(id: char) -> ContainerId {
+        ContainerId::parse(id.to_string().repeat(64)).unwrap()
+    }
+
+    fn wanted() -> ResolvedServiceSpec {
+        private_access_router(
+            "10.210.0.0/16".parse().unwrap(),
+            &ployz_core::Ciphertext::from_bytes(vec![9; 48]),
+            ployz_core::PrivateAccessStateId::random(),
+        )
+    }
+
+    fn router(
+        id_char: char,
+        spec: &ResolvedServiceSpec,
+        created_at: i64,
+        runtime: serde_json::Value,
+    ) -> ContainerObservation {
+        serde_json::from_value(json!({
+            "container_id": id_char.to_string().repeat(64),
+            "display_name": format!("{}-{id_char}", spec.name),
+            "created_at_unix_nanos": created_at,
+            "machine_id": "b".repeat(32),
+            "namespace": "ployz-system",
+            "kind": "service_container",
+            "runtime": runtime,
+            "resolved_spec": serde_json::to_value(spec).unwrap(),
+        }))
+        .unwrap()
+    }
+
+    fn running() -> serde_json::Value {
+        json!({ "state": "running", "health": "healthy" })
+    }
+
+    fn created() -> serde_json::Value {
+        json!({ "state": "created" })
+    }
+
+    fn retiree(id_char: char, running: bool) -> Retiree {
+        Retiree {
+            id: id(id_char),
+            running,
+        }
+    }
+
+    // Catches the router placer choosing differently from the door placers it copies:
+    // the newest running canonical router is kept, a stopped or restarting one is
+    // started or left to restart, a dead one is replaced, and every other router retires.
+    #[test]
+    fn the_router_plan_keeps_starts_or_creates_and_retires_the_rest() {
+        let spec = wanted();
+        let plan = plan_router(&[], Some(&spec));
+        assert_eq!(plan.step, Some(RouterStep::Create(None)));
+        assert!(plan.retire.is_empty());
+
+        let plan = plan_router(&[router('a', &spec, 1, created())], Some(&spec));
+        assert_eq!(plan.step, Some(RouterStep::Start(id('a'))));
+
+        let restarting = router('a', &spec, 1, json!({ "state": "restarting" }));
+        let plan = plan_router(&[restarting], Some(&spec));
+        assert_eq!(plan.step, Some(RouterStep::Keep(id('a'))));
+
+        let mut other = spec.clone();
+        other.container.image = "tailscale/tailscale:old".into();
+        let routers = [
+            router('a', &spec, 1, running()),
+            router('b', &spec, 2, created()),
+            router('c', &other, 4, running()),
+            router('d', &spec, 3, json!({ "state": "dead" })),
+        ];
+        let plan = plan_router(&routers, Some(&spec));
+        assert_eq!(plan.step, Some(RouterStep::Keep(id('a'))));
+        assert_eq!(
+            plan.retire,
+            vec![retiree('b', false), retiree('c', true), retiree('d', false)]
+        );
+
+        let routers = [
+            router('a', &spec, 1, json!({ "state": "dead" })),
+            router('c', &other, 4, running()),
+            router('d', &other, 3, created()),
+        ];
+        let plan = plan_router(&routers, Some(&spec));
+        assert_eq!(plan.step, Some(RouterStep::Create(Some(id('c')))));
+        assert_eq!(
+            plan.retire,
+            vec![retiree('a', false), retiree('c', true), retiree('d', false)]
+        );
+
+        let plan = plan_router(&routers, None);
+        assert_eq!(plan.step, None);
+        assert_eq!(plan.retire.len(), 3);
+    }
 
     // Catches a placement answering success on the start-up line before the probe
     // passes, which reads as stopped to the next look.
