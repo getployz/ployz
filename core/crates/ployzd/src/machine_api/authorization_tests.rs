@@ -911,6 +911,9 @@ async fn answer(case: &'static Case, machine: &Enforcing) -> Outcome {
     Outcome::Answered
 }
 
+#[path = "admission_golden_tests.rs"]
+mod admission_golden;
+
 mod departure {
     //! `Leave` and `Forget` under Device enforcement: an Operator is refused before any
     //! Container stops, and a Full caller, or any caller with enforcement off, is not.

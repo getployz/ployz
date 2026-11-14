@@ -56,10 +56,14 @@ pub(crate) async fn served(
         api,
         tokio_stream::wrappers::UnixListenerStream::new(listener),
     ));
-    let channel = tonic::transport::Endpoint::try_from("http://machine.invalid")
+    (MachineRpcClient::new(channel_to(socket).await), server)
+}
+
+/// A channel to the Machine API served on `socket`.
+pub(crate) async fn channel_to(socket: &Path) -> Channel {
+    tonic::transport::Endpoint::try_from("http://machine.invalid")
         .unwrap()
         .connect_with_connector(Connector(socket.to_owned()))
         .await
-        .unwrap();
-    (MachineRpcClient::new(channel), server)
+        .unwrap()
 }
