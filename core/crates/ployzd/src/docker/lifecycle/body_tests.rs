@@ -52,7 +52,7 @@ fn body_of(
         None,
     )
     .unwrap();
-    create::ingress_sysctls(&mut body, namespace, spec, true);
+    create::ingress_sysctls(&mut body, Door::of_service(namespace, &spec.name), true);
     serde_json::to_value(body).unwrap()
 }
 

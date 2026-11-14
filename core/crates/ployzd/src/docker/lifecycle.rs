@@ -271,8 +271,7 @@ impl ContainerRuntime {
         )?;
         create::ingress_sysctls(
             &mut body,
-            namespace,
-            spec,
+            Door::of_service(namespace, &spec.name),
             std::path::Path::new("/proc/sys")
                 .join(create::TCP_MIGRATE_REQ.replace('.', "/"))
                 .exists(),

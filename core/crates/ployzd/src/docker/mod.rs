@@ -44,11 +44,10 @@ use bollard::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
-    Evidence, Gen, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand,
-    HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry,
-    QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
+    BridgeEndpointCapacity, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName, Evidence, Gen,
+    HealthObservation, HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages,
+    MachineTelemetry, QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -63,6 +62,7 @@ use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
+use create::effective_healthcheck;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
@@ -75,7 +75,7 @@ pub use unregistry::ImageIngest;
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 #[cfg(test)]
-use ployz_core::{Namespace, ServiceId};
+use ployz_core::{ConfiguredHealthcheck, HealthcheckCommand, Namespace, ServiceId};
 
 /// The Docker network every Service Container and the Ingress Proxy join.
 pub const DOCKER_NETWORK_NAME: &str = "ployz";
@@ -1385,36 +1385,6 @@ fn state_without_app_output(state: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(decoded)
 }
 
-fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {
-    let healthcheck = config?.healthcheck.as_ref()?;
-    let test = healthcheck.test.clone().unwrap_or_default();
-    if test
-        .first()
-        .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
-    {
-        return Some(HealthcheckSpec::Disabled);
-    }
-    Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
-        test: HealthcheckCommand::parse(test).ok()?,
-        interval_millis: nanos_to_millis(healthcheck.interval),
-        timeout_millis: nanos_to_millis(healthcheck.timeout),
-        start_period_millis: nanos_to_millis(healthcheck.start_period),
-        start_interval_millis: nanos_to_millis(healthcheck.start_interval),
-        retries: healthcheck
-            .retries
-            .filter(|retries| *retries > 0)
-            .and_then(|retries| u32::try_from(retries).ok()),
-        deadline_millis: None,
-    }))
-}
-
-fn nanos_to_millis(nanos: Option<i64>) -> Option<u64> {
-    nanos
-        .filter(|nanos| *nanos > 0)
-        .and_then(|nanos| u64::try_from(nanos).ok())
-        .map(|nanos| nanos.div_ceil(1_000_000))
-}
-
 #[cfg(test)]
 fn runtime_from_parts(
     status: &str,
@@ -2025,7 +1995,11 @@ mod tests {
                 None,
             )
             .unwrap();
-            create::ingress_sysctls(&mut body, namespace, &spec, kernel_supports);
+            create::ingress_sysctls(
+                &mut body,
+                doors::Door::of_service(namespace, &spec.name),
+                kernel_supports,
+            );
             let host = body.host_config.unwrap();
             assert_eq!(host.log_config, Some(container_log_config()));
             host.sysctls

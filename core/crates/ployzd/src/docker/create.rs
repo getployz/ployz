@@ -13,15 +13,15 @@ use bollard::models::{
 };
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerId, ContainerKind, EnvValue, HostBind, MachineGateway,
-    MachineId, Namespace, PortPublication, QualifiedService, ResolvedServiceSpec,
-    ResolvedServiceVolumeGraph, TransportProtocol,
+    MachineId, Namespace, PortPublication, ResolvedServiceSpec, ResolvedServiceVolumeGraph,
+    TransportProtocol,
 };
 
 use super::{Error, doors::Door};
 
 mod healthcheck;
 use crate::sealed_env;
-pub(super) use healthcheck::docker_healthcheck;
+pub(super) use healthcheck::{docker_healthcheck, effective_healthcheck};
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
 
@@ -48,14 +48,12 @@ pub(crate) fn container_log_config() -> HostConfigLogConfig {
 /// public client whose link stalls with unacked data is reset then too, not after 15 minutes.
 pub(super) fn ingress_sysctls(
     body: &mut ContainerCreateBody,
-    namespace: &Namespace,
-    spec: &ResolvedServiceSpec,
+    door: Option<Door>,
     kernel_supports_migrate_req: bool,
 ) {
     // The holder owns the Ingress Proxy's netns, so the sysctls go on it. A Caddy that
     // joins it inherits them, and Docker refuses netns sysctls in `container:` mode.
-    if Door::of(&QualifiedService::new(namespace.clone(), spec.name.clone())) != Some(Door::Holder)
-    {
+    if door != Some(Door::Holder) {
         return;
     }
     let sysctls = body
