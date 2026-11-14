@@ -150,6 +150,27 @@ fn a_key_from_before_the_first_f6_start_is_untrusted_while_awaiting() {
         Some(ployz_core::ManagementScope::Full),
         "a key a person installs at the console is trusted before activation"
     );
+    store
+        .approve_device(planted, Some(crate::machine::Evidence::LocalSocket))
+        .unwrap();
+    store
+        .approve_passkey(
+            ployz_core::authority::TrustedPasskey {
+                passkey: planted_passkey.clone(),
+                approved_by: ployz_core::authority::PasskeyApprover::Server,
+            },
+            Some(crate::machine::Evidence::LocalSocket),
+        )
+        .unwrap();
+    let trusted = store.record().trusted_keys();
+    assert!(
+        trusted.devices.contains(&planted)
+            && trusted
+                .passkeys
+                .iter()
+                .any(|held| held.passkey.code() == planted_passkey.code()),
+        "a key from 0.3 a person approves again at the console is trusted"
+    );
     drop(store);
     std::fs::remove_dir_all(directory).unwrap();
 }
