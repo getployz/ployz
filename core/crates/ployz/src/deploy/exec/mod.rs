@@ -13,9 +13,9 @@ use ployz_core::{
     ContainerObservation, ContainerRefusal, ContainerWant, CopyRotation, CreationKey,
     DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError,
     ExposedPort, FailedOperation, Gen, HealthFailure, HealthVerdict, MachineAction, MachineId,
-    MachineName, Namespace, ObservationKind, OperationPhase, PortPublication, PullPolicy,
-    QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    MachineName, Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService,
+    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
+    ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -914,27 +914,7 @@ impl<'a> Rows<'a> {
             services,
             gens: std::sync::Mutex::new(BTreeMap::new()),
             stored: tokio::sync::OnceCell::new(),
-            unobserved: plan
-                .preview()
-                .warnings
-                .iter()
-                .filter_map(|warning| {
-                    let (DeployWarning::ObservationFailed {
-                        kind: ObservationKind::Container,
-                        machine_id,
-                        ..
-                    }
-                    | DeployWarning::ObservationOmitted {
-                        kind: ObservationKind::Container,
-                        machine_id,
-                        ..
-                    }) = warning
-                    else {
-                        return None;
-                    };
-                    Some(*machine_id)
-                })
-                .collect(),
+            unobserved: plan.unobserved_containers().clone(),
             retiring: plan.retiring(),
             strays: plan.strays(),
             dropped_large_packets: plan.dropped_large_packets(),

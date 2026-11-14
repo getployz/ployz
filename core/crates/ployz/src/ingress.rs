@@ -1095,12 +1095,6 @@ pub(crate) fn port_taken(cause: &str) -> bool {
     cause.contains("address already in use") || cause.contains("port is already allocated")
 }
 
-/// True when this observation is the reserved Ingress Proxy Service.
-#[must_use]
-pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
-    observation.identity() == QualifiedService::system_ingress()
-}
-
 #[cfg(test)]
 #[path = "ingress_tests.rs"]
 mod tests;

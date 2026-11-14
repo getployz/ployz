@@ -99,6 +99,8 @@ pub struct DeployPlan {
     /// The Services this Deploy takes out wherever they run: each named removal the
     /// snapshot observed, and each Service it prunes.
     retiring: BTreeSet<QualifiedService>,
+    /// Machines whose Containers the plan's snapshot did not list.
+    unobserved_containers: BTreeSet<MachineId>,
     /// Machines whose Container listing went unanswered while the entry's path probes
     /// found large packets to them dropped, so a notice can give that cause.
     dropped_large_packets: BTreeSet<MachineId>,
@@ -133,6 +135,10 @@ impl DeployPlan {
 
     pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
         &self.machine_names
+    }
+
+    pub(super) const fn unobserved_containers(&self) -> &BTreeSet<MachineId> {
+        &self.unobserved_containers
     }
 
     pub(super) const fn dropped_large_packets(&self) -> &BTreeSet<MachineId> {
@@ -191,6 +197,7 @@ impl DeployPlan {
             registry_auth: std::collections::BTreeMap::new(),
             machine_names: BTreeMap::new(),
             retiring: BTreeSet::new(),
+            unobserved_containers: BTreeSet::new(),
             dropped_large_packets: BTreeSet::new(),
             strays: BTreeMap::new(),
         }
@@ -233,17 +240,7 @@ impl DeployPlan {
     /// The plan's snapshot listed no Containers on `machines`, as for a Down Machine.
     #[cfg(test)]
     pub(super) fn with_unobserved(mut self, machines: &[MachineId]) -> Self {
-        self.preview
-            .warnings
-            .extend(
-                machines
-                    .iter()
-                    .map(|machine_id| DeployWarning::ObservationOmitted {
-                        gap: None,
-                        kind: ployz_core::ObservationKind::Container,
-                        machine_id: *machine_id,
-                    }),
-            );
+        self.unobserved_containers.extend(machines);
         self
     }
 }
@@ -689,16 +686,11 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         registry_auth: std::collections::BTreeMap::new(),
         machine_names: super::progress::machine_names(snapshot),
         retiring: planned.retiring.into_iter().collect(),
+        unobserved_containers: snapshot.listing_gaps().map(|gap| gap.machine).collect(),
         dropped_large_packets: snapshot
-            .container_failures
-            .iter()
-            .filter(|failure| {
-                snapshot.machines.iter().any(|machine| {
-                    machine.machine.id == failure.machine_id
-                        && super::dropped_large_packets(machine, &failure.error)
-                })
-            })
-            .map(|failure| failure.machine_id)
+            .listing_gaps()
+            .filter(|gap| gap.large_packets)
+            .map(|gap| gap.machine)
             .collect(),
         strays: planned.strays,
     }
