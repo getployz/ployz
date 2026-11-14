@@ -1136,7 +1136,7 @@ impl LocalMachineStore {
         for member in &pending.members {
             snapshot.add_member(member.clone());
         }
-        for (code, evidence) in pending.kept() {
+        for (code, evidence) in pending.kept(&self.record.held_keys()) {
             snapshot.add_key(code, evidence);
         }
         let keeps = |code: DeviceCode| snapshot.holds_key(code);

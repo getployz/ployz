@@ -184,7 +184,7 @@ async fn request_shows_the_code_its_own_key_hashes_to() {
 
     let requested = request_with(&token(cloud), key(0)).await.unwrap();
 
-    assert_eq!(requested.code, key(0).code());
+    assert_eq!(requested.code, key(0).check_code());
     assert_eq!(requested.expires_at, "x");
 }
 
@@ -208,7 +208,7 @@ async fn a_refused_request_writes_no_key_and_a_filed_one_keeps_it() {
     });
     let requested = request_at(&token(filing.clone()), &path).await.unwrap();
     let secret = key::load(&path).unwrap().unwrap();
-    assert_eq!(requested.code, key::public(&secret).code());
+    assert_eq!(requested.code, key::public(&secret).check_code());
 
     let again = request_at(&token(filing), &path).await.unwrap();
     assert_eq!(again.code, requested.code);
@@ -234,7 +234,7 @@ async fn a_request_that_loses_a_race_files_the_key_the_winner_wrote() {
 
     let requested = request_at(&token(cloud), &path).await.unwrap();
 
-    assert_eq!(requested.code, key::public(&winner).code());
+    assert_eq!(requested.code, key::public(&winner).check_code());
     assert_eq!(key::load(&path).unwrap(), Some(winner));
     assert_eq!(filed.lock().unwrap().last(), Some(&key::public(&winner)));
 }
@@ -252,19 +252,36 @@ async fn request_refuses_a_reply_naming_another_code() {
     assert!(message.contains(key(1).code().as_str()), "{message}");
 }
 
+/// Two keys whose 50-bit names collide, found offline with Pollard's rho: what Cloud would
+/// grind to stand in for the key the requester printed.
+fn same_name_keys() -> (DeviceKey, DeviceKey) {
+    let key = |head: [u8; 8]| {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&head);
+        DeviceKey::from_bytes(bytes)
+    };
+    (
+        key([0x00, 0x00, 0x0f, 0x7a, 0x5b, 0xab, 0x23, 0x3a]),
+        key([0x00, 0x03, 0xb9, 0xbe, 0x18, 0x80, 0x7a, 0xca]),
+    )
+}
+
 #[tokio::test]
-async fn a_key_that_does_not_hash_to_the_code_is_refused_before_any_machine() {
-    let cloud = crate::cloud_login::tests::fake_cloud(|route, _| {
-        assert_eq!(route, "GET /api/cli/device-requests/mmg42klgyq");
+async fn a_key_that_only_shares_the_codes_name_is_refused_before_any_machine() {
+    let (printed, ground) = same_name_keys();
+    assert_eq!(printed.code().as_str(), "25vjlh52bc");
+    assert_eq!(ground.code(), printed.code());
+    let cloud = crate::cloud_login::tests::fake_cloud(move |route, _| {
+        assert_eq!(route, "GET /api/cli/device-requests/25vjlh52bc");
         (
             200,
-            json!({ "code": "mmg42klgyq", "key": key(1), "expires_at": "x" }),
+            json!({ "code": "25vjlh52bc", "key": ground, "expires_at": "x" }),
         )
     });
     let credential = token(cloud);
     let calls = AtomicUsize::new(0);
-    let code = DeviceCode::parse("mmg42klgyq").unwrap();
-    assert_eq!(key(0).code(), code);
+    let code = CheckCode::parse("25vjl-h52bc-6resv-zf72m").unwrap();
+    assert_eq!(printed.check_code(), code);
 
     let error = approve_with(&credential, code, async |_| {
         calls.fetch_add(1, Ordering::SeqCst);
@@ -274,7 +291,12 @@ async fn a_key_that_does_not_hash_to_the_code_is_refused_before_any_machine() {
     .unwrap_err();
 
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(error.report().message.contains("doesn't match mmg42klgyq"));
+    assert!(
+        error
+            .report()
+            .message
+            .contains("doesn't match 25vjl-h52bc-6resv-zf72m")
+    );
 }
 
 #[tokio::test]
@@ -392,10 +414,12 @@ fn each_device_command_parses_and_reaches_its_connection() {
     .unwrap();
     let connect = format!("unix://{}", socket.display());
     let code = key(0).code().to_string();
+    let check = key(0).check_code().to_string();
     for ((args, handler), via) in [
         (vec!["ls"], list as fn(&ArgMatches) -> Result<(), Error>),
         (vec!["rm", &code], remove),
-        (vec!["approve", &code, "--yes"], super::approve),
+        (vec!["rm", &check], remove),
+        (vec!["approve", &check, "--yes"], super::approve),
     ]
     .into_iter()
     .flat_map(|leaf| {
@@ -430,7 +454,7 @@ fn each_device_command_parses_and_reaches_its_connection() {
             config.to_str().unwrap(),
             "device",
             "approve",
-            &code,
+            &check,
             "--connect",
             &connect,
         ])
@@ -439,7 +463,25 @@ fn each_device_command_parses_and_reaches_its_connection() {
     assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(
         refused.message,
-        format!("Approving device {code} needs confirmation. Nothing changed.")
+        format!("Approving device {check} needs confirmation. Nothing changed.")
+    );
+
+    let by_name = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "--ployz-config",
+            config.to_str().unwrap(),
+            "device",
+            "approve",
+            &code,
+            "--yes",
+        ])
+        .unwrap();
+    let refused = super::approve(&by_name).unwrap_err().report();
+    assert!(
+        refused.message.contains("20 letters and digits 2 to 7"),
+        "{}",
+        refused.message
     );
 }
 

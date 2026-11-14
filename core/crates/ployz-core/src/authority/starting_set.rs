@@ -10,7 +10,7 @@ use super::{
     rule::{RuleStatement, verify_signature},
     trusted_key::TrustedKeys,
 };
-use crate::{DeviceCode, Machine, MachineId, MachineSubnet, OperationId, WireGuardPublicKey};
+use crate::{CheckCode, Machine, MachineId, MachineSubnet, OperationId, WireGuardPublicKey};
 
 /// The parts of a Machine row membership compares. Endpoints and policy may change.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -60,10 +60,10 @@ pub struct StartingSet {
     pub expires_at: Timestamp,
     /// A Device's key writes the same bytes an older daemon read here.
     pub signer: SignerKey,
-    /// Keys added while enforcement was off that the person confirmed by fingerprint, so
-    /// activation keeps them. Absent keeps none.
+    /// Keys added while enforcement was off that the person confirmed by their full code,
+    /// so activation keeps them. Absent keeps none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kept_keys: Vec<DeviceCode>,
+    pub kept_keys: Vec<CheckCode>,
 }
 
 impl Statement for StartingSet {

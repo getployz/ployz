@@ -1,5 +1,6 @@
 //! `ployz device`: the people's keys every Machine admits at Full scope. Cloud relays a
-//! Device's key to the approver, who checks it against the code the Device printed.
+//! Device's key to the approver, who checks it against the code the Device printed: its
+//! [`CheckCode`], which Cloud can't grind a second key to match.
 
 use crate::cluster::{Call, fan_out_entry_last};
 use std::collections::BTreeMap;
@@ -7,10 +8,10 @@ use std::path::Path;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
-    DeviceCode, DeviceKey, DeviceSet, InspectRequest, MachineId, MachineName, MachineTarget,
-    REMOVE_TRUSTED_KEY_CAPABILITY, RemoveTrustedKeyRequest, Rpc, RpcError, RpcErrorCode,
-    SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY, SetDeviceRequest, SetPasskeyRequest,
-    TrustedKeyRemoved,
+    CheckCode, DeviceCode, DeviceKey, DeviceSet, InspectRequest, MachineId, MachineName,
+    MachineTarget, REMOVE_TRUSTED_KEY_CAPABILITY, RemoveTrustedKeyRequest, Rpc, RpcError,
+    RpcErrorCode, SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY, SetDeviceRequest,
+    SetPasskeyRequest, TrustedKeyRemoved,
     authority::{
         Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey,
         trusted_key::{CredentialId, RelyingParty},
@@ -52,7 +53,7 @@ pub(crate) fn approve_command(command: Command) -> Command {
     base(command, "Approve a device or a passkey on every server")
         .after_help(concat!(
             "Examples:\n",
-            "  ployz device approve mmg42klgyq\n",
+            "  ployz device approve mmg42-klgyq-p3w7d-xa5re\n",
             "  ployz device approve --this-device --connect ssh://root@HOST\n",
             "  sudo ployz device approve --passkey hq3vbn5x2c"
         ))
@@ -89,7 +90,11 @@ pub(crate) fn list_command(command: Command) -> Command {
 pub(crate) fn remove_command(command: Command) -> Command {
     base(command, "Remove a device or a passkey from every server")
         .after_help(concat!("Examples:\n", "  ployz device rm mmg42klgyq"))
-        .arg(positional("code", true).help("The device's or passkey's code, from ployz device ls"))
+        .arg(
+            positional("code", true).help(
+                "The device's or passkey's code from ployz device ls, or the device's full code",
+            ),
+        )
 }
 
 pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
@@ -101,7 +106,7 @@ pub(crate) fn request(root: &ArgMatches) -> Result<(), Error> {
     })?;
     let code = requested.code;
     ui::finish(&requested, || {
-        ui::stream(code.as_str());
+        ui::stream(code);
         ui::note(format_args!(
             "Approve it from an approved device, or over SSH on a server:\n  ployz device approve {code}"
         ));
@@ -133,7 +138,7 @@ async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Request
     let code = key.code();
     let body = json!({ "key": key.to_string() });
     let filed =
-        cloud_account::call::<Requested>(credential, Method::POST, "device-requests", Some(&body))
+        cloud_account::call::<Filed>(credential, Method::POST, "device-requests", Some(&body))
             .await?;
     if filed.code != code {
         return Err(Error::conflict(format!(
@@ -142,7 +147,7 @@ async fn request_with(credential: &Credential, key: DeviceKey) -> Result<Request
         )));
     }
     Ok(Requested {
-        code,
+        code: key.check_code(),
         expires_at: filed.expires_at,
     })
 }
@@ -160,11 +165,11 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
             .to_ascii_lowercase();
         return runtime()?.block_on(approve_waiting_join(leaf, &code));
     }
-    let code = typed_code(leaf)?;
     let store = CredentialStore::beside(&config_path(leaf)?);
     if leaf.get_flag("passkey") {
-        return runtime()?.block_on(approve_passkey(leaf, &store, code));
+        return runtime()?.block_on(approve_passkey(leaf, &store, typed_code(leaf)?));
     }
+    let code = CheckCode::parse(typed(leaf))?;
     runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
@@ -228,7 +233,7 @@ async fn approve_this_device(leaf: &ArgMatches) -> Result<(), Error> {
     let key = own_key(&config_path(leaf)?)?;
     ui::note(format_args!(
         "Approving this computer's device {}.",
-        key.code()
+        key.check_code()
     ));
     let request = SetDeviceRequest::Approve { key };
     set_everywhere(&mut client, |client, machine_id| {
@@ -240,7 +245,7 @@ async fn approve_this_device(leaf: &ArgMatches) -> Result<(), Error> {
 
 /// Say what approving the Device `code` grants, and ask. A code copied from a compromised
 /// Ployz Cloud page could name someone else's Device, so the grant is spelled out first.
-fn confirm_device(leaf: &ArgMatches, code: DeviceCode) -> Result<(), Error> {
+fn confirm_device(leaf: &ArgMatches, code: CheckCode) -> Result<(), Error> {
     ui::note(format!(
         "Device {code} gets Full access to every server you approve it on: exec, port-forward, and approving other devices and passkeys."
     ));
@@ -557,7 +562,11 @@ fn left_out_summary(left_out: &[DeviceKey]) -> String {
 
 pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let code = typed_code(leaf)?;
+    let code = typed_code(leaf).or_else(|named| {
+        CheckCode::parse(typed(leaf))
+            .map(|check| check.code())
+            .map_err(|_| named)
+    })?;
     runtime()?.block_on(async {
         let mut client = route::connect_full(leaf, context(leaf)).await?;
         let settled = set_everywhere(&mut client, |client, machine_id| {
@@ -571,7 +580,7 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
 pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let own = key::load(&key::path(&config_path(leaf)?))?.map(|secret| key::public(&secret).code());
+    let own = key::load(&key::path(&config_path(leaf)?))?.map(|secret| key::public(&secret));
     runtime()?.block_on(async {
         let mut client = route::connect(leaf, context(leaf)).await?;
         let reach = Reach::of(&mut client).await?;
@@ -608,10 +617,9 @@ pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
                 KeyKind::Passkey { account } => ("passkey, approve-only", account.as_str()),
             };
             table.row([
-                Cell::from(if Some(device.code) == own {
-                    format!("{} (this computer)", device.code)
-                } else {
-                    device.code.to_string()
+                Cell::from(match own.filter(|own| own.code() == device.code) {
+                    Some(own) => format!("{} (this computer)", own.check_code()),
+                    None => device.code.to_string(),
                 }),
                 Cell::from(kind),
                 Cell::from(account),
@@ -630,15 +638,24 @@ fn context(leaf: &ArgMatches) -> Option<&str> {
     leaf.get_one::<String>("context").map(String::as_str)
 }
 
-fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
-    Ok(DeviceCode::parse(
-        leaf.get_one::<String>("code").expect("code is required"),
-    )?)
+fn typed(leaf: &ArgMatches) -> &str {
+    leaf.get_one::<String>("code").expect("code is required")
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Requested {
+fn typed_code(leaf: &ArgMatches) -> Result<DeviceCode, Error> {
+    Ok(DeviceCode::parse(typed(leaf))?)
+}
+
+/// Cloud's answer to a filed request, which names the request by the key's name.
+#[derive(Deserialize)]
+struct Filed {
     code: DeviceCode,
+    expires_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Requested {
+    code: CheckCode,
     expires_at: String,
 }
 
@@ -647,13 +664,14 @@ struct Pending {
     key: DeviceKey,
 }
 
-/// Fetch the key waiting at `code`, refuse it unless it hashes to `code`, then `set` it.
+/// Fetch the key waiting under `code`'s name, refuse it unless it hashes to all of `code`,
+/// then `set` it.
 async fn approve_with<T>(
     credential: &Credential,
-    code: DeviceCode,
+    code: CheckCode,
     set: impl AsyncFnOnce(SetDeviceRequest) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    let path = format!("device-requests/{code}");
+    let path = format!("device-requests/{}", code.code());
     let pending = match cloud_account::call::<Pending>(credential, Method::GET, &path, None).await {
         Err(LoginError::Status { body, .. })
             if cloud_account::refusal(body.as_bytes())
@@ -666,7 +684,7 @@ async fn approve_with<T>(
         }
         reply => reply?,
     };
-    if pending.key.code() != code {
+    if pending.key.check_code() != code {
         return Err(Error::conflict(format!(
             "The key Ployz Cloud returned doesn't match {code}. Nothing changed."
         )));
