@@ -12,7 +12,7 @@
 //! (:391), which builds the root-backed `ployz` Pool on a backing file. Copy's `first_pool`
 //! takes the same path (volume_plugin/copy.rs:143-157 and `first_pool` in the same file). Meanwhile the disk can go
 //! missing and return, ZFS imports at boot the Pools its cache file lists, and
-//! `local_storage` (ployzd machine/mod.rs:689) reports what `zpool list` shows.
+//! `local_storage` (ployzd machine/mod.rs) reports what `zpool list` shows.
 //!
 //! How ZFS imports at boot comes from a reboot run on Ubuntu 24.04.4 with ZFS 2.2.2 (the
 //! verify-pool-ownership skill's ZFS at boot). Neither `zpool create` sets a cachefile, so
@@ -67,7 +67,7 @@
 //! from the imported Pools alone, so no boot imports `ployz-device` again, and `admit`
 //! returns `ployz` from `one_usable` without reaching `recover` (pool.rs:255-260). And
 //! `local_storage` reads Ready while a recorded device Pool's disk is missing
-//! (machine/mod.rs:708).
+//! (`local_storage`'s no-Pool arm).
 //!
 //! The fix variant keeps the marker's bytes. Before `zpool create`, the installer writes an
 //! intent, a sibling file naming the device. `recover` refuses while an intent's disk is
@@ -180,7 +180,7 @@ impl Plugin {
     }
 }
 
-/// What `local_storage` (ployzd machine/mod.rs:689-717) answered.
+/// What `local_storage` (ployzd machine/mod.rs) answered.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Observed {
     /// `MachineStorageObservation::Ready`: `zpool list` lists no Pool (:710).
@@ -314,7 +314,7 @@ enum Action {
     /// `PoolStorage::create`: the marker check, the backing file, `fallocate`,
     /// `zpool create ployz`, and its `one_usable` (volume_plugin/pool.rs:391-453).
     CreateRoot,
-    /// `local_storage` runs `zpool list` (ployzd machine/mod.rs:689-717), in an installed
+    /// `local_storage` runs `zpool list` (ployzd machine/mod.rs), in an installed
     /// ployzd.
     Observe,
     /// Docker lists Volumes (`VolumeStorage::list`, volume_plugin/removal.rs:100-108) or
@@ -757,7 +757,7 @@ impl PoolOwnership {
         );
     }
 
-    /// `local_storage` (ployzd machine/mod.rs:689-717) over `zpool list`. With no Pool
+    /// `local_storage` (ployzd machine/mod.rs) over `zpool list`. With no Pool
     /// listed, the fix reads None where `recover` would refuse: no importable
     /// `ployz-device`, and the marker, or an intent that is not stale.
     fn observe(&self, state: &mut State) {

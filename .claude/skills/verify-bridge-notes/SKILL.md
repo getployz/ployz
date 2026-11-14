@@ -371,7 +371,7 @@ ROWS   unreached: Docker attaches a detached member it starts on a dynamic addre
 - A `docker` command someone runs on the Machine outside Ployz.
 - Docker's own restart of its containers when the Docker daemon restarts.
 - A corrupt or unreadable note (`stopped.rs:27-43`, `pins.rs:26-42`).
-- `complete_reset`, which removes every `data_dir` file but the state, lock and prepare entries (`core/crates/ployzd/src/machine/store.rs:737-749`).
+- `complete_reset`, which removes every `data_dir` file but the state, lock and prepare entries (`complete_reset` in `core/crates/ployzd/src/machine/store.rs`).
 - Any second Machine.
 
 A green model says nothing about them. Cover the code with:
