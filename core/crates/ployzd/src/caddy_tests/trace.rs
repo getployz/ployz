@@ -305,6 +305,7 @@ fn sites_import_the_trace_page_with_their_facts() {
         format!(
             "http://example.com {{
 \timport ployz_headers {a}
+\timport ployz_client_ip
 \timport ployz_trace {a} dep_7 {a}:2,{b}:1 ok
 \timport ployz_requests app api
 \thandle /.well-known/acme-challenge/ployz-verify {{
@@ -327,6 +328,7 @@ fn sites_import_the_trace_page_with_their_facts() {
         format!(
             "http://empty.example.com {{
 \timport ployz_headers {a}
+\timport ployz_client_ip
 \timport ployz_trace {a} dep_7 {a}:2,{b}:1 NOT_RUNNING
 \timport ployz_requests app api
 \thandle /.well-known/acme-challenge/ployz-verify {{
@@ -343,6 +345,7 @@ fn sites_import_the_trace_page_with_their_facts() {
         format!(
             "http:// {{
 \timport ployz_headers {a}
+\timport ployz_client_ip
 \timport ployz_trace {a} \"\" \"\" NOT_DEPLOYED
 \thandle /.ployz-verify {{
 \t\trespond \"{a}\" 200
@@ -362,6 +365,7 @@ fn sites_import_the_trace_page_with_their_facts() {
         format!(
             "https:// {{
 \timport ployz_headers {a}
+\timport ployz_client_ip
 \timport ployz_trace {a} \"\" \"\" NOT_DEPLOYED
 \terror NOT_DEPLOYED 404
 \timport error_page {a}

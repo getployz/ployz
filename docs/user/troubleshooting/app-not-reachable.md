@@ -143,11 +143,15 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
   it**, Cloudflare's redirect is blocking your certificate. Set the DNS record to **DNS only**,
   or turn off **Always Use HTTPS** and add a redirect rule that sends http to https for every
   path except `/.well-known/acme-challenge/*`.
-- Your app sees the visitor's address, not Cloudflare's, in `X-Forwarded-For`, `X-Real-IP` and
-  `CF-Connecting-IP`. Your servers take it from Cloudflare's `CF-Connecting-IP` header, and only
-  from requests that come from [Cloudflare's addresses](https://www.cloudflare.com/ips/). They
-  replace all three headers before a request reaches your app, so a visitor can't fake their
-  address in any of them.
+- Your app sees the visitor's address, not Cloudflare's, in `X-Forwarded-For` and `X-Real-IP`.
+  Your servers take it from Cloudflare's `CF-Connecting-IP` header, and only from requests that
+  come from [Cloudflare's addresses](https://www.cloudflare.com/ips/). They replace both headers
+  before a request reaches your app, so a visitor can't fake their address in either.
+- `CF-Connecting-IP` reaches your app only on requests that really came through Cloudflare or
+  your Tunnel. Your servers remove it from any other request. Read `X-Forwarded-For` if your app
+  takes traffic both ways. If your app forwards a request's headers to another site behind
+  Cloudflare, drop the `CF-*` headers first: Cloudflare refuses a request that already carries
+  `CF-Connecting-IP` with `403 error code: 1000`.
 
 ## Port 80 is closed
 

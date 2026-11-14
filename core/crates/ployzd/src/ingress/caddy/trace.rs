@@ -94,9 +94,10 @@ impl TraceStatus {
     }
 }
 
-/// `import ployz_headers <id>`: the `ployz-server` and `ployz-request-id` headers.
+/// `import ployz_headers <id>`: the `ployz-server` and `ployz-request-id` headers, and
+/// `import ployz_client_ip`.
 pub(super) fn headers_import(machine: &MachineId) -> String {
-    format!("\timport ployz_headers {machine}\n")
+    format!("\timport ployz_headers {machine}\n\timport ployz_client_ip\n")
 }
 
 /// `import ployz_trace` for a site that answers nothing published.
@@ -144,7 +145,7 @@ fn import(machine: &MachineId, deploy: &str, placement: &str, status: TraceStatu
     )
 }
 
-/// The `ployz_headers` and `ployz_trace` snippets.
+/// The `ployz_headers`, `ployz_client_ip` and `ployz_trace` snippets.
 pub(super) fn write_snippets(output: &mut String) {
     // Deferred, so they replace any same-named header an app sends.
     output.push_str(
@@ -154,6 +155,14 @@ pub(super) fn write_snippets(output: &mut String) {
 \t\t>ployz-request-id {http.request.uuid}\n\
 \t}\n\
 \tlog_append request_id {http.request.uuid}\n\
+}\n\
+\n\
+# Cloudflare refuses a request that already carries CF-Connecting-IP, so an app that forwards\n\
+# its headers to a site behind Cloudflare would fail. Only a trusted peer's header goes through.\n\
+# Site blocks only: a named matcher inside handle_errors would collide with the site's own.\n\
+(ployz_client_ip) {\n\
+\t@ployz_untrusted_peer not vars trusted_proxy true\n\
+\trequest_header @ployz_untrusted_peer -CF-Connecting-IP\n\
 }\n\
 \n",
     );
