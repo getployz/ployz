@@ -1460,14 +1460,16 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
             ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
         ),
-        LocalMachineError::RestartRefused(_) => Err(ployz_core::rpc::hinted_status(
-            tonic::Code::PermissionDenied,
-            &error,
-            serde_json::json!({
-                "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
-                "next": "ployz service restart from an approved device",
-            }),
-        )),
+        LocalMachineError::RestartRefused(_) | LocalMachineError::RestartReachesHost => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
+                    "next": "ployz service restart from an approved device",
+                }),
+            ))
+        }
         LocalMachineError::DeployRefused(_) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
@@ -1475,6 +1477,11 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY,
                 "next": "ployz deploy from an approved device",
             }),
+        )),
+        LocalMachineError::HostnameOwned { capability, .. } => Err(ployz_core::rpc::hinted_status(
+            tonic::Code::PermissionDenied,
+            &error,
+            serde_json::json!({ "capability": capability }),
         )),
         LocalMachineError::RuleDeployRefused(ref refusal) => {
             let details = match refusal.next() {
@@ -1738,11 +1745,12 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         )),
         // Both ask the caller for the doors route, so its capability is named.
         LocalMachineError::UnsupportedDoors
-        | LocalMachineError::Docker(crate::docker::Error::IngressHolderNotRunning) => {
-            Ok(RpcError::invalid_argument(error.to_string()).with_details(
-                serde_json::json!({ "capability": ployz_core::SET_INGRESS_DOORS_CAPABILITY }),
-            ))
-        }
+        | LocalMachineError::Docker(
+            crate::docker::Error::IngressHolderNotRunning
+            | crate::docker::Error::TunnelOriginNotRunning,
+        ) => Ok(RpcError::invalid_argument(error.to_string()).with_details(
+            serde_json::json!({ "capability": ployz_core::SET_INGRESS_DOORS_CAPABILITY }),
+        )),
         LocalMachineError::TunnelTokenMissing => Ok(RpcError::invalid_argument(error.to_string())
             .with_details(
                 serde_json::json!({ "capability": ployz_core::SET_INGRESS_TUNNEL_CAPABILITY }),

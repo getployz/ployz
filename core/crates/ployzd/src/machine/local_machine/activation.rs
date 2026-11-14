@@ -8,9 +8,12 @@
 use std::{io, path::Path};
 
 use ployz_core::{
-    ActivationReport, ActivationState, DeviceCode, DeviceEnforcementSet, DeviceKey, LegacyKey,
-    LocalMachinePhase, Machine, MachineId, OperationId, Sealing, TrustedKeyKind,
-    authority::{Approver, AuthorityRefusal, Member, Signed, StartingSet, Timestamp, starting_set},
+    ActivationReport, ActivationState, CheckCode, DeviceCode, DeviceEnforcementSet, DeviceKey,
+    LegacyKey, LocalMachinePhase, Machine, MachineId, OperationId, Sealing, TrustedKeyKind,
+    authority::{
+        Approver, AuthorityRefusal, Member, Signed, StartingSet, Timestamp, TrustedKeys,
+        starting_set,
+    },
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error as ThisError;
@@ -49,18 +52,37 @@ pub(crate) struct PendingActivation {
     pub(crate) signer: DeviceCode,
     pub(crate) signer_evidence: Evidence,
     #[serde(default)]
-    pub(crate) kept_keys: Vec<DeviceCode>,
+    pub(crate) kept_keys: Vec<CheckCode>,
 }
 
 impl PendingActivation {
-    /// The keys the commit puts in the snapshot: the signer, and each key the person
-    /// confirmed by fingerprint.
-    pub(crate) fn kept(&self) -> impl Iterator<Item = (DeviceCode, Evidence)> + '_ {
+    /// The keys the commit puts in the snapshot: the signer, and each key of `held` whose
+    /// full code the person confirmed. A key held under a kept name with another full code
+    /// stays out.
+    pub(crate) fn kept(
+        &self,
+        held: &TrustedKeys,
+    ) -> impl Iterator<Item = (DeviceCode, Evidence)> + use<> {
         let kept = Evidence::Activation {
             operation: self.operation,
         };
-        std::iter::once((self.signer, self.signer_evidence))
-            .chain(self.kept_keys.iter().map(move |code| (*code, kept)))
+        let held: Vec<CheckCode> = held
+            .devices
+            .iter()
+            .map(DeviceKey::check_code)
+            .chain(
+                held.passkeys
+                    .iter()
+                    .map(|trusted| trusted.passkey.public_key.check_code()),
+            )
+            .collect();
+        let confirmed: Vec<_> = self
+            .kept_keys
+            .iter()
+            .filter(|code| held.contains(code))
+            .map(|code| (code.code(), kept))
+            .collect();
+        std::iter::once((self.signer, self.signer_evidence)).chain(confirmed)
     }
 
     pub(crate) fn read(data_dir: &Path) -> io::Result<Option<Self>> {
@@ -211,7 +233,7 @@ impl LocalMachine {
                                 .into_iter()
                                 .find(|legacy| body.kept_keys.contains(&legacy.code))
                             {
-                                return Err(refused(Refusal::LegacyKey(kept.code)));
+                                return Err(refused(Refusal::LegacyKey(kept.code.code())));
                             }
                             if let Some(member) = legacy_member(record, &body, &rows, cluster) {
                                 return Err(refused(Refusal::LegacyMember(member)));
@@ -318,10 +340,9 @@ fn legacy_keys(record: &LocalMachineRecord) -> Vec<LegacyKey> {
     let held = record.held_keys();
     held.devices
         .iter()
-        .map(DeviceKey::code)
-        .filter(|code| !evidenced(*code))
-        .map(|code| LegacyKey {
-            code,
+        .filter(|key| !evidenced(key.code()))
+        .map(|key| LegacyKey {
+            code: key.check_code(),
             kind: TrustedKeyKind::Device,
             account: None,
         })
@@ -330,7 +351,7 @@ fn legacy_keys(record: &LocalMachineRecord) -> Vec<LegacyKey> {
                 .iter()
                 .filter(|trusted| !evidenced(trusted.passkey.code()))
                 .map(|trusted| LegacyKey {
-                    code: trusted.passkey.code(),
+                    code: trusted.passkey.public_key.check_code(),
                     kind: TrustedKeyKind::Passkey,
                     account: Some(trusted.passkey.account.to_string()),
                 }),

@@ -701,12 +701,7 @@ fn cluster_with_a_held_peer(
         volumes: BTreeMap::from([(docker("app-prod_data"), bytes)]),
         copies: BTreeMap::from([(
             docker("app-prod_logs"),
-            ployz_core::ProvisionedCopy {
-                role: ployz_core::CopyRole::Slot,
-                maximum_bytes: bytes,
-                used_bytes: 0,
-                slot_role: None,
-            },
+            ployz_core::ProvisionedCopy::new(ployz_core::CopyPlace::Slot(None), bytes, 0),
         )]),
     });
     (description, peer, service)

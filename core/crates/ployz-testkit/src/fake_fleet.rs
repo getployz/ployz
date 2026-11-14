@@ -25,15 +25,15 @@ use ployz_core::{
     CapabilityAdvertisement, ClusterDoorsDeclared, ContainerDetails, ContainerId, ContainerKind,
     ContainerList, ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
-    ContractDescription, CopyRole, CopyRotation, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnrollmentSnapshot, EnsuredContainer,
-    HealthObservation, HistoryContainer, HistoryContainerKind, HistoryRow, HistoryStream,
-    IngressDoors, IngressDoorsSet, LiveLogTarget, LocalMachinePhase, LogBody, LogDirection,
-    LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, Machine, MachineDetails, MachineId,
-    MachineList, MachineName, MachineObservation, MachinePath, MachineRelease, MachineRpc,
-    MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome, MachineVersion,
-    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, PrivateAccessSet,
-    ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
+    ContractDescription, CopyPlace, CopyRole, CopyRotation, DockerVolume, DockerVolumeId,
+    DockerVolumeName, DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnrollmentSnapshot,
+    EnsuredContainer, HealthObservation, HistoryContainer, HistoryContainerKind, HistoryRow,
+    HistoryStream, IngressDoors, IngressDoorsSet, LiveLogTarget, LocalMachinePhase, LogBody,
+    LogDirection, LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, Machine, MachineDetails,
+    MachineId, MachineList, MachineName, MachineObservation, MachinePath, MachineRelease,
+    MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome,
+    MachineVersion, MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    PrivateAccessSet, ProvisionedCopy, ProvisionedVolumeMaximumBytes, QualifiedService,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge, RoutedAddresses,
     RoutesRead, RoutingRequest, RpcError, RpcRequestBody, RpcResponse, RunTarget,
     RuntimeWatchFrame, ServiceId, ServiceName, SetPrivateAccessRequest, SlotId, SlotRole,
@@ -1405,12 +1405,7 @@ impl MachineState {
                 .map(|copy| {
                     (
                         copy.name.clone(),
-                        ProvisionedCopy {
-                            role: copy.role,
-                            maximum_bytes: maximum,
-                            used_bytes: USED_BYTES,
-                            slot_role: None,
-                        },
+                        ProvisionedCopy::new(CopyPlace::of(copy.role, None), maximum, USED_BYTES),
                     )
                 })
                 .collect(),

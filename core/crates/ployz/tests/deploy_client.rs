@@ -1219,13 +1219,14 @@ async fn deletion_review_holds_a_mirror_slot_as_the_server_keeping_it() {
     let service = DeployService::new(machine('a', "one"));
     let copies = Arc::clone(&service.copies);
     let (address, server) = listening(service).await;
-    let copy = |role| ProvisionedCopy {
-        role,
-        maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
-            NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
-        ),
-        used_bytes: 0,
-        slot_role: None,
+    let copy = |role| {
+        ProvisionedCopy::new(
+            ployz_core::CopyPlace::of(role, None),
+            ployz_core::ProvisionedVolumeMaximumBytes::new(
+                NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
+            ),
+            0,
+        )
     };
     let name = |suffix: &str| DockerVolumeName::parse(format!("shop-production_{suffix}")).unwrap();
     copies.lock().unwrap().extend([

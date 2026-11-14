@@ -23,7 +23,7 @@ use ployz_core::MachineGateway;
 
 use crate::{
     docker_image::{ImagePull, prepare_image},
-    network::DOCKER_NETWORK_NAME,
+    network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME},
 };
 
 use super::{
@@ -33,8 +33,6 @@ use super::{
     error::{Status, classify, docker_error},
     spec_store::ConfigOperation,
 };
-
-const CONTAINER_NAME_ATTEMPTS: u8 = 4;
 
 /// How a Container leaves through [`ContainerRuntime::retire`].
 pub(super) enum How {
@@ -53,8 +51,8 @@ pub(crate) struct ContainerCreated {
 
 /// Resolved container inputs shared by every Machine-local creation entry path.
 pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
-    /// Optional identity of this currently existing creation.
-    pub(crate) creation_key: Option<&'spec str>,
+    /// Identity of this currently existing creation.
+    pub(crate) creation_key: &'spec str,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
     pub(crate) r#gen: Gen,
     /// How creation obtains the image.
@@ -74,7 +72,7 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
 /// A request once admission has consumed its futures: what the rest of creation reads.
 struct Creating<'a> {
     machine: &'a Machine,
-    creation_key: Option<&'a str>,
+    creation_key: &'a str,
     deployment_id: Option<&'a ployz_core::DeploymentLogId>,
     r#gen: Gen,
     image: ImagePull<'a>,
@@ -97,7 +95,7 @@ impl ContainerRuntime {
         self.create_with_admission(
             &machine,
             ContainerRequest {
-                creation_key: None,
+                creation_key: &format!("test:{}", MachineId::random()),
                 deployment_id: None,
                 r#gen: Gen::FIRST,
                 image: ImagePull::Policy(None),
@@ -137,11 +135,11 @@ impl ContainerRuntime {
             admission,
             storage,
         } = request;
-        if let Some(key) = creation_key {
+        {
             // Wait for an in-flight create to persist its spec before comparing a retry.
             let mut operation = self.specs.config_operation().await;
             if let Some(existing) = self
-                .matching_creation(&mut operation, machine, namespace, kind, spec, key)
+                .matching_creation(&mut operation, machine, namespace, kind, spec, creation_key)
                 .await
                 .map_err(E::from)?
             {
@@ -204,10 +202,16 @@ impl ContainerRuntime {
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
-        if let Some(key) = creation_key
-            && let Some(existing) = self
-                .matching_creation(&mut config_operation, machine, namespace, kind, spec, key)
-                .await?
+        if let Some(existing) = self
+            .matching_creation(
+                &mut config_operation,
+                machine,
+                namespace,
+                kind,
+                spec,
+                creation_key,
+            )
+            .await?
         {
             return Ok(existing);
         }
@@ -250,10 +254,19 @@ impl ContainerRuntime {
         let network = match spec.container.network {
             None => CreationNetwork::Bridge,
             Some(ServiceNetwork::IngressHolder) => CreationNetwork::Holder(
-                self.running_holder()
+                self.running_door(Door::Holder)
                     .await?
                     .ok_or(Error::IngressHolderNotRunning)?,
             ),
+            Some(ServiceNetwork::TunnelOrigin) => CreationNetwork::Holder(
+                self.running_door(Door::TunnelOrigin)
+                    .await?
+                    .ok_or(Error::TunnelOriginNotRunning)?,
+            ),
+            Some(ServiceNetwork::Tunnel) => {
+                self.docker.ensure_tunnel_network().await?;
+                CreationNetwork::Tunnel
+            }
             Some(ServiceNetwork::Unrecognized) => return Err(Error::UnrecognizedNetwork),
         };
         let mut body = create::container_create_body(
@@ -267,8 +280,7 @@ impl ContainerRuntime {
         )?;
         create::ingress_sysctls(
             &mut body,
-            namespace,
-            spec,
+            Door::of_service(namespace, &spec.name),
             std::path::Path::new("/proc/sys")
                 .join(create::TCP_MIGRATE_REQ.replace('.', "/"))
                 .exists(),
@@ -276,14 +288,13 @@ impl ContainerRuntime {
         labels::stamp_run(
             body.labels.get_or_insert_default(),
             deployment_id,
-            creation_key,
+            Some(creation_key),
             r#gen,
         );
         Ok(body)
     }
 
-    /// Creates the Container, under its slot's name when it has a key, then writes its
-    /// spec. A Container with no spec is removed again, so none outlives a failed write.
+    /// Creates the Container under its slot's name, then writes its spec. A Container with no spec is removed again, so none outlives a failed write.
     async fn create_and_record(
         &self,
         creating: &Creating<'_>,
@@ -298,31 +309,26 @@ impl ContainerRuntime {
             spec,
             ..
         } = *creating;
-        let (created, display_name) = match creation_key {
-            Some(key) => {
-                let display_name = creation_name(&machine.id, namespace, &spec.name, kind, key);
-                let options = CreateContainerOptionsBuilder::default()
-                    .name(&display_name)
-                    .build();
-                match self.docker.create_container(Some(options), body).await {
-                    Ok(created) => (created, display_name),
-                    Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
-                        return self
-                            .matching_creation(
-                                config_operation,
-                                machine,
-                                namespace,
-                                kind,
-                                spec,
-                                key,
-                            )
-                            .await?
-                            .ok_or(Error::SlotNameOccupied(display_name));
-                    }
-                    Err(error) => return Err(error),
-                }
+        let display_name = creation_name(&machine.id, namespace, &spec.name, kind, creation_key);
+        let options = CreateContainerOptionsBuilder::default()
+            .name(&display_name)
+            .build();
+        let created = match self.docker.create_container(Some(options), body).await {
+            Ok(created) => created,
+            Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
+                return self
+                    .matching_creation(
+                        config_operation,
+                        machine,
+                        namespace,
+                        kind,
+                        spec,
+                        creation_key,
+                    )
+                    .await?
+                    .ok_or(Error::SlotNameOccupied(display_name));
             }
-            None => self.create_unkeyed(kind, spec, body).await?,
+            Err(error) => return Err(error),
         };
         let container_id =
             ContainerId::parse(created.id).map_err(|source| Error::InvalidValue {
@@ -331,12 +337,8 @@ impl ContainerRuntime {
             })?;
         // A daemon killed here leaves a Container no spec describes.
         crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
-        let slot =
-            creation_key.map(|key| super::spec_store::CreationSlot::new(namespace, kind, key));
-        if let Err(error) = config_operation
-            .put(&container_id, slot.as_ref(), spec)
-            .await
-        {
+        let slot = super::spec_store::CreationSlot::new(namespace, kind, creation_key);
+        if let Err(error) = config_operation.put(&container_id, Some(&slot), spec).await {
             self.remove_if_present(&container_id).await?;
             return Err(error.into());
         }
@@ -344,36 +346,6 @@ impl ContainerRuntime {
             container_id,
             display_name,
         })
-    }
-
-    /// Creates a Container under a random name, retrying a name Docker already holds.
-    async fn create_unkeyed(
-        &self,
-        kind: ContainerKind,
-        spec: &ResolvedServiceSpec,
-        body: ContainerCreateBody,
-    ) -> Result<(bollard::models::ContainerCreateResponse, String), Error> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let suffix = MachineId::random().as_str()[..4].to_owned();
-            let display_name = match kind {
-                ContainerKind::ServiceContainer => format!("{}-{suffix}", spec.name),
-                ContainerKind::PreDeployHook => format!("{}-pre-deploy-{suffix}", spec.name),
-            };
-            let options = CreateContainerOptionsBuilder::default()
-                .name(&display_name)
-                .build();
-            match self
-                .docker
-                .create_container(Some(options), body.clone())
-                .await
-            {
-                Ok(created) => break Ok((created, display_name)),
-                Err(Error::Docker(error)) if retry_name_conflict(attempt, &error) => {}
-                Err(error) => break Err(error),
-            }
-        }
     }
 
     /// The Container an earlier create under `key` left behind, so a resend adopts it
@@ -593,22 +565,12 @@ impl ContainerRuntime {
         container_id: &ContainerId,
         inspected: &ContainerInspectResponse,
     ) -> Result<(), Error> {
-        if lost_ployz_network(inspected)
-            && let Err(error) = self
-                .docker
-                .join_bridge(
-                    container_id,
-                    inspected
-                        .config
-                        .as_ref()
-                        .and_then(|config| config.labels.as_ref())
-                        .is_some_and(super::takes_bridge_ipv6),
-                )
-                .await
+        if let Some(network) = lost_network(inspected)
+            && let Err(error) = self.rejoin(container_id, network, inspected).await
             // A concurrent start may have attached it first.
-            && lost_ployz_network(&self.ensure_managed(container_id).await?)
+            && lost_network(&self.ensure_managed(container_id).await?).is_some()
         {
-            return Err(docker_error(container_id, error));
+            return Err(error);
         }
         let result = self
             .docker
@@ -616,6 +578,38 @@ impl ContainerRuntime {
             .start_container(container_id.as_str(), None)
             .await;
         idempotent_lifecycle_result(container_id, result)
+    }
+
+    /// Attach a Container to the network a failed start took from it. The Tunnel
+    /// Origin's network is checked as at creation, so it never joins one the firewall
+    /// doesn't fence.
+    async fn rejoin(
+        &self,
+        container_id: &ContainerId,
+        network: &str,
+        inspected: &ContainerInspectResponse,
+    ) -> Result<(), Error> {
+        let joined = if network == DOCKER_NETWORK_NAME {
+            let ipv6 = inspected
+                .config
+                .as_ref()
+                .and_then(|config| config.labels.as_ref())
+                .is_some_and(super::takes_bridge_ipv6);
+            self.docker.join_bridge(container_id, ipv6).await
+        } else {
+            self.docker.ensure_tunnel_network().await?;
+            self.docker
+                .client
+                .connect_network(
+                    network,
+                    NetworkConnectRequest {
+                        container: container_id.to_string(),
+                        endpoint_config: None,
+                    },
+                )
+                .await
+        };
+        joined.map_err(|error| docker_error(container_id, error))
     }
 
     /// Carry out one Ingress door recovery, unless a request stopped its Container or
@@ -688,15 +682,15 @@ impl ContainerRuntime {
                 self.start_inspected(caddy, &inspected).await?;
                 Ok(true)
             }
-            IngressRecovery::RejoinCaddy { holder, caddy } => {
-                let holder_now = self.ensure_managed(holder).await?;
-                let caddy_now = self.ensure_managed(caddy).await?;
-                let stale = match (doors::netns_of(&holder_now), doors::netns_of(&caddy_now)) {
-                    (Some(holder_ns), Some(caddy_ns)) => holder_ns != caddy_ns,
+            IngressRecovery::Rejoin { owner, joined } => {
+                let owner_now = self.ensure_managed(owner).await?;
+                let joined_now = self.ensure_managed(joined).await?;
+                let stale = match (doors::netns_of(&owner_now), doors::netns_of(&joined_now)) {
+                    (Some(owner_ns), Some(joined_ns)) => owner_ns != joined_ns,
                     _ => false,
                 };
                 if !stale
-                    || doors::joined_to(&caddy_now) != Some(*holder)
+                    || doors::joined_to(&joined_now) != Some(*owner)
                     || !self.docker.created_nothing_since(creates)
                 {
                     return Ok(false);
@@ -706,11 +700,11 @@ impl ContainerRuntime {
                 let result = self
                     .docker
                     .client
-                    .stop_container(caddy.as_str(), None)
+                    .stop_container(joined.as_str(), None)
                     .await;
-                idempotent_lifecycle_result(caddy, result)?;
-                let inspected = self.ensure_managed(caddy).await?;
-                self.start_inspected(caddy, &inspected).await?;
+                idempotent_lifecycle_result(joined, result)?;
+                let inspected = self.ensure_managed(joined).await?;
+                self.start_inspected(joined, &inspected).await?;
                 Ok(true)
             }
         }
@@ -816,12 +810,13 @@ impl ContainerRuntime {
         self.departing
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let mut config_operation = self.specs.config_operation().await;
-        // A Caddy in a holder's network goes before the holder, so no Container is ever
-        // left in a removed Container's network.
+        // A Caddy in a holder's network goes before the holder, and a connector before
+        // its Tunnel Origin, so no Container is ever left in a removed Container's
+        // network.
         let mut managed = self.docker.managed_containers().await?;
         managed.sort_by_key(|(_, labels)| {
             ServiceLabels::parse(labels)
-                .is_ok_and(|managed| Door::of(&managed.identity) == Some(Door::Holder))
+                .is_ok_and(|managed| Door::of(&managed.identity).is_some_and(Door::owns_netns))
         });
         for (container_id, _) in managed {
             self.retire(&mut config_operation, &container_id, How::Departing)
@@ -1034,10 +1029,6 @@ fn idempotent_lifecycle_result(
     }
 }
 
-fn retry_name_conflict(attempt: u8, error: &bollard::errors::Error) -> bool {
-    attempt < CONTAINER_NAME_ATTEMPTS && classify(error) == Status::Conflict
-}
-
 pub(crate) fn same_creation(
     observed: &ContainerObservation,
     namespace: &Namespace,
@@ -1131,19 +1122,24 @@ pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
 
 /// Docker 29 empties a container's networks when its start fails, and a later start
 /// then runs it with no network and no published ports. A Container in another's
-/// network has none to lose.
-fn lost_ployz_network(inspected: &ContainerInspectResponse) -> bool {
-    let created_on_ployz = inspected
+/// network has none to lose. Answers the network a Container on the `ployz` bridge
+/// or a Tunnel Origin lost.
+fn lost_network(inspected: &ContainerInspectResponse) -> Option<&'static str> {
+    let network = match inspected
         .host_config
         .as_ref()
         .and_then(|host| host.network_mode.as_deref())
-        == Some(DOCKER_NETWORK_NAME);
+    {
+        Some(DOCKER_NETWORK_NAME) => DOCKER_NETWORK_NAME,
+        Some(TUNNEL_NETWORK_NAME) => TUNNEL_NETWORK_NAME,
+        _ => return None,
+    };
     let attached = inspected
         .network_settings
         .as_ref()
         .and_then(|settings| settings.networks.as_ref())
-        .is_some_and(|networks| networks.contains_key(DOCKER_NETWORK_NAME));
-    created_on_ployz && !attached
+        .is_some_and(|networks| networks.contains_key(network));
+    (!attached).then_some(network)
 }
 
 #[cfg(test)]
@@ -1163,26 +1159,37 @@ mod tests {
 
     #[test]
     fn a_container_whose_failed_start_dropped_its_network_gets_it_back() {
-        assert!(lost_ployz_network(&inspected(
-            "ployz",
-            serde_json::json!({})
-        )));
-        assert!(lost_ployz_network(&inspected(
-            "ployz",
-            serde_json::json!({ "bridge": {} })
-        )));
+        assert_eq!(
+            lost_network(&inspected("ployz", serde_json::json!({}))),
+            Some("ployz")
+        );
+        assert_eq!(
+            lost_network(&inspected("ployz", serde_json::json!({ "bridge": {} }))),
+            Some("ployz")
+        );
+        assert_eq!(
+            lost_network(&inspected("ployz-tunnel", serde_json::json!({}))),
+            Some("ployz-tunnel")
+        );
     }
 
     #[test]
     fn an_attached_or_differently_networked_container_is_left_alone() {
-        assert!(!lost_ployz_network(&inspected(
-            "ployz",
-            serde_json::json!({ "ployz": {} })
-        )));
-        assert!(!lost_ployz_network(&inspected(
-            "host",
-            serde_json::json!({})
-        )));
+        assert_eq!(
+            lost_network(&inspected("ployz", serde_json::json!({ "ployz": {} }))),
+            None
+        );
+        assert_eq!(
+            lost_network(&inspected(
+                "ployz-tunnel",
+                serde_json::json!({ "ployz-tunnel": {} })
+            )),
+            None
+        );
+        assert_eq!(
+            lost_network(&inspected("host", serde_json::json!({}))),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1223,7 +1230,7 @@ mod tests {
 
     async fn stamped_labels(
         kind: ContainerKind,
-        creation_key: Option<&str>,
+        creation_key: &str,
         deployment_id: Option<&ployz_core::DeploymentLogId>,
         generation: Gen,
     ) -> serde_json::Value {
@@ -1269,7 +1276,7 @@ mod tests {
         };
         let service = stamped_labels(
             ContainerKind::ServiceContainer,
-            Some("plan:0"),
+            "plan:0",
             Some(&deployment),
             Gen::new(3),
         )
@@ -1286,7 +1293,7 @@ mod tests {
                 "ployz.gen": "3",
             })
         );
-        let hook = stamped_labels(ContainerKind::PreDeployHook, None, None, Gen::FIRST).await;
+        let hook = stamped_labels(ContainerKind::PreDeployHook, "plan:1", None, Gen::FIRST).await;
         assert_eq!(
             without_service_id(hook),
             serde_json::json!({
@@ -1295,6 +1302,7 @@ mod tests {
                 "ployz.service.name": "api",
                 "ployz.service.hook": "pre-deploy",
                 "ployz.network.ipv6": "true",
+                "ployz.creation.key": "plan:1",
                 "ployz.gen": Gen::FIRST.to_string(),
             })
         );
@@ -1316,7 +1324,7 @@ mod tests {
             .create_with_admission::<_, _, Error>(
                 &machine,
                 ContainerRequest {
-                    creation_key: Some("plan:0"),
+                    creation_key: "plan:0",
                     ..container_request(
                         ContainerKind::ServiceContainer,
                         &namespace,
@@ -1400,7 +1408,7 @@ mod tests {
                 .unwrap();
         }
         let request = || ContainerRequest {
-            creation_key: Some("plan:0"),
+            creation_key: "plan:0",
             ..container_request(
                 ContainerKind::ServiceContainer,
                 &namespace,
@@ -1473,6 +1481,7 @@ mod tests {
     }
 
     /// A Container the create under `key` left, with no spec and Docker state `status`.
+    /// With no key it is one made before creations were keyed, so it carries no key label.
     async fn specless(
         key: Option<&'static str>,
         status: &str,
@@ -1499,7 +1508,7 @@ mod tests {
             .create_with_admission::<_, _, Error>(
                 &machine,
                 ContainerRequest {
-                    creation_key: key,
+                    creation_key: key.unwrap_or("legacy"),
                     ..container_request(
                         ContainerKind::ServiceContainer,
                         &namespace,
@@ -1519,6 +1528,13 @@ mod tests {
             .unwrap();
         for container in containers.lock().unwrap().values_mut() {
             container["State"] = serde_json::json!({ "Status": status });
+            if key.is_none() {
+                container
+                    .pointer_mut("/Config/Labels")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .unwrap()
+                    .remove(labels::CREATION_KEY);
+            }
         }
         (
             runtime,
@@ -2062,7 +2078,7 @@ mod tests {
     async fn a_container_created_since_the_scan_voids_the_start() {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
         let creates = runtime.docker.creates();
-        let stranded = fake.existing_container.lock().unwrap().clone();
+        let stranded = fake.existing_container.lock().unwrap().take();
         runtime
             .create_with_admission::<_, _, Error>(
                 &machine(),
@@ -2153,6 +2169,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tunnel_origin_whose_failed_start_dropped_its_network_rejoins_it_before_starting() {
+        let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
+        *fake
+            .existing_container
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|container| container.pointer_mut("/HostConfig/NetworkMode"))
+            .unwrap() = TUNNEL_NETWORK_NAME.into();
+
+        runtime.start(&container_id).await.unwrap();
+
+        let posts: Vec<String> = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == axum::http::Method::POST)
+            .map(|(_, path)| path.clone())
+            .collect();
+        let joined = posts
+            .iter()
+            .position(|path| path.ends_with(&format!("/networks/{TUNNEL_NETWORK_NAME}/connect")));
+        let started = posts.iter().position(|path| path.ends_with("/start"));
+        assert!(
+            joined.is_some() && joined < started,
+            "it must be back on its fenced bridge before it runs: {posts:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_start_that_races_another_for_the_network_still_starts() {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
         fake.connect_raced
@@ -2161,22 +2208,6 @@ mod tests {
         runtime.start(&container_id).await.unwrap();
 
         assert!(started(&fake));
-    }
-
-    #[test]
-    fn name_conflicts_retry_with_a_fresh_four_character_suffix() {
-        let conflict = bollard::errors::Error::DockerResponseServerError {
-            status_code: 409,
-            message: "name already in use".into(),
-        };
-        let server_error = bollard::errors::Error::DockerResponseServerError {
-            status_code: 500,
-            message: "failed".into(),
-        };
-
-        assert!(retry_name_conflict(1, &conflict));
-        assert!(!retry_name_conflict(CONTAINER_NAME_ATTEMPTS, &conflict));
-        assert!(!retry_name_conflict(1, &server_error));
     }
 
     #[tokio::test]
@@ -2229,7 +2260,7 @@ mod tests {
             .create_with_admission::<_, _, Error>(
                 &machine(),
                 ContainerRequest {
-                    creation_key: Some("plan:0"),
+                    creation_key: "plan:0",
                     ..container_request(
                         ContainerKind::ServiceContainer,
                         &namespace,

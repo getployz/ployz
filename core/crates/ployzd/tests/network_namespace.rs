@@ -17,6 +17,8 @@ const LAN: &str = "192.168.77.2";
 const METADATA: &str = "169.254.169.254";
 const INTERNET: &str = "198.51.100.2";
 const PUBLIC: &str = "203.0.113.1";
+/// One of the addresses Cloudflare's edge discovery answers.
+const EDGE: &str = "198.41.192.7";
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
@@ -546,8 +548,14 @@ fn build_steps_reach_the_internet_and_dns_but_never_the_host_or_the_lan() {
 
     apply_in_namespace(&host, "10.210.1.0/24", "fdcc::1");
     assert_eq!(
-        rules(&host, "mangle", "FORWARD"),
-        ["-A FORWARD -i ployz-build+ -j PLOYZ-BUILD-FORWARD"],
+        rules(&host, "mangle", "FORWARD")
+            .into_iter()
+            .filter(|rule| rule.contains(" -i "))
+            .collect::<Vec<_>>(),
+        [
+            "-A FORWARD -i ployz-build+ -j PLOYZ-BUILD-FORWARD",
+            "-A FORWARD -i ployz-tunnel -j PLOYZ-TUNNEL-FORWARD",
+        ],
         "a loose rule survived"
     );
     for address in ["10.10.0.1", "10.210.1.1"] {
@@ -591,6 +599,176 @@ fn build_steps_reach_the_internet_and_dns_but_never_the_host_or_the_lan() {
     assert_eq!(published.peer(), "10.10.0.2");
     let _published = stream_server(&service, "10.210.1.2", 51505);
     assert_connection_denied(&step, "10.10.0.2", "192.168.77.1", 51504);
+}
+
+/// The Tunnel Connector dials whatever origin its tunnel's routes name, and a
+/// remotely managed tunnel takes those routes from Cloudflare, not from the daemon.
+/// Each origin a hostile route could name is dialled here from the connector's own
+/// bridge: only DNS and Cloudflare's edge answer.
+#[test]
+#[ignore = "requires passwordless sudo and Linux network namespaces"]
+fn the_tunnel_connector_reaches_dns_and_the_cloudflare_edge_but_no_origin_a_route_names() {
+    sudo(&["-n", "true"]);
+    let suffix = std::process::id();
+    let host = format!("p35-th-{suffix}");
+    let connector = format!("p35-tc-{suffix}");
+    let service = format!("p35-ts-{suffix}");
+    let mesh = format!("p35-tm-{suffix}");
+    let lan = format!("p35-tl-{suffix}");
+    let _namespaces = Namespaces::new([&host, &connector, &service, &mesh, &lan]);
+    for (outside, inside, namespace, name) in [
+        ("th-tunnel", "tc-if", &connector, "ployz-tunnel"),
+        ("th-svc", "ts-if", &service, "ployz"),
+        ("th-wg", "tm-if", &mesh, "ployz-wg"),
+        ("th-lan", "tl-if", &lan, "host-lan"),
+    ] {
+        sudo(&[
+            "ip", "link", "add", outside, "type", "veth", "peer", "name", inside,
+        ]);
+        sudo(&["ip", "link", "set", outside, "netns", &host]);
+        sudo(&["ip", "link", "set", inside, "netns", namespace]);
+        ns(&host, "ip", &["link", "set", outside, "name", name]);
+    }
+    for namespace in [&host, &connector, &service, &mesh, &lan] {
+        ns(namespace, "ip", &["link", "set", "lo", "up"]);
+    }
+    for (namespace, interface, address, gateway) in [
+        (&connector, "tc-if", "10.20.0.2/24", "10.20.0.1"),
+        (&service, "ts-if", "10.210.1.2/24", "10.210.1.1"),
+        (&mesh, "tm-if", "10.210.2.2/24", "10.210.2.1"),
+        (&lan, "tl-if", "192.168.77.2/24", "192.168.77.1"),
+    ] {
+        configure_link(namespace, interface, address);
+        ns(
+            namespace,
+            "ip",
+            &["route", "add", "default", "via", gateway],
+        );
+    }
+    for (interface, address) in [
+        ("ployz-tunnel", "10.20.0.1/24"),
+        ("ployz", "10.210.1.1/24"),
+        ("ployz-wg", "10.210.2.1/24"),
+        ("host-lan", "192.168.77.1/24"),
+    ] {
+        configure_link(&host, interface, address);
+    }
+    for address in [METADATA, INTERNET, EDGE] {
+        ns(
+            &lan,
+            "ip",
+            &["address", "add", &format!("{address}/32"), "dev", "tl-if"],
+        );
+        ns(
+            &host,
+            "ip",
+            &["route", "add", &format!("{address}/32"), "via", LAN],
+        );
+    }
+    ns(
+        &host,
+        "ip",
+        &["address", "add", &format!("{PUBLIC}/32"), "dev", "lo"],
+    );
+    ns(&host, "sysctl", &["-q", "-w", "net.ipv4.ip_forward=1"]);
+    ns(&host, "iptables", &["-N", "DOCKER-USER"]);
+    ns(
+        &host,
+        "iptables",
+        &["-I", "FORWARD", "1", "-j", "DOCKER-USER"],
+    );
+    // A port the host publishes, the way Docker publishes Caddy's 443 or a Service's port.
+    ns(
+        &host,
+        "iptables",
+        &[
+            "-t",
+            "nat",
+            "-A",
+            "PREROUTING",
+            "-d",
+            PUBLIC,
+            "-p",
+            "tcp",
+            "--dport",
+            "51504",
+            "-j",
+            "DNAT",
+            "--to-destination",
+            "10.210.1.2:51505",
+        ],
+    );
+
+    // Each origin a hostile route could name: the host on its bridge, overlay and
+    // public addresses, a Container on the ployz bridge (Caddy, the Private Access
+    // router, any Service), a peer across the mesh, the LAN, a metadata service, the
+    // internet, and Cloudflare itself on a port that isn't the edge's.
+    let origins = [
+        (&host, "10.20.0.1"),
+        (&host, "10.210.1.1"),
+        (&host, PUBLIC),
+        (&service, "10.210.1.2"),
+        (&mesh, "10.210.2.2"),
+        (&lan, LAN),
+        (&lan, METADATA),
+        (&lan, INTERNET),
+    ];
+    for (namespace, address) in origins {
+        let mut before = stream_server(namespace, address, 51503);
+        connect(&connector, "10.20.0.2", address, 51503);
+        assert_eq!(
+            before.peer(),
+            "10.20.0.2",
+            "{address} was out of reach unfenced"
+        );
+    }
+
+    apply_in_namespace(&host, "10.210.1.0/24", "fdcc::1");
+
+    for (namespace, address) in origins {
+        let _server = stream_server(namespace, address, 51503);
+        assert_connection_denied(&connector, "10.20.0.2", address, 51503);
+    }
+    let _server = stream_server(&lan, EDGE, 443);
+    assert_connection_denied(&connector, "10.20.0.2", EDGE, 443);
+    let _published = stream_server(&service, "10.210.1.2", 51505);
+    assert_connection_denied(&connector, "10.20.0.2", PUBLIC, 51504);
+    for (namespace, address) in [
+        (&host, "10.20.0.1"),
+        (&host, "10.210.1.1"),
+        (&service, "10.210.1.2"),
+        (&mesh, "10.210.2.2"),
+    ] {
+        let mut dns = datagram_server(namespace, address, 53);
+        send_datagram(&connector, "10.20.0.2", address, 53);
+        assert_eq!(
+            dns.peer_within(2),
+            None,
+            "DNS reached {address} on this Machine or the mesh"
+        );
+    }
+
+    let mut edge = stream_server(&lan, EDGE, 7844);
+    connect(&connector, "10.20.0.2", EDGE, 7844);
+    assert_eq!(edge.peer(), "10.20.0.2", "the edge's TCP was dropped");
+    let mut edge = datagram_server(&lan, EDGE, 7844);
+    send_datagram(&connector, "10.20.0.2", EDGE, 7844);
+    assert_eq!(
+        edge.peer_within(3).as_deref(),
+        Some("10.20.0.2"),
+        "the edge's QUIC was dropped"
+    );
+    let _internet = stream_server(&lan, INTERNET, 7844);
+    assert_connection_denied(&connector, "10.20.0.2", INTERNET, 7844);
+    for address in [LAN, METADATA] {
+        let mut resolver = datagram_server(&lan, address, 53);
+        send_datagram(&connector, "10.20.0.2", address, 53);
+        assert_eq!(
+            resolver.peer_within(3).as_deref(),
+            Some("10.20.0.2"),
+            "DNS to the resolver at {address} was dropped"
+        );
+    }
 }
 
 #[test]

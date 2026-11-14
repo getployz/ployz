@@ -1,4 +1,5 @@
 use std::{
+    convert::Infallible,
     fs, io,
     os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
@@ -8,12 +9,12 @@ use std::{
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API, MINIMUM_DOCKER_RELEASE};
 use ployz_core::probe_document::{
     Assessment, Blocker, BlockerCode, CgroupVersion, Disk, DiskRole, DockerFacts, Filesystem,
-    HostFacts, OsRelease, ProbeDocument, Virtualization, ZfsEligibility, ZfsTarget,
+    HostFacts, ProbeDocument, Virtualization, ZfsEligibility, ZfsTarget,
 };
 use serde_json::Value;
 
 use super::os_release;
-use super::zfs_route::ZfsRoute;
+use super::zfs_route::{RouteStop, choose};
 use super::{Error, InstallPaths, command_exists, run_command, run_host};
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -637,9 +638,14 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
 }
 
 fn zfs_eligibility(facts: &HostFacts) -> ZfsEligibility {
-    let route = match zfs_route(facts) {
+    let route = match choose(
+        &facts.os,
+        || Ok::<_, Infallible>(facts.secure_boot),
+        || Ok(facts.virt.clone()),
+    ) {
         Ok(route) => route,
-        Err(reason) => return ZfsEligibility::Ineligible { reason },
+        Err(RouteStop::Blocked(reason)) => return ZfsEligibility::Ineligible { reason },
+        Err(RouteStop::Unread(never)) => match never {},
     };
     if let Some(reason) = root_reserve_blocker(facts.root_filesystem) {
         return ZfsEligibility::Ineligible { reason };
@@ -657,81 +663,6 @@ fn zfs_eligibility(facts: &HostFacts) -> ZfsEligibility {
     ZfsEligibility::Eligible {
         targets,
         prepare_minutes: route.prepare_minutes(),
-    }
-}
-
-/// The ZFS route for this Machine, or the first reason it has none, in the installer's order.
-pub(super) fn zfs_route(facts: &HostFacts) -> Result<ZfsRoute, Blocker> {
-    let route = zfs_os_route(&facts.os)?;
-    if let Some(reason) = secure_boot_blocker(route, &facts.os, facts.secure_boot) {
-        return Err(reason);
-    }
-    virtualization_blocker(&facts.virt).map_or(Ok(route), Err)
-}
-
-pub(super) fn zfs_os_route(os: &OsRelease) -> Result<ZfsRoute, Blocker> {
-    ZfsRoute::for_os(os).ok_or_else(|| {
-        Blocker::new(
-            BlockerCode::UnsupportedOs,
-            format!(
-                "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {}. Use one of those, or add `--storage none`.",
-                os.display()
-            ),
-        )
-    })
-}
-
-/// Secure Boot stops only routes that build their own, unsigned module.
-pub(super) fn secure_boot_blocker(
-    route: ZfsRoute,
-    os: &OsRelease,
-    secure_boot: Option<bool>,
-) -> Option<Blocker> {
-    if !route.builds_module() {
-        return None;
-    }
-    match secure_boot {
-        Some(false) => None,
-        Some(true) => Some(Blocker::new(
-            BlockerCode::SecureBoot,
-            format!(
-                "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
-                os.name
-            ),
-        )),
-        None => Some(Blocker::new(
-            BlockerCode::SecureBootUnknown,
-            format!(
-                "Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
-                os.name
-            ),
-        )),
-    }
-}
-
-pub(super) fn virtualization_blocker(virt: &Virtualization) -> Option<Blocker> {
-    match virt {
-        Virtualization::OpenVz => Some(Blocker::new(
-            BlockerCode::OpenVz,
-            "OpenVZ does not allow this Machine to load the host ZFS kernel module",
-        )),
-        Virtualization::Lxc {
-            privileged: Some(false),
-        } => Some(Blocker::new(
-            BlockerCode::UnprivilegedLxc,
-            "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module",
-        )),
-        Virtualization::Lxc { privileged: None } => Some(Blocker::new(
-            BlockerCode::LxcPrivilegeUnknown,
-            "Couldn't read this LXC container's user namespace, so Ployz can't tell whether it may load the host ZFS kernel module",
-        )),
-        Virtualization::BareMetal
-        | Virtualization::Vm { .. }
-        | Virtualization::Lxc {
-            privileged: Some(true),
-        }
-        | Virtualization::Container { .. }
-        | Virtualization::Unknown => None,
     }
 }
 

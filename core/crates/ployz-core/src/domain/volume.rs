@@ -166,6 +166,13 @@ impl VolumeSource {
         }
     }
 
+    /// The Namespace a managed source was scoped to, or `None` before scoping and for a
+    /// source Ployz does not manage.
+    #[must_use]
+    pub fn scope_namespace(&self) -> Option<&Namespace> {
+        self.scope.as_ref().map(|scope| &scope.namespace)
+    }
+
     /// Scope admitted declarations once; preserve imported observations' exact identity.
     pub fn scope_to_namespace(&mut self, namespace: &Namespace) {
         if self.scope.is_some() {
@@ -483,6 +490,51 @@ pub enum DockerVolumeStorageObservation {
     },
 }
 
+impl DockerVolumeStorageObservation {
+    /// A Provisioned Volume observation whose copy sits at `place`; `None` when the plugin
+    /// reported no place.
+    #[must_use]
+    pub fn provisioned(
+        mountpoint: MachinePath,
+        bound_bytes: NonZeroU64,
+        used_bytes: u64,
+        place: Option<crate::CopyPlace>,
+    ) -> Self {
+        Self::Provisioned {
+            mountpoint,
+            bound_bytes,
+            used_bytes,
+            role: place.map(crate::CopyPlace::role),
+            slot_role: place.and_then(crate::CopyPlace::slot_role),
+        }
+    }
+
+    /// Where the observed copy sits; `None` for an ordinary Volume or when the plugin
+    /// reported no role.
+    #[must_use]
+    pub fn copy_place(&self) -> Option<crate::CopyPlace> {
+        match self {
+            Self::Provisioned {
+                role, slot_role, ..
+            } => role.map(|role| crate::CopyPlace::of(role, *slot_role)),
+            Self::Plain { .. } => None,
+        }
+    }
+
+    /// Records a copy's two wire fields as received on a Provisioned Volume; an ordinary Volume
+    /// has no copy.
+    pub fn set_copy(&mut self, copy: Option<&crate::ProvisionedCopy>) {
+        if let Self::Provisioned {
+            role, slot_role, ..
+        } = self
+        {
+            let pair = copy.map(crate::ProvisionedCopy::wire_pair);
+            *role = pair.map(|(role, _)| role);
+            *slot_role = pair.and_then(|(_, slot_role)| slot_role);
+        }
+    }
+}
+
 /// One Docker Volume observed on one Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DockerVolume {
@@ -661,6 +713,21 @@ mod tests {
         let mut source = source.admit().unwrap();
         source.scope_to_namespace(&Namespace::parse("app").unwrap());
         source
+    }
+
+    #[test]
+    fn a_provisioned_observation_keeps_its_role_pair_on_the_wire() {
+        for json in [
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":null}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"writer"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"switching"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"slot"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"slot","slot_role":"mirror"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"slot","slot_role":"old_copy"}"#,
+        ] {
+            let observation: DockerVolumeStorageObservation = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_string(&observation).unwrap(), json);
+        }
     }
 
     fn observed(source: &VolumeSource, storage: DockerVolumeStorageObservation) -> DockerVolume {

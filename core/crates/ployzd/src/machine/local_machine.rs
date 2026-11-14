@@ -22,7 +22,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
+    EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError,
     store::{Installation, PreparedReset, Rediscovered},
 };
 
@@ -32,7 +32,7 @@ use crate::{
         membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
-    host_capacity,
+    host_capacity, host_facts,
     network::{
         DOCKER_NETWORK_NAME, Leftover, NetworkError, NetworkPlane, WIREGUARD_INTERFACE_NAME,
         discover_network,
@@ -208,10 +208,25 @@ pub enum Error {
     /// Device enforcement refused an Operator's restart step.
     #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
     RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
+    /// A browser key's restart or start of a Container that reaches the host.
+    #[error(
+        "This service reaches the server itself, so only an approved device can restart or start it. Run ployz service restart on that device."
+    )]
+    RestartReachesHost,
     /// Device enforcement refused an Operator's creation, or its step under a deploy
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
     #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
+    /// A session's creation claims an Ingress Hostname another Namespace owns. The refusal
+    /// names `capability`, the route's approval, in its details.
+    #[error(
+        "{hostname} belongs to {owner} in another environment, so a passkey approval can't take it. Remove it there first, or deploy from an approved device."
+    )]
+    HostnameOwned {
+        capability: &'static str,
+        hostname: ployz_core::IngressHost,
+        owner: ployz_core::QualifiedService,
+    },
     /// A rule build's grant failed a check before anything opened. The refusal names
     /// [`ployz_core::BUILD_GRANT_RULE_CAPABILITY`] in its details.
     #[error("This Server refused the rule build's grant: {0}")]
@@ -866,7 +881,7 @@ impl LocalMachine {
             } else {
                 requested_endpoints.to_vec()
             },
-            runtime: local_runtime(self.owner.data_dir()),
+            runtime: host_facts::local_runtime(self.owner.data_dir()).await,
             memory_total_bytes: capacity.memory_total_bytes,
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,
@@ -1054,36 +1069,39 @@ impl LocalMachine {
                 capability: ployz_core::REGISTER_MACHINE_CAPABILITY,
             });
         }
-        if let Some(stored) = self.approvals.join_result(request.machine_id)? {
-            if ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
-                != stored.approval.open().map_err(Error::JoinRefused)?.machine
-                || request
-                    .join_approval
-                    .as_ref()
-                    .is_some_and(|approval| approval != &stored.approval)
-            {
-                return Err(Error::JoinConsumed(request.machine_id));
-            }
-            let restart_approval::JoinReply::Register(registration) = stored.reply else {
-                return Err(Error::JoinConsumed(request.machine_id));
-            };
-            if let Some(confirmation) = &request.join_confirmation {
-                let confirmed = SealingKey::load(self.owner.data_dir())
-                    .map_err(Error::JoinRecord)?
-                    .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
-                if !confirmed {
-                    return Err(Error::JoinRefused(
-                        ployz_core::authority::AuthorityRefusal::Mismatch {
-                            field: "a join confirmation",
-                        },
-                    ));
+        let fresh = match self.enter_join(request.machine_id, |stored| {
+            Ok(
+                ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
+                    == stored.approval.open().map_err(Error::JoinRefused)?.machine
+                    && request
+                        .join_approval
+                        .as_ref()
+                        .is_none_or(|approval| approval == &stored.approval),
+            )
+        })? {
+            join_approval::Entered::Fresh(fresh) => fresh,
+            join_approval::Entered::Replayed(stored) => {
+                let restart_approval::JoinReply::Register(registration) = stored.reply else {
+                    return Err(Error::JoinConsumed(request.machine_id));
+                };
+                if let Some(confirmation) = &request.join_confirmation {
+                    let confirmed = SealingKey::load(self.owner.data_dir())
+                        .map_err(Error::JoinRecord)?
+                        .is_some_and(|key| key.confirms_join(&stored.approval, confirmation));
+                    if !confirmed {
+                        return Err(Error::JoinRefused(
+                            ployz_core::authority::AuthorityRefusal::Mismatch {
+                                field: "a join confirmation",
+                            },
+                        ));
+                    }
+                    publication
+                        .register(registration.assigned_machine.clone())
+                        .await?;
                 }
-                publication
-                    .register(registration.assigned_machine.clone())
-                    .await?;
+                return Ok(*registration);
             }
-            return Ok(*registration);
-        }
+        };
         let subnet = ipnet::Ipv4Net::from(assignment.machine.subnet);
         if snapshot.machines.iter().any(|peer| {
             let other = ipnet::Ipv4Net::from(peer.subnet);
@@ -1096,6 +1114,7 @@ impl LocalMachine {
             ));
         }
         let approval = self.admit_join(
+            &fresh,
             &assignment.machine,
             snapshot.network,
             request.join_approval,
@@ -1115,10 +1134,13 @@ impl LocalMachine {
             self.record().devices().collect(),
         );
         registration.recipient = self.join_recipient(&registration.assigned_machine.public_key)?;
-        self.consume_join(restart_approval::JoinResult {
-            approval,
-            reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
-        })?;
+        self.consume_join(
+            fresh,
+            restart_approval::JoinResult {
+                approval,
+                reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
+            },
+        )?;
         Ok(registration)
     }
 

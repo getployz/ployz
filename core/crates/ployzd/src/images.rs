@@ -5,32 +5,68 @@
 
 use ipnet::Ipv4Net;
 use ployz_core::{
-    Ciphertext, IngressPorts, Namespace, PrivateAccessStateId, QualifiedService,
+    Ciphertext, IngressPorts, Namespace, PinnedImage, PrivateAccessStateId, QualifiedService,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceId, caddy_service_spec, holder_service_spec,
     private_access_sealed_key, private_access_service_spec, private_access_state,
-    tunnel_sealed_token, tunnel_service_spec,
+    tunnel_origin_service_spec, tunnel_sealed_token, tunnel_service_spec,
 };
 
 /// Caddy v2.11.9, resolved 2026-11-07.
-pub(crate) const CADDY: &str = "docker.io/library/caddy:2@sha256:ce773ec7a742ce15ee6bf2bb5f65882b9e2a4487b10733e6f1484f86e6b5d8bc";
+pub(crate) const CADDY: &str = PinnedImage::new(
+    "docker.io/library/caddy:2@sha256:ce773ec7a742ce15ee6bf2bb5f65882b9e2a4487b10733e6f1484f86e6b5d8bc",
+)
+.as_str();
 
 /// The holder sleeps and owns the Ingress Proxy's network namespace and host ports.
-pub(crate) const PAUSE: &str = "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a";
+pub(crate) const PAUSE: &str = PinnedImage::new(
+    "registry.k8s.io/pause:3.10@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a",
+)
+.as_str();
 
 /// cloudflared 2026.10.7, resolved 2026-11-08. The Tunnel Connector.
-pub(crate) const CLOUDFLARED: &str = "docker.io/cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba";
+pub(crate) const CLOUDFLARED: &str = PinnedImage::new(
+    "docker.io/cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba",
+)
+.as_str();
 
 /// Tailscale 1.104.4, resolved 2026-11-08. The Private Access router.
-pub(crate) const TAILSCALE: &str = "docker.io/tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c";
+pub(crate) const TAILSCALE: &str = PinnedImage::new(
+    "docker.io/tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c",
+)
+.as_str();
 
 /// The reserved Ingress door specs this daemon builds for one set of Doors: the
-/// holder, the Caddy that joins it, and the Tunnel Connector when the Tunnel Door
-/// is open.
+/// holder, the Caddy that joins it, and the Tunnel Door's pair when it is open.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DoorSpecs {
     pub holder: ResolvedServiceSpec,
     pub proxy: ResolvedServiceSpec,
-    pub tunnel: Option<ResolvedServiceSpec>,
+    pub tunnel: Option<TunnelSpecs>,
+}
+
+/// The Tunnel Door: the Tunnel Origin that owns the network namespace, and the
+/// Tunnel Connector that joins it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TunnelSpecs {
+    pub origin: ResolvedServiceSpec,
+    pub connector: ResolvedServiceSpec,
+}
+
+impl TunnelSpecs {
+    /// The pair for the Ingress Proxy Service `proxy` and the tunnel `sealed_token`
+    /// names.
+    #[must_use]
+    pub(crate) fn new(proxy: ServiceId, sealed_token: &Ciphertext) -> Self {
+        Self {
+            origin: tunnel_origin_spec(tunnel_origin_service_id(proxy)),
+            connector: tunnel_spec(tunnel_service_id(proxy), sealed_token),
+        }
+    }
+
+    /// The origin, then the connector, in the order they are placed.
+    pub(crate) fn specs(&self) -> [&ResolvedServiceSpec; 2] {
+        [&self.origin, &self.connector]
+    }
 }
 
 impl DoorSpecs {
@@ -41,7 +77,7 @@ impl DoorSpecs {
         Self::new(proxy, IngressPorts::Public, None)
     }
 
-    /// The holder with `ports`, the Caddy that joins it, and the Tunnel Connector
+    /// The holder with `ports`, the Caddy that joins it, and the Tunnel Door's pair
     /// running the tunnel `sealed_token` names, when there is one.
     #[must_use]
     pub(crate) fn new(
@@ -52,13 +88,13 @@ impl DoorSpecs {
         Self {
             holder: holder_spec(holder_service_id(proxy), ports),
             proxy: proxy_spec(proxy),
-            tunnel: sealed_token.map(|token| tunnel_spec(tunnel_service_id(proxy), token)),
+            tunnel: sealed_token.map(|token| TunnelSpecs::new(proxy, token)),
         }
     }
 
     /// Whether `spec` at `namespace` is a door spec this daemon builds: the Caddy
-    /// for its own Service id, the holder for any proxy id with either Door, or
-    /// the Tunnel Connector for the sealed token it carries.
+    /// for its own Service id, the holder for any proxy id with either Door, the
+    /// Tunnel Origin, or the Tunnel Connector for the sealed token it carries.
     #[must_use]
     pub(crate) fn built_here(namespace: &Namespace, spec: &ResolvedServiceSpec) -> bool {
         let identity = QualifiedService::new(namespace.clone(), spec.name.clone());
@@ -68,6 +104,8 @@ impl DoorSpecs {
             [IngressPorts::Public, IngressPorts::Closed]
                 .into_iter()
                 .any(|ports| *spec == holder_spec(spec.service_id, ports))
+        } else if identity == QualifiedService::system_tunnel_origin() {
+            *spec == tunnel_origin_spec(spec.service_id)
         } else if identity == QualifiedService::system_tunnel() {
             tunnel_sealed_token(&spec.container.labels)
                 .is_some_and(|token| *spec == tunnel_spec(spec.service_id, &token))
@@ -86,6 +124,11 @@ fn holder_service_id(proxy: ServiceId) -> ServiceId {
 /// The Tunnel Connector's Service id, derived like the holder's.
 fn tunnel_service_id(proxy: ServiceId) -> ServiceId {
     derived_service_id(b"ployz-ingress-tunnel\0", proxy.as_str().as_bytes())
+}
+
+/// The Tunnel Origin's Service id, derived like the holder's.
+fn tunnel_origin_service_id(proxy: ServiceId) -> ServiceId {
+    derived_service_id(b"ployz-ingress-tunnel-origin\0", proxy.as_str().as_bytes())
 }
 
 fn derived_service_id(domain: &[u8], seed: &[u8]) -> ServiceId {
@@ -140,6 +183,12 @@ fn tunnel_spec(service_id: ServiceId, sealed_token: &Ciphertext) -> ResolvedServ
     tunnel_service_spec(CLOUDFLARED, sealed_token)
         .to_resolved(service_id, ResolvedUpdateConfig::default())
         .expect("the built-in connector mounts are valid")
+}
+
+fn tunnel_origin_spec(service_id: ServiceId) -> ResolvedServiceSpec {
+    tunnel_origin_service_spec(CADDY)
+        .to_resolved(service_id, ResolvedUpdateConfig::default())
+        .expect("the built-in tunnel origin mounts are valid")
 }
 
 fn proxy_spec(service_id: ServiceId) -> ResolvedServiceSpec {
@@ -208,14 +257,28 @@ mod tests {
             validate_ingress_service_spec(&specs.holder).ok(),
             Some(IngressWiring::Holder(IngressPorts::Closed))
         );
-        let tunnel = specs.tunnel.as_ref().unwrap();
+        let pair = specs.tunnel.as_ref().unwrap();
+        let tunnel = &pair.connector;
         assert_eq!(
             validate_ingress_service_spec(tunnel).ok(),
             Some(IngressWiring::Tunnel)
         );
+        assert_eq!(
+            validate_ingress_service_spec(&pair.origin).ok(),
+            Some(IngressWiring::TunnelOrigin)
+        );
         assert_eq!(tunnel_sealed_token(&tunnel.container.labels), Some(token));
-        assert_ne!(tunnel.service_id, specs.holder.service_id);
-        assert_ne!(tunnel.service_id, specs.proxy.service_id);
+        let ids = [
+            &specs.holder.service_id,
+            &specs.proxy.service_id,
+            &pair.origin.service_id,
+            &tunnel.service_id,
+        ];
+        assert_eq!(
+            ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            ids.len(),
+            "each door has its own Service id"
+        );
         assert_eq!(
             DoorSpecs::new(proxy_id(), IngressPorts::Public, None),
             DoorSpecs::public(proxy_id())
@@ -231,13 +294,15 @@ mod tests {
         let token = Ciphertext::from_bytes(vec![7; 48]);
         let tunnel = DoorSpecs::new(proxy_id(), IngressPorts::Closed, Some(&token));
         assert!(DoorSpecs::built_here(&system, &tunnel.holder));
-        assert!(DoorSpecs::built_here(
-            &system,
-            tunnel.tunnel.as_ref().unwrap()
-        ));
-        let mut other_origin = tunnel.tunnel.unwrap();
+        let pair = tunnel.tunnel.unwrap();
+        assert!(DoorSpecs::built_here(&system, &pair.origin));
+        assert!(DoorSpecs::built_here(&system, &pair.connector));
+        let mut other_origin = pair.connector;
         other_origin.container.command.pop();
         assert!(!DoorSpecs::built_here(&system, &other_origin));
+        let mut other_upstream = pair.origin;
+        other_upstream.container.command.pop();
+        assert!(!DoorSpecs::built_here(&system, &other_upstream));
 
         let mut other_image = specs.proxy.clone();
         other_image.container.image = "caddy:2.11.4".into();

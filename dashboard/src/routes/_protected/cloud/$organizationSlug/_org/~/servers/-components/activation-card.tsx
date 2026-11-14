@@ -49,6 +49,8 @@ const CLI = "ployz device enforce";
 const list = (names: readonly string[]) =>
   names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1) ?? ""}`;
 const plural = (names: readonly string[], one: string, many: string) => names.length === 1 ? one : many;
+/** A key's full code as `ployz device ls` prints it: `mmg42-klgyq-p3w7d-xa5re`. */
+const grouped = (code: string) => code.match(/.{1,5}/gu)?.join("-") ?? code;
 
 /** Why the dashboard can't activate, one sentence each. */
 function blockerText(blocker: ActivationBlocker) {
@@ -60,7 +62,7 @@ function blockerText(blocker: ActivationBlocker) {
     case "legacy-members":
       return `Servers added while enforcement was off: ${list(blocker.members)}.`;
     case "legacy-keys":
-      return `Keys added while enforcement was off: ${list(blocker.keys.map((key) => key.code))}.`;
+      return `Keys added while enforcement was off: ${list(blocker.keys.map((key) => grouped(key.code)))}.`;
     case "partial":
       return `${list(blocker.servers)} ${plural(blocker.servers, "is", "are")} already activated.`;
     case "no-cluster-key":

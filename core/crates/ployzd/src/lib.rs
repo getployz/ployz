@@ -34,6 +34,7 @@ pub mod faults;
 pub(crate) mod filesystem;
 pub mod github;
 mod host_capacity;
+pub mod host_facts;
 pub(crate) mod images;
 pub(crate) mod ingress;
 pub mod installer;
@@ -57,6 +58,7 @@ pub mod sealing_key;
 mod sealing_recovery;
 pub mod socket_activation;
 mod storage;
+pub(crate) mod systemd_timeout;
 #[cfg(test)]
 #[path = "../tests/test_dir/mod.rs"]
 mod test_dir;

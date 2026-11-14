@@ -45,15 +45,6 @@ pub use schedule::{ServiceGroup, Stage};
 pub(crate) use progress::pending_rows;
 pub(crate) use report::{Replica, service_row, starts, updates};
 
-fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
-    matches!(
-        runtime,
-        ContainerRuntimeObservation::Created
-            | ContainerRuntimeObservation::Exited { .. }
-            | ContainerRuntimeObservation::Dead
-    )
-}
-
 pub(crate) fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
         runtime,
@@ -367,6 +358,26 @@ pub(crate) fn dropped_note(machine: impl std::fmt::Display) -> String {
     )
 }
 
+/// A Machine whose Container listing a [`DeploySnapshot`] lacks, as
+/// [`DeploySnapshot::listing_gaps`] reads it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ListingGap<'snapshot> {
+    pub(crate) machine: MachineId,
+    pub(crate) kind: ListingGapKind<'snapshot>,
+    /// Whether its silence is a [`listing_gap`].
+    pub(crate) silent: bool,
+    /// Whether it went unanswered over a path the entry finds dropping large packets.
+    pub(crate) large_packets: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ListingGapKind<'snapshot> {
+    /// The listing failed with this error.
+    Failed(&'snapshot RpcError),
+    /// The listing produced no terminal response.
+    Omitted,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DeploySnapshot {
     pub machines: Vec<MachineObservation>,
@@ -416,7 +427,7 @@ impl DeploySnapshot {
                     held.into_iter().partition(|container| {
                         container.runtime == ContainerRuntimeObservation::Restarting
                     });
-                if !held.iter().all(|container| is_at_rest(&container.runtime)) {
+                if !held.iter().all(|container| container.runtime.at_rest()) {
                     return None;
                 }
                 if let Some(restarting) = ployz_core::newest(restarting) {
@@ -457,24 +468,42 @@ impl DeploySnapshot {
             .any(|failure| failure.machine_id == machine && failure.error.server_unlisted(&machine))
     }
 
+    /// Each Machine whose Container listing this snapshot lacks, failures before
+    /// omissions, each read once for every use of it.
+    pub(crate) fn listing_gaps(&self) -> impl Iterator<Item = ListingGap<'_>> {
+        let failed = self.container_failures.iter().map(|failure| {
+            let machine = self.machine(failure.machine_id);
+            ListingGap {
+                machine: failure.machine_id,
+                kind: ListingGapKind::Failed(&failure.error),
+                silent: machine.is_some_and(|machine| listing_gap(machine, &failure.error)),
+                large_packets: machine
+                    .is_some_and(|machine| dropped_large_packets(machine, &failure.error)),
+            }
+        });
+        let omitted = self.container_omissions.iter().map(|machine| ListingGap {
+            machine: *machine,
+            kind: ListingGapKind::Omitted,
+            silent: false,
+            large_packets: false,
+        });
+        failed.chain(omitted)
+    }
+
     /// Whether `machine` left this snapshot's Container listing unanswered as a
     /// [`listing_gap`].
     pub(crate) fn silent(&self, machine: &MachineObservation) -> bool {
-        self.container_failures.iter().any(|failure| {
-            failure.machine_id == machine.machine.id && listing_gap(machine, &failure.error)
-        })
+        self.listing_gaps()
+            .any(|gap| gap.machine == machine.machine.id && gap.silent)
     }
 
     /// Why `machine`'s container listing is missing from this snapshot, if it is.
     fn unobserved(&self, machine: MachineId) -> Option<String> {
-        self.container_failures
-            .iter()
-            .find(|failure| failure.machine_id == machine)
-            .map(|failure| failure.error.to_string())
-            .or_else(|| {
-                self.container_omissions
-                    .contains(&machine)
-                    .then(|| "no answer".to_owned())
+        self.listing_gaps()
+            .find(|gap| gap.machine == machine)
+            .map(|gap| match gap.kind {
+                ListingGapKind::Failed(error) => error.to_string(),
+                ListingGapKind::Omitted => "no answer".to_owned(),
             })
     }
 
@@ -1032,30 +1061,4 @@ impl PlanError {
             constraints: EliminatingConstraints::new(constraints),
         }
     }
-}
-
-pub(super) fn observation_warnings(
-    kind: ObservationKind,
-    failures: &[MachineFailure<RpcError>],
-    omissions: &[MachineId],
-) -> Vec<DeployWarning> {
-    failures
-        .iter()
-        .map(|failure| DeployWarning::ObservationFailed {
-            gap: None,
-            kind,
-            machine_id: failure.machine_id,
-            machine_name: None,
-            message: error_chain::row(&failure.error),
-        })
-        .chain(
-            omissions
-                .iter()
-                .map(|machine| DeployWarning::ObservationOmitted {
-                    gap: None,
-                    kind,
-                    machine_id: *machine,
-                }),
-        )
-        .collect()
 }

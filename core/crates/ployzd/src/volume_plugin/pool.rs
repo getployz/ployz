@@ -8,7 +8,7 @@ use std::{
 };
 
 use ployz_core::MachineLayout;
-use ployzd::machine_pool::{self, MachinePool};
+use ployzd::machine_pool::{self, DeviceMarker, DevicePoolFiles, MachinePool};
 
 use super::{
     CapacityAdmission, PluginError, Result, VolumeName, VolumeStorage, checked_command,
@@ -38,7 +38,7 @@ pub(super) struct PoolStorage {
     fallocate: PathBuf,
     stat: PathBuf,
     df: PathBuf,
-    backing: PathBuf,
+    files: DevicePoolFiles,
     volume_root: PathBuf,
     host_root: PathBuf,
     sys_dev_block: PathBuf,
@@ -132,7 +132,7 @@ impl PoolStorage {
             fallocate: "fallocate".into(),
             stat: "stat".into(),
             df: "df".into(),
-            backing: MachineLayout::production().machine_pool_file(),
+            files: DevicePoolFiles::new(MachineLayout::production().machine_pool_file()),
             volume_root: ployzd::dataset_layout::MOUNT_ROOT.into(),
             host_root: "/".into(),
             sys_dev_block: "/sys/dev/block".into(),
@@ -156,7 +156,7 @@ impl PoolStorage {
             stat,
             df,
             volume_root: backing.with_file_name("ployz-volumes"),
-            backing,
+            files: DevicePoolFiles::new(backing),
             host_root,
             sys_dev_block,
         }
@@ -166,19 +166,19 @@ impl PoolStorage {
     /// Replaces the production backing path for adapters at the test seam.
     pub(super) fn with_backing(mut self, backing: PathBuf) -> Self {
         self.volume_root = backing.with_file_name("ployz-volumes");
-        self.backing = backing;
+        self.files = DevicePoolFiles::new(backing);
         self
     }
 
     /// The file other daemon versions may hold during an upgrade, so its name is fixed.
     fn lock_path(&self) -> PathBuf {
-        let mut lock_path = self.backing.as_os_str().to_owned();
+        let mut lock_path = self.backing().as_os_str().to_owned();
         lock_path.push(".lock");
         PathBuf::from(lock_path)
     }
 
-    fn device_marker(&self) -> PathBuf {
-        self.backing.with_extension("device")
+    fn backing(&self) -> &Path {
+        self.files.backing()
     }
 
     pub(super) async fn lock_mutation(&self) -> Result<fs::File> {
@@ -229,7 +229,7 @@ impl PoolStorage {
             .map_err(|error| ployz_core::error_chain::inline(&error))?;
         if let Some(pool) = &pool {
             let device = pool.name() == machine_pool::DEVICE_BACKED_POOL_NAME;
-            if path_exists(&self.backing, "Machine Pool backing file")?
+            if path_exists(self.backing(), "Machine Pool backing file")?
                 && (device || self.has_device_pool()?)
             {
                 return Err(
@@ -237,16 +237,10 @@ impl PoolStorage {
                         .into(),
                 );
             }
-            if device {
-                let marker = self.device_marker();
-                if !matches!(
-                    fs::read_to_string(&marker).as_deref(),
-                    Ok(machine_pool::CONFIRMED_DEVICE_POOL_MARKER)
-                ) {
-                    fs::write(marker, machine_pool::CONFIRMED_DEVICE_POOL_MARKER).map_err(
-                        |error| format!("could not remember device Machine Pool: {error}"),
-                    )?;
-                }
+            if device && !matches!(self.files.read(), Ok(DeviceMarker::Confirmed)) {
+                self.files
+                    .confirm_in_place()
+                    .map_err(|error| format!("could not remember device Machine Pool: {error}"))?;
             }
         }
         Ok(pool)
@@ -269,7 +263,7 @@ impl PoolStorage {
     /// Returns an error when any path cannot be inspected.
     pub(super) fn has_held_a_pool(&self) -> Result<bool> {
         Ok(self.has_device_pool()?
-            || path_exists(&self.backing, "Machine Pool backing file")?
+            || path_exists(self.backing(), "Machine Pool backing file")?
             || path_exists(&self.volume_root, "Volume mount root")?)
     }
 
@@ -278,7 +272,7 @@ impl PoolStorage {
     /// # Errors
     /// Returns an error for ambiguous or destroyed labels, failed import, or failed cleanup.
     pub(super) async fn recover(&self, unlabeled: UnlabeledBacking) -> Result<Option<MachinePool>> {
-        let has_backing = path_exists(&self.backing, "Machine Pool backing file")?;
+        let has_backing = path_exists(self.backing(), "Machine Pool backing file")?;
         if self.has_device_pool()? && has_backing {
             return Err(
                 "conflicting device and file-backed Machine Pool ownership; refusing to choose one"
@@ -328,7 +322,7 @@ impl PoolStorage {
             {
                 return Err(format!(
                     "Machine Pool backing file {} contains a destroyed Pool label; refusing to replace it",
-                    self.backing.display()
+                    self.backing().display()
                 )
                 .into());
             }
@@ -336,7 +330,7 @@ impl PoolStorage {
                 self.remove_backing().map_err(|error| {
                     format!(
                         "could not remove unlabeled Machine Pool backing file {}: {error}",
-                        self.backing.display(),
+                        self.backing().display(),
                         error = ployz_core::error_chain::inline(&error),
                     )
                 })?;
@@ -346,7 +340,7 @@ impl PoolStorage {
         if pools.as_slice() != [POOL_NAME] {
             return Err(format!(
                 "Machine Pool backing file {} has ambiguous Pool labels ({}); refusing to replace it",
-                self.backing.display(),
+                self.backing().display(),
                 pools.join(", ")
             )
             .into());
@@ -370,14 +364,14 @@ impl PoolStorage {
     }
 
     fn has_device_pool(&self) -> Result<bool> {
-        path_exists(&self.device_marker(), "device Machine Pool marker")
+        path_exists(self.files.marker(), "device Machine Pool marker")
     }
 
     fn backing_text(&self) -> Result<&str> {
-        self.backing.to_str().ok_or_else(|| {
+        self.backing().to_str().ok_or_else(|| {
             format!(
                 "Machine Pool backing path is not valid UTF-8: {}",
-                self.backing.display()
+                self.backing().display()
             )
             .into()
         })
@@ -563,7 +557,7 @@ impl PoolStorage {
             Err(error) => {
                 return format!(
                     "{failure}; cleanup could not inspect Machine Pools: {error}; backing file retained at {}",
-                    self.backing.display(), error = ployz_core::error_chain::inline(&error),)
+                    self.backing().display(), error = ployz_core::error_chain::inline(&error),)
                 .into();
             }
         };
@@ -572,7 +566,7 @@ impl PoolStorage {
         {
             return format!(
                 "{failure}; cleanup could not destroy Machine Pool {POOL_NAME}: {error}; backing file retained at {}",
-                self.backing.display(), error = ployz_core::error_chain::inline(&error),)
+                self.backing().display(), error = ployz_core::error_chain::inline(&error),)
             .into();
         }
         self.cleanup_backing(failure)
@@ -602,7 +596,7 @@ impl PoolStorage {
                 })
             }
             None => {
-                if self.backing.exists() {
+                if self.backing().exists() {
                     return Err("Machine Pool backing exists without an imported Pool; recover it before planning".into());
                 }
                 Ok(StorageBacking::Unallocated {
@@ -621,10 +615,10 @@ impl PoolStorage {
                 error = ployz_core::error_chain::inline(&error),
             )
         })?;
-        let backing_directory = self.backing.parent().ok_or_else(|| {
+        let backing_directory = self.backing().parent().ok_or_else(|| {
             PluginError::from(format!(
                 "Machine Pool backing path has no parent: {}",
-                self.backing.display()
+                self.backing().display()
             ))
         })?;
         let data = fs::metadata(backing_directory).map_err(|error| {
@@ -769,7 +763,7 @@ impl PoolStorage {
             Ok(()) => failure,
             Err(error) => format!(
                 "{failure}; cleanup could not remove Machine Pool backing file {}: {error}",
-                self.backing.display(),
+                self.backing().display(),
                 error = ployz_core::error_chain::inline(&error),
             )
             .into(),
@@ -777,7 +771,7 @@ impl PoolStorage {
     }
 
     fn remove_backing(&self) -> io::Result<()> {
-        match fs::remove_file(&self.backing) {
+        match fs::remove_file(self.backing()) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             result => result,
         }
@@ -838,7 +832,7 @@ mod tests {
 
         assert!(
             !storage
-                .backing
+                .backing()
                 .starts_with(MachineLayout::production().data_dir())
         );
     }
@@ -880,7 +874,7 @@ esac
             "admitted device Pool must retain ownership"
         );
         assert_eq!(
-            fs::read_to_string(storage.backing.with_extension("device")).unwrap(),
+            fs::read_to_string(storage.files.marker()).unwrap(),
             machine_pool::CONFIRMED_DEVICE_POOL_MARKER
         );
 
@@ -903,7 +897,7 @@ esac
                 .contains("refusing to create a root-backed Pool"),
             "{failure}"
         );
-        assert!(!storage.backing.exists());
+        assert!(!storage.backing().exists());
     }
 
     #[tokio::test]
@@ -914,8 +908,8 @@ esac
             "printf 'pool: ployz-device\\n'",
             &format!("touch '{}/imported'", root.path().display()),
         );
-        let marker = storage.backing.with_extension("device");
-        fs::create_dir(&marker).unwrap();
+        let marker = storage.files.marker();
+        fs::create_dir(marker).unwrap();
 
         let failure = storage
             .recover(UnlabeledBacking::Preserve)
@@ -929,7 +923,7 @@ esac
         );
         assert!(root.path().join("imported").exists());
 
-        fs::remove_dir(&marker).unwrap();
+        fs::remove_dir(marker).unwrap();
         let pool = storage.one_usable().await.unwrap().unwrap();
         assert_eq!(pool.name(), machine_pool::DEVICE_BACKED_POOL_NAME);
         assert!(
@@ -940,7 +934,7 @@ esac
             fs::read_to_string(marker).unwrap(),
             machine_pool::CONFIRMED_DEVICE_POOL_MARKER
         );
-        assert!(!storage.backing.exists());
+        assert!(!storage.backing().exists());
     }
 
     #[tokio::test]
@@ -948,13 +942,13 @@ esac
         let root = tempfile::tempdir().unwrap();
         let storage = device_recovery_storage(root.path(), "exit 97", "exit 97");
         fs::write(root.path().join("imported"), "").unwrap();
-        fs::write(&storage.backing, "retained file Pool").unwrap();
+        fs::write(storage.backing(), "retained file Pool").unwrap();
 
         let failure = storage.one_usable().await.unwrap_err();
         assert!(failure.to_string().contains("conflicting"), "{failure}");
         assert!(!storage.has_device_pool().unwrap());
         assert_eq!(
-            fs::read_to_string(&storage.backing).unwrap(),
+            fs::read_to_string(storage.backing()).unwrap(),
             "retained file Pool"
         );
     }
@@ -974,7 +968,7 @@ esac
             .unwrap();
         assert_eq!(pool.name(), machine_pool::DEVICE_BACKED_POOL_NAME);
         assert!(storage.has_device_pool().unwrap());
-        assert!(!storage.backing.exists());
+        assert!(!storage.backing().exists());
     }
 
     #[tokio::test]
@@ -1004,7 +998,7 @@ esac
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         let storage = PoolStorage::new(program).with_backing(root.path().join("machine-pool"));
-        fs::write(&storage.backing, "original pool bytes").unwrap();
+        fs::write(storage.backing(), "original pool bytes").unwrap();
         let pool = storage
             .recover(UnlabeledBacking::Preserve)
             .await
@@ -1013,12 +1007,12 @@ esac
         assert_eq!(pool.name(), POOL_NAME);
         let commands = fs::read_to_string(root.path().join("commands")).unwrap();
         assert!(
-            commands.contains(&format!("import -d {}", storage.backing.display())),
+            commands.contains(&format!("import -d {}", storage.backing().display())),
             "{commands}"
         );
         assert!(!storage.has_device_pool().unwrap());
         assert_eq!(
-            fs::read_to_string(&storage.backing).unwrap(),
+            fs::read_to_string(storage.backing()).unwrap(),
             "original pool bytes"
         );
     }
@@ -1027,15 +1021,19 @@ esac
     async fn recovery_refuses_conflicting_file_and_device_ownership() {
         let root = tempfile::tempdir().unwrap();
         let storage = device_recovery_storage(root.path(), "exit 97", "exit 97");
-        fs::write(&storage.backing, "retained pool").unwrap();
-        fs::write(storage.backing.with_extension("device"), "ployz-device\n").unwrap();
+        fs::write(storage.backing(), "retained pool").unwrap();
+        fs::write(
+            storage.files.marker(),
+            machine_pool::UNCONFIRMED_DEVICE_POOL_MARKER,
+        )
+        .unwrap();
         let failure = storage
             .recover(UnlabeledBacking::Preserve)
             .await
             .unwrap_err();
         assert!(failure.to_string().contains("conflicting"), "{failure}");
         assert_eq!(
-            fs::read_to_string(&storage.backing).unwrap(),
+            fs::read_to_string(storage.backing()).unwrap(),
             "retained pool"
         );
     }
@@ -1054,7 +1052,7 @@ esac
             "{failure}"
         );
         assert!(!storage.has_device_pool().unwrap());
-        assert!(!storage.backing.exists());
+        assert!(!storage.backing().exists());
     }
 
     #[tokio::test]
@@ -1067,18 +1065,22 @@ esac
         );
         let failure = storage.recover(UnlabeledBacking::Remove).await.unwrap_err();
         assert!(failure.to_string().contains("ambiguous"), "{failure}");
-        assert!(!storage.backing.exists());
+        assert!(!storage.backing().exists());
     }
 
     #[tokio::test]
     async fn a_missing_device_pool_never_becomes_a_file_backed_pool() {
         let root = tempfile::tempdir().unwrap();
         let storage = device_recovery_storage(root.path(), ":", "exit 97");
-        fs::write(storage.backing.with_extension("device"), "ployz-device\n").unwrap();
+        fs::write(
+            storage.files.marker(),
+            machine_pool::UNCONFIRMED_DEVICE_POOL_MARKER,
+        )
+        .unwrap();
         assert!(storage.has_held_a_pool().unwrap());
         assert!(storage.recover(UnlabeledBacking::Remove).await.is_err());
         let failure = storage.create(1024).await.err().unwrap();
         assert!(failure.to_string().contains("device"), "{failure}");
-        assert!(!storage.backing.exists());
+        assert!(!storage.backing().exists());
     }
 }

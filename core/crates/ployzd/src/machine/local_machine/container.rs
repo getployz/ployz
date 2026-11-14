@@ -31,8 +31,8 @@ use crate::docker::{
     same_creation,
 };
 use crate::docker_image::ImagePull;
+use crate::host_facts::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 use crate::images::DoorSpecs;
-use crate::machine::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 
 /// A settle inspects local Docker, so a short poll costs little and sets how late a
 /// verdict is seen. Remote health waits keep `HEALTH_POLL_INTERVAL`.
@@ -244,7 +244,8 @@ impl LocalMachine {
                     kind,
                     &namespace,
                     &spec,
-                    creation_key,
+                    creation_key
+                        .unwrap_or_else(|| format!("test:{}", ployz_core::MachineId::random())),
                     deployment_id,
                     Gen::FIRST,
                     ImagePull::Policy(registry_auth.as_ref()),
@@ -309,7 +310,7 @@ impl LocalMachine {
                             ContainerKind::ServiceContainer,
                             &namespace,
                             &resolved_spec,
-                            Some(creation_key.as_str().to_owned()),
+                            creation_key.as_str().to_owned(),
                             None,
                             copy_gen,
                             ImagePull::Policy(None),
@@ -1386,7 +1387,7 @@ impl LocalMachine {
                         new.slot.kind,
                         &new.slot.namespace,
                         &new.resolved_spec,
-                        Some(new.slot.creation_key.as_str().to_owned()),
+                        new.slot.creation_key.as_str().to_owned(),
                         new.deployment_id,
                         new.r#gen,
                         if new.image_prepared {
@@ -1438,7 +1439,7 @@ impl LocalMachine {
         kind: ContainerKind,
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
-        creation_key: Option<String>,
+        creation_key: String,
         deployment_id: Option<ployz_core::DeploymentLogId>,
         r#gen: Gen,
         image: ImagePull<'_>,
@@ -1456,7 +1457,7 @@ impl LocalMachine {
             .create_with_admission(
                 machine,
                 ContainerRequest {
-                    creation_key: creation_key.as_deref(),
+                    creation_key: &creation_key,
                     deployment_id: deployment_id.as_ref(),
                     r#gen,
                     image,
@@ -1473,8 +1474,7 @@ impl LocalMachine {
                         // A deploy's hook runs once: a slot whose hook was made and
                         // is now gone is never made again, so it never reruns.
                         if kind == ContainerKind::PreDeployHook
-                            && let Some(key) = creation_key.as_deref()
-                            && self.approvals.hook_made(key)?
+                            && self.approvals.hook_made(&creation_key)?
                         {
                             return Err(Error::DeployRefused(
                                 ployz_core::authority::AuthorityRefusal::Mismatch {
@@ -1795,7 +1795,11 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     let reason = match &error {
         Error::NotParticipating => ContainerRefusalReason::NotParticipating,
         Error::IngressProxyServiceSpec(_) => ContainerRefusalReason::InvalidIngress,
-        Error::Docker(Docker::IngressHolderNotRunning | Docker::UnrecognizedNetwork) => {
+        Error::Docker(
+            Docker::IngressHolderNotRunning
+            | Docker::TunnelOriginNotRunning
+            | Docker::UnrecognizedNetwork,
+        ) => {
             return Ok(ContainerRefusal {
                 reason: ContainerRefusalReason::InvalidIngress,
                 message: ployz_core::error_chain::inline(&error),

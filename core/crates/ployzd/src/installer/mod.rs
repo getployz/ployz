@@ -4,6 +4,7 @@ mod assess;
 mod compensation;
 mod host;
 mod os_release;
+mod packages;
 mod prepare;
 mod release;
 mod storage;
@@ -28,7 +29,7 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-use crate::{mutation, units::Unit};
+use crate::{machine_pool::DevicePoolFiles, mutation, units::Unit};
 
 use self::{
     assess::{assess, read_facts},
@@ -145,7 +146,7 @@ pub(super) struct InstallPaths {
     pub(super) proc_dir: PathBuf,
     /// Present only while the ZFS kernel module is loaded.
     pub(super) zfs_module: PathBuf,
-    pub(super) device_pool_marker: PathBuf,
+    pub(super) device_pool: DevicePoolFiles,
     pub(super) usr_src: PathBuf,
     /// Where builds and downloads are staged before they are installed.
     pub(super) staging_dir: PathBuf,
@@ -171,7 +172,7 @@ impl InstallPaths {
             apt_dir: PathBuf::from("/etc/apt"),
             proc_dir: PathBuf::from("/proc"),
             zfs_module: PathBuf::from("/sys/module/zfs"),
-            device_pool_marker: MachineLayout::production().device_pool_marker(),
+            device_pool: DevicePoolFiles::new(MachineLayout::production().machine_pool_file()),
             usr_src: PathBuf::from("/usr/src"),
             staging_dir: PathBuf::from("/var/tmp"),
             sys_class_block: PathBuf::from("/sys/class/block"),
@@ -208,7 +209,7 @@ impl InstallPaths {
             apt_dir: root.join("apt"),
             proc_dir: root.join("proc"),
             zfs_module: root.join("sys/module/zfs"),
-            device_pool_marker: root.join("machine-pool.device"),
+            device_pool: DevicePoolFiles::new(root.join("machine-pool")),
             usr_src: root.join("usr/src"),
             staging_dir: root.join("var/tmp"),
             sys_class_block: root.join("sys/class/block"),
@@ -553,7 +554,7 @@ mod tests {
             "/var/lib/ployz-machine-pool"
         );
         assert_eq!(
-            paths.device_pool_marker.as_os_str(),
+            paths.device_pool.marker().as_os_str(),
             "/var/lib/ployz-machine-pool.device"
         );
         assert_eq!(paths.staging_dir.as_os_str(), "/var/tmp");
@@ -584,7 +585,7 @@ mod tests {
             "/var//lib/ployz/prepare/state.json"
         );
         assert_eq!(
-            paths.device_pool_marker.as_os_str(),
+            paths.device_pool.marker().as_os_str(),
             "/var/lib/ployz-machine-pool.device"
         );
     }

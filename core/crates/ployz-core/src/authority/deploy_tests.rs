@@ -90,6 +90,21 @@ fn requested(value: Value) -> RequestedServiceSpec {
     serde_json::from_value(value).unwrap()
 }
 
+/// The fixture with nothing that reaches past its own Environment, as a session approves
+/// it: no capability, device, sysctl, host port or Bind Mount.
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn contained_json() -> Value {
+    let mut spec = requested_json();
+    let container = spec["container"].as_object_mut().unwrap();
+    for key in ["cap_add", "resources", "sysctls"] {
+        container.remove(key);
+    }
+    for list in ["ports", "volumes", "mounts"] {
+        spec[list].as_array_mut().unwrap().remove(0);
+    }
+    spec
+}
+
 /// What a Machine is handed for `spec`: scoped and resolved, as the client places it.
 fn resolved(spec: &RequestedServiceSpec) -> ResolvedServiceSpec {
     let mut spec = spec.clone();
@@ -576,6 +591,15 @@ fn a_stranger_or_a_missing_signature_is_refused() {
 }
 
 fn browser_approval(families: Vec<ActionFamily>) -> (Signed<DeployApproval>, Machine) {
+    browser_approval_of(families, &requested(contained_json()))
+}
+
+/// A deploy of `spec` a browser key signed under a passkey's grant of `families` for the
+/// fixture's Environment, and a Machine that trusts the passkey.
+fn browser_approval_of(
+    families: Vec<ActionFamily>,
+    spec: &RequestedServiceSpec,
+) -> (Signed<DeployApproval>, Machine) {
     let browser = signer(4);
     let passkey = Authenticator::es256(4);
     let grant = GrantBody {
@@ -594,7 +618,7 @@ fn browser_approval(families: Vec<ActionFamily>) -> (Signed<DeployApproval>, Mac
         challenge: &GrantBody::challenge(&body),
         ..HONEST
     });
-    let mut deploy = approval(&browser, &requested(requested_json()));
+    let mut deploy = approval(&browser, spec);
     deploy.signer = SignerKey::Browser {
         browser: browser.public(),
     };
@@ -705,7 +729,7 @@ fn the_fixture_digest_is_golden() {
 #[test]
 fn a_browser_approval_under_a_deploy_grant_creates_and_another_environment_is_refused() {
     let (signed, machine) = browser_approval(vec![ActionFamily::Deploy]);
-    let spec = resolved(&requested(requested_json()));
+    let spec = resolved(&requested(contained_json()));
     let approved = verify(&signed, &machine.facts(Some(service(&spec)))).unwrap();
     assert!(matches!(approved.by, Approver::Browser { .. }));
 
@@ -725,6 +749,216 @@ fn a_browser_approval_under_a_deploy_grant_creates_and_another_environment_is_re
         AuthorityRefusal::Mismatch {
             field: "an Environment"
         }
+    );
+}
+
+/// Each way a spec reaches past its own Environment, set on the contained fixture.
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn reaching_specs() -> Vec<(&'static str, Value)> {
+    let edit = |edit: &dyn Fn(&mut Value)| {
+        let mut spec = contained_json();
+        edit(&mut spec);
+        spec
+    };
+    vec![
+        (
+            "privileged",
+            edit(&|spec| spec["container"]["privileged"] = json!(true)),
+        ),
+        (
+            "cap_add",
+            edit(&|spec| spec["container"]["cap_add"] = json!(["SYS_ADMIN"])),
+        ),
+        (
+            "device",
+            edit(&|spec| {
+                spec["container"]["resources"] = json!({"devices": [{
+                    "machine_path": "/dev/sda",
+                    "container_path": "/dev/sda",
+                    "cgroup_permissions": "rwm"
+                }]});
+            }),
+        ),
+        (
+            "pid_mode",
+            edit(&|spec| spec["container"]["pid_mode"] = json!("host")),
+        ),
+        (
+            "sysctl",
+            edit(&|spec| spec["container"]["sysctls"] = json!({"net.ipv4.ip_forward": "1"})),
+        ),
+        (
+            "host port",
+            edit(&|spec| {
+                spec["ports"].as_array_mut().unwrap().push(json!({
+                    "mode": "host", "bind": {"kind": "all"}, "published_port": 2222,
+                    "container_port": 22, "transport_protocol": "tcp"
+                }));
+            }),
+        ),
+        (
+            "Bind Mount",
+            edit(&|spec| {
+                spec["volumes"].as_array_mut().unwrap().push(
+                    json!({"reference": "root", "source": {"kind": "bind", "machine_path": "/"}}),
+                );
+                spec["mounts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"volume": "root", "target": "/host"}));
+            }),
+        ),
+        (
+            "External Volume",
+            edit(&|spec| {
+                spec["volumes"].as_array_mut().unwrap().push(json!({
+                    "reference": "theirs",
+                    "source": {"kind": "external", "name": "other-data"}
+                }));
+                spec["mounts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"volume": "theirs", "target": "/theirs"}));
+            }),
+        ),
+        (
+            "GPU reservation",
+            edit(&|spec| {
+                spec["container"]["resources"] =
+                    json!({"device_reservations": [{"driver": "nvidia", "count": 1}]});
+            }),
+        ),
+        (
+            "local driver binding a host path",
+            edit(&|spec| {
+                spec["volumes"][0]["source"]["driver"] = json!({"name": "local",
+                    "options": {"type": "none", "o": "bind", "device": "/"}});
+            }),
+        ),
+        (
+            "tmpfs driver options binding a host path",
+            edit(&|spec| {
+                spec["volumes"][0]["source"]["driver"] = json!({"name": "local",
+                    "options": {"type": "tmpfs", "o": "bind,size=1m", "device": "/"}});
+            }),
+        ),
+        (
+            "third-party driver",
+            edit(&|spec| {
+                spec["volumes"][0]["source"]["driver"] = json!({"name": "rexray/ebs"});
+            }),
+        ),
+        (
+            "Ingress holder network",
+            edit(&|spec| spec["container"]["network"] = json!("ingress_holder")),
+        ),
+        (
+            "privileged hook",
+            edit(&|spec| spec["pre_deploy"]["privileged"] = json!(true)),
+        ),
+    ]
+}
+
+/// A browser key signs whatever plan Cloud's page hands it, so the Container it approves
+/// reaches nothing past its own Environment, whether made or started again. A Device
+/// approves the same spec.
+#[test]
+fn a_session_approves_no_host_reach() {
+    for (reach, value) in reaching_specs() {
+        let spec = requested(value);
+        let made = resolved(&spec);
+        let (signed, machine) = browser_approval_of(vec![ActionFamily::Deploy], &spec);
+        for creation in [service(&made), hook(&made)] {
+            assert_eq!(
+                verify(&signed, &machine.facts(Some(creation))).unwrap_err(),
+                AuthorityRefusal::Mismatch { field: HOST_ACCESS },
+                "{reach}"
+            );
+        }
+        assert!(
+            verify(&signed, &machine.facts(None)).is_ok(),
+            "{reach}: a step that creates nothing names no spec"
+        );
+        let device = signer(1);
+        let signed = Signed::sign(&approval(&device, &spec), &device).unwrap();
+        let machine = Machine::new(&[&device]);
+        assert!(
+            verify(&signed, &machine.facts(Some(service(&made)))).is_ok(),
+            "{reach}: a Device approves it"
+        );
+    }
+}
+
+/// A managed Volume carries the Namespace it was scoped to. A session never mounts one
+/// scoped to another Environment, so it can't reach that Environment's data.
+#[test]
+fn a_session_mounts_no_other_environments_volume() {
+    let spec = requested(contained_json());
+    let mut theirs = spec.clone();
+    theirs.mount_graph = theirs
+        .mount_graph
+        .scope_to_namespace(&Namespace::parse("other").unwrap())
+        .unwrap();
+    let made = theirs
+        .to_resolved(
+            ServiceId::parse("c".repeat(32)).unwrap(),
+            ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let (signed, machine) = browser_approval_of(vec![ActionFamily::Deploy], &made.to_requested());
+    assert_eq!(
+        verify(&signed, &machine.facts(Some(service(&made)))).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: HOST_ACCESS },
+    );
+    let ours = resolved(&spec);
+    let (signed, machine) = browser_approval_of(vec![ActionFamily::Deploy], &spec);
+    assert!(verify(&signed, &machine.facts(Some(service(&ours)))).is_ok());
+}
+
+/// The dashboard refuses before it signs, naming every Service and what each reaches.
+#[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn a_browser_draft_refuses_host_reach_and_names_each_service() {
+    let terms = draft_terms();
+    let reaching = reaching_specs();
+    for (reach, value) in &reaching {
+        assert!(
+            matches!(
+                DeployApproval::browser_draft(
+                    terms.clone(),
+                    namespace(),
+                    &[requested(value.clone())]
+                ),
+                Err(BrowserDraftError::HostReach(_))
+            ),
+            "{reach}"
+        );
+    }
+    let mut db = with(&["name"], json!("db"));
+    db["container"]["privileged"] = json!(true);
+    let refusal = DeployApproval::browser_draft(
+        terms.clone(),
+        namespace(),
+        &[requested(requested_json()), requested(db)],
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        refusal,
+        "These services reach the server itself, so only an approved device can approve them: \
+         web (device /dev/null:/dev/null, adds NET_ADMIN, sysctl net.core.somaxconn, host port \
+         8080, binds /srv/web), db (privileged, device /dev/null:/dev/null, adds NET_ADMIN, \
+         sysctl net.core.somaxconn, host port 8080, binds /srv/web). Run ployz deploy on that \
+         device."
+    );
+    let one =
+        DeployApproval::browser_draft(terms, namespace(), &[requested(reaching[0].1.clone())])
+            .unwrap_err()
+            .to_string();
+    assert_eq!(
+        one,
+        "web (privileged) reaches the server itself, so only an approved device can approve it. \
+         Run ployz deploy on that device."
     );
 }
 
@@ -868,26 +1102,16 @@ fn a_deploy_step_in_a_bundle_no_trusted_key_signed_is_refused() {
 
 #[test]
 fn a_browser_draft_names_the_golden_digest_and_refuses_a_build_or_a_tag() {
-    let signer = signer(1);
-    let fixture = approval(&signer, &requested(requested_json()));
-    let terms = DeployTerms {
-        cluster: fixture.cluster,
-        operation: fixture.operation,
-        machines: fixture.machines,
-        issued_at: fixture.issued_at,
-        expires_at: fixture.expires_at,
-        signer: fixture.signer,
-        proposal: None,
-    };
+    let terms = draft_terms();
     let draft =
-        DeployApproval::browser_draft(terms.clone(), namespace(), &[requested(requested_json())])
+        DeployApproval::browser_draft(terms.clone(), namespace(), &[requested(contained_json())])
             .unwrap();
     let body: DeployApproval = canonical::from_canonical(&draft.body).unwrap();
     assert_eq!(
         body.digest(&web())
             .map(|digest| digest.to_string())
             .as_deref(),
-        Some("cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5")
+        Some(CONTAINED_GOLDEN)
     );
     assert_eq!(draft.lines, draft.changes.first().unwrap().lines());
 
@@ -919,9 +1143,13 @@ fn a_browser_draft_names_the_golden_digest_and_refuses_a_build_or_a_tag() {
     );
 }
 
-fn draft_lines(spec: Value) -> Vec<String> {
+/// The digest of [`contained_json`], which the browser's draft must reproduce.
+const CONTAINED_GOLDEN: &str = "b38204e1d5b8a6d94b145b97d8dcbff4b50f5218b1cd9969324a1108aed6541b";
+
+/// The fixture approval's terms, as a client sets them around a plan.
+fn draft_terms() -> DeployTerms {
     let fixture = approval(&signer(1), &requested(requested_json()));
-    let terms = DeployTerms {
+    DeployTerms {
         cluster: fixture.cluster,
         operation: fixture.operation,
         machines: fixture.machines,
@@ -929,10 +1157,20 @@ fn draft_lines(spec: Value) -> Vec<String> {
         expires_at: fixture.expires_at,
         signer: fixture.signer,
         proposal: None,
-    };
-    DeployApproval::browser_draft(terms, namespace(), &[requested(spec)])
-        .unwrap()
-        .lines
+    }
+}
+
+/// What the approver reads before signing `spec`, the same lines on the CLI and in a
+/// browser.
+fn draft_lines(spec: Value) -> Vec<String> {
+    let (_, changes) = DeployApproval::draft(
+        draft_terms(),
+        namespace(),
+        &[requested(spec)],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    changes.iter().flat_map(ApprovedChange::lines).collect()
 }
 
 /// Each field Cloud could plant in the plan it relays changes what the approver reads

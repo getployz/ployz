@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::{ContainerKind, ContainerObservation, PortPublication};
-use crate::{IngressHost, QualifiedService, ServiceId};
+use crate::{HttpProtocol, IngressHost, QualifiedService, ServiceId};
 
 /// Hostname Owner for each explicit Ingress Hostname in these observations.
 ///
@@ -40,6 +40,39 @@ pub fn hostname_owners<'a>(
         .collect()
 }
 
+/// Each Ingress Hostname a Service Container publishes, with the Service that owns the
+/// Hostname and the protocol this publication asks for.
+///
+/// A Service that does not own a Hostname publishes nothing here for it, so what a
+/// Service asks of a Hostname it lost never reaches a site or a certificate order.
+pub fn published_hostnames<'a>(
+    observations: impl IntoIterator<Item = &'a ContainerObservation>,
+) -> impl Iterator<Item = (IngressHost, QualifiedService, HttpProtocol)> {
+    let observations: Vec<_> = observations.into_iter().collect();
+    let owners = hostname_owners(observations.iter().copied());
+    let mut published = Vec::new();
+    for observation in observations {
+        if observation.kind != ContainerKind::ServiceContainer {
+            continue;
+        }
+        let owner = observation.identity();
+        for port in &observation.resolved_spec.ports {
+            let PortPublication::Ingress {
+                hostname,
+                http_protocol,
+                ..
+            } = port
+            else {
+                continue;
+            };
+            if owners.get(hostname) == Some(&owner) {
+                published.push((hostname.clone(), owner.clone(), *http_protocol));
+            }
+        }
+    }
+    published.into_iter()
+}
+
 /// Explicit Ingress Hostnames published by these ports.
 pub fn explicit_ingress_hosts(ports: &[PortPublication]) -> impl Iterator<Item = &IngressHost> {
     ports.iter().filter_map(|port| match port {
@@ -54,10 +87,11 @@ mod tests {
 
     use serde_json::json;
 
-    use super::hostname_owners;
+    use super::{hostname_owners, published_hostnames};
     use crate::{
-        ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, IngressHost,
-        MachineId, Namespace, QualifiedService, ResolvedServiceSpec, ServiceId, ServiceName,
+        ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
+        HttpProtocol, IngressHost, MachineId, Namespace, PortPublication, QualifiedService,
+        ResolvedServiceSpec, ServiceId, ServiceName,
     };
 
     #[test]
@@ -131,6 +165,74 @@ mod tests {
         hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
             .unwrap();
         assert!(hostname_owners([&hook]).is_empty());
+    }
+
+    #[test]
+    fn a_losing_service_publishes_nothing_for_the_hostname_it_lost() {
+        let hostname = host("api.example.com");
+        let winner = observation("blog", "web", '2', 'b', 5, hostname.as_str());
+        let mut loser = observation("shop", "web", '1', 'a', 10, hostname.as_str());
+        loser
+            .try_update(|parts| {
+                parts.resolved_spec.ports = vec![
+                    ingress(&hostname, HttpProtocol::Https),
+                    ingress(&host("shop.example.com"), HttpProtocol::Https),
+                ];
+            })
+            .unwrap();
+        let mut hook = observation("blog", "web", '3', 'c', 1, "hook.example.com");
+        hook.try_update(|parts| parts.kind = ContainerKind::PreDeployHook)
+            .unwrap();
+
+        assert_eq!(
+            published_hostnames([&loser, &winner, &hook]).collect::<Vec<_>>(),
+            [
+                (
+                    host("shop.example.com"),
+                    QualifiedService::parse("shop/web").unwrap(),
+                    HttpProtocol::Https
+                ),
+                (
+                    hostname,
+                    QualifiedService::parse("blog/web").unwrap(),
+                    HttpProtocol::Http
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_protocol_an_owner_publishes_comes_out_in_container_and_port_order() {
+        let hostname = host("api.example.com");
+        let mut plain = observation("shop", "web", '1', 'a', 1, hostname.as_str());
+        plain
+            .try_update(|parts| {
+                parts.resolved_spec.ports = vec![
+                    ingress(&hostname, HttpProtocol::Https),
+                    ingress(&hostname, HttpProtocol::Http),
+                ];
+            })
+            .unwrap();
+        let rolling = observation("shop", "web", '1', 'b', 2, hostname.as_str());
+
+        let owner = QualifiedService::parse("shop/web").unwrap();
+        assert_eq!(
+            published_hostnames([&plain, &rolling]).collect::<Vec<_>>(),
+            [
+                (hostname.clone(), owner.clone(), HttpProtocol::Https),
+                (hostname.clone(), owner.clone(), HttpProtocol::Http),
+                (hostname, owner, HttpProtocol::Http),
+            ]
+        );
+    }
+
+    fn ingress(hostname: &IngressHost, http_protocol: HttpProtocol) -> PortPublication {
+        PortPublication::Ingress {
+            hostname: hostname.clone(),
+            load_balancer_port: 80.try_into().unwrap(),
+            container_port: 80.try_into().unwrap(),
+            http_protocol,
+        }
     }
 
     fn host(name: &str) -> IngressHost {

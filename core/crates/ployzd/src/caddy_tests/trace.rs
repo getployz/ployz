@@ -445,7 +445,7 @@ fn every_site_and_the_error_page_set_the_ployz_headers() {
     for address in sites {
         let site = site_text(&caddyfile, address);
         let import = if address.ends_with(":8480") {
-            format!("\timport loopback_site {a}\n")
+            format!("\timport tunnel_site {a}\n")
         } else {
             format!("\timport ployz_headers {a}\n")
         };
@@ -457,19 +457,18 @@ fn every_site_and_the_error_page_set_the_ployz_headers() {
     }
     let error_page = &caddyfile[caddyfile.find("(error_page) {").unwrap()..];
     assert!(error_page.contains("\t\timport ployz_headers {args[0]}\n"));
-    let loopback = site_text(&caddyfile, "(loopback_site)");
+    let tunnel = site_text(&caddyfile, "(tunnel_site)");
     assert!(
-        loopback.contains("\timport ployz_headers {args[0]}\n"),
-        "{loopback}"
+        tunnel.contains("\timport ployz_headers {args[0]}\n"),
+        "{tunnel}"
     );
 }
 
-/// Every whitespace token that reads as `ip:port`, but the loopback listener.
+/// Every whitespace token that reads as `ip:port`.
 fn upstream_tokens(caddyfile: &str) -> std::collections::BTreeSet<String> {
     caddyfile
         .split_whitespace()
         .filter(|token| token.parse::<std::net::SocketAddr>().is_ok())
-        .filter(|token| !token.starts_with("127.0.0.1:"))
         .map(ToOwned::to_owned)
         .collect()
 }

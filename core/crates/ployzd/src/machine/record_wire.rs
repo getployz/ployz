@@ -51,6 +51,8 @@ pub(super) struct LocalMachineRecordWire {
     trusted_snapshot: Option<super::TrustedSnapshot>,
     #[serde(default)]
     activation: Option<ployz_core::OperationId>,
+    #[serde(default)]
+    activated_at: Option<ployz_core::authority::Timestamp>,
 }
 
 impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
@@ -75,6 +77,7 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.enrollment = wire.enrollment;
         record.trusted_snapshot = wire.trusted_snapshot;
         record.activation = wire.activation;
+        record.activated_at = wire.activated_at;
         if record.activation.is_some() {
             record.filters_peers = true;
         }

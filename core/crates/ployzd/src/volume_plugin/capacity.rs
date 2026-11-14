@@ -2,7 +2,8 @@
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    CopyRole, ProvisionedCopy, ProvisionedVolumeMaximumBytes, StorageCapacity, StorageCapacityError,
+    CopyPlace, ProvisionedCopy, ProvisionedVolumeMaximumBytes, StorageCapacity,
+    StorageCapacityError,
 };
 use ployzd::dataset_layout::{DatasetLayout, Place, SlotAt};
 use std::collections::BTreeMap;
@@ -56,16 +57,15 @@ impl VolumeStorage {
                 };
                 let name = ployz_core::DockerVolumeName::parse(name)
                     .map_err(|error| ployz_core::error_chain::inline(&error))?;
-                let (role, maximum_bytes, used_bytes, slot_role) = match place {
+                let (copy_place, maximum_bytes, used_bytes) = match place {
                     Place::Root(_) => (
                         if dataset.switching() {
-                            CopyRole::Switching
+                            CopyPlace::Switching
                         } else {
-                            CopyRole::Writer
+                            CopyPlace::Writer
                         },
                         dataset.refquota,
                         dataset.referenced_bytes,
-                        None,
                     ),
                     Place::Slot { at, .. } => {
                         let bound = super::storage::committed_bytes(dataset, pool.name());
@@ -81,10 +81,9 @@ impl VolumeStorage {
                             .checked_add(bound)
                             .ok_or("Volume commitments overflow u64")?;
                         (
-                            CopyRole::Slot,
+                            CopyPlace::Slot(Some(self.marks(&dataset.name).role().await?)),
                             bound,
                             0,
-                            Some(self.marks(&dataset.name).role().await?),
                         )
                     }
                     Place::Outside => continue,
@@ -92,18 +91,10 @@ impl VolumeStorage {
                 let maximum = ProvisionedVolumeMaximumBytes::new(
                     std::num::NonZeroU64::new(maximum_bytes).ok_or("Volume has no finite bound")?,
                 );
-                if role != CopyRole::Slot {
+                if !matches!(copy_place, CopyPlace::Slot(_)) {
                     volumes.insert(name.clone(), maximum);
                 }
-                copies.insert(
-                    name,
-                    ProvisionedCopy {
-                        role,
-                        maximum_bytes: maximum,
-                        used_bytes,
-                        slot_role,
-                    },
-                );
+                copies.insert(name, ProvisionedCopy::new(copy_place, maximum, used_bytes));
             }
         }
         Ok(StorageCapacity {

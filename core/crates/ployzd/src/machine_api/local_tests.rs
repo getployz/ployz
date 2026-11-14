@@ -1231,18 +1231,48 @@ mod ingress_doors {
         let connector = set.tunnel.unwrap();
         assert_eq!(connector.change, DoorChange::Created);
         assert_eq!(connector.now.identity(), QualifiedService::system_tunnel());
-        assert_eq!(connector.now.resolved_spec, specs.tunnel.unwrap());
+        let pair = specs.tunnel.unwrap();
+        assert_eq!(connector.now.resolved_spec, pair.connector);
         let token = data_dir.join("root/run/ployz/tunnel/token");
         assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
         let inventory = runtime
             .door_inventory(&service.local.record().id())
             .await
             .unwrap();
-        assert_eq!(inventory.len(), 3);
-        assert!(inventory.iter().all(|entry| {
-            entry.facts.door == crate::docker::Door::Holder
-                || entry.facts.joined_to == Some(holder.now.container_id)
-        }));
+        assert_eq!(inventory.len(), 4);
+        let origin = inventory
+            .iter()
+            .find(|entry| entry.facts.door == crate::docker::Door::TunnelOrigin)
+            .unwrap();
+        assert_eq!(origin.observation.resolved_spec, pair.origin);
+        for entry in &inventory {
+            let joined = match entry.facts.door {
+                crate::docker::Door::Proxy => Some(holder.now.container_id),
+                crate::docker::Door::Tunnel => Some(origin.facts.id),
+                crate::docker::Door::Holder | crate::docker::Door::TunnelOrigin => None,
+            };
+            assert_eq!(entry.facts.joined_to, joined, "{:?}", entry.facts.door);
+        }
+        let network_modes = fake
+            .request_bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| path.ends_with("/containers/create"))
+            .filter_map(|(_, body)| {
+                body.pointer("/HostConfig/NetworkMode")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            network_modes
+                .iter()
+                .filter(|mode| *mode == "ployz-tunnel")
+                .count(),
+            1,
+            "the Tunnel Origin alone is created on its own bridge: {network_modes:?}"
+        );
 
         let again = set_doors(&service, tunnel, false).await.unwrap().unwrap();
         assert_eq!(again.holder.unwrap().change, DoorChange::Unchanged);
@@ -1509,6 +1539,61 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn a_failed_tunnel_door_never_starts_a_connector_in_the_holders_network_again() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-old-connector").await;
+        let machine = service.local.record().id();
+        set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let record = service.local.record();
+        let placed = record.machine().unwrap();
+        let mut spec = ployz_core::tunnel_service_spec("cloudflared:1", &sealed);
+        spec.container.network = Some(ployz_core::ServiceNetwork::IngressHolder);
+        let spec = spec
+            .to_resolved(ployz_core::ServiceId::random(), Default::default())
+            .unwrap();
+        let old = runtime
+            .create_for_test(
+                &placed.id,
+                placed.subnet.gateway(),
+                ployz_core::ContainerKind::ServiceContainer,
+                &ployz_core::Namespace::system(),
+                &spec,
+            )
+            .await
+            .unwrap()
+            .container_id;
+        runtime.start(&old).await.unwrap();
+
+        fake.refuse_create_of
+            .lock()
+            .unwrap()
+            .insert(QualifiedService::system_tunnel_origin().name.to_string());
+        let open =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let set = set_doors(&service, open, false).await.unwrap().unwrap();
+        assert_eq!(
+            set.failure.as_ref().map(|failure| failure.stage),
+            Some(ployz_core::IngressStage::Tunnel),
+            "{set:?}"
+        );
+        let doors = at_rest_by_id(&runtime, &machine).await;
+        assert!(
+            doors.contains(&(old, true)),
+            "the undo started the old doors again but this connector: {doors:?}"
+        );
+        assert!(
+            doors.iter().any(|(id, at_rest)| *id != old && !at_rest),
+            "the previous holder and Caddy run again: {doors:?}"
+        );
+        runtime.remove_tunnel_token().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn reopening_the_tunnel_door_over_a_connector_left_stopped_holds_it_across_a_reboot() {
         let (data_dir, _store, service, fake, runtime, cluster) =
             fake_docker_service_sealing("ployzd-doors-reopen-stays").await;
@@ -1759,12 +1844,7 @@ mod ingress_doors {
             .await
             .unwrap()
             .iter()
-            .map(|entry| {
-                (
-                    entry.facts.id,
-                    crate::ingress::at_rest(&entry.facts.runtime),
-                )
-            })
+            .map(|entry| (entry.facts.id, entry.facts.runtime.at_rest()))
             .collect()
     }
 
@@ -1977,7 +2057,9 @@ mod ingress_doors {
             runtime.stop(&entry.facts.id, None, None).await.unwrap();
             match entry.facts.door {
                 crate::docker::Door::Holder => holder = Some(entry.facts.id),
-                crate::docker::Door::Proxy | crate::docker::Door::Tunnel => {
+                crate::docker::Door::Proxy
+                | crate::docker::Door::TunnelOrigin
+                | crate::docker::Door::Tunnel => {
                     runtime.remove(&entry.facts.id, true, true).await.unwrap();
                 }
             }
@@ -7085,6 +7167,71 @@ mod ensure_container {
             .await
             .unwrap();
             assert_eq!(creates(&fixture.fake, seen), 1);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        /// Service `api` at the pinned image, published at `hostname`.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn published(hostname: &str) -> Value {
+            let mut spec = spec(PINNED);
+            spec["ports"] = json!([{
+                "mode": "ingress",
+                "hostname": hostname,
+                "load_balancer_port": 80,
+                "container_port": 80,
+                "http_protocol": "http"
+            }]);
+            spec
+        }
+
+        #[tokio::test]
+        async fn a_browser_approval_never_claims_a_hostname_another_environment_owns() {
+            let mut fixture = enforced("ployzd-deploy-hostname-owner").await;
+            trust_passkey(&fixture).await;
+            use crate::docker::test_support::hostname_claimant;
+            let (replicated, _cluster) = crate::corrosion::fake_cluster::store().await;
+            for claimant in [
+                hostname_claimant(0xa, "shop", "shop.example.com"),
+                hostname_claimant(0xb, "app", "app.example.com"),
+            ] {
+                replicated.publish_container(&claimant).await.unwrap();
+            }
+            fixture.service = fixture.service.with_cluster_option(Some((
+                replicated,
+                crate::corrosion::AdminClient::new("/no/admin"),
+            )));
+            let service = &fixture.service;
+            let taken = published("shop.example.com");
+            let seen = requests(&fixture.fake).len();
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &taken),
+                    Some(&fixture.browser_deploy(FIX_API, &[&taken])),
+                )
+                .await,
+                "shop.example.com belongs to shop/web",
+            );
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+
+            for (key, hostname) in [("k2", "app.example.com"), ("k3", "new.example.com")] {
+                let spec = published(hostname);
+                deploy_ensure(
+                    service,
+                    new_want("service_container", key, &spec),
+                    Some(&fixture.browser_deploy(FIX_API, &[&spec])),
+                )
+                .await
+                .expect("a session claims a hostname its own environment or nobody owns");
+            }
+            deploy_ensure(
+                service,
+                new_want("service_container", "k4", &taken),
+                Some(&fixture.deploy(&taken)),
+            )
+            .await
+            .expect("an approved device moves a hostname on purpose");
+            assert_eq!(creates(&fixture.fake, seen), 3);
             std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 

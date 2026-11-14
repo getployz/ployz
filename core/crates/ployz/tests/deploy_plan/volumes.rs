@@ -947,12 +947,11 @@ fn copies_snapshot_of(
         };
         capacity.copies.insert(
             volume.clone(),
-            ployz_core::ProvisionedCopy {
-                role: *role,
-                maximum_bytes: maximum_bytes(1_073_741_824),
-                used_bytes: 0,
-                slot_role: None,
-            },
+            ployz_core::ProvisionedCopy::new(
+                ployz_core::CopyPlace::of(*role, None),
+                maximum_bytes(1_073_741_824),
+                0,
+            ),
         );
     }
     let mut first = machine('1', "first");
@@ -2111,12 +2110,11 @@ fn blocked_services_are_reported_in_deploy_order() {
     };
     second.copies.insert(
         app_volume("shared"),
-        ployz_core::ProvisionedCopy {
-            role: CopyRole::Slot,
-            maximum_bytes: maximum_bytes(1_073_741_824),
-            used_bytes: 0,
-            slot_role: None,
-        },
+        ployz_core::ProvisionedCopy::new(
+            ployz_core::CopyPlace::Slot(None),
+            maximum_bytes(1_073_741_824),
+            0,
+        ),
     );
 
     let preview = runner_preview(&intent, &snapshot).unwrap();

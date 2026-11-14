@@ -103,6 +103,7 @@ fn check(
             service: &service,
             container: &container,
             kind: ContainerKind::ServiceContainer,
+            spec: &crate::authority::restart::contained_spec(),
             step: RestartStep::Stop,
             now: at(now),
         },
@@ -419,6 +420,86 @@ fn a_body_changed_after_the_browser_key_signed_fails_its_signature() {
     );
 }
 
+/// A session never restarts or starts a Container that reaches the host, and refuses at
+/// the first step so nothing stops. A session stopping it, or a Device restarting it,
+/// still works.
+#[test]
+fn a_session_starts_no_container_with_host_reach() {
+    let passkey = Authenticator::es256(4);
+    let device = Signer::from_seed(&[1; 32]);
+    let own = machine('2');
+    let service = ServiceName::parse("web").unwrap();
+    let container = ContainerId::parse("a".repeat(64)).unwrap();
+    let mut trusted = trusting(&passkey);
+    trusted.devices.push(device.public().into());
+    let mut privileged = crate::authority::restart::contained_spec();
+    privileged.container.privileged = true;
+    let verify = |signed: &Signed<RestartApproval>, step: RestartStep| {
+        restart::verify(
+            signed,
+            &RestartFacts {
+                cluster: Some(cluster()),
+                machine: &own,
+                trusted: &trusted,
+                namespace: &production(),
+                service: &service,
+                container: &container,
+                kind: ContainerKind::ServiceContainer,
+                spec: &privileged,
+                step,
+                now: at(ISSUED + 2 * MINUTE),
+            },
+        )
+        .map(|approved| approved.body.kind)
+    };
+    let body = GrantBody {
+        families: vec![
+            ActionFamily::Restart,
+            ActionFamily::Start,
+            ActionFamily::Stop,
+        ],
+        ..grant_body(60 * MINUTE)
+    };
+    let session = |kind| {
+        envelope(
+            &RestartApproval {
+                kind,
+                ..approval(production(), vec![machine('2')])
+            },
+            granted(&passkey, &body, "webauthn.get"),
+        )
+    };
+    for (kind, step) in [
+        (WorkflowKind::Restart, RestartStep::Hold),
+        (WorkflowKind::Restart, RestartStep::Stop),
+        (WorkflowKind::Restart, RestartStep::Start),
+        (WorkflowKind::Start, RestartStep::Start),
+    ] {
+        assert_eq!(
+            verify(&session(kind), step),
+            Err(AuthorityRefusal::Mismatch {
+                field: crate::authority::deploy::HOST_ACCESS
+            }),
+            "{kind} {step:?}"
+        );
+    }
+    assert_eq!(
+        verify(&session(WorkflowKind::Stop), RestartStep::Stop),
+        Ok(WorkflowKind::Stop)
+    );
+    let by_device = Signed::sign(
+        &RestartApproval {
+            signer: SignerKey::Device(device.public().into()),
+            ..approval(production(), vec![machine('2')])
+        },
+        &device,
+    )
+    .unwrap();
+    for step in [RestartStep::Stop, RestartStep::Start] {
+        assert_eq!(verify(&by_device, step), Ok(WorkflowKind::Restart));
+    }
+}
+
 #[test]
 fn a_device_envelope_keeps_the_bytes_an_older_daemon_reads() {
     let device = Signer::from_seed(&[1; 32]);
@@ -510,6 +591,7 @@ fn a_stop_or_start_runs_only_under_a_grant_whose_families_name_it() {
                 service: &service,
                 container: &container,
                 kind: ContainerKind::ServiceContainer,
+                spec: &crate::authority::restart::contained_spec(),
                 step,
                 now: at(ISSUED + 2 * MINUTE),
             },

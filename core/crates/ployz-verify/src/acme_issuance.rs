@@ -101,8 +101,8 @@ fn ago_cap() -> u8 {
     ))
 }
 
-/// What one Machine's probe of the hostname sees (`HostnameVerdict`,
-/// core/crates/ployz-core/src/domain/hostname_verdict.rs:45-50), in the one refusal and the one
+/// What one Machine's probe of the hostname sees (`HostnameVerdict` in
+/// core/crates/ployz-core/src/domain/hostname_verdict.rs), in the one refusal and the one
 /// route the model explores.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Verdict {
@@ -196,7 +196,7 @@ impl Clock {
 }
 
 /// Which `last_error` a recorded refusal holds. Only `record_certificate_error` compares it
-/// (core/crates/ployzd/src/corrosion/store.rs:1243-1244), and only with the policy's reason.
+/// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check), and only with the policy's reason.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Reason {
     /// `refusal_reason` for DoesNotResolve (`issue_wanted`'s `Issuance::Refused` arm).
@@ -288,10 +288,10 @@ enum Record {
     /// It returned Err and wrote nothing.
     Lost,
     /// `record_certificate_error` found the same reason and wrote nothing
-    /// (core/crates/ployzd/src/corrosion/store.rs:1243-1244).
+    /// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check).
     Same,
     /// `record_certificate_failure` found material and wrote nothing
-    /// (core/crates/ployzd/src/corrosion/store.rs:1189-1190).
+    /// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`'s check for material).
     HasMaterial,
     /// The Machine is not rank 0, so it records no refusal, unless `Broken::any_rank_records`.
     NotRankZero,
@@ -921,7 +921,7 @@ struct AcmeIssuance {
 }
 
 /// `record_certificate_failure` with no material tried
-/// (core/crates/ployzd/src/corrosion/store.rs:1178-1196): `write_acme_row` reads the row; with
+/// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`): `write_acme_row` reads the row; with
 /// material it writes nothing; otherwise it writes `with_backoff`, which keeps the material and
 /// replaces the refusal (core/crates/ployzd/src/corrosion/certificate.rs:281-293, :171-184).
 /// `None` when the write would be lost but none would be made.
@@ -966,7 +966,7 @@ impl AcmeIssuance {
         let policy = built_in();
         match state.policy {
             // `read_pass`'s policy refusal arm: every Machine records the policy's reason for every wanted hostname,
-            // with `record_certificate_error` (core/crates/ployzd/src/corrosion/store.rs:1237-1250),
+            // with `record_certificate_error` (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`),
             // whose `with_error` keeps the material and replaces the refusal with the reason and
             // no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379).
             Policy::Refused => {
@@ -1151,7 +1151,7 @@ impl AcmeIssuance {
             (true, Ends::Rechecked) => Branch::Rechecked { who },
             (true, Ends::Issued | Ends::Failed { .. }) | (false, Ends::Rechecked) => return None,
             // `obtain`'s `order_certificate` and `publish_certificate`: `publish_certificate` writes `CertificateRow::issued`, material with no
-            // challenge and no refusal (core/crates/ployzd/src/corrosion/store.rs:966-986,
+            // challenge and no refusal (core/crates/ployzd/src/corrosion/store.rs, `publish_certificate`,
             // core/crates/ployzd/src/corrosion/certificate.rs:259-261).
             (false, Ends::Issued) => {
                 state.row = Row {
@@ -1601,14 +1601,14 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
             }
         ),
         Some(Branch::PolicyRefused { record, dropped, reset, .. }) => format!(
-            "pass: resolve_certificate_policy refuses the policy, so record_certificate_error records its reason (read_pass's policy refusal arm, core/crates/ployzd/src/corrosion/store.rs:1237-1250): {}; read_pass stops before the gate{}, and run sleeps 60 s ({})",
+            "pass: resolve_certificate_policy refuses the policy, so record_certificate_error records its reason (read_pass's policy refusal arm, core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`): {}; read_pass stops before the gate{}, and run sleeps 60 s ({})",
             match record {
                 Record::Wrote if dropped =>
                     "with_error keeps the material and replaces the refusal with the reason and no clock, dropping the clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)",
                 Record::Wrote =>
                     "with_error keeps the material and replaces the refusal with the reason and no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)",
                 Record::Same =>
-                    "the row already holds that reason, so it writes nothing (core/crates/ployzd/src/corrosion/store.rs:1243-1244)",
+                    "the row already holds that reason, so it writes nothing (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check)",
                 Record::Lost => "it returns Err and writes nothing",
                 Record::HasMaterial | Record::NotRankZero => unreachable!("the policy refusal records with record_certificate_error"),
             },
@@ -1695,7 +1695,7 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
         ),
         Some(Branch::Rechecked { .. }) => "obtain: certificate_row re-reads the row, which holds material, and the recheck returns".to_owned(),
         Some(Branch::Issued { over_material, .. }) => format!(
-            "obtain: {}, so it orders and is issued, and publish_certificate writes the material with no challenge and no refusal (obtain's order_certificate and publish_certificate, core/crates/ployzd/src/corrosion/store.rs:966-986, core/crates/ployzd/src/corrosion/certificate.rs:259-261); the next pass skips the hostname",
+            "obtain: {}, so it orders and is issued, and publish_certificate writes the material with no challenge and no refusal (obtain's order_certificate and publish_certificate, core/crates/ployzd/src/corrosion/store.rs, `publish_certificate`, core/crates/ployzd/src/corrosion/certificate.rs:259-261); the next pass skips the hostname",
             reread_words(over_material)
         ),
         Some(Branch::Failed {
@@ -1714,11 +1714,11 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
                 },
                 match record {
                     Record::Wrote => format!(
-                        "record_certificate_failure writes {} (issue_wanted's record_certificate_failure call, core/crates/ployzd/src/corrosion/store.rs:1186-1196)",
+                        "record_certificate_failure writes {} (issue_wanted's record_certificate_failure call, core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`'s no-material write)",
                         after.row.clock().map_or_else(String::new, clock_words)
                     ),
                     Record::Lost => "record_certificate_failure returns Err and writes nothing, which is only logged".to_owned(),
-                    Record::HasMaterial => "record_certificate_failure finds material and writes nothing (core/crates/ployzd/src/corrosion/store.rs:1189-1190)".to_owned(),
+                    Record::HasMaterial => "record_certificate_failure finds material and writes nothing (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_failure`'s check for material)".to_owned(),
                     Record::Same | Record::NotRankZero => unreachable!("an authority failure records with record_certificate_failure"),
                 },
                 if after.row.material {

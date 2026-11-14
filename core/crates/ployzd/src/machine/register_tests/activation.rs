@@ -89,13 +89,89 @@ async fn a_member_from_before_the_first_f6_start_is_legacy() {
     assert_eq!(report.state, ActivationState::Awaiting);
     assert_eq!(report.legacy_members, vec![harness.id]);
     let legacy: Vec<_> = report.legacy_keys.iter().map(|key| key.code).collect();
-    assert!(legacy.contains(&mesh_key.code()));
-    assert!(legacy.contains(&console_key.code()));
+    assert!(legacy.contains(&mesh_key.check_code()));
+    assert!(legacy.contains(&console_key.check_code()));
     let snapshot = local.record().trusted_snapshot().cloned().unwrap();
     assert!(snapshot.keys().is_empty());
     assert!(snapshot.members().is_empty());
     server.abort();
     drop(local);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A Device or passkey Cloud could plant under 0.3 makes no Full call and signs nothing
+/// while the Server awaits activation. With Full it could start a container that mounts
+/// `/run/ployz`, approve itself over the local socket and keep Full after activation.
+#[test]
+fn a_key_from_before_the_first_f6_start_is_untrusted_while_awaiting() {
+    let (directory, mut store, _) = founded_store("ployzd-planted-key");
+    let planted = DeviceKey::from(Signer::from_seed(&[3; 32]).public());
+    let planted_passkey = crate::machine::test_support::passkey(4);
+    store.approve_device(planted, None).unwrap();
+    store
+        .approve_passkey(
+            ployz_core::authority::TrustedPasskey {
+                passkey: planted_passkey.clone(),
+                approved_by: ployz_core::authority::PasskeyApprover::Routed,
+            },
+            None,
+        )
+        .unwrap();
+    drop(store);
+    crate::machine::test_support::written_before_f7(&directory, false);
+    let record = directory.join("machine.json");
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("trusted_snapshot");
+    std::fs::write(&record, serde_json::to_vec(&json).unwrap()).unwrap();
+
+    let mut store = LocalMachineStore::open(&directory).unwrap();
+
+    let record = store.record();
+    assert!(record.awaits_activation());
+    assert_ne!(
+        record.management_scope(&planted.into()),
+        Some(ployz_core::ManagementScope::Full)
+    );
+    let trusted = record.trusted_keys();
+    assert!(!trusted.devices.contains(&planted));
+    assert!(
+        trusted
+            .passkeys
+            .iter()
+            .all(|held| held.passkey.code() != planted_passkey.code())
+    );
+    let console = DeviceKey::from(Signer::from_seed(&[1; 32]).public());
+    store
+        .approve_device(console, Some(crate::machine::Evidence::LocalSocket))
+        .unwrap();
+    assert_eq!(
+        store.record().management_scope(&console.into()),
+        Some(ployz_core::ManagementScope::Full),
+        "a key a person installs at the console is trusted before activation"
+    );
+    store
+        .approve_device(planted, Some(crate::machine::Evidence::LocalSocket))
+        .unwrap();
+    store
+        .approve_passkey(
+            ployz_core::authority::TrustedPasskey {
+                passkey: planted_passkey.clone(),
+                approved_by: ployz_core::authority::PasskeyApprover::Server,
+            },
+            Some(crate::machine::Evidence::LocalSocket),
+        )
+        .unwrap();
+    let trusted = store.record().trusted_keys();
+    assert!(
+        trusted.devices.contains(&planted)
+            && trusted
+                .passkeys
+                .iter()
+                .any(|held| held.passkey.code() == planted_passkey.code()),
+        "a key from 0.3 a person approves again at the console is trusted"
+    );
+    drop(store);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -154,6 +230,7 @@ async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
     let console_key = Signer::from_seed(&[1; 32]);
     approve(&entry.clone().on_local_socket(), &console_key).await;
     let planted_code = DeviceKey::from(planted.public()).code();
+    let planted_check = DeviceKey::from(planted.public()).check_code();
     let keeping = |kept_keys| {
         let issued_at = Timestamp::now();
         let set = StartingSet {
@@ -168,7 +245,7 @@ async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
     };
 
     let over_mesh = entry
-        .set_device_enforcement(enforce(keeping(vec![planted_code])))
+        .set_device_enforcement(enforce(keeping(vec![planted_check])))
         .await;
 
     assert!(matches!(refusal(over_mesh), Refusal::LegacyKey(code) if code == planted_code));
@@ -179,7 +256,7 @@ async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
     entry
         .clone()
         .on_local_socket()
-        .set_device_enforcement(enforce(keeping(vec![planted_code])))
+        .set_device_enforcement(enforce(keeping(vec![planted_check])))
         .await
         .unwrap();
     entry.commit_activation_as_if_restarted().await;

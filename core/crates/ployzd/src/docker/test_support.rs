@@ -411,10 +411,26 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             barrier.wait().await;
         }
         let id = "a".repeat(64);
-        *fake.existing_container.lock().unwrap() = Some(serde_json::json!({"Id": id}));
+        let name = uri
+            .query()
+            .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("name=")));
+        *fake.existing_container.lock().unwrap() = Some(match name {
+            Some(name) => serde_json::json!({"Id": id, "Name": format!("/{name}")}),
+            None => serde_json::json!({"Id": id}),
+        });
         (
             StatusCode::CREATED,
             serde_json::json!({"Id": id, "Warnings": []}),
+        )
+    } else if method == Method::GET && path.ends_with(&format!("/networks/{TUNNEL_NETWORK_NAME}")) {
+        (
+            StatusCode::OK,
+            serde_json::json!({
+                "Name": TUNNEL_NETWORK_NAME,
+                "Driver": "bridge",
+                "EnableIPv6": false,
+                "Options": {"com.docker.network.bridge.name": TUNNEL_NETWORK_NAME},
+            }),
         )
     } else if method == Method::GET && path.contains("/networks/") {
         let network = fake.network.lock().unwrap().clone().unwrap_or_else(|| {
@@ -451,15 +467,35 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         });
         (StatusCode::OK, listed)
     } else if method == Method::GET && path.contains("/containers/") && path.ends_with("/json") {
-        fake.existing_container.lock().unwrap().clone().map_or_else(
-            || {
-                (
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"message":"no such container"}),
-                )
-            },
-            |container| (StatusCode::OK, container),
-        )
+        let asked = path
+            .trim_end_matches("/json")
+            .rsplit('/')
+            .next()
+            .unwrap_or_default();
+        // A container made under a name answers only to its ID or that name.
+        fake.existing_container
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|container| {
+                container
+                    .get("Name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|name| {
+                        asked == name.trim_start_matches('/')
+                            || container.get("Id").and_then(serde_json::Value::as_str)
+                                == Some(asked)
+                    })
+            })
+            .map_or_else(
+                || {
+                    (
+                        StatusCode::NOT_FOUND,
+                        serde_json::json!({"message":"no such container"}),
+                    )
+                },
+                |container| (StatusCode::OK, container),
+            )
     } else if method == Method::POST && path.ends_with("/images/create") {
         (StatusCode::OK, serde_json::json!({}))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
@@ -644,6 +680,12 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             (StatusCode::NO_CONTENT, serde_json::Value::Null)
         }
     } else if method == Method::POST && path.ends_with("/connect") {
+        let network = path
+            .trim_end_matches("/connect")
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
         if let Some(networks) = fake
             .existing_container
             .lock()
@@ -652,7 +694,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             .and_then(|container| container.pointer_mut("/NetworkSettings/Networks"))
             .and_then(serde_json::Value::as_object_mut)
         {
-            networks.insert("ployz".into(), serde_json::json!({}));
+            networks.insert(network, serde_json::json!({}));
         }
         if fake.connect_raced.load(Ordering::SeqCst) {
             (
@@ -800,7 +842,7 @@ pub(super) fn container_request<'spec, Storage>(
         deployment_id: None,
         r#gen: ployz_core::Gen::FIRST,
         image: crate::docker_image::ImagePull::Policy(None),
-        creation_key: None,
+        creation_key: "test-key",
         kind,
         namespace,
         spec,
@@ -877,4 +919,44 @@ pub(crate) fn spec_with_sources(sources: Vec<VolumeSource>) -> ResolvedServiceSp
     )
     .unwrap();
     spec
+}
+
+/// A Service Container of `namespace`'s `web` on another Machine, published at `hostname`.
+pub(crate) fn hostname_claimant(
+    suffix: u8,
+    namespace: &str,
+    hostname: &str,
+) -> ployz_core::ContainerObservation {
+    let resolved_spec: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
+        "service_id": format!("{suffix:x}").repeat(32),
+        "name": "web",
+        "mode": { "mode": "replicated", "replicas": 1 },
+        "container": { "image": "example.test/web", "pull_policy": "missing" },
+        "ports": [{
+            "mode": "ingress",
+            "hostname": hostname,
+            "load_balancer_port": 80,
+            "container_port": 80,
+            "http_protocol": "http"
+        }],
+    }))
+    .unwrap();
+    ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
+        container_id: ployz_core::ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
+        display_name: format!("web-{suffix}"),
+        created_at_unix_nanos: 1,
+        machine_id: MachineId::random(),
+        namespace: Namespace::parse(namespace).unwrap(),
+        kind: ployz_core::ContainerKind::ServiceContainer,
+        runtime: ployz_core::ContainerRuntimeObservation::Created,
+        effective_healthcheck: None,
+        resolved_spec,
+        address: None,
+        labels: BTreeMap::new(),
+        stopped: false,
+        run: None,
+    })
+    .unwrap()
 }

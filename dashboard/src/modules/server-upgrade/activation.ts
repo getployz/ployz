@@ -17,6 +17,7 @@ export type ActivationState = (typeof ACTIVATION_STATES)[number];
 /** A Member of a starting set, as a Server reports itself: what every Server compares. Its mesh key is 32 bytes. */
 export type ActivationMember = { readonly id: string; readonly public_key: readonly number[]; readonly subnet: string };
 
+/** `code` is the key's full 20-character code, which a person compares before keeping it. */
 export type LegacyKey = { readonly code: string; readonly kind: "device" | "passkey"; readonly account: string | null };
 
 /** One Server's own report of its activation. */

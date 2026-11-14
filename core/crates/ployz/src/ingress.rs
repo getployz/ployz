@@ -7,13 +7,12 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     ContainerId, ContainerObservation, ContainerRuntimeObservation, DescribeContractRequest,
-    DoorChange, DoorOutcome, EnvironmentValues, IngressDoor, IngressDoors, IngressDoorsFailure,
-    IngressDoorsSet, IngressPorts, IngressStage, IngressWiring, Machine, MachineFailure, MachineId,
+    DoorChange, DoorOutcome, EnvironmentValues, HeldDoor, IngressDoor, IngressDoors,
+    IngressDoorsFailure, IngressDoorsSet, IngressStage, Machine, MachineFailure, MachineId,
     MachineName, MachineObservation, MachineTarget, PartialResult, PlatformPurpose,
     QualifiedService, RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY,
     SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing, SealingPublicKey,
     ServiceId, ServiceObservation, SetClusterDoorsRequest, cluster_sealing_key, op, seal_platform,
-    validate_ingress_service_spec,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -96,28 +95,24 @@ pub(crate) use ployz_core::{ClusterDoors, cluster_doors};
 /// Tunnel Connector runs there. A Server with no running door Container holds none.
 pub(crate) fn machine_doors(services: &[ServiceObservation]) -> BTreeMap<MachineId, IngressDoors> {
     let mut doors: BTreeMap<MachineId, IngressDoors> = BTreeMap::new();
-    for service in services
+    for copy in services
         .iter()
-        .filter(|service| service.identity.is_ingress_door())
+        .flat_map(|service| &service.containers)
+        .map(|copy| copy.as_observation())
     {
-        for copy in service.containers.iter().map(|copy| copy.as_observation()) {
-            if !matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }) {
-                continue;
-            }
-            let door = match validate_ingress_service_spec(&copy.resolved_spec).ok() {
-                Some(IngressWiring::LegacyProxy | IngressWiring::Holder(IngressPorts::Public)) => {
-                    IngressDoor::Public
-                }
-                Some(IngressWiring::Tunnel) => IngressDoor::Tunnel,
-                Some(IngressWiring::JoinedProxy | IngressWiring::Holder(IngressPorts::Closed))
-                | None => continue,
-            };
-            doors
-                .entry(copy.machine_id)
-                .or_insert_with(|| IngressDoors(Default::default()))
-                .0
-                .insert(door);
+        if !matches!(copy.runtime, ContainerRuntimeObservation::Running { .. }) {
+            continue;
         }
+        let door = match copy.door() {
+            Some(HeldDoor::Public) => IngressDoor::Public,
+            Some(HeldDoor::Tunnel) => IngressDoor::Tunnel,
+            Some(HeldDoor::Closed) | None => continue,
+        };
+        doors
+            .entry(copy.machine_id)
+            .or_insert_with(|| IngressDoors(Default::default()))
+            .0
+            .insert(door);
     }
     doors
 }
@@ -692,10 +687,7 @@ fn switch_steps(
 fn doors_of(set: &IngressDoorsSet) -> Vec<String> {
     let mut doors = Vec::new();
     let public = set.holder.as_ref().is_some_and(|holder| {
-        matches!(
-            validate_ingress_service_spec(&holder.now.resolved_spec).ok(),
-            Some(IngressWiring::Holder(IngressPorts::Public) | IngressWiring::LegacyProxy)
-        )
+        HeldDoor::of_spec(&holder.now.resolved_spec) == Some(HeldDoor::Public)
     });
     if public {
         doors.push(IngressDoor::Public.as_str().to_owned());
@@ -1093,12 +1085,6 @@ pub(crate) fn unchecked(
 /// Whether Docker's `cause` says something else holds a port the Ingress Proxy publishes.
 pub(crate) fn port_taken(cause: &str) -> bool {
     cause.contains("address already in use") || cause.contains("port is already allocated")
-}
-
-/// True when this observation is the reserved Ingress Proxy Service.
-#[must_use]
-pub fn is_system_ingress(observation: &ContainerObservation) -> bool {
-    observation.identity() == QualifiedService::system_ingress()
 }
 
 #[cfg(test)]

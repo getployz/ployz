@@ -19,7 +19,7 @@
 //!
 //! The first finding: a member Docker refused to start stays in `bridge-stopped-members.json`
 //! (stopped.rs:64-73). The operator stops it between daemon starts, and nothing touches the note
-//! (`ContainerRuntime::stop`, core/crates/ployzd/src/docker/lifecycle.rs:611-670). The next daemon
+//! (`ContainerRuntime::stop`, core/crates/ployzd/src/docker/lifecycle.rs). The next daemon
 //! start's `Stopped::start` starts it again (:546, stopped.rs:60-79). A failed rewrite of the
 //! note after a start that Docker accepted keeps the member written down the same way
 //! (stopped.rs:80-93).
@@ -45,7 +45,7 @@ use stateright::{Model, Property};
 use crate::harness::{self, Variant, everywhere};
 
 /// The ployz bridge's name in Docker's messages (`DOCKER_NETWORK_NAME`,
-/// core/crates/ployzd/src/network.rs).
+/// core/crates/ployzd/src/docker/mod.rs).
 const NETWORK: &str = "ployz";
 
 /// Docker's refusal of a disconnect or connect of a member between restarts.
@@ -1657,7 +1657,7 @@ impl BridgeNotes {
         let step = match pick {
             Pick::Stop if container.run == Run::Exited => {
                 // ContainerStep::Hold: `containers.stop` (container.rs:1131), which reads
-                // Docker's 304 as success (core/crates/ployzd/src/docker/lifecycle.rs:870-881).
+                // Docker's 304 as success (`idempotent_lifecycle_result` in core/crates/ployzd/src/docker/lifecycle.rs).
                 Operator::Hold
             }
             Pick::Stop => {
@@ -3084,7 +3084,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                 attached.map_or_else(String::new, |address| format!(", and Docker attaches it on {address:?}"))
             ),
             Operator::Stop => format!("ContainerStep::Stop stops {member:?}, which runs: stop_out_of_rotation calls containers.stop (core/crates/ployzd/src/machine/local_machine/container.rs:1106-1121, :499-505)"),
-            Operator::Hold => format!("ContainerStep::Hold holds {member:?}, at rest: containers.stop, whose 304 reads as success (core/crates/ployzd/src/machine/local_machine/container.rs:1122-1136; core/crates/ployzd/src/docker/lifecycle.rs:870-881)"),
+            Operator::Hold => format!("ContainerStep::Hold holds {member:?}, at rest: containers.stop, whose 304 reads as success (core/crates/ployzd/src/machine/local_machine/container.rs:1122-1136; `idempotent_lifecycle_result` in core/crates/ployzd/src/docker/lifecycle.rs)"),
             Operator::Remove => format!("the operator removes {member:?}"),
         },
     };

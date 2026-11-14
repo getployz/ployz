@@ -342,8 +342,8 @@ describe("approveDeploy", () => {
     await startSession(app, now);
   };
   const image = (last: string) => `nginx@sha256:${"0".repeat(63)}${last}`;
-  // That fixture, and its digest there: the browser must reproduce it, as every implementation of `PayloadDigest::of` must.
-  const GOLDEN = "cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5";
+  // `contained_json`, the fixture a session approves there, and its digest: the browser must reproduce it, as every implementation of `PayloadDigest::of` must.
+  const GOLDEN = "b38204e1d5b8a6d94b145b97d8dcbff4b50f5218b1cd9969324a1108aed6541b";
   const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
   const web = (last: string) => ({
     name: "web",
@@ -359,20 +359,11 @@ describe("approveDeploy", () => {
         environment: "11111111-1111-1111-1111-111111111111",
         service: "22222222-2222-2222-2222-222222222222",
       },
-      cap_add: ["NET_ADMIN"],
-      resources: { devices: [{ machine_path: "/dev/null", container_path: "/dev/null", cgroup_permissions: "rwm" }] },
-      sysctls: { "net.core.somaxconn": "1024" },
       config_mounts: [{ config_name: "site", target: "/etc/site.conf", mode: 420 }],
     },
-    ports: [
-      { mode: "host", bind: { kind: "all" }, published_port: 8080, container_port: 80, transport_protocol: "tcp" },
-      { mode: "ingress", hostname: "web.example.com", load_balancer_port: 443, container_port: 80, http_protocol: "http" },
-    ],
-    volumes: [
-      { reference: "host", source: { kind: "bind", machine_path: "/srv/web" } },
-      { reference: "data", source: { kind: "ordinary", name: "data", driver: { name: "local", options: { type: "tmpfs" } } } },
-    ],
-    mounts: [{ volume: "host", target: "/srv" }, { volume: "data", target: "/data" }],
+    ports: [{ mode: "ingress", hostname: "web.example.com", load_balancer_port: 443, container_port: 80, http_protocol: "http" }],
+    volumes: [{ reference: "data", source: { kind: "ordinary", name: "data", driver: { name: "local", options: { type: "tmpfs" } } } }],
+    mounts: [{ volume: "data", target: "/data" }],
     configs: [{ name: "site", content: [104, 105] }],
     pre_deploy: { command: ["migrate"], privileged: false },
     update: { order: "start_first" },
@@ -403,7 +394,7 @@ describe("approveDeploy", () => {
     });
     expect(canonicalJson(JSON.parse(approval.body) as JsonValue)).toBe(approval.body);
     expect(JSON.parse(approval.grants?.[0]?.body ?? "{}")).toMatchObject({ families: ["deploy", "restart", "start", "stop"] });
-    expect(lines[0]).toBe("Approved web: nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001 (device /dev/null:/dev/null, adds NET_ADMIN, sysctl net.core.somaxconn, host port 8080, binds /srv/web, hook migrate)");
+    expect(lines[0]).toBe("Approved web: nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001 (hook migrate)");
     expect(lines).toContain('  command ["nginx","-g","daemon off;"]');
     expect(await verifies(approval, approval.body)).toBe(true);
   });
@@ -420,7 +411,7 @@ describe("approveDeploy", () => {
     expect(await verifies(a.approval, b.approval.body)).toBe(false);
   });
 
-  it("refuses before any prompt or signature a plan of another version or Environment, a tag, or an uncovered scope", async () => {
+  it("refuses before any prompt or signature a plan of another version or Environment, a tag, host access, or an uncovered scope", async () => {
     const now = Date.now();
     await passkey(now);
     credential.mockClear();
@@ -430,6 +421,9 @@ describe("approveDeploy", () => {
     const tagged = { ...web("1"), container: { ...web("1").container, image: "nginx:1.29-alpine" } };
     await expect(approveDeploy(app, deployment, "v1", plan([tagged]), now))
       .rejects.toThrow("The dashboard can't check what web's tag nginx:1.29-alpine points to. Write web's image by digest, which docker buildx imagetools inspect nginx:1.29-alpine prints.");
+    const privileged = { ...web("1"), container: { ...web("1").container, privileged: true } };
+    await expect(approveDeploy(app, deployment, "v1", plan([privileged]), now))
+      .rejects.toThrow("web (privileged) reaches the server itself, so only an approved device can approve it. Run ployz deploy on that device.");
     await expect(approveDeploy(production, deployment, "v1", plan([web("1")], "production"), now)).rejects.toThrow("Confirm it's you again.");
     expect(sign).not.toHaveBeenCalled();
     expect(credential).not.toHaveBeenCalled();

@@ -44,11 +44,10 @@ use bollard::{
 };
 use futures_util::StreamExt;
 use ployz_core::{
-    BridgeEndpointCapacity, ConfiguredHealthcheck, ContainerAddress, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName,
-    Evidence, Gen, HEALTHCHECK_DISABLE_SENTINEL, HealthObservation, HealthcheckCommand,
-    HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages, MachineTelemetry,
-    QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
+    BridgeEndpointCapacity, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName, Evidence, Gen,
+    HealthObservation, HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages,
+    MachineTelemetry, QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -63,6 +62,7 @@ use http_health::probe as http_health_probe;
 use observe::ObservationSink;
 
 pub(crate) use create::container_log_config;
+use create::effective_healthcheck;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
@@ -75,7 +75,14 @@ pub use unregistry::ImageIngest;
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
 #[cfg(test)]
-use ployz_core::{Namespace, ServiceId};
+use ployz_core::{ConfiguredHealthcheck, HealthcheckCommand, Namespace, ServiceId};
+
+/// The Docker network every Service Container and the Ingress Proxy join.
+pub const DOCKER_NETWORK_NAME: &str = "ployz";
+/// The Docker network the Tunnel Origin alone joins, with the Tunnel Connector in its
+/// network namespace, and its bridge's name, which the Machine's firewall fences to DNS
+/// and Cloudflare's edge.
+pub const TUNNEL_NETWORK_NAME: &str = "ployz-tunnel";
 
 /// The Ingress Proxy takes an IPv6 address on the ployz bridge, so IPv6 visitors
 /// reach it by DNAT with their own address (#2837). So does a container created
@@ -1382,36 +1389,6 @@ fn state_without_app_output(state: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(decoded)
 }
 
-fn effective_healthcheck(config: Option<&RawContainerConfig>) -> Option<HealthcheckSpec> {
-    let healthcheck = config?.healthcheck.as_ref()?;
-    let test = healthcheck.test.clone().unwrap_or_default();
-    if test
-        .first()
-        .is_some_and(|command| command == HEALTHCHECK_DISABLE_SENTINEL)
-    {
-        return Some(HealthcheckSpec::Disabled);
-    }
-    Some(HealthcheckSpec::Configured(ConfiguredHealthcheck {
-        test: HealthcheckCommand::parse(test).ok()?,
-        interval_millis: nanos_to_millis(healthcheck.interval),
-        timeout_millis: nanos_to_millis(healthcheck.timeout),
-        start_period_millis: nanos_to_millis(healthcheck.start_period),
-        start_interval_millis: nanos_to_millis(healthcheck.start_interval),
-        retries: healthcheck
-            .retries
-            .filter(|retries| *retries > 0)
-            .and_then(|retries| u32::try_from(retries).ok()),
-        deadline_millis: None,
-    }))
-}
-
-fn nanos_to_millis(nanos: Option<i64>) -> Option<u64> {
-    nanos
-        .filter(|nanos| *nanos > 0)
-        .and_then(|nanos| u64::try_from(nanos).ok())
-        .map(|nanos| nanos.div_ceil(1_000_000))
-}
-
 #[cfg(test)]
 fn runtime_from_parts(
     status: &str,
@@ -1460,7 +1437,7 @@ fn container_address(inspected: &RawContainerInspect) -> Option<ContainerAddress
         .as_ref()?
         .networks
         .as_ref()?
-        .get(crate::network::DOCKER_NETWORK_NAME)?
+        .get(DOCKER_NETWORK_NAME)?
         .ip_address
         .as_deref()?
         .parse::<Ipv4Addr>()
@@ -1581,8 +1558,14 @@ pub enum Error {
     SlotNameOccupied(String),
     #[error("no Ingress Proxy holder is running on this Server")]
     IngressHolderNotRunning,
+    #[error("no Tunnel Origin is running on this Server")]
+    TunnelOriginNotRunning,
     #[error("the spec names a network this Server's Ployz doesn't know")]
     UnrecognizedNetwork,
+    #[error(
+        "a Docker network named `{TUNNEL_NETWORK_NAME}` exists that Ployz didn't make; remove it so the Tunnel Door gets its fenced bridge"
+    )]
+    ForeignTunnelNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
     /// A registry or peer pull failed while the Docker root had almost no free space.
@@ -1665,6 +1648,7 @@ impl Error {
             | Self::InvalidValue { .. }
             | Self::NotAServiceContainer(_)
             | Self::IngressHolderNotRunning
+            | Self::TunnelOriginNotRunning
             | Self::UnrecognizedNetwork
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
@@ -1678,6 +1662,7 @@ impl Error {
             | Self::Clock(_)
             | Self::LimitsUnapplied { .. }
             | Self::StoppedAfterLimitsUpdate(_)
+            | Self::ForeignTunnelNetwork
             | Self::InvalidVolumeStatus(_)
             | Self::UnexpectedVolumeName { .. }
             | Self::Observation(_) => RpcErrorCode::Internal,
@@ -1872,7 +1857,7 @@ mod tests {
         assert_eq!(regular_host.log_config, Some(container_log_config()));
         assert_eq!(
             regular_host.network_mode.as_deref(),
-            Some(crate::network::DOCKER_NETWORK_NAME)
+            Some(DOCKER_NETWORK_NAME)
         );
         assert_eq!(regular_host.dns, Some(vec![gateway.0.to_string()]));
         assert_eq!(regular_host.dns_search, Some(vec!["shop.internal".into()]));
@@ -2022,7 +2007,11 @@ mod tests {
                 None,
             )
             .unwrap();
-            create::ingress_sysctls(&mut body, namespace, &spec, kernel_supports);
+            create::ingress_sysctls(
+                &mut body,
+                doors::Door::of_service(namespace, &spec.name),
+                kernel_supports,
+            );
             let host = body.host_config.unwrap();
             assert_eq!(host.log_config, Some(container_log_config()));
             host.sysctls
@@ -2140,7 +2129,7 @@ mod tests {
             );
             body.networking_config
                 .and_then(|config| config.endpoints_config)
-                .and_then(|endpoints| endpoints.get(crate::network::DOCKER_NETWORK_NAME).cloned())
+                .and_then(|endpoints| endpoints.get(DOCKER_NETWORK_NAME).cloned())
         };
 
         assert_eq!(endpoint(&ingress.namespace), None);

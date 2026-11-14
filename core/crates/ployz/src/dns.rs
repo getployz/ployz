@@ -1,7 +1,7 @@
 //! Deploy warnings for Ingress Hostnames that do not reach this Cluster.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fmt::{self, Display, Formatter},
     net::{IpAddr, SocketAddr},
     time::Duration,
@@ -11,6 +11,7 @@ use futures_util::future::join_all;
 use ployz_core::{
     HostnameProbe, HostnameVerdict, HttpProtocol, IngressHost, MachineId, PortPublication, Refusal,
     VerifyAnswer, generated_refusal_reason, hostname_verdict, refusal_reason,
+    resolve_ingress_addresses,
 };
 
 /// An Ingress Hostname that does not reach this Cluster.
@@ -109,18 +110,6 @@ pub fn ingress_dns_warnings<'a>(
     )
 }
 
-/// Resolve A/AAAA addresses for an Ingress Hostname. Lookup failure is an empty set.
-pub async fn resolve_ingress_addresses(hostname: &IngressHost) -> Vec<IpAddr> {
-    match tokio::net::lookup_host((hostname.as_str(), 0)).await {
-        Ok(addresses) => addresses
-            .map(|address| address.ip())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
 async fn probe_ingress_hostname(
     probe: &HostnameProbe,
     hostname: &IngressHost,
@@ -128,7 +117,7 @@ async fn probe_ingress_hostname(
     cluster_addresses: &[IpAddr],
     ingress_returning: &[Option<IpAddr>],
 ) -> Option<HostnameVerdict> {
-    let addresses = resolve_ingress_addresses(hostname).await;
+    let addresses = resolve_ingress_addresses(hostname, 0).await;
     let answers = join_all(addresses.into_iter().map(|address| async move {
         let answer = probe.answer(hostname, SocketAddr::new(address, 80)).await;
         (address, answer)
@@ -197,7 +186,7 @@ mod tests {
         Refusal, RequestedServiceSpec, VerifyAnswer,
     };
 
-    use super::{ingress_dns_warnings, judge_answers, resolve_ingress_addresses};
+    use super::{ingress_dns_warnings, judge_answers};
 
     fn requested(ports: Vec<PortPublication>) -> RequestedServiceSpec {
         serde_json::from_value(serde_json::json!({
@@ -401,8 +390,9 @@ mod tests {
     #[tokio::test]
     async fn invalid_tlds_resolve_to_nothing() {
         assert!(
-            resolve_ingress_addresses(
-                &ployz_core::IngressHost::parse("no-such-host.invalid").unwrap()
+            ployz_core::resolve_ingress_addresses(
+                &ployz_core::IngressHost::parse("no-such-host.invalid").unwrap(),
+                0,
             )
             .await
             .is_empty()

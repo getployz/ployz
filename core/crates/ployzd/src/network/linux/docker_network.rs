@@ -536,7 +536,8 @@ impl NetworkPlane {
         let ipv6 =
             (fenced && bridge_ipv6_allowed()).then(|| docker_network_ipv6(self.machine.subnet));
         // Both passes may stop members, which start again only once a bridge stands.
-        let _extend = crate::daemon::extend_systemd_start_timeout("settling the ployz network");
+        let _extend =
+            crate::systemd_timeout::extend_systemd_start_timeout("settling the ployz network");
         let mut stopped = Stopped::load(data_dir);
         let mut pins = Pins::load(data_dir);
         let created = self

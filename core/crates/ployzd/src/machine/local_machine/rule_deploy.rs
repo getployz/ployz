@@ -21,7 +21,7 @@ use ployz_core::{
     authority::{
         ApprovalFacts, AuthorityRefusal, AutoDeployRule, CommitAuthority, CommitNow, RestartStep,
         RuleFacts, RuleProof, Timestamp,
-        deploy::Creation,
+        deploy::{self, Creation},
         rule::{verify_commit_approval, verify_signature},
     },
 };
@@ -329,6 +329,11 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         } => "Automatic deploys for this environment are off.",
         AuthorityRefusal::Mismatch { field: "a Service" } => {
             "The automatic deploy rule doesn't cover this service."
+        }
+        AuthorityRefusal::Mismatch {
+            field: deploy::HOST_ACCESS,
+        } => {
+            "This service reaches the server itself, so only an approved device can approve its commit. Run ployz deployment redeploy on that device."
         }
         AuthorityRefusal::Mismatch { field: "a Machine" } => {
             "The automatic deploy rule was approved before this server joined. Approve it again."

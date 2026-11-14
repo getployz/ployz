@@ -134,7 +134,10 @@ fn activation_is_a_process_boundary() {
 fn a_key_the_person_kept_by_fingerprint_survives_the_commit() {
     let (dir, store) = founded();
     let admitted = PendingActivation {
-        kept_keys: vec![device(2).code(), passkey().passkey.code()],
+        kept_keys: vec![
+            device(2).check_code(),
+            passkey().passkey.public_key.check_code(),
+        ],
         ..pending(&store)
     };
     admitted.write(store.data_dir()).unwrap();
@@ -158,6 +161,41 @@ fn a_key_the_person_kept_by_fingerprint_survives_the_commit() {
             operation: admitted.operation
         })
     );
+}
+
+/// Two keys whose 50-bit names collide, found offline with Pollard's rho: what Cloud would
+/// grind to stand in for a key the person checked.
+fn same_name_keys() -> (DeviceKey, DeviceKey) {
+    let key = |head: [u8; 8]| {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&head);
+        DeviceKey::from_bytes(bytes)
+    };
+    (
+        key([0x00, 0x00, 0x0f, 0x7a, 0x5b, 0xab, 0x23, 0x3a]),
+        key([0x00, 0x03, 0xb9, 0xbe, 0x18, 0x80, 0x7a, 0xca]),
+    )
+}
+
+#[test]
+fn a_key_that_only_shares_the_kept_keys_name_is_retired() {
+    let (checked, ground) = same_name_keys();
+    assert_eq!(checked.code(), ground.code());
+    let (dir, mut store) = founded();
+    store.approve_device(ground, None).unwrap();
+    let admitted = PendingActivation {
+        kept_keys: vec![checked.check_code()],
+        ..pending(&store)
+    };
+    admitted.write(store.data_dir()).unwrap();
+    let mut store = reopened(&dir, store);
+
+    commit_pending(&mut store, &Plugin::default()).unwrap();
+
+    let record = store.record();
+    assert_eq!(record.management_scope(&ground.into()), None);
+    assert!(!record.devices().any(|key| key == ground));
+    assert!(!record.trusted_snapshot().unwrap().holds_key(ground.code()));
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::{
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
-    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyRole, DockerVolume,
+    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyPlace, DockerVolume,
     DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, ResolvedServiceSpec,
     VolumeInventory,
 };
@@ -377,10 +377,10 @@ impl ContainerRuntime {
             .await?;
         self.first_synced
             .send_if_modified(|synced| !std::mem::replace(synced, true));
-        // The Ingress doors, the holder and its Caddy, are the only Service Containers the
-        // daemon starts unasked, and only while this Machine participates and accepts
-        // ingress. It starts an existing container, or restarts a Caddy left in a
-        // holder's old network; it never creates, replaces, moves or removes one.
+        // The Ingress doors are the only Service Containers the daemon starts unasked,
+        // and only while this Machine participates and accepts ingress. It starts an
+        // existing holder or Caddy, or restarts a Caddy or connector left in its owner's
+        // old network; it never creates, replaces, moves or removes one.
         // Started after the guard drops, so a slow Docker start never stalls publication.
         // A reset that takes the guard meanwhile removes the container anyway. The record
         // is read again here, so a policy change that committed during publication holds.
@@ -482,17 +482,13 @@ fn observe_copies(
     copies: &std::collections::BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>,
 ) {
     for volume in volumes.iter_mut() {
-        if let DockerVolumeStorageObservation::Provisioned {
-            role, slot_role, ..
-        } = &mut volume.storage
-        {
-            let copy = copies.get(&volume.id.name);
-            *role = copy.map(|copy| copy.role);
-            *slot_role = copy.and_then(|copy| copy.slot_role);
-        }
+        volume.storage.set_copy(copies.get(&volume.id.name));
     }
     for (name, copy) in copies {
-        if copy.role != CopyRole::Slot || volumes.iter().any(|volume| volume.id.name == *name) {
+        let place @ CopyPlace::Slot(_) = copy.place() else {
+            continue;
+        };
+        if volumes.iter().any(|volume| volume.id.name == *name) {
             continue;
         }
         let (Ok(mountpoint), Some(bound_bytes)) = (
@@ -508,13 +504,12 @@ fn observe_copies(
             },
             options: Default::default(),
             labels: Default::default(),
-            storage: DockerVolumeStorageObservation::Provisioned {
+            storage: DockerVolumeStorageObservation::provisioned(
                 mountpoint,
                 bound_bytes,
-                used_bytes: copy.used_bytes,
-                role: Some(CopyRole::Slot),
-                slot_role: copy.slot_role,
-            },
+                copy.used_bytes,
+                Some(place),
+            ),
         });
     }
 }
@@ -608,10 +603,11 @@ pub(crate) enum IngressRecovery {
         holder: Option<ContainerId>,
         caddy: ContainerId,
     },
-    /// A running Caddy left in a network namespace the running holder no longer has.
-    RejoinCaddy {
-        holder: ContainerId,
-        caddy: ContainerId,
+    /// A running Caddy left in a network namespace the running holder no longer has,
+    /// or a running connector left in one the running Tunnel Origin no longer has.
+    Rejoin {
+        owner: ContainerId,
+        joined: ContainerId,
     },
 }
 
@@ -620,14 +616,15 @@ impl IngressRecovery {
     pub(super) fn target(&self) -> &ContainerId {
         match self {
             Self::StartHolder(id) => id,
-            Self::StartCaddy { caddy, .. } | Self::RejoinCaddy { caddy, .. } => caddy,
+            Self::StartCaddy { caddy, .. } => caddy,
+            Self::Rejoin { joined, .. } => joined,
         }
     }
 
     pub(super) fn verb(&self) -> &'static str {
         match self {
             Self::StartHolder(_) | Self::StartCaddy { .. } => "started",
-            Self::RejoinCaddy { .. } => "rejoined",
+            Self::Rejoin { .. } => "rejoined",
         }
     }
 }
@@ -644,6 +641,11 @@ fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecove
     if !complete {
         return None;
     }
+    proxy_recovery(doors).or_else(|| tunnel_recovery(doors))
+}
+
+/// The holder's or its Caddy's recovery, if any.
+fn proxy_recovery(doors: &[DoorFacts]) -> Option<IngressRecovery> {
     let newest = |facts: &[&DoorFacts]| {
         facts
             .iter()
@@ -698,9 +700,9 @@ fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecove
     if let Some(caddy) = joined.iter().find(|facts| facts.running()) {
         return match (holder.netns, caddy.netns) {
             (Some(holder_ns), Some(caddy_ns)) if holder_ns != caddy_ns => {
-                Some(IngressRecovery::RejoinCaddy {
-                    holder: holder.id,
-                    caddy: caddy.id,
+                Some(IngressRecovery::Rejoin {
+                    owner: holder.id,
+                    joined: caddy.id,
                 })
             }
             _ => None,
@@ -714,6 +716,42 @@ fn ingress_recovery(doors: &[DoorFacts], complete: bool) -> Option<IngressRecove
         holder: Some(holder.id),
         caddy: caddy.id,
     })
+}
+
+/// A running connector to move into the running Tunnel Origin's network, if any.
+///
+/// Only that: a door at rest stays at rest, since the route starts the Tunnel Door
+/// only once it has written the token and the Cluster still declares it. Docker
+/// restarts a connector that exits into the origin's current network, so only a
+/// connector that keeps running after its origin restarted is left behind.
+fn tunnel_recovery(doors: &[DoorFacts]) -> Option<IngressRecovery> {
+    let origins = doors
+        .iter()
+        .filter(|facts| facts.door == Door::TunnelOrigin)
+        .collect::<Vec<_>>();
+    let mut running = origins.iter().copied().filter(|facts| facts.running());
+    let (Some(origin), None) = (running.next(), running.next()) else {
+        return None;
+    };
+    if origins
+        .iter()
+        .any(|facts| !facts.running() && !facts.at_rest())
+    {
+        return None;
+    }
+    let origin_ns = origin.netns?;
+    doors
+        .iter()
+        .find(|facts| {
+            facts.door == Door::Tunnel
+                && facts.running()
+                && facts.joined_to == Some(origin.id)
+                && facts.netns.is_some_and(|ns| ns != origin_ns)
+        })
+        .map(|connector| IngressRecovery::Rejoin {
+            owner: origin.id,
+            joined: connector.id,
+        })
 }
 
 #[cfg(test)]
@@ -871,6 +909,45 @@ mod tests {
         );
     }
 
+    fn tunnel_origin(id: char, created_at: i64, runtime: serde_json::Value) -> DoorFacts {
+        door(id, Door::TunnelOrigin, created_at, runtime)
+    }
+
+    fn connector(id: char, created_at: i64, runtime: serde_json::Value) -> DoorFacts {
+        door(id, Door::Tunnel, created_at, runtime)
+    }
+
+    #[test]
+    fn a_running_connector_in_the_origins_old_namespace_is_rejoined() {
+        let doors = |connector_ns| {
+            [
+                in_netns(holder('a', 1, running()), 1),
+                in_netns(joined(caddy('b', 2, running()), 'a'), 1),
+                in_netns(tunnel_origin('e', 3, running()), 10),
+                in_netns(joined(connector('f', 4, running()), 'e'), connector_ns),
+            ]
+        };
+        assert_eq!(
+            ingress_recovery(&doors(11), true),
+            Some(IngressRecovery::Rejoin {
+                owner: id('e'),
+                joined: id('f'),
+            })
+        );
+        assert_eq!(ingress_recovery(&doors(10), true), None);
+        assert_eq!(
+            ingress_recovery(
+                &[
+                    in_netns(tunnel_origin('e', 3, running()), 10),
+                    failed(joined(connector('f', 4, created()), 'e')),
+                ],
+                true
+            ),
+            None,
+            "a connector at rest waits for the route, which writes its token first"
+        );
+    }
+
     #[test]
     fn a_running_caddy_in_the_holders_old_namespace_is_rejoined() {
         assert_eq!(
@@ -881,9 +958,9 @@ mod tests {
                 ],
                 true
             ),
-            Some(IngressRecovery::RejoinCaddy {
-                holder: id('a'),
-                caddy: id('c'),
+            Some(IngressRecovery::Rejoin {
+                owner: id('a'),
+                joined: id('c'),
             })
         );
         assert_eq!(
@@ -1231,7 +1308,132 @@ mod tests {
     }
 
     #[test]
+    fn a_slots_recorded_role_reaches_its_observation_listed_or_not() {
+        use ployz_core::{CopyPlace, DockerVolumeStorageObservation::Provisioned, SlotRole};
+        let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let name = |name: &str| DockerVolumeName::parse(name).unwrap();
+        let maximum_bytes = ployz_core::ProvisionedVolumeMaximumBytes::new(
+            std::num::NonZeroU64::new(1024).unwrap(),
+        );
+        let listed = |volume: &str| DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: name(volume),
+            },
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            storage: Provisioned {
+                mountpoint: ployz_core::MachinePath::parse(format!(
+                    "/var/lib/ployz-volumes/{volume}"
+                ))
+                .unwrap(),
+                bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+                used_bytes: 0,
+                role: None,
+                slot_role: None,
+            },
+        };
+        let copy =
+            |place, used_bytes| ployz_core::ProvisionedCopy::new(place, maximum_bytes, used_bytes);
+        let copies = BTreeMap::from([
+            (name("kept"), copy(CopyPlace::Writer, 5)),
+            (
+                name("old"),
+                copy(CopyPlace::Slot(Some(SlotRole::OldCopy)), 0),
+            ),
+            (
+                name("mirrored"),
+                copy(CopyPlace::Slot(Some(SlotRole::Mirror)), 3),
+            ),
+            (name("unmarked"), copy(CopyPlace::Slot(None), 4)),
+        ]);
+        let mut volumes = vec![listed("kept"), listed("old")];
+
+        observe_copies(&machine_id, &mut volumes, &copies);
+
+        let pair = |volume: &DockerVolume| match &volume.storage {
+            Provisioned {
+                role,
+                slot_role,
+                used_bytes,
+                ..
+            } => (*role, *slot_role, *used_bytes),
+            other => panic!("not provisioned: {other:?}"),
+        };
+        let seen: Vec<_> = volumes
+            .iter()
+            .map(|volume| (volume.id.name.to_string(), pair(volume)))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("kept".to_owned(), (Some(CopyRole::Writer), None, 0)),
+                (
+                    "old".to_owned(),
+                    (Some(CopyRole::Slot), Some(SlotRole::OldCopy), 0)
+                ),
+                (
+                    "mirrored".to_owned(),
+                    (Some(CopyRole::Slot), Some(SlotRole::Mirror), 3)
+                ),
+                ("unmarked".to_owned(), (Some(CopyRole::Slot), None, 4)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stray_slot_role_on_a_writer_or_switching_copy_reaches_its_observation_as_received() {
+        use ployz_core::DockerVolumeStorageObservation::Provisioned;
+        let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let name = DockerVolumeName::parse("stray").unwrap();
+        let mut volumes = vec![DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: name.clone(),
+            },
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            storage: Provisioned {
+                mountpoint: ployz_core::MachinePath::parse("/var/lib/ployz-volumes/stray").unwrap(),
+                bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+                used_bytes: 0,
+                role: None,
+                slot_role: None,
+            },
+        }];
+        for (role, slot_role) in [
+            ("writer", "mirror"),
+            ("writer", "old_copy"),
+            ("switching", "mirror"),
+            ("switching", "old_copy"),
+        ] {
+            let copy: ployz_core::ProvisionedCopy = serde_json::from_str(&format!(
+                r#"{{"role":"{role}","maximum_bytes":1024,"used_bytes":0,"slot_role":"{slot_role}"}}"#
+            ))
+            .unwrap();
+            observe_copies(
+                &machine_id,
+                &mut volumes,
+                &BTreeMap::from([(name.clone(), copy)]),
+            );
+            let Provisioned {
+                role: seen_role,
+                slot_role: seen_slot_role,
+                ..
+            } = &volumes.first().unwrap().storage
+            else {
+                panic!("not provisioned");
+            };
+            assert_eq!(
+                serde_json::to_string(&(seen_role, seen_slot_role)).unwrap(),
+                format!(r#"["{role}","{slot_role}"]"#)
+            );
+        }
+    }
+
+    #[test]
     fn copies_give_docker_volumes_their_role_and_add_each_unlisted_slot() {
+        use ployz_core::CopyPlace;
         let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
         let name = |name: &str| DockerVolumeName::parse(name).unwrap();
         let provisioned = |volume: &str, role| DockerVolume {
@@ -1263,17 +1465,18 @@ mod tests {
                 driver: "local".into(),
             },
         };
-        let copy = |role, used_bytes| ployz_core::ProvisionedCopy {
-            role,
-            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
-                std::num::NonZeroU64::new(1024).unwrap(),
-            ),
-            used_bytes,
-            slot_role: None,
+        let copy = |place, used_bytes| {
+            ployz_core::ProvisionedCopy::new(
+                place,
+                ployz_core::ProvisionedVolumeMaximumBytes::new(
+                    std::num::NonZeroU64::new(1024).unwrap(),
+                ),
+                used_bytes,
+            )
         };
         let copies = BTreeMap::from([
-            (name("data"), copy(CopyRole::Switching, 512)),
-            (name("mirror"), copy(CopyRole::Slot, 300)),
+            (name("data"), copy(CopyPlace::Switching, 512)),
+            (name("mirror"), copy(CopyPlace::Slot(None), 300)),
         ]);
         let mut volumes = vec![provisioned("data", None), plain.clone()];
 
