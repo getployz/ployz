@@ -16,14 +16,14 @@
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange,
-    DoorOutcome, Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet,
-    ResolvedServiceSpec, SetPrivateAccessRequest, private_access_router_joined,
-    private_access_sealed_key,
+    ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange, DoorOutcome,
+    Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet, ResolvedServiceSpec,
+    SetPrivateAccessRequest, private_access_router_joined, private_access_sealed_key,
 };
 use zeroize::Zeroizing;
 
-use super::ingress_doors::{Effects, Gate, Replacing, Retiree};
+use super::ingress_doors::reserved::{self, Retiree, Step, newest, retirees, usable};
+use super::ingress_doors::{Effects, Gate};
 use super::{Error, LocalMachine};
 use crate::docker::{ContainerRuntime, same_creation};
 use crate::images::private_access_router;
@@ -46,16 +46,6 @@ const ROUTER_UP: &str = "Startup complete";
 /// The longest detail an answer carries.
 const DETAIL_LIMIT: usize = 300;
 
-/// What the route does with the router.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum RouterStep {
-    /// A canonical router runs.
-    Keep(ContainerId),
-    /// A canonical router exists at rest.
-    Start(ContainerId),
-    Create(Replacing),
-}
-
 /// The whole change, decided before any effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RouterPlan {
@@ -63,18 +53,7 @@ pub(super) struct RouterPlan {
     /// turns off.
     pub(super) retire: Vec<Retiree>,
     /// `None` when Private Access turns off.
-    pub(super) step: Option<RouterStep>,
-}
-
-fn usable(router: &ContainerObservation) -> bool {
-    !matches!(
-        router.runtime,
-        ContainerRuntimeObservation::Removing | ContainerRuntimeObservation::Dead
-    )
-}
-
-fn running(router: &ContainerObservation) -> bool {
-    matches!(router.runtime, ContainerRuntimeObservation::Running { .. })
+    pub(super) step: Option<Step>,
 }
 
 /// Decide the change from the routers Docker has and the router wanted, if any.
@@ -88,43 +67,19 @@ pub(super) fn plan_router(
             step: None,
         };
     };
-    let kept = routers
-        .iter()
-        .filter(|router| {
-            usable(router)
-                && same_creation(
-                    router,
-                    &Namespace::system(),
-                    ContainerKind::ServiceContainer,
-                    spec,
-                )
-        })
-        .max_by_key(|router| (running(router), router.recency_key()));
-    let kept_id = kept.map(|router| router.container_id);
-    let step = match kept {
-        Some(router)
-            if running(router) || router.runtime == ContainerRuntimeObservation::Restarting =>
-        {
-            RouterStep::Keep(router.container_id)
-        }
-        Some(router) => RouterStep::Start(router.container_id),
-        None => RouterStep::Create(ployz_core::newest(routers).map(|router| router.container_id)),
-    };
+    let kept = newest(routers.iter().filter(|router| {
+        usable(*router)
+            && same_creation(
+                router,
+                &Namespace::system(),
+                ContainerKind::ServiceContainer,
+                spec,
+            )
+    }));
     RouterPlan {
-        retire: retirees(routers, kept_id),
-        step: Some(step),
+        retire: retirees(routers, kept.map(|router| router.container_id)),
+        step: Some(reserved::step(kept, routers)),
     }
-}
-
-fn retirees(routers: &[ContainerObservation], kept: Option<ContainerId>) -> Vec<Retiree> {
-    routers
-        .iter()
-        .filter(|router| Some(router.container_id) != kept)
-        .map(|router| Retiree {
-            id: router.container_id,
-            running: !router.runtime.at_rest(),
-        })
-        .collect()
 }
 
 /// Why a router that has stopped or is still starting did not serve, from what it last
@@ -304,7 +259,7 @@ impl LocalMachine {
             let Some((spec, sealed)) = routers
                 .iter()
                 .rev()
-                .filter(|router| usable(router))
+                .filter(|router| usable(*router))
                 .find_map(|router| {
                     let sealed = private_access_sealed_key(&router.resolved_spec.container.labels)?;
                     Some((router.resolved_spec.clone(), sealed))
@@ -424,13 +379,13 @@ impl LocalMachine {
             return Ok(None);
         };
         let (id, change) = match step {
-            RouterStep::Keep(id) => (*id, DoorChange::Unchanged),
-            RouterStep::Start(id) => {
+            Step::Keep(id) => (*id, DoorChange::Unchanged),
+            Step::Start(id) => {
                 effects.started.push(*id);
                 self.start_door(containers, id, Gate::Router).await?;
                 (*id, DoorChange::Started)
             }
-            RouterStep::Create(replacing) => {
+            Step::Create(replacing) => {
                 let id = self
                     .create_door(&wanted.spec, *replacing, effects, Gate::Router)
                     .await?;
@@ -497,7 +452,7 @@ fn unix_seconds() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::HealthObservation;
+    use ployz_core::{ContainerId, HealthObservation};
     use serde_json::json;
 
     fn id(id: char) -> ContainerId {
@@ -553,15 +508,15 @@ mod tests {
     fn the_router_plan_keeps_starts_or_creates_and_retires_the_rest() {
         let spec = wanted();
         let plan = plan_router(&[], Some(&spec));
-        assert_eq!(plan.step, Some(RouterStep::Create(None)));
+        assert_eq!(plan.step, Some(Step::Create(None)));
         assert!(plan.retire.is_empty());
 
         let plan = plan_router(&[router('a', &spec, 1, created())], Some(&spec));
-        assert_eq!(plan.step, Some(RouterStep::Start(id('a'))));
+        assert_eq!(plan.step, Some(Step::Start(id('a'))));
 
         let restarting = router('a', &spec, 1, json!({ "state": "restarting" }));
         let plan = plan_router(&[restarting], Some(&spec));
-        assert_eq!(plan.step, Some(RouterStep::Keep(id('a'))));
+        assert_eq!(plan.step, Some(Step::Keep(id('a'))));
 
         let mut other = spec.clone();
         other.container.image = "tailscale/tailscale:old".into();
@@ -572,7 +527,7 @@ mod tests {
             router('d', &spec, 3, json!({ "state": "dead" })),
         ];
         let plan = plan_router(&routers, Some(&spec));
-        assert_eq!(plan.step, Some(RouterStep::Keep(id('a'))));
+        assert_eq!(plan.step, Some(Step::Keep(id('a'))));
         assert_eq!(
             plan.retire,
             vec![retiree('b', false), retiree('c', true), retiree('d', false)]
@@ -584,7 +539,7 @@ mod tests {
             router('d', &other, 3, created()),
         ];
         let plan = plan_router(&routers, Some(&spec));
-        assert_eq!(plan.step, Some(RouterStep::Create(Some(id('c')))));
+        assert_eq!(plan.step, Some(Step::Create(Some(id('c')))));
         assert_eq!(
             plan.retire,
             vec![retiree('a', false), retiree('c', true), retiree('d', false)]

@@ -26,6 +26,9 @@ use crate::docker::{ContainerRuntime, Door, DoorEntry, same_creation};
 use crate::docker_image::ImagePull;
 use crate::images::{DoorSpecs, TunnelSpecs};
 
+pub(super) mod reserved;
+use reserved::{Placed, Replacing, Retiree, Step, newest, retirees, usable};
+
 /// An opened tunnel token, written for the connector before it is placed.
 pub(super) type TunnelToken = Zeroizing<Vec<u8>>;
 
@@ -43,17 +46,6 @@ pub(super) enum Gate {
 const DOOR_START_WAIT: Duration = Duration::from_secs(15);
 const DOOR_POLL: Duration = Duration::from_millis(100);
 
-/// What the route does with a door other doors join: the holder, or the Tunnel
-/// Origin.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum HolderStep {
-    /// A canonical one runs.
-    Keep(ContainerId),
-    /// A canonical one exists at rest.
-    Start(ContainerId),
-    Create(Replacing),
-}
-
 /// What the route does with a door in another's network: the Caddy in the holder's,
 /// or the Tunnel Connector in the Tunnel Origin's.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,20 +62,8 @@ pub(super) enum JoinedStep {
 /// What the route does with the Tunnel Door's pair.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TunnelPlan {
-    pub(super) origin: HolderStep,
+    pub(super) origin: Step,
     pub(super) connector: JoinedStep,
-}
-
-/// The newest Container of the same door a creation replaces. The old one keeps its
-/// name until the new one runs, so the new one is named for what it replaces.
-pub(super) type Replacing = Option<ContainerId>;
-
-/// A door Container the route replaces.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Retiree {
-    pub(super) id: ContainerId,
-    /// It ran when planned, so a replacement that fails starts it again.
-    pub(super) running: bool,
 }
 
 /// The whole change, decided before any effect.
@@ -99,7 +79,7 @@ pub(super) struct DoorPlan {
     /// Caddys from before the holder, which publish the ports themselves.
     pub(super) legacy: Vec<Retiree>,
     pub(super) retire_holders: Vec<Retiree>,
-    pub(super) holder: HolderStep,
+    pub(super) holder: Step,
     pub(super) proxy: JoinedStep,
     /// `None` while the Tunnel Door is closed.
     pub(super) tunnel: Option<TunnelPlan>,
@@ -124,7 +104,7 @@ impl DoorPlan {
             IngressStage::Holder => true,
             IngressStage::Proxy => matches!(self.proxy, JoinedStep::Create(_)),
             IngressStage::Tunnel => self.tunnel.as_ref().is_some_and(|tunnel| {
-                matches!(tunnel.origin, HolderStep::Create(_))
+                matches!(tunnel.origin, Step::Create(_))
                     || matches!(tunnel.connector, JoinedStep::Create(_))
             }),
             IngressStage::Unrecognized => false,
@@ -141,43 +121,22 @@ fn shares_holders_netns(entry: &DoorEntry) -> bool {
             == Some(ployz_core::ServiceNetwork::IngressHolder)
 }
 
-fn usable(entry: &DoorEntry) -> bool {
-    !matches!(
-        entry.facts.runtime,
-        ContainerRuntimeObservation::Removing | ContainerRuntimeObservation::Dead
-    )
-}
+impl Placed for DoorEntry {
+    fn id(&self) -> ContainerId {
+        self.facts.id
+    }
 
-fn newest<'entry>(entries: &[&'entry DoorEntry]) -> Option<&'entry DoorEntry> {
-    entries.iter().copied().max_by_key(|entry| {
-        (
-            entry.facts.running(),
-            entry.facts.created_at,
-            entry.facts.id,
-        )
-    })
-}
+    fn runtime(&self) -> &ContainerRuntimeObservation {
+        &self.facts.runtime
+    }
 
-fn retirees(entries: &[&DoorEntry], kept: Option<ContainerId>) -> Vec<Retiree> {
-    entries
-        .iter()
-        .filter(|entry| Some(entry.facts.id) != kept)
-        .map(|entry| Retiree {
-            id: entry.facts.id,
-            running: !entry.facts.at_rest() && !shares_holders_netns(entry),
-        })
-        .collect()
-}
+    fn created_at(&self) -> i64 {
+        self.facts.created_at
+    }
 
-/// The newest of `entries` not `kept`. A Container named for replacing it would be
-/// newer still, so no Container holds the name a creation that replaces it takes.
-fn replacing(entries: &[&DoorEntry], kept: Option<ContainerId>) -> Replacing {
-    entries
-        .iter()
-        .filter(|entry| Some(entry.facts.id) != kept)
-        .map(|entry| (entry.facts.created_at, entry.facts.id))
-        .max()
-        .map(|(_, id)| id)
+    fn was_running(&self) -> bool {
+        !self.facts.at_rest() && !shares_holders_netns(self)
+    }
 }
 
 /// Decide the change from the inventory. `fresh_caddy` replaces the canonical Caddy
@@ -223,18 +182,22 @@ pub(super) fn plan_doors(
                     origin: origin_step,
                     connector,
                 }),
-                retirees(&origins, origin.map(|entry| entry.facts.id)),
+                retirees(origins.iter().copied(), origin.map(|entry| entry.facts.id)),
                 retire_tunnels,
             )
         }
-        None => (None, retirees(&origins, None), retirees(&tunnels, None)),
+        None => (
+            None,
+            retirees(origins.iter().copied(), None),
+            retirees(tunnels.iter().copied(), None),
+        ),
     };
     DoorPlan {
         retire_tunnels,
         retire_origins,
         retire_caddys,
-        legacy: retirees(&legacy, None),
-        retire_holders: retirees(&holders, holder_id),
+        legacy: retirees(legacy.iter().copied(), None),
+        retire_holders: retirees(holders.iter().copied(), holder_id),
         holder: holder_step,
         proxy: proxy_step,
         tunnel,
@@ -244,7 +207,7 @@ pub(super) fn plan_doors(
 /// The door a joined door is planned against: the holder, or the Tunnel Origin.
 struct Joined<'plan> {
     holder: Option<&'plan DoorEntry>,
-    holder_step: &'plan HolderStep,
+    holder_step: &'plan Step,
 }
 
 impl Joined<'_> {
@@ -262,29 +225,27 @@ impl Joined<'_> {
         })
         .filter(|_| !fresh);
         let kept_id = kept.map(|entry| entry.facts.id);
-        let step = match kept {
-            Some(entry) if entry.facts.running() => {
-                let stale = match (
-                    self.holder_step,
-                    self.holder.and_then(|holder| holder.facts.netns),
-                ) {
-                    (HolderStep::Start(_), _) => true,
-                    (_, Some(holder_ns)) => entry.facts.netns.is_some_and(|ns| ns != holder_ns),
-                    (_, None) => false,
-                };
-                if stale {
-                    JoinedStep::Rejoin(entry.facts.id)
-                } else {
-                    JoinedStep::Keep(entry.facts.id)
-                }
+        let step = match (reserved::step(kept, entries.iter().copied()), kept) {
+            (Step::Keep(id), Some(entry)) if entry.facts.running() && self.stale(entry) => {
+                JoinedStep::Rejoin(id)
             }
-            Some(entry) if entry.facts.runtime == ContainerRuntimeObservation::Restarting => {
-                JoinedStep::Keep(entry.facts.id)
-            }
-            Some(entry) => JoinedStep::Start(entry.facts.id),
-            None => JoinedStep::Create(replacing(entries, None)),
+            (Step::Keep(id), _) => JoinedStep::Keep(id),
+            (Step::Start(id), _) => JoinedStep::Start(id),
+            (Step::Create(replacing), _) => JoinedStep::Create(replacing),
         };
-        (step, retirees(entries, kept_id))
+        (step, retirees(entries.iter().copied(), kept_id))
+    }
+
+    /// Whether a joined door that runs sits in a network its owner no longer has.
+    fn stale(&self, entry: &DoorEntry) -> bool {
+        match (
+            self.holder_step,
+            self.holder.and_then(|holder| holder.facts.netns),
+        ) {
+            (Step::Start(_), _) => true,
+            (_, Some(holder_ns)) => entry.facts.netns.is_some_and(|ns| ns != holder_ns),
+            (_, None) => false,
+        }
     }
 }
 
@@ -294,57 +255,34 @@ fn canonical<'entry>(
     spec: &ResolvedServiceSpec,
     placed: impl Fn(&DoorEntry) -> bool,
 ) -> Option<&'entry DoorEntry> {
-    newest(
-        &entries
-            .iter()
-            .copied()
-            .filter(|entry| {
-                usable(entry)
-                    && placed(entry)
-                    && same_creation(
-                        &entry.observation,
-                        &Namespace::system(),
-                        ContainerKind::ServiceContainer,
-                        spec,
-                    )
-            })
-            .collect::<Vec<_>>(),
-    )
+    newest(entries.iter().copied().filter(|entry| {
+        usable(*entry)
+            && placed(entry)
+            && same_creation(
+                &entry.observation,
+                &Namespace::system(),
+                ContainerKind::ServiceContainer,
+                spec,
+            )
+    }))
 }
 
 /// The step for a door others join among `entries`, and the canonical one it keeps.
 fn plan_owner<'entry>(
     entries: &[&'entry DoorEntry],
     spec: &ResolvedServiceSpec,
-) -> (HolderStep, Option<&'entry DoorEntry>) {
+) -> (Step, Option<&'entry DoorEntry>) {
     let kept = canonical(entries, spec, |_| true);
-    let step = match kept {
-        Some(entry)
-            if entry.facts.running()
-                || entry.facts.runtime == ContainerRuntimeObservation::Restarting =>
-        {
-            HolderStep::Keep(entry.facts.id)
-        }
-        Some(entry) => HolderStep::Start(entry.facts.id),
-        None => HolderStep::Create(replacing(entries, None)),
-    };
-    (step, kept)
+    (reserved::step(kept, entries.iter().copied()), kept)
 }
 
 /// The doors a legacy Deploy keeps: it asks for a Caddy and knows no other Door, so
 /// the holder's ports and the connector stay as this Machine has them.
 fn doors_as_found(inventory: &[DoorEntry], proxy: ServiceId, tunnel_closed: bool) -> DoorSpecs {
     let newest_of = |door: Door| {
-        newest(
-            &inventory
-                .iter()
-                .filter(|entry| {
-                    entry.facts.door == door
-                        && usable(entry)
-                        && !(tunnel_closed && door == Door::Tunnel)
-                })
-                .collect::<Vec<_>>(),
-        )
+        newest(inventory.iter().filter(|entry| {
+            entry.facts.door == door && usable(*entry) && !(tunnel_closed && door == Door::Tunnel)
+        }))
     };
     let ports = match newest_of(Door::Holder) {
         Some(holder) if holder.observation.resolved_spec.ports.is_empty() => IngressPorts::Closed,
@@ -379,29 +317,17 @@ impl DoorsHeld {
 /// is not held: the Machine was told to close it, so planning retires it.
 fn doors_held(inventory: &[DoorEntry], tunnel_closed: bool) -> Option<DoorsHeld> {
     let newest_of = |door: Door| {
-        newest(
-            &inventory
-                .iter()
-                .filter(|entry| {
-                    entry.facts.door == door
-                        && usable(entry)
-                        && !(tunnel_closed && door == Door::Tunnel)
-                })
-                .collect::<Vec<_>>(),
-        )
+        newest(inventory.iter().filter(|entry| {
+            entry.facts.door == door && usable(*entry) && !(tunnel_closed && door == Door::Tunnel)
+        }))
     };
     let spec = |entry: &DoorEntry| entry.observation.resolved_spec.clone();
     let holder = newest_of(Door::Holder)?;
-    let proxy = newest(
-        &inventory
-            .iter()
-            .filter(|entry| {
-                entry.facts.door == Door::Proxy
-                    && usable(entry)
-                    && entry.observation.resolved_spec.container.network.is_some()
-            })
-            .collect::<Vec<_>>(),
-    )?;
+    let proxy = newest(inventory.iter().filter(|entry| {
+        entry.facts.door == Door::Proxy
+            && usable(*entry)
+            && entry.observation.resolved_spec.container.network.is_some()
+    }))?;
     let tunnel = newest_of(Door::Tunnel);
     let sealed = match tunnel {
         Some(tunnel) => Some(tunnel_sealed_token(
@@ -799,17 +725,17 @@ impl LocalMachine {
         &self,
         containers: &ContainerRuntime,
         spec: &ResolvedServiceSpec,
-        step: &HolderStep,
+        step: &Step,
         effects: &mut Effects,
     ) -> Result<DoorOutcome, Error> {
         let (id, change) = match step {
-            HolderStep::Keep(id) => (*id, DoorChange::Unchanged),
-            HolderStep::Start(id) => {
+            Step::Keep(id) => (*id, DoorChange::Unchanged),
+            Step::Start(id) => {
                 effects.started.push(*id);
                 self.start_door(containers, id, Gate::Ingress).await?;
                 (*id, DoorChange::Started)
             }
-            HolderStep::Create(replacing) => {
+            Step::Create(replacing) => {
                 let id = self
                     .create_door(spec, *replacing, effects, Gate::Ingress)
                     .await?;
@@ -1125,7 +1051,7 @@ mod tests {
         entry
     }
 
-    fn tunnel_plan(origin: HolderStep, connector: JoinedStep) -> Option<TunnelPlan> {
+    fn tunnel_plan(origin: Step, connector: JoinedStep) -> Option<TunnelPlan> {
         Some(TunnelPlan { origin, connector })
     }
 
@@ -1136,12 +1062,12 @@ mod tests {
             &tunnel_specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
+        assert_eq!(plan.holder, Step::Create(Some(id('a'))));
         assert_eq!(plan.retire_holders, vec![retiree('a', true)]);
         assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
         assert_eq!(
             plan.tunnel,
-            tunnel_plan(HolderStep::Create(None), JoinedStep::Create(None))
+            tunnel_plan(Step::Create(None), JoinedStep::Create(None))
         );
         assert!(plan.retire_tunnels.is_empty());
         assert!(plan.creates_at(IngressStage::Tunnel));
@@ -1159,7 +1085,7 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
+        assert_eq!(plan.holder, Step::Create(Some(id('a'))));
         assert_eq!(plan.tunnel, None);
         assert_eq!(plan.retire_tunnels, vec![retiree('c', true)]);
         assert_eq!(plan.retire_origins, vec![retiree('e', true)]);
@@ -1181,11 +1107,11 @@ mod tests {
             in_netns(tunnel('c', 'e', running()), 20),
         ];
         let plan = plan_doors(&inventory, &tunnel_specs(), false);
-        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.holder, Step::Keep(id('a')));
         assert_eq!(plan.proxy, JoinedStep::Keep(id('b')));
         assert_eq!(
             plan.tunnel,
-            tunnel_plan(HolderStep::Keep(id('e')), JoinedStep::Keep(id('c')))
+            tunnel_plan(Step::Keep(id('e')), JoinedStep::Keep(id('c')))
         );
         assert_eq!(plan.retirees().count(), 0);
 
@@ -1196,10 +1122,10 @@ mod tests {
             Some(&other_token),
         );
         let plan = plan_doors(&inventory, &renewed, false);
-        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.holder, Step::Keep(id('a')));
         assert_eq!(
             plan.tunnel,
-            tunnel_plan(HolderStep::Keep(id('e')), JoinedStep::Create(Some(id('c'))))
+            tunnel_plan(Step::Keep(id('e')), JoinedStep::Create(Some(id('c'))))
         );
         assert_eq!(plan.retire_tunnels, vec![retiree('c', true)]);
         assert!(plan.retire_origins.is_empty());
@@ -1217,11 +1143,11 @@ mod tests {
             &tunnel_specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
+        assert_eq!(plan.holder, Step::Create(Some(id('a'))));
         assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
         assert_eq!(
             plan.tunnel,
-            tunnel_plan(HolderStep::Keep(id('e')), JoinedStep::Keep(id('c')))
+            tunnel_plan(Step::Keep(id('e')), JoinedStep::Keep(id('c')))
         );
         assert!(plan.retire_tunnels.is_empty());
     }
@@ -1240,7 +1166,7 @@ mod tests {
         );
         assert_eq!(
             plan.tunnel,
-            tunnel_plan(HolderStep::Keep(id('e')), JoinedStep::Rejoin(id('c')))
+            tunnel_plan(Step::Keep(id('e')), JoinedStep::Rejoin(id('c')))
         );
         let plan = plan_doors(
             &[
@@ -1254,7 +1180,7 @@ mod tests {
         );
         assert_eq!(
             plan.tunnel,
-            tunnel_plan(HolderStep::Start(id('e')), JoinedStep::Start(id('c'))),
+            tunnel_plan(Step::Start(id('e')), JoinedStep::Start(id('c'))),
             "after a reboot the origin starts, then the connector in its new network"
         );
     }
@@ -1270,11 +1196,11 @@ mod tests {
             &tunnel_specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.holder, Step::Keep(id('a')));
         assert_eq!(plan.proxy, JoinedStep::Keep(id('b')));
         assert_eq!(
             plan.tunnel,
-            tunnel_plan(HolderStep::Create(None), JoinedStep::Create(Some(id('c'))))
+            tunnel_plan(Step::Create(None), JoinedStep::Create(Some(id('c'))))
         );
         assert_eq!(
             plan.retire_tunnels,
@@ -1354,7 +1280,7 @@ mod tests {
                 retire_caddys: vec![],
                 legacy: vec![],
                 retire_holders: vec![],
-                holder: HolderStep::Create(None),
+                holder: Step::Create(None),
                 proxy: JoinedStep::Create(None),
                 tunnel: None,
             }
@@ -1368,7 +1294,7 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Start(id('a')));
+        assert_eq!(plan.holder, Step::Start(id('a')));
         assert_eq!(
             plan.proxy,
             JoinedStep::Start(id('b')),
@@ -1396,7 +1322,7 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.holder, Step::Keep(id('a')));
         assert_eq!(plan.proxy, JoinedStep::Keep(id('b')));
         assert_eq!(plan.retirees().count(), 0);
     }
@@ -1408,7 +1334,7 @@ mod tests {
             &specs(),
             true,
         );
-        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.holder, Step::Keep(id('a')));
         assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
         assert_eq!(
             plan.retire_caddys,
@@ -1429,7 +1355,7 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Create(Some(id('a'))));
+        assert_eq!(plan.holder, Step::Create(Some(id('a'))));
         assert_eq!(plan.retire_holders, vec![retiree('a', true)]);
         assert_eq!(plan.retire_caddys, vec![retiree('b', true)]);
         assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
@@ -1451,7 +1377,7 @@ mod tests {
             &specs(),
             false,
         );
-        assert_eq!(plan.holder, HolderStep::Keep(id('a')));
+        assert_eq!(plan.holder, Step::Keep(id('a')));
         assert_eq!(plan.retire_caddys, vec![retiree('b', true)]);
         assert_eq!(plan.proxy, JoinedStep::Create(Some(id('b'))));
     }
@@ -1461,7 +1387,7 @@ mod tests {
         let plan = plan_doors(&[legacy_caddy('a', running())], &specs(), true);
         assert_eq!(plan.legacy, vec![retiree('a', true)]);
         assert!(plan.retire_caddys.is_empty());
-        assert_eq!(plan.holder, HolderStep::Create(None));
+        assert_eq!(plan.holder, Step::Create(None));
         assert_eq!(
             plan.proxy,
             JoinedStep::Create(None),
@@ -1539,7 +1465,7 @@ mod tests {
         );
         assert_eq!(
             plan.holder,
-            HolderStep::Create(Some(id('a'))),
+            Step::Create(Some(id('a'))),
             "the dead holder still holds the canonical name"
         );
         assert_eq!(plan.retire_holders, vec![retiree('a', false)]);
