@@ -871,18 +871,22 @@ impl ReplicatedStore {
                 [],
             ))
             .await?;
-        let mut rows = Vec::new();
+        let mut observations = Vec::new();
+        let mut incomplete_ids = Vec::new();
         for [id, machine_id, encoded] in query.rows(["id", "machine_id", "container"])? {
-            rows.push((
-                ContainerId::parse(text(&id, "container ID")?)?,
-                (
-                    text(&machine_id, "container Machine ID")?.to_owned(),
-                    text(&encoded, "replicated container JSON")?.to_owned(),
-                ),
-            ));
+            let id = ContainerId::parse(text(&id, "container ID")?)?;
+            match decode_container(
+                &id,
+                text(&machine_id, "container Machine ID")?,
+                text(&encoded, "replicated container JSON")?,
+            )? {
+                Some(observation) => observations.push(observation),
+                None => incomplete_ids.push(id),
+            }
         }
-        decode_observations(rows, RowPolicy::FailRead, |id, (machine_id, encoded)| {
-            decode_container(id, machine_id, encoded)
+        Ok(ReplicatedObservations {
+            observations,
+            incomplete_ids,
         })
     }
 
