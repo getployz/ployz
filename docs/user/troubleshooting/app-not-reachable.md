@@ -209,7 +209,8 @@ that still lists `public` never switched; run `ployz ingress use tunnel` again a
 
 When every server lists `tunnel` and the domain still doesn't answer, check the tunnel in
 Cloudflare under **Zero Trust → Networks → Tunnels**. It should show one connector per server,
-and a public hostname for the domain with service `http://localhost:8480`. A tunnel whose token
+and a public hostname for the domain with service `http://localhost:8480`. A hostname with any
+other service gets no answer, since the connector reaches nothing else. A tunnel whose token
 you rotated needs the new token: `ployz ingress use tunnel --token-stdin`.
 
 A domain behind the tunnel never shows **Issuing certificate**; Cloudflare serves it. If the
