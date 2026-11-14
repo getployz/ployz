@@ -129,9 +129,10 @@ async fn send_in(machine: &Enforcing, sample: &Sample, caller: Caller, state: St
         }
     };
     let (channel, server) = connect(machine, caller).await;
-    // real-wait: a call queued behind the held mutation never answers until it is released
+    // real-wait: a call queued behind the held mutation never answers until it is released; the
+    // wait is long enough that a loaded runner still answers a call refused before the turn
     let answer = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(15),
         call(channel, sample, caller),
     )
     .await
@@ -260,16 +261,28 @@ fn normalize(text: &str) -> String {
 async fn every_case_is_answered_as_it_was_by_every_caller_in_every_state() {
     let mut text = String::new();
     for state in State::ALL {
-        for caller in CALLERS {
-            text.push_str(&answers(*caller, state).await);
+        let runs: Vec<_> = CALLERS
+            .iter()
+            .map(|caller| tokio::spawn(answers(*caller, state)))
+            .collect();
+        for run in runs {
+            text.push_str(&run.await.unwrap());
         }
     }
     if std::env::var_os("PLOYZ_BLESS").is_some() {
         std::fs::write(GOLDEN, &text).unwrap();
         return;
     }
+    let golden = std::fs::read_to_string(GOLDEN).unwrap();
+    let changed: Vec<String> = golden
+        .lines()
+        .zip(text.lines())
+        .filter(|(was, now)| was != now)
+        .map(|(was, now)| format!("- {was}\n+ {now}"))
+        .collect();
     assert!(
-        std::fs::read_to_string(GOLDEN).unwrap() == text,
-        "an admission answer changed; rerun with PLOYZ_BLESS=1 and review {GOLDEN}"
+        golden == text,
+        "an admission answer changed; rerun with PLOYZ_BLESS=1 and review {GOLDEN}\n{}",
+        changed.join("\n")
     );
 }
