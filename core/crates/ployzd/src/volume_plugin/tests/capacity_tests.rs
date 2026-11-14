@@ -510,3 +510,38 @@ async fn a_slot_a_root_of_its_name_hides_still_counts_against_committable_bytes(
     server.abort();
     assert_eq!(created, json!({"Err":""}));
 }
+
+#[tokio::test]
+async fn a_request_that_overflows_the_commitment_is_refused_by_name_before_any_write() {
+    for fixed in [true, false] {
+        let create = TestDir::new();
+        assert_eq!(
+            create_other(&create, fixed, u64::MAX).await,
+            json!({"Err": "Provisioned Volume commitments overflowed u64"}),
+            "fixed={fixed}"
+        );
+        assert!(
+            !fs::read_to_string(create.0.join("commands"))
+                .unwrap()
+                .contains("ployz/other"),
+            "fixed={fixed}: a refused Volume creates no dataset"
+        );
+
+        let grow = TestDir::new();
+        assert_eq!(
+            grow_data_by(&grow, fixed, u64::MAX - ROOT_BOUND).await,
+            json!({"Err": {
+                "code": "internal",
+                "details": null,
+                "message": "Provisioned Volume commitments overflowed u64",
+            }}),
+            "fixed={fixed}"
+        );
+        assert!(
+            !fs::read_to_string(grow.0.join("commands"))
+                .unwrap()
+                .contains("zfs set refquota="),
+            "fixed={fixed}: a refused grow sets no bound"
+        );
+    }
+}
