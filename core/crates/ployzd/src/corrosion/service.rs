@@ -22,12 +22,13 @@ use crate::{
     docker::{DesiredContainer, Ensure, ManagedService},
     filesystem::atomic_write,
 };
-use ployz_core::{CORROSION_API_ADDRESS, CORROSION_GOSSIP_PORT};
+use ployz_core::{CORROSION_API_ADDRESS, CORROSION_GOSSIP_PORT, PinnedImage};
 
 use super::{AdminClient, ApiClient, Error, ReplicatedStore, Statement};
 
 /// Built from the `ployz` branch of getployz/corrosion: upstream plus the patches its README lists.
 pub const IMAGE: &str = "ghcr.io/getployz/corrosion:20261031-28f00b417271@sha256:384f1e20dbbe187135c4c75ae0eb41943df64c2306b5b4eecffa88ba04b46cc1";
+const PINNED: PinnedImage = PinnedImage::new(IMAGE);
 pub const DEFAULT_CONTAINER_NAME: &str = "ployz-corrosion";
 const TOKEN_FILE: &str = ".api-token";
 const SCHEMA: &str = include_str!("schema.sql");
@@ -236,7 +237,7 @@ pub async fn remove_retained(run_dir: &Path) -> Result<(), Error> {
 const STOP_GRACE_SECONDS: i32 = 1;
 
 fn managed(docker: Docker, name: impl Into<String>) -> ManagedService<Docker> {
-    ManagedService::new(docker, name, IMAGE).with_stop_grace(STOP_GRACE_SECONDS)
+    ManagedService::new(docker, name).with_stop_grace(STOP_GRACE_SECONDS)
 }
 
 async fn remove(service: &ManagedService<Docker>, run_dir: &Path) -> Result<(), Error> {
@@ -349,6 +350,7 @@ impl DockerService {
         );
         self.service
             .ensure(DesiredContainer::new(
+                PINNED,
                 config,
                 &[&files.config, SCHEMA.as_bytes()],
             ))
@@ -368,7 +370,6 @@ fn container_config(data_dir: &Path, run_dir: &Path, user: String) -> ContainerC
         })
         .collect();
     ContainerCreateBody {
-        image: Some(IMAGE.into()),
         cmd: Some(vec![
             "corrosion".into(),
             "agent".into(),

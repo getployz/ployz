@@ -58,8 +58,11 @@ pub const MINIMUM_DOCKER_RELEASE: &str = "29.2";
 pub const MINIMUM_DOCKER_API: (u32, u32) = (1, 53);
 /// Build cache retention runs `buildx prune --max-used-space`, added in buildx 0.18.
 pub const MINIMUM_BUILDX: (u32, u32) = (0, 18);
-/// Pinned BuildKit release. Every Ployz Build runs this version.
-pub const BUILDKIT_IMAGE: &str = "moby/buildkit:v0.26.2";
+/// Pinned BuildKit release. Every Ployz Build runs this version. BuildKit runs
+/// privileged and any image route can write its tag, so only the index digest names it.
+pub const BUILDKIT_IMAGE: ployz_core::PinnedImage = ployz_core::PinnedImage::new(
+    "moby/buildkit:v0.26.2@sha256:de10faf919fc71ba4eb1dd7bd6449566d012b0c9436b1c61bfee21d621b009aa",
+);
 /// Interface prefix of the bridge each build slot's steps run on. Host
 /// firewall rules match it as `ployz-build+`.
 pub const BUILD_BRIDGE_PREFIX: &str = "ployz-build";

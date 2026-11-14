@@ -12,7 +12,7 @@ use bollard::{
         StopContainerOptionsBuilder,
     },
 };
-use ployz_core::{PullPolicy, labels};
+use ployz_core::{PinnedImage, PullPolicy, labels};
 use sha2::{Digest as _, Sha256};
 
 use crate::docker_image::{is_not_found, prepare_image};
@@ -22,17 +22,19 @@ use super::{Error, LocalDocker, Status, classify};
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SpecDigest(String);
 
-/// A create body whose `ployzd.spec` label is the digest of its own content and
-/// of the files the container reads at start.
+/// A create body running `image`, whose `ployzd.spec` label is the digest of its own
+/// content and of the files the container reads at start.
 pub(crate) struct DesiredContainer {
+    image: PinnedImage,
     body: ContainerCreateBody,
     digest: SpecDigest,
 }
 
 impl DesiredContainer {
     /// `files` are the daemon-written files the container reads at start, in a
-    /// caller-fixed order.
-    pub(crate) fn new(mut body: ContainerCreateBody, files: &[&[u8]]) -> Self {
+    /// caller-fixed order. `image` replaces any image `body` names.
+    pub(crate) fn new(image: PinnedImage, mut body: ContainerCreateBody, files: &[&[u8]]) -> Self {
+        body.image = Some(image.as_str().to_owned());
         if let Some(labels) = body.labels.as_mut() {
             labels.remove(labels::SPEC);
         }
@@ -49,7 +51,11 @@ impl DesiredContainer {
         body.labels
             .get_or_insert_default()
             .insert(labels::SPEC.to_owned(), digest.0.clone());
-        Self { body, digest }
+        Self {
+            image,
+            body,
+            digest,
+        }
     }
 }
 
@@ -156,16 +162,14 @@ impl ServiceRuntime for LocalDocker {
 pub(crate) struct ManagedService<R> {
     runtime: R,
     name: String,
-    image: &'static str,
     stop_grace_seconds: Option<i32>,
 }
 
 impl<R: ServiceRuntime> ManagedService<R> {
-    pub(crate) fn new(runtime: R, name: impl Into<String>, image: &'static str) -> Self {
+    pub(crate) fn new(runtime: R, name: impl Into<String>) -> Self {
         Self {
             runtime,
             name: name.into(),
-            image,
             stop_grace_seconds: None,
         }
     }
@@ -188,20 +192,26 @@ impl<R: ServiceRuntime> ManagedService<R> {
         match ensure {
             Ensure::Keep => {}
             Ensure::Start => docker.start_container(&self.name, None).await?,
-            Ensure::Create => self.create(desired.body).await?,
+            Ensure::Create => self.create(desired).await?,
             Ensure::Replace => {
                 // A registry outage must leave the old container serving, not none at all.
-                prepare_image(docker, self.image, PullPolicy::Missing, None).await?;
+                prepare_image(docker, desired.image.as_str(), PullPolicy::Missing, None).await?;
                 self.remove().await?;
-                self.create(desired.body).await?;
+                self.create(desired).await?;
             }
         }
         Ok(ensure)
     }
 
-    async fn create(&self, config: ContainerCreateBody) -> Result<(), R::Error> {
-        prepare_image(self.runtime.client(), self.image, PullPolicy::Missing, None).await?;
-        self.runtime.create(&self.name, config).await
+    async fn create(&self, desired: DesiredContainer) -> Result<(), R::Error> {
+        prepare_image(
+            self.runtime.client(),
+            desired.image.as_str(),
+            PullPolicy::Missing,
+            None,
+        )
+        .await?;
+        self.runtime.create(&self.name, desired.body).await
     }
 
     async fn stop(&self) -> Result<(), DockerError> {
@@ -258,8 +268,12 @@ mod tests {
         }
     }
 
+    const PINNED: PinnedImage = PinnedImage::new(
+        "example.test/service:1@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    );
+
     fn digest(body: ContainerCreateBody, files: &[&[u8]]) -> SpecDigest {
-        DesiredContainer::new(body, files).digest
+        DesiredContainer::new(PINNED, body, files).digest
     }
 
     #[test]
@@ -290,7 +304,14 @@ mod tests {
         let base = digest(body("image:1"), files);
         assert_eq!(base, digest(body("image:1"), files));
         let changed = [
-            digest(body("image:2"), files),
+            DesiredContainer::new(
+                PinnedImage::new(
+                    "example.test/service:1@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                ),
+                body("image:1"),
+                files,
+            )
+            .digest,
             digest(
                 ContainerCreateBody {
                     cmd: Some(vec!["agent".into()]),
@@ -342,6 +363,7 @@ mod tests {
     fn new_stamps_its_own_label_and_ignores_a_forged_one() {
         let labelled = |labels: &[(&str, &str)]| {
             DesiredContainer::new(
+                PINNED,
                 ContainerCreateBody {
                     labels: Some(
                         labels
@@ -358,6 +380,7 @@ mod tests {
         let forged = labelled(&[(labels::SYSTEM_MANAGED, ""), (labels::SPEC, "x")]);
         assert_eq!(forged.digest, honest.digest);
         for desired in [honest, forged] {
+            assert_eq!(desired.body.image.as_deref(), Some(PINNED.as_str()));
             assert_eq!(
                 desired.body.labels.unwrap().get(labels::SPEC),
                 Some(&desired.digest.0)

@@ -12,15 +12,16 @@ RUN apt-get update \
 COPY --from=docker-bin /usr/local/bin/containerd /usr/local/bin/containerd-shim-runc-v2 /usr/local/bin/ctr /usr/local/bin/docker /usr/local/bin/docker-init /usr/local/bin/docker-proxy /usr/local/bin/dockerd /usr/local/bin/runc /usr/local/bin/
 COPY --from=docker-bin /usr/local/bin/dind /usr/local/bin/dind
 COPY --from=docker-bin /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
-# Corrosion goes in as an OCI archive, which keeps its index digest, so the
-# containerd store finds the digest-pinned IMAGE in ployzd's corrosion/service.rs.
+# Corrosion and unregistry go in as OCI archives, which keep their index digests,
+# so the containerd store finds the digest-pinned IMAGE in ployzd's
+# corrosion/service.rs and docker/unregistry.rs.
 # The classic store cannot load an OCI archive; only priming, which runs on the
 # containerd store, loads these tars.
 RUN mkdir -p /opt/ployz/images \
  && skopeo copy --all docker://ghcr.io/getployz/corrosion@sha256:384f1e20dbbe187135c4c75ae0eb41943df64c2306b5b4eecffa88ba04b46cc1 oci-archive:/opt/ployz/images/corrosion.tar:ghcr.io/getployz/corrosion:20261031-28f00b417271 \
  && skopeo copy docker://docker.io/library/alpine:3.23.3 docker-archive:/opt/ployz/images/alpine.tar:alpine:3.23.3 \
  && skopeo copy docker://docker.io/library/caddy:2.10.2 docker-archive:/opt/ployz/images/caddy.tar:caddy:2.10.2 \
- && skopeo copy docker://ghcr.io/psviderski/unregistry:0.4.1 docker-archive:/opt/ployz/images/unregistry.tar:ghcr.io/psviderski/unregistry:0.4.1
+ && skopeo copy --all docker://ghcr.io/psviderski/unregistry@sha256:7297f3bb6f503515991e81e249dab81c23d2c350323fc209e3eaa8507a5970b1 oci-archive:/opt/ployz/images/unregistry.tar:ghcr.io/psviderski/unregistry:0.4.1
 COPY crates/ployz-testkit/entrypoint.sh /usr/local/bin/ployz-testkit-entrypoint
 COPY crates/ployz-testkit/journalctl /usr/local/bin/journalctl
 COPY crates/ployz-testkit/daemon.json /etc/docker/daemon.json
