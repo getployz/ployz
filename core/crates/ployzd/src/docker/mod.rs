@@ -14,6 +14,7 @@ mod managed_service;
 mod observe;
 pub(crate) use observe::published_spec;
 mod peer_pull;
+mod recovery;
 pub(crate) use peer_pull::ImageProxy;
 mod private_access;
 mod spec_store;
@@ -62,13 +63,13 @@ use error::docker_error;
 pub(crate) use error::{Status, classify};
 use http_health::probe as http_health_probe;
 use observe::ObservationSink;
+use recovery::IngressRecovery;
 
 pub(crate) use create::container_log_config;
 use create::effective_healthcheck;
 pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
 pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
-pub(crate) use observe::IngressRecovery;
 pub(crate) use peer_pull::pull_from_ingest;
 use ployz_core::LimitsRefusal;
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
@@ -342,7 +343,7 @@ pub struct ContainerRuntime {
     leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
     first_synced: watch::Sender<bool>,
     checks: Arc<std::sync::Mutex<CheckRecords>>,
-    stranded: Arc<tokio::sync::Mutex<observe::StrandedIngress>>,
+    recovery: IngressRecovery,
     /// Serializes every holder and Caddy lifecycle (a route, a legacy translation and
     /// recovery), so no two of them place or retire the Ingress doors at once. Taken
     /// before the admission turn and before any per-id gate.
@@ -353,7 +354,7 @@ pub struct ContainerRuntime {
     log_store: LogStore,
     /// Set when a Leave begins removing every managed Container, and cleared only when
     /// that Leave fails, so a committed Leave keeps it set.
-    departing: Arc<std::sync::atomic::AtomicBool>,
+    departure: lifecycle::Departure,
 }
 
 impl ContainerRuntime {
@@ -367,12 +368,12 @@ impl ContainerRuntime {
             leaving: Arc::default(),
             first_synced: watch::Sender::new(false),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
-            stranded: Arc::default(),
+            recovery: IngressRecovery::default(),
             doors: Arc::default(),
             sealing_key_dir: None,
             machine_root: PathBuf::from("/"),
             log_store: LogStore::default(),
-            departing: Arc::default(),
+            departure: lifecycle::Departure::default(),
         }
     }
 
@@ -407,13 +408,12 @@ impl ContainerRuntime {
     /// Container call that overlapped it met the Leave's stops.
     #[must_use]
     pub fn departing(&self) -> bool {
-        self.departing.load(std::sync::atomic::Ordering::SeqCst)
+        self.departure.under_way()
     }
 
     /// A Leave that failed leaves this Machine in the Cluster, taking Container work again.
     pub fn departure_failed(&self) {
-        self.departing
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.departure.failed();
     }
 
     pub async fn floor_turn(&self) -> FloorTurn<'_> {
@@ -553,9 +553,7 @@ impl ContainerRuntime {
             .lock()
             .expect("check records are never poisoned")
             .forget(container_id);
-        let mut stranded = self.stranded().await;
-        stranded.held.forget(container_id);
-        stranded.gates.remove(container_id);
+        self.recovery.forget(container_id).await;
     }
 
     pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {

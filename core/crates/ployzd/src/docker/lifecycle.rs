@@ -27,12 +27,32 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, IngressRecovery, create,
+    ContainerRuntime, Error, create,
     create::CreationNetwork,
-    doors::{self, Door},
+    doors::Door,
     error::{Status, classify, docker_error},
     spec_store::ConfigOperation,
 };
+
+/// Whether a Leave owns this Machine's Containers: set when it starts removing them and
+/// kept once it commits, cleared only by the caller when the Leave fails. Nothing else
+/// writes it.
+#[derive(Clone, Default)]
+pub(super) struct Departure(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Departure {
+    pub(super) fn begin(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(super) fn failed(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(super) fn under_way(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
 
 /// How a Container leaves through [`ContainerRuntime::retire`].
 pub(super) enum How {
@@ -556,11 +576,11 @@ impl ContainerRuntime {
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.ensure_managed(container_id).await?;
-        self.stranded().await.held.release(container_id);
+        self.recovery.release(container_id).await;
         self.start_inspected(container_id, &inspected).await
     }
 
-    async fn start_inspected(
+    pub(super) async fn start_inspected(
         &self,
         container_id: &ContainerId,
         inspected: &ContainerInspectResponse,
@@ -612,110 +632,6 @@ impl ContainerRuntime {
         joined.map_err(|error| docker_error(container_id, error))
     }
 
-    /// Carry out one Ingress door recovery, unless a request stopped its Container or
-    /// is about to, or a container was created since `creates` was read or is being
-    /// created. Recovery only starts what exists; it never creates.
-    pub(super) async fn start_stranded(&self, recovery: IngressRecovery, creates: u64) {
-        // Under the doors lock so a route placing the doors never races it.
-        let _doors = self.door_lifecycle().await;
-        let container_id = *recovery.target();
-        let gate = self
-            .stranded()
-            .await
-            .gates
-            .entry(container_id)
-            .or_default()
-            .clone();
-        let Ok(_gate) = gate.try_lock() else {
-            return;
-        };
-        if self.stranded().await.held.contains(&container_id) || self.is_withdrawn(&container_id) {
-            return;
-        }
-        let result = self.recover_door(&recovery, creates).await;
-        let mut stranded = self.stranded().await;
-        match result {
-            Ok(acted) => {
-                if acted {
-                    tracing::info!(?recovery, "{} an Ingress door", recovery.verb());
-                }
-                stranded.reported = None;
-            }
-            Err(error) if stranded.reported != Some(container_id) => {
-                eprintln!(
-                    "Ingress door {container_id} is still not {}: {error}",
-                    recovery.verb(),
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                stranded.reported = Some(container_id);
-            }
-            Err(_) => {}
-        }
-    }
-
-    async fn recover_door(&self, recovery: &IngressRecovery, creates: u64) -> Result<bool, Error> {
-        match recovery {
-            IngressRecovery::StartHolder(container_id)
-            | IngressRecovery::StartCaddy {
-                holder: None,
-                caddy: container_id,
-            } => {
-                let inspected = self.ensure_managed(container_id).await?;
-                // A newer door may be about to take the ports; the next scan decides.
-                if !failed_start(&inspected) || !self.docker.created_nothing_since(creates) {
-                    return Ok(false);
-                }
-                self.start_inspected(container_id, &inspected).await?;
-                Ok(true)
-            }
-            IngressRecovery::StartCaddy {
-                holder: Some(holder),
-                caddy,
-            } => {
-                let inspected = self.ensure_managed(caddy).await?;
-                if !failed_start(&inspected)
-                    || !is_running(&self.ensure_managed(holder).await?)
-                    || !self.docker.created_nothing_since(creates)
-                {
-                    return Ok(false);
-                }
-                self.start_inspected(caddy, &inspected).await?;
-                Ok(true)
-            }
-            IngressRecovery::Rejoin { owner, joined } => {
-                let owner_now = self.ensure_managed(owner).await?;
-                let joined_now = self.ensure_managed(joined).await?;
-                let stale = match (doors::netns_of(&owner_now), doors::netns_of(&joined_now)) {
-                    (Some(owner_ns), Some(joined_ns)) => owner_ns != joined_ns,
-                    _ => false,
-                };
-                if !stale
-                    || doors::joined_to(&joined_now) != Some(*owner)
-                    || !self.docker.created_nothing_since(creates)
-                {
-                    return Ok(false);
-                }
-                // A stop here is no request's, so it holds nothing: the start that
-                // follows is the same repair.
-                let result = self
-                    .docker
-                    .client
-                    .stop_container(joined.as_str(), None)
-                    .await;
-                idempotent_lifecycle_result(joined, result)?;
-                let inspected = self.ensure_managed(joined).await?;
-                self.start_inspected(joined, &inspected).await?;
-                Ok(true)
-            }
-        }
-    }
-
-    pub(super) async fn stranded(
-        &self,
-    ) -> tokio::sync::MutexGuard<'_, super::observe::StrandedIngress> {
-        self.stranded.lock().await
-    }
-
     pub async fn stop(
         &self,
         container_id: &ContainerId,
@@ -740,16 +656,8 @@ impl ContainerRuntime {
         still_wanted: impl std::future::Future<Output = Result<bool, E>>,
     ) -> Result<bool, E> {
         let managed = self.ensure_managed(container_id).await;
-        let hold = if managed.is_ok() {
-            let (hold, gate) = {
-                let stranded = self.stranded().await;
-                let hold = stranded.held.hold(*container_id);
-                (hold, stranded.gates.get(container_id).cloned())
-            };
-            if let Some(gate) = gate {
-                drop(gate.lock().await);
-            }
-            Some(hold)
+        let plan = if managed.is_ok() {
+            Some(self.recovery.before_stop(container_id).await)
         } else {
             None
         };
@@ -757,8 +665,8 @@ impl ContainerRuntime {
         if !matches!(wanted, Ok(true)) {
             return wanted;
         }
-        if let Some(hold) = hold {
-            hold.keep();
+        if let Some(plan) = plan {
+            plan.proceed();
         }
         managed?;
         let mut options = StopContainerOptionsBuilder::default();
@@ -807,8 +715,7 @@ impl ContainerRuntime {
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {
-        self.departing
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.departure.begin();
         let mut config_operation = self.specs.config_operation().await;
         // A Caddy in a holder's network goes before the holder, and a connector before
         // its Tunnel Origin, so no Container is ever left in a removed Container's
@@ -1018,7 +925,7 @@ async fn docker_config_mounts(
     Ok(mounts)
 }
 
-fn idempotent_lifecycle_result(
+pub(super) fn idempotent_lifecycle_result(
     container_id: &ContainerId,
     result: Result<(), bollard::errors::Error>,
 ) -> Result<(), Error> {
@@ -1145,8 +1052,11 @@ fn lost_network(inspected: &ContainerInspectResponse) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::docker::test_support::{
-        FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+    use crate::docker::{
+        recovery::Repair,
+        test_support::{
+            FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+        },
     };
 
     fn inspected(network_mode: &str, networks: serde_json::Value) -> ContainerInspectResponse {
@@ -1776,8 +1686,8 @@ mod tests {
         (runtime, fake, created.container_id)
     }
 
-    fn start_legacy_caddy(caddy: ContainerId) -> IngressRecovery {
-        IngressRecovery::StartCaddy {
+    fn start_legacy_caddy(caddy: ContainerId) -> Repair {
+        Repair::StartCaddy {
             holder: None,
             caddy,
         }
@@ -1798,21 +1708,21 @@ mod tests {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a failed first start is retried");
 
         runtime.stop(&container_id, None, None).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "a stopped ingress stays stopped");
 
         runtime.start(&container_id).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a requested start lifts the stop");
     }
@@ -1833,12 +1743,12 @@ mod tests {
             }
         });
         was_asked.await.unwrap();
-        assert!(runtime.stranded().await.held.contains(&container_id));
+        assert!(runtime.recovery.is_held(&container_id).await);
 
         stopping.abort();
         assert!(stopping.await.unwrap_err().is_cancelled());
         assert!(
-            !runtime.stranded().await.held.contains(&container_id),
+            !runtime.recovery.is_held(&container_id).await,
             "a dropped stop must not keep the ingress from its retry"
         );
     }
@@ -1866,33 +1776,9 @@ mod tests {
         decide.send(()).unwrap();
         let _ = stopping.await.unwrap();
         assert!(
-            !runtime.stranded().await.held.contains(&container_id),
+            !runtime.recovery.is_held(&container_id).await,
             "a forgotten container must not stay held"
         );
-    }
-
-    #[tokio::test]
-    async fn a_hold_forget_voided_never_touches_a_later_hold() {
-        let (_runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
-        let holds = super::super::observe::Holds::default();
-
-        let voided = holds.hold(container_id);
-        holds.forget(&container_id);
-        let later = holds.hold(container_id);
-        voided.keep();
-        drop(later);
-        assert!(
-            !holds.contains(&container_id),
-            "a voided keep must not hold"
-        );
-
-        let voided = holds.hold(container_id);
-        holds.forget(&container_id);
-        let later = holds.hold(container_id);
-        drop(voided);
-        assert!(holds.contains(&container_id), "a voided drop must not lift");
-        later.keep();
-        assert!(holds.contains(&container_id), "the later stop is kept");
     }
 
     #[tokio::test]
@@ -1929,7 +1815,7 @@ mod tests {
 
         let _withdrawal = runtime.withdraw(container_id);
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -1952,7 +1838,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+                    .recover(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -1989,7 +1875,7 @@ mod tests {
         assert_eq!(lifecycle, ["start", "stop"]);
         fake.requests.lock().unwrap().clear();
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "the stop holds");
     }
@@ -2011,7 +1897,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+                    .recover(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -2029,7 +1915,7 @@ mod tests {
             }
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !runtime.stranded().await.held.contains(&container_id) {
+            while !runtime.recovery.is_held(&container_id).await {
                 tokio::task::yield_now().await;
             }
         })
@@ -2048,7 +1934,7 @@ mod tests {
                 .iter()
                 .any(|(_, path)| path.ends_with("/stop"))
         );
-        assert!(!runtime.stranded().await.held.contains(&container_id));
+        assert!(!runtime.recovery.is_held(&container_id).await);
     }
 
     #[tokio::test]
@@ -2058,18 +1944,18 @@ mod tests {
         let creates = runtime.docker.creates();
 
         runtime
-            .start_stranded(start_legacy_caddy(container_id), creates)
+            .recover(start_legacy_caddy(container_id), creates)
             .await;
         assert!(!started(&fake), "a newer ingress may be appearing");
 
         drop(creating);
         runtime
-            .start_stranded(start_legacy_caddy(container_id), creates)
+            .recover(start_legacy_caddy(container_id), creates)
             .await;
         assert!(!started(&fake), "it appeared after the scan began");
 
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "the next scan decides");
     }
@@ -2095,7 +1981,7 @@ mod tests {
         fake.requests.lock().unwrap().clear();
 
         runtime
-            .start_stranded(start_legacy_caddy(container_id), creates)
+            .recover(start_legacy_caddy(container_id), creates)
             .await;
 
         assert!(!started(&fake), "the next scan decides");
@@ -2119,7 +2005,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
-                    .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+                    .recover(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
@@ -2136,7 +2022,7 @@ mod tests {
         let (runtime, fake, container_id) = stranded("").await;
 
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));
@@ -2150,7 +2036,7 @@ mod tests {
             stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
 
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(started(&fake));
@@ -2162,7 +2048,7 @@ mod tests {
             stranded_with("exited", "", FakeDocker::default()).await;
 
         runtime
-            .start_stranded(start_legacy_caddy(container_id), runtime.docker.creates())
+            .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
         assert!(!started(&fake));

@@ -10,8 +10,9 @@ use std::{
 use ployz_core::{ContainerId, ContainerKind, Namespace};
 
 use super::{
-    ContainerRuntime, Error, IngressRecovery,
+    ContainerRuntime, Error,
     lifecycle::ContainerRequest,
+    recovery::Repair,
     test_support::{FakeDocker, container_request, fake_runtime_with, machine},
 };
 use crate::images::DoorSpecs;
@@ -173,7 +174,7 @@ async fn a_stop_that_a_refusal_wins_sends_no_stop_and_holds_nothing() {
 
     assert!(matches!(stopped, Ok(false)));
     assert_eq!(doors.calls(), lines(&["GET /containers/caddy/json"]));
-    assert!(!doors.runtime.stranded().await.held.contains(&doors.caddy));
+    assert!(!doors.runtime.recovery.is_held(&doors.caddy).await);
 }
 
 #[tokio::test]
@@ -183,13 +184,13 @@ async fn a_requested_stop_holds_the_door_and_a_requested_start_lifts_the_hold() 
     doors.calls();
 
     doors.runtime.stop(&doors.caddy, None, None).await.unwrap();
-    assert!(doors.runtime.stranded().await.held.contains(&doors.caddy));
+    assert!(doors.runtime.recovery.is_held(&doors.caddy).await);
     doors.calls();
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
-        .start_stranded(
-            IngressRecovery::StartCaddy {
+        .recover(
+            Repair::StartCaddy {
                 holder: Some(doors.holder),
                 caddy: doors.caddy,
             },
@@ -202,7 +203,7 @@ async fn a_requested_stop_holds_the_door_and_a_requested_start_lifts_the_hold() 
     );
 
     doors.runtime.start(&doors.caddy).await.unwrap();
-    assert!(!doors.runtime.stranded().await.held.contains(&doors.caddy));
+    assert!(!doors.runtime.recovery.is_held(&doors.caddy).await);
     assert_eq!(
         doors.calls(),
         lines(&["GET /containers/caddy/json", "POST /containers/caddy/start",]),
@@ -218,8 +219,8 @@ async fn a_caddy_whose_start_failed_is_started_once_its_holder_runs() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
-        .start_stranded(
-            IngressRecovery::StartCaddy {
+        .recover(
+            Repair::StartCaddy {
                 holder: Some(doors.holder),
                 caddy: doors.caddy,
             },
@@ -247,8 +248,8 @@ async fn a_caddy_is_left_alone_while_its_holder_is_stopped() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
-        .start_stranded(
-            IngressRecovery::StartCaddy {
+        .recover(
+            Repair::StartCaddy {
                 holder: Some(doors.holder),
                 caddy: doors.caddy,
             },
@@ -271,7 +272,7 @@ async fn a_holder_whose_start_failed_is_started() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
-        .start_stranded(IngressRecovery::StartHolder(doors.holder), creates)
+        .recover(Repair::StartHolder(doors.holder), creates)
         .await;
 
     assert_eq!(
@@ -294,8 +295,8 @@ async fn a_rejoin_that_finds_both_doors_in_one_network_does_nothing() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
-        .start_stranded(
-            IngressRecovery::Rejoin {
+        .recover(
+            Repair::Rejoin {
                 owner: doors.holder,
                 joined: doors.caddy,
             },
