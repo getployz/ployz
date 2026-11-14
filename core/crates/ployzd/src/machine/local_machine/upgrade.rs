@@ -67,8 +67,9 @@ impl LocalMachine {
 
     /// The releases `scope` may name here. An Operator gets only the channel its verified
     /// statement approves, whose generation is recorded first. On a Machine that awaits
-    /// activation, an Operator that sends no statement may name either channel, as before
-    /// activation: the keys a statement would verify against were never vouched for.
+    /// activation, an Operator may name either channel whatever statement it sends, as
+    /// before activation: the key that signed it may be one this Machine trusts only once
+    /// it activates.
     fn release_choice(
         &self,
         request: &RequestMachineUpgradeRequest,
@@ -78,9 +79,7 @@ impl LocalMachine {
         let record = self.record();
         match scope {
             ManagementScope::Full => return Ok(ReleaseChoice::AnyRelease),
-            ManagementScope::Operator
-                if record.awaits_activation() && request.channel.is_none() =>
-            {
+            ManagementScope::Operator if record.awaits_activation() => {
                 return Ok(ReleaseChoice::ChannelResolved);
             }
             ManagementScope::Operator => {}
@@ -331,8 +330,10 @@ mod tests {
         );
     }
 
+    /// Cloud attaches the channel a person approved to every upgrade it asks for, and while
+    /// a Server awaits activation that approval's key may be one it doesn't trust yet.
     #[tokio::test]
-    async fn a_machine_awaiting_activation_lets_an_operator_upgrade_without_a_channel() {
+    async fn a_machine_awaiting_activation_lets_an_operator_upgrade_with_or_without_a_channel() {
         let dir = tempfile::tempdir().unwrap();
         drop(founder(dir.path()).await);
         crate::machine::test_support::written_before_f7(dir.path(), false);
@@ -343,11 +344,10 @@ mod tests {
             choose(&local, &request(None)).unwrap(),
             ReleaseChoice::ChannelResolved
         );
-        let mut tampered = approved(dir.path(), 1);
-        tampered.body = tampered.body.replace("stable", "beta");
-        assert!(matches!(
-            choose(&local, &request(Some(tampered))),
-            Err(Error::UpgradeChannelRefused(_))
-        ));
+        assert_eq!(
+            choose(&local, &request(Some(approved(dir.path(), 1)))).unwrap(),
+            ReleaseChoice::ChannelResolved,
+            "an approval by a key from before 0.4 neither widens nor refuses the upgrade"
+        );
     }
 }
