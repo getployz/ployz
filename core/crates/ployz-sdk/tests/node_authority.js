@@ -6,8 +6,8 @@ const authority = import("../authority.mjs");
 
 const IMAGE = "nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001";
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
-// `PayloadDigest`'s golden fixture in ployz-core's authority/deploy_tests.rs, and its digest there.
-const GOLDEN = "cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5";
+// `contained_json`, the fixture a session approves in ployz-core's authority/deploy_tests.rs, and its digest there.
+const GOLDEN = "b38204e1d5b8a6d94b145b97d8dcbff4b50f5218b1cd9969324a1108aed6541b";
 const web = (image = IMAGE) => ({
   name: "web",
   mode: { mode: "replicated", replicas: 2 },
@@ -22,20 +22,11 @@ const web = (image = IMAGE) => ({
       environment: "11111111-1111-1111-1111-111111111111",
       service: "22222222-2222-2222-2222-222222222222",
     },
-    cap_add: ["NET_ADMIN"],
-    resources: { devices: [{ machine_path: "/dev/null", container_path: "/dev/null", cgroup_permissions: "rwm" }] },
-    sysctls: { "net.core.somaxconn": "1024" },
     config_mounts: [{ config_name: "site", target: "/etc/site.conf", mode: 420 }],
   },
-  ports: [
-    { mode: "host", bind: { kind: "all" }, published_port: 8080, container_port: 80, transport_protocol: "tcp" },
-    { mode: "ingress", hostname: "web.example.com", load_balancer_port: 443, container_port: 80, http_protocol: "http" },
-  ],
-  volumes: [
-    { reference: "host", source: { kind: "bind", machine_path: "/srv/web" } },
-    { reference: "data", source: { kind: "ordinary", name: "data", driver: { name: "local", options: { type: "tmpfs" } } } },
-  ],
-  mounts: [{ volume: "host", target: "/srv" }, { volume: "data", target: "/data" }],
+  ports: [{ mode: "ingress", hostname: "web.example.com", load_balancer_port: 443, container_port: 80, http_protocol: "http" }],
+  volumes: [{ reference: "data", source: { kind: "ordinary", name: "data", driver: { name: "local", options: { type: "tmpfs" } } } }],
+  mounts: [{ volume: "data", target: "/data" }],
   configs: [{ name: "site", content: [104, 105] }],
   pre_deploy: { command: ["migrate"], privileged: false },
   update: { order: "start_first" },
@@ -69,21 +60,17 @@ test("the body names the fixture's golden digest, in canonical form", async () =
   assert.equal(body, JSON.stringify(parsed));
   assert.equal(changes[0].digest, GOLDEN);
   assert.deepEqual(lines, [
-    `Approved web: ${IMAGE} (device /dev/null:/dev/null, adds NET_ADMIN, ` +
-      "sysctl net.core.somaxconn, host port 8080, binds /srv/web, hook migrate)",
+    `Approved web: ${IMAGE} (hook migrate)`,
     '  variables PLAIN=one, SECRET (sealed)',
     '  pre-deploy ["migrate"]',
     '  configs [{"content":"hi","name":"site"}]',
-    '  mounts [{"no_copy":false,"read_only":false,"target":"/srv","volume":"host"},{"no_copy":false,"read_only":false,"target":"/data","volume":"data"}]',
-    '  ports [{"bind":{"kind":"all"},"container_port":80,"mode":"host","published_port":8080,"transport_protocol":"tcp"},{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]',
-    '  volumes [{"reference":"host","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv/web"}},{"reference":"data","source":{"driver":{"name":"local","options":{"type":"tmpfs"}},"kind":"ordinary","labels":{},"name":"data"}}]',
-    '  cap_add ["NET_ADMIN"]',
+    '  mounts [{"no_copy":false,"read_only":false,"target":"/data","volume":"data"}]',
+    '  ports [{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]',
+    '  volumes [{"reference":"data","source":{"driver":{"name":"local","options":{"type":"tmpfs"}},"kind":"ordinary","labels":{},"name":"data"}}]',
     '  command ["nginx","-g","daemon off;"]',
     '  config_mounts [{"config_name":"site","mode":420,"target":"/etc/site.conf"}]',
     '  entrypoint ["/docker-entrypoint.sh"]',
     '  pull_policy "missing"',
-    '  resources {"device_reservations":[],"devices":[{"cgroup_permissions":"rwm","container_path":"/dev/null","machine_path":"/dev/null"}],"ulimits":{}}',
-    '  sysctls {"net.core.somaxconn":"1024"}',
     "  pre-deploy privileged false",
   ]);
 });
@@ -95,7 +82,7 @@ test("a proposal step names its place in the body", async () => {
   assert.deepEqual(JSON.parse(body).proposal, proposal);
 });
 
-test("a built image, a tag image, a plan read without target, or unknown terms sign nothing", async () => {
+test("a built image, a tag image, a plan read without target, host access, or unknown terms sign nothing", async () => {
   const { deployApprovalBody } = await authority;
   assert.throws(() => deployApprovalBody(preview([web(`ployz-build/web@${IMAGE.split("@")[1]}`)]), terms), {
     message: "web builds from source, and servers that enforce device approval can't run a build yet. Deploy it from an image pinned by digest.",
@@ -104,6 +91,10 @@ test("a built image, a tag image, a plan read without target, or unknown terms s
     message: "The dashboard can't check what web's tag nginx:1.29-alpine points to. Write web's image by digest, which docker buildx imagetools inspect nginx:1.29-alpine prints.",
   });
   assert.throws(() => deployApprovalBody(preview(), terms), { message: "Read the plan with target set to sign a deploy." });
+  const root = { ...web(), volumes: [{ reference: "root", source: { kind: "bind", machine_path: "/" } }], mounts: [{ volume: "root", target: "/host" }] };
+  assert.throws(() => deployApprovalBody(preview([root]), terms), {
+    message: "web (binds /) reaches the server itself, so only an approved device can approve it. Run ployz deploy on that device.",
+  });
   assert.throws(() => deployApprovalBody(preview([web()]), { ...terms, extra: 1 }), /unknown field `extra`/);
 });
 

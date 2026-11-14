@@ -441,8 +441,13 @@ per container for a restart, stop or start, and one per deployment for a deploy.
 it, the passkey's grant of the browser key and the passkey itself before it acts. Its log names the passkey that approved it. A grant
 that was changed after the passkey answered, names another Environment or server, or lasts over
 an hour is refused. Ployz Cloud carries the grant but can't make one, so it can't deploy, restart,
-stop or start a container on its own. Upgrade a server to 0.4 before the dashboard deploys to it
-or stops or starts services on it. The dashboard names a server that enforces and needs a newer
+stop or start a container on its own. The browser's key never approves a container that reaches
+the server itself, such as one that runs privileged or binds a path on the server. Deploy those
+from an approved device, as in
+[Deploy from the dashboard](../deploy/deployments.md#deploy-from-the-dashboard), and restart or
+start them with `ployz service restart` or `ployz service start` there. The dashboard still stops
+them. Upgrade a server
+to 0.4 before the dashboard deploys to it or stops or starts services on it. The dashboard names a server that enforces and needs a newer
 Ployz, and deploys nothing there. With enforcement on, the dashboard won't stop a service on an older server, since
 nothing could start it again there, and says which server needs a newer Ployz.
 

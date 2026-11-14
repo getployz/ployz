@@ -166,6 +166,13 @@ impl VolumeSource {
         }
     }
 
+    /// The Namespace a managed source was scoped to, or `None` before scoping and for a
+    /// source Ployz does not manage.
+    #[must_use]
+    pub fn scope_namespace(&self) -> Option<&Namespace> {
+        self.scope.as_ref().map(|scope| &scope.namespace)
+    }
+
     /// Scope admitted declarations once; preserve imported observations' exact identity.
     pub fn scope_to_namespace(&mut self, namespace: &Namespace) {
         if self.scope.is_some() {

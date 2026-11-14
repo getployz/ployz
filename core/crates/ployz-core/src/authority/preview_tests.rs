@@ -648,6 +648,48 @@ fn a_reviewed_preview_deploys_only_the_reviewed_commit_and_settings() {
     assert_eq!(case(reviewed, edited).create(), refused("a payload"));
 }
 
+/// A session signs whatever review Cloud's page drafts, so the Container it admits reaches
+/// nothing past its own Environment. A passkey's own prompt reviews the same settings.
+#[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn a_session_review_admits_no_host_reach() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusting(&passkey);
+    let now = Timestamp::from_millis(2_000).unwrap();
+    let mut rule = rule();
+    rule.services[0].inherit.clear();
+    let namespace = preview_namespace(rule.rule, &PreviewKey::Fork(7));
+    let mut spec = preview_json(namespace.as_str(), "zyxwvutsrqponmlk", false);
+    spec["container"]["privileged"] = json!(true);
+    spec["container"]["environment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("DATABASE_URL");
+    let mut body = review_body(&rule);
+    body.services[0].digest =
+        template(&requested(spec.clone()), &namespace, &rule.services[0]).unwrap();
+    let create = |review: &Review| {
+        Case {
+            rule: rule.clone(),
+            claim: built(CommitAuthority::Review(review.digest())),
+            key: PreviewKey::Fork(7),
+            namespace: namespace.clone(),
+            spec: spec.clone(),
+            kind: ContainerKind::ServiceContainer,
+            review: Some(verify_review(review, &rule, &trusted, now).unwrap()),
+        }
+        .create()
+    };
+    assert_eq!(
+        create(&session_review(&rule, &body, &passkey)),
+        refused(super::super::deploy::HOST_ACCESS)
+    );
+    assert_eq!(
+        create(&passkey_review(&body, &passkey)),
+        Ok(ImageDigest::from_bytes([0x44; 32]))
+    );
+}
+
 #[test]
 fn a_review_of_another_rule_or_generation_is_refused() {
     let passkey = Authenticator::es256(4);
