@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    DeviceCode, DeviceKey, LegacyKey, OperationId, TrustedKeyKind, WireGuardPublicKey,
+    CheckCode, DeviceCode, DeviceKey, LegacyKey, OperationId, TrustedKeyKind, WireGuardPublicKey,
     authority::{Member, SignerKey, StartingSet, Timestamp},
 };
 
@@ -64,9 +64,13 @@ fn device(seed: u8) -> DeviceCode {
     DeviceKey::from_bytes([seed; 32]).code()
 }
 
+fn check(seed: u8) -> CheckCode {
+    DeviceKey::from_bytes([seed; 32]).check_code()
+}
+
 fn legacy(seed: u8) -> LegacyKey {
     LegacyKey {
-        code: device(seed),
+        code: check(seed),
         kind: TrustedKeyKind::Device,
         account: None,
     }
@@ -198,16 +202,16 @@ fn enforce_lists_and_retires_legacy_keys() {
 
     assert_eq!(
         listed.keys().copied().collect::<Vec<_>>(),
-        BTreeSet::from([device(2), device(3)])
+        BTreeSet::from([check(2), check(3)])
             .into_iter()
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        listed.get(&device(2)).unwrap().1,
+        listed.get(&check(2)).unwrap().1,
         vec!["machine-1".to_owned(), "machine-2".to_owned()]
     );
-    let kept = kept_keys(&listed, |key| Ok(key.code == device(3))).unwrap();
-    assert_eq!(kept, BTreeSet::from([device(3)]));
+    let kept = kept_keys(&listed, |key| Ok(key.code == check(3))).unwrap();
+    assert_eq!(kept, BTreeSet::from([check(3)]));
     assert!(kept_keys(&listed, |_| Ok(false)).unwrap().is_empty());
 }
 
@@ -243,8 +247,8 @@ fn set_summary_names_each_server_and_kept_key_before_signing() {
             second.member.public_key.fingerprint()
         )
     );
-    set.kept_keys = vec![device(3)];
-    assert!(set_summary(&reach, &set).ends_with(&format!("Keeping older keys: {}.", device(3))));
+    set.kept_keys = vec![check(3)];
+    assert!(set_summary(&reach, &set).ends_with(&format!("Keeping older keys: {}.", check(3))));
 }
 
 #[test]

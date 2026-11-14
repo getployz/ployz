@@ -221,12 +221,15 @@ Over `--connect ssh://` they still work.
 ployz device request
 ```
 
-It prints a code, such as `mmg42klgyq`. Anyone in the Organization can request one. An owner or
-admin approves it from a device that's already approved:
+It prints a 20-character code, such as `mmg42-klgyq-p3w7d-xa5re`. Anyone in the Organization can
+request one. An owner or admin approves it from a device that's already approved:
 
 ```sh
-ployz device approve mmg42klgyq
+ployz device approve mmg42-klgyq-p3w7d-xa5re
 ```
+
+`approve` takes the code with or without dashes, in any case. It refuses a 10-character code from
+an older CLI. Run `ployz device request` again with this version to get the full code.
 
 For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
 same `ployz device approve`. A request lasts 24 hours.
@@ -254,7 +257,8 @@ ployz device ls
 ployz device rm mmg42klgyq
 ```
 
-`device ls` shows each device and the servers missing it. `device rm` takes it off every server
+`device ls` shows this computer's device and each passkey by its full code, and other devices by
+the first 10 characters of theirs. `device rm` takes either form and removes the device from every server
 that answers. A server that doesn't answer is listed under failures, and one with no direct
 connection under omissions. Either way the command exits 3.
 
@@ -372,8 +376,8 @@ signed. A server you don't confirm is left out, and so is a server running a Plo
 your approved device.
 
 Next, `enforce` lists the devices and passkeys added while enforcement was off. Activation
-removes each one unless you keep it. Keep a key only after checking its code with
-`ployz device ls` on that computer, or pass it with `--keep`. With `--yes`, `enforce` keeps no
+removes each one unless you keep it. Keep a key only after checking its full 20-character code
+with `ployz device ls` on that computer, or pass that code with `--keep`. With `--yes`, `enforce` keeps no
 older key and leaves out every server it hasn't confirmed.
 
 It then prints `Signing the N Servers every Server trusts from now on:`, each server's name,

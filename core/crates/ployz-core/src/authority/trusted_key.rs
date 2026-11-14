@@ -16,7 +16,7 @@ use ts_rs::TS;
 use url::Url;
 
 use super::{AuthorityRefusal, Purpose, SigningPublicKey};
-use crate::{DeviceCode, DeviceKey, ValueError};
+use crate::{CheckCode, DeviceCode, DeviceKey, ValueError};
 
 /// A passkey's public key: a P-256 point for ES256, or an Ed25519 key for EdDSA.
 #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -83,6 +83,12 @@ impl PasskeyPublicKey {
     #[must_use]
     pub fn code(&self) -> DeviceCode {
         DeviceCode::hashing(self.as_bytes())
+    }
+
+    /// The code a person compares for this key, by the same rule as a Device's.
+    #[must_use]
+    pub fn check_code(&self) -> CheckCode {
+        CheckCode::hashing(self.as_bytes())
     }
 
     /// Whether `signature` is this key's signature over `message`: DER-encoded ECDSA over

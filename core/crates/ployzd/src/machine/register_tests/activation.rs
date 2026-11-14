@@ -89,8 +89,8 @@ async fn a_member_from_before_the_first_f6_start_is_legacy() {
     assert_eq!(report.state, ActivationState::Awaiting);
     assert_eq!(report.legacy_members, vec![harness.id]);
     let legacy: Vec<_> = report.legacy_keys.iter().map(|key| key.code).collect();
-    assert!(legacy.contains(&mesh_key.code()));
-    assert!(legacy.contains(&console_key.code()));
+    assert!(legacy.contains(&mesh_key.check_code()));
+    assert!(legacy.contains(&console_key.check_code()));
     let snapshot = local.record().trusted_snapshot().cloned().unwrap();
     assert!(snapshot.keys().is_empty());
     assert!(snapshot.members().is_empty());
@@ -230,6 +230,7 @@ async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
     let console_key = Signer::from_seed(&[1; 32]);
     approve(&entry.clone().on_local_socket(), &console_key).await;
     let planted_code = DeviceKey::from(planted.public()).code();
+    let planted_check = DeviceKey::from(planted.public()).check_code();
     let keeping = |kept_keys| {
         let issued_at = Timestamp::now();
         let set = StartingSet {
@@ -244,7 +245,7 @@ async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
     };
 
     let over_mesh = entry
-        .set_device_enforcement(enforce(keeping(vec![planted_code])))
+        .set_device_enforcement(enforce(keeping(vec![planted_check])))
         .await;
 
     assert!(matches!(refusal(over_mesh), Refusal::LegacyKey(code) if code == planted_code));
@@ -255,7 +256,7 @@ async fn a_set_from_the_mesh_keeps_no_key_outside_the_snapshot() {
     entry
         .clone()
         .on_local_socket()
-        .set_device_enforcement(enforce(keeping(vec![planted_code])))
+        .set_device_enforcement(enforce(keeping(vec![planted_check])))
         .await
         .unwrap();
     entry.commit_activation_as_if_restarted().await;

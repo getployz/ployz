@@ -978,7 +978,7 @@ mod tests {
             (&["device", "request"], None),
             (&["device", "ls"], Some("b")),
             (&["device", "rm", "mmg42klgyq"], Some("b")),
-            (&["device", "approve", "mmg42klgyq"], Some("b")),
+            (&["device", "approve", "mmg42-klgyq-p3w7d-xa5re"], Some("b")),
             (&["device", "enforce"], Some("b")),
             (
                 &[
@@ -987,7 +987,7 @@ mod tests {
                     "--pin",
                     "3f9a1c2e",
                     "--keep",
-                    "mmg42klgyq",
+                    "mmg42-klgyq-p3w7d-xa5re",
                     "--yes",
                 ],
                 Some("b"),
