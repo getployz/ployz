@@ -12,7 +12,8 @@ use ployz_core::{
 use serde_json::json;
 
 use super::{
-    IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore, store::RuntimeOverlay,
+    IngressRouteAck, IngressRouteChange, IngressRouteRow, ReplicatedStore,
+    store::{RuntimeOverlay, publishable_machine},
 };
 use crate::corrosion::{ApiClient, Statement};
 use crate::machine::{
@@ -201,25 +202,20 @@ async fn record_certificate_failure_is_an_error_when_the_store_is_unreachable() 
     );
 }
 
-#[tokio::test]
-async fn publication_guard_rechecks_the_local_phase() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let store = ReplicatedStore::new(
-        ApiClient::new(listener.local_addr().unwrap(), &"a".repeat(64)).unwrap(),
-    );
+#[test]
+fn a_machine_publishes_only_while_its_record_participates() {
     let (mut machine, local) = participating_record();
     machine.runtime.management_identity = Some(local.management_secret().public_key());
     machine.runtime.device_enforcement = Some(true);
-    let publication = store.machine_publication().await;
     assert_eq!(
-        publication.publishable_machine(&local, RuntimeOverlay::default()),
+        publishable_machine(&local, RuntimeOverlay::default()),
         Some(machine.clone())
     );
     let mut observed = machine;
     observed.runtime.running_builds = 2;
     observed.runtime.pool_committable_bytes = Some(7 << 30);
     assert_eq!(
-        publication.publishable_machine(
+        publishable_machine(
             &local,
             RuntimeOverlay {
                 running_builds: 2,
@@ -252,10 +248,7 @@ async fn publication_guard_rechecks_the_local_phase() {
         local.private_key().clone(),
     )
     .unwrap();
-    assert_eq!(
-        publication.publishable_machine(&local, RuntimeOverlay::default()),
-        None
-    );
+    assert_eq!(publishable_machine(&local, RuntimeOverlay::default()), None);
 }
 
 #[tokio::test]
@@ -1060,6 +1053,19 @@ async fn catch_up_rejects_invalid_targets_without_retrying() {
     }
 }
 
+/// The cr-sqlite and Corrosion tables [`super::store::crsql`] reads, as the test double
+/// has no extension to create them. Their shapes are the ones the pinned image's
+/// `corrosion::integration_tests` exercise.
+fn crsql_stand_ins(db: &rusqlite::Connection) {
+    db.execute_batch(
+        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);
+         CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
+         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
+         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
+    )
+    .unwrap();
+}
+
 /// #2930: a recreated `store.db` holds only this Machine's row until gossip reaches it,
 /// while a removed Machine leaves its key behind.
 #[tokio::test]
@@ -1067,8 +1073,7 @@ async fn a_store_has_held_another_machine_once_its_key_arrived() {
     let own = MachineId::random();
     let other = MachineId::random();
     let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch("CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);")
-        .unwrap();
+    crsql_stand_ins(&db);
     db.execute(
         "INSERT INTO machines__crsql_pks (id) VALUES (?)",
         [own.to_string()],
@@ -1097,11 +1102,9 @@ async fn a_deleted_machine_row_reads_as_removed() {
     let unasked = MachineId::random();
     let never_held = MachineId::random();
     let db = rusqlite::Connection::open_in_memory().unwrap();
-    db.execute_batch(
-        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id);
-         CREATE TABLE machines (id PRIMARY KEY, info);",
-    )
-    .unwrap();
+    crsql_stand_ins(&db);
+    db.execute_batch("CREATE TABLE machines (id PRIMARY KEY, info);")
+        .unwrap();
     for id in [present, deleted, unasked] {
         db.execute(
             "INSERT INTO machines__crsql_pks (id) VALUES (?)",
@@ -1131,11 +1134,9 @@ async fn catch_up_waits_for_pending_target_transactions() {
     use std::time::Duration;
 
     let db = rusqlite::Connection::open_in_memory().unwrap();
+    crsql_stand_ins(&db);
     db.execute_batch(
-        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
-         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);
-         INSERT INTO crsql_db_versions VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 5);
+        "INSERT INTO crsql_db_versions VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 5);
          INSERT INTO __corro_seq_bookkeeping VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 5);",
     )
     .unwrap();
@@ -1225,11 +1226,9 @@ async fn catch_up_waits_for_pending_target_transactions() {
 #[tokio::test]
 async fn store_version_stops_below_each_actors_first_hole() {
     let db = rusqlite::Connection::open_in_memory().unwrap();
+    crsql_stand_ins(&db);
     db.execute_batch(
-        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
-         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);
-         INSERT INTO crsql_db_versions VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 14);
+        "INSERT INTO crsql_db_versions VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 14);
          INSERT INTO __corro_bookkeeping_gaps VALUES (X'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 10, 13);
          INSERT INTO crsql_db_versions VALUES (X'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 5);
          INSERT INTO __corro_seq_bookkeeping VALUES (X'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 4);
@@ -1543,9 +1542,7 @@ async fn forget_leaves_a_tombstone_only_the_forgotten_identity_matches() {
     let identity = local.management_secret().public_key();
     let other = crate::management::ManagementSecret::generate().public_key();
     let publication = store.machine_publication().await;
-    let published = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     assert_eq!(published.runtime.management_identity, Some(identity));
     publication.publish(&published).await.unwrap();
     drop(publication);
@@ -1600,9 +1597,7 @@ async fn a_forgotten_machine_still_running_cannot_publish_itself_back() {
     let (machine, local) = participating_record();
     let identity = local.management_secret().public_key();
     let publication = store.machine_publication().await;
-    let published = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
     let mut updated = published.clone();
     updated.runtime.running_builds += 1;
@@ -1634,9 +1629,7 @@ async fn a_forgotten_id_stays_gone_when_published_without_an_identity() {
     let (store, task) = identity_store(corrosion_db()).await;
     let (machine, local) = participating_record();
     let publication = store.machine_publication().await;
-    let published = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
     drop(publication);
     store.forget_machine(&machine.id).await.unwrap();
@@ -1691,9 +1684,7 @@ async fn forget_of_a_registered_row_keeps_its_id_gone() {
         store.publish_local_machine(&machine).await.unwrap();
         assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
         let publication = store.machine_publication().await;
-        let caught_up = publication
-            .publishable_machine(&local, RuntimeOverlay::default())
-            .unwrap();
+        let caught_up = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
         publication.publish(&caught_up).await.unwrap();
         drop(publication);
         assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
@@ -1755,9 +1746,7 @@ async fn an_older_entry_still_lists_a_forgotten_registered_row() {
         Some(machine.clone())
     );
     let publication = store.machine_publication().await;
-    let caught_up = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let caught_up = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&caught_up).await.unwrap();
     drop(publication);
     assert_eq!(
@@ -1822,9 +1811,7 @@ async fn a_register_takes_back_the_forget_of_a_registered_row() {
         Some(machine.clone())
     );
     let publication = store.machine_publication().await;
-    let caught_up = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let caught_up = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&caught_up).await.unwrap();
     drop(publication);
     assert_eq!(
@@ -1839,9 +1826,7 @@ async fn a_register_does_not_take_back_the_forget_of_a_joined_row() {
     let (store, task) = identity_store(corrosion_db()).await;
     let (machine, local) = participating_record();
     let publication = store.machine_publication().await;
-    let published = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
     drop(publication);
     store.forget_machine(&machine.id).await.unwrap();
@@ -1863,9 +1848,7 @@ async fn leave_writes_no_tombstone() {
     let (machine, local) = participating_record();
     let identity = local.management_secret().public_key();
     let publication = store.machine_publication().await;
-    let published = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
     drop(publication);
 
@@ -2442,9 +2425,7 @@ async fn a_register_keeps_the_leaving_mark_of_a_row_its_machine_published() {
     let (store, task) = identity_store(corrosion_db()).await;
     let (machine, local) = participating_record();
     let publication = store.machine_publication().await;
-    let mut published = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let mut published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
     publication.mark_leaving(&machine.id, true).await.unwrap();
     publication.register(machine.clone()).await.unwrap();
@@ -2485,11 +2466,7 @@ async fn each_written_machine_row_decodes_to_its_standing() {
     // joiner's runtime, version included.
     let mut cli_shaped = cloud_shaped.clone();
     cli_shaped.runtime.daemon_version = "0.3.17".into();
-    let mut published = store
-        .machine_publication()
-        .await
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let mut published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     published.runtime.daemon_version = "0.3.17".into();
     let mut rekeyed = cloud_shaped.clone();
     rekeyed.public_key = crate::network::WireGuardPrivateKey::from_bytes([1; 32]).public_key();
@@ -3205,9 +3182,7 @@ async fn a_forget_writes_the_tombstone_rows_the_fence_and_the_guards_read() {
 
     let (store, task) = identity_store(corrosion_db()).await;
     let publication = store.machine_publication().await;
-    let published = publication
-        .publishable_machine(&local, RuntimeOverlay::default())
-        .unwrap();
+    let published = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
     publication.publish(&published).await.unwrap();
     drop(publication);
     store.forget_machine(&machine.id).await.unwrap();
