@@ -89,7 +89,7 @@ It prints what every preview will run, then signs it with your device key:
 ```text
 Approving previews of production:
   repository  acme/web, parent branch main
-  builder     getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+  builder     getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
   urls        <service>-pv-<id>.acme-x7q2.ployz.app
   trusted     alice (1109914), bob (2207431)
   servers     2 in the cluster
@@ -156,7 +156,7 @@ permissions:
 jobs:
   build:
     if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
-    uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+    uses: getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
     with:
       cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
       commit: ${{ inputs.commit }}

@@ -124,7 +124,7 @@ It prints what you approve, then signs it with your device key:
 Approving automatic deploys for production:
   repository  acme/web on main
   workflow    .github/workflows/ployz-build.yml, on push and on rebuilds you approve
-  builder     getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+  builder     getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
   servers     2 in the cluster
   web
     builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
@@ -163,7 +163,7 @@ permissions:
 jobs:
   build:
     if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
-    uses: getployz/build/.github/workflows/build.yml@a19b4fca3adea371c25ec29f181e8c7d21037d1e
+    uses: getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
     with:
       cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
       commit: ${{ inputs.commit }}

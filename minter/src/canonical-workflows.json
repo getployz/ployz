@@ -1,7 +1,7 @@
 {
   "source": "The SHA-256, after CRLF becomes LF, of each ployz-build.yml the dashboard offers (GITHUB_WORKFLOW_TEMPLATES in dashboard/src/modules/github/github-build-workflow.ts): the build template, then the rule template. A dashboard test fails when the two disagree.",
   "digests": [
-    "d592ce0cc7b54c5f65b5a5d617c9c828ae8376dd7186387fe6dab42b1a68a049",
-    "8870df1d7d879d714300461f97e7599b5230731a5966b91db0a2b4bd7cdf7aa4"
+    "66525c57ca5a7f56e419e0e5a7b189777a1620c4d05c37ad522ecb7b20f95e66",
+    "e5f3e8af3cb66ceb3114ac215db518db9c783290deff7654850173672c3c71f0"
   ]
 }
