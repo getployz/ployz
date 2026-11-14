@@ -86,6 +86,9 @@ pub fn tunnel_origin() -> String {
 /// [`TUNNEL_SITE_PORT`] and passing each request with its Host header to the origin
 /// socket. It owns the Tunnel Connector's network namespace on its own bridge.
 ///
+/// Caddy would say `http` in `X-Forwarded-Proto`, the scheme it was reached by, so
+/// it passes on the one the connector reported, which the origin socket redirects by.
+///
 /// The daemon's image pins in `ployzd/src/images.rs` are its only production
 /// input. The CLI must not call it.
 #[must_use]
@@ -98,6 +101,8 @@ pub fn tunnel_origin_service_spec(image: &str) -> RequestedServiceSpec {
         &format!(":{TUNNEL_SITE_PORT}"),
         "--to",
         &format!("unix/{TUNNEL_ORIGIN_MOUNT}/{TUNNEL_ORIGIN_SOCKET}"),
+        "--header-up",
+        "X-Forwarded-Proto: {http.request.header.X-Forwarded-Proto}",
     ]
     .map(str::to_owned)
     .into();
@@ -258,7 +263,8 @@ mod tests {
         assert!(spec.container.environment.is_empty());
         assert_eq!(
             spec.container.command.join(" "),
-            "caddy reverse-proxy --from :8480 --to unix//run/origin/origin.sock"
+            "caddy reverse-proxy --from :8480 --to unix//run/origin/origin.sock \
+             --header-up X-Forwarded-Proto: {http.request.header.X-Forwarded-Proto}"
         );
         let [mount] = spec.mount_graph.volume_graph().mounts() else {
             panic!("the origin mounts only the socket's directory");
