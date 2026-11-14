@@ -26,6 +26,8 @@ mod volume;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
+mod stop_path_tests;
+#[cfg(test)]
 pub(crate) mod test_support;
 
 use ployz_core::labels::{self, LabelError, LabelMap, ServiceLabels};
