@@ -15,14 +15,11 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    CodecError, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerObservation, ContainerWant, CopyRotation, EnsuredContainer, Gen,
-    InspectContainerRequest, ListMachinesRequest, MACHINE_API_PORT, Machine, MachineId,
-    MachineRpcClient, QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RequestedServiceSpec,
-    ResolvedServiceSpec, ServiceMode, SpecChange, compare_specs, op,
+    ContainerId, ContainerKind, ContainerLocator, ContainerObservation, ContainerWant,
+    CopyRotation, EnsuredContainer, Gen, MACHINE_API_PORT, Machine, MachineId, QualifiedService,
+    ResolvedServiceSpec, ServiceMode,
 };
 use tokio::{sync::watch, time::Instant};
-use tonic::transport::Endpoint;
 
 use crate::{
     corrosion::{
@@ -31,11 +28,11 @@ use crate::{
     },
     ingress::PublishedRoutes,
     machine::{LocalMachine, LocalMachineError},
+    mesh_peer::{confirmed_row, deploy_input, inspect_peer, recreates, target_versions},
     route_acks::{Ackers, Membership, routed, sample_ackers},
 };
 
-/// The executor's `ACK_WAIT`, which ployzd cannot import.
-pub(crate) const BOOT_PASS_WAIT: Duration = Duration::from_secs(300);
+pub(crate) const BOOT_PASS_WAIT: Duration = ployz_core::ACK_WAIT;
 const PEER_TIMEOUT: Duration = Duration::from_secs(2);
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PEER_RETRY: Duration = Duration::from_secs(1);
@@ -224,15 +221,6 @@ pub(crate) fn superseded(
     (superseded, unjudged)
 }
 
-/// What a Deploy asked of a copy. The planner resolves each copy's update order on
-/// its own: a replacement whose predecessor holds a host port stops first, while a
-/// new copy starts first. So copies one Deploy started can differ there alone.
-pub(crate) fn deploy_input(spec: &ResolvedServiceSpec) -> RequestedServiceSpec {
-    let mut requested = spec.to_requested();
-    requested.update.order = None;
-    requested
-}
-
 /// Whether [`superseded`] sets `copy` Out, or why it cannot decide.
 fn judge(
     Candidate {
@@ -252,7 +240,7 @@ fn judge(
     if !newest.all(|sibling| sibling.as_ref() == Some(&wanted)) {
         return Err("its newest siblings disagree or did not answer");
     }
-    if compare_specs(current, &wanted) == SpecChange::NeedsRecreate {
+    if recreates(&wanted, current) {
         return Ok(true);
     }
     let ServiceMode::Replicated { replicas } = wanted.mode else {
@@ -264,8 +252,7 @@ fn judge(
         .iter()
         .filter(|sibling| {
             rank(sibling) < rank(copy)
-                && spec(sibling)
-                    .is_some_and(|spec| compare_specs(spec, &wanted) != SpecChange::NeedsRecreate)
+                && spec(sibling).is_some_and(|spec| !recreates(&wanted, spec))
         })
         .count();
     Ok(u32::try_from(above).is_ok_and(|above| above >= replicas.get()))
@@ -282,17 +269,14 @@ async fn confirmed<H: BootHost>(
     let (machine, container) = (row.machine_id, row.container_id);
     loop {
         if let Some(answer) = host.inspect(machine, container).await {
-            if answer.machine_id == machine
-                && *answer.rotation() == CopyRotation::In
-                && answer.copy_gen() == row.copy_gen()
-            {
-                return Some(answer.into_parts().resolved_spec);
+            let spec = confirmed_row(row, answer);
+            if spec.is_none() {
+                tracing::info!(
+                    "boot pass trusts no row for {container}: {machine} no longer reports it In at gen {}",
+                    row.copy_gen()
+                );
             }
-            tracing::info!(
-                "boot pass trusts no row for {container}: {machine} no longer reports it In at gen {}",
-                row.copy_gen()
-            );
-            return None;
+            return spec;
         }
         if Instant::now() + PEER_RETRY > retry_until {
             tracing::info!("boot pass could not read {container} from {machine}");
@@ -535,11 +519,7 @@ impl BootHost for DaemonHost {
                 .ok();
         }
         let machines = self.machines.current()?;
-        let peer = machines
-            .observations
-            .iter()
-            .find(|peer| peer.id == machine)?;
-        inspect_peer(peer, container, INSPECT_TIMEOUT)
+        inspect_peer(&machines, machine, container, INSPECT_TIMEOUT)
             .await
             .map(|details| details.container)
     }
@@ -547,74 +527,6 @@ impl BootHost for DaemonHost {
     async fn ensure(&self, want: ContainerWant) -> Result<EnsuredContainer, LocalMachineError> {
         self.machine.ensure_container(want).await
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-enum PeerError {
-    #[error("could not reach the peer")]
-    Connect(#[from] tonic::transport::Error),
-    #[error("the peer refused the request")]
-    Rpc(#[from] tonic::Status),
-    #[error("the peer's answer did not decode")]
-    Codec(#[from] CodecError),
-    #[error("the peer's answer carried no store versions")]
-    NoEnrollment,
-}
-
-/// A request with no iroh connection skips the Machine API's credential check.
-async fn target_versions(address: SocketAddr) -> Result<BTreeMap<String, i64>, PeerError> {
-    let channel = Endpoint::from_shared(format!("http://{address}"))?
-        .connect()
-        .await?;
-    MachineRpcClient::new(channel)
-        .list_machines(op::ListMachines::into_request(ListMachinesRequest {}).encode()?)
-        .await?
-        .into_inner()
-        .decode_response()?
-        .decode::<op::ListMachines>()?
-        .enrollment
-        .map(|enrollment| enrollment.target_versions)
-        .ok_or(PeerError::NoEnrollment)
-}
-
-/// `container` as `peer` observes it, over the mesh within `wait`. The answer keeps the
-/// environment and Config content. `None` when it didn't answer.
-pub(crate) async fn inspect_peer(
-    peer: &Machine,
-    container: ContainerId,
-    wait: Duration,
-) -> Option<ContainerDetails> {
-    let address = SocketAddr::new(IpAddr::V6(peer.management_address().0), MACHINE_API_PORT);
-    match tokio::time::timeout(wait, inspect_on(address, container)).await {
-        Ok(Ok(copy)) => Some(copy),
-        Ok(Err(error)) => {
-            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "could not inspect {container} on {}", peer.name);
-            None
-        }
-        Err(_) => {
-            tracing::debug!("timed out inspecting {container} on {}", peer.name);
-            None
-        }
-    }
-}
-
-/// Like [`target_versions`], over the mesh with no iroh connection. The answer
-/// keeps the environment and Config content.
-async fn inspect_on(
-    address: SocketAddr,
-    container_id: ContainerId,
-) -> Result<ContainerDetails, PeerError> {
-    let channel = Endpoint::from_shared(format!("http://{address}"))?
-        .connect()
-        .await?;
-    let request = InspectContainerRequest { container_id };
-    Ok(MachineRpcClient::new(channel)
-        .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
-        .inspect_container(op::InspectContainer::into_request(request).encode()?)
-        .await?
-        .into_inner()
-        .decode_response()?
-        .decode::<op::InspectContainer>()?)
 }
 
 #[cfg(test)]

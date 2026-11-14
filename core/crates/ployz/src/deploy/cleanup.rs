@@ -16,7 +16,7 @@ use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 use ployz_core::error_chain::{then_sentence, with_reason};
 
 pub(crate) const ACK_POLL: Duration = Duration::from_millis(200);
-pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);
+pub(crate) use ployz_core::ACK_WAIT;
 
 const DOCKER_STOP_GRACE_SECONDS: u16 = 10;
 

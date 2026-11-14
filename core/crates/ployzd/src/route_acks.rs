@@ -12,9 +12,11 @@ use ployz_core::{
     QualifiedService,
 };
 
-use crate::corrosion::{
-    AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedObservations,
-    membership_states_by_address,
+use crate::{
+    corrosion::{
+        AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedObservations,
+    },
+    mesh_peer::sample_membership,
 };
 
 const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -70,7 +72,7 @@ pub(crate) async fn sample_ackers(
     local: &MachineId,
     admin: &AdminClient,
 ) -> Membership {
-    let states = sample_states(admin)
+    let states = sample_membership(admin, MEMBERSHIP_SAMPLE_TIMEOUT)
         .await
         .inspect_err(|error| {
             tracing::warn!(
@@ -95,27 +97,13 @@ pub(crate) async fn load_down(
             "the Machine view has not observed the store yet",
         ))
     })?;
-    let states = sample_states(admin).await?;
+    let states = sample_membership(admin, MEMBERSHIP_SAMPLE_TIMEOUT).await?;
     Ok(machines
         .observations
         .iter()
         .filter(|machine| reported_down(machine, local, Some(&states)))
         .map(|machine| machine.id)
         .collect())
-}
-
-async fn sample_states(
-    admin: &AdminClient,
-) -> Result<BTreeMap<ManagementAddress, MembershipEvidence>, CorrosionError> {
-    let states = tokio::time::timeout(MEMBERSHIP_SAMPLE_TIMEOUT, admin.membership_states())
-        .await
-        .map_err(|_| {
-            CorrosionError::Io(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "membership sample timed out",
-            ))
-        })??;
-    Ok(membership_states_by_address(states))
 }
 
 pub(crate) struct DownMachines {

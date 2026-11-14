@@ -45,6 +45,7 @@ pub(crate) mod machine_api_socket;
 #[doc(hidden)]
 pub mod machine_pool;
 pub mod management;
+pub(crate) mod mesh_peer;
 pub mod mutation;
 pub mod network;
 pub mod observe;

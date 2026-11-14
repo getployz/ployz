@@ -685,11 +685,8 @@ impl LocalMachine {
         }
         let inspected = async {
             let machines = self.replicated().ok()?.machines().await.ok()?;
-            let peer = machines
-                .observations
-                .iter()
-                .find(|peer| peer.id == machine)?;
-            crate::boot_pass::inspect_peer(peer, container, PEER_INSPECT_TIMEOUT).await
+            crate::mesh_peer::inspect_peer(&machines, machine, container, PEER_INSPECT_TIMEOUT)
+                .await
         };
         tokio::time::timeout(PEER_INSPECT_TIMEOUT, inspected)
             .await

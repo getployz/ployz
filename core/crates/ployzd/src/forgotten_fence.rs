@@ -36,9 +36,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     backoff::Doubling,
-    corrosion::{AdminClient, MachineView, membership_states_by_address},
+    corrosion::{AdminClient, MachineView},
     machine::{LocalMachine, LocalMachineError},
     management::forgotten,
+    mesh_peer::sample_membership,
 };
 
 /// How often peer liveness is read.
@@ -189,16 +190,10 @@ pub(crate) struct FenceDaemon {
 impl FenceHost for FenceDaemon {
     async fn peers(&self) -> Option<Vec<Peer>> {
         let machines = self.machines.current()?;
-        let states = match tokio::time::timeout(MEMBERSHIP_TIMEOUT, self.admin.membership_states())
-            .await
-        {
-            Ok(Ok(states)) => membership_states_by_address(states),
-            Ok(Err(error)) => {
+        let states = match sample_membership(&self.admin, MEMBERSHIP_TIMEOUT).await {
+            Ok(states) => states,
+            Err(error) => {
                 tracing::debug!(error = %ployz_core::error_chain::inline(&error), "could not read membership");
-                return None;
-            }
-            Err(_) => {
-                tracing::debug!("timed out reading membership");
                 return None;
             }
         };

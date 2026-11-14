@@ -20,12 +20,12 @@ use ployz_core::{
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     CopyRotation, DeploymentLogId, EnsuredContainer, Gen, HealthVerdict, MachineId,
     QualifiedService, ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget,
-    RunRotation, RunTarget, SpecChange, compare_specs,
+    RunRotation, RunTarget,
 };
 
 use super::{Error, LocalMachine, not_found_refusal, redacted, refuse};
-use crate::boot_pass::deploy_input;
 use crate::docker::{ContainerRuntime, published_spec};
+use crate::mesh_peer::{confirmed_row, supersedes};
 use crate::route_acks::{Ackers, Membership, routed};
 
 #[derive(Clone, Debug)]
@@ -496,10 +496,7 @@ impl LocalMachine {
                 .inspect_peer(row.machine_id, row.container_id)
                 .await?
                 .container;
-            (answer.machine_id == row.machine_id
-                && *answer.rotation() == CopyRotation::In
-                && answer.copy_gen() == row.copy_gen())
-            .then(|| (row.container_id, answer.into_parts().resolved_spec))
+            confirmed_row(row, answer).map(|spec| (row.container_id, spec))
         }))
         .await
         .into_iter()
@@ -660,14 +657,6 @@ impl LocalMachine {
             })
             .collect())
     }
-}
-
-/// A newer copy supersedes `current` when a Deploy of the newer copy's spec would
-/// make a new Container in its place. A Deploy that only scales up keeps the older
-/// copies, so they are not superseded. A replicated row has no environment or
-/// Config content, so `current` is compared as published against one.
-fn supersedes(newer: &ResolvedServiceSpec, current: &ResolvedServiceSpec) -> bool {
-    compare_specs(current, &deploy_input(newer)) == SpecChange::NeedsRecreate
 }
 
 fn created_by(deployment: Option<&DeploymentLogId>, run: Option<&DeploymentLogId>) -> bool {
