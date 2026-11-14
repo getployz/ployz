@@ -128,29 +128,38 @@ impl UnitSnapshot {
             .map(Self)
     }
 
-    /// Put back every file the attempt changed or added. Whether anything changed is the answer,
-    /// so a `daemon-reload` runs only when systemd's view of a unit went stale.
-    fn restore(&self) -> Result<bool, InstallError> {
+    /// Put back every file the attempt changed or added, trying each one even after another
+    /// failed. Returns whether any file may have changed, so a `daemon-reload` runs only when
+    /// systemd's view of a unit may have gone stale, and the first failure, if any.
+    fn restore(&self) -> (bool, Result<(), InstallError>) {
         let mut changed = false;
+        let mut failure = None;
         for (path, before) in &self.0 {
-            let current = read_unit(path).map_err(|source| InstallError::Io {
-                stage: "read systemd unit to restore",
-                source,
-            })?;
+            let current = match read_unit(path) {
+                Ok(current) => current,
+                Err(source) => {
+                    failure.get_or_insert(InstallError::Io {
+                        stage: "read systemd unit to restore",
+                        source,
+                    });
+                    continue;
+                }
+            };
             if &current == before {
                 continue;
             }
-            match before {
+            changed = true;
+            if let Err(source) = match before {
                 Some(content) => atomic_write(path, content, 0o644),
                 None => fs::remove_file(path),
+            } {
+                failure.get_or_insert(InstallError::Io {
+                    stage: "restore systemd unit",
+                    source,
+                });
             }
-            .map_err(|source| InstallError::Io {
-                stage: "restore systemd unit",
-                source,
-            })?;
-            changed = true;
         }
-        Ok(changed)
+        (changed, failure.map_or(Ok(()), Err))
     }
 }
 
@@ -177,8 +186,14 @@ async fn restore(
     units: &UnitSnapshot,
 ) -> Result<(), InstallError> {
     super::release::restore_previous(paths)?;
-    if units.restore()? {
-        super::systemctl("reload systemd units", ["daemon-reload"])?;
+    // A unit file that would not go back must not leave the restored daemon stopped: recovery
+    // still runs, and the failure is reported once the daemon is back.
+    let (changed, units_restored) = units.restore();
+    if changed {
+        let reloaded = super::systemctl("reload systemd units", ["daemon-reload"]);
+        if units_restored.is_ok() {
+            reloaded?;
+        }
     }
     // A crash loop exhausts a unit's start limit, which would refuse the restart. `reset-failed`
     // fails on a unit that is not loaded, so it only names units known to be.
@@ -196,7 +211,8 @@ async fn restore(
     for unit in plugins {
         super::systemctl("restart unit", ["restart", unit])?;
     }
-    super::host::verify_running_daemon(paths, previous).await
+    super::host::verify_running_daemon(paths, previous).await?;
+    units_restored
 }
 
 /// Which file `path` names, so a later rename over it shows.
@@ -239,13 +255,39 @@ mod tests {
         fs::write(&changed, "old").unwrap();
         let snapshot = UnitSnapshot::take(root.path()).unwrap();
 
-        assert!(!snapshot.restore().unwrap(), "nothing changed yet");
+        let (any, result) = snapshot.restore();
+        assert!(!any, "nothing changed yet");
+        result.unwrap();
         fs::write(&changed, "new").unwrap();
         fs::write(&added, "added").unwrap();
-        assert!(snapshot.restore().unwrap());
+        let (any, result) = snapshot.restore();
+        assert!(any);
+        result.unwrap();
         assert_eq!(fs::read_to_string(&kept).unwrap(), "kept");
         assert_eq!(fs::read_to_string(&changed).unwrap(), "old");
         assert!(!added.exists());
-        assert!(!snapshot.restore().unwrap(), "a restored set is stable");
+        let (any, result) = snapshot.restore();
+        assert!(!any, "a restored set is stable");
+        result.unwrap();
+    }
+
+    #[test]
+    fn a_unit_that_will_not_go_back_does_not_stop_the_rest_and_is_reported() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join(Unit::Ployz.name());
+        let stuck = root.path().join(Unit::PloyzSocket.name());
+        let last = root.path().join(Unit::VolumePluginSocket.name());
+        fs::write(&first, "old").unwrap();
+        fs::write(&last, "old").unwrap();
+        let snapshot = UnitSnapshot::take(root.path()).unwrap();
+
+        fs::write(&first, "new").unwrap();
+        fs::create_dir(&stuck).unwrap();
+        fs::write(&last, "new").unwrap();
+        let (any, result) = snapshot.restore();
+        assert!(any, "systemd must be told to reload what did go back");
+        assert!(matches!(result, Err(InstallError::Io { .. })));
+        assert_eq!(fs::read_to_string(&first).unwrap(), "old");
+        assert_eq!(fs::read_to_string(&last).unwrap(), "old");
     }
 }
