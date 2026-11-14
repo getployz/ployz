@@ -171,6 +171,7 @@ async fn refresh(replicated: &ReplicatedStore, publish: &watch::Sender<MachinesS
 mod tests {
     use std::time::Duration;
 
+    use futures_util::StreamExt as _;
     use ployz_core::{
         AdvertisedEndpoint, Machine, MachineId, MachineName, MachineRuntime, WireGuardPublicKey,
     };
@@ -268,6 +269,65 @@ mod tests {
         .await
         .expect("the view stops on shutdown");
         server.abort();
+    }
+
+    fn stalled_snapshot() -> crate::corrosion::api::Subscription {
+        crate::corrosion::api::Subscription::streaming(
+            futures_util::stream::iter([Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                b"{\"columns\":[\"id\",\"info\"]}\n",
+            ))])
+            .chain(futures_util::stream::pending()),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_subscription_re_reads_on_the_refresh_interval() {
+        let mut subscription =
+            crate::corrosion::api::Subscription::streaming(futures_util::stream::pending::<
+                Result<bytes::Bytes, std::io::Error>,
+            >());
+        let started = tokio::time::Instant::now();
+
+        let wake = super::wait(&mut subscription, &CancellationToken::new()).await;
+
+        assert!(matches!(wake, super::Wake::Refresh));
+        assert_eq!(started.elapsed(), super::REFRESH_INTERVAL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_snapshot_still_open_at_the_refresh_interval_resubscribes() {
+        let mut subscription = stalled_snapshot();
+        let started = tokio::time::Instant::now();
+
+        let wake = super::wait(&mut subscription, &CancellationToken::new()).await;
+
+        let super::Wake::Resubscribe(error) = wake else {
+            panic!("a stuck snapshot must resubscribe");
+        };
+        assert_eq!(
+            error.to_string(),
+            "invalid Corrosion protocol response: subscription snapshot stalled"
+        );
+        assert_eq!(started.elapsed(), super::REFRESH_INTERVAL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_subscription_resubscribes_and_shutdown_wins_over_both() {
+        let mut closed =
+            crate::corrosion::api::Subscription::streaming(futures_util::stream::empty::<
+                Result<bytes::Bytes, std::io::Error>,
+            >());
+        assert!(matches!(
+            super::wait(&mut closed, &CancellationToken::new()).await,
+            super::Wake::Resubscribe(_)
+        ));
+
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        assert!(matches!(
+            super::wait(&mut stalled_snapshot(), &shutdown).await,
+            super::Wake::Shutdown
+        ));
     }
 
     #[tokio::test(start_paused = true)]

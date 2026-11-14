@@ -616,6 +616,68 @@ async fn store_failure_ends_the_stream() {
     );
 }
 
+/// Every way the store side ends a Watch stream, as the client sees it: the Status code, its
+/// message, and that the frame before it came first.
+#[tokio::test]
+async fn each_store_ending_is_one_unavailable_status_after_the_last_frame() {
+    let entry = machine("edge", ENTRY_ID, 1);
+
+    // The first load fails: no frame, one Status.
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+    fixture.fail("first load");
+    let (_wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+    let status = next_status(&mut stream).await;
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert_eq!(
+        status.message(),
+        "invalid Corrosion protocol response: first load"
+    );
+    assert!(stream.next().await.is_none());
+
+    // A reload after a store wake fails: the first frame, then one Status.
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+    let (wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+    let _first = next_frame(&mut stream).await;
+    fixture.fail("reload");
+    wake.send(Ok(())).await.unwrap();
+    let status = next_status(&mut stream).await;
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert_eq!(
+        status.message(),
+        "invalid Corrosion protocol response: reload"
+    );
+    assert!(stream.next().await.is_none());
+
+    // The subscription reports a stalled snapshot: the first frame, then one Status.
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+    let (wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+    let _first = next_frame(&mut stream).await;
+    wake.send(Err(Error::Protocol("subscription snapshot stalled".into())))
+        .await
+        .unwrap();
+    let status = next_status(&mut stream).await;
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert_eq!(
+        status.message(),
+        "invalid Corrosion protocol response: subscription snapshot stalled"
+    );
+    assert!(stream.next().await.is_none());
+
+    // The subscription stream ends: the first frame, then one Status.
+    let fixture = WatchFixture::new(snapshot(vec![entry.clone()], Vec::new()));
+    let (wake, changes) = mpsc::channel(1);
+    let mut stream = serve_fixture(entry.id, &fixture, changes);
+    let _first = next_frame(&mut stream).await;
+    drop(wake);
+    let status = next_status(&mut stream).await;
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+    assert_eq!(status.message(), "Runtime Watch store subscription ended");
+    assert!(stream.next().await.is_none());
+}
+
 #[tokio::test]
 async fn dropping_the_stream_cancels_watch() {
     let entry = machine("edge", ENTRY_ID, 1);
@@ -956,6 +1018,18 @@ async fn next_frame(
         .expect("open stream")
         .expect("Watch status");
     decode_runtime_watch_frame(&payload).unwrap()
+}
+
+async fn next_status(
+    stream: &mut (
+             impl futures_util::Stream<Item = Result<ployz_core::OpaquePayload, tonic::Status>> + Unpin
+         ),
+) -> tonic::Status {
+    tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("Watch status")
+        .expect("open stream")
+        .expect_err("a Watch status")
 }
 
 fn snapshot(machines: Vec<Machine>, volumes: Vec<DockerVolume>) -> RuntimeWatchSnapshot {

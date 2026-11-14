@@ -1792,7 +1792,8 @@ mod runtime_watch_changes_tests {
                 .expect("the refresh bounds a stalled snapshot")
                 .expect_err("a stalled snapshot must end the watch");
         assert!(
-            error.to_string().contains("subscription snapshot stalled"),
+            error.to_string()
+                == "invalid Corrosion protocol response: subscription snapshot stalled",
             "{error}"
         );
     }
@@ -1831,7 +1832,8 @@ mod runtime_watch_changes_tests {
         .await
         .expect("the stall is caught within one refresh interval");
         assert!(
-            error.to_string().contains("subscription snapshot stalled"),
+            error.to_string()
+                == "invalid Corrosion protocol response: subscription snapshot stalled",
             "{error}"
         );
         writer.abort();
