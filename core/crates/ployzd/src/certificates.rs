@@ -36,8 +36,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
-        AcmeWrite, CertificateChallenge, CertificateMaterial, CertificateRow, ReplicatedStore,
-        published_cover,
+        AcmeWrite, CertificateChallenge, CertificateMaterial, CertificateRow, ChangeWatch,
+        REFRESH_INTERVAL, ReplicatedStore, Retry, Wake, WatchPolicy, published_cover,
     },
     filesystem::{atomic_write, set_ployz_group},
 };
@@ -348,59 +348,57 @@ pub(crate) async fn run(
 ) {
     let account_dir = data_dir.join("acme");
     let mut hosts = BTreeMap::new();
+    let mut changes = ChangeWatch::new(
+        "certificate",
+        || {
+            let store = store.clone();
+            async move { Ok(vec![store.subscribe_container_changes().await?]) }
+        },
+        WatchPolicy {
+            debounce: None,
+            refresh: REFRESH_INTERVAL,
+            retry: Retry::InPlace(RESUBSCRIBE_INTERVAL),
+        },
+        shutdown.clone(),
+    );
+    // The first wake is the subscription opening, so the first pass reads after it exists.
+    if !matches!(changes.next().await, Ok(Wake::Changed)) {
+        return;
+    }
     loop {
-        let subscribed = tokio::select! {
-            subscribed = store.subscribe_container_changes() => subscribed,
-            () = shutdown.cancelled() => return,
-        };
-        let mut changes = match subscribed {
-            Ok(changes) => changes,
+        let wait = match issue_wanted(
+            &store,
+            &directory_default,
+            &account_dir,
+            &machine_id,
+            &mut hosts,
+        )
+        .await
+        {
+            Ok(wait) => wait,
             Err(error) => {
-                tracing::warn!(error = %ployz_core::error_chain::inline(&error), "certificate subscription failed, retrying");
-                if wait_to_resubscribe(&shutdown).await {
-                    continue;
-                }
-                return;
+                eprintln!(
+                    "failed to obtain certificates: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                );
+                RETRY_INTERVAL
             }
         };
+        // The next ACME work item is a wake of its own, so a refresh tick, which only
+        // checks the subscription, does not restart this sleep.
+        let due = tokio::time::sleep(wait);
+        tokio::pin!(due);
         loop {
-            let wait = match issue_wanted(
-                &store,
-                &directory_default,
-                &account_dir,
-                &machine_id,
-                &mut hosts,
-            )
-            .await
-            {
-                Ok(wait) => wait,
-                Err(error) => {
-                    eprintln!(
-                        "failed to obtain certificates: {error}",
-                        error = ployz_core::error_chain::inline(&error),
-                    );
-                    RETRY_INTERVAL
-                }
-            };
             tokio::select! {
-                changed = changes.changed() => if let Err(error) = changed {
-                    tracing::warn!(error = %ployz_core::error_chain::inline(&error), "certificate subscription ended, reopening");
-                    break;
+                woke = changes.next() => match woke {
+                    Ok(Wake::Changed) => break,
+                    Ok(Wake::Tick) => {}
+                    Ok(Wake::Shutdown) | Err(_) => return,
                 },
-                () = tokio::time::sleep(wait) => {}
+                () = &mut due => break,
                 () = shutdown.cancelled() => return,
             }
         }
-        if !wait_to_resubscribe(&shutdown).await {
-            return;
-        }
-    }
-}
-
-async fn wait_to_resubscribe(shutdown: &CancellationToken) -> bool {
-    tokio::select! {
-        () = tokio::time::sleep(RESUBSCRIBE_INTERVAL) => true,
-        () = shutdown.cancelled() => false,
     }
 }
 

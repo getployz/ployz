@@ -24,9 +24,11 @@ use ployz_core::{
 };
 use serde_json::json;
 
+use tokio_util::sync::CancellationToken;
+
 use super::{
-    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, Error, REFRESH_INTERVAL,
-    Statement, Subscription,
+    ApiClient, CertificateChallenge, CertificateMaterial, CertificateRow, ChangeWatch, Error,
+    REFRESH_INTERVAL, Retry, Statement, Subscription, Wake, WatchPolicy,
 };
 use crate::machine::{LocalMachineBody, LocalMachineError, LocalMachineRecord, RecordOwner};
 
@@ -1466,26 +1468,45 @@ impl ReplicatedStore {
     pub(crate) async fn subscribe_runtime_watch_changes(
         &self,
     ) -> Result<impl Stream<Item = Result<(), Error>> + Send + use<>, Error> {
-        let changes = RuntimeWatchChanges {
-            machines: self.subscribe_machine_changes().await?,
-            containers: self.subscribe_container_changes().await?,
-            volumes: self
-                .api
+        let store = self.clone();
+        let mut changes = ChangeWatch::new(
+            "Runtime Watch",
+            move || {
+                let store = store.clone();
+                async move { store.runtime_watch_subscriptions().await }
+            },
+            WatchPolicy {
+                debounce: None,
+                refresh: REFRESH_INTERVAL,
+                retry: Retry::Surface,
+            },
+            CancellationToken::new(),
+        );
+        changes.connect().await?;
+        Ok(futures_util::stream::unfold(changes, |mut changes| async {
+            match changes.next().await {
+                Ok(Wake::Changed | Wake::Tick) => Some((Ok(()), changes)),
+                Ok(Wake::Shutdown) => None,
+                Err(error) => Some((Err(error), changes)),
+            }
+        }))
+    }
+
+    async fn runtime_watch_subscriptions(&self) -> Result<Vec<Subscription>, Error> {
+        Ok(vec![
+            self.subscribe_machine_changes().await?,
+            self.subscribe_container_changes().await?,
+            self.api
                 .subscribe(Statement::new(
                     "SELECT machine_id, name, volume FROM volumes",
                     [],
                 ))
                 .await?,
-            certificates: self.subscribe_certificate_changes().await?,
-            cluster: self
-                .api
+            self.subscribe_certificate_changes().await?,
+            self.api
                 .subscribe(Statement::new("SELECT key, value FROM cluster", []))
                 .await?,
-            refresh: RuntimeWatchChanges::refresh(),
-        };
-        Ok(futures_util::stream::unfold(changes, |mut changes| async {
-            Some((changes.changed().await, changes))
-        }))
+        ])
     }
 }
 
@@ -1607,60 +1628,6 @@ pub struct ReplicatedObservations<T, Id> {
     pub incomplete_ids: Vec<Id>,
 }
 
-/// Store subscriptions that wake observation readers. Change payloads are ignored.
-struct RuntimeWatchChanges {
-    machines: Subscription,
-    containers: Subscription,
-    volumes: Subscription,
-    certificates: Subscription,
-    cluster: Subscription,
-    /// Ticks whatever the tables do, so changes on one table can't put off the
-    /// stall check on another.
-    refresh: tokio::time::Interval,
-}
-
-impl RuntimeWatchChanges {
-    fn refresh() -> tokio::time::Interval {
-        let mut refresh = tokio::time::interval_at(
-            tokio::time::Instant::now() + REFRESH_INTERVAL,
-            REFRESH_INTERVAL,
-        );
-        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        refresh
-    }
-
-    /// Wakes on a change, and every `REFRESH_INTERVAL` so the reader re-reads
-    /// tables whose subscription went quiet.
-    async fn changed(&mut self) -> Result<(), Error> {
-        tokio::select! {
-            result = self.machines.changed() => result,
-            result = self.containers.changed() => result,
-            result = self.volumes.changed() => result,
-            result = self.certificates.changed() => result,
-            result = self.cluster.changed() => result,
-            _ = self.refresh.tick() => {
-                if self.snapshot_in_progress() {
-                    Err(Error::Protocol("subscription snapshot stalled".into()))
-                } else {
-                    Ok(())
-                }
-            }
-        }
-    }
-
-    fn snapshot_in_progress(&self) -> bool {
-        [
-            &self.machines,
-            &self.containers,
-            &self.volumes,
-            &self.certificates,
-            &self.cluster,
-        ]
-        .into_iter()
-        .any(Subscription::snapshot_in_progress)
-    }
-}
-
 // One row that won't decode must not hide every other certificate, so it is logged and skipped.
 fn certificate_host(hostname: &str) -> Option<CertificateHost> {
     CertificateHost::parse(hostname)
@@ -1738,106 +1705,6 @@ fn removal(machine_id: &MachineId) -> [Statement; 4] {
         ),
         Statement::new("DELETE FROM machines WHERE id = ?", [json!(machine_id)]),
     ]
-}
-
-#[cfg(test)]
-mod runtime_watch_changes_tests {
-    use std::{io, time::Duration};
-
-    use bytes::Bytes;
-    use futures_util::{StreamExt, stream};
-
-    use super::{REFRESH_INTERVAL, RuntimeWatchChanges, Subscription};
-
-    fn quiet() -> Subscription {
-        Subscription::streaming(stream::pending::<Result<Bytes, io::Error>>())
-    }
-
-    fn changes(certificates: Subscription) -> RuntimeWatchChanges {
-        RuntimeWatchChanges {
-            machines: quiet(),
-            containers: quiet(),
-            volumes: quiet(),
-            certificates,
-            cluster: quiet(),
-            refresh: RuntimeWatchChanges::refresh(),
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn quiet_subscriptions_wake_the_reader_on_the_refresh_interval() {
-        let mut changes = changes(quiet());
-        let started = tokio::time::Instant::now();
-
-        changes
-            .changed()
-            .await
-            .expect("a quiet table is not a failure");
-        assert_eq!(started.elapsed(), REFRESH_INTERVAL);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_snapshot_still_in_progress_at_the_refresh_ends_the_watch() {
-        let stalled = Subscription::streaming(
-            stream::iter([Ok::<_, io::Error>(Bytes::from_static(
-                b"{\"columns\":[\"hostname\",\"body\"]}\n",
-            ))])
-            .chain(stream::pending()),
-        );
-        let mut changes = changes(stalled);
-
-        let error =
-            tokio::time::timeout(REFRESH_INTERVAL + Duration::from_secs(1), changes.changed())
-                .await
-                .expect("the refresh bounds a stalled snapshot")
-                .expect_err("a stalled snapshot must end the watch");
-        assert!(
-            error.to_string()
-                == "invalid Corrosion protocol response: subscription snapshot stalled",
-            "{error}"
-        );
-    }
-    #[tokio::test(start_paused = true)]
-    async fn changes_on_another_table_do_not_put_off_the_stall_check() {
-        let stalled = Subscription::streaming(
-            stream::iter([Ok::<_, io::Error>(Bytes::from_static(
-                b"{\"columns\":[\"hostname\",\"body\"]}\n",
-            ))])
-            .chain(stream::pending()),
-        );
-        let mut changes = changes(stalled);
-        let (machine_changes, received) = tokio::sync::mpsc::unbounded_channel();
-        changes.machines = Subscription::streaming(
-            tokio_stream::wrappers::UnboundedReceiverStream::new(received),
-        );
-        let writer = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(REFRESH_INTERVAL / 3).await;
-                if machine_changes
-                    .send(Ok(Bytes::from_static(b"{\"change\":null}\n")))
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
-
-        let error = tokio::time::timeout(REFRESH_INTERVAL + Duration::from_secs(1), async {
-            loop {
-                if let Err(error) = changes.changed().await {
-                    return error;
-                }
-            }
-        })
-        .await
-        .expect("the stall is caught within one refresh interval");
-        assert!(
-            error.to_string()
-                == "invalid Corrosion protocol response: subscription snapshot stalled",
-            "{error}"
-        );
-        writer.abort();
-    }
 }
 
 #[cfg(test)]

@@ -401,10 +401,8 @@ async fn watch_projection(
     loop {
         let rebuild = tokio::select! {
             Some((started, loaded)) = refreshes.next() => {
-                if changes.snapshot_in_progress() {
-                    return Ok(Watched::Lost(Lost::Stream(CorrosionError::Protocol(
-                        "subscription snapshot stalled".into(),
-                    ))));
+                if changes.stalled() {
+                    return Ok(Watched::Lost(Lost::Stream(CorrosionError::SnapshotStalled)));
                 }
                 match loaded {
                     Ok(snapshot) if started == epoch.load(Ordering::Relaxed) => {

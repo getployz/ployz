@@ -1243,7 +1243,7 @@ impl Model for AcmeIssuance {
 
     /// Each Machine's pass or obtain in slot order, then the tick, each probe change, each
     /// restart and the operator's edits. The order decides only which of the shortest paths a
-    /// story shows. Nothing is fair: a container change wakes a loop at any time (`changes.changed()` in `run`), so
+    /// story shows. Nothing is fair: a container change wakes a loop at any time (`changes.next()` in `run`), so
     /// a pass is offered at any tick, and a Machine may also skip ticks.
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
         for who in 0..MACHINES {
@@ -1522,7 +1522,7 @@ fn reread_words(over_material: bool) -> &'static str {
 }
 
 /// How long Machine `who`'s loop sleeps after the pass or obtain from `before` to `after`,
-/// unless a container change wakes it first (run's changes.changed()): `wake` (core/crates/ployz-decide/src/issuance.rs:226-259).
+/// unless a container change wakes it first (run's changes.next()): `wake` (core/crates/ployz-decide/src/issuance.rs:226-259).
 fn wait_words(who: usize, before: &State, after: &State) -> String {
     let policy = built_in();
     let elapsed = tick() * u32::from(after.machine(who).orderable_since.unwrap_or(0));
@@ -1779,7 +1779,7 @@ mod tests {
     /// are held, and at 60 s the clock has passed. Before this change rank 1's held passes kept
     /// their first pass's instant and `poll_wait`, a function `wake` replaced, woke it at 30 s and 60 s; now `wake` answers
     /// when the clock passes (core/crates/ployz-decide/src/issuance.rs:246-256), and a container change can wake a loop at any time
-    /// (`changes.changed()` in `run`).
+    /// (`changes.next()` in `run`).
     const THE_HOLD: [Action; 9] = [
         pass(R0),
         Action::Obtain {
@@ -2031,7 +2031,7 @@ mod tests {
     /// at 0 s, records the policy's reason and stops before the gate; `run` sleeps 60 s.
     /// At 30 s rank 1's pass stops the same way. The operator repairs the policy. At 60 s rank
     /// 0's sleep ends and it pushes the hostname, and a container change wakes rank 1's loop
-    /// at that moment (`changes.changed()` in `run`).
+    /// at that moment (`changes.next()` in `run`).
     const THE_POLICY_REFUSAL: [Action; 9] = [
         pass(R1),
         Action::Operator(Policy::Refused),

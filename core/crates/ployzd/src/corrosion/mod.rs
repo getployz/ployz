@@ -7,6 +7,7 @@ mod machine_view;
 mod publisher;
 mod service;
 mod store;
+mod watch;
 
 #[cfg(test)]
 pub(crate) mod fake_cluster;
@@ -33,6 +34,7 @@ pub(crate) use store::{
     LocalContainerSnapshot, LocalVolumeSnapshot,
 };
 pub use store::{ReplicatedObservations, ReplicatedStore};
+pub(crate) use watch::{ChangeWatch, Debounce, Retry, Wake, WatchPolicy};
 
 use std::time::Duration;
 
@@ -63,6 +65,8 @@ pub enum Error {
     InvalidCatchUpTarget(&'static str),
     #[error("invalid Corrosion protocol response: {0}")]
     Protocol(String),
+    #[error("invalid Corrosion protocol response: subscription snapshot stalled")]
+    SnapshotStalled,
 }
 
 pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(10);

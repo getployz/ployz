@@ -1945,6 +1945,107 @@ async fn routed_addresses_are_empty_once_ingress_is_turned_off_and_its_caddy_rem
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// The Machine's own row is a subscribed table, so turning the role off reaches Caddy at the
+/// next quiet window and not at the next refresh tick.
+#[tokio::test]
+async fn turning_ingress_off_reaches_caddy_on_the_machine_change_alone() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let caddyfile = directory.join(CONFIG_FILE);
+    let (route_publishes, mut published) =
+        tokio::sync::watch::channel(crate::ingress::PublishedRoutes::default());
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        route_publishes,
+        shutdown.clone(),
+        || std::future::ready(Ok(None::<TestAdmin>)),
+    ));
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+
+    state
+        .machine
+        .lock()
+        .unwrap()
+        .as_mut()
+        .expect("watch fixture has a Machine row")
+        .accepts_ingress = false;
+    state.containers.lock().unwrap().remove(1);
+    state.send_machines(b"{\"change\":{}}\n");
+    timeout(
+        Duration::from_secs(2),
+        published.wait_for(|published| published.addresses == Some(BTreeMap::new())),
+    )
+    .await
+    .expect("a Machine row change woke no pass before the refresh tick")
+    .unwrap();
+
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A change every 20ms never leaves a 50ms quiet window, so only the limit lets a pass run.
+#[tokio::test]
+async fn a_steady_stream_of_changes_cannot_starve_the_pass() {
+    let WatcherFixture {
+        machine,
+        state,
+        address,
+        server,
+        directory,
+    } = watcher_fixture().await;
+    let caddyfile = directory.join(CONFIG_FILE);
+    let shutdown = CancellationToken::new();
+    let watcher = tokio::spawn(watch_caddy(
+        machine.clone(),
+        ReplicatedStore::new(ApiClient::http1(address, &"a".repeat(64)).unwrap()),
+        no_down,
+        caddyfile.clone(),
+        tokio::sync::watch::channel(Default::default()).0,
+        shutdown.clone(),
+        || std::future::ready(Ok(None::<TestAdmin>)),
+    ));
+    wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
+
+    let writing = state.clone();
+    let writer = tokio::spawn(async move {
+        loop {
+            writing.send(b"{\"change\":{}}\n");
+            // real-wait: a steady stream of changes is real time against the debounce limit
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    state.replace(observation(
+        2,
+        &machine.id,
+        "api",
+        Some([10, 210, 1, 3]),
+        vec![ingress("example.com", 80, HttpProtocol::Http)],
+    ));
+    timeout(
+        Duration::from_secs(4),
+        wait_for_caddyfile(&caddyfile, "10.210.1.3:80"),
+    )
+    .await
+    .expect("a steady stream of changes starved the pass");
+
+    writer.abort();
+    shutdown.cancel();
+    watcher.await.unwrap().unwrap();
+    server.abort();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[tokio::test]
 async fn routed_addresses_claim_nothing_while_this_machine_has_no_row() {
     let WatcherFixture {
@@ -2807,6 +2908,7 @@ async fn watcher_fixture() -> WatcherFixture {
         stall_container: Arc::new(AtomicBool::new(false)),
         container_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
+        machine_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificates: Arc::new(Mutex::new(Vec::new())),
         statements: Arc::new(Mutex::new(Vec::new())),
         transactions: Arc::new(Mutex::new(Vec::new())),
@@ -2987,6 +3089,7 @@ struct WatchState {
     stall_container: Arc<AtomicBool>,
     container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
+    machine_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificates: Arc<Mutex<Vec<(String, String)>>>,
     statements: Arc<Mutex<Vec<(Sent, String)>>>,
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
@@ -3133,6 +3236,13 @@ impl WatchState {
         self.send_certificates(b"{\"change\":{}}\n");
     }
 
+    fn send_machines(&self, event: &'static [u8]) {
+        self.machine_subscriptions
+            .lock()
+            .unwrap()
+            .retain(|subscription| subscription.send(Bytes::from_static(event)).is_ok());
+    }
+
     fn send_certificates(&self, event: &'static [u8]) {
         self.certificate_subscriptions
             .lock()
@@ -3221,6 +3331,8 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
                 &state.certificate_subscriptions,
                 false,
             )
+        } else if statement.query == "SELECT id, info FROM machines" {
+            (&["id", "info"][..], &state.machine_subscriptions, false)
         } else {
             panic!("unexpected subscription {}", statement.query);
         };

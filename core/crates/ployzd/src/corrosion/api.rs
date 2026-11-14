@@ -310,7 +310,8 @@ impl Subscription {
         }
     }
 
-    pub(crate) fn snapshot_in_progress(&self) -> bool {
+    /// Whether a snapshot is still open, which at a refresh tick means the stream is stuck.
+    pub(crate) fn stalled(&self) -> bool {
         self.snapshot_in_progress
     }
 
