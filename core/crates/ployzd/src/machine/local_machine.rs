@@ -555,6 +555,29 @@ impl LocalMachine {
         self.containers.as_ref().ok_or(Error::DockerUnavailable)
     }
 
+    /// Place again the Private Access router and the Ingress doors this Machine held before
+    /// the daemon stopped. A step that fails is warned about and the other still runs, and
+    /// what it could not place stays as it is until the operator asks again.
+    pub(crate) async fn restore_held_at_boot(&self) {
+        if let Err(error) = self.restore_private_access().await {
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "could not place the Private Access router this Machine held again; it stays as it is until the next `ployz private-access on`"
+            );
+        }
+        let unplaced = match self.restore_doors().await {
+            Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
+            Ok(None) => None,
+            Err(error) => Some(ployz_core::error_chain::inline(&error)),
+        };
+        if let Some(error) = unplaced {
+            tracing::warn!(
+                %error,
+                "could not place the Ingress doors this Machine held again; they stay as they are until the next `ployz ingress use`"
+            );
+        }
+    }
+
     /// The persisted Local Machine record as last published by its owner.
     #[must_use]
     pub fn record(&self) -> Arc<LocalMachineRecord> {

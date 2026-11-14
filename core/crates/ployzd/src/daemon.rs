@@ -36,8 +36,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest, LocalDocker, MachineSpecStore, SpecStoreError},
     ingress,
     machine::{
-        InterruptedReset, LocalMachineBody, LocalMachineRecord, LocalMachineStore, Opened,
-        RecordOwner, RecordOwnerStopped, StoreError,
+        InterruptedReset, LocalMachineBody, LocalMachineStore, Opened, RecordOwner,
+        RecordOwnerStopped, StoreError,
     },
     machine_api::{EndsOnShutdown, MachineApi},
     machine_api_socket::MachineApiSocket,
@@ -48,6 +48,8 @@ use crate::{
 };
 
 mod planes;
+
+use planes::{Participation, cluster_plane};
 
 /// How the daemon attaches a Container Runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -320,6 +322,7 @@ impl Daemon {
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
         let records = local.watch();
+        let participation = Participation::new(records.clone(), shutdown.clone());
         let dns_service = dns.clone();
         let restart_requested = local.restart_requested();
         let certificate_data_dir = config.data_dir.clone();
@@ -442,11 +445,13 @@ impl Daemon {
             };
             let dns = dns_service.run(records.clone(), shutdown.clone());
             let ingress = async {
-                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
+                if !participation.wait().await? {
                     return Ok(());
                 }
-                match (local_machine.clone(), link.clone()) {
-                    (Some(machine), Some(link)) => {
+                cluster_plane(
+                    local_machine.clone().zip(link.clone()),
+                    &shutdown,
+                    |(machine, link)| {
                         ingress::run(
                             machine,
                             link.context.replicated,
@@ -457,86 +462,67 @@ impl Daemon {
                             route_publishes,
                             shutdown.clone(),
                         )
-                        .await
-                    }
-                    _ => {
-                        shutdown.cancelled().await;
-                        Ok(())
-                    }
-                }
+                    },
+                )
+                .await
             };
             let certificates = async {
-                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
+                if !participation.wait().await? {
                     return Ok(());
                 }
-                match link.as_ref().map(|link| link.context.replicated.clone()) {
-                    Some(replicated) => {
-                        certificates::run(
-                            replicated,
-                            certificate_data_dir,
-                            acme_directory,
-                            local_id,
-                            shutdown.clone(),
-                        )
-                        .await;
-                    }
-                    None => shutdown.cancelled().await,
-                }
-                Ok(())
+                cluster_plane(link.clone(), &shutdown, |link| async {
+                    certificates::run(
+                        link.context.replicated,
+                        certificate_data_dir,
+                        acme_directory,
+                        local_id,
+                        shutdown.clone(),
+                    )
+                    .await;
+                    Ok(())
+                })
+                .await
             };
             let boot_pass_and_fence = async {
-                if !wait_for_participation(records.clone(), shutdown.clone()).await? {
+                if !participation.wait().await? {
                     return Ok(());
                 }
-                let (Some(runtime), Some(link)) = (containers.clone(), link.clone()) else {
-                    return Ok(());
-                };
-                let (replicated, machines, admin) =
-                    (link.context.replicated, link.view, link.context.admin);
-                let first_synced = runtime.first_synced();
-                let machine = serving_local.clone();
-                if let Err(error) = machine.restore_private_access().await {
-                    tracing::warn!(
-                        error = %ployz_core::error_chain::inline(&error),
-                        "could not place the Private Access router this Machine held again; it stays as it is until the next `ployz private-access on`"
-                    );
-                }
-                let unplaced = match machine.restore_doors().await {
-                    Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
-                    Ok(None) => None,
-                    Err(error) => Some(ployz_core::error_chain::inline(&error)),
-                };
-                if let Some(error) = unplaced {
-                    tracing::warn!(
-                        %error,
-                        "could not place the Ingress doors this Machine held again; they stay as they are until the next `ployz ingress use`"
-                    );
-                }
-                let boot = crate::boot_pass::DaemonHost {
-                    machine_id: local_id,
-                    machine: machine.clone(),
-                    replicated,
-                    machines: machines.clone(),
-                    admin: admin.clone(),
-                };
-                let fence = crate::forgotten_fence::FenceDaemon {
-                    machine_id: local_id,
-                    machine,
-                    machines,
-                    admin,
-                    endpoint: fence_endpoint,
-                    relay: fence_relay,
-                };
-                tokio::select! {
-                    () = shutdown.cancelled() => {}
-                    () = async {
-                        tokio::join!(
-                            crate::boot_pass::run(boot, first_synced, published_routes),
-                            crate::forgotten_fence::run(&fence, shutdown.clone()),
-                        );
-                    } => {}
-                }
-                Ok(())
+                cluster_plane(link.clone(), &shutdown, |link| async {
+                    let Some(runtime) = containers.clone() else {
+                        return Ok(());
+                    };
+                    let (replicated, machines, admin) =
+                        (link.context.replicated, link.view, link.context.admin);
+                    let first_synced = runtime.first_synced();
+                    let machine = serving_local.clone();
+                    machine.restore_held_at_boot().await;
+                    let boot = crate::boot_pass::DaemonHost {
+                        machine_id: local_id,
+                        machine: machine.clone(),
+                        replicated,
+                        machines: machines.clone(),
+                        admin: admin.clone(),
+                    };
+                    let fence = crate::forgotten_fence::FenceDaemon {
+                        machine_id: local_id,
+                        machine,
+                        machines,
+                        admin,
+                        endpoint: fence_endpoint,
+                        relay: fence_relay,
+                    };
+                    tokio::select! {
+                        () = shutdown.cancelled() => {}
+                        () = async {
+                            tokio::join!(
+                                crate::boot_pass::run(boot, first_synced, published_routes),
+                                crate::forgotten_fence::run(&fence, shutdown.clone()),
+                            );
+                        } => {}
+                    }
+                    Ok(())
+                })
+                .await
             };
             tokio::try_join!(
                 async { rpc.await.map_err(io::Error::other) },
@@ -828,23 +814,6 @@ async fn start_corrosion(
     ))
 }
 
-/// Wait until the published record is participating.
-///
-/// `Ok(false)` when shutdown wins or the record owner stopped; the daemon shuts
-/// down on the latter, so the gated plane simply never starts.
-async fn wait_for_participation(
-    mut records: watch::Receiver<Arc<LocalMachineRecord>>,
-    shutdown: CancellationToken,
-) -> io::Result<bool> {
-    tokio::select! {
-        biased;
-        () = shutdown.cancelled() => Ok(false),
-        changed = records.wait_for(|record| record.phase() == LocalMachinePhase::Participating) => {
-            Ok(changed.is_ok() && !shutdown.is_cancelled())
-        }
-    }
-}
-
 enum StopKind {
     Plane,
     Signal(&'static str),
@@ -882,10 +851,8 @@ mod tests {
         ContainerMode, CorrosionError, Daemon, DaemonConfig, Error, InterruptedReset,
         LocalMachineStore, MachineApiSocket, ManagementConfig, NetworkError, Opened, StoreError,
         close_queued_if_refused, finish_interrupted_reset, finish_reset, record_refusal,
-        wait_for_participation,
     };
     use crate::test_dir::TestDir;
-    use tokio_util::sync::CancellationToken;
 
     fn test_config(root: &Path, containers: ContainerMode) -> (DaemonConfig, PathBuf) {
         fs::create_dir_all(root).unwrap();
@@ -1494,112 +1461,5 @@ mod tests {
             serde_json::from_slice(&fs::read(data_dir.join("machine.json")).unwrap()).unwrap();
         assert_eq!(persisted.id(), old_id);
         assert_eq!(persisted.phase(), ployz_core::LocalMachinePhase::Resetting);
-    }
-
-    fn gate_owner(name: &str) -> (TestDir, crate::machine::RecordOwner) {
-        let root = TestDir::new(name);
-        let owner = crate::machine::RecordOwner::spawn(
-            crate::machine::LocalMachineStore::open(root.0.join("data")).unwrap(),
-        )
-        .unwrap();
-        (root, owner)
-    }
-
-    async fn participate(owner: &crate::machine::RecordOwner) {
-        owner
-            .mutate(|store| {
-                store.enroll(ployz_core::EnrollRequest {
-                    role: ployz_core::EnrollAs::Founder {
-                        initial_policy: Default::default(),
-                        name: ployz_core::MachineName::parse("gate").unwrap(),
-                        cluster_network: "10.210.0.0/16".parse().unwrap(),
-                        public_ip: None,
-                        advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
-                            "192.0.2.1:51820".parse().unwrap(),
-                        )],
-                        grant: None,
-                    },
-                    wireguard_mtu: None,
-                    pinned: Default::default(),
-                })
-            })
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn participation_gate_waits_for_catch_up_and_obeys_shutdown() {
-        let (_root, owner) = gate_owner("ployzd-participation-gate");
-        let shutdown = CancellationToken::new();
-        let waiting = wait_for_participation(owner.watch(), shutdown);
-        tokio::pin!(waiting);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
-                .await
-                .is_err()
-        );
-        participate(&owner).await;
-        assert!(waiting.await.unwrap());
-
-        let records = owner.watch();
-        let shutdown = CancellationToken::new();
-        shutdown.cancel();
-        drop(owner);
-        assert!(!wait_for_participation(records, shutdown).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn participation_gate_prefers_shutdown_over_a_participating_record() {
-        let (_root, owner) = gate_owner("ployzd-participation-gate-shutdown");
-        participate(&owner).await;
-        let shutdown = CancellationToken::new();
-        shutdown.cancel();
-        assert!(
-            !wait_for_participation(owner.watch(), shutdown)
-                .await
-                .unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn participation_gate_answers_at_once_for_a_participating_record() {
-        let (_root, owner) = gate_owner("ployzd-participation-gate-now");
-        participate(&owner).await;
-        let answer = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            wait_for_participation(owner.watch(), CancellationToken::new()),
-        )
-        .await
-        .expect("a participating record needs no wait");
-        assert!(answer.unwrap());
-    }
-
-    #[tokio::test]
-    async fn participation_gate_ends_false_when_shutdown_arrives_while_waiting() {
-        let (_root, owner) = gate_owner("ployzd-participation-gate-cancel");
-        let shutdown = CancellationToken::new();
-        let waiting = tokio::spawn(wait_for_participation(owner.watch(), shutdown.clone()));
-        tokio::task::yield_now().await;
-        shutdown.cancel();
-        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
-            .await
-            .expect("shutdown ends the wait")
-            .unwrap();
-        assert!(!answer.unwrap());
-    }
-
-    #[tokio::test]
-    async fn participation_gate_ends_false_when_the_record_owner_stops() {
-        let (_root, owner) = gate_owner("ployzd-participation-gate-owner");
-        let records = owner.watch();
-        drop(owner);
-        let answer = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            wait_for_participation(records, CancellationToken::new()),
-        )
-        .await
-        .expect("a stopped record owner ends the wait");
-        assert!(!answer.unwrap());
     }
 }
