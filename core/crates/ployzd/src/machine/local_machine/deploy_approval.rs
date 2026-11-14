@@ -289,6 +289,9 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
             field: "a Container",
         } => "That container isn't on this server.",
         AuthorityRefusal::Expired => "The device's approval expired. Deploy again.",
+        AuthorityRefusal::RetiredBuilder { .. } => {
+            "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
+        }
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
             "This server doesn't trust the device that approved this deploy."
         }
