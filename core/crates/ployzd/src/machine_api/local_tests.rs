@@ -1539,6 +1539,61 @@ mod ingress_doors {
     }
 
     #[tokio::test]
+    async fn a_failed_tunnel_door_never_starts_a_connector_in_the_holders_network_again() {
+        let (data_dir, _store, service, fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-doors-old-connector").await;
+        let machine = service.local.record().id();
+        set_doors(&service, doors_request(), false)
+            .await
+            .unwrap()
+            .unwrap();
+        let sealed = cluster.seal_platform(ployz_core::PlatformPurpose::IngressTunnel, b"cf-token");
+        let record = service.local.record();
+        let placed = record.machine().unwrap();
+        let mut spec = ployz_core::tunnel_service_spec("cloudflared:1", &sealed);
+        spec.container.network = Some(ployz_core::ServiceNetwork::IngressHolder);
+        let spec = spec
+            .to_resolved(ployz_core::ServiceId::random(), Default::default())
+            .unwrap();
+        let old = runtime
+            .create_for_test(
+                &placed.id,
+                placed.subnet.gateway(),
+                ployz_core::ContainerKind::ServiceContainer,
+                &ployz_core::Namespace::system(),
+                &spec,
+            )
+            .await
+            .unwrap()
+            .container_id;
+        runtime.start(&old).await.unwrap();
+
+        fake.refuse_create_of
+            .lock()
+            .unwrap()
+            .insert(QualifiedService::system_tunnel_origin().name.to_string());
+        let open =
+            json!({"doors": ["tunnel"], "proxy_service": proxy_id(), "sealed_token": sealed});
+        let set = set_doors(&service, open, false).await.unwrap().unwrap();
+        assert_eq!(
+            set.failure.as_ref().map(|failure| failure.stage),
+            Some(ployz_core::IngressStage::Tunnel),
+            "{set:?}"
+        );
+        let doors = at_rest_by_id(&runtime, &machine).await;
+        assert!(
+            doors.contains(&(old, true)),
+            "the undo started the old doors again but this connector: {doors:?}"
+        );
+        assert!(
+            doors.iter().any(|(id, at_rest)| *id != old && !at_rest),
+            "the previous holder and Caddy run again: {doors:?}"
+        );
+        runtime.remove_tunnel_token().unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn reopening_the_tunnel_door_over_a_connector_left_stopped_holds_it_across_a_reboot() {
         let (data_dir, _store, service, fake, runtime, cluster) =
             fake_docker_service_sealing("ployzd-doors-reopen-stays").await;

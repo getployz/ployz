@@ -131,6 +131,15 @@ impl DoorPlan {
     }
 }
 
+/// A connector an earlier daemon placed in the holder's network namespace, where it
+/// reached everything Caddy reaches. It is stopped for good: never kept, and never
+/// started again by an undo or at daemon start.
+fn shares_holders_netns(entry: &DoorEntry) -> bool {
+    entry.facts.door == Door::Tunnel
+        && entry.observation.resolved_spec.container.network
+            == Some(ployz_core::ServiceNetwork::IngressHolder)
+}
+
 fn usable(entry: &DoorEntry) -> bool {
     !matches!(
         entry.facts.runtime,
@@ -154,7 +163,7 @@ fn retirees(entries: &[&DoorEntry], kept: Option<ContainerId>) -> Vec<Retiree> {
         .filter(|entry| Some(entry.facts.id) != kept)
         .map(|entry| Retiree {
             id: entry.facts.id,
-            running: !entry.facts.at_rest(),
+            running: !entry.facts.at_rest() && !shares_holders_netns(entry),
         })
         .collect()
 }
@@ -504,7 +513,8 @@ impl LocalMachine {
     /// Tunnel Door the declaration lacks stays at rest with no token written, as
     /// `ployz ingress use` left it, and nothing is created, replaced or stopped here.
     /// Every other door is placed, so a Machine part way through a switch that still
-    /// holds both Doors gets its declared connector back. With no declaration, or one
+    /// holds both Doors gets its declared connector back. A connector an earlier daemon
+    /// placed in the holder's network is stopped first, whatever else this does. With no declaration, or one
     /// this Machine can't read, the doors it held are placed as above.
     ///
     /// # Errors
@@ -520,6 +530,15 @@ impl LocalMachine {
             let _doors = containers.door_lifecycle().await;
             local.door_effect()?;
             let inventory = containers.door_inventory(&local.record().id()).await?;
+            for entry in inventory
+                .iter()
+                .filter(|entry| shares_holders_netns(entry) && !entry.facts.at_rest())
+            {
+                match containers.stop(&entry.facts.id, None, None).await {
+                    Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
             let Some(held) = doors_held(&inventory, containers.tunnel_door_closed()) else {
                 return Ok(None);
             };
@@ -1258,7 +1277,11 @@ mod tests {
             plan.tunnel,
             tunnel_plan(HolderStep::Create(None), JoinedStep::Create(Some(id('c'))))
         );
-        assert_eq!(plan.retire_tunnels, vec![retiree('c', true)]);
+        assert_eq!(
+            plan.retire_tunnels,
+            vec![retiree('c', false)],
+            "it ran, but an undo never starts it again"
+        );
     }
 
     #[test]
