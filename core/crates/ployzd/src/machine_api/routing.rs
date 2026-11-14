@@ -27,6 +27,7 @@ use tonic::{
     transport::{Channel, Endpoint},
 };
 
+use super::provenance::Provenance;
 use crate::corrosion::ReplicatedStore;
 
 #[derive(Debug, Error)]
@@ -524,11 +525,7 @@ fn refuse_awaiting(
     record: &crate::machine::LocalMachineRecord,
 ) -> Option<http::Response<Body>> {
     use ployz_core::authority::coverage::{Authorization, authorization};
-    if !record.awaits_activation()
-        || !request
-            .headers()
-            .contains_key(ployz_core::OPERATOR_SCOPE_HEADER)
-    {
+    if !record.awaits_activation() || !Provenance::of_headers(request.headers()).operator() {
         return None;
     }
     let capability = ployz_core::capability_of(request.uri().path())?;
