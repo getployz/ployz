@@ -11,7 +11,7 @@
 //!
 //! Four processes take part. The daemon runs `request_locked` in a task (:156-158) and hosts
 //! every RPC: Inspect, a resend, Leave, a new upgrade request and the mutations that admit
-//! through `admit_installation` (local_machine.rs:331-334). A kill ends all of them at once.
+//! through `admit_installation` (local_machine.rs). A kill ends all of them at once.
 //! systemd restarts it (`Restart=always` in `machine_daemon_service_unit`, installer/host.rs), and daemon start
 //! reconciles before it serves (`Daemon::start`, before it serves). The worker is its own unit (:397-459),
 //! `ployzd install` its own process, and the volume plugin its own unit
@@ -25,9 +25,9 @@
 //! so either can hold the lock while daemon start settles.
 //!
 //! Settling readers repair a receipt and marker that a stopped writer left. `settle`
-//! (installer/upgrade.rs:251-276) runs for Inspect (local_machine.rs:512, through `latest`,
+//! (installer/upgrade.rs:251-276) runs for Inspect (`LocalMachine::inspect`, through `latest`,
 //! :109-117), for a resend of the same attempt (local_machine/upgrade.rs:27-31, through
-//! `replay`, :90-105), for Leave (local_machine.rs:945) and at daemon start (`Daemon::start`,
+//! `replay`, :90-105), for Leave (`LocalMachine::depart`) and at daemon start (`Daemon::start`,
 //! through `reconcile`, :349-351). `reconcile_locked` (:372-395) runs under the lock for a
 //! new upgrade request (:185, after local_machine/upgrade.rs:38) and for `ployzd install`
 //! (`reconcile_for_install`, :353-370, from `install_at` in installer/mod.rs).
@@ -170,13 +170,13 @@ impl Worker {
 /// A caller of `settle` or `reconcile_locked`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Caller {
-    /// The Inspect RPC (local_machine.rs:463, :512), through `latest`.
+    /// The Inspect RPC (`LocalMachine::inspect`), through `latest`.
     Inspect,
     /// A resend of the same attempt (local_machine/upgrade.rs:27-31), through `replay`. The
     /// CLI's poll (ployz handlers/server/upgrade.rs poll_upgrade at :80-98, :700-701) and Cloud's resend
     /// (dashboard server-upgrade.server.ts:288-292) send it.
     Replay,
-    /// Leave's `depart` (local_machine.rs:938-961), through `latest`, then `finish_mutation`.
+    /// Leave's `depart` (`LocalMachine::depart`), through `latest`, then `finish_mutation`.
     Leave,
     /// Daemon start (`Daemon::start`), through `reconcile` and `latest`, before it serves.
     DaemonStart,
@@ -237,8 +237,8 @@ enum At {
     /// :186-193, `ployzd install` at :357-369.
     Decide,
     /// Leave's `settle` returned; `depart` checks whether the attempt is live
-    /// (local_machine.rs:946-953) and otherwise runs `finish_mutation`'s `try_mutation`
-    /// (:959, :355, :333). `repaired` says Leave's own `settle` removed the marker a
+    /// (`LocalMachine::depart`) and otherwise runs `finish_mutation`'s `try_mutation`
+    /// (`finish_admitted`, `admit_installation`). `repaired` says Leave's own `settle` removed the marker a
     /// stopped writer left.
     Depart { live: bool, repaired: bool },
 }
@@ -269,8 +269,8 @@ impl Reader {
 /// Whose `try_mutation` answered.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Asker {
-    /// A daemon RPC, through `admit_installation` (local_machine.rs:331-334) or the Update
-    /// fast path (:851). It runs only while the daemon serves.
+    /// A daemon RPC, through `admit_installation` (local_machine.rs) or the Update
+    /// fast path (`try_mutation` in `LocalMachine::update`). It runs only while the daemon serves.
     Daemon,
     /// The volume plugin's `admit_mutation` (volume_plugin/storage.rs:121), its own unit.
     Plugin,
@@ -335,7 +335,7 @@ enum Branch {
     Interrupts,
     /// `reconcile_locked` removed the marker (:378 or :393).
     ReconcileClears,
-    /// `depart` refused while the attempt is not terminal (local_machine.rs:946-953).
+    /// `depart` refused while the attempt is not terminal (`LocalMachine::depart`).
     LeaveRefuses,
     /// `depart` ran `finish_mutation` after Leave's own `settle` removed the marker a
     /// stopped writer left.
@@ -1430,9 +1430,9 @@ fn story(model: &UpgradeAttempt, path: &[(State, Option<Action>)]) -> String {
 /// Where each settling caller enters, in the code's words.
 fn enters(caller: Caller) -> &'static str {
     match caller {
-        Caller::Inspect => "Inspect (local_machine.rs:512) calls latest",
+        Caller::Inspect => "Inspect (LocalMachine::inspect) calls latest",
         Caller::Replay => "a resend of the same attempt (local_machine/upgrade.rs:28) calls replay",
-        Caller::Leave => "Leave's depart (local_machine.rs:945) calls latest",
+        Caller::Leave => "Leave's depart (LocalMachine::depart) calls latest",
         Caller::DaemonStart => {
             "daemon start (`Daemon::start`) calls reconcile, then latest, before it serves"
         }
@@ -1451,7 +1451,7 @@ fn enters(caller: Caller) -> &'static str {
 fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &State) -> String {
     match action {
         Action::Accept if after.took == Some(Branch::RequestBusy) => {
-            "Daemon: request_upgrade's try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1069-1074)".to_owned()
+            "Daemon: request_upgrade's try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs, the Admission(Busy) arm)".to_owned()
         }
         Action::Accept if after.took == Some(Branch::RequestFindsMarker) => {
             "Daemon: request_upgrade takes the installation lock (local_machine/upgrade.rs:38); request_locked finds no receipt, finds .upgrade-active and returns Busy, and the lock drops (installer/upgrade.rs:177, :191-192)".to_owned()
@@ -1624,7 +1624,7 @@ fn reads_as(model: &UpgradeAttempt, before: &State, action: Action, after: &Stat
             "Install: the ployzd install process is killed; any lock it held is released".to_owned()
         }
         Action::Mutate(Asker::Daemon) => format!(
-            "Daemon RPC: admit_installation's try_mutation {} (local_machine.rs:331-334, mutation.rs:55-69)",
+            "Daemon RPC: admit_installation's try_mutation {} (local_machine.rs, mutation.rs:55-69)",
             answer_reads_as(model, before, after)
         ),
         Action::Mutate(Asker::Plugin) => format!(
@@ -1711,7 +1711,7 @@ fn started(after: &State, caller: Caller) -> String {
             "try_installation answers Busy, and ployzd install prints \"another Ployz installation is active\" (installer::install_at, installer::map_admission_error, `Error::Busy`)".to_owned()
         }
         Some(Branch::CallerBusy) => {
-            "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs:1069-1074)".to_owned()
+            "try_installation answers Busy; the request returns \"a Ployz installation or upgrade is active\" (local_machine/upgrade.rs:38, machine_api/local.rs, the Admission(Busy) arm)".to_owned()
         }
         took if !caller.settles() => format!(
             "takes the lock; {}",
@@ -1831,10 +1831,10 @@ fn reader_step_reads_as(
             }
         },
         At::Depart { live: true, .. } => {
-            "Reader: depart refuses, \"an upgrade is running on this Machine; resend Leave once it finishes\" (local_machine.rs:946-953)".to_owned()
+            "Reader: depart refuses, \"an upgrade is running on this Machine; resend Leave once it finishes\" (LocalMachine::depart)".to_owned()
         }
         At::Depart { live: false, .. } => format!(
-            "Reader: depart goes on to finish_mutation, whose try_mutation {} (local_machine.rs:959, :355, :333)",
+            "Reader: depart goes on to finish_mutation, whose try_mutation {} (LocalMachine::depart, finish_admitted, admit_installation)",
             answer_reads_as(model, before, after)
         ),
     }

@@ -55,12 +55,12 @@ The caller returns the Io with `?`.
 
 The model has three askers:
 - **`Asker::Daemon`**, for a daemon RPC. It runs only while the daemon serves.
-  - `admit_installation` (`machine/local_machine.rs:331-334`), and through it:
-    - `finish_mutation` (`:337-344`, `:355`), for enroll, register, update, forget and Leave;
-    - `finish_installed` (`:359-367`), for a Deploy's container step (`EnsureContainer`, `machine_api/local.rs:469`, `ensure_container` and `converge_now` in `machine/local_machine/container.rs`) and volume copy cuts (`cut_volume_copy`);
+  - `admit_installation` (`LocalMachine::admit_installation` in `machine/local_machine.rs`), and through it:
+    - `finish_mutation` and `finish_admitted`, which calls `admit_installation`, for enroll, register, update, forget and Leave;
+    - `finish_installed`, for a Deploy's container step (the `EnsureContainer` handler `ensure_container` in `machine_api/local.rs`, `ensure_container` and `converge_now` in `machine/local_machine/container.rs`) and volume copy cuts (`cut_volume_copy`);
     - image ingest (`ensure_image_ingest` in `machine/local_machine/container.rs`);
     - a Build's admission (`build.rs:196-201`).
-  - The Update fast path (`machine/local_machine.rs:846-856`, `try_mutation` at `:851`). It takes every update that leaves the name, the public IP and the advertised endpoints unchanged (`:846-848`). That includes labels and the policy fields: `accepts_builds`, `accepts_services`, `accepts_ingress` and build concurrency (`core/crates/ployz-core/src/domain/machine.rs:523-541`). Other updates go through `finish_mutation`.
+  - The Update fast path (`LocalMachine::update` in `machine/local_machine.rs`, which calls `try_mutation` itself). It takes every update that leaves the name, the public IP and the advertised endpoints unchanged. That includes labels and the policy fields: `accepts_builds`, `accepts_services`, `accepts_ingress` and build concurrency (`core/crates/ployz-core/src/domain/machine.rs:523-541`). Other updates go through `finish_mutation`.
 - **`Asker::Plugin`**, for the volume plugin, at any time. Its `admit_mutation` gates:
   - create (`volume_plugin/pool.rs:102`) and mount (`volume_plugin/storage.rs:257`);
   - remove (`volume_plugin/removal.rs:21`) and resize (`volume_plugin/size.rs:28`);
@@ -78,9 +78,9 @@ The model has three askers:
 
 | Caller | Process | Route | When it runs |
 |---|---|---|---|
-| Inspect | daemon | `machine/local_machine.rs:463`, `:512`, through `latest` (`installer/upgrade.rs:109-117`). A `settle` error is logged as "could not read the latest upgrade attempt", and Inspect answers without the attempt (`machine/local_machine.rs:512-520`). | Whenever a client sends Inspect (`machine_api/local.rs:294`). The daemon has no timer for it. Senders include `ployz server ls` (lane 3, below); a Deploy's storage reads (`core/crates/ployz/src/deploy/pipeline.rs:437`, `observe_machine_storage` in `core/crates/ployz/src/cluster.rs`); the SDK's runtime watch (`core/crates/ployz/src/sdk.rs:1491`); a GitHub build (`core/crates/ployz/src/sdk/github_build.rs:303`); and Cloud's enrollment (`dashboard/src/modules/machines/enrollment.server.ts:822`), forget (`dashboard/src/modules/machines/forget-servers.server.ts:92`) and pairing removal (`dashboard/src/modules/machines/pairing-removal.server.ts:384`). |
+| Inspect | daemon | `LocalMachine::inspect` in `machine/local_machine.rs`, through `latest` (`installer/upgrade.rs:109-117`). A `settle` error is logged as "could not read the latest upgrade attempt", and Inspect answers without the attempt (the `Err` arm of `latest` in `LocalMachine::inspect`). | Whenever a client sends Inspect (`inspect` in `machine_api/local.rs`). The daemon has no timer for it. Senders include `ployz server ls` (lane 3, below); a Deploy's storage reads (`core/crates/ployz/src/deploy/pipeline.rs:437`, `observe_machine_storage` in `core/crates/ployz/src/cluster.rs`); the SDK's runtime watch (`core/crates/ployz/src/sdk.rs:1491`); a GitHub build (`core/crates/ployz/src/sdk/github_build.rs:303`); and Cloud's enrollment (`dashboard/src/modules/machines/enrollment.server.ts:822`), forget (`dashboard/src/modules/machines/forget-servers.server.ts:92`) and pairing removal (`dashboard/src/modules/machines/pairing-removal.server.ts:384`). |
 | A resend of the same attempt | daemon | `machine/local_machine/upgrade.rs:27-31`, through `replay` (`installer/upgrade.rs:90-105`), which returns `settle`'s error | The CLI polls every second (`POLL_INTERVAL` and `poll_upgrade` in `core/crates/ployz/src/handlers/server/upgrade.rs`) and stops at the first terminal reply (`:710-711`) or error. Cloud resends while it watches the attempt (`dashboard/src/modules/server-upgrade/server-upgrade.server.ts:288-292`). |
-| Leave | daemon | `depart`, `machine/local_machine.rs:938-961`, through `latest` (`:945`). A `settle` error fails Leave (`:956`). | When a user leaves the Machine. `depart` refuses a live attempt (`:946-953`) and otherwise runs `finish_mutation` (`:959`). |
+| Leave | daemon | `LocalMachine::depart` in `machine/local_machine.rs`, through `latest`. A `settle` error fails Leave (the `Err` arm of `latest` in `depart`). | When a user leaves the Machine. `depart` refuses a live attempt (the `Ok(Some(attempt))` arm) and otherwise runs `finish_mutation`. |
 | Daemon start | daemon | `Daemon::start`, through `reconcile` (`installer/upgrade.rs:349-351`) and `latest` | Once per start, before the daemon serves |
 | A new upgrade request | daemon | `replay` returns None for another id (`installer/upgrade.rs:98-99`); `try_installation` (`machine/local_machine/upgrade.rs:38`); `request_locked`'s `reconcile_locked` (`:185`) | On the next upgrade |
 | `ployzd install` | its own | `install_at`: `try_installation`, then `reconcile_for_install` (`installer/upgrade.rs:353-370`), both in `installer::install_at`, holding the lock through `installer::install_locked` | When an operator runs it |
@@ -115,8 +115,8 @@ A daemon start that loses the lock needs a second rare event after the daemon's 
 
 **What a user sees while the daemon serves beside the marker.** Each item below answers "a Ployz installation or upgrade is active", unless it says otherwise.
 - **`ployz server set` on this Machine.**
-  - The CLI sends UpdateMachine (`core/crates/ployz/src/handlers/server.rs:1017-1024`). A label or policy edit reaches the fast path's `try_mutation` (`machine/local_machine.rs:851`), and other edits reach `finish_mutation`.
-  - The daemon maps Busy to Conflict (`machine_api/local.rs:1069-1074`).
+  - The CLI sends UpdateMachine (`core/crates/ployz/src/handlers/server.rs:1017-1024`). A label or policy edit reaches the fast path's `try_mutation` (in `LocalMachine::update`), and other edits reach `finish_mutation`.
+  - The daemon maps Busy to Conflict (the `Admission(Busy)` arm of the error mapping in `machine_api/local.rs`).
   - The CLI returns the `RpcError` (`core/crates/ployz/src/handlers/server.rs:1057`) as `Failure::command` (`core/crates/ployz/src/failure.rs`, its `Display` impl prints the message, and `report` builds the `--json` error).
   - `ployz server set --accepts-ingress=true` sends Inspect first (`ingress_off`, `core/crates/ployz/src/handlers/server.rs:1178-1190`), and that clears the marker before the update.
 - **Enroll, register, forget and Leave.** Leave runs its own `settle` first, which clears the marker unless its `try_installation` loses to another lock holder.
@@ -130,8 +130,8 @@ A daemon start that loses the lock needs a second rare event after the daemon's 
 
 **What only a persistent Io adds.** Lane 3 saw the poll, Inspect and Cloud items while the marker was immutable (18:31:39 to 18:38:54 in its log):
 - **The CLI's upgrade poll reports a failure for an upgrade that succeeded.** The poll is a resend, and its `replay` reaches `settle` (`installer/upgrade.rs:90-105`). `settle` wins `try_installation`, and `clear_active` returns the Io (`:261-262`), which comes back through `request_upgrade` (`machine/local_machine/upgrade.rs:27-31`). The CLI prints "error: Machine mutation admission failed" (`mutation.rs:29`) with its cause, and exits 3. That is `PARTIAL_EXIT` (`core/crates/ployz/src/ui/exit.rs:11-12`), which a run gets while a Server's result is unknown (`core/crates/ployz/src/handlers/server/upgrade.rs:543-547`). It needs the poll's own `clear_active` (`installer/upgrade.rs:259`) to fail too. After a one-off Io at `:344`, the poll's next resend clears the marker and gets the terminal receipt.
-- **Inspect answers without the attempt.** `ployz server ls` exits 0 with no error, and the daemon logs "could not read the latest upgrade attempt" for each Inspect (`machine/local_machine.rs:512-520`). The marker stays.
-- **Leave fails** with the Io (`machine/local_machine.rs:945`, `:956`). Lane 3 did not run Leave.
+- **Inspect answers without the attempt.** `ployz server ls` exits 0 with no error, and the daemon logs "could not read the latest upgrade attempt" for each Inspect (the `Err` arm of `latest` in `LocalMachine::inspect`). The marker stays.
+- **Leave fails** with the Io (`latest` in `LocalMachine::depart`). Lane 3 did not run Leave.
 - **A new upgrade fails** with the Io: `request_locked` runs `reconcile_locked` on the finished receipt (`installer/upgrade.rs:185`), whose `clear_active` returns it (`:378`). Lane 3 ran its new upgrade after it removed the pin.
 - **A daemon restart never serves**, as in the route table. Lane 3's restart and kill ran after it removed the pin, so their timings are one-off numbers.
 - **A Cloud policy change is lost.** Lane 3's toggle got Conflict on the first attempt and all 3 retries, and the page read the policy back unchanged with no error. A control click after the window closed took effect.
@@ -279,7 +279,7 @@ What the fix keeps, and what the later PR must decide:
 - **Older readers.** A release before the fix still refuses on the marker a stopped writer left, until a settling reader clears it (`the_fix_leaves_older_readers_their_window`). The model offers the older reader at every state, as the reader the Stable promise keeps. It does not show which mix of releases on one Machine produces it.
 - **Read and decode failures.** With the marker present, a receipt that cannot be read or decoded must refuse, as `try_mutation` does on marker metadata errors today (`mutation.rs:64-67`). The model has no such error.
 - **A marker naming another attempt.** Refuse, as today, because the receipt cannot say the marker's attempt ended. `request_locked` writes a new attempt's receipt only after `active` found no marker (`installer/upgrade.rs:191`, `:227`). `clear_active` leaves a marker naming another id in place (`mutation.rs:117`). So that state is permanent today: no reader clears it, and every new request refuses at `:191`. The fix PR may want an operator path out. The model has one attempt, so it has no such state.
-- **A persistent Io.** With the fix, admission reads the terminal receipt beside the marker and admits, so mutations no longer refuse. But every settling caller still runs its own `clear_active`, and each still fails with the Io: Inspect's attempt read (`machine/local_machine.rs:512-520`), Leave (`:956`), a new upgrade (`installer/upgrade.rs:185`, `:378`), the poll (`:259`), and daemon start, which exits before it serves (in `Daemon::start`).
+- **A persistent Io.** With the fix, admission reads the terminal receipt beside the marker and admits, so mutations no longer refuse. But every settling caller still runs its own `clear_active`, and each still fails with the Io: Inspect's attempt read (the `Err` arm of `latest` in `LocalMachine::inspect`), Leave (`latest` in `LocalMachine::depart`), a new upgrade (`installer/upgrade.rs:185`, `:378`), the poll (`:259`), and daemon start, which exits before it serves (in `Daemon::start`).
 - **Layering.** The fix makes `MutationGate` (`mutation.rs`) decode the installer's `StoredAttempt` (`installer/upgrade.rs`). That is a layering choice for the PR that ships it.
 - **Asking systemd.** A shape that asked systemd for the worker's state at admission could end the dead-attempt window. That leans on systemd as bet 9 asks ("systemd for lifecycle", `core/DESIGN.md:207-208`), so it crosses none of the bet's red flags. Its cost is a `systemctl` spawn on every admission, on the hot path.
 
@@ -378,14 +378,14 @@ The other processes can step between any two reads, not only at an await. Each r
 - **`try_installation`, the re-read and `reconcile_locked`** (`:268-274`). These are one step. The lock keeps every writer out, and the model starts a unit only under the lock (above).
 - **`reconcile_locked`'s reads and its Interrupted write.** These are one step, followed by a separate `clear_active` step. A waiting unit can die between `worker_state` and the return, and `reconcile_locked` then returns without a write, as it would have anyway.
 - **The worker's lock and receipt read** (`:306-307`). These are one step, and its NotActive return (`:309`) is another.
-- **`depart`'s check and its `try_mutation`** (`machine/local_machine.rs:946-953`, `:959`). These are separate steps, and the check reads `settle`'s return, not the receipt again.
+- **`depart`'s check and its `try_mutation`** (in `LocalMachine::depart`). These are separate steps, and the check reads `settle`'s return, not the receipt again.
 - **A new request's `replay`** (`installer/upgrade.rs:95-99`). It returns None for another id whatever the receipt holds, so the model starts at its `try_installation`.
 
 An RPC cancelled while the daemon lives drops its future at an await. In `settle` those are `worker_state` (`:265`) and `reconcile_locked` (`:274`), whose only await is its own `worker_state` (`:381`). So a dropped `settle` stops before any write, like a reader that never takes its next step, and the model has no separate action for it. The request task is spawned (`:156-158`), so a cancelled request RPC does not stop it (`cancelled-launch`, `installer/upgrade/tests.rs:189-201`).
 
 Out of scope:
 - a second attempt, and the same-id request path (`:178-183`);
-- the in-process admission lock that `finish_mutation` takes before `try_mutation` (`machine/local_machine.rs:342`);
+- the in-process admission lock that `finish_mutation` takes before `try_mutation` (`admission_lock` in `finish_mutation`, `machine/local_machine.rs`);
 - `request_locked`'s already-installed path (`:216`) and release resolution;
 - Io from the receipt writes (`installer/upgrade.rs:227`, `:316`, `:343`, `:392`) and from `mark_active` (`:228`). A terminal write that fails at `:343` leaves Running and the marker: the dead-attempt state;
 - receipt read or decode errors, and `worker_state` errors (`WorkerEvidence`), which `inspection-unknown` pins (a case of `run_contract_case` in `installer/upgrade/tests.rs`);

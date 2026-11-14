@@ -5,11 +5,11 @@
 //! A bare `:n` is a line of core/crates/ployzd/src/network/linux/docker_network.rs.
 //!
 //! What hosts each step. One `ployzd` process runs on the Machine. Each daemon start runs
-//! `NetworkPlane::start` (core/crates/ployzd/src/daemon.rs:274), whose `ensure_docker_network`
+//! `NetworkPlane::start` (called from `start_planes` in core/crates/ployzd/src/daemon.rs), whose `ensure_docker_network`
 //! (:516-553) loads both notes (:540-541), readdresses the bridge when its IPv6 shape is wrong
 //! (:571-578), pins its members (:545) and starts the members written down (:546). The Machine
 //! API is built and served only after `NetworkPlane::start` returns
-//! (core/crates/ployzd/src/daemon.rs:347-372, :411-417), so the operator's own steps on a
+//! (`MachineApi::builder` and the `machine_api` serve arm in `start_planes`, core/crates/ployzd/src/daemon.rs), so the operator's own steps on a
 //! Container (`ContainerStep::Start`, `Stop` and `Hold`,
 //! core/crates/ployzd/src/machine/local_machine/container.rs, `converge_now`) run only between daemon
 //! starts. Docker's restart policy acts at any step. A crash ends the process: the in-memory
@@ -3064,9 +3064,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
         Branch::Updated {
             kept: false,
             write: Write::Unchanged,
-        } => "Stopped::start keeps nothing, and no stopped note stands to remove (stopped.rs:80-84); ensure_docker_network returns, and the Machine API serves (core/crates/ployzd/src/daemon.rs:347-372)".to_owned(),
+        } => "Stopped::start keeps nothing, and no stopped note stands to remove (stopped.rs:80-84); ensure_docker_network returns, and the Machine API serves (`MachineApi::builder` in `start_planes`, core/crates/ployzd/src/daemon.rs)".to_owned(),
         Branch::Updated { kept, write } => format!(
-            "Stopped::start {} the stopped note (stopped.rs:80-93): {}; ensure_docker_network returns, and the Machine API serves (core/crates/ployzd/src/daemon.rs:347-372)",
+            "Stopped::start {} the stopped note (stopped.rs:80-93): {}; ensure_docker_network returns, and the Machine API serves (`MachineApi::builder` in `start_planes`, core/crates/ployzd/src/daemon.rs)",
             if kept { "rewrites" } else { "removes" },
             write_words(write, if kept { "the rewrite" } else { "the removal" })
         ),
