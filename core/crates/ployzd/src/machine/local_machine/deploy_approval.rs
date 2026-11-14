@@ -1,17 +1,19 @@
 //! Deploy approvals under Device enforcement: an Operator's new Container is created only
 //! when its spec matches a digest a trusted key approved, and the approval also admits the
-//! Deploy's steps on Containers in its Namespace.
+//! Deploy's steps on Containers in its Namespace. A session's Container stays inside its own
+//! Environment: its Sealed values, and the Ingress Hostnames it claims.
 
 use std::time::Instant;
 
 use ployz_core::{
-    ContainerKind, ContainerNow, ContainerWant, ResolvedServiceSpec, RunTarget, Sealing,
+    ContainerKind, ContainerNow, ContainerWant, Namespace, ResolvedServiceSpec, RunTarget, Sealing,
     ServiceName,
     authority::{
-        AuthorityRefusal, DeployApproval, DeployApproved, DeployFacts, Purpose, RestartStep,
-        Signed, Timestamp,
+        Approver, AuthorityRefusal, DeployApproval, DeployApproved, DeployFacts, Purpose,
+        RestartStep, Signed, Timestamp,
         deploy::{self, Creation},
     },
+    explicit_ingress_hosts, hostname_owners,
 };
 
 use super::{Error, LocalMachine, restart_approval::pinned};
@@ -23,9 +25,10 @@ impl LocalMachine {
     /// Service Container is not consumed: retries and replicas repeat it.
     ///
     /// # Errors
-    /// Returns [`Error::DeployRefused`] naming what the approval lacks, and
+    /// Returns [`Error::DeployRefused`] naming what the approval lacks,
+    /// [`Error::HostnameOwned`] for a session's claim on another Environment's hostname, and
     /// [`Error::ApprovalRecord`] when the consumption log cannot be written.
-    pub(super) fn admit_operator_creation(
+    pub(super) async fn admit_operator_creation(
         &self,
         want: &ContainerWant,
         approval: Option<&Signed<DeployApproval>>,
@@ -72,6 +75,12 @@ impl LocalMachine {
         )
         .map_err(refused)?;
         admit_sealed_scope(&approved, &new.slot.service, &new.resolved_spec)?;
+        if matches!(approved.by, Approver::Browser { .. })
+            && new.slot.kind == ContainerKind::ServiceContainer
+        {
+            self.admit_session_hostnames(&new.slot.namespace, &new.resolved_spec)
+                .await?;
+        }
         if new.slot.kind == ContainerKind::PreDeployHook {
             self.approvals.consume_hook(
                 &approved.body,
@@ -156,6 +165,41 @@ impl LocalMachine {
             identity,
         );
         Ok(pinned(want, observed.container_id))
+    }
+
+    /// Refuse a session's Service Container that claims an Ingress Hostname whose owner,
+    /// from this Machine's view of every Service Container, is in another Namespace. The
+    /// oldest claim owns a hostname, so a newer claim admitted beside the owner's would take
+    /// it once the owner's next Deploy replaced its Containers. A Device may still move a
+    /// hostname on purpose. A view this Machine can't read refuses the claim.
+    ///
+    /// # Errors
+    /// Returns [`Error::HostnameOwned`] naming the hostname and its owner,
+    /// [`Error::ClusterUnavailable`] or [`Error::Cluster`] when the view can't be read.
+    async fn admit_session_hostnames(
+        &self,
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        let mut claimed = explicit_ingress_hosts(&spec.ports).peekable();
+        if claimed.peek().is_none() {
+            return Ok(());
+        }
+        let observations = self.replicated()?.containers().await?.observations;
+        let owners = hostname_owners(&observations);
+        let Some((hostname, owner)) = claimed.find_map(|hostname| {
+            owners
+                .get(hostname)
+                .filter(|owner| &owner.namespace != namespace)
+                .map(|owner| (hostname.clone(), owner.clone()))
+        }) else {
+            return Ok(());
+        };
+        tracing::warn!(
+            service = %spec.name,
+            "refused deploy in {namespace}: hostname {hostname} belongs to {owner}",
+        );
+        Err(Error::HostnameOwned { hostname, owner })
     }
 
     pub(super) fn cluster_key(

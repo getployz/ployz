@@ -217,6 +217,15 @@ pub enum Error {
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
     #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
+    /// A session's creation claims an Ingress Hostname another Namespace owns. The refusal
+    /// names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
+    #[error(
+        "{hostname} belongs to {owner} in another environment, so a passkey approval can't take it. Remove it there first, or run ployz deploy from an approved device."
+    )]
+    HostnameOwned {
+        hostname: ployz_core::IngressHost,
+        owner: ployz_core::QualifiedService,
+    },
     /// A rule build's grant failed a check before anything opened. The refusal names
     /// [`ployz_core::BUILD_GRANT_RULE_CAPABILITY`] in its details.
     #[error("This Server refused the rule build's grant: {0}")]
