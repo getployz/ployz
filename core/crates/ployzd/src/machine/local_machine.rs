@@ -14,9 +14,9 @@ use ployz_core::{
     Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine,
     MachineDetails, MachineId, MachineIdentity, MachineList, MachineName, MachineObservation,
     MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
-    PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError, RpcErrorCode,
-    RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY, SelectedEndpoint,
-    StorageDeparture, UpdateMachineRequest, synthesize_membership,
+    PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
+    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
+    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -206,8 +206,13 @@ pub enum Error {
     #[error("push target {0}")]
     InvalidPushTarget(&'static str),
     /// Device enforcement refused an Operator's restart step.
-    #[error("{}", restart_approval::refusal_text(.0))]
+    #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
     RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
+    /// A browser key's restart or start of a Container that reaches the host.
+    #[error(
+        "This service reaches the server itself, so only an approved device can restart or start it. Run ployz service restart on that device."
+    )]
+    RestartReachesHost,
     /// Device enforcement refused an Operator's creation, or its step under a deploy
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
     #[error("{}", deploy_approval::refusal_text(.0))]

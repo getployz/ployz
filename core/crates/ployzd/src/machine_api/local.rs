@@ -1460,14 +1460,16 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
             ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
         ),
-        LocalMachineError::RestartRefused(_) => Err(ployz_core::rpc::hinted_status(
-            tonic::Code::PermissionDenied,
-            &error,
-            serde_json::json!({
-                "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
-                "next": "ployz service restart from an approved device",
-            }),
-        )),
+        LocalMachineError::RestartRefused(_) | LocalMachineError::RestartReachesHost => {
+            Err(ployz_core::rpc::hinted_status(
+                tonic::Code::PermissionDenied,
+                &error,
+                serde_json::json!({
+                    "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
+                    "next": "ployz service restart from an approved device",
+                }),
+            ))
+        }
         LocalMachineError::DeployRefused(_) => Err(ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,
             &error,
