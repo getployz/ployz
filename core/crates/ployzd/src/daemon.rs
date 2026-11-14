@@ -1513,21 +1513,16 @@ mod tests {
         assert_eq!(persisted.phase(), ployz_core::LocalMachinePhase::Resetting);
     }
 
-    #[tokio::test]
-    async fn participation_gate_waits_for_catch_up_and_obeys_shutdown() {
-        let root = TestDir::new("ployzd-participation-gate");
+    fn gate_owner(name: &str) -> (TestDir, crate::machine::RecordOwner) {
+        let root = TestDir::new(name);
         let owner = crate::machine::RecordOwner::spawn(
             crate::machine::LocalMachineStore::open(root.0.join("data")).unwrap(),
         )
         .unwrap();
-        let shutdown = CancellationToken::new();
-        let waiting = wait_for_participation(owner.watch(), shutdown);
-        tokio::pin!(waiting);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
-                .await
-                .is_err()
-        );
+        (root, owner)
+    }
+
+    async fn participate(owner: &crate::machine::RecordOwner) {
         owner
             .mutate(|store| {
                 store.enroll(ployz_core::EnrollRequest {
@@ -1548,6 +1543,20 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn participation_gate_waits_for_catch_up_and_obeys_shutdown() {
+        let (_root, owner) = gate_owner("ployzd-participation-gate");
+        let shutdown = CancellationToken::new();
+        let waiting = wait_for_participation(owner.watch(), shutdown);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+                .await
+                .is_err()
+        );
+        participate(&owner).await;
         assert!(waiting.await.unwrap());
 
         let records = owner.watch();
@@ -1555,5 +1564,59 @@ mod tests {
         shutdown.cancel();
         drop(owner);
         assert!(!wait_for_participation(records, shutdown).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn participation_gate_prefers_shutdown_over_a_participating_record() {
+        let (_root, owner) = gate_owner("ployzd-participation-gate-shutdown");
+        participate(&owner).await;
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        assert!(
+            !wait_for_participation(owner.watch(), shutdown)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn participation_gate_answers_at_once_for_a_participating_record() {
+        let (_root, owner) = gate_owner("ployzd-participation-gate-now");
+        participate(&owner).await;
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            wait_for_participation(owner.watch(), CancellationToken::new()),
+        )
+        .await
+        .expect("a participating record needs no wait");
+        assert!(answer.unwrap());
+    }
+
+    #[tokio::test]
+    async fn participation_gate_ends_false_when_shutdown_arrives_while_waiting() {
+        let (_root, owner) = gate_owner("ployzd-participation-gate-cancel");
+        let shutdown = CancellationToken::new();
+        let waiting = tokio::spawn(wait_for_participation(owner.watch(), shutdown.clone()));
+        tokio::task::yield_now().await;
+        shutdown.cancel();
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+            .await
+            .expect("shutdown ends the wait")
+            .unwrap();
+        assert!(!answer.unwrap());
+    }
+
+    #[tokio::test]
+    async fn participation_gate_ends_false_when_the_record_owner_stops() {
+        let (_root, owner) = gate_owner("ployzd-participation-gate-owner");
+        let records = owner.watch();
+        drop(owner);
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            wait_for_participation(records, CancellationToken::new()),
+        )
+        .await
+        .expect("a stopped record owner ends the wait");
+        assert!(!answer.unwrap());
     }
 }
