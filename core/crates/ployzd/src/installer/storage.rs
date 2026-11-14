@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-use crate::machine_pool::DEVICE_BACKED_POOL_NAME;
+use crate::machine_pool::{DEVICE_BACKED_POOL_NAME, DeviceMarker};
 use ployz_core::StoragePreparation;
 use ployz_core::probe_document::{OsRelease, Virtualization};
 
@@ -47,7 +47,7 @@ pub(super) fn prepare_storage(
                 stage: "resolve ZFS device",
                 source,
             })?;
-            if paths.device_pool_marker.with_extension("").exists() {
+            if paths.device_pool.backing().exists() {
                 return Err(refuse(
                     STAGE,
                     "a file-backed Machine Pool already exists; refusing to replace it with a device Pool",
@@ -77,11 +77,10 @@ pub(super) fn prepare_storage(
 }
 
 fn remember_device_pool(paths: &InstallPaths) -> Result<(), Error> {
-    write_file_atomically(
-        &paths.device_pool_marker,
-        crate::machine_pool::CONFIRMED_DEVICE_POOL_MARKER,
-        "remember device Machine Pool",
-    )
+    paths.device_pool.confirm().map_err(|source| Error::Io {
+        stage: "remember device Machine Pool",
+        source,
+    })
 }
 
 fn create_device_pool(device: &Path, assessed: &Path, paths: &InstallPaths) -> Result<(), Error> {
@@ -123,7 +122,7 @@ fn zpool_stdout(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Result<Str
 }
 
 fn reconcile_device_pool_marker(paths: &InstallPaths) -> Result<(), Error> {
-    if !paths.device_pool_marker.exists() {
+    if !paths.device_pool.marker().exists() {
         return Ok(());
     }
     let imported = zpool_stdout(["list", "-H", "-o", "name"])?;
@@ -135,12 +134,12 @@ fn reconcile_device_pool_marker(paths: &InstallPaths) -> Result<(), Error> {
     {
         return Ok(());
     }
-    let marker = fs::read_to_string(&paths.device_pool_marker).map_err(|source| Error::Io {
+    let marker = paths.device_pool.read().map_err(|source| Error::Io {
         stage: "read device Machine Pool ownership",
         source,
     })?;
-    let backing = paths.device_pool_marker.with_extension("");
-    if marker == "ployz-device\n" && backing.exists() {
+    let backing = paths.device_pool.backing();
+    if marker == DeviceMarker::Unconfirmed && backing.exists() {
         let labels = zpool_stdout([OsStr::new("import"), OsStr::new("-d"), backing.as_os_str()])?;
         let labels = crate::machine_pool::importable_names(&labels)
             .map_err(|error| refuse(STAGE, error.to_string()))?;
@@ -149,7 +148,7 @@ fn reconcile_device_pool_marker(paths: &InstallPaths) -> Result<(), Error> {
                 .lines()
                 .any(|name| name == crate::machine_pool::ROOT_BACKED_POOL_NAME)
         {
-            return fs::remove_file(&paths.device_pool_marker).map_err(|source| Error::Io {
+            return paths.device_pool.discard().map_err(|source| Error::Io {
                 stage: "remove stale device Machine Pool marker",
                 source,
             });

@@ -256,7 +256,7 @@ fn named_storage_retries_only_the_same_unambiguous_device_pool() {
         let result = prepare_storage(&storage, &paths);
         if case == "same" {
             result.unwrap();
-            assert!(paths.device_pool_marker.exists());
+            assert!(paths.device_pool.marker().exists());
         } else {
             let failure = result.unwrap_err().to_string();
             let expected = match case.as_str() {
@@ -266,7 +266,7 @@ fn named_storage_retries_only_the_same_unambiguous_device_pool() {
                 _ => unreachable!(),
             };
             assert!(failure.contains(expected), "{failure}");
-            assert!(!paths.device_pool_marker.exists());
+            assert!(!paths.device_pool.marker().exists());
         }
         fs::write(root.join("child-completed"), case).unwrap();
         return;
@@ -1368,10 +1368,10 @@ fn device_creation_commits_ownership_only_after_confirmation() {
         let result = create_device_pool(&device, &assessed, &paths);
         if case == "success" {
             result.unwrap();
-            assert!(paths.device_pool_marker.exists());
+            assert!(paths.device_pool.marker().exists());
         } else {
             assert!(result.is_err());
-            assert!(!paths.device_pool_marker.exists());
+            assert!(!paths.device_pool.marker().exists());
         }
         fs::write(root.join("child-completed"), case).unwrap();
         return;
@@ -1413,15 +1413,15 @@ fn plain_zfs_reconciles_stale_ownership_only_with_proven_file_pool_evidence() {
         match case.as_str() {
             "retained-file" => {
                 result.unwrap();
-                assert!(!paths.device_pool_marker.exists());
+                assert!(!paths.device_pool.marker().exists());
             }
             "exported-device" | "imported-device" => {
                 result.unwrap();
-                assert!(paths.device_pool_marker.exists());
+                assert!(paths.device_pool.marker().exists());
             }
             _ => {
                 assert!(result.is_err());
-                assert!(paths.device_pool_marker.exists());
+                assert!(paths.device_pool.marker().exists());
             }
         }
         fs::write(root.join("child-completed"), case).unwrap();
@@ -1437,7 +1437,11 @@ fn plain_zfs_reconciles_stale_ownership_only_with_proven_file_pool_evidence() {
     ] {
         let root = fixture(case);
         fs::create_dir(root.path().join("commands")).unwrap();
-        fs::write(root.path().join("machine-pool.device"), "ployz-device\n").unwrap();
+        fs::write(
+            root.path().join("machine-pool.device"),
+            crate::machine_pool::UNCONFIRMED_DEVICE_POOL_MARKER,
+        )
+        .unwrap();
         if case == "owned-with-file" {
             fs::write(
                 root.path().join("machine-pool.device"),
@@ -1484,11 +1488,11 @@ fn named_storage_retry_imports_only_exported_pool_on_the_requested_disk() {
         let result = prepare_storage(&storage, &paths);
         if matches!(case.as_str(), "exported" | "unloaded") {
             result.unwrap();
-            assert!(paths.device_pool_marker.exists());
+            assert!(paths.device_pool.marker().exists());
             assert!(root.join("imported").exists());
         } else {
             assert!(result.is_err());
-            assert!(!paths.device_pool_marker.exists());
+            assert!(!paths.device_pool.marker().exists());
             assert!(!root.join("imported").exists());
         }
         fs::write(root.join("child-completed"), case).unwrap();

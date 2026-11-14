@@ -4,7 +4,7 @@
 //! :40-73) checks the host, runs `zpool create ployz-device` (`create_device_pool`,
 //! :96-106), checks the Pool with `existing_device_pool` (:107-112), and only then records
 //! ownership with `remember_device_pool` (:113), an atomic write of the CONFIRMED marker
-//! (:77-83). `install_at` holds the installation gate's exclusive guard throughout
+//! (`DevicePoolFiles::confirm` in machine_pool.rs). `install_at` holds the installation gate's exclusive guard throughout
 //! (`install_at` and `install_locked` in installer/mod.rs). The plugin's `VolumeStorage::create`
 //! (volume_plugin/pool.rs:96-124) takes that gate's shared guard (`admit_mutation`,
 //! :102, volume_plugin/storage.rs:115-125), then the Pool mutation lock (pool.rs:103), then
@@ -116,7 +116,7 @@ struct Host {
     /// (`MachineLayout::machine_pool_file`, machine_layout.rs:112-116).
     root: bool,
     /// `/var/lib/ployz-machine-pool.device` holds CONFIRMED (`MachineLayout::device_pool_marker`,
-    /// machine_layout.rs:118-122; machine_pool.rs `CONFIRMED_DEVICE_POOL_MARKER`).
+    /// machine_layout.rs:118-122; machine_pool.rs `DevicePoolFiles` and `CONFIRMED_DEVICE_POOL_MARKER`).
     marker: bool,
     /// The fix's intent file names the disk. Nothing in the code as it is writes one.
     intent: bool,
@@ -298,7 +298,7 @@ enum Action {
     ZpoolCreate,
     /// `create_device_pool`'s `existing_device_pool` (installer/storage.rs:107-112).
     Verify,
-    /// `remember_device_pool` (installer/storage.rs:77-83, :113). `install_locked` then
+    /// `remember_device_pool` (installer/storage.rs, :113). `install_locked` then
     /// installs the binaries and units and enables the plugin's socket
     /// (`install_binaries`, `install_units` and `activate_units` in installer/mod.rs, installer/host.rs:273), which this step includes.
     Record,
