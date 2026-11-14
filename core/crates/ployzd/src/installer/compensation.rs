@@ -186,15 +186,15 @@ async fn restore(
     units: &UnitSnapshot,
 ) -> Result<(), InstallError> {
     super::release::restore_previous(paths)?;
-    // A unit file that would not go back must not leave the restored daemon stopped: recovery
-    // still runs, and the failure is reported once the daemon is back.
+    // A unit file that would not go back, or a reload that failed, must not leave the restored
+    // daemon stopped: recovery still runs, and the failure is reported once the daemon is back.
     let (changed, units_restored) = units.restore();
-    if changed {
-        let reloaded = super::systemctl("reload systemd units", ["daemon-reload"]);
-        if units_restored.is_ok() {
-            reloaded?;
-        }
-    }
+    let reloaded = if changed {
+        super::systemctl("reload systemd units", ["daemon-reload"]).map(drop)
+    } else {
+        Ok(())
+    };
+    let units_restored = units_restored.and(reloaded);
     // A crash loop exhausts a unit's start limit, which would refuse the restart. `reset-failed`
     // fails on a unit that is not loaded, so it only names units known to be.
     super::systemctl(
