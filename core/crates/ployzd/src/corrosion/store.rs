@@ -454,10 +454,6 @@ impl ReplicatedStore {
         }
     }
 
-    pub(crate) fn authorize(&mut self, owner: RecordOwner) {
-        self.authority = Some(owner);
-    }
-
     pub(crate) fn with_authority(mut self, owner: RecordOwner) -> Self {
         self.authority = Some(owner);
         self

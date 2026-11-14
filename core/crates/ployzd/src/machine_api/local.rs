@@ -18,12 +18,12 @@ use tonic::{Request, Response, Status};
 
 use super::provenance::Provenance;
 use crate::{
-    corrosion::{AdminClient, CertificateMaterial, ReplicatedStore},
+    corrosion::{CertificateMaterial, ReplicatedStore},
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner,
-        RecoveryError, SealingError, StoreError,
+        HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord, RecoveryError,
+        SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -104,13 +104,20 @@ impl MachineService {
         )
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_cluster(
-        owner: RecordOwner,
-        cluster: Option<(ReplicatedStore, AdminClient)>,
+        owner: crate::machine::RecordOwner,
+        cluster: Option<(ReplicatedStore, crate::corrosion::AdminClient)>,
     ) -> Self {
+        Self::over(LocalMachine::new(owner).with_cluster(cluster))
+    }
+
+    /// A Machine API service over `local`, with the defaults a builder starts from.
+    #[must_use]
+    pub fn over(local: LocalMachine) -> Self {
         Self {
-            local: LocalMachine::new(owner).with_cluster(cluster),
+            local,
             observe: crate::observe::ObserveClient::new(
                 MachineLayout::production().observe_socket(),
             ),
@@ -152,21 +159,31 @@ impl MachineService {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(super) fn with_cluster_option(
         mut self,
-        cluster: Option<(ReplicatedStore, AdminClient)>,
+        cluster: Option<(ReplicatedStore, crate::corrosion::AdminClient)>,
     ) -> Self {
         self.local = self.local.with_cluster(cluster);
         self
     }
 
+    /// Serve through `local` itself, so everything else cloned from it shares its state.
+    #[must_use]
+    pub(super) fn with_local(mut self, local: LocalMachine) -> Self {
+        self.local = local;
+        self
+    }
+
+    #[cfg(test)]
     #[must_use]
     pub fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
         self.local = self.local.with_containers(containers);
         self
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn with_volume_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
         self.local = self.local.with_plugin(plugin);

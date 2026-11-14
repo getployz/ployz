@@ -29,8 +29,8 @@ use super::{
 
 use crate::{
     corrosion::{
-        AdminClient, ClusterSealing, DeclaredDoors, MembershipState, ReplicatedStore,
-        membership_states_by_address,
+        AdminClient, ClusterContext, ClusterSealing, DeclaredDoors, MembershipState,
+        ReplicatedStore, membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity, host_facts,
@@ -136,12 +136,6 @@ pub(crate) use teardown::HeldTeardown;
 mod upgrade;
 mod volume_approval;
 pub(crate) use volume_approval::{Admitted, CopyStep};
-
-#[derive(Clone)]
-struct ClusterContext {
-    replicated: ReplicatedStore,
-    admin: AdminClient,
-}
 
 /// Entry-local admin membership, RTT samples, and selected endpoints.
 ///
@@ -521,18 +515,31 @@ impl LocalMachine {
     }
 
     #[must_use]
-    pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
-        self.cluster = cluster.map(|(replicated, admin)| ClusterContext {
-            replicated: replicated.with_authority(self.owner.clone()),
-            admin,
-        });
+    pub(crate) fn with_cluster_context(mut self, cluster: Option<ClusterContext>) -> Self {
+        self.cluster = cluster;
         self
+    }
+
+    /// The Cluster `replicated` and `admin` reach, answering for this Machine's record.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_cluster(self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
+        let owner = self.owner.clone();
+        self.with_cluster_context(
+            cluster.map(|(replicated, admin)| ClusterContext::new(replicated, admin, owner)),
+        )
     }
 
     #[must_use]
     pub(crate) fn with_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
         self.containers = containers;
         self
+    }
+
+    /// Whether `other` keeps the creations that settled in the same place this one does.
+    #[cfg(test)]
+    pub(crate) fn shares_settled_creations_with(&self, other: &Self) -> bool {
+        self.settled.is_shared_with(&other.settled)
     }
 
     pub(crate) fn has_cluster(&self) -> bool {
