@@ -8,9 +8,9 @@ use std::{
 use bollard::query_parameters::EventsOptionsBuilder;
 use futures_util::StreamExt;
 use ployz_core::{
-    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyRole, DockerVolume,
-    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, ResolvedServiceSpec,
-    VolumeInventory,
+    CADDY_ADMIN_ENV, ContainerId, ContainerKind, ContainerObservation, CopyPlace, DockerVolume,
+    DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase, ProvisionedCopy,
+    ResolvedServiceSpec, VolumeInventory,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -482,17 +482,15 @@ fn observe_copies(
     copies: &std::collections::BTreeMap<DockerVolumeName, ployz_core::ProvisionedCopy>,
 ) {
     for volume in volumes.iter_mut() {
-        if let DockerVolumeStorageObservation::Provisioned {
-            role, slot_role, ..
-        } = &mut volume.storage
-        {
-            let copy = copies.get(&volume.id.name);
-            *role = copy.map(|copy| copy.role);
-            *slot_role = copy.and_then(|copy| copy.slot_role);
-        }
+        volume
+            .storage
+            .set_copy_place(copies.get(&volume.id.name).map(ProvisionedCopy::place));
     }
     for (name, copy) in copies {
-        if copy.role != CopyRole::Slot || volumes.iter().any(|volume| volume.id.name == *name) {
+        let place @ CopyPlace::Slot(_) = copy.place() else {
+            continue;
+        };
+        if volumes.iter().any(|volume| volume.id.name == *name) {
             continue;
         }
         let (Ok(mountpoint), Some(bound_bytes)) = (
@@ -508,13 +506,12 @@ fn observe_copies(
             },
             options: Default::default(),
             labels: Default::default(),
-            storage: DockerVolumeStorageObservation::Provisioned {
+            storage: DockerVolumeStorageObservation::provisioned(
                 mountpoint,
                 bound_bytes,
-                used_bytes: copy.used_bytes,
-                role: Some(CopyRole::Slot),
-                slot_role: copy.slot_role,
-            },
+                copy.used_bytes,
+                Some(place),
+            ),
         });
     }
 }
@@ -1313,7 +1310,82 @@ mod tests {
     }
 
     #[test]
+    fn a_slots_recorded_role_reaches_its_observation_listed_or_not() {
+        use ployz_core::{CopyPlace, DockerVolumeStorageObservation::Provisioned, SlotRole};
+        let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let name = |name: &str| DockerVolumeName::parse(name).unwrap();
+        let maximum_bytes = ployz_core::ProvisionedVolumeMaximumBytes::new(
+            std::num::NonZeroU64::new(1024).unwrap(),
+        );
+        let listed = |volume: &str| DockerVolume {
+            id: ployz_core::DockerVolumeId {
+                machine_id,
+                name: name(volume),
+            },
+            options: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            storage: Provisioned {
+                mountpoint: ployz_core::MachinePath::parse(format!(
+                    "/var/lib/ployz-volumes/{volume}"
+                ))
+                .unwrap(),
+                bound_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+                used_bytes: 0,
+                role: None,
+                slot_role: None,
+            },
+        };
+        let copy =
+            |place, used_bytes| ployz_core::ProvisionedCopy::new(place, maximum_bytes, used_bytes);
+        let copies = BTreeMap::from([
+            (name("kept"), copy(CopyPlace::Writer, 5)),
+            (
+                name("old"),
+                copy(CopyPlace::Slot(Some(SlotRole::OldCopy)), 0),
+            ),
+            (
+                name("mirrored"),
+                copy(CopyPlace::Slot(Some(SlotRole::Mirror)), 3),
+            ),
+            (name("unmarked"), copy(CopyPlace::Slot(None), 4)),
+        ]);
+        let mut volumes = vec![listed("kept"), listed("old")];
+
+        observe_copies(&machine_id, &mut volumes, &copies);
+
+        let pair = |volume: &DockerVolume| match &volume.storage {
+            Provisioned {
+                role,
+                slot_role,
+                used_bytes,
+                ..
+            } => (*role, *slot_role, *used_bytes),
+            other => panic!("not provisioned: {other:?}"),
+        };
+        let seen: Vec<_> = volumes
+            .iter()
+            .map(|volume| (volume.id.name.to_string(), pair(volume)))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("kept".to_owned(), (Some(CopyRole::Writer), None, 0)),
+                (
+                    "old".to_owned(),
+                    (Some(CopyRole::Slot), Some(SlotRole::OldCopy), 0)
+                ),
+                (
+                    "mirrored".to_owned(),
+                    (Some(CopyRole::Slot), Some(SlotRole::Mirror), 3)
+                ),
+                ("unmarked".to_owned(), (Some(CopyRole::Slot), None, 4)),
+            ]
+        );
+    }
+
+    #[test]
     fn copies_give_docker_volumes_their_role_and_add_each_unlisted_slot() {
+        use ployz_core::CopyPlace;
         let machine_id = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
         let name = |name: &str| DockerVolumeName::parse(name).unwrap();
         let provisioned = |volume: &str, role| DockerVolume {
@@ -1345,17 +1417,18 @@ mod tests {
                 driver: "local".into(),
             },
         };
-        let copy = |role, used_bytes| ployz_core::ProvisionedCopy {
-            role,
-            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
-                std::num::NonZeroU64::new(1024).unwrap(),
-            ),
-            used_bytes,
-            slot_role: None,
+        let copy = |place, used_bytes| {
+            ployz_core::ProvisionedCopy::new(
+                place,
+                ployz_core::ProvisionedVolumeMaximumBytes::new(
+                    std::num::NonZeroU64::new(1024).unwrap(),
+                ),
+                used_bytes,
+            )
         };
         let copies = BTreeMap::from([
-            (name("data"), copy(CopyRole::Switching, 512)),
-            (name("mirror"), copy(CopyRole::Slot, 300)),
+            (name("data"), copy(CopyPlace::Switching, 512)),
+            (name("mirror"), copy(CopyPlace::Slot(None), 300)),
         ]);
         let mut volumes = vec![provisioned("data", None), plain.clone()];
 

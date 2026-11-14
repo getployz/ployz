@@ -60,10 +60,51 @@ pub enum CopyRole {
     Switching,
 }
 
+/// Where a Machine's copy of a Volume sits: its [`CopyRole`] with what a slot's Machine
+/// recorded the slot as, which only a slot has. The wire spells it as the two fields
+/// `role` and `slot_role`; this is their one decoding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CopyPlace {
+    Writer,
+    Switching,
+    /// `None` until a step marked the slot, and from older daemons.
+    Slot(Option<crate::SlotRole>),
+}
+
+impl CopyPlace {
+    /// The place a `role` and `slot_role` pair names; a `slot_role` on any role but a slot
+    /// is read as absent.
+    #[must_use]
+    pub const fn of(role: CopyRole, slot_role: Option<crate::SlotRole>) -> Self {
+        match role {
+            CopyRole::Writer => Self::Writer,
+            CopyRole::Switching => Self::Switching,
+            CopyRole::Slot => Self::Slot(slot_role),
+        }
+    }
+
+    #[must_use]
+    pub const fn role(self) -> CopyRole {
+        match self {
+            Self::Writer => CopyRole::Writer,
+            Self::Switching => CopyRole::Switching,
+            Self::Slot(_) => CopyRole::Slot,
+        }
+    }
+
+    #[must_use]
+    pub const fn slot_role(self) -> Option<crate::SlotRole> {
+        match self {
+            Self::Slot(slot_role) => slot_role,
+            Self::Writer | Self::Switching => None,
+        }
+    }
+}
+
 /// One copy of a Volume on a Machine and the bytes it commits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ProvisionedCopy {
-    pub role: CopyRole,
+    role: CopyRole,
     pub maximum_bytes: ProvisionedVolumeMaximumBytes,
     /// ZFS `referenced` bytes of the copy's data: a root's, or its slot `fs`'s, zero
     /// until a slot holds a copy.
@@ -71,7 +112,28 @@ pub struct ProvisionedCopy {
     /// What a slot's Machine recorded it as; unset on every other role and from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub slot_role: Option<crate::SlotRole>,
+    slot_role: Option<crate::SlotRole>,
+}
+
+impl ProvisionedCopy {
+    #[must_use]
+    pub const fn new(
+        place: CopyPlace,
+        maximum_bytes: ProvisionedVolumeMaximumBytes,
+        used_bytes: u64,
+    ) -> Self {
+        Self {
+            role: place.role(),
+            maximum_bytes,
+            used_bytes,
+            slot_role: place.slot_role(),
+        }
+    }
+
+    #[must_use]
+    pub const fn place(&self) -> CopyPlace {
+        CopyPlace::of(self.role, self.slot_role)
+    }
 }
 
 /// Fresh storage evidence, including commitments whose Docker metadata may be missing.
@@ -100,7 +162,11 @@ impl StorageCapacity {
             .keys()
             .filter(|name| !self.copies.contains_key(*name))
             .map(|name| (name, CopyRole::Writer))
-            .chain(self.copies.iter().map(|(name, copy)| (name, copy.role)))
+            .chain(
+                self.copies
+                    .iter()
+                    .map(|(name, copy)| (name, copy.place().role())),
+            )
     }
 }
 
@@ -447,6 +513,47 @@ fn validate_host(total: u64, available: u64) -> Result<(), StorageCapacityError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_keeps_its_wire_pair_for_every_place() {
+        for json in [
+            r#"{"role":"writer","maximum_bytes":1024,"used_bytes":7}"#,
+            r#"{"role":"switching","maximum_bytes":1024,"used_bytes":7}"#,
+            r#"{"role":"slot","maximum_bytes":1024,"used_bytes":0}"#,
+            r#"{"role":"slot","maximum_bytes":1024,"used_bytes":0,"slot_role":"mirror"}"#,
+            r#"{"role":"slot","maximum_bytes":1024,"used_bytes":0,"slot_role":"old_copy"}"#,
+        ] {
+            let copy: ProvisionedCopy = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_string(&copy).unwrap(), json);
+        }
+    }
+
+    #[test]
+    fn a_daemon_that_predates_slot_roles_reads_as_a_slot_with_no_role() {
+        let copy: ProvisionedCopy =
+            serde_json::from_str(r#"{"role":"slot","maximum_bytes":1,"used_bytes":0}"#).unwrap();
+        assert_eq!(copy.place(), CopyPlace::Slot(None));
+    }
+
+    #[test]
+    fn a_place_reads_back_the_pair_it_was_made_from_and_a_stray_slot_role_is_absent() {
+        use crate::SlotRole;
+        for place in [
+            CopyPlace::Writer,
+            CopyPlace::Switching,
+            CopyPlace::Slot(None),
+            CopyPlace::Slot(Some(SlotRole::Mirror)),
+            CopyPlace::Slot(Some(SlotRole::OldCopy)),
+        ] {
+            assert_eq!(CopyPlace::of(place.role(), place.slot_role()), place);
+        }
+        let stray: ProvisionedCopy = serde_json::from_str(
+            r#"{"role":"writer","maximum_bytes":1,"used_bytes":0,"slot_role":"mirror"}"#,
+        )
+        .unwrap();
+        assert_eq!(stray.place(), CopyPlace::Writer);
+    }
+
     #[test]
     fn arithmetic_overflow_and_inconsistent_observations_hold_capacity_unknown() {
         assert!(storage_with_headroom(u64::MAX).is_err());

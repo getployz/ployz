@@ -490,6 +490,49 @@ pub enum DockerVolumeStorageObservation {
     },
 }
 
+impl DockerVolumeStorageObservation {
+    /// A Provisioned Volume observation whose copy sits at `place`; `None` when the plugin
+    /// reported no place.
+    #[must_use]
+    pub fn provisioned(
+        mountpoint: MachinePath,
+        bound_bytes: NonZeroU64,
+        used_bytes: u64,
+        place: Option<crate::CopyPlace>,
+    ) -> Self {
+        Self::Provisioned {
+            mountpoint,
+            bound_bytes,
+            used_bytes,
+            role: place.map(crate::CopyPlace::role),
+            slot_role: place.and_then(crate::CopyPlace::slot_role),
+        }
+    }
+
+    /// Where the observed copy sits; `None` for an ordinary Volume or when the plugin
+    /// reported no role.
+    #[must_use]
+    pub fn copy_place(&self) -> Option<crate::CopyPlace> {
+        match self {
+            Self::Provisioned {
+                role, slot_role, ..
+            } => role.map(|role| crate::CopyPlace::of(role, *slot_role)),
+            Self::Plain { .. } => None,
+        }
+    }
+
+    /// Records where the copy sits on a Provisioned Volume; an ordinary Volume has no copy.
+    pub fn set_copy_place(&mut self, place: Option<crate::CopyPlace>) {
+        if let Self::Provisioned {
+            role, slot_role, ..
+        } = self
+        {
+            *role = place.map(crate::CopyPlace::role);
+            *slot_role = place.and_then(crate::CopyPlace::slot_role);
+        }
+    }
+}
+
 /// One Docker Volume observed on one Machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DockerVolume {
@@ -668,6 +711,21 @@ mod tests {
         let mut source = source.admit().unwrap();
         source.scope_to_namespace(&Namespace::parse("app").unwrap());
         source
+    }
+
+    #[test]
+    fn a_provisioned_observation_keeps_its_role_pair_on_the_wire() {
+        for json in [
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":null}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"writer"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"switching"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"slot"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"slot","slot_role":"mirror"}"#,
+            r#"{"kind":"provisioned","mountpoint":"/v/data","bound_bytes":1024,"used_bytes":7,"role":"slot","slot_role":"old_copy"}"#,
+        ] {
+            let observation: DockerVolumeStorageObservation = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_string(&observation).unwrap(), json);
+        }
     }
 
     fn observed(source: &VolumeSource, storage: DockerVolumeStorageObservation) -> DockerVolume {

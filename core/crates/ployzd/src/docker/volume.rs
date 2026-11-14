@@ -539,13 +539,12 @@ fn docker_volume(machine_id: &MachineId, volume: RawVolume) -> Result<DockerVolu
         let mountpoint = ployz_core::MachinePath::parse(volume.mountpoint).map_err(|_| {
             Error::InvalidVolumeStatus("Provisioned Volume status has an invalid mountpoint")
         })?;
-        DockerVolumeStorageObservation::Provisioned {
+        DockerVolumeStorageObservation::provisioned(
             mountpoint,
             bound_bytes,
-            used_bytes: status.used_bytes,
-            role: None,
-            slot_role: None,
-        }
+            status.used_bytes,
+            None,
+        )
     } else {
         DockerVolumeStorageObservation::Plain {
             driver: volume.driver,

@@ -273,7 +273,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             .get(&machine_id)
             .and_then(|capacity| capacity.as_ref().ok())
             .and_then(|capacity| capacity.copies.get(name))
-            .map_or(CopyRole::Writer, |copy| copy.role)
+            .map_or(CopyRole::Writer, |copy| copy.place().role())
     }
 
     /// Every copy of `name` that is not a writer, by Machine name.
@@ -284,13 +284,14 @@ impl<'snapshot> VolumePlan<'snapshot> {
             .filter_map(|(machine_id, capacity)| Some((machine_id, capacity.as_ref().ok()?)))
             .filter_map(|(machine_id, capacity)| {
                 let copy = capacity.copies.get(name)?;
-                if copy.role == CopyRole::Writer {
+                let role = copy.place().role();
+                if role == CopyRole::Writer {
                     return None;
                 }
                 let machine = self.snapshot.machine(*machine_id)?;
                 Some(KnownCopy {
                     machine: machine.machine.name.clone(),
-                    role: copy.role,
+                    role,
                 })
             })
             .collect()

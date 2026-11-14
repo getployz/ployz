@@ -1327,12 +1327,7 @@ async fn a_server_that_answers_holding_copies_is_refused_before_cloud_or_any_con
         volumes: BTreeMap::new(),
         copies: BTreeMap::from([(
             docker("app-prod_logs"),
-            ployz_core::ProvisionedCopy {
-                role: ployz_core::CopyRole::Slot,
-                maximum_bytes: bytes,
-                used_bytes: 0,
-                slot_role: None,
-            },
+            ployz_core::ProvisionedCopy::new(ployz_core::CopyPlace::Slot(None), bytes, 0),
         )]),
     });
     for confirm in ["two", "dead"] {
