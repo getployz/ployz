@@ -124,7 +124,7 @@ impl LocalMachine {
             _ => {}
         }
         let Some((step, locator)) = RestartStep::of(&want) else {
-            self.admit_operator_creation(&want, deploy)?;
+            self.admit_operator_creation(&want, deploy).await?;
             return Ok(want);
         };
         if let (None, Some(deploy)) = (approval, deploy) {

@@ -7170,6 +7170,71 @@ mod ensure_container {
             std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 
+        /// Service `api` at the pinned image, published at `hostname`.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn published(hostname: &str) -> Value {
+            let mut spec = spec(PINNED);
+            spec["ports"] = json!([{
+                "mode": "ingress",
+                "hostname": hostname,
+                "load_balancer_port": 80,
+                "container_port": 80,
+                "http_protocol": "http"
+            }]);
+            spec
+        }
+
+        #[tokio::test]
+        async fn a_browser_approval_never_claims_a_hostname_another_environment_owns() {
+            let mut fixture = enforced("ployzd-deploy-hostname-owner").await;
+            trust_passkey(&fixture).await;
+            use crate::docker::test_support::hostname_claimant;
+            let (replicated, _cluster) = crate::corrosion::fake_cluster::store().await;
+            for claimant in [
+                hostname_claimant(0xa, "shop", "shop.example.com"),
+                hostname_claimant(0xb, "app", "app.example.com"),
+            ] {
+                replicated.publish_container(&claimant).await.unwrap();
+            }
+            fixture.service = fixture.service.with_cluster_option(Some((
+                replicated,
+                crate::corrosion::AdminClient::new("/no/admin"),
+            )));
+            let service = &fixture.service;
+            let taken = published("shop.example.com");
+            let seen = requests(&fixture.fake).len();
+            deploy_refused(
+                deploy_ensure(
+                    service,
+                    new_want("service_container", "k1", &taken),
+                    Some(&fixture.browser_deploy(FIX_API, &[&taken])),
+                )
+                .await,
+                "shop.example.com belongs to shop/web",
+            );
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+
+            for (key, hostname) in [("k2", "app.example.com"), ("k3", "new.example.com")] {
+                let spec = published(hostname);
+                deploy_ensure(
+                    service,
+                    new_want("service_container", key, &spec),
+                    Some(&fixture.browser_deploy(FIX_API, &[&spec])),
+                )
+                .await
+                .expect("a session claims a hostname its own environment or nobody owns");
+            }
+            deploy_ensure(
+                service,
+                new_want("service_container", "k4", &taken),
+                Some(&fixture.deploy(&taken)),
+            )
+            .await
+            .expect("an approved device moves a hostname on purpose");
+            assert_eq!(creates(&fixture.fake, seen), 3);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
         #[tokio::test]
         async fn a_hooks_sealed_values_for_another_environment_are_refused() {
             let fixture = enforced_sealing("ployzd-deploy-sealed-hook").await;

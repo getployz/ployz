@@ -446,3 +446,69 @@ async fn a_session_review_deploys_only_a_preview_that_opens_no_secret() {
         "the signer"
     );
 }
+
+/// A session reviews the settings a preview runs, so the review alone may not claim a
+/// hostname another Environment owns. A Device's review still may.
+#[tokio::test]
+async fn a_session_review_never_claims_a_hostname_another_environment_owns() {
+    let mut deploy = Deploy::new().await;
+    let (replicated, _cluster) = crate::corrosion::fake_cluster::store().await;
+    replicated
+        .publish_container(&crate::docker::test_support::hostname_claimant(
+            0xa,
+            "shop",
+            "shop.example.com",
+        ))
+        .await
+        .unwrap();
+    deploy.fixture.machine = deploy.fixture.machine.clone().with_cluster(Some((
+        replicated,
+        crate::corrosion::AdminClient::new("/no/admin"),
+    )));
+    let namespace = fork(&deploy.rule);
+    let mut published = spec();
+    published["ports"] = json!([{
+        "mode": "ingress",
+        "hostname": "shop.example.com",
+        "load_balancer_port": 80,
+        "container_port": 80,
+        "http_protocol": "http"
+    }]);
+    let mut body = deploy.review_body();
+    body.services[0].digest = ployz_core::authority::preview::template(
+        &requested(&published),
+        &namespace,
+        &deploy.rule.services[0],
+    )
+    .unwrap();
+    let session = super::super::preview_grant::tests::session_review(&deploy.rule, &body);
+    let result = deploy
+        .create(
+            &namespace,
+            "k1",
+            &published,
+            &deploy.reviewed(session, "session"),
+            now(),
+        )
+        .await;
+    assert!(
+        matches!(
+            &result,
+            Err(Error::HostnameOwned { capability, hostname, owner })
+                if *capability == ployz_core::DEPLOY_PREVIEW_CAPABILITY
+                    && hostname.as_str() == "shop.example.com"
+                    && owner.to_string() == "shop/web"
+        ),
+        "{result:?}"
+    );
+    deploy
+        .create(
+            &namespace,
+            "k2",
+            &published,
+            &deploy.reviewed(device(&deploy, &body), "device"),
+            now(),
+        )
+        .await
+        .expect("a Device's review moves a hostname on purpose");
+}
