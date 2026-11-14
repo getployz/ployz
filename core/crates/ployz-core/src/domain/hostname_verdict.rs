@@ -4,11 +4,20 @@ use std::net::IpAddr;
 
 use crate::{IngressHost, MachineId};
 
+macro_rules! acme_challenge_prefix {
+    () => {
+        "/.well-known/acme-challenge/"
+    };
+}
+
+/// Where an ACME HTTP-01 challenge token is served, ending in `/`.
+pub const ACME_CHALLENGE_PREFIX: &str = acme_challenge_prefix!();
+
 /// Path every ingress Machine answers with its Machine id, probed through an Ingress Hostname.
 ///
 /// It sits under the ACME challenge prefix so the one proxy exemption HTTP-01 needs also lets
 /// the probe through. Challenge tokens are at least 22 characters, so it never shadows one.
-pub const HOSTNAME_VERIFY_PATH: &str = "/.well-known/acme-challenge/ployz-verify";
+pub const HOSTNAME_VERIFY_PATH: &str = concat!(acme_challenge_prefix!(), "ployz-verify");
 
 /// What a `GET http://<hostname>` + [`HOSTNAME_VERIFY_PATH`] returned, without following redirects.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -174,6 +183,19 @@ fn join_addresses(addresses: &[IpAddr]) -> String {
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
+
+    #[test]
+    fn the_verify_path_sits_under_the_challenge_prefix() {
+        assert_eq!(super::ACME_CHALLENGE_PREFIX, "/.well-known/acme-challenge/");
+        assert_eq!(
+            super::HOSTNAME_VERIFY_PATH,
+            "/.well-known/acme-challenge/ployz-verify"
+        );
+        assert_eq!(
+            super::HOSTNAME_VERIFY_PATH,
+            format!("{}ployz-verify", super::ACME_CHALLENGE_PREFIX)
+        );
+    }
 
     use super::{
         ClusterRoute, HostnameVerdict, Refusal, VerifyAnswer, hostname_verdict, refusal_reason,

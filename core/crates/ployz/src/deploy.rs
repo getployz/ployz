@@ -45,15 +45,6 @@ pub use schedule::{ServiceGroup, Stage};
 pub(crate) use progress::pending_rows;
 pub(crate) use report::{Replica, service_row, starts, updates};
 
-fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
-    matches!(
-        runtime,
-        ContainerRuntimeObservation::Created
-            | ContainerRuntimeObservation::Exited { .. }
-            | ContainerRuntimeObservation::Dead
-    )
-}
-
 pub(crate) fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
         runtime,
@@ -436,7 +427,7 @@ impl DeploySnapshot {
                     held.into_iter().partition(|container| {
                         container.runtime == ContainerRuntimeObservation::Restarting
                     });
-                if !held.iter().all(|container| is_at_rest(&container.runtime)) {
+                if !held.iter().all(|container| container.runtime.at_rest()) {
                     return None;
                 }
                 if let Some(restarting) = ployz_core::newest(restarting) {

@@ -262,6 +262,31 @@ fn published_material_and_published_wildcards_are_not_wanted() {
     );
 }
 
+#[test]
+fn a_losing_services_https_publication_orders_no_certificate() {
+    let observations = [
+        observation(
+            1,
+            "api",
+            vec![ingress("shared.example.com", HttpProtocol::Http)],
+        ),
+        observation(
+            2,
+            "web",
+            vec![
+                ingress("shared.example.com", HttpProtocol::Https),
+                ingress("own.example.com", HttpProtocol::Https),
+            ],
+        ),
+    ];
+
+    assert_eq!(
+        wanted_certificate_hosts(observations.iter(), &BTreeMap::new()),
+        BTreeSet::from([host("own.example.com")]),
+        "api owns shared.example.com and publishes it over http only"
+    );
+}
+
 fn certificate_host(name: &str) -> ployz_core::CertificateHost {
     ployz_core::CertificateHost::parse(name).unwrap()
 }
@@ -584,6 +609,62 @@ fn a_server_with_the_public_door_closed_is_never_ranked_or_probed() {
     assert!(
         door_standing(&both).closed.is_empty(),
         "a Server mid-switch, with a public holder still up, is open"
+    );
+}
+
+#[test]
+fn only_a_door_that_may_serve_counts_toward_a_servers_standing() {
+    let server = machine_with_endpoint("a", "192.0.2.1");
+    let proxy = ServiceId::parse("c".repeat(32)).unwrap();
+    let public = crate::images::DoorSpecs::public(proxy);
+    let with_runtime = |door: ContainerObservation, runtime| {
+        let mut door = door;
+        door.try_update(|parts| parts.runtime = runtime).unwrap();
+        door
+    };
+    let down = ContainerRuntimeObservation::Exited { code: 1 };
+    let failing = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Failing,
+    };
+
+    assert_eq!(
+        door_standing(&[with_runtime(door_on(&server, &public.holder), down.clone())]),
+        DoorStanding::default(),
+        "an exited holder holds no door"
+    );
+    assert_eq!(
+        door_standing(&[with_runtime(
+            door_on(&server, &public.holder),
+            ContainerRuntimeObservation::Paused
+        )]),
+        DoorStanding::default(),
+        "a paused holder holds no door"
+    );
+    assert_eq!(
+        door_standing(&[with_runtime(door_on(&server, &public.holder), failing)]),
+        DoorStanding {
+            public: BTreeSet::from([server.id]),
+            closed: BTreeSet::new(),
+        },
+        "a running holder with a failing health check still holds its door"
+    );
+    assert_eq!(
+        door_standing(&[
+            door_on(&server, &public.proxy),
+            with_runtime(door_on(&server, &public.proxy), down),
+        ]),
+        DoorStanding::default(),
+        "a Caddy that joins the holder's network holds no door of its own"
+    );
+
+    let mut impostor = door_on(&server, &public.holder);
+    impostor
+        .try_update(|parts| parts.namespace = Namespace::parse("app").unwrap())
+        .unwrap();
+    assert_eq!(
+        door_standing(&[impostor]),
+        DoorStanding::default(),
+        "a holder spec outside the system Namespace is no door"
     );
 }
 
@@ -1004,7 +1085,7 @@ fn observation(
     .unwrap()
 }
 
-/// A hostname whose probe reaches no Machine of the replica: an IP literal, so `resolve_host`
+/// A hostname whose probe reaches no Machine of the replica: an IP literal, so `resolve_ingress_addresses`
 /// asks no DNS server, and the verify probe gets no Machine id from `127.0.0.1:80`.
 const UNREACHED: &str = "127.0.0.1";
 

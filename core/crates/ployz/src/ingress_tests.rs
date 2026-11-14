@@ -1,6 +1,7 @@
 use ployz_core::error_chain;
 use ployz_core::{
-    ContainerRuntimeObservation, Machine, MembershipObservation, Placement, RpcErrorCode,
+    ContainerRuntimeObservation, IngressPorts, Machine, MembershipObservation, Placement,
+    RpcErrorCode,
 };
 
 use super::*;
@@ -1206,5 +1207,163 @@ async fn an_activated_pin_seals_the_tunnel_token_to_its_recipient_key_once_the_r
         refusal.code,
         RpcErrorCode::Conflict,
         "a pinned recipient seals nothing when the relayed identity is not the pin"
+    );
+}
+
+fn door_container(
+    identity: QualifiedService,
+    spec: ployz_core::RequestedServiceSpec,
+    server: &Machine,
+    runtime: ContainerRuntimeObservation,
+) -> ServiceObservation {
+    let mut container = running_on(server, 'c');
+    container
+        .try_update(|parts| parts.runtime = runtime)
+        .unwrap();
+    crate::global_fixtures::grouped(
+        identity,
+        spec.to_resolved(
+            crate::global_fixtures::service_id('d'),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap(),
+        container,
+    )
+}
+
+fn serving() -> ContainerRuntimeObservation {
+    ContainerRuntimeObservation::Running {
+        health: ployz_core::HealthObservation::Healthy,
+    }
+}
+
+#[test]
+fn a_server_holds_the_doors_its_running_door_containers_stand_for() {
+    let image = "ghcr.io/getployz/caddy:2";
+    let token = ployz_core::Ciphertext::from_bytes(vec![7; 48]);
+    let public = machine('a', "public");
+    let tunnel = machine('b', "tunnel");
+    let both = machine('c', "both");
+    let closed = machine('d', "closed");
+    let stopped = machine('e', "stopped");
+    let paused = machine('f', "paused");
+    let unhealthy = machine('1', "unhealthy");
+    let holder = |server: &Machine, ports, runtime| {
+        door_container(
+            QualifiedService::system_ingress_holder(),
+            ployz_core::holder_service_spec(image, ports),
+            server,
+            runtime,
+        )
+    };
+    let connector = |server: &Machine, runtime| {
+        door_container(
+            QualifiedService::system_tunnel(),
+            ployz_core::tunnel_service_spec(image, &token),
+            server,
+            runtime,
+        )
+    };
+    let services = [
+        holder(&public, IngressPorts::Public, serving()),
+        door_container(
+            QualifiedService::system_ingress(),
+            ployz_core::caddy_service_spec(image),
+            &public,
+            serving(),
+        ),
+        connector(&tunnel, serving()),
+        door_container(
+            QualifiedService::system_tunnel_origin(),
+            ployz_core::tunnel_origin_service_spec(image),
+            &tunnel,
+            serving(),
+        ),
+        holder(&tunnel, IngressPorts::Closed, serving()),
+        holder(&both, IngressPorts::Public, serving()),
+        connector(&both, serving()),
+        holder(&closed, IngressPorts::Closed, serving()),
+        holder(
+            &stopped,
+            IngressPorts::Public,
+            ContainerRuntimeObservation::Dead,
+        ),
+        connector(&stopped, ContainerRuntimeObservation::Exited { code: 1 }),
+        holder(
+            &paused,
+            IngressPorts::Public,
+            ContainerRuntimeObservation::Paused,
+        ),
+        holder(
+            &unhealthy,
+            IngressPorts::Public,
+            ContainerRuntimeObservation::Running {
+                health: ployz_core::HealthObservation::Failing,
+            },
+        ),
+    ];
+
+    assert_eq!(
+        machine_doors(&services),
+        BTreeMap::from([
+            (public.id, IngressDoors::public()),
+            (tunnel.id, IngressDoors::tunnel()),
+            (both.id, IngressDoors::both()),
+            (unhealthy.id, IngressDoors::public()),
+        ])
+    );
+}
+
+#[test]
+fn the_doors_a_set_left_open_are_named_public_then_tunnel() {
+    let image = "ghcr.io/getployz/caddy:2";
+    let server = machine('a', "one");
+    let holder = |ports| {
+        let service = door_container(
+            QualifiedService::system_ingress_holder(),
+            ployz_core::holder_service_spec(image, ports),
+            &server,
+            serving(),
+        );
+        DoorOutcome {
+            now: service.containers.first().unwrap().as_observation().clone(),
+            change: DoorChange::Created,
+        }
+    };
+    let tunnel = || DoorOutcome {
+        now: running_on(&server, 'c'),
+        change: DoorChange::Created,
+    };
+
+    assert_eq!(
+        doors_of(&IngressDoorsSet {
+            holder: Some(holder(IngressPorts::Public)),
+            tunnel: Some(tunnel()),
+            ..IngressDoorsSet::default()
+        }),
+        ["public", "tunnel"]
+    );
+    assert_eq!(
+        doors_of(&IngressDoorsSet {
+            holder: Some(holder(IngressPorts::Closed)),
+            ..IngressDoorsSet::default()
+        }),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        doors_of(&IngressDoorsSet {
+            holder: Some(holder(IngressPorts::Closed)),
+            tunnel: Some(tunnel()),
+            ..IngressDoorsSet::default()
+        }),
+        ["tunnel"]
+    );
+    assert_eq!(
+        doors_of(&IngressDoorsSet {
+            holder: Some(outcome(serving(), DoorChange::Created)),
+            ..IngressDoorsSet::default()
+        }),
+        Vec::<String>::new(),
+        "a container that is no canonical holder holds nothing"
     );
 }
