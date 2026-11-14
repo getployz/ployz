@@ -5,7 +5,10 @@ mod management;
 pub use build_grant::{GrantRegistry, open_grant_registry};
 pub use management::{ManagementRelay, management_proof};
 use management::{connect_management, dial_tunnel};
-use ployz_core::error_chain;
+use ployz_core::{
+    error_chain,
+    startup_refusal::{Refusal, StartupRefusal},
+};
 
 use std::{
     borrow::Cow,
@@ -311,17 +314,13 @@ async fn connect_local(path: &Path) -> Result<Channel, ConnectError> {
         .connect_with_connector(tower::service_fn(move |_| {
             let path = path.clone();
             async move {
-                let run_dir = path.parent().map(Path::to_owned);
+                let refusal = path.parent().map(StartupRefusal::new);
                 match UnixStream::connect(&path).await {
-                    Ok(stream) => Ok(TokioIo::new(LocalDaemon { stream, run_dir })),
-                    Err(error) => Err(
-                        match run_dir.as_deref().and_then(ployz_core::startup_refusal) {
-                            Some(refusal) => {
-                                io::Error::new(error.kind(), format!("{error}; {refusal}"))
-                            }
-                            None => error,
-                        },
-                    ),
+                    Ok(stream) => Ok(TokioIo::new(LocalDaemon { stream, refusal })),
+                    Err(error) => Err(match &refusal {
+                        Some(refusal) => refusal.naming(error),
+                        None => error,
+                    }),
                 }
             }
         }))
@@ -333,17 +332,16 @@ async fn connect_local(path: &Path) -> Result<Channel, ConnectError> {
 /// started it unanswered, so the stream's end names the refusal it left.
 struct LocalDaemon {
     stream: UnixStream,
-    run_dir: Option<PathBuf>,
+    refusal: Option<StartupRefusal>,
 }
 
 impl LocalDaemon {
     fn ended<T>(&self, ended: io::Result<T>) -> io::Result<T> {
-        match self
-            .run_dir
-            .as_deref()
-            .and_then(ployz_core::startup_refusal)
-        {
-            Some(refusal) => Err(io::Error::new(io::ErrorKind::BrokenPipe, refusal)),
+        match self.refusal.as_ref().and_then(StartupRefusal::read) {
+            Some(refusal) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                refusal.to_string(),
+            )),
             None => ended,
         }
     }
@@ -1123,8 +1121,12 @@ fn naming_local_refusal(connection: &Connection, error: ConnectError) -> Connect
     if !transport.is_local() {
         return ConnectError::Rpc(transport);
     }
-    match path.parent().and_then(ployz_core::startup_refusal) {
-        Some(refusal) => ConnectError::Rpc(transport.caused_by(refusal)),
+    match path
+        .parent()
+        .map(StartupRefusal::new)
+        .and_then(|refusal| refusal.read())
+    {
+        Some(refusal) => ConnectError::Rpc(transport.caused_by(refusal.to_string())),
         None => ConnectError::Rpc(transport),
     }
 }
@@ -1518,7 +1520,7 @@ impl ConnectError {
         }
         std::iter::once(self.to_string())
             .chain(ployz_core::error_chain::causes(self))
-            .any(|line| line.contains(ployz_core::STARTUP_REFUSED))
+            .any(|line| Refusal::is_named_in(&line))
     }
 
     /// The daemon answered but is too old for this dial; only its upgrade lets it be used.

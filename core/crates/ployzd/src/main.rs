@@ -4,7 +4,6 @@ compile_error!("ployzd supports Linux only");
 mod volume_plugin;
 
 use std::{
-    cell::Cell,
     io,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -15,10 +14,10 @@ use std::{
 use clap::{Parser, Subcommand};
 use ployz_core::{
     MachineLayout, MachineRelease, MachineUpgradeAttemptId, NETWORK_CONFLICT_EXIT_STATUS,
-    StoragePreparation,
+    StoragePreparation, startup_refusal::StartupRefusal,
 };
 use ployzd::{
-    daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
+    daemon::{ContainerMode, Daemon, DaemonConfig, Error},
     diag,
     dns::{self, DnsExit},
     installer::{InstallMode, InstallRequest, Readiness},
@@ -31,8 +30,6 @@ use tokio::{
 };
 
 const DIAL_STDIO_SOCKET_TIMEOUT: Duration = Duration::from_secs(20);
-/// Under the client's 5 s wait for an answer, so its error names the refusal.
-const REFUSED_SOCKET_GRACE: Duration = Duration::from_secs(2);
 const STDOUT_FLUSH_BOUND: Duration = Duration::from_secs(2);
 
 #[derive(Parser)]
@@ -147,7 +144,7 @@ enum ObserveCommand {
 fn main() -> ExitCode {
     let args = Args::parse();
     if args.command.is_none() {
-        ployzd::daemon::clear_refusal(&MachineLayout::run_dir_of(&args.socket));
+        StartupRefusal::beside(&args.socket).clear();
     }
     let dial_stdio = matches!(args.command, Some(Command::DialStdio));
     let runtime = match runtime() {
@@ -354,46 +351,16 @@ fn install_request(
 }
 
 async fn dial_stdio(path: &Path) -> io::Result<()> {
-    let run_dir = MachineLayout::run_dir_of(path);
-    let stream = connect_unless_refused(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
+    let refusal = StartupRefusal::beside(path);
+    let stream = refusal.connect(path, DIAL_STDIO_SOCKET_TIMEOUT).await?;
     // A refusing start closes the connection unread, so a request already sent
     // ends it with a reset rather than an empty close.
     match bridge(stdin(), stdout(), stream).await {
         Ok(sent) if sent > 0 => Ok(()),
-        ended => match ployz_core::startup_refusal(&run_dir) {
-            Some(refusal) => Err(io::Error::other(refusal)),
+        ended => match refusal.read() {
+            Some(refusal) => Err(io::Error::other(refusal.to_string())),
             None => ended.map(drop),
         },
-    }
-}
-
-// Every daemon process clears the refusal first, so a socket that stays down
-// while one is recorded was most likely stopped by it: systemd's start limit
-// trips after repeated refusals, and waiting longer would only outlast the
-// client. The grace covers a socket restarting, which comes back before a
-// daemon process has cleared the last refusal.
-async fn connect_unless_refused(path: &Path, timeout: Duration) -> io::Result<UnixStream> {
-    let run_dir = MachineLayout::run_dir_of(path);
-    let refused_since = Cell::new(None);
-    wait_until_socket_accepts(path, timeout, || {
-        if ployz_core::startup_refusal(&run_dir).is_none() {
-            refused_since.set(None);
-            return false;
-        }
-        let since = refused_since
-            .get()
-            .unwrap_or_else(tokio::time::Instant::now);
-        refused_since.set(Some(since));
-        since.elapsed() >= REFUSED_SOCKET_GRACE
-    })
-    .await
-    .map_err(|error| naming_refusal(&run_dir, error))
-}
-
-fn naming_refusal(run_dir: &Path, error: io::Error) -> io::Error {
-    match ployz_core::startup_refusal(run_dir) {
-        Some(refusal) => io::Error::new(error.kind(), format!("{error}; {refusal}")),
-        None => error,
     }
 }
 
@@ -500,48 +467,6 @@ mod tests {
         })
         .await;
         assert_eq!(seen, b"reply");
-    }
-
-    fn refused_dir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let refused = dir.path().join(ployz_core::STARTUP_REFUSAL_FILE);
-        std::fs::write(&refused, "refusing to change\n").unwrap();
-        dir
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn dial_names_a_recorded_refusal_without_waiting_out_the_socket() {
-        let dir = refused_dir();
-        let path = dir.path().join("ployz.sock");
-        // A socket unit that hit its start limit leaves its file unanswered.
-        drop(UnixListener::bind(&path).unwrap());
-        let started = tokio::time::Instant::now();
-        let error = connect_unless_refused(&path, DIAL_STDIO_SOCKET_TIMEOUT)
-            .await
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
-        assert!(started.elapsed() < REFUSED_SOCKET_GRACE + Duration::from_millis(50));
-        let message = error.to_string();
-        assert!(
-            message.contains("ployzd refused to start: refusing to change"),
-            "{message}"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn dial_reaches_a_socket_restarting_after_a_refusal() {
-        let dir = refused_dir();
-        let path = dir.path().join("ployz.sock");
-        let listener_path = path.clone();
-        let socket = tokio::spawn(async move {
-            tokio::time::sleep(REFUSED_SOCKET_GRACE / 2).await;
-            let listener = UnixListener::bind(&listener_path).unwrap();
-            listener.accept().await.unwrap()
-        });
-        connect_unless_refused(&path, DIAL_STDIO_SOCKET_TIMEOUT)
-            .await
-            .unwrap();
-        socket.await.unwrap();
     }
 
     /// Holds written bytes until a flush after `open` is set, like tokio's stdout
