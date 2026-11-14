@@ -397,12 +397,8 @@ async fn enroll_current_identity(
                     runtime: Default::default(),
                     capabilities: Vec::new(),
                 };
-                let entry_id = entry
-                    .call::<op::Inspect>(InspectRequest::default(), Call::read())
-                    .await?
-                    .id;
                 // This join's pin is this computer's Device alone, whatever the route.
-                let from = if entry.answers_for_itself(&entry_id) {
+                let from = if crate::sealing_pin::SealTo::direct(&entry) {
                     super::device::JoinEntry::Chosen {
                         pins_its_devices: false,
                     }
