@@ -715,6 +715,214 @@ pub(super) mod tests {
         );
     }
 
+    /// Sets the value a pointer names, adding the key when it is missing; `None` removes it.
+    fn edit(raw: &mut Value, pointer: &str, value: Option<Value>) {
+        let (parent, key) = pointer.rsplit_once('/').unwrap();
+        let parent = raw.pointer_mut(parent).unwrap().as_object_mut().unwrap();
+        match value {
+            Some(value) => parent.insert(key.into(), value),
+            None => parent.remove(key),
+        };
+    }
+
+    /// What `server show` prints from the report that these rows could change.
+    fn displayed(detail: &Detail) -> [String; 4] {
+        [
+            detail.docker(),
+            detail.storage(),
+            detail.disks(),
+            detail.report.cpu_count.to_string(),
+        ]
+    }
+
+    fn refusal<T>(read: Result<T, serde_json::Error>) -> Option<String> {
+        read.err().map(|error| error.to_string())
+    }
+
+    fn ineligible(extra: Option<(&'static str, Value)>) -> Vec<(&'static str, Option<Value>)> {
+        let mut edits = vec![
+            ("/report/zfs/kind", Some(json!("ineligible"))),
+            ("/report/zfs/targets", None),
+            ("/report/zfs/buildMinutes", None),
+            ("/report/zfs/message", Some(json!("no ZFS"))),
+        ];
+        edits.extend(extra.map(|(pointer, value)| (pointer, Some(value))));
+        edits
+    }
+
+    /// Each row changes one part of a served report. A row that `server show` read before this
+    /// release still reads, to the same lines and the same raw JSON.
+    #[test]
+    fn a_served_row_reads_as_far_as_what_it_shows_goes() {
+        let baseline = Detail::read(served("/detail/waiting_server")).unwrap();
+        let unchanged = displayed(&baseline);
+        let mut no_zfs = unchanged.clone();
+        no_zfs[1] = "Docker volumes; no ZFS".into();
+        let mut big_cpu = unchanged.clone();
+        big_cpu[3] = "4294967296".into();
+        let gone = |pointer| vec![(pointer, None)];
+        let set = |pointer, value| vec![(pointer, Some(value))];
+        let rows = [
+            ("hostname absent", gone("/report/hostname"), &unchanged),
+            (
+                "hostname null",
+                set("/report/hostname", json!(null)),
+                &unchanged,
+            ),
+            (
+                "hostname wrong",
+                set("/report/hostname", json!(32)),
+                &unchanged,
+            ),
+            ("kernel absent", gone("/report/kernel"), &unchanged),
+            (
+                "kernel null",
+                set("/report/kernel", json!(null)),
+                &unchanged,
+            ),
+            ("kernel wrong", set("/report/kernel", json!(32)), &unchanged),
+            ("cgroup absent", gone("/report/cgroup"), &unchanged),
+            (
+                "cgroup null",
+                set("/report/cgroup", json!(null)),
+                &unchanged,
+            ),
+            (
+                "cgroup wrong",
+                set("/report/cgroup", json!({ "kind": "v2" })),
+                &unchanged,
+            ),
+            (
+                "cgroup unknown",
+                set("/report/cgroup", json!("v3")),
+                &unchanged,
+            ),
+            ("docker api absent", gone("/report/docker/api"), &unchanged),
+            (
+                "docker api null",
+                set("/report/docker/api", json!(null)),
+                &unchanged,
+            ),
+            (
+                "docker api wrong",
+                set("/report/docker/api", json!(7)),
+                &unchanged,
+            ),
+            (
+                "docker compatible absent",
+                gone("/report/docker/compatible"),
+                &unchanged,
+            ),
+            (
+                "docker compatible null",
+                set("/report/docker/compatible", json!(null)),
+                &unchanged,
+            ),
+            (
+                "docker compatible wrong",
+                set("/report/docker/compatible", json!([])),
+                &unchanged,
+            ),
+            (
+                "buildMinutes null",
+                set("/report/zfs/buildMinutes", json!(null)),
+                &unchanged,
+            ),
+            (
+                "buildMinutes wrong",
+                set("/report/zfs/buildMinutes", json!([])),
+                &unchanged,
+            ),
+            (
+                "buildMinutes fraction",
+                set("/report/zfs/buildMinutes", json!(6.5)),
+                &unchanged,
+            ),
+            (
+                "buildMinutes negative",
+                set("/report/zfs/buildMinutes", json!(-1)),
+                &unchanged,
+            ),
+            (
+                "buildMinutes past u32",
+                set("/report/zfs/buildMinutes", json!(4_294_967_296_u64)),
+                &unchanged,
+            ),
+            (
+                "buildMinutes absent",
+                gone("/report/zfs/buildMinutes"),
+                &unchanged,
+            ),
+            (
+                "byId null",
+                set("/report/disks/1/byId", json!(null)),
+                &unchanged,
+            ),
+            (
+                "byId wrong",
+                set("/report/disks/1/byId", json!([])),
+                &unchanged,
+            ),
+            (
+                "availableBytes absent",
+                gone("/report/disks/0/availableBytes"),
+                &unchanged,
+            ),
+            (
+                "availableBytes null",
+                set("/report/disks/0/availableBytes", json!(null)),
+                &unchanged,
+            ),
+            (
+                "availableBytes wrong",
+                set("/report/disks/0/availableBytes", json!([])),
+                &unchanged,
+            ),
+            (
+                "warning code absent",
+                gone("/report/warnings/0/code"),
+                &unchanged,
+            ),
+            (
+                "warning code null",
+                set("/report/warnings/0/code", json!(null)),
+                &unchanged,
+            ),
+            (
+                "warning code wrong",
+                set("/report/warnings/0/code", json!([])),
+                &unchanged,
+            ),
+            (
+                "cpuCount past u32",
+                set("/report/cpuCount", json!(4_294_967_296_u64)),
+                &big_cpu,
+            ),
+            ("ineligible, a message only", ineligible(None), &no_zfs),
+            (
+                "ineligible, with a code",
+                ineligible(Some(("/report/zfs/code", json!("no_zfs")))),
+                &no_zfs,
+            ),
+            (
+                "a field added later",
+                set("/report/future", json!({ "any": [1, 2, 3] })),
+                &unchanged,
+            ),
+        ];
+        for (name, edits, shows) in rows {
+            let mut raw = served("/detail/waiting_server");
+            for (pointer, value) in edits {
+                edit(&mut raw, pointer, value);
+            }
+            let detail =
+                Detail::read(raw.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(&displayed(&detail), shows, "{name}");
+            assert_eq!(detail.waiting.raw, raw, "{name}");
+            assert_eq!(refusal(serde_json::from_value::<Row>(raw)), None, "{name}");
+        }
+    }
+
     #[test]
     fn age_counts_in_the_largest_whole_unit() {
         let now = DateTime::parse_from_rfc3339("2026-10-16T03:00:00Z")

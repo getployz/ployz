@@ -13,7 +13,9 @@ use ployz_core::probe_document::{
     Assessment, Blocker, BlockerCode, CgroupVersion, DiskRole, DockerFacts, ProbeDocument,
     Virtualization, ZfsEligibility, ZfsTarget,
 };
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use ts_rs::TS;
 
 use crate::cloud_enroll::EnrollStage;
@@ -131,19 +133,48 @@ pub(crate) struct EnrollPolicy {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HostReport {
+    #[serde(default, deserialize_with = "lenient")]
     pub(crate) hostname: String,
     pub(crate) os: Os,
+    #[serde(default, deserialize_with = "lenient")]
     pub(crate) kernel: String,
     pub(crate) arch: String,
     pub(crate) virt: String,
-    pub(crate) cpu_count: u32,
+    pub(crate) cpu_count: u64,
     pub(crate) memory_total_bytes: u64,
     pub(crate) disks: Vec<ReportDisk>,
     pub(crate) docker: ReportDocker,
+    #[serde(default, deserialize_with = "lenient")]
     pub(crate) cgroup: Cgroup,
     pub(crate) zfs: ReportZfs,
+    #[serde(deserialize_with = "served_issues")]
     pub(crate) blockers: Vec<Issue>,
+    #[serde(deserialize_with = "served_issues")]
     pub(crate) warnings: Vec<Issue>,
+}
+
+/// Reads a field Cloud serves back that a waiting server's display never needed: one that is
+/// missing, null or of another type reads as its default instead of refusing the whole report.
+fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned + Default,
+{
+    Ok(T::deserialize(Value::deserialize(deserializer)?).unwrap_or_default())
+}
+
+/// A served issue is shown by its message; its code may be missing or of another type.
+fn served_issues<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Issue>, D::Error> {
+    #[derive(Deserialize)]
+    struct Served {
+        #[serde(default, deserialize_with = "lenient")]
+        code: String,
+        message: String,
+    }
+    Ok(Vec::<Served>::deserialize(deserializer)?
+        .into_iter()
+        .map(|Served { code, message }| Issue { code, message })
+        .collect())
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
@@ -157,13 +188,21 @@ pub(crate) struct Os {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReportDisk {
     pub(crate) path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub(crate) by_id: Option<String>,
     pub(crate) size_bytes: u64,
     /// `root` or `empty`; a role a newer Cloud adds is shown as it spells it.
     pub(crate) role: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(optional)]
     pub(crate) available_bytes: Option<u64>,
 }
@@ -174,7 +213,9 @@ pub(crate) enum ReportDocker {
     Absent,
     Present {
         version: String,
+        #[serde(default, deserialize_with = "lenient")]
         api: String,
+        #[serde(default, deserialize_with = "lenient")]
         compatible: bool,
     },
     /// A kind this release does not know, which a newer Cloud may serve.
@@ -182,12 +223,13 @@ pub(crate) enum ReportDocker {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Cgroup {
     V1,
     V2,
     Hybrid,
+    #[default]
     #[serde(other)]
     Unknown,
 }
@@ -199,6 +241,7 @@ pub(crate) enum ReportZfs {
         targets: Vec<ReportTarget>,
         #[serde(
             default,
+            deserialize_with = "lenient",
             rename = "buildMinutes",
             skip_serializing_if = "Option::is_none"
         )]
@@ -206,6 +249,7 @@ pub(crate) enum ReportZfs {
         build_minutes: Option<u32>,
     },
     Ineligible {
+        #[serde(default, deserialize_with = "lenient")]
         code: String,
         message: String,
     },
@@ -599,7 +643,7 @@ pub(super) fn host_report(
         kernel: facts.kernel,
         arch: facts.arch,
         virt: virt(facts.virt),
-        cpu_count: facts.cpu_count.unwrap_or(0),
+        cpu_count: facts.cpu_count.unwrap_or(0).into(),
         memory_total_bytes: facts.memory_total_bytes.unwrap_or(0),
         disks: facts
             .disks
