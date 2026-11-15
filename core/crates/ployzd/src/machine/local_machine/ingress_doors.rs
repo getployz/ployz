@@ -453,14 +453,14 @@ impl LocalMachine {
         let containers = self.docker()?.clone();
         self.door_effect()?;
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.door_effect()?;
-            let inventory = containers.door_inventory(&local.record().id()).await?;
+            let inventory = containers.doors().door_inventory(&local.record().id()).await?;
             for entry in inventory
                 .iter()
                 .filter(|entry| shares_holders_netns(entry) && !entry.facts.at_rest())
             {
-                match containers.stop(&entry.facts.id, None, None).await {
+                match containers.lifecycle().stop(&entry.facts.id, None, None).await {
                     Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
                     Err(error) => return Err(error.into()),
                 }
@@ -492,7 +492,7 @@ impl LocalMachine {
                 .chain(pinned.tunnel.iter().flat_map(TunnelSpecs::specs))
             {
                 containers
-                    .prepare_pinned_image(&spec.container.image)
+                    .doors().prepare_pinned_image(&spec.container.image)
                     .await?;
             }
             if let Some(sealed) = &held.sealed {
@@ -526,10 +526,10 @@ impl LocalMachine {
         self.door_effect()?;
         let specs = specs.clone();
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.door_effect()?;
             let machine_id = local.record().id();
-            let inventory = containers.door_inventory(&machine_id).await?;
+            let inventory = containers.doors().door_inventory(&machine_id).await?;
             let specs = match legacy {
                 Legacy::Caddy => doors_as_found(
                     &inventory,
@@ -543,6 +543,7 @@ impl LocalMachine {
                 .chain(specs.tunnel.iter().flat_map(TunnelSpecs::specs))
             {
                 containers
+                    .doors()
                     .prepare_pinned_image(&spec.container.image)
                     .await?;
             }
@@ -636,7 +637,7 @@ impl LocalMachine {
         };
         let mut connector_stays = false;
         for retiree in plan.retirees() {
-            match containers.remove(&retiree.id, true, true).await {
+            match containers.lifecycle().remove(&retiree.id, true, true).await {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 // Stopped and held, it serves nothing, and the next call retires it.
@@ -709,7 +710,7 @@ impl LocalMachine {
         effects: &mut Effects,
     ) -> Result<(), Error> {
         self.door_effect()?;
-        match containers.stop(&retiree.id, None, None).await {
+        match containers.lifecycle().stop(&retiree.id, None, None).await {
             Ok(()) => {
                 if retiree.running {
                     effects.stopped.push(retiree.id);
@@ -743,7 +744,10 @@ impl LocalMachine {
                 (id, DoorChange::Created)
             }
         };
-        let now = containers.inspect_managed(&id, &self.record().id()).await?;
+        let now = containers
+            .observation()
+            .inspect_managed(&id, &self.record().id())
+            .await?;
         Ok(DoorOutcome { now, change })
     }
 
@@ -763,7 +767,7 @@ impl LocalMachine {
             }
             JoinedStep::Rejoin(id) => {
                 self.door_effect()?;
-                containers.stop(id, None, None).await?;
+                containers.lifecycle().stop(id, None, None).await?;
                 self.start_door(containers, id, Gate::Ingress).await?;
                 (*id, DoorChange::Rejoined)
             }
@@ -775,7 +779,10 @@ impl LocalMachine {
                 (id, DoorChange::Created)
             }
         };
-        let now = containers.inspect_managed(&id, &self.record().id()).await?;
+        let now = containers
+            .observation()
+            .inspect_managed(&id, &self.record().id())
+            .await?;
         Ok(DoorOutcome { now, change })
     }
 
@@ -801,7 +808,7 @@ impl LocalMachine {
         if self
             .containers
             .as_ref()
-            .is_some_and(ContainerRuntime::departing)
+            .is_some_and(|containers| containers.lifecycle().departing())
         {
             return Err(Error::Departing {
                 server: machine.name.clone(),
@@ -818,11 +825,12 @@ impl LocalMachine {
         gate: Gate,
     ) -> Result<(), Error> {
         self.reserved_effect(gate)?;
-        containers.start(id).await?;
+        containers.lifecycle().start(id).await?;
         let machine_id = self.record().id();
         let deadline = tokio::time::Instant::now() + DOOR_START_WAIT;
         loop {
             let runtime = containers
+                .observation()
                 .inspect_managed(id, &machine_id)
                 .await?
                 .runtime
@@ -882,7 +890,7 @@ impl LocalMachine {
     ) -> Error {
         let mut cleared = true;
         for id in effects.created.iter().rev() {
-            if let Err(removal) = containers.remove(id, true, true).await {
+            if let Err(removal) = containers.lifecycle().remove(id, true, true).await {
                 cleared = false;
                 error = Error::Cleanup(format!(
                     "{}; removing the new Ingress door {id} failed too: {}",
@@ -892,7 +900,7 @@ impl LocalMachine {
             }
         }
         for id in effects.started.iter().rev() {
-            if let Err(stop) = containers.stop(id, None, None).await {
+            if let Err(stop) = containers.lifecycle().stop(id, None, None).await {
                 cleared = false;
                 error = Error::Cleanup(format!(
                     "{}; stopping the Ingress door {id} again failed too: {}",
@@ -912,7 +920,7 @@ impl LocalMachine {
             };
         }
         for id in effects.stopped.iter().rev() {
-            if let Err(restart) = containers.start(id).await {
+            if let Err(restart) = containers.lifecycle().start(id).await {
                 error = Error::Cleanup(format!(
                     "{}; starting the previous Ingress door {id} again failed: {}",
                     ployz_core::error_chain::inline(&error),

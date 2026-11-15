@@ -287,12 +287,13 @@ impl LocalMachine {
                     let (_leaving, reads) = match reads {
                         GuardReads::LastIn(routed) => {
                             let recorded = containers
+                                .observation()
                                 .rotations(vec![id])
                                 .await?
                                 .remove(&id)
                                 .unwrap_or_default();
                             if recorded == CopyRotation::In {
-                                let leaving = containers.leave(id);
+                                let leaving = containers.lifecycle().leave(id);
                                 let refusal = local.last_in(&copy, routed).await?;
                                 (
                                     Some(leaving),
@@ -306,7 +307,7 @@ impl LocalMachine {
                         | GuardReads::NewerIn(..)
                         | GuardReads::Decided(_)) => (None, reads),
                     };
-                    let turn = match containers.rotation_turn(&id).await {
+                    let turn = match containers.lifecycle().rotation_turn(&id).await {
                         Ok(turn) => turn,
                         Err(crate::docker::Error::ContainerNotFound(_)) => {
                             return Ok(Written::Refused(not_found_refusal(&locator)));
@@ -323,7 +324,7 @@ impl LocalMachine {
                         Checked::Allowed(to) => to,
                     };
                     if let RotationWant::In { .. } = want {
-                        let runtime = containers.inspect_runtime(&id).await?;
+                        let runtime = containers.observation().inspect_runtime(&id).await?;
                         if !super::is_running(&runtime) {
                             return Ok(Written::NotRunning(runtime));
                         }
@@ -442,7 +443,11 @@ impl LocalMachine {
             })
             .map(|observed| (observed.container_id, observed.copy_gen()))
             .collect::<Vec<_>>();
-        for local in containers.service_copies(&copy.service).await? {
+        for local in containers
+            .observation()
+            .service_copies(&copy.service)
+            .await?
+        {
             if local.rotation != CopyRotation::In
                 || Some(local.container_id) == copy.id
                 || local.r#gen <= copy.r#gen
@@ -453,7 +458,7 @@ impl LocalMachine {
                 newer.push((local.container_id, local.r#gen));
                 continue;
             }
-            let spec = containers.spec(&local.container_id).await?;
+            let spec = containers.observation().spec(&local.container_id).await?;
             if spec.is_none_or(|spec| supersedes(&spec, &copy.spec)) {
                 newer.push((local.container_id, local.r#gen));
             }
@@ -643,7 +648,7 @@ impl LocalMachine {
             BTreeMap::new()
         } else {
             let containers = self.docker()?;
-            containers.rotations(local).await?
+            containers.observation().rotations(local).await?
         };
         Ok(others
             .into_iter()
@@ -678,12 +683,12 @@ pub(super) async fn start_fenced(
     run: Option<DeploymentLogId>,
     expect: Option<&CopyRotation>,
 ) -> Result<Option<ContainerRefusal>, Error> {
-    let turn = containers.rotation_turn(id).await?;
+    let turn = containers.lifecycle().rotation_turn(id).await?;
     match decide(turn.rotation(), &RotationWant::In { run }, expect) {
         Checked::Refused(refusal) => return Ok(Some(refusal)),
         Checked::Met | Checked::Allowed(_) => {}
     }
-    containers.start(id).await?;
+    containers.lifecycle().start(id).await?;
     drop(turn);
     Ok(None)
 }

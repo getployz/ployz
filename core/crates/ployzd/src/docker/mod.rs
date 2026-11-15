@@ -2,13 +2,16 @@ pub(crate) mod bridge_address;
 mod checks;
 mod create;
 mod doors;
+pub use doors::Doors;
 mod error;
 pub(crate) use doors::{Door, DoorEntry};
 #[cfg(test)]
 pub(crate) use doors::{DoorFacts, NetnsId};
 mod http_health;
 mod images;
+pub use images::Images;
 mod lifecycle;
+pub use lifecycle::Lifecycle;
 mod limits;
 mod managed_service;
 mod observe;
@@ -18,11 +21,15 @@ mod recovery;
 pub(crate) use peer_pull::ImageProxy;
 mod private_access;
 mod spec_store;
+mod standing;
+use standing::Standing;
+pub use standing::{Leaving, Withdrawal};
 mod stream;
 mod telemetry;
 mod tunnel_token;
 mod unregistry;
 mod volume;
+pub use volume::Volumes;
 
 #[cfg(test)]
 mod integration_tests;
@@ -43,14 +50,13 @@ use std::{
 use bollard::{
     Docker,
     models::{ContainerInspectResponse, HealthConfig, ImageManifestSummaryKindEnum},
-    query_parameters::{ListContainersOptionsBuilder, ListImagesOptionsBuilder},
+    query_parameters::ListContainersOptionsBuilder,
 };
-use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName, Evidence, Gen,
-    HealthObservation, HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages,
-    MachineTelemetry, QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
+    ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName, Evidence, Gen,
+    HealthObservation, HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineTelemetry,
+    QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -280,7 +286,7 @@ impl LocalDocker {
     }
 }
 
-/// One of this Machine's copies of a Service, from [`ContainerRuntime::service_copies`].
+/// One of this Machine's copies of a Service, from [`Observation::service_copies`].
 #[derive(Clone, Debug)]
 pub struct ServiceCopy {
     pub container_id: ContainerId,
@@ -293,7 +299,7 @@ pub struct ServiceCopy {
 /// One existing copy's rotation, read under the lock `remove` takes and held until
 /// the rotation is written or the Container stopped or removed.
 pub struct RotationTurn<'a> {
-    runtime: &'a ContainerRuntime,
+    runtime: &'a Lifecycle,
     operation: spec_store::ConfigOperation<'a>,
     container_id: ContainerId,
     rotation: ployz_core::CopyRotation,
@@ -317,11 +323,11 @@ impl RotationTurn<'_> {
             .await?)
     }
 
-    /// Remove the Container and its records, as [`ContainerRuntime::remove`] does.
+    /// Remove the Container and its records, as [`Lifecycle::remove`] does.
     ///
     /// # Errors
     ///
-    /// As [`ContainerRuntime::remove`].
+    /// As [`Lifecycle::remove`].
     pub async fn remove(mut self, remove_volumes: bool, force: bool) -> Result<(), Error> {
         self.runtime
             .remove_locked(
@@ -338,144 +344,231 @@ impl RotationTurn<'_> {
 pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
-    sink: Option<ObservationSink>,
-    stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
-    leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
+    settings: Settings,
+    images: Images,
+    volumes: Volumes,
+    observation: Observation,
+    doors: Doors,
+    lifecycle: Lifecycle,
     first_synced: watch::Sender<bool>,
-    checks: Arc<std::sync::Mutex<CheckRecords>>,
-    recovery: IngressRecovery,
-    /// Serializes every holder and Caddy lifecycle (a route, a legacy translation and
-    /// recovery), so no two of them place or retire the Ingress doors at once. Taken
-    /// before the admission turn and before any per-id gate.
-    doors: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// What the builders set, which the handles are assembled from.
+#[derive(Clone)]
+struct Settings {
     sealing_key_dir: Option<PathBuf>,
     /// Where Machine paths such as the tunnel token's resolve. `/` outside tests.
     machine_root: PathBuf,
     log_store: LogStore,
-    /// Set when a Leave begins removing every managed Container, and cleared only when
-    /// that Leave fails, so a committed Leave keeps it set.
-    departure: lifecycle::Departure,
+    sink: Option<ObservationSink>,
+}
+
+/// What Docker and the Machine database say about the managed Containers, read without
+/// changing either: inspects, the inventory and the records of each copy.
+#[derive(Clone)]
+pub struct Observation {
+    docker: LocalDocker,
+    specs: MachineSpecStore,
+    standing: Standing,
+    checks: Arc<std::sync::Mutex<CheckRecords>>,
+    sealing_key_dir: Option<PathBuf>,
 }
 
 impl ContainerRuntime {
     #[must_use]
     pub fn new(docker: LocalDocker, specs: MachineSpecStore) -> Self {
-        Self {
+        Self::assemble(
             docker,
             specs,
-            sink: None,
-            stopping: watch::Sender::new(BTreeMap::new()),
-            leaving: Arc::default(),
-            first_synced: watch::Sender::new(false),
+            Settings {
+                sealing_key_dir: None,
+                machine_root: PathBuf::from("/"),
+                log_store: LogStore::default(),
+                sink: None,
+            },
+        )
+    }
+
+    /// The handles over one Docker client and spec store, each given what it reads.
+    fn assemble(docker: LocalDocker, specs: MachineSpecStore, settings: Settings) -> Self {
+        let standing = Standing::new();
+        let observation = Observation {
+            docker: docker.clone(),
+            specs: specs.clone(),
+            standing: standing.clone(),
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
+            sealing_key_dir: settings.sealing_key_dir.clone(),
+        };
+        let images = Images::new(docker.clone());
+        let volumes = Volumes::new(docker.clone());
+        let doors = Doors::new(docker.clone(), observation.clone());
+        let lifecycle = Lifecycle {
+            docker: docker.clone(),
+            specs: specs.clone(),
+            observation: observation.clone(),
+            volumes: volumes.clone(),
+            doors: doors.clone(),
+            images: images.clone(),
+            standing,
             recovery: IngressRecovery::default(),
-            doors: Arc::default(),
-            sealing_key_dir: None,
-            machine_root: PathBuf::from("/"),
-            log_store: LogStore::default(),
+            log_store: settings.log_store.clone(),
             departure: lifecycle::Departure::default(),
+        };
+        Self {
+            images,
+            volumes,
+            observation,
+            doors,
+            lifecycle,
+            docker,
+            specs,
+            settings,
+            first_synced: watch::Sender::new(false),
         }
+    }
+
+    /// Builds the runtime again with `change` made to its settings. A builder runs
+    /// before the runtime is used, so nothing it forgets was set.
+    fn configured(self, change: impl FnOnce(&mut Settings)) -> Self {
+        let mut settings = self.settings;
+        change(&mut settings);
+        Self::assemble(self.docker, self.specs, settings)
     }
 
     /// Resolves Machine paths under `root` instead of `/`.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_machine_root(mut self, root: PathBuf) -> Self {
-        self.machine_root = root;
-        self
+    pub(crate) fn with_machine_root(self, root: PathBuf) -> Self {
+        self.configured(|settings| settings.machine_root = root)
     }
 
-    /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so
-    /// work detached from its caller holds it until that work ends.
-    pub(crate) async fn door_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        Arc::clone(&self.doors).lock_owned().await
+    /// What Docker holds as images on this Machine.
+    #[must_use]
+    pub fn images(&self) -> &Images {
+        &self.images
+    }
+
+    /// What Docker holds as Volumes on this Machine.
+    #[must_use]
+    pub fn volumes(&self) -> &Volumes {
+        &self.volumes
+    }
+
+    /// What Docker and the Machine database say about the managed Containers.
+    #[must_use]
+    pub fn observation(&self) -> &Observation {
+        &self.observation
+    }
+
+    /// The reserved Ingress doors and the lock their lifecycle takes.
+    #[must_use]
+    pub fn doors(&self) -> &Doors {
+        &self.doors
+    }
+
+    /// Creating, starting, stopping and removing the managed Containers.
+    #[must_use]
+    pub fn lifecycle(&self) -> &Lifecycle {
+        &self.lifecycle
     }
 
     /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
     #[must_use]
-    pub fn with_sealing_key(mut self, data_dir: PathBuf) -> Self {
-        self.sealing_key_dir = Some(data_dir);
-        self
+    pub fn with_sealing_key(self, data_dir: PathBuf) -> Self {
+        self.configured(|settings| settings.sealing_key_dir = Some(data_dir))
     }
 
     #[must_use]
-    pub(crate) fn with_log_store(mut self, log_store: LogStore) -> Self {
-        self.log_store = log_store;
-        self
+    pub(crate) fn with_log_store(self, log_store: LogStore) -> Self {
+        self.configured(|settings| settings.log_store = log_store)
     }
 
-    /// Whether a Leave is removing every managed Container here, or has committed. A
-    /// Container call that overlapped it met the Leave's stops.
+    #[cfg(test)]
+    pub(crate) fn stopping_ids_for_test(&self) -> std::collections::BTreeSet<ContainerId> {
+        self.lifecycle.standing.withdrawn_ids()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn subscribe_stopping_for_test(
+        &self,
+    ) -> watch::Receiver<BTreeMap<ContainerId, usize>> {
+        self.lifecycle.standing.subscribe()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spec_store_path_for_test(&self) -> &std::path::Path {
+        self.specs.path_for_test()
+    }
+
     #[must_use]
-    pub fn departing(&self) -> bool {
-        self.departure.under_way()
+    pub(crate) fn local_docker(&self) -> LocalDocker {
+        self.docker.clone()
     }
 
-    /// A Leave that failed leaves this Machine in the Cluster, taking Container work again.
-    pub fn departure_failed(&self) {
-        self.departure.failed();
-    }
-
-    pub async fn floor_turn(&self) -> FloorTurn<'_> {
-        self.specs.floor_turn().await
-    }
-
-    pub async fn clear_floors(&self) -> Result<(), Error> {
-        Ok(self.specs.clear_floors().await?)
-    }
-
-    /// Take the lock `remove` takes and read a copy's rotation under it, so no other
-    /// rotation write or removal lands before the turn is spent.
+    /// Read fresh Docker bridge and host telemetry.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ContainerNotFound`] when Docker no longer has the Container,
-    /// and when the Machine database cannot be read.
-    pub async fn rotation_turn(
-        &self,
-        container_id: &ContainerId,
-    ) -> Result<RotationTurn<'_>, Error> {
-        let operation = self.specs.config_operation().await;
-        self.ensure_managed(container_id).await?;
-        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
-        Ok(RotationTurn {
-            runtime: self,
-            operation,
-            container_id: *container_id,
-            rotation,
-        })
+    /// Returns when Docker or a required host probe cannot be read.
+    pub(crate) async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
+        self.docker.telemetry().await
     }
 
-    /// Record that this Machine stopped `run` of the Container for a `Stopped` want.
-    /// Observations of that run, once exited, report it stopped; a later run does not.
+    /// Read fresh Ployz bridge endpoint capacity.
     ///
     /// # Errors
     ///
-    /// Returns when the Machine database cannot be written.
-    pub async fn record_stop(
+    /// Returns when Docker cannot inspect the Ployz bridge.
+    pub(crate) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
+        self.docker.bridge_capacity().await
+    }
+
+    pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
+        self.observation.sealing_key_dir()
+    }
+
+    pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {
+        Ok(Self::new(
+            LocalDocker::connect()?,
+            MachineSpecStore::open(spec_store).await?,
+        ))
+    }
+}
+
+impl Observation {
+    /// Drop what the daemon remembers about a container Docker no longer has.
+    pub(super) fn forget(&self, container_id: &ContainerId) {
+        self.checks
+            .lock()
+            .expect("check records are never poisoned")
+            .forget(container_id);
+    }
+
+    pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
+        self.sealing_key_dir.as_deref()
+    }
+
+    pub(super) async fn ensure_managed(
         &self,
         container_id: &ContainerId,
-        run: &ployz_core::ContainerRun,
-    ) -> Result<(), Error> {
-        Ok(self
-            .specs
-            .config_operation()
+    ) -> Result<ContainerInspectResponse, Error> {
+        let inspected = self
+            .docker
+            .client
+            .inspect_container(container_id.as_str(), None)
             .await
-            .set_stopped(container_id, run)
-            .await?)
-    }
-
-    /// The recorded rotations of `container_ids`, in one read. A copy that never left
-    /// Pending has no entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns when the Machine database cannot be read.
-    pub async fn rotations(
-        &self,
-        container_ids: Vec<ContainerId>,
-    ) -> Result<BTreeMap<ContainerId, ployz_core::CopyRotation>, Error> {
-        Ok(self.specs.rotations(container_ids).await?)
+            .map_err(|error| docker_error(container_id, error))?;
+        let labels = inspected
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .ok_or(Error::NotManaged)?;
+        ServiceLabels::parse(labels)?;
+        self.specs
+            .get(container_id)
+            .await?
+            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
+        Ok(inspected)
     }
 
     /// The full spec this Machine recorded when it created `container_id`.
@@ -490,170 +583,17 @@ impl ContainerRuntime {
         Ok(self.specs.get(container_id).await?)
     }
 
-    /// Report this Container as `stopping` until the returned Withdrawal drops,
-    /// so the Ingress Proxies stop routing to it before it stops. Each operation
-    /// holds its own; the Container returns to ingress once none is held.
-    pub fn withdraw(&self, container_id: ContainerId) -> Withdrawal {
-        self.stopping.send_if_modified(|stopping| {
-            let held = stopping.entry(container_id).or_default();
-            *held += 1;
-            *held == 1
-        });
-        Withdrawal {
-            stopping: self.stopping.clone(),
-            container_id,
-        }
-    }
-
-    /// Mark this Container leaving until the returned guard drops, so a peer's inspect
-    /// reports it. The caller holds the Machine's exclusive admission turn.
-    #[must_use]
-    pub fn leave(&self, container_id: ContainerId) -> Leaving {
-        self.leaving
-            .lock()
-            .expect("leaving marks lock")
-            .insert(container_id);
-        Leaving {
-            leaving: Arc::clone(&self.leaving),
-            container_id,
-        }
-    }
-
-    fn is_leaving(&self, container_id: &ContainerId) -> bool {
-        self.leaving
-            .lock()
-            .expect("leaving marks lock")
-            .contains(container_id)
-    }
-
-    fn is_withdrawn(&self, container_id: &ContainerId) -> bool {
-        self.stopping.borrow().contains_key(container_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn stopping_ids_for_test(&self) -> std::collections::BTreeSet<ContainerId> {
-        self.stopping.borrow().keys().copied().collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn subscribe_stopping_for_test(
+    /// The recorded rotations of `container_ids`, in one read. A copy that never left
+    /// Pending has no entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be read.
+    pub async fn rotations(
         &self,
-    ) -> watch::Receiver<BTreeMap<ContainerId, usize>> {
-        self.stopping.subscribe()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn spec_store_path_for_test(&self) -> &std::path::Path {
-        self.specs.path_for_test()
-    }
-
-    /// Drop what the daemon remembers about a container Docker no longer has.
-    async fn forget(&self, container_id: &ContainerId) {
-        self.checks
-            .lock()
-            .expect("check records are never poisoned")
-            .forget(container_id);
-        self.recovery.forget(container_id).await;
-    }
-
-    pub async fn open(spec_store: impl Into<PathBuf>) -> Result<Self, Error> {
-        Ok(Self::new(
-            LocalDocker::connect()?,
-            MachineSpecStore::open(spec_store).await?,
-        ))
-    }
-
-    pub async fn list_images(
-        &self,
-        reference: Option<&str>,
-        last_tagged: bool,
-    ) -> Result<MachineImages, Error> {
-        let filters = reference
-            .map(|reference| HashMap::from([("reference", vec![reference])]))
-            .unwrap_or_default();
-        let options = ListImagesOptionsBuilder::default()
-            .all(true)
-            .filters(&filters)
-            .manifests(true)
-            .build();
-        let listed = self.docker.client.list_images(Some(options)).await?;
-        let tagged = if last_tagged {
-            futures_util::future::try_join_all(
-                listed.iter().map(|image| self.last_tagged(&image.id)),
-            )
-            .await?
-        } else {
-            vec![None; listed.len()]
-        };
-        let images = listed
-            .into_iter()
-            .zip(tagged)
-            .map(|(image, last_tagged)| ImageSummary {
-                last_tagged,
-                ..project_image(image)
-            })
-            .collect();
-        let info = self.docker.client.info().await?;
-        Ok(MachineImages {
-            containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
-            images,
-            docker_root: info
-                .docker_root_dir
-                .and_then(|root| crate::host_capacity::filesystem_space(&root).ok())
-                .map(|(total_bytes, free_bytes)| DiskSpace {
-                    total_bytes,
-                    free_bytes,
-                }),
-        })
-    }
-
-    #[must_use]
-    pub(crate) fn local_docker(&self) -> LocalDocker {
-        self.docker.clone()
-    }
-
-    pub async fn list_managed(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<Vec<ContainerObservation>, Error> {
-        let mut observations = Vec::new();
-        let mut inspected = futures_util::stream::iter(self.managed_inventory().await?)
-            .map(|container_id| async move {
-                (
-                    container_id,
-                    self.inspect_managed(&container_id, machine_id).await,
-                )
-            })
-            .buffered(8);
-        while let Some((container_id, result)) = inspected.next().await {
-            match result {
-                Ok(observation) => observations.push(observation),
-                Err(Error::SpecNotFound(_))
-                    if self
-                        .discard_half_made(&container_id)
-                        .await
-                        .unwrap_or_else(|error| {
-                            eprintln!(
-                                "couldn't remove container {container_id}, which has no spec: {error}",
-                                error = ployz_core::error_chain::inline(&error),
-                            );
-                            false
-                        }) =>
-                {
-                    eprintln!(
-                        "removed container {container_id}, which a crash left without its spec before it started"
-                    );
-                }
-                Err(error) if malformed_container(&error) => {
-                    eprintln!(
-                        "ignoring malformed managed container {container_id}: {error}",
-                        error = ployz_core::error_chain::inline(&error),
-                    );
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(observations)
+        container_ids: Vec<ContainerId>,
+    ) -> Result<BTreeMap<ContainerId, ployz_core::CopyRotation>, Error> {
+        Ok(self.specs.rotations(container_ids).await?)
     }
 
     /// Every managed Container's ID. A Container a container-level restore recreated
@@ -815,24 +755,6 @@ impl ContainerRuntime {
             .collect())
     }
 
-    /// Read fresh Docker bridge and host telemetry.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker or a required host probe cannot be read.
-    pub(crate) async fn telemetry(&self) -> Result<MachineTelemetry, Error> {
-        self.docker.telemetry().await
-    }
-
-    /// Read fresh Ployz bridge endpoint capacity.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker cannot inspect the Ployz bridge.
-    pub(crate) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
-        self.docker.bridge_capacity().await
-    }
-
     /// Docker's runtime state for `container_id`. No health check runs.
     ///
     /// # Errors
@@ -903,10 +825,6 @@ impl ContainerRuntime {
         )?)
     }
 
-    pub(crate) fn sealing_key_dir(&self) -> Option<&Path> {
-        self.sealing_key_dir.as_deref()
-    }
-
     pub async fn inspect_managed(
         &self,
         container_id: &ContainerId,
@@ -945,7 +863,7 @@ impl ContainerRuntime {
     ) -> Result<InspectedRun, Error> {
         // Before the rotation: an Out clears its mark only after it wrote Out, so an
         // answer that reads no mark then reads Out, never In from before the write.
-        let leaving = self.is_leaving(container_id);
+        let leaving = self.standing.is_leaving(container_id);
         let inspected = self.docker.inspect(container_id).await?;
         let labels = inspected
             .config
@@ -1007,7 +925,7 @@ impl ContainerRuntime {
                     ),
             };
         }
-        let runtime = withdrawn(runtime, self.is_withdrawn(container_id));
+        let runtime = withdrawn(runtime, self.standing.is_withdrawn(container_id));
         let stopped = if matches!(runtime, ContainerRuntimeObservation::Exited { .. })
             && let Some(run) = &run
         {
@@ -1061,43 +979,6 @@ pub struct InspectedRun {
     pub details: ployz_core::ContainerDetails,
     /// Docker OOM-killed a process of the run this inspect saw.
     pub oom_killed: bool,
-}
-
-/// An Out's hold on a Container's leaving mark.
-pub struct Leaving {
-    leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
-    container_id: ContainerId,
-}
-
-impl Drop for Leaving {
-    fn drop(&mut self) {
-        if let Ok(mut leaving) = self.leaving.lock() {
-            leaving.remove(&self.container_id);
-        }
-    }
-}
-
-/// One operation's hold on a Container's `stopping` mark.
-#[must_use = "the Container returns to ingress when its Withdrawal drops"]
-pub struct Withdrawal {
-    stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
-    container_id: ContainerId,
-}
-
-impl Drop for Withdrawal {
-    fn drop(&mut self) {
-        self.stopping.send_if_modified(|stopping| {
-            let Some(held) = stopping.get_mut(&self.container_id) else {
-                return false;
-            };
-            *held -= 1;
-            if *held > 0 {
-                return false;
-            }
-            stopping.remove(&self.container_id);
-            true
-        });
-    }
 }
 
 /// A Running Container marked stopping reports health `stopping`, which no proxy routes to.
@@ -3220,6 +3101,7 @@ async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
     let namespace = Namespace::parse("app").unwrap();
     let spec = test_support::spec_with_sources(Vec::new());
     let created = runtime
+        .lifecycle()
         .create_with_admission::<_, _, Error>(
             &machine,
             container_request(
@@ -3249,6 +3131,7 @@ async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
             );
         }
         let observed = runtime
+            .observation()
             .inspect_managed(&created.container_id, &machine.id)
             .await
             .unwrap();
@@ -3289,6 +3172,7 @@ mod sealed_output_tests {
     use super::*;
     use crate::sealed_env::{OpenError, test_support::Cluster};
     use crate::sealing_key::SealingKey;
+    use futures_util::StreamExt;
 
     const OPENED: &str = "opened-t0ken";
 
@@ -3339,6 +3223,7 @@ mod sealed_output_tests {
         spec.container.sealed_identity = Some(cluster.identity.clone());
         spec.container.environment.insert("TOKEN".into(), token);
         let created = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine,
                 container_request(
@@ -3537,6 +3422,7 @@ mod sealed_output_tests {
         }
         let runtime = runtime.with_sealing_key(key_dir);
         runtime
+            .observation()
             .inspect_managed_details(&id, &machine.id)
             .await
             .unwrap()

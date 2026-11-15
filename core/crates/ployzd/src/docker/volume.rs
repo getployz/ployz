@@ -15,7 +15,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ContainerRuntime, Error, Status, classify, some_map};
+use super::{Error, LocalDocker, Status, classify, some_map};
 use crate::VolumePluginStatus;
 
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
@@ -47,7 +47,17 @@ impl CreateVolumeReport {
     }
 }
 
-impl ContainerRuntime {
+/// Docker Volumes on this Machine: mounting, creating, listing, inspecting and removing.
+#[derive(Clone)]
+pub struct Volumes {
+    docker: LocalDocker,
+}
+
+impl Volumes {
+    pub(super) fn new(docker: LocalDocker) -> Self {
+        Self { docker }
+    }
+
     /// Ensure every mounted Docker Volume exists and every managed source matches exactly.
     ///
     /// # Errors

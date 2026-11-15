@@ -19,7 +19,7 @@
 //!
 //! The first finding: a member Docker refused to start stays in `bridge-stopped-members.json`
 //! (stopped.rs:64-73). The operator stops it between daemon starts, and nothing touches the note
-//! (`ContainerRuntime::stop`, core/crates/ployzd/src/docker/lifecycle.rs). The next daemon
+//! (`Lifecycle::stop`, core/crates/ployzd/src/docker/lifecycle.rs). The next daemon
 //! start's `Stopped::start` starts it again (:546, stopped.rs:60-79). A failed rewrite of the
 //! note after a start that Docker accepted keeps the member written down the same way
 //! (stopped.rs:80-93).

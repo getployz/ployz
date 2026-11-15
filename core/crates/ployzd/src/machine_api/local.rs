@@ -288,6 +288,7 @@ impl MachineService {
         }
         self.containers()
             .map_err(|error| Status::unavailable(error.message))?
+            .observation()
             .sealed_record(&id)
             .await
             .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))
@@ -609,7 +610,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         let machine_id = self.local_record().id();
-        match containers.list_managed(&machine_id).await {
+        match containers.lifecycle().list_managed(&machine_id).await {
             Ok(mut observations) => {
                 if request.environment == EnvironmentValues::Redacted {
                     observations
@@ -636,6 +637,7 @@ impl MachineRpc for MachineService {
         };
         let machine_id = self.local_record().id();
         match containers
+            .observation()
             .inspect_managed_details(&request.container_id, &machine_id)
             .await
         {
@@ -736,7 +738,7 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        match containers.list_volumes(&machine_id).await {
+        match containers.volumes().list_volumes(&machine_id).await {
             Ok(inventory) => respond(inventory),
             Err(error) => respond(RpcError::from(&error)),
         }
@@ -1127,6 +1129,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         let images = containers
+            .images()
             .list_images(request.reference.as_deref(), request.last_tagged)
             .await
             .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;

@@ -101,6 +101,7 @@ async fn moved_service_stays_routed() {
         !fleet
             .node(0)
             .runtime
+            .observation()
             .inspect_managed(&source, &fleet.node(0).row.id)
             .await
             .unwrap()

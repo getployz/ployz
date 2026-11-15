@@ -88,12 +88,18 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .unwrap()
         .clone();
     fake.existing_container.lock().unwrap().as_mut().unwrap()["Config"] = json!({"Labels": labels});
-    runtime.start(&existing.container_id).await.unwrap();
     runtime
+        .lifecycle()
+        .start(&existing.container_id)
+        .await
+        .unwrap();
+    runtime
+        .lifecycle()
         .stop(&existing.container_id, None, None)
         .await
         .unwrap();
     runtime
+        .lifecycle()
         .remove(&existing.container_id, false, false)
         .await
         .unwrap();
@@ -1497,6 +1503,7 @@ mod stopped_on_request {
         ]);
         let crashed = fixture
             .runtime
+            .observation()
             .inspect_managed(&fixture.id, &fixture.local.record().id())
             .await
             .unwrap();
@@ -1568,6 +1575,7 @@ mod stopped_on_request {
 
         fixture
             .runtime
+            .lifecycle()
             .remove(&fixture.id, true, false)
             .await
             .unwrap();
@@ -1580,6 +1588,7 @@ mod stopped_on_request {
         // A stop that lost the race to that removal records only afterwards.
         fixture
             .runtime
+            .lifecycle()
             .record_stop(
                 &fixture.id,
                 &ContainerRun {
@@ -1945,7 +1954,7 @@ mod reserved_lifecycle {
         /// Whether `want` is still unanswered while the door lifecycle lock is held, and
         /// its answer once the lock is released.
         async fn under_the_lock(&self, want: ContainerWant) -> (bool, EnsuredContainer) {
-            let held = self.runtime.door_lifecycle().await;
+            let held = self.runtime.doors().hold().await;
             let local = self.local.clone();
             let ensuring = tokio::spawn(async move { local.ensure_container(want).await });
             // real-wait: the want reaches the lock through the fake Docker's TCP socket,
@@ -1997,6 +2006,7 @@ mod reserved_lifecycle {
         assert_eq!(
             fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &fixture.local.record().id())
                 .await
                 .unwrap()
@@ -2038,6 +2048,7 @@ mod reserved_lifecycle {
         assert_eq!(
             fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &fixture.local.record().id())
                 .await
                 .unwrap()

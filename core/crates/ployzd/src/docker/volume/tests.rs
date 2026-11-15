@@ -29,6 +29,7 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
     ]);
 
     runtime
+        .volumes()
         .ensure_mounted_volumes(&MachineId::random(), &managed)
         .await
         .unwrap();
@@ -55,6 +56,7 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
             .unwrap(),
     ]);
     runtime
+        .volumes()
         .ensure_mounted_volumes(&MachineId::random(), &external)
         .await
         .unwrap();
@@ -68,6 +70,7 @@ async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
 
     assert!(matches!(
         runtime
+            .lifecycle()
             .create_with_admission(
                 &machine(),
                 container_request(
@@ -82,6 +85,7 @@ async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
     ));
     assert!(matches!(
         runtime
+            .lifecycle()
             .create_with_admission(
                 &machine(),
                 container_request(
@@ -107,7 +111,7 @@ async fn inventory_reads_provisioned_details_and_keeps_healthy_siblings() {
     let (runtime, fake) = fake_runtime().await;
     let machine_id = MachineId::random();
 
-    let inventory = runtime.list_volumes(&machine_id).await.unwrap();
+    let inventory = runtime.volumes().list_volumes(&machine_id).await.unwrap();
 
     assert_eq!(
         inventory
@@ -146,7 +150,7 @@ async fn failed_ployz_listing_reports_its_volumes_without_inspecting_them() {
     );
     let machine_id = MachineId::random();
 
-    let inventory = runtime.list_volumes(&machine_id).await.unwrap();
+    let inventory = runtime.volumes().list_volumes(&machine_id).await.unwrap();
 
     assert_eq!(
         inventory
@@ -191,6 +195,7 @@ async fn direct_lookup_does_not_enumerate_unrelated_volumes() {
     let machine_id = MachineId::random();
 
     let volume = runtime
+        .volumes()
         .inspect_volume(&machine_id, &DockerVolumeName::parse("healthy").unwrap())
         .await
         .unwrap();
@@ -244,6 +249,7 @@ async fn external_volume_is_checked_for_existence_only() {
     .expect("valid volume declaration");
 
     runtime
+        .volumes()
         .ensure_volume_source(&MachineId::random(), &source)
         .await
         .unwrap();
@@ -272,6 +278,7 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
     source.scope_to_namespace(&ployz_core::Namespace::parse("app").unwrap());
 
     runtime
+        .volumes()
         .ensure_volume_source(&MachineId::random(), &source)
         .await
         .unwrap();
@@ -305,6 +312,7 @@ async fn normalized_local_driver_uses_no_options() {
     source.scope_to_namespace(&ployz_core::Namespace::parse("app").unwrap());
 
     runtime
+        .volumes()
         .ensure_volume_source(&MachineId::random(), &source)
         .await
         .unwrap();
@@ -324,6 +332,7 @@ async fn missing_provisioned_volume_uses_ployz_driver_bound_and_labels() {
     let source = provisioned_source("bounded", 2_147_483_648);
 
     runtime
+        .volumes()
         .ensure_volume_source(&MachineId::random(), &source)
         .await
         .unwrap();
@@ -359,6 +368,7 @@ async fn existing_managed_volume_allows_extra_labels() {
     );
 
     runtime
+        .volumes()
         .ensure_volume_source(&MachineId::random(), &ordinary_source("ordinary"))
         .await
         .unwrap();
@@ -422,6 +432,7 @@ async fn existing_managed_volume_refuses_every_unsafe_shape_mismatch() {
         fake.volumes.lock().unwrap().insert(name, observed);
         assert!(matches!(
             runtime
+                .volumes()
                 .ensure_volume_source(&MachineId::random(), &source)
                 .await,
             Err(Error::VolumeShapeMismatch { .. })
@@ -446,9 +457,10 @@ async fn missing_external_volume_fails_without_create() {
     .expect("valid volume declaration");
 
     assert!(matches!(
-        runtime.ensure_volume_source(&MachineId::random(), &source).await,
-        Err(Error::ExternalVolumeNotFound(name)) if name.as_str() == "external-missing"
-    ));
+            runtime.volumes()
+    .ensure_volume_source(&MachineId::random(), &source).await,
+            Err(Error::ExternalVolumeNotFound(name)) if name.as_str() == "external-missing"
+        ));
     assert!(
         fake.requests
             .lock()
@@ -469,6 +481,7 @@ async fn created_but_unverified_error_keeps_identity_and_retry_inspects_without_
     let source = ordinary_source("retry-volume");
 
     let error = runtime
+        .volumes()
         .ensure_volume_source(&machine_id, &source)
         .await
         .unwrap_err();
@@ -488,6 +501,7 @@ async fn created_but_unverified_error_keeps_identity_and_retry_inspects_without_
     );
 
     runtime
+        .volumes()
         .ensure_volume_source(&machine_id, &source)
         .await
         .unwrap();
@@ -526,6 +540,7 @@ async fn a_later_volume_failure_does_not_roll_back_an_earlier_create() {
 
     assert!(matches!(
         runtime
+            .volumes()
             .ensure_mounted_volumes(&MachineId::random(), &spec)
             .await,
         Err(Error::VolumeShapeMismatch { .. })
@@ -556,6 +571,7 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
 
     assert!(
         runtime
+            .lifecycle()
             .create_with_admission(
                 &machine(),
                 container_request(
@@ -603,6 +619,7 @@ async fn inspect_rejects_a_mismatched_volume_identity() {
     let machine_id = MachineId::random();
 
     let error = runtime
+        .volumes()
         .inspect_volume(&machine_id, &DockerVolumeName::parse("mismatched").unwrap())
         .await
         .unwrap_err();
@@ -619,7 +636,7 @@ async fn list_reports_a_mismatched_detail_under_the_requested_name() {
     let (runtime, _) = fake_runtime().await;
     let machine_id = MachineId::random();
 
-    let inventory = runtime.list_volumes(&machine_id).await.unwrap();
+    let inventory = runtime.volumes().list_volumes(&machine_id).await.unwrap();
 
     let failure = inventory
         .failures
@@ -636,6 +653,7 @@ async fn list_returns_a_top_level_collection_error() {
     fake.reject_list.store(true, Ordering::Relaxed);
 
     let error = runtime
+        .volumes()
         .list_volumes(&MachineId::random())
         .await
         .unwrap_err();
@@ -649,6 +667,7 @@ async fn create_reports_mutation_success_separately_from_failed_verification() {
     let machine_id = MachineId::random();
 
     let report = runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -688,6 +707,7 @@ async fn create_returns_docker_rejection_as_an_error() {
     let (runtime, _) = fake_runtime().await;
 
     let error = runtime
+        .volumes()
         .create_volume(
             &MachineId::random(),
             CreateVolumeRequest {
@@ -733,7 +753,11 @@ async fn in_use_volume_names_the_service_that_mounts_it() {
     let (runtime, _) = fake_runtime_with(fake).await;
     let volume = DockerVolumeName::parse(name).unwrap();
 
-    let error = runtime.remove_volume(&volume, false).await.unwrap_err();
+    let error = runtime
+        .volumes()
+        .remove_volume(&volume, false)
+        .await
+        .unwrap_err();
     let rpc = ployz_core::RpcError::from(&error);
 
     assert!(matches!(error, Error::VolumeInUse { .. }), "{error}");
@@ -749,7 +773,11 @@ async fn in_use_volume_names_the_service_that_mounts_it() {
         Some(&serde_json::json!(["cashdash/cashdash-singlestore"]))
     );
 
-    let forced = runtime.remove_volume(&volume, true).await.unwrap_err();
+    let forced = runtime
+        .volumes()
+        .remove_volume(&volume, true)
+        .await
+        .unwrap_err();
     assert!(matches!(forced, Error::VolumeInUse { .. }), "{forced}");
     assert!(
         forced
@@ -769,7 +797,11 @@ async fn in_use_volume_names_the_service_that_mounts_it() {
         .unwrap()
         .insert(name.into(), vec![serde_json::json!({"Id": "c".repeat(64)})]);
     let (runtime, _) = fake_runtime_with(unlabeled).await;
-    let error = runtime.remove_volume(&volume, true).await.unwrap_err();
+    let error = runtime
+        .volumes()
+        .remove_volume(&volume, true)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("volume is in use"), "{error}");
     assert!(
         !error.to_string().contains("cashdash/"),
@@ -875,6 +907,7 @@ async fn preparation_rejects_conflicting_definitions_without_creating_a_volume()
     .collect::<Vec<_>>();
     assert!(matches!(
         runtime
+            .volumes()
             .validate_provisioned_volumes(&MachineId::random(), &specs)
             .await,
         Err(Error::VolumeShapeMismatch { .. })
@@ -896,6 +929,7 @@ async fn a_volume_planted_under_an_approved_name_is_refused_at_use() {
     );
     assert!(matches!(
         runtime
+            .volumes()
             .ensure_volume_source(&MachineId::random(), &approved)
             .await,
         Err(Error::VolumeShapeMismatch { .. })
@@ -914,31 +948,35 @@ async fn a_volume_planted_under_an_approved_name_is_refused_at_use() {
             "Labels":{"ployz.managed":"","ployz.namespace":"other"}}),
     );
     assert!(matches!(
-        runtime
-            .refuse_managed_external(&MachineId::random(), &external)
-            .await,
-        Err(Error::VolumeShapeMismatch { name: refused, .. }) if refused == name
-    ));
+            runtime
+                .volumes()
+    .refuse_managed_external(&MachineId::random(), &external)
+                .await,
+            Err(Error::VolumeShapeMismatch { name: refused, .. }) if refused == name
+        ));
     fake.volumes.lock().unwrap().insert(
         name.to_string(),
         serde_json::json!({"Name":"shared","Driver":"local","Mountpoint":"/volumes/shared"}),
     );
     runtime
+        .volumes()
         .refuse_managed_external(&MachineId::random(), &external)
         .await
         .unwrap();
     // A missing External Volume passes here, so the mount check names it as it always did.
     fake.volumes.lock().unwrap().remove(name.as_str());
     runtime
+        .volumes()
         .refuse_managed_external(&MachineId::random(), &external)
         .await
         .unwrap();
     assert!(matches!(
-        runtime
-            .ensure_mounted_volumes(&MachineId::random(), &external)
-            .await,
-        Err(Error::ExternalVolumeNotFound(missing)) if missing == name
-    ));
+            runtime
+                .volumes()
+    .ensure_mounted_volumes(&MachineId::random(), &external)
+                .await,
+            Err(Error::ExternalVolumeNotFound(missing)) if missing == name
+        ));
 }
 
 #[test]

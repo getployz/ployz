@@ -511,7 +511,7 @@ impl BootHost for DaemonHost {
             return self
                 .machine
                 .containers()?
-                .inspect_managed(&container, &machine)
+                .observation().inspect_managed(&container, &machine)
                 .await
                 .inspect_err(|error| {
                     tracing::debug!(error = %ployz_core::error_chain::inline(error), "boot pass could not inspect {container}");

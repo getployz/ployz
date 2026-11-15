@@ -13,7 +13,7 @@ use std::{
 use ployz_core::ContainerId;
 
 use super::{
-    ContainerRuntime, Error,
+    Error, Lifecycle,
     doors::{self, Door, DoorFacts},
     lifecycle::{failed_start, idempotent_lifecycle_result, is_running},
 };
@@ -88,9 +88,9 @@ impl IngressRecovery {
     /// Carry out one repair, unless a request stopped its Container or is about to, or a
     /// container was created since `creates` was read or is being created. Recovery only
     /// starts what exists; it never creates.
-    async fn run(&self, runtime: &ContainerRuntime, repair: Repair, creates: u64) {
+    async fn run(&self, runtime: &Lifecycle, repair: Repair, creates: u64) {
         // Under the doors lock so a route placing the doors never races it.
-        let _doors = runtime.door_lifecycle().await;
+        let _doors = runtime.doors.hold().await;
         let container_id = *repair.target();
         let gate = self
             .stranded()
@@ -102,7 +102,8 @@ impl IngressRecovery {
         let Ok(_gate) = gate.try_lock() else {
             return;
         };
-        if self.stranded().await.held.contains(&container_id) || runtime.is_withdrawn(&container_id)
+        if self.stranded().await.held.contains(&container_id)
+            || runtime.standing.is_withdrawn(&container_id)
         {
             return;
         }
@@ -128,25 +129,21 @@ impl IngressRecovery {
     }
 }
 
-impl ContainerRuntime {
+impl Lifecycle {
     /// Carry out one repair a scan decided on. See [`IngressRecovery::run`].
     pub(super) async fn recover(&self, repair: Repair, creates: u64) {
         self.recovery.run(self, repair, creates).await;
     }
 }
 
-async fn repair_door(
-    runtime: &ContainerRuntime,
-    repair: &Repair,
-    creates: u64,
-) -> Result<bool, Error> {
+async fn repair_door(runtime: &Lifecycle, repair: &Repair, creates: u64) -> Result<bool, Error> {
     match repair {
         Repair::StartHolder(container_id)
         | Repair::StartCaddy {
             holder: None,
             caddy: container_id,
         } => {
-            let inspected = runtime.ensure_managed(container_id).await?;
+            let inspected = runtime.observation.ensure_managed(container_id).await?;
             // A newer door may be about to take the ports; the next scan decides.
             if !failed_start(&inspected) || !runtime.docker.created_nothing_since(creates) {
                 return Ok(false);
@@ -158,9 +155,9 @@ async fn repair_door(
             holder: Some(holder),
             caddy,
         } => {
-            let inspected = runtime.ensure_managed(caddy).await?;
+            let inspected = runtime.observation.ensure_managed(caddy).await?;
             if !failed_start(&inspected)
-                || !is_running(&runtime.ensure_managed(holder).await?)
+                || !is_running(&runtime.observation.ensure_managed(holder).await?)
                 || !runtime.docker.created_nothing_since(creates)
             {
                 return Ok(false);
@@ -169,8 +166,8 @@ async fn repair_door(
             Ok(true)
         }
         Repair::Rejoin { owner, joined } => {
-            let owner_now = runtime.ensure_managed(owner).await?;
-            let joined_now = runtime.ensure_managed(joined).await?;
+            let owner_now = runtime.observation.ensure_managed(owner).await?;
+            let joined_now = runtime.observation.ensure_managed(joined).await?;
             let stale = match (doors::netns_of(&owner_now), doors::netns_of(&joined_now)) {
                 (Some(owner_ns), Some(joined_ns)) => owner_ns != joined_ns,
                 _ => false,
@@ -189,7 +186,7 @@ async fn repair_door(
                 .stop_container(joined.as_str(), None)
                 .await;
             idempotent_lifecycle_result(joined, result)?;
-            let inspected = runtime.ensure_managed(joined).await?;
+            let inspected = runtime.observation.ensure_managed(joined).await?;
             runtime.start_inspected(joined, &inspected).await?;
             Ok(true)
         }

@@ -998,12 +998,17 @@ mod tests {
 
         let (runtime, _fake, id) = runtime_with_running_container().await;
         let machine = MachineId::random();
-        let observed = runtime.inspect_managed(&id, &machine).await.unwrap();
+        let observed = runtime
+            .observation()
+            .inspect_managed(&id, &machine)
+            .await
+            .unwrap();
         assert_eq!(observed.rotation, Some(CopyRotation::Pending));
         assert_eq!(observed.r#gen, Some(Gen::FIRST));
 
         let held = CopyRotation::Held(DeploymentLogId::parse("d1").unwrap());
         runtime
+            .lifecycle()
             .rotation_turn(&id)
             .await
             .unwrap()
@@ -1016,7 +1021,11 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let observed = restarted.inspect_managed(&id, &machine).await.unwrap();
+        let observed = restarted
+            .observation()
+            .inspect_managed(&id, &machine)
+            .await
+            .unwrap();
         assert_eq!(observed.rotation(), &held);
         assert_eq!(observed.copy_gen(), Gen::FIRST);
     }
@@ -1041,6 +1050,7 @@ mod tests {
         let machine = MachineId::random();
         let rotation = || async {
             let [observed] = runtime
+                .lifecycle()
                 .list_managed(&machine)
                 .await
                 .unwrap()
@@ -1051,10 +1061,16 @@ mod tests {
 
         assert_eq!(rotation().await, CopyRotation::In);
         assert_eq!(
-            runtime.rotation_turn(&id).await.unwrap().rotation(),
+            runtime
+                .lifecycle()
+                .rotation_turn(&id)
+                .await
+                .unwrap()
+                .rotation(),
             &CopyRotation::In
         );
         runtime
+            .lifecycle()
             .rotation_turn(&id)
             .await
             .unwrap()
@@ -1124,6 +1140,7 @@ mod tests {
         runtime: &crate::docker::ContainerRuntime,
     ) -> Option<ployz_core::HealthcheckSpec> {
         let [observed] = runtime
+            .lifecycle()
             .list_managed(&ployz_core::MachineId::random())
             .await
             .unwrap()
@@ -1231,6 +1248,7 @@ mod tests {
             request.creation_key = &key;
             ids.push(
                 runtime
+                    .lifecycle()
                     .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
                     .await
                     .unwrap()
@@ -1249,6 +1267,7 @@ mod tests {
         write_stored(&runtime, &undecodable, r#"{"container":{}}"#);
 
         let [observed] = runtime
+            .lifecycle()
             .list_managed(&machine.id)
             .await
             .unwrap()
@@ -1319,12 +1338,14 @@ mod tests {
         );
         request.creation_key = "restore-1";
         let id = runtime
+            .lifecycle()
             .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
             .await
             .unwrap()
             .container_id;
         let rotation = CopyRotation::Held(DeploymentLogId::parse("d1").unwrap());
         runtime
+            .lifecycle()
             .rotation_turn(&id)
             .await
             .unwrap()
@@ -1362,7 +1383,12 @@ mod tests {
                 .insert("Id".into(), restored.as_str().into());
         }
 
-        let listed = copy.runtime.list_managed(&copy.machine).await.unwrap();
+        let listed = copy
+            .runtime
+            .lifecycle()
+            .list_managed(&copy.machine)
+            .await
+            .unwrap();
 
         let observed = listed
             .iter()
@@ -1409,6 +1435,7 @@ mod tests {
 
         let resent = copy
             .runtime
+            .lifecycle()
             .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
             .await
             .unwrap();
@@ -1436,7 +1463,7 @@ mod tests {
         *copy.fake.listed_hold.lock().unwrap() = Some(std::sync::Arc::clone(&listed));
         let mut inventory = tokio::spawn({
             let runtime = copy.runtime.clone();
-            async move { runtime.managed_inventory().await }
+            async move { runtime.observation().managed_inventory().await }
         });
         listed.wait().await;
         let restored = restored_unstarted(&copy);
@@ -1444,7 +1471,7 @@ mod tests {
         *copy.fake.answered_hold.lock().unwrap() = Some(std::sync::Arc::clone(&inspected));
         let removal = tokio::spawn({
             let runtime = copy.runtime.clone();
-            async move { runtime.discard_half_made(&restored).await }
+            async move { runtime.lifecycle().discard_half_made(&restored).await }
         });
         // The check adopted nothing, since the slot has no row, and now inspects.
         inspected.wait().await;
@@ -1490,9 +1517,14 @@ mod tests {
 
         let resent = copy
             .runtime
+            .lifecycle()
             .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
             .await;
-        copy.runtime.list_managed(&copy.machine).await.unwrap();
+        copy.runtime
+            .lifecycle()
+            .list_managed(&copy.machine)
+            .await
+            .unwrap();
 
         assert!(
             matches!(&resent, Err(crate::docker::Error::SpecNotFound(id)) if *id == restored),
@@ -1520,6 +1552,7 @@ mod tests {
 
         let found = copy
             .runtime
+            .lifecycle()
             .inspect_slot(&copy.machine, &slot)
             .await
             .unwrap()
@@ -1546,12 +1579,20 @@ mod tests {
         *copy.fake.listed_hold.lock().unwrap() = Some(std::sync::Arc::clone(&listed));
         let stale = tokio::spawn({
             let (runtime, machine) = (copy.runtime.clone(), copy.machine);
-            async move { runtime.list_managed(&machine).await }
+            async move { runtime.lifecycle().list_managed(&machine).await }
         });
         listed.wait().await;
 
-        copy.runtime.list_managed(&copy.machine).await.unwrap();
-        copy.runtime.remove(&restored, false, true).await.unwrap();
+        copy.runtime
+            .lifecycle()
+            .list_managed(&copy.machine)
+            .await
+            .unwrap();
+        copy.runtime
+            .lifecycle()
+            .remove(&restored, false, true)
+            .await
+            .unwrap();
         let mut machine = machine();
         machine.id = copy.machine;
         let namespace = Namespace::parse("app").unwrap();
@@ -1564,6 +1605,7 @@ mod tests {
         request.creation_key = "restore-1";
         let replacement = copy
             .runtime
+            .lifecycle()
             .create_with_admission::<_, _, crate::docker::Error>(&machine, request)
             .await
             .unwrap()
@@ -1630,7 +1672,12 @@ mod tests {
             containers.insert("twin".into(), twin);
         }
 
-        let listed = copy.runtime.list_managed(&copy.machine).await.unwrap();
+        let listed = copy
+            .runtime
+            .lifecycle()
+            .list_managed(&copy.machine)
+            .await
+            .unwrap();
 
         assert_eq!(
             listed
@@ -1654,13 +1701,14 @@ mod tests {
 
         let (runtime, _fake, id) = runtime_with_running_container().await;
         runtime
+            .lifecycle()
             .rotation_turn(&id)
             .await
             .unwrap()
             .write(&CopyRotation::Out)
             .await
             .unwrap();
-        runtime.remove(&id, false, true).await.unwrap();
+        runtime.lifecycle().remove(&id, false, true).await.unwrap();
         let store = MachineSpecStore::open(runtime.spec_store_path_for_test())
             .await
             .unwrap();
@@ -1679,6 +1727,7 @@ mod tests {
         let (_, rotation) = store.spec_and_rotation(&id).await.unwrap().unwrap();
         assert_eq!(rotation, store.rotation(&id).await.unwrap());
         runtime
+            .lifecycle()
             .rotation_turn(&id)
             .await
             .unwrap()
@@ -1689,7 +1738,7 @@ mod tests {
         assert_eq!(rotation, Some(CopyRotation::Out));
         assert_eq!(Some(spec), store.get(&id).await.unwrap());
 
-        runtime.remove(&id, false, true).await.unwrap();
+        runtime.lifecycle().remove(&id, false, true).await.unwrap();
         assert!(store.spec_and_rotation(&id).await.unwrap().is_none());
         assert_eq!(store.stopped_run(&id).await.unwrap(), None);
     }

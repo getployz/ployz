@@ -36,25 +36,26 @@ pub(super) struct ObservationSink {
 impl ContainerRuntime {
     #[must_use]
     pub(crate) fn replicating(
-        mut self,
+        self,
         replicated: ReplicatedStore,
         local: RecordOwner,
         plugin: crate::storage::Plugin,
     ) -> Self {
-        self.sink = Some(ObservationSink {
-            replicated,
-            local,
-            plugin,
-            rescan_interval: RESCAN_INTERVAL,
-            pool_committable_bytes: tokio::sync::watch::Sender::new(None),
-        });
-        self
+        self.configured(|settings| {
+            settings.sink = Some(ObservationSink {
+                replicated,
+                local,
+                plugin,
+                rescan_interval: RESCAN_INTERVAL,
+                pool_committable_bytes: tokio::sync::watch::Sender::new(None),
+            });
+        })
     }
 
     /// What this Machine's Pool could still commit, as of the last storage
     /// observation.
     pub(crate) fn pool_committable_bytes(&self) -> tokio::sync::watch::Receiver<Option<u64>> {
-        self.sink.as_ref().map_or_else(
+        self.settings.sink.as_ref().map_or_else(
             || tokio::sync::watch::channel(None).1,
             |sink| sink.pool_committable_bytes.subscribe(),
         )
@@ -62,11 +63,12 @@ impl ContainerRuntime {
 
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_rescan_interval(mut self, interval: Duration) -> Self {
-        if let Some(sink) = &mut self.sink {
-            sink.rescan_interval = interval;
-        }
-        self
+    pub(crate) fn with_rescan_interval(self, interval: Duration) -> Self {
+        self.configured(|settings| {
+            if let Some(sink) = &mut settings.sink {
+                sink.rescan_interval = interval;
+            }
+        })
     }
 
     /// Turns `true` once this process has published its container observations
@@ -76,7 +78,7 @@ impl ContainerRuntime {
     }
 
     pub async fn publish_observations(&self, shutdown: CancellationToken) -> Result<(), Error> {
-        let Some(sink) = self.sink.clone() else {
+        let Some(sink) = self.settings.sink.clone() else {
             shutdown.cancelled().await;
             return Ok(());
         };
@@ -200,7 +202,7 @@ impl ContainerRuntime {
         // Bollard opens this lazy stream when first polled. The cursor replays any event
         // between capturing `since` and completing the initial snapshot.
         let mut events = Box::pin(self.docker.client.events(Some(options)));
-        let mut stopping = self.stopping.subscribe();
+        let mut stopping = self.observation.standing.subscribe();
         let mut rotations = self.specs.subscribe_rotations();
         sync(self, sink).await?;
 
@@ -238,13 +240,17 @@ impl ContainerRuntime {
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
         let machine_id = sink.local.record().id();
         let creates = self.docker.creates();
-        let inventory = self.managed_inventory().await?;
+        let inventory = self.observation().managed_inventory().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
         let mut doors = Vec::new();
         let mut complete = true;
         for container_id in &container_ids {
-            match self.inspect_managed(container_id, &machine_id).await {
+            match self
+                .observation()
+                .inspect_managed(container_id, &machine_id)
+                .await
+            {
                 Ok(observation) => {
                     live.observed(redacted_container(&observation));
                     match self.door_facts_of(&observation).await {
@@ -297,7 +303,7 @@ impl ContainerRuntime {
         {
             // Off the event loop, so a slow Docker start never delays later scans.
             let runtime = self.clone();
-            tokio::spawn(async move { runtime.recover(repair, creates).await });
+            tokio::spawn(async move { runtime.lifecycle().recover(repair, creates).await });
         }
         Ok(())
     }
@@ -327,7 +333,7 @@ impl ContainerRuntime {
         let VolumeInventory {
             mut volumes,
             failures,
-        } = match self.list_volumes(&machine_id).await {
+        } = match self.volumes().list_volumes(&machine_id).await {
             Ok(inventory) => inventory,
             Err(error) => {
                 sink.pool_committable_bytes
@@ -1158,6 +1164,7 @@ mod tests {
 
         wait_for(CopyRotation::Pending).await;
         runtime
+            .lifecycle()
             .rotation_turn(&id)
             .await
             .unwrap()
@@ -1185,7 +1192,7 @@ mod tests {
             container_id,
             data_dir,
         } = replicating(Duration::from_millis(20)).await;
-        let sink = runtime.sink.clone().unwrap();
+        let sink = runtime.settings.sink.clone().unwrap();
         let mut synced = runtime.first_synced();
         let run_awhile = async |watcher: tokio::task::JoinHandle<()>,
                                 shutdown: CancellationToken| {

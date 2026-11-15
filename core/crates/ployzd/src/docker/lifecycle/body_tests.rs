@@ -73,6 +73,7 @@ async fn keyed_config(
     let mut request = container_request(kind, &namespace, &app, std::future::ready(None));
     request.creation_key = creation_key;
     let created = runtime
+        .lifecycle()
         .create_with_admission(&machine, request)
         .await
         .unwrap();

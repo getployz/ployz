@@ -27,12 +27,18 @@ use crate::{
 };
 
 use super::{
-    ContainerRuntime, Error, create,
+    Doors, Error, FloorTurn, Images, Leaving, LocalDocker, MachineSpecStore, Observation,
+    RotationTurn, Volumes, Withdrawal, create,
     create::CreationNetwork,
     doors::Door,
     error::{Status, classify, docker_error},
+    malformed_container,
+    recovery::IngressRecovery,
     spec_store::ConfigOperation,
+    standing::Standing,
 };
+use crate::sealed_compat::LogStore;
+use futures_util::StreamExt;
 
 /// Whether a Leave owns this Machine's Containers: set when it starts removing them and
 /// kept once it commits, cleared only by the caller when the Leave fails. Nothing else
@@ -54,7 +60,7 @@ impl Departure {
     }
 }
 
-/// How a Container leaves through [`ContainerRuntime::retire`].
+/// How a Container leaves through [`Lifecycle::retire`].
 pub(super) enum How {
     /// A request to remove it, as asked.
     Asked { remove_volumes: bool, force: bool },
@@ -101,7 +107,152 @@ struct Creating<'a> {
     spec: &'a ResolvedServiceSpec,
 }
 
-impl ContainerRuntime {
+/// Creating, starting, stopping and removing the managed Containers, and the marks and
+/// records those operations keep.
+#[derive(Clone)]
+pub struct Lifecycle {
+    pub(super) docker: LocalDocker,
+    pub(super) specs: MachineSpecStore,
+    pub(super) observation: Observation,
+    pub(super) volumes: Volumes,
+    pub(super) doors: Doors,
+    pub(super) images: Images,
+    pub(super) standing: Standing,
+    pub(super) recovery: IngressRecovery,
+    pub(super) log_store: LogStore,
+    /// Set when a Leave begins removing every managed Container, and cleared only when
+    /// that Leave fails, so a committed Leave keeps it set.
+    pub(super) departure: Departure,
+}
+
+impl Lifecycle {
+    /// Whether a Leave is removing every managed Container here, or has committed. A
+    /// Container call that overlapped it met the Leave's stops.
+    #[must_use]
+    pub fn departing(&self) -> bool {
+        self.departure.under_way()
+    }
+
+    /// A Leave that failed leaves this Machine in the Cluster, taking Container work again.
+    pub fn departure_failed(&self) {
+        self.departure.failed();
+    }
+
+    pub async fn floor_turn(&self) -> FloorTurn<'_> {
+        self.specs.floor_turn().await
+    }
+
+    pub async fn clear_floors(&self) -> Result<(), Error> {
+        Ok(self.specs.clear_floors().await?)
+    }
+
+    /// Take the lock `remove` takes and read a copy's rotation under it, so no other
+    /// rotation write or removal lands before the turn is spent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ContainerNotFound`] when Docker no longer has the Container,
+    /// and when the Machine database cannot be read.
+    pub async fn rotation_turn(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<RotationTurn<'_>, Error> {
+        let operation = self.specs.config_operation().await;
+        self.observation.ensure_managed(container_id).await?;
+        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
+        Ok(RotationTurn {
+            runtime: self,
+            operation,
+            container_id: *container_id,
+            rotation,
+        })
+    }
+
+    /// Record that this Machine stopped `run` of the Container for a `Stopped` want.
+    /// Observations of that run, once exited, report it stopped; a later run does not.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be written.
+    pub async fn record_stop(
+        &self,
+        container_id: &ContainerId,
+        run: &ployz_core::ContainerRun,
+    ) -> Result<(), Error> {
+        Ok(self
+            .specs
+            .config_operation()
+            .await
+            .set_stopped(container_id, run)
+            .await?)
+    }
+
+    /// Report this Container as `stopping` until the returned Withdrawal drops,
+    /// so the Ingress Proxies stop routing to it before it stops. Each operation
+    /// holds its own; the Container returns to ingress once none is held.
+    pub fn withdraw(&self, container_id: ContainerId) -> Withdrawal {
+        self.standing.withdraw(container_id)
+    }
+
+    /// Mark this Container leaving until the returned guard drops, so a peer's inspect
+    /// reports it. The caller holds the Machine's exclusive admission turn.
+    #[must_use]
+    pub fn leave(&self, container_id: ContainerId) -> Leaving {
+        self.standing.leave(container_id)
+    }
+
+    /// Drop what the daemon remembers about a container Docker no longer has.
+    pub(super) async fn forget(&self, container_id: &ContainerId) {
+        self.observation.forget(container_id);
+        self.recovery.forget(container_id).await;
+    }
+
+    pub async fn list_managed(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<Vec<ContainerObservation>, Error> {
+        let mut observations = Vec::new();
+        let mut inspected = futures_util::stream::iter(self.observation.managed_inventory().await?)
+            .map(|container_id| async move {
+                (
+                    container_id,
+                    self.observation
+                        .inspect_managed(&container_id, machine_id)
+                        .await,
+                )
+            })
+            .buffered(8);
+        while let Some((container_id, result)) = inspected.next().await {
+            match result {
+                Ok(observation) => observations.push(observation),
+                Err(Error::SpecNotFound(_))
+                    if self
+                        .discard_half_made(&container_id)
+                        .await
+                        .unwrap_or_else(|error| {
+                            eprintln!(
+                                "couldn't remove container {container_id}, which has no spec: {error}",
+                                error = ployz_core::error_chain::inline(&error),
+                            );
+                            false
+                        }) =>
+                {
+                    eprintln!(
+                        "removed container {container_id}, which a crash left without its spec before it started"
+                    );
+                }
+                Err(error) if malformed_container(&error) => {
+                    eprintln!(
+                        "ignoring malformed managed container {container_id}: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(observations)
+    }
+
     #[cfg(test)]
     pub(crate) async fn create_for_test(
         &self,
@@ -218,7 +369,7 @@ impl ContainerRuntime {
             )
             .await
         {
-            return Err(self.pull_failure(Error::ImagePull(error)).await);
+            return Err(self.images.pull_failure(Error::ImagePull(error)).await);
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
@@ -274,12 +425,14 @@ impl ContainerRuntime {
         let network = match spec.container.network {
             None => CreationNetwork::Bridge,
             Some(ServiceNetwork::IngressHolder) => CreationNetwork::Holder(
-                self.running_door(Door::Holder)
+                self.doors
+                    .running_door(Door::Holder)
                     .await?
                     .ok_or(Error::IngressHolderNotRunning)?,
             ),
             Some(ServiceNetwork::TunnelOrigin) => CreationNetwork::Holder(
-                self.running_door(Door::TunnelOrigin)
+                self.doors
+                    .running_door(Door::TunnelOrigin)
                     .await?
                     .ok_or(Error::TunnelOriginNotRunning)?,
             ),
@@ -296,7 +449,7 @@ impl ContainerRuntime {
             namespace,
             spec,
             &network,
-            self.sealing_key_dir.as_deref(),
+            self.observation.sealing_key_dir(),
         )?;
         create::ingress_sysctls(
             &mut body,
@@ -434,7 +587,7 @@ impl ContainerRuntime {
         operation: &mut ConfigOperation<'_>,
         container_id: &ContainerId,
     ) -> Result<bool, Error> {
-        let listed = self.managed_slots().await?;
+        let listed = self.observation.managed_slots().await?;
         let present = listed.iter().map(|(id, _)| *id).collect::<Vec<_>>();
         for (old, new) in operation.adopt_restored(listed).await? {
             eprintln!("adopted restored container {new}, which replaces {old}");
@@ -549,7 +702,8 @@ impl ContainerRuntime {
             field: "container ID",
             source,
         })?;
-        self.inspect_managed(&container_id, machine_id)
+        self.observation
+            .inspect_managed(&container_id, machine_id)
             .await
             .map(Some)
     }
@@ -569,13 +723,15 @@ impl ContainerRuntime {
         let eligibility =
             spec.placement_eligibility_in_namespace(namespace, machine, storage.as_ref());
         if matches!(eligibility, ServicePlacementEligibility::Eligible) {
-            self.ensure_mounted_volumes(&machine.id, spec).await?;
+            self.volumes
+                .ensure_mounted_volumes(&machine.id, spec)
+                .await?;
         }
         Ok(eligibility)
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
-        let inspected = self.ensure_managed(container_id).await?;
+        let inspected = self.observation.ensure_managed(container_id).await?;
         self.recovery.release(container_id).await;
         self.start_inspected(container_id, &inspected).await
     }
@@ -588,7 +744,7 @@ impl ContainerRuntime {
         if let Some(network) = lost_network(inspected)
             && let Err(error) = self.rejoin(container_id, network, inspected).await
             // A concurrent start may have attached it first.
-            && lost_network(&self.ensure_managed(container_id).await?).is_some()
+            && lost_network(&self.observation.ensure_managed(container_id).await?).is_some()
         {
             return Err(error);
         }
@@ -655,7 +811,7 @@ impl ContainerRuntime {
         grace_period_seconds: Option<i32>,
         still_wanted: impl std::future::Future<Output = Result<bool, E>>,
     ) -> Result<bool, E> {
-        let managed = self.ensure_managed(container_id).await;
+        let managed = self.observation.ensure_managed(container_id).await;
         let plan = if managed.is_ok() {
             Some(self.recovery.before_stop(container_id).await)
         } else {
@@ -748,7 +904,7 @@ impl ContainerRuntime {
             How::Asked {
                 remove_volumes,
                 force,
-            } => match self.ensure_managed(container_id).await {
+            } => match self.observation.ensure_managed(container_id).await {
                 Ok(_) => {
                     let options = RemoveContainerOptionsBuilder::default()
                         .v(remove_volumes)
@@ -776,29 +932,6 @@ impl ContainerRuntime {
         }
         self.forget(container_id).await;
         Ok(())
-    }
-
-    pub(super) async fn ensure_managed(
-        &self,
-        container_id: &ContainerId,
-    ) -> Result<ContainerInspectResponse, Error> {
-        let inspected = self
-            .docker
-            .client
-            .inspect_container(container_id.as_str(), None)
-            .await
-            .map_err(|error| docker_error(container_id, error))?;
-        let labels = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .ok_or(Error::NotManaged)?;
-        ServiceLabels::parse(labels)?;
-        self.specs
-            .get(container_id)
-            .await?
-            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        Ok(inspected)
     }
 
     /// Stops `container_id`. A Container already stopped or gone is success.
@@ -1112,6 +1245,7 @@ mod tests {
         let namespace = Namespace::parse("app").unwrap();
         let spec = spec_with_sources(Vec::new());
         runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine(),
                 container_request(
@@ -1152,6 +1286,7 @@ mod tests {
         })
         .await;
         runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine(),
                 ContainerRequest {
@@ -1231,6 +1366,7 @@ mod tests {
         let namespace = Namespace::parse("app").unwrap();
         let spec = spec_with_sources(Vec::new());
         let created = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine,
                 ContainerRequest {
@@ -1267,7 +1403,11 @@ mod tests {
             kind: ContainerKind::ServiceContainer,
             creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
         };
-        let found = runtime.inspect_slot(&machine.id, &slot).await.unwrap();
+        let found = runtime
+            .lifecycle()
+            .inspect_slot(&machine.id, &slot)
+            .await
+            .unwrap();
         assert_eq!(
             found.map(|container| container.container_id),
             Some(created.container_id),
@@ -1283,7 +1423,7 @@ mod tests {
         status: &str,
         gone: Option<&'static str>,
     ) -> (
-        ContainerRuntime,
+        crate::docker::ContainerRuntime,
         std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
         ContainerId,
         Result<ContainerCreated, Error>,
@@ -1327,6 +1467,7 @@ mod tests {
             )
         };
         let first = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(&machine, request())
             .await
             .unwrap();
@@ -1341,6 +1482,7 @@ mod tests {
             container["State"] = serde_json::json!({ "Status": status });
         }
         let again = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(&machine, request())
             .await;
         (runtime, containers, first.container_id, again)
@@ -1396,7 +1538,7 @@ mod tests {
         key: Option<&'static str>,
         status: &str,
     ) -> (
-        ContainerRuntime,
+        crate::docker::ContainerRuntime,
         std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, serde_json::Value>>>,
         Machine,
         ResolvedServiceSpec,
@@ -1415,6 +1557,7 @@ mod tests {
         let namespace = Namespace::parse("app").unwrap();
         let spec = spec_with_sources(Vec::new());
         let created = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine,
                 ContainerRequest {
@@ -1466,7 +1609,7 @@ mod tests {
             creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
         };
 
-        let found = runtime.inspect_slot(&machine.id, &slot).await;
+        let found = runtime.lifecycle().inspect_slot(&machine.id, &slot).await;
 
         assert!(matches!(found, Ok(None)), "{found:?}");
         assert!(
@@ -1491,7 +1634,7 @@ mod tests {
         let mut create = runtime.specs.config_operation().await;
         let read = tokio::spawn({
             let runtime = runtime.clone();
-            async move { runtime.inspect_slot(&machine.id, &slot).await }
+            async move { runtime.lifecycle().inspect_slot(&machine.id, &slot).await }
         });
         // The read finds the half-made Container by name, then inspects it by ID. Once that
         // answer is read, the create the read then waits on removes the Container and
@@ -1534,7 +1677,7 @@ mod tests {
             creation_key: ployz_core::CreationKey::try_from("plan:0".to_owned()).unwrap(),
         };
 
-        let found = runtime.inspect_slot(&machine.id, &slot).await;
+        let found = runtime.lifecycle().inspect_slot(&machine.id, &slot).await;
 
         assert!(
             matches!(found, Err(Error::SpecNotFound(found)) if found == id),
@@ -1548,6 +1691,7 @@ mod tests {
         let (runtime, _, machine, _, id, _) = specless(Some("plan:0"), "running").await;
 
         let error = runtime
+            .observation()
             .inspect_managed(&id, &machine.id)
             .await
             .expect_err("Docker has the Container, but no spec describes it");
@@ -1570,6 +1714,7 @@ mod tests {
             let (runtime, _, machine, _, id, _) = specless(key, status).await;
 
             let error = runtime
+                .observation()
                 .inspect_managed(&id, &machine.id)
                 .await
                 .expect_err("Docker has the Container, but no spec describes it");
@@ -1594,6 +1739,7 @@ mod tests {
         containers.lock().unwrap().clear();
 
         let error = runtime
+            .observation()
             .inspect_managed(&id, &machine.id)
             .await
             .expect_err("Docker no longer has the Container");
@@ -1617,7 +1763,14 @@ mod tests {
             (None, "created", 1),
         ] {
             let (runtime, containers, machine, _, _, _) = specless(key, status).await;
-            assert!(runtime.list_managed(&machine.id).await.unwrap().is_empty());
+            assert!(
+                runtime
+                    .lifecycle()
+                    .list_managed(&machine.id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
             assert_eq!(
                 containers.lock().unwrap().len(),
                 kept,
@@ -1636,7 +1789,7 @@ mod tests {
         assert_eq!(containers.lock().unwrap().len(), 1);
     }
 
-    async fn stranded(error: &str) -> (ContainerRuntime, FakeDocker, ContainerId) {
+    async fn stranded(error: &str) -> (crate::docker::ContainerRuntime, FakeDocker, ContainerId) {
         stranded_with("created", error, FakeDocker::default()).await
     }
 
@@ -1644,7 +1797,7 @@ mod tests {
         status: &str,
         error: &str,
         fake: FakeDocker,
-    ) -> (ContainerRuntime, FakeDocker, ContainerId) {
+    ) -> (crate::docker::ContainerRuntime, FakeDocker, ContainerId) {
         let (runtime, fake) = fake_runtime_with(FakeDocker {
             create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
             ..fake
@@ -1653,6 +1806,7 @@ mod tests {
         let namespace = Namespace::parse("app").unwrap();
         let spec = spec_with_sources(Vec::new());
         let created = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine(),
                 container_request(
@@ -1708,20 +1862,27 @@ mod tests {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a failed first start is retried");
 
-        runtime.stop(&container_id, None, None).await.unwrap();
+        runtime
+            .lifecycle()
+            .stop(&container_id, None, None)
+            .await
+            .unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "a stopped ingress stays stopped");
 
-        runtime.start(&container_id).await.unwrap();
+        runtime.lifecycle().start(&container_id).await.unwrap();
         fake.requests.lock().unwrap().clear();
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "a requested start lifts the stop");
@@ -1735,6 +1896,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
+                    .lifecycle()
                     .stop_if(&container_id, None, None, async move {
                         let _ = asked.send(());
                         std::future::pending::<Result<bool, Error>>().await
@@ -1743,12 +1905,12 @@ mod tests {
             }
         });
         was_asked.await.unwrap();
-        assert!(runtime.recovery.is_held(&container_id).await);
+        assert!(runtime.lifecycle().recovery.is_held(&container_id).await);
 
         stopping.abort();
         assert!(stopping.await.unwrap_err().is_cancelled());
         assert!(
-            !runtime.recovery.is_held(&container_id).await,
+            !runtime.lifecycle().recovery.is_held(&container_id).await,
             "a dropped stop must not keep the ingress from its retry"
         );
     }
@@ -1762,6 +1924,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
+                    .lifecycle()
                     .stop_if(&container_id, None, None, async move {
                         let _ = asked.send(());
                         let _ = decided.await;
@@ -1772,11 +1935,11 @@ mod tests {
         });
         was_asked.await.unwrap();
 
-        runtime.forget(&container_id).await;
+        runtime.lifecycle().forget(&container_id).await;
         decide.send(()).unwrap();
         let _ = stopping.await.unwrap();
         assert!(
-            !runtime.recovery.is_held(&container_id).await,
+            !runtime.lifecycle().recovery.is_held(&container_id).await,
             "a forgotten container must not stay held"
         );
     }
@@ -1785,9 +1948,9 @@ mod tests {
     async fn a_container_stays_withdrawn_until_its_last_withdrawal_drops() {
         let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
         for first_released_first in [true, false] {
-            let mut observer = runtime.stopping.subscribe();
-            let first = runtime.withdraw(container_id);
-            let second = runtime.withdraw(container_id);
+            let mut observer = runtime.lifecycle().standing.subscribe();
+            let first = runtime.lifecycle().withdraw(container_id);
+            let second = runtime.lifecycle().withdraw(container_id);
             assert!(observer.has_changed().unwrap());
             observer.mark_unchanged();
 
@@ -1797,11 +1960,11 @@ mod tests {
                 (second, first)
             };
             drop(released);
-            assert!(runtime.is_withdrawn(&container_id));
+            assert!(runtime.lifecycle().standing.is_withdrawn(&container_id));
             assert!(!observer.has_changed().unwrap());
 
             drop(held);
-            assert!(!runtime.is_withdrawn(&container_id));
+            assert!(!runtime.lifecycle().standing.is_withdrawn(&container_id));
             assert!(
                 observer.has_changed().unwrap(),
                 "the last release wakes the observer"
@@ -1813,8 +1976,9 @@ mod tests {
     async fn an_ingress_about_to_be_stopped_is_not_started() {
         let (runtime, fake, container_id) = stranded(PORT_TAKEN).await;
 
-        let _withdrawal = runtime.withdraw(container_id);
+        let _withdrawal = runtime.lifecycle().withdraw(container_id);
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
@@ -1838,6 +2002,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
+                    .lifecycle()
                     .recover(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
@@ -1845,7 +2010,7 @@ mod tests {
         barrier.wait().await;
         let stopping = tokio::spawn({
             let runtime = runtime.clone();
-            async move { runtime.stop(&container_id, None, None).await }
+            async move { runtime.lifecycle().stop(&container_id, None, None).await }
         });
         for _ in 0..20 {
             tokio::task::yield_now().await;
@@ -1875,6 +2040,7 @@ mod tests {
         assert_eq!(lifecycle, ["start", "stop"]);
         fake.requests.lock().unwrap().clear();
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(!started(&fake), "the stop holds");
@@ -1897,6 +2063,7 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
+                    .lifecycle()
                     .recover(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
@@ -1908,6 +2075,7 @@ mod tests {
             let still_wanted = still_wanted.clone();
             async move {
                 runtime
+                    .lifecycle()
                     .stop_if(&container_id, None, None, async move {
                         Ok::<_, Error>(still_wanted.load(Ordering::SeqCst))
                     })
@@ -1915,7 +2083,7 @@ mod tests {
             }
         });
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !runtime.recovery.is_held(&container_id).await {
+            while !runtime.lifecycle().recovery.is_held(&container_id).await {
                 tokio::task::yield_now().await;
             }
         })
@@ -1934,7 +2102,7 @@ mod tests {
                 .iter()
                 .any(|(_, path)| path.ends_with("/stop"))
         );
-        assert!(!runtime.recovery.is_held(&container_id).await);
+        assert!(!runtime.lifecycle().recovery.is_held(&container_id).await);
     }
 
     #[tokio::test]
@@ -1944,17 +2112,20 @@ mod tests {
         let creates = runtime.docker.creates();
 
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), creates)
             .await;
         assert!(!started(&fake), "a newer ingress may be appearing");
 
         drop(creating);
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), creates)
             .await;
         assert!(!started(&fake), "it appeared after the scan began");
 
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
         assert!(started(&fake), "the next scan decides");
@@ -1966,6 +2137,7 @@ mod tests {
         let creates = runtime.docker.creates();
         let stranded = fake.existing_container.lock().unwrap().take();
         runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine(),
                 container_request(
@@ -1981,6 +2153,7 @@ mod tests {
         fake.requests.lock().unwrap().clear();
 
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), creates)
             .await;
 
@@ -2005,14 +2178,18 @@ mod tests {
             let runtime = runtime.clone();
             async move {
                 runtime
+                    .lifecycle()
                     .recover(start_legacy_caddy(container_id), runtime.docker.creates())
                     .await
             }
         });
         barrier.wait().await;
-        tokio::time::timeout(std::time::Duration::from_secs(1), runtime.forget(&other))
-            .await
-            .expect("forgetting another container does not wait for the start");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.lifecycle().forget(&other),
+        )
+        .await
+        .expect("forgetting another container does not wait for the start");
         barrier.wait().await;
         starting.await.unwrap();
     }
@@ -2022,6 +2199,7 @@ mod tests {
         let (runtime, fake, container_id) = stranded("").await;
 
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
@@ -2036,6 +2214,7 @@ mod tests {
             stranded_with("exited", PORT_TAKEN, FakeDocker::default()).await;
 
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
@@ -2048,6 +2227,7 @@ mod tests {
             stranded_with("exited", "", FakeDocker::default()).await;
 
         runtime
+            .lifecycle()
             .recover(start_legacy_caddy(container_id), runtime.docker.creates())
             .await;
 
@@ -2065,7 +2245,7 @@ mod tests {
             .and_then(|container| container.pointer_mut("/HostConfig/NetworkMode"))
             .unwrap() = TUNNEL_NETWORK_NAME.into();
 
-        runtime.start(&container_id).await.unwrap();
+        runtime.lifecycle().start(&container_id).await.unwrap();
 
         let posts: Vec<String> = fake
             .requests
@@ -2091,7 +2271,7 @@ mod tests {
         fake.connect_raced
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
-        runtime.start(&container_id).await.unwrap();
+        runtime.lifecycle().start(&container_id).await.unwrap();
 
         assert!(started(&fake));
     }
@@ -2101,7 +2281,11 @@ mod tests {
         let (runtime, fake, container_id) =
             crate::docker::test_support::runtime_with_running_container().await;
 
-        runtime.remove(&container_id, false, true).await.unwrap();
+        runtime
+            .lifecycle()
+            .remove(&container_id, false, true)
+            .await
+            .unwrap();
 
         assert!(
             fake.requests
@@ -2121,11 +2305,15 @@ mod tests {
             crate::docker::test_support::runtime_with_running_container().await;
         fake.existing_container.lock().unwrap().take();
 
-        runtime.remove(&container_id, false, true).await.unwrap();
+        runtime
+            .lifecycle()
+            .remove(&container_id, false, true)
+            .await
+            .unwrap();
         assert!(runtime.specs.get(&container_id).await.unwrap().is_none());
 
         assert!(matches!(
-            runtime.remove(&container_id, false, true).await,
+            runtime.lifecycle().remove(&container_id, false, true).await,
             Err(Error::ContainerNotFound(id)) if id == container_id
         ));
     }
@@ -2143,6 +2331,7 @@ mod tests {
         let namespace = Namespace::parse("app").unwrap();
         let spec = spec_with_sources(Vec::new());
         let created = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine(),
                 ContainerRequest {
@@ -2158,7 +2347,7 @@ mod tests {
             .await
             .unwrap();
 
-        runtime.remove_all_managed().await.unwrap();
+        runtime.lifecycle().remove_all_managed().await.unwrap();
 
         assert!(containers.lock().unwrap().is_empty());
         assert!(

@@ -142,6 +142,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     let spec = fixture_spec(&service_id, &service_name);
 
     let created = runtime
+        .lifecycle()
         .create_for_test(
             &machine_id,
             TEST_GATEWAY,
@@ -152,6 +153,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .await
         .unwrap();
     let inspected = runtime
+        .observation()
         .inspect_managed(&created.container_id, &machine_id)
         .await
         .unwrap();
@@ -175,7 +177,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         ContainerKind::ServiceContainer,
     )
     .await;
-    let listed = runtime.list_managed(&machine_id).await.unwrap();
+    let listed = runtime.lifecycle().list_managed(&machine_id).await.unwrap();
     assert!(
         listed
             .iter()
@@ -189,12 +191,14 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     remove_container(&docker.client, &malformed).await;
 
     runtime
+        .lifecycle()
         .remove(&created.container_id, true, true)
         .await
         .unwrap();
     assert!(specs.get(&created.container_id).await.unwrap().is_none());
     assert!(matches!(
         runtime
+            .observation()
             .inspect_managed(&created.container_id, &machine_id)
             .await,
         Err(Error::ContainerNotFound(_))
@@ -206,14 +210,19 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .put(&orphan, None, &fixture_spec(&service_id, &service_name))
         .await
         .unwrap();
-    runtime.remove(&orphan, true, true).await.unwrap();
+    runtime
+        .lifecycle()
+        .remove(&orphan, true, true)
+        .await
+        .unwrap();
     assert!(specs.get(&orphan).await.unwrap().is_none());
     assert!(matches!(
-        runtime.remove(&orphan, true, true).await,
+        runtime.lifecycle().remove(&orphan, true, true).await,
         Err(Error::ContainerNotFound(_))
     ));
 
     let reset_target = runtime
+        .lifecycle()
         .create_for_test(
             &machine_id,
             TEST_GATEWAY,
@@ -230,7 +239,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         ContainerKind::ServiceContainer,
     )
     .await;
-    runtime.remove_all_managed().await.unwrap();
+    runtime.lifecycle().remove_all_managed().await.unwrap();
     assert!(
         specs
             .get(&reset_target.container_id)
@@ -265,15 +274,15 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .unwrap();
     let unmanaged = ContainerId::parse(unmanaged.id).unwrap();
     assert!(matches!(
-        runtime.start(&unmanaged).await,
+        runtime.lifecycle().start(&unmanaged).await,
         Err(Error::NotManaged)
     ));
     assert!(matches!(
-        runtime.stop(&unmanaged, None, None).await,
+        runtime.lifecycle().stop(&unmanaged, None, None).await,
         Err(Error::NotManaged)
     ));
     assert!(matches!(
-        runtime.remove(&unmanaged, true, true).await,
+        runtime.lifecycle().remove(&unmanaged, true, true).await,
         Err(Error::NotManaged)
     ));
     docker
@@ -304,6 +313,7 @@ async fn update_limits_changes_a_running_container_in_place() {
     spec.container.resources.memory_bytes = Some(ByteQuantity::try_from(64 << 20).unwrap());
 
     let created = runtime
+        .lifecycle()
         .create_for_test(
             &machine_id,
             TEST_GATEWAY,
@@ -314,7 +324,7 @@ async fn update_limits_changes_a_running_container_in_place() {
         .await
         .unwrap();
     let container_id = created.container_id;
-    runtime.start(&container_id).await.unwrap();
+    runtime.lifecycle().start(&container_id).await.unwrap();
     let before = docker
         .client
         .inspect_container(container_id.as_str(), None)
@@ -350,6 +360,7 @@ async fn update_limits_changes_a_running_container_in_place() {
     assert_eq!(host_config.memory_swap, Some(256 << 20));
     assert_eq!(host_config.nano_cpus, Some(500_000_000));
     let inspected = runtime
+        .observation()
         .inspect_managed(&container_id, &machine_id)
         .await
         .unwrap();
@@ -427,7 +438,11 @@ async fn update_limits_changes_a_running_container_in_place() {
         .await
         .unwrap();
 
-    runtime.stop(&container_id, None, Some(1)).await.unwrap();
+    runtime
+        .lifecycle()
+        .stop(&container_id, None, Some(1))
+        .await
+        .unwrap();
     let mut raised = updated.clone();
     raised.container.resources.memory_bytes = Some(ByteQuantity::try_from(256 << 20).unwrap());
     let refused = runtime
@@ -446,7 +461,11 @@ async fn update_limits_changes_a_running_container_in_place() {
     );
     assert_eq!(specs.get(&container_id).await.unwrap(), Some(updated));
 
-    runtime.remove(&container_id, true, true).await.unwrap();
+    runtime
+        .lifecycle()
+        .remove(&container_id, true, true)
+        .await
+        .unwrap();
     cleanup_ployz_network(&docker.client, created_network).await;
 }
 
@@ -471,14 +490,14 @@ async fn concurrent_runtime_creates_admit_only_one_last_bridge_endpoint() {
     let second_spec = fixture_spec(&ServiceId::random(), &ServiceName::parse("second").unwrap());
 
     let (first_result, second_result) = tokio::join!(
-        first.create_for_test(
+        first.lifecycle().create_for_test(
             &machine,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
             &namespace,
             &first_spec
         ),
-        second.create_for_test(
+        second.lifecycle().create_for_test(
             &machine,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
@@ -509,7 +528,7 @@ async fn concurrent_runtime_creates_admit_only_one_last_bridge_endpoint() {
         .containers
         .map_or(0, |containers| containers.len());
     assert_eq!(attachments, 1);
-    first.remove_all_managed().await.unwrap();
+    first.lifecycle().remove_all_managed().await.unwrap();
     cleanup_ployz_network(&docker.client, created_network).await;
 }
 
@@ -577,6 +596,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     .unwrap();
 
     let created = runtime
+        .lifecycle()
         .create_for_test(
             &machine_id,
             TEST_GATEWAY,
@@ -636,8 +656,16 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
         Some(spec.clone())
     );
 
-    runtime.start(&created.container_id).await.unwrap();
-    runtime.start(&created.container_id).await.unwrap();
+    runtime
+        .lifecycle()
+        .start(&created.container_id)
+        .await
+        .unwrap();
+    runtime
+        .lifecycle()
+        .start(&created.container_id)
+        .await
+        .unwrap();
     let hosts_check = docker
         .client
         .create_exec(
@@ -674,11 +702,13 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
         Some(0)
     );
     runtime
+        .lifecycle()
         .stop(&created.container_id, None, Some(0))
         .await
         .unwrap();
 
     runtime
+        .lifecycle()
         .remove(&created.container_id, true, true)
         .await
         .unwrap();
@@ -687,6 +717,7 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
     failed_spec.container.pull_policy = PullPolicy::Never;
     assert!(
         runtime
+            .lifecycle()
             .create_for_test(
                 &machine_id,
                 TEST_GATEWAY,
@@ -780,6 +811,7 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
     let labels = BTreeMap::from([("purpose".into(), "machine-local-test".into())]);
 
     let created = runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -793,9 +825,13 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
         .unwrap()
         .into_observation()
         .unwrap();
-    let listed = runtime.list_volumes(&machine_id).await.unwrap();
-    let inspected = runtime.inspect_volume(&machine_id, &name).await.unwrap();
-    runtime.remove_volume(&name, false).await.unwrap();
+    let listed = runtime.volumes().list_volumes(&machine_id).await.unwrap();
+    let inspected = runtime
+        .volumes()
+        .inspect_volume(&machine_id, &name)
+        .await
+        .unwrap();
+    runtime.volumes().remove_volume(&name, false).await.unwrap();
 
     assert_eq!(created.id, DockerVolumeId { machine_id, name });
     assert_eq!(created.driver(), "local");
@@ -839,6 +875,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{machine_id}")).unwrap();
     let name = Namespace::parse("app").unwrap().volume_name(&logical_name);
     runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -888,6 +925,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     .unwrap();
 
     let container_id = runtime
+        .lifecycle()
         .create_for_test(
             &machine_id,
             TEST_GATEWAY,
@@ -998,7 +1036,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         )
         .await
         .unwrap();
-    runtime.remove_volume(&name, false).await.unwrap();
+    runtime.volumes().remove_volume(&name, false).await.unwrap();
     if created_network {
         docker
             .client
@@ -1453,6 +1491,7 @@ async fn image_cleanup_lists_tag_times_and_removes_only_unused_references() {
         .unwrap();
 
     let listed = runtime
+        .images()
         .list_images(Some(&format!("{repository}:ployz-sha256-*")), true)
         .await
         .unwrap();
@@ -1466,6 +1505,7 @@ async fn image_cleanup_lists_tag_times_and_removes_only_unused_references() {
     assert!(listed.docker_root.is_some());
     let missing = format!("{repository}:ployz-sha256-missing");
     let removed = runtime
+        .images()
         .remove_images(&[unused.clone(), used.clone(), missing.clone()])
         .await
         .unwrap();

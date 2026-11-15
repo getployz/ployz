@@ -85,23 +85,23 @@ pub(crate) fn is_closed(root: &Path) -> bool {
 
 impl ContainerRuntime {
     pub(crate) fn mark_tunnel_door_closed(&self) -> io::Result<()> {
-        mark_closed(&self.machine_root)
+        mark_closed(&self.settings.machine_root)
     }
 
     pub(crate) fn clear_tunnel_door_closed(&self) -> io::Result<()> {
-        clear_closed(&self.machine_root)
+        clear_closed(&self.settings.machine_root)
     }
 
     pub(crate) fn tunnel_door_closed(&self) -> bool {
-        is_closed(&self.machine_root)
+        is_closed(&self.settings.machine_root)
     }
 
     pub(crate) fn write_tunnel_token(&self, token: &[u8]) -> io::Result<()> {
-        write(&self.machine_root, token)
+        write(&self.settings.machine_root, token)
     }
 
     pub(crate) fn remove_tunnel_token(&self) -> io::Result<()> {
-        remove(&self.machine_root)
+        remove(&self.settings.machine_root)
     }
 
     /// Open `sealed` with this Machine's Sealing Key.

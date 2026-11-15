@@ -461,7 +461,7 @@ impl MachineService {
                 .map_err(|_| LocalMachineError::NotParticipating)
         };
         joined()?;
-        let turn = self.containers()?.floor_turn().await;
+        let turn = self.containers()?.lifecycle().floor_turn().await;
         // Checked again under the floor lock: a reset may have begun while this queued.
         joined()?;
         Ok(turn)
@@ -528,6 +528,7 @@ impl MachineService {
                     .machine()
                     .ok_or(LocalMachineError::NotParticipating)?;
                 containers
+                    .lifecycle()
                     .find_creation(
                         machine,
                         namespace,
@@ -542,7 +543,11 @@ impl MachineService {
         let Some(container_id) = container_id else {
             return Ok(None);
         };
-        match containers.inspect_managed(&container_id, &machine_id).await {
+        match containers
+            .observation()
+            .inspect_managed(&container_id, &machine_id)
+            .await
+        {
             Ok(observed) => Ok(Some(observed)),
             Err(crate::docker::Error::ContainerNotFound(_)) => Ok(None),
             Err(error) => Err(error.into()),

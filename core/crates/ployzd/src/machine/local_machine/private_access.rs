@@ -194,7 +194,7 @@ impl LocalMachine {
         };
         self.reserved_effect(Gate::Router)?;
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
             let routers = containers.routers(&machine_id).await?;
@@ -205,6 +205,7 @@ impl LocalMachine {
                         .map_err(Error::PrivateAccessState)?;
                     let spec = private_access_router(network, &sealed, state);
                     containers
+                        .doors()
                         .prepare_pinned_image(&spec.container.image)
                         .await?;
                     containers
@@ -247,7 +248,7 @@ impl LocalMachine {
         let containers = self.docker()?.clone();
         self.reserved_effect(Gate::Router)?;
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let routers = containers.routers(&local.record().id()).await?;
             if routers.is_empty() {
@@ -288,7 +289,7 @@ impl LocalMachine {
                 );
             }
             containers
-                .prepare_pinned_image(&pinned.container.image)
+                .doors().prepare_pinned_image(&pinned.container.image)
                 .await?;
             let spec = pinned;
             containers
@@ -345,7 +346,7 @@ impl LocalMachine {
         }
         let mut stays = None;
         for retiree in &plan.retire {
-            match containers.remove(&retiree.id, true, true).await {
+            match containers.lifecycle().remove(&retiree.id, true, true).await {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 Err(source) if wanted.is_none() => {
@@ -373,7 +374,7 @@ impl LocalMachine {
     ) -> Result<Option<DoorOutcome>, Error> {
         for retiree in &plan.retire {
             self.reserved_effect(Gate::Router)?;
-            match containers.stop(&retiree.id, None, None).await {
+            match containers.lifecycle().stop(&retiree.id, None, None).await {
                 Ok(()) => {
                     if retiree.running {
                         effects.stopped.push(retiree.id);
@@ -401,7 +402,10 @@ impl LocalMachine {
                 (id, DoorChange::Created)
             }
         };
-        let now = containers.inspect_managed(&id, &self.record().id()).await?;
+        let now = containers
+            .observation()
+            .inspect_managed(&id, &self.record().id())
+            .await?;
         Ok(Some(DoorOutcome { now, change }))
     }
 
@@ -422,6 +426,7 @@ impl LocalMachine {
         let deadline = tokio::time::Instant::now() + self.pacing.router_settle;
         loop {
             let runtime = containers
+                .observation()
                 .inspect_managed(&id, &machine_id)
                 .await
                 .map(|observed| observed.runtime.clone())

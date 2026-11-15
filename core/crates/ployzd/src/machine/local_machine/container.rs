@@ -141,6 +141,7 @@ impl LocalMachine {
                 }
             }
             containers
+                .volumes()
                 .validate_provisioned_volumes(&machine.id, &specs)
                 .await?;
             for name in requested.keys() {
@@ -151,6 +152,7 @@ impl LocalMachine {
                 .call(crate::volume_copy::STORAGE_PREPARE_ROUTE, &requested)
                 .await?;
             containers
+                .volumes()
                 .ensure_provisioned_volumes(&machine.id, &specs)
                 .await?;
             Ok(ployz_core::PreparedVolumes { names })
@@ -267,7 +269,7 @@ impl LocalMachine {
     /// container.
     pub(crate) async fn start_container(&self, container_id: ContainerId) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
-            local.docker()?.start(&container_id).await?;
+            local.docker()?.lifecycle().start(&container_id).await?;
             Ok(())
         })
         .await
@@ -290,7 +292,13 @@ impl LocalMachine {
     ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
-            if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+            if let Err(floor) = containers
+                .lifecycle()
+                .floor_turn()
+                .await
+                .admit(&name, r#gen)
+                .await?
+            {
                 return Ok(Err(floor));
             }
             let container_id = match start {
@@ -316,7 +324,7 @@ impl LocalMachine {
                         .container_id
                 }
             };
-            containers.start(&container_id).await?;
+            containers.lifecycle().start(&container_id).await?;
             Ok(Ok(()))
         })
         .await
@@ -338,6 +346,7 @@ impl LocalMachine {
         self.finish_mutation(move |local| async move {
             local
                 .docker()?
+                .lifecycle()
                 .remove(&container_id, remove_volumes, force)
                 .await?;
             Ok(())
@@ -427,7 +436,10 @@ impl LocalMachine {
         let _ = installation;
         let containers = self.docker()?;
         let machine_id = self.record().id();
-        let observed = containers.inspect_managed(container, &machine_id).await?;
+        let observed = containers
+            .observation()
+            .inspect_managed(container, &machine_id)
+            .await?;
         if !is_running(&observed.runtime) {
             return Ok(Ok(observed));
         }
@@ -451,6 +463,7 @@ impl LocalMachine {
         };
         let issued = chrono::Utc::now();
         containers
+            .lifecycle()
             .stop(
                 container,
                 stop.signal.as_deref(),
@@ -458,16 +471,20 @@ impl LocalMachine {
             )
             .await?;
         let ended = if guard.records() {
-            containers.run_ended_since(container, issued).await?
+            containers
+                .observation()
+                .run_ended_since(container, issued)
+                .await?
         } else {
             None
         };
         drop(held);
         if let Some(run) = ended {
-            containers.record_stop(container, &run).await?;
+            containers.lifecycle().record_stop(container, &run).await?;
         }
         drop(turn);
         Ok(Ok(containers
+            .observation()
             .inspect_managed(container, &machine_id)
             .await?))
     }
@@ -489,7 +506,7 @@ impl LocalMachine {
         container: &ContainerId,
         not_before: tokio::time::Instant,
     ) {
-        let Ok(Some(pid)) = containers.pid(container).await else {
+        let Ok(Some(pid)) = containers.observation().pid(container).await else {
             return std::future::pending().await;
         };
         let mut listening = std::collections::BTreeSet::new();
@@ -539,11 +556,15 @@ impl LocalMachine {
         self.finish_installed(move |local, installation| async move {
             let containers = local.docker()?;
             let stop = StopOptions::default();
-            let holders = containers.volume_holder_ids(&name).await?;
+            let holders = containers.volumes().volume_holder_ids(&name).await?;
             let machine_id = local.record().id();
             let mut running = Vec::new();
             for holder in &holders {
-                match containers.inspect_managed(holder, &machine_id).await {
+                match containers
+                    .observation()
+                    .inspect_managed(holder, &machine_id)
+                    .await
+                {
                     Ok(observed) if is_running(&observed.runtime) => running.push(*holder),
                     Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
                     Err(error) => return Err(error.into()),
@@ -551,7 +572,13 @@ impl LocalMachine {
             }
             record(&running)?;
             for holder in holders {
-                if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+                if let Err(floor) = containers
+                    .lifecycle()
+                    .floor_turn()
+                    .await
+                    .admit(&name, r#gen)
+                    .await?
+                {
                     return Ok(Err(CutRefusal::Stale(floor)));
                 }
                 let observed = match local
@@ -569,7 +596,7 @@ impl LocalMachine {
             if local.volume_holder_running(&name).await? {
                 return Ok(Err(CutRefusal::Busy));
             }
-            let mut floor = containers.floor_turn().await;
+            let mut floor = containers.lifecycle().floor_turn().await;
             if let Err(floor) = floor.admit(&name, r#gen).await? {
                 return Ok(Err(CutRefusal::Stale(floor)));
             }
@@ -586,8 +613,12 @@ impl LocalMachine {
     ) -> Result<bool, Error> {
         let containers = self.docker()?;
         let machine_id = self.record().id();
-        for holder in containers.volume_holder_ids(name).await? {
-            match containers.inspect_managed(&holder, &machine_id).await {
+        for holder in containers.volumes().volume_holder_ids(name).await? {
+            match containers
+                .observation()
+                .inspect_managed(&holder, &machine_id)
+                .await
+            {
                 Ok(observed) if is_running(&observed.runtime) => return Ok(true),
                 Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 Err(error) => return Err(error.into()),
@@ -608,7 +639,11 @@ impl LocalMachine {
         force: bool,
     ) -> Result<VolumeRemoved, Error> {
         self.finish_mutation(move |local| async move {
-            local.docker()?.remove_volume(&name, force).await?;
+            local
+                .docker()?
+                .volumes()
+                .remove_volume(&name, force)
+                .await?;
             Ok(VolumeRemoved {})
         })
         .await
@@ -626,7 +661,11 @@ impl LocalMachine {
         request: PruneImagesRequest,
     ) -> Result<ImagesRemoved, Error> {
         self.finish_mutation(move |local| async move {
-            Ok(local.docker()?.prune_images(&request.repositories).await?)
+            Ok(local
+                .docker()?
+                .images()
+                .prune_images(&request.repositories)
+                .await?)
         })
         .await
     }
@@ -671,6 +710,7 @@ impl LocalMachine {
         self.finish_admitted(shared, move |local| async move {
             let exposed_ports = local
                 .docker()?
+                .images()
                 .pull_image(
                     &request.image,
                     request.policy,
@@ -703,7 +743,7 @@ impl LocalMachine {
             )
             .await
             {
-                return Err(containers.pull_failure(error).await.into());
+                return Err(containers.images().pull_failure(error).await.into());
             }
             // Every caller discards this reply; a deploy reads ports from its `PullImage`.
             Ok(ImagePulled::default())
@@ -799,7 +839,7 @@ impl LocalMachine {
             && self
                 .containers
                 .as_ref()
-                .is_some_and(ContainerRuntime::departing)
+                .is_some_and(|containers| containers.lifecycle().departing())
         {
             return self.marked_departing(ensured);
         }
@@ -928,7 +968,11 @@ impl LocalMachine {
             ContainerLocator::Key(slot) => QualifiedService::new(slot.namespace, slot.service),
             ContainerLocator::Id(id) => {
                 let containers = self.docker()?;
-                match containers.inspect_managed(&id, &self.record().id()).await {
+                match containers
+                    .observation()
+                    .inspect_managed(&id, &self.record().id())
+                    .await
+                {
                     Ok(observed) => observed.identity(),
                     Err(_) => return Ok(false),
                 }
@@ -948,7 +992,7 @@ impl LocalMachine {
         // with the lock, so a caller that stops waiting cannot free the lock while a
         // stop it began still runs.
         let containers = self.docker()?;
-        let doors = containers.door_lifecycle().await;
+        let doors = containers.doors().hold().await;
         let local = self.clone();
         tokio::spawn(async move {
             let _doors = doors;
@@ -1021,7 +1065,9 @@ impl LocalMachine {
             // verdict still answers by the deadline.
             let Ok(inspected) = tokio::time::timeout_at(
                 (started + limit).max(tokio::time::Instant::now() + SETTLE_INSPECT_GRACE),
-                containers.inspect_managed_run(container_id, &machine_id),
+                containers
+                    .observation()
+                    .inspect_managed_run(container_id, &machine_id),
             )
             .await
             else {
@@ -1109,6 +1155,7 @@ impl LocalMachine {
         }
         let containers = self.docker()?;
         let details = containers
+            .observation()
             .inspect_managed_details(container_id, &self.record().id())
             .await?;
         Ok(details.run.as_ref() == Some(&settled_run) && details.container.runtime.may_serve())
@@ -1204,7 +1251,7 @@ impl LocalMachine {
                             Ok(turn) => turn,
                             Err(refusal) => return Ok(Some(refusal)),
                         };
-                    containers.stop(&id, None, None).await?;
+                    containers.lifecycle().stop(&id, None, None).await?;
                     drop(turn);
                     Ok(None)
                 })
@@ -1277,12 +1324,21 @@ impl LocalMachine {
         let containers = self.docker()?;
         let machine_id = self.record().id();
         let observed = match locator {
-            ContainerLocator::Id(id) => match containers.inspect_managed(id, &machine_id).await {
+            ContainerLocator::Id(id) => match containers
+                .observation()
+                .inspect_managed(id, &machine_id)
+                .await
+            {
                 Ok(observed) => Some(observed),
                 Err(crate::docker::Error::ContainerNotFound(_)) => None,
                 Err(error) => return Err(error.into()),
             },
-            ContainerLocator::Key(slot) => containers.inspect_slot(&machine_id, slot).await?,
+            ContainerLocator::Key(slot) => {
+                containers
+                    .lifecycle()
+                    .inspect_slot(&machine_id, slot)
+                    .await?
+            }
         };
         Ok(observed.map_or_else(
             || ContainerNow::Absent {
@@ -1324,6 +1380,7 @@ impl LocalMachine {
                 // A racing create adopted a hook another request already started: never run it twice.
                 if new.slot.kind == ContainerKind::PreDeployHook {
                     let adopted = containers
+                        .observation()
                         .inspect_managed(&created.container_id, &local.record().id())
                         .await?;
                     if !never_started(&adopted) {
@@ -1342,7 +1399,7 @@ impl LocalMachine {
                     )
                     .await;
                 }
-                containers.start(&created.container_id).await?;
+                containers.lifecycle().start(&created.container_id).await?;
                 Ok(None)
             })
             .await?;
@@ -1369,6 +1426,7 @@ impl LocalMachine {
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
         containers
+            .lifecycle()
             .create_with_admission(
                 machine,
                 ContainerRequest {
@@ -1402,7 +1460,12 @@ impl LocalMachine {
                         }
                         // Boxed: its Volume inspections would otherwise grow every create's
                         // future.
-                        Box::pin(containers.refuse_managed_external(&machine.id, spec)).await?;
+                        Box::pin(
+                            containers
+                                .volumes()
+                                .refuse_managed_external(&machine.id, spec),
+                        )
+                        .await?;
                         Ok(())
                     },
                     storage: self.observe_storage(),
@@ -1446,7 +1509,7 @@ impl<'a> StopGuard for Fence<'a> {
     }
 
     async fn withdraw(&self) -> Result<Result<Withdrawal, VolumeGen>, Error> {
-        Ok(Ok(self.containers.withdraw(*self.container)))
+        Ok(Ok(self.containers.lifecycle().withdraw(*self.container)))
     }
 
     async fn drained(&self) -> Result<Result<(), VolumeGen>, Error> {
@@ -1455,6 +1518,7 @@ impl<'a> StopGuard for Fence<'a> {
         };
         Ok(self
             .containers
+            .lifecycle()
             .floor_turn()
             .await
             .admit(name, r#gen)
@@ -1465,7 +1529,7 @@ impl<'a> StopGuard for Fence<'a> {
         let Some((name, r#gen)) = self.fence else {
             return Ok(Ok(None));
         };
-        let mut floor = self.containers.floor_turn().await;
+        let mut floor = self.containers.lifecycle().floor_turn().await;
         Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
     }
 }
@@ -1489,7 +1553,7 @@ impl<'a> StopGuard for Leaving<'a> {
     async fn withdraw(&self) -> Result<Result<Withdrawal, ContainerRefusal>, Error> {
         Ok(leave_rotation(self.containers, self.container, self.target)
             .await?
-            .map(|_turn| self.containers.withdraw(*self.container)))
+            .map(|_turn| self.containers.lifecycle().withdraw(*self.container)))
     }
 
     async fn drained(&self) -> Result<Result<(), ContainerRefusal>, Error> {
@@ -1709,7 +1773,7 @@ async fn leave_rotation<'a>(
     container: &ContainerId,
     target: &RotationTarget,
 ) -> Result<Result<RotationTurn<'a>, ContainerRefusal>, Error> {
-    let turn = containers.rotation_turn(container).await?;
+    let turn = containers.lifecycle().rotation_turn(container).await?;
     Ok(if in_rotation(turn.rotation(), target) {
         Err(in_rotation_refusal(container, turn.rotation()))
     } else {
@@ -1727,7 +1791,10 @@ async fn remove_out_of_rotation(
         Ok(Ok(turn)) => turn.remove(remove_volumes, false).await?,
         Ok(Err(refusal)) => return Ok(Some(refusal)),
         Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {
-            containers.remove(container, remove_volumes, false).await?;
+            containers
+                .lifecycle()
+                .remove(container, remove_volumes, false)
+                .await?;
         }
         Err(error) => return Err(error),
     }

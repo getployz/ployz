@@ -121,6 +121,7 @@ impl Fleet {
                         gate.wait().await;
                     }
                     runtime?
+                        .observation()
                         .inspect_managed_details(&container, &machine)
                         .await
                         .ok()
@@ -479,6 +480,7 @@ impl Drop for Fleet {
 impl Node {
     async fn rotation(&self, container: ContainerId) -> CopyRotation {
         self.runtime
+            .observation()
             .rotations(vec![container])
             .await
             .unwrap()
@@ -490,6 +492,7 @@ impl Node {
     /// turn would.
     async fn record(&self, container: ContainerId, rotation: CopyRotation) {
         self.runtime
+            .lifecycle()
             .rotation_turn(&container)
             .await
             .unwrap()
@@ -1178,14 +1181,19 @@ async fn an_inspect_reports_the_leaving_mark_it_began_under() {
     let node = fleet.node(0);
     let a = fleet.routed(0, "a", "api", 1).await;
     let machine = fleet.id(0);
-    let leaving = node.runtime.leave(a);
+    let leaving = node.runtime.lifecycle().leave(a);
     let docker = node.hold_inspect();
 
-    let (answer, ()) = tokio::join!(node.runtime.inspect_managed_details(&a, &machine), async {
-        docker.wait().await;
-        drop(leaving);
-        docker.wait().await;
-    });
+    let (answer, ()) = tokio::join!(
+        node.runtime
+            .observation()
+            .inspect_managed_details(&a, &machine),
+        async {
+            docker.wait().await;
+            drop(leaving);
+            docker.wait().await;
+        }
+    );
 
     let answer = answer.unwrap();
     assert!(answer.leaving);
@@ -1193,6 +1201,7 @@ async fn an_inspect_reports_the_leaving_mark_it_began_under() {
     assert!(
         !node
             .runtime
+            .observation()
             .inspect_managed_details(&a, &fleet.id(0))
             .await
             .unwrap()
@@ -2577,7 +2586,7 @@ async fn stops_removes_and_creations_run_while_a_leave_is_under_way() {
     let a = fleet.pending(0, "a", "api", 1).await;
 
     // The Leave's first step: every copy goes, and the mark says it is under way.
-    node.runtime.remove_all_managed().await.unwrap();
+    node.runtime.lifecycle().remove_all_managed().await.unwrap();
     assert!(node.container(a).is_none());
 
     let reply = node.service.local.ensure_container(stopped(a)).await;
@@ -2629,7 +2638,7 @@ async fn a_leave_that_took_a_settling_copy_marks_the_answer() {
     reached.notified().await;
 
     // The Leave's first step: every copy goes, and the mark says it is under way.
-    node.runtime.remove_all_managed().await.unwrap();
+    node.runtime.lifecycle().remove_all_managed().await.unwrap();
     release.notify_one();
     let error = wire_error(settling.await.unwrap());
 
@@ -2652,7 +2661,7 @@ async fn a_leave_under_way_marks_the_unhealthy_copy_a_creation_it_let_through_ma
         held_creation_on_wire(node, "a", checked_spec("api"), EnsurePausePoint::BeforeWork);
     reached.notified().await;
 
-    node.runtime.remove_all_managed().await.unwrap();
+    node.runtime.lifecycle().remove_all_managed().await.unwrap();
     node.fake.exit_on_start.store(true, Ordering::SeqCst);
     release.notify_one();
     let reply = creating.await.unwrap();
