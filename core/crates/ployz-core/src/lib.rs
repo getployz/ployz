@@ -39,6 +39,8 @@ pub mod rpc;
 mod rpc_catalog;
 pub mod scrub;
 mod sealed;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod sealed_pins_tests;
 mod sealed_record;
 mod sealing;
 #[cfg(not(target_arch = "wasm32"))]
