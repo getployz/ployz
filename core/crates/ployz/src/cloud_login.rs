@@ -946,6 +946,264 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn the_device_token_route_reads_as_one_poll_outcome_or_one_refusal() {
+        let table: [(u16, serde_json::Value, &str); 22] = [
+            (
+                400,
+                serde_json::json!({ "error": "authorization_pending" }),
+                "pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "slow_down" }),
+                "slow_down",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "access_denied" }),
+                "denied",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "expired_token" }),
+                "expired",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "invalid_grant" }),
+                "expired",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "authorization_pending", "error_description": "x" }),
+                "pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "nope" }),
+                "reply: device token error nope",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "" }),
+                "reply: device token error ",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "Authorization_Pending" }),
+                "reply: device token error Authorization_Pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "slow_down " }),
+                "reply: device token error slow_down ",
+            ),
+            (
+                400,
+                serde_json::json!({}),
+                "reply: missing field `error` at line 1 column 2",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": 7 }),
+                "reply: invalid type: integer `7`, expected a string at line 1 column 10",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": null }),
+                "reply: invalid type: null, expected a string at line 1 column 13",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": { "code": "x" } }),
+                "reply: invalid type: map, expected a string at line 1 column 9",
+            ),
+            (200, serde_json::json!({ "access_token": "t" }), "approved"),
+            (
+                200,
+                serde_json::json!({ "access_token": "t", "token_type": "Bearer" }),
+                "approved",
+            ),
+            (
+                200,
+                serde_json::json!({}),
+                "reply: missing field `access_token` at line 1 column 2",
+            ),
+            (
+                200,
+                serde_json::json!({ "access_token": null }),
+                "reply: invalid type: null, expected a string at line 1 column 20",
+            ),
+            (
+                200,
+                serde_json::json!({ "error": "access_denied" }),
+                "reply: missing field `access_token` at line 1 column 25",
+            ),
+            (
+                401,
+                serde_json::json!({ "error": "authorization_pending" }),
+                r#"status 401: {"error":"authorization_pending"}"#,
+            ),
+            (
+                404,
+                serde_json::json!({ "error": "expired_token" }),
+                r#"status 404: {"error":"expired_token"}"#,
+            ),
+            (
+                500,
+                serde_json::json!({ "error": "slow_down" }),
+                r#"status 500: {"error":"slow_down"}"#,
+            ),
+        ];
+        for (status, body, expected) in table {
+            let said = body.clone();
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/auth/device/token" => (status, said.clone()),
+                other => panic!("unexpected {other}"),
+            });
+            let pending = Pending {
+                cloud,
+                device_code: Secret("device-secret".to_owned()),
+                code: "ABCD2345".to_owned(),
+                url: "http://cloud/device".to_owned(),
+                expires_at: now() + 600,
+                interval_secs: 1,
+            };
+            let http = reqwest::Client::new();
+            let read = match poll(&http, &pending).await {
+                Ok(Poll::Pending) => "pending".to_owned(),
+                Ok(Poll::SlowDown) => "slow_down".to_owned(),
+                Ok(Poll::Denied) => "denied".to_owned(),
+                Ok(Poll::Expired) => "expired".to_owned(),
+                Ok(Poll::Approved(token)) => {
+                    assert_eq!(token.expose(), "t");
+                    "approved".to_owned()
+                }
+                Err(LoginError::Reply(said)) => format!("reply: {said}"),
+                Err(LoginError::Status { status, body }) => format!("status {status}: {body}"),
+                Err(other) => format!("other: {other:?}"),
+            };
+            assert_eq!(read, expected, "{status} {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_code_that_has_run_out_is_expired_without_asking_cloud() {
+        let pending = Pending {
+            cloud: "http://127.0.0.1:1".to_owned(),
+            device_code: Secret("device-secret".to_owned()),
+            code: "ABCD2345".to_owned(),
+            url: "http://cloud/device".to_owned(),
+            expires_at: 0,
+            interval_secs: 1,
+        };
+        assert!(matches!(
+            poll(&reqwest::Client::new(), &pending).await,
+            Ok(Poll::Expired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_device_code_reply_decodes_only_what_cloud_must_send() {
+        let full = serde_json::json!({
+            "device_code": "d", "user_code": "U", "verification_uri_complete": "http://c/d?u=U",
+            "expires_in": 60, "interval": 0,
+        });
+        let without = |field: &str| {
+            let mut body = full.clone();
+            body.as_object_mut().unwrap().remove(field);
+            body
+        };
+        let with = |field: &str, value: serde_json::Value| {
+            let mut body = full.clone();
+            body.as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), value);
+            body
+        };
+        let table = [
+            (404, serde_json::json!({}), "unsupported"),
+            (200, full.clone(), "ok interval 1"),
+            (
+                200,
+                with("verification_uri", serde_json::json!("http://c/d")),
+                "ok interval 1",
+            ),
+            (200, with("interval", serde_json::json!(5)), "ok interval 5"),
+            (
+                200,
+                without("device_code"),
+                "reply: missing field `device_code` at line 1 column 91",
+            ),
+            (
+                200,
+                without("user_code"),
+                "reply: missing field `user_code` at line 1 column 93",
+            ),
+            (
+                200,
+                without("verification_uri_complete"),
+                "reply: missing field `verification_uri_complete` at line 1 column 64",
+            ),
+            (
+                200,
+                without("expires_in"),
+                "reply: missing field `expires_in` at line 1 column 93",
+            ),
+            (
+                200,
+                without("interval"),
+                "reply: missing field `interval` at line 1 column 96",
+            ),
+            (
+                200,
+                with("interval", serde_json::json!(-1)),
+                "reply: invalid value: integer `-1`, expected u64 at line 1 column 48",
+            ),
+            (
+                200,
+                with("interval", serde_json::json!("5")),
+                "reply: invalid type: string \"5\", expected u64 at line 1 column 49",
+            ),
+            (
+                200,
+                with("expires_in", serde_json::json!(null)),
+                "reply: invalid type: null, expected u64 at line 1 column 36",
+            ),
+            (
+                500,
+                serde_json::json!({ "error": "down" }),
+                r#"status 500: {"error":"down"}"#,
+            ),
+            (
+                403,
+                serde_json::json!({ "error": "no" }),
+                r#"status 403: {"error":"no"}"#,
+            ),
+        ];
+        for (status, body, expected) in table {
+            let said = body.clone();
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/auth/device/code" => (status, said.clone()),
+                other => panic!("unexpected {other}"),
+            });
+            let (_dir, store) = store();
+            let read = match start(&store, &cloud).await {
+                Ok(Start::Pending { pending, .. }) => {
+                    assert!(pending.expires_in() <= 60);
+                    format!("ok interval {}", pending.interval_secs)
+                }
+                Ok(_) => "other start".to_owned(),
+                Err(LoginError::Unsupported(_)) => "unsupported".to_owned(),
+                Err(LoginError::Reply(said)) => format!("reply: {said}"),
+                Err(LoginError::Status { status, body }) => format!("status {status}: {body}"),
+                Err(other) => format!("other: {other:?}"),
+            };
+            assert_eq!(read, expected, "{status} {body}");
+        }
+    }
+
+    #[tokio::test]
     async fn login_refuses_to_switch_clouds_while_signed_in() {
         let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
         let (_dir, store) = store();

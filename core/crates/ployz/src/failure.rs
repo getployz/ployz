@@ -966,6 +966,51 @@ mod tests {
     }
 
     #[test]
+    fn every_cloud_status_reads_as_one_code_whichever_cloud_call_met_it() {
+        use RpcErrorCode::{Conflict, InvalidArgument, NotFound, Unauthenticated, Unavailable};
+        for (status, code) in [
+            (0, Unavailable),
+            (100, Unavailable),
+            (200, Unavailable),
+            (302, Unavailable),
+            (399, Unavailable),
+            (400, InvalidArgument),
+            (401, Unauthenticated),
+            (402, InvalidArgument),
+            (403, Unauthenticated),
+            (404, NotFound),
+            (405, InvalidArgument),
+            (407, InvalidArgument),
+            (408, Unavailable),
+            (409, Conflict),
+            (410, InvalidArgument),
+            (413, InvalidArgument),
+            (422, InvalidArgument),
+            (428, InvalidArgument),
+            (429, Unavailable),
+            (430, InvalidArgument),
+            (499, InvalidArgument),
+            (500, Unavailable),
+            (502, Unavailable),
+            (503, Unavailable),
+            (599, Unavailable),
+            (600, Unavailable),
+            (u16::MAX, Unavailable),
+        ] {
+            let signed_in = LoginError::Status {
+                status,
+                body: String::new(),
+            };
+            assert_eq!(login_code(&signed_in), code, "login HTTP {status}");
+            let enrolled = Failure::from(cloud_enroll::Error::Status {
+                status,
+                body: String::new(),
+            });
+            assert_eq!(enrolled.report().code, code, "enroll HTTP {status}");
+        }
+    }
+
+    #[test]
     fn bad_log_tail_is_invalid_argument() {
         let failure = Failure::from(crate::operator::input::InputError::InvalidTail(
             "bad".into(),
