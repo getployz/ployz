@@ -5,7 +5,7 @@ use super::RemoteBuildFailure;
 use super::inputs::BuildInputs;
 use crate::connect::Client;
 use ployz_build::{
-    Progress, Stage,
+    Progress, Stage, TIMING,
     remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::error_chain;
@@ -52,8 +52,7 @@ impl Client {
             }
         };
         // Keep the admitted sender alive: closing it would cancel the worker check.
-        let deadline =
-            tokio::time::Instant::now() + admitted.active_timeout + Duration::from_secs(70);
+        let deadline = tokio::time::Instant::now() + TIMING.result_wait(admitted.active_timeout);
         let unusable =
             |message: &str| CapabilityCheckError::from(remote::InputError::from(message));
         tokio::select! {
@@ -176,7 +175,7 @@ async fn open_and_admit(
     sender.send(start).await.expect("request receiver is owned");
     let target = MachineTarget::from(&machine_id);
     let mut responses = match tokio::time::timeout(
-        Duration::from_secs(10),
+        TIMING.admission_wait,
         client.open_stream::<op::Build>(Some(&target), ReceiverStream::new(receiver)),
     )
     .await
@@ -216,7 +215,7 @@ async fn open_and_admit(
         .with_work(evidence.clone())
     };
     let waiting_since = tokio::time::Instant::now();
-    let mut admission_deadline = waiting_since + Duration::from_secs(10);
+    let mut admission_deadline = waiting_since + TIMING.admission_wait;
     let mut queued = false;
     let active_timeout = loop {
         tokio::select! {
@@ -229,11 +228,11 @@ async fn open_and_admit(
             result = responses.message() => match result {
                 Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
                     Ok(Event::Admitted { machine_id: admitted, active_timeout })
-                        if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => break active_timeout,
+                        if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= TIMING.max_policy_timeout => break active_timeout,
                     Ok(Event::Progress(Progress::Stage(Stage::Queued))) if !queued => {
                         queued = true;
                         // The Machine's validated local policy is bounded at 24h.
-                        admission_deadline = waiting_since + Duration::from_secs(86410);
+                        admission_deadline = waiting_since + TIMING.queued_admission_wait();
                         progress(Progress::Stage(Stage::Queued));
                     }
                     Ok(Event::Finished(outcome)) => return Err(RemoteBuildFailure::try_from(outcome).map(|failure| failure.with_work(evidence.clone())).unwrap_or_else(|_| invalid_response()).into()),
@@ -323,7 +322,7 @@ async fn execute_attempt(
         let mut uploaded = false;
         let mut cancelling = false;
         let mut stage = Stage::Upload;
-        let mut deadline = tokio::time::Instant::now() + active_timeout + Duration::from_secs(70);
+        let mut deadline = tokio::time::Instant::now() + TIMING.result_wait(active_timeout);
         loop {
             tokio::select! {
                 result = responses.message() => match result {
@@ -347,7 +346,7 @@ async fn execute_attempt(
                     uploaded = true;
                     if !matches!(result, Ok(Ok(()))) && !cancelling {
                         cancelling = true;
-                        deadline = tokio::time::Instant::now() + Duration::from_secs(70);
+                        deadline = tokio::time::Instant::now() + TIMING.termination_grace;
                         // The capture cannot be completed; ask the host to release
                         // admission and wait for its typed termination evidence.
                         if send_cancellation(&sender).await.is_err() {
@@ -357,7 +356,7 @@ async fn execute_attempt(
                 },
                 () = cancellation.cancelled(), if !cancelling => {
                     cancelling = true;
-                    deadline = tokio::time::Instant::now() + Duration::from_secs(70);
+                    deadline = tokio::time::Instant::now() + TIMING.termination_grace;
                     // Stop the producer first so cancellation cannot sit behind an
                     // unbounded upload. Only two bounded frames can be in flight.
                     if send_cancellation(&sender).await.is_err() {

@@ -30,7 +30,7 @@ pub fn validate_capture(
         .map(|target| target.name.as_str())
         .collect();
     if names.is_empty()
-        || names.len() > 128
+        || names.len() > crate::LIMITS.targets
         || names.len() != definition.targets.len()
         || names.iter().any(|name| {
             !name
@@ -44,7 +44,7 @@ pub fn validate_capture(
     {
         return Err("invalid Build target names".into());
     }
-    if definition.image_contexts.len() > 128
+    if definition.image_contexts.len() > crate::LIMITS.image_contexts
         || definition.image_contexts.keys().any(|name| {
             names.contains(name.as_str())
                 || name.is_empty()
