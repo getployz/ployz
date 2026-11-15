@@ -20,7 +20,9 @@ mod wire;
 
 pub(crate) use client::{CheckinClient, CheckinKey, Hold, KeyError, key_failure};
 pub(crate) use enroll::Committed;
-pub(crate) use host::{Host, System, local_machine, process_is_root, systemctl};
+pub(crate) use host::{
+    Host, LoopControl, System, Systemd, local_machine, probes_in_time, process_is_root, systemctl,
+};
 pub(crate) use paths::{Paths, hold_loop, loop_stopped};
 pub(crate) use plan::{InstallPass, Next, Posted, install_pass, joined, restart_preparation};
 pub(crate) use run::{CheckinEnd, run};

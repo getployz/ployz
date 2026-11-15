@@ -256,9 +256,41 @@ impl StopReason {
     }
 }
 
+/// What a body Cloud answered with says.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Decoded {
+    Answer(Answer),
+    /// A kind this CLI does not know, which a newer Cloud may send.
+    UnknownKind,
+    /// A kind this CLI knows, with a field it cannot read.
+    Malformed {
+        kind: String,
+        why: String,
+    },
+}
+
 /// Cloud's answer, or None when the body is not a JSON object with a `kind`, which Cloud always
-/// sends. A kind or field this CLI does not know waits, since a newer Cloud may send it.
+/// sends. A kind or field this CLI does not know waits, since a newer Cloud may send it. A known
+/// kind it cannot read waits the same, and says why.
 pub(super) fn answer(body: &[u8]) -> Option<Answer> {
+    Some(match decode(body)? {
+        Decoded::Answer(answer) => answer,
+        Decoded::UnknownKind => unknown_wait(),
+        Decoded::Malformed { kind, why } => {
+            crate::ui::note(format!("Could not read Cloud's {kind} answer: {why}"));
+            unknown_wait()
+        }
+    })
+}
+
+fn unknown_wait() -> Answer {
+    Answer::Wait(Wait {
+        after: UNKNOWN_WAIT,
+        no_cluster: false,
+    })
+}
+
+pub(super) fn decode(body: &[u8]) -> Option<Decoded> {
     #[derive(Deserialize)]
     #[serde(tag = "kind", rename_all = "lowercase")]
     enum Wire {
@@ -276,35 +308,42 @@ pub(super) fn answer(body: &[u8]) -> Option<Answer> {
             #[serde(default)]
             message: String,
         },
+        #[serde(other)]
+        Unknown,
     }
     let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    body.get("kind")?.as_str()?;
-    Some(match serde_json::from_value::<Wire>(body) {
-        Ok(Wire::Wait {
-            retry_after,
-            probe,
-            no_cluster,
-        }) => {
-            let wait = Wait {
-                after: wait_for(retry_after),
+    let kind = body.get("kind")?.as_str()?.to_owned();
+    Some(Decoded::Answer(
+        match serde_json::from_value::<Wire>(body) {
+            Ok(Wire::Wait {
+                retry_after,
+                probe,
                 no_cluster,
-            };
-            match probe.map(serde_json::from_value) {
-                Some(Ok(handout)) => Answer::Probe(wait, handout),
-                Some(Err(why)) => {
-                    crate::ui::note(format!("Could not read Cloud's probe handout: {why}"));
-                    Answer::Wait(wait)
+            }) => {
+                let wait = Wait {
+                    after: wait_for(retry_after),
+                    no_cluster,
+                };
+                match probe.map(serde_json::from_value) {
+                    Some(Ok(handout)) => Answer::Probe(wait, handout),
+                    Some(Err(why)) => {
+                        crate::ui::note(format!("Could not read Cloud's probe handout: {why}"));
+                        Answer::Wait(wait)
+                    }
+                    None => Answer::Wait(wait),
                 }
-                None => Answer::Wait(wait),
             }
-        }
-        Ok(Wire::Enroll(instruction)) => Answer::Enroll(Box::new(instruction)),
-        Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
-        Err(_) => Answer::Wait(Wait {
-            after: UNKNOWN_WAIT,
-            no_cluster: false,
-        }),
-    })
+            Ok(Wire::Enroll(instruction)) => Answer::Enroll(Box::new(instruction)),
+            Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
+            Ok(Wire::Unknown) => return Some(Decoded::UnknownKind),
+            Err(why) => {
+                return Some(Decoded::Malformed {
+                    kind,
+                    why: why.to_string(),
+                });
+            }
+        },
+    ))
 }
 
 fn wait_for(seconds: f64) -> Duration {

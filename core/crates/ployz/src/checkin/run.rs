@@ -6,7 +6,7 @@ use super::paths::Paths;
 use super::plan::{Next, Pass, REFUSED_ONCE, loop_pass};
 use super::probe::Probes;
 use super::token_file::{self, Held, replaced_token};
-use super::{CheckinClient, CheckinKey, Host, StopReason, client, enroll, unit};
+use super::{CheckinClient, CheckinKey, Host, LoopControl, StopReason, client, enroll, unit};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CheckinEnd {
@@ -16,7 +16,7 @@ pub(crate) enum CheckinEnd {
     Enrolled,
 }
 
-pub(crate) async fn run<H: Host>(
+pub(crate) async fn run<H: Host + LoopControl>(
     host: &H,
     client: &mut CheckinClient,
     key: &CheckinKey,
@@ -101,7 +101,7 @@ impl Said {
 /// Removes the token file only while it still holds the token Cloud answered, so a token written
 /// since survives, and the loop stays enabled to restart with it. A rejection is about the host,
 /// so it ends the loop whatever the file holds.
-pub(crate) async fn stop<H: Host>(
+pub(crate) async fn stop<H: LoopControl>(
     host: &H,
     client: &CheckinClient,
     paths: &Paths,

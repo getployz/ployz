@@ -12,7 +12,7 @@ use std::{
 use ployz_core::RpcErrorCode;
 
 use super::paths::Paths;
-use super::{CheckinClient, Host, KeyError, unit};
+use super::{CheckinClient, KeyError, LoopControl, unit};
 use crate::failure::Failure;
 
 pub(super) const TOKEN_SETTLE: Duration = Duration::from_secs(2);
@@ -83,7 +83,7 @@ pub(super) async fn replaced_token(client: &CheckinClient, path: &Path) -> Optio
 
 /// The Fleet Token the loop checks in with. With the file gone there is nothing to check in
 /// with, so the loop disables itself and ends cleanly instead of failing at every restart.
-pub(crate) async fn loop_token<H: Host>(
+pub(crate) async fn loop_token<H: LoopControl>(
     host: &H,
     paths: &Paths,
 ) -> Result<Option<FleetToken>, KeyError> {

@@ -11,7 +11,7 @@ use super::plan::{Next, Pass, read_prep_state};
 use super::status::{LocalCheckin, Seen, record};
 use super::{Attempt, EnrollInstruction, Prep};
 use super::{
-    CheckinClient, CheckinEnd, CheckinKey, Host, Paths, System, ZfsPrep, client, unit,
+    CheckinClient, CheckinEnd, CheckinKey, Host, LoopControl, Paths, System, ZfsPrep, client, unit,
     wire::{
         Answer, AttemptFailure, CheckinRequest, EnrollStorage, HostReport, PrepRecord, StopReason,
     },
@@ -220,7 +220,7 @@ async fn heartbeat(
     None
 }
 
-pub(super) async fn finish<H: Host>(host: &H, paths: &Paths) -> CheckinEnd {
+pub(super) async fn finish<H: LoopControl>(host: &H, paths: &Paths) -> CheckinEnd {
     if let Err(error) = fs::remove_file(&paths.token_file)
         && error.kind() != std::io::ErrorKind::NotFound
     {

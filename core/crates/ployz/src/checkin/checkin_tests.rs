@@ -83,6 +83,13 @@ struct FakeHost {
     binder: Option<Arc<dyn Binder>>,
 }
 
+impl LoopControl for FakeHost {
+    async fn disable_loop(&self) -> Result<(), String> {
+        self.disables.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 impl Host for FakeHost {
     fn binder(&self) -> Arc<dyn Binder> {
         self.binder.clone().unwrap_or_else(|| Arc::new(Sockets))
@@ -134,11 +141,6 @@ impl Host for FakeHost {
     async fn start_prepare(&self) -> Result<(), String> {
         self.preparing.store(true, Ordering::SeqCst);
         self.prepares.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn disable_loop(&self) -> Result<(), String> {
-        self.disables.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -263,6 +265,25 @@ fn a_known_answer_with_a_bad_field_waits_as_an_unknown_one_does() {
     ] {
         assert_eq!(wire::answer(body), Some(Answer::Wait(wait(60))));
     }
+}
+
+#[test]
+fn a_known_kind_cloud_sends_wrong_is_told_from_a_kind_this_cli_does_not_know() {
+    use super::wire::Decoded;
+
+    assert_eq!(
+        wire::decode(br#"{"kind":"reboot","retryAfter":30}"#),
+        Some(Decoded::UnknownKind)
+    );
+    assert!(matches!(
+        wire::decode(br#"{"kind":"stop","reason":"gone"}"#),
+        Some(Decoded::Malformed { kind, .. }) if kind == "stop"
+    ));
+    assert!(matches!(
+        wire::decode(br#"{"kind":"wait","retryAfter":"soon"}"#),
+        Some(Decoded::Malformed { kind, .. }) if kind == "wait"
+    ));
+    assert_eq!(wire::decode(b"{}"), None);
 }
 
 #[tokio::test]
@@ -2433,7 +2454,7 @@ async fn a_probe_cut_off_takes_the_processes_it_started_with_it() {
     )
     .unwrap();
     fs::set_permissions(&ployzd, fs::Permissions::from_mode(0o755)).unwrap();
-    let system = System::with(ployzd);
+    let system = System::new(ployzd, None, "https://cloud.example");
     let probed = tokio::time::timeout(Duration::from_secs(2), system.probe()).await;
     assert!(probed.is_err(), "the probe should hang until cut off");
     let pid = fs::read_to_string(&child).unwrap();

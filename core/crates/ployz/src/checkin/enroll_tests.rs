@@ -216,6 +216,13 @@ impl Scripted {
     }
 }
 
+impl LoopControl for Scripted {
+    async fn disable_loop(&self) -> Result<(), String> {
+        self.disables.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 impl Host for Scripted {
     async fn probe(&self) -> Result<ProbeDocument, String> {
         Ok(serde_json::from_str(PROBE).unwrap())
@@ -230,11 +237,6 @@ impl Host for Scripted {
     }
 
     async fn start_prepare(&self) -> Result<(), String> {
-        Ok(())
-    }
-
-    async fn disable_loop(&self) -> Result<(), String> {
-        self.disables.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 

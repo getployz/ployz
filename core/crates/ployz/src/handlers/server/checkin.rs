@@ -14,7 +14,7 @@ use ployz_core::{Hint, MachineLayout, RpcErrorCode};
 
 use super::super::{Error, leaf_matches, runtime};
 use crate::checkin::{
-    self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Paths, System,
+    self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Paths, System, Systemd,
     install::{self, Install, Token},
     key_failure,
 };
@@ -108,7 +108,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         }
     };
     let Some((ployzd, token)) = runtime.block_on(install::loop_start(
-        &System::with(PathBuf::new()),
+        &Systemd,
         matches.get_one::<PathBuf>("ployzd").cloned(),
         &paths,
         process_env::var_os("PATH").as_deref(),
@@ -116,11 +116,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     else {
         return Ok(());
     };
-    let host = System {
-        ployzd: ployzd.path,
-        stale: ployzd.stale,
-        cloud: cloud_url.clone(),
-    };
+    let host = System::new(ployzd.path, ployzd.stale, &cloud_url);
     let (key, mut client) = connect(&paths, &cloud_url, token)?;
     match runtime.block_on(checkin::run(&host, &mut client, &key, &paths)) {
         CheckinEnd::Stopped(_) | CheckinEnd::Enrolled => Ok(()),

@@ -14,9 +14,9 @@ use ployz_core::RpcErrorCode;
 use super::client::key_failure;
 use super::token_file::{self, FleetToken, TokenFileLock};
 use super::{
-    CheckinClient, CheckinKey, Hold, Host, InstallPass, NO_CLUSTER, NO_CLUSTER_WHY, Next, Paths,
-    Posted, StopReason, System, install_pass, joined, loop_token, no_ployzd, record,
-    restart_preparation, systemctl, unit,
+    CheckinClient, CheckinKey, Hold, InstallPass, LoopControl, NO_CLUSTER, NO_CLUSTER_WHY, Next,
+    Paths, Posted, StopReason, System, install_pass, joined, loop_token, no_ployzd, probes_in_time,
+    record, restart_preparation, systemctl, unit,
 };
 use crate::failure::Failure;
 
@@ -52,7 +52,8 @@ pub(crate) async fn install(
     install_with: Install<'_>,
 ) -> Result<(), Failure> {
     let cloud_url = install_with.cloud_url;
-    let host = System::with(install_ployzd(paths, process_env::var_os("PATH").as_deref()).await?);
+    let ployzd = install_ployzd(paths, process_env::var_os("PATH").as_deref()).await?;
+    let host = System::new(ployzd, None, cloud_url);
     let ployz = process_env::current_exe().map_err(|error| {
         Failure::caused(
             RpcErrorCode::Internal,
@@ -262,7 +263,7 @@ pub(crate) struct LoopPloyzd {
 
 /// The token, then the ployzd, the loop runs with. A missing token ends the loop before it looks
 /// for a ployzd it would not use. `stopper` only disables the loop.
-pub(crate) async fn loop_start<H: Host>(
+pub(crate) async fn loop_start<H: LoopControl>(
     stopper: &H,
     pinned: Option<PathBuf>,
     paths: &Paths,
@@ -304,7 +305,7 @@ pub(crate) async fn loop_ployzd(
     }
     let mut probing = None;
     for path in &found {
-        if System::probes(path).await {
+        if probes_in_time(path).await {
             probing = Some(path.clone());
             break;
         }
