@@ -151,11 +151,67 @@ pub(crate) trait Tool: DeserializeOwned + JsonSchema {
     /// Where it can run, declared once; a tool that only Cloud can run says so here.
     const REACH: Reach = Reach::Anywhere;
 
+    /// The read that shows what a call to this tool started or changed; a call that
+    /// outlasts its deadline points to it.
+    const STATUS: ToolId = ToolId::DeploymentShow;
+
     /// A complete input that decodes.
     fn example() -> Value;
 
+    /// What a human approves when a write of this tool waits on an approval whose diff
+    /// names no verb.
+    fn verb(_input: &Value) -> DiffVerb {
+        DiffVerb::Deploy
+    }
+
     /// Read, write and wait through `cx`, then render the answer.
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop>;
+}
+
+/// The word for a Store write held for approval, when its diff names no verb.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffVerb {
+    Publish,
+    Deploy,
+    Retry,
+    Remove,
+}
+
+/// What a host needs to know about a tool beyond what a model is told.
+#[derive(Clone, Copy)]
+pub struct ToolFacts {
+    /// The read that shows what a call to the tool started or changed.
+    pub status: ToolId,
+    verb: fn(&Value) -> DiffVerb,
+}
+
+impl ToolFacts {
+    /// What a human approves when `input`'s write waits on an approval.
+    #[must_use]
+    pub fn verb(&self, input: &Value) -> DiffVerb {
+        (self.verb)(input)
+    }
+}
+
+impl std::fmt::Debug for ToolFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolFacts")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ToolFacts {
+    fn eq(&self, other: &Self) -> bool {
+        self.status == other.status && std::ptr::fn_addr_eq(self.verb, other.verb)
+    }
+}
+
+const fn facts<T: Tool>() -> ToolFacts {
+    ToolFacts {
+        status: T::STATUS,
+        verb: T::verb,
+    }
 }
 
 /// What a model is told about one tool.
@@ -168,6 +224,9 @@ pub struct ToolDef {
     pub read_only: bool,
     pub destructive: bool,
     pub gate: Gate,
+    #[serde(skip)]
+    #[ts(skip)]
+    pub facts: ToolFacts,
 }
 
 /// What one run of a plan sees: the recorded rounds and what it has used.
@@ -613,6 +672,7 @@ pub(crate) struct Entry {
     pub(crate) example: fn() -> Value,
     run: fn(&mut Cx<'_>, &Value) -> Result<Value, Stop>,
     pub(crate) reach: Reach,
+    pub(crate) facts: ToolFacts,
 }
 
 pub(crate) const fn entry<T: Tool>() -> Entry {
@@ -622,6 +682,7 @@ pub(crate) const fn entry<T: Tool>() -> Entry {
         example: T::example,
         run: run::<T>,
         reach: T::REACH,
+        facts: facts::<T>(),
     }
 }
 
@@ -634,6 +695,7 @@ fn def<T: Tool>() -> ToolDef {
         read_only: T::EFFECT == Effect::Read,
         destructive: T::EFFECT == Effect::Remove,
         gate: T::GATE,
+        facts: facts::<T>(),
     }
 }
 

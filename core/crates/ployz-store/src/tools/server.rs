@@ -109,6 +109,7 @@ pub(crate) struct ServerShow {
 
 impl Tool for ServerShow {
     const NAME: &'static str = "server_show";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed, lost or interrupted drain a later one hides.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
@@ -249,6 +250,7 @@ pub(crate) struct ServerLogs {
 
 impl Tool for ServerLogs {
     const NAME: &'static str = "server_logs";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "A server's own recent logs from the daemon (process ployz, the default), docker or corrosion: at most 200 lines, 16 KB and 500 B a line, secret-shaped values redacted.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
@@ -297,6 +299,7 @@ tool_input! {
 
 impl Tool for ServerDrain {
     const NAME: &'static str = "server_drain";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "Move Services off a server and place none there; the result says what stayed because its data is there.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
@@ -332,6 +335,7 @@ tool_input! {
 
 impl Tool for ServerSet {
     const NAME: &'static str = "server_set";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "Set what a server takes: builds, services, web traffic. Turning web traffic off on the last server that serves your domains waits for a human to approve.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Change;
@@ -394,6 +398,7 @@ tool_input! {
 
 impl Tool for ServerUpgrade {
     const NAME: &'static str = "server_upgrade";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str =
         "Upgrade Ployz on a server to its channel's latest release. Apps keep running.";
     const EFFECT: Effect = Effect::Change;
@@ -427,6 +432,7 @@ tool_input! {
 
 impl Tool for ServerClean {
     const NAME: &'static str = "server_clean";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "Delete a leftover no Environment owns: its containers on every server, and its volumes with their data.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
@@ -502,6 +508,7 @@ tool_input! {
 
 impl Tool for ServerRemove {
     const NAME: &'static str = "server_remove";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "Remove a server and delete its containers and volumes with their data. Services still there stop; the next deploy places them on other servers, except those whose Volume was there.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
@@ -542,6 +549,7 @@ tool_input! {
 
 impl Tool for ServerForget {
     const NAME: &'static str = "server_forget";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "Forget a server that is gone, without a reset; its volumes are lost. Refused while it answers and holds a volume copy.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;

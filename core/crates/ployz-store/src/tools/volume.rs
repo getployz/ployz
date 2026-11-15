@@ -4,6 +4,7 @@ use ployz_core::config::VolumeKind;
 use ployz_core::{ProvisionedVolumeMaximumBytes, ServiceName};
 use serde_json::{Value, json};
 
+use super::ToolId;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, effects_ask, written};
 use super::refusal::Refusal;
@@ -89,6 +90,7 @@ tool_input! {
 
 impl Tool for VolumeAdd {
     const NAME: &'static str = "volume_add";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Create a Volume, persistent storage, and mount it into a Service at a path. Staged until the next Deploy.";
     const EFFECT: Effect = Effect::Change;
 
@@ -163,6 +165,7 @@ tool_input! {
 
 impl Tool for VolumeUpdate {
     const NAME: &'static str = "volume_update";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Change one thing about a Volume per call: its size, its name, or whether several containers may write it.";
     const EFFECT: Effect = Effect::Change;
 
@@ -228,6 +231,7 @@ tool_input! {
 
 impl Tool for VolumeRemove {
     const NAME: &'static str = "volume_remove";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next deploy, which asks a human to approve.";
     const EFFECT: Effect = Effect::Change;
 

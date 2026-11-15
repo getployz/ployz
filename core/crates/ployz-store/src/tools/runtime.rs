@@ -73,6 +73,7 @@ tool_input! {
 
 impl Tool for ServiceState {
     const NAME: &'static str = "service_status";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str = "A Service's state as the canvas shows it, and its containers per server: health, restarts, image, Deployment, latest restart, start or stop.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
@@ -240,6 +241,7 @@ tool_input! {
 
 impl Tool for ServiceLogs {
     const NAME: &'static str = "service_logs";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str = "A Service's recent logs: at most 200 lines, 16 KB and 500 B a line, secrets shown by name. With deployment, that Deployment's containers, or its build log if the build failed.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
@@ -377,6 +379,7 @@ macro_rules! service_act_tool {
 
         impl Tool for $tool {
             const NAME: &'static str = $name;
+            const STATUS: ToolId = ToolId::ServiceState;
             const DESCRIPTION: &'static str = $description;
             const EFFECT: Effect = Effect::Change;
             const GATE: Gate = $gate;

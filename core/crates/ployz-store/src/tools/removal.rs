@@ -10,7 +10,7 @@ use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
 use super::deployment::FOLLOW_WAIT_SECONDS;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, store};
+use super::machine::{Cx, DiffVerb, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal, Writes, from_store_with};
 use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
 use crate::catalog::NODE_NAME;
@@ -307,6 +307,10 @@ impl Tool for EnvironmentRemove {
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
 
+    fn verb(_input: &Value) -> DiffVerb {
+        DiffVerb::Remove
+    }
+
     fn example() -> Value {
         json!({ "environment": "preview", "wait_seconds": 120 })
     }
@@ -360,6 +364,10 @@ impl Tool for ProjectRemove {
     const DESCRIPTION: &'static str = "Delete a Project, every Environment and Volume and their data, the Default last. A server that does not answer holds its part until it answers or is removed. The result says removed or removing.";
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
+
+    fn verb(_input: &Value) -> DiffVerb {
+        DiffVerb::Remove
+    }
 
     fn example() -> Value {
         json!({ "project": "trial", "wait_seconds": 120 })
