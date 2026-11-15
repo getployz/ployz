@@ -176,6 +176,21 @@ impl SnapshotName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The run that took it, as the writer epoch Cloud's `observedEpoch` reads: the `<run>` of
+    /// `w-<run>-<round>` or `f-<run>`. A departure restore point, or a run number that does not
+    /// fit an epoch, shows none.
+    #[must_use]
+    pub fn epoch(&self) -> Option<u32> {
+        let rest = self
+            .0
+            .strip_prefix("w-")
+            .or_else(|| self.0.strip_prefix("f-"))?;
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest.get(..digits)?.parse().ok()
+    }
 }
 
 /// A snapshot name that is not `w-<run>-<round>`, `f-<run>` or `dep-<unix seconds>`.
@@ -841,6 +856,26 @@ mod tests {
         }
         for invalid in ["w-3", "f-", "dep-", "dep-x", "d-1", "manual"] {
             assert!(invalid.parse::<SnapshotName>().is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_shows_the_epoch_of_the_run_that_took_it() {
+        for (name, epoch) in [
+            ("w-3-1", Some(3)),
+            ("w-4-2", Some(4)),
+            ("f-7", Some(7)),
+            ("f-007", Some(7)),
+            ("w-4294967295-1", Some(u32::MAX)),
+            ("w-4294967296-1", None),
+            ("f-99999999999999999999", None),
+            ("dep-1690000000", None),
+        ] {
+            assert_eq!(
+                name.parse::<SnapshotName>().unwrap().epoch(),
+                epoch,
+                "{name}"
+            );
         }
     }
 
