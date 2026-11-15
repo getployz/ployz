@@ -10,6 +10,8 @@ mod cloud_account;
 mod cloud_enroll;
 mod cloud_login;
 mod cloud_origin;
+#[cfg(test)]
+mod cloud_reply_tests;
 mod cluster;
 mod cluster_teardown;
 mod config_dir;
