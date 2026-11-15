@@ -336,3 +336,76 @@ fn admin_membership_evidence_survives_machine_wire_roundtrip_and_absence_stays_u
         serde_json::from_value(serde_json::to_value(absent).unwrap()).unwrap();
     assert_eq!(legacy.membership_evidence, None);
 }
+
+/// Each field alone, and whether the update applies without waiting for active Builds. The
+/// name, the public IP and the Advertised Endpoints wait their turn; the rest is policy.
+#[test]
+fn an_update_is_a_policy_edit_unless_it_sets_the_name_ip_or_endpoints() {
+    use ployz_core::BuildConcurrencyUpdate;
+
+    let labels: MachineUpdate =
+        serde_json::from_value(serde_json::json!({"label_changes": {"zone": "east"}})).unwrap();
+    let cases = [
+        ("nothing", MachineUpdate::default(), true),
+        ("label_changes", labels, true),
+        (
+            "accepts_builds",
+            MachineUpdate {
+                accepts_builds: Some(false),
+                ..Default::default()
+            },
+            true,
+        ),
+        (
+            "accepts_services",
+            MachineUpdate {
+                accepts_services: Some(false),
+                ..Default::default()
+            },
+            true,
+        ),
+        (
+            "accepts_ingress",
+            MachineUpdate {
+                accepts_ingress: Some(false),
+                ..Default::default()
+            },
+            true,
+        ),
+        (
+            "build_concurrency",
+            MachineUpdate {
+                build_concurrency: BuildConcurrencyUpdate::Automatic,
+                ..Default::default()
+            },
+            true,
+        ),
+        (
+            "name",
+            MachineUpdate {
+                name: Some(MachineName::parse("renamed").unwrap()),
+                ..Default::default()
+            },
+            false,
+        ),
+        (
+            "public_ip",
+            MachineUpdate {
+                public_ip: PublicIpUpdate::Remove,
+                ..Default::default()
+            },
+            false,
+        ),
+        (
+            "advertised_endpoints",
+            MachineUpdate {
+                advertised_endpoints: Some(Vec::new()),
+                ..Default::default()
+            },
+            false,
+        ),
+    ];
+    for (field, update, policy) in cases {
+        assert_eq!(update.is_policy_edit(), policy, "{field}");
+    }
+}

@@ -1268,10 +1268,7 @@ impl LocalMachine {
         let local = self.clone();
         // Policy edits affect new admission without waiting for active Builds.
         // Ordinary mutations remain serialized; all updates exclude installation.
-        if request.update.name.is_none()
-            && request.update.public_ip == ployz_core::PublicIpUpdate::Keep
-            && request.update.advertised_endpoints.is_none()
-        {
+        if request.update.is_policy_edit() {
             self.require_management_access()?;
             let installation = self.owner.mutation_gate().try_mutation()?;
             return tokio::spawn(async move {

@@ -27,7 +27,7 @@ use iroh::{
 };
 use ployz_core::{
     BUILD_GRANT_ALPN, ClientKey, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN,
-    MANAGEMENT_PORT, MANAGEMENT_PROOF_LABEL, ManagementProof, Rpc, TUNNEL_ALPN, op,
+    MANAGEMENT_PORT, MANAGEMENT_PROOF_LABEL, ManagementProof, TUNNEL_ALPN,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -461,10 +461,7 @@ where
     }
 
     fn call(&mut self, request: http::Request<hyper::body::Incoming>) -> Self::Future {
-        let may_revoke_caller = matches!(
-            request.uri().path(),
-            op::SetManagementClient::PATH | op::SetDevice::PATH | op::RemoveTrustedKey::PATH
-        );
+        let may_revoke_caller = ployz_core::rpc::revokes_caller(request.uri().path());
         let mut request = request.map(Body::new);
         request
             .extensions_mut()

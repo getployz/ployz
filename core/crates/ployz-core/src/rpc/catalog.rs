@@ -99,6 +99,18 @@ pub fn scope_of(path: &str) -> Option<ManagementScope> {
     route_at(path).map(|route| route.scope)
 }
 
+/// Whether the call at `path` may end the Management connection that makes it: it changes a
+/// slot, a Device or a trusted key, and the one it changes may be the caller's own. Such a
+/// connection answers it rather than drain mid-reply.
+#[must_use]
+pub fn revokes_caller(path: &str) -> bool {
+    use super::{Rpc, op};
+    matches!(
+        path,
+        op::SetManagementClient::PATH | op::SetDevice::PATH | op::RemoveTrustedKey::PATH
+    )
+}
+
 /// Whether `command` names a request a Machine decodes. A bidi stream is opened on its
 /// route and carries no request envelope.
 pub(super) fn is_request_command(command: &str) -> bool {

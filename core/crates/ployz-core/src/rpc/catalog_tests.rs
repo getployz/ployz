@@ -640,3 +640,21 @@ fn each_advertisement_lists_its_capabilities_in_catalog_order() {
         assert_eq!(listed, expected, "{class:?}");
     }
 }
+
+#[test]
+fn only_the_routes_that_change_a_slot_a_device_or_a_trusted_key_may_revoke_their_caller() {
+    let revoking: Vec<&str> = ROUTES
+        .iter()
+        .filter(|route| revokes_caller(route.path))
+        .map(|route| route.capability)
+        .collect();
+    assert_eq!(
+        revoking,
+        [
+            "ployz.machine.set-management-client.v1",
+            "ployz.machine.set-device.v1",
+            "ployz.machine.remove-trusted-key.v1",
+        ]
+    );
+    assert!(!revokes_caller("/other.Service/SetDevice"));
+}

@@ -230,6 +230,13 @@ pub fn needs_full_caller(capability: &str) -> bool {
     )
 }
 
+/// Whether an enforcing Machine refuses an Operator's `capability` call outright: no
+/// statement a person signs admits it, so only a Full caller is served.
+#[must_use]
+pub fn refuses_operator(capability: &str) -> bool {
+    matches!(authorization(capability), Some(Signed(&[])))
+}
+
 /// What an enforcing Machine must do with a case sent by Cloud, with no statement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "answer", content = "detail")]
