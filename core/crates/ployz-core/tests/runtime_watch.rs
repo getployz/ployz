@@ -2,13 +2,13 @@ use std::collections::BTreeSet;
 
 use ployz_core::{
     AdvertisedEndpoint, CertificateAvailability, CertificateBackoff, CertificateFailureKind,
-    CertificateHost, CertificateObservation, CodecError, ContainerId, ContainerKind,
-    ContainerObservation, ContainerRuntimeObservation, ContractDescription, DockerVolume,
-    DockerVolumeId, DockerVolumeName, HealthObservation, Machine, MachineId, MachineName,
-    MachineObservation, MachineRuntime, MembershipObservation, Namespace, OpaquePayload,
-    PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody, RttStatistics,
-    RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError, RuntimeWatchRequest,
-    Sealing, SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey,
+    CertificateHold, CertificateHost, CertificateObservation, CodecError, ContainerId,
+    ContainerKind, ContainerObservation, ContainerRuntimeObservation, ContractDescription,
+    DockerVolume, DockerVolumeId, DockerVolumeName, HealthObservation, Machine, MachineId,
+    MachineName, MachineObservation, MachineRuntime, MembershipObservation, Namespace,
+    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_CAPABILITY, ResolvedServiceSpec, RpcRequestBody,
+    RttStatistics, RuntimeWatchFrame, RuntimeWatchIncompleteIds, RuntimeWatchPayloadError,
+    RuntimeWatchRequest, Sealing, SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey,
     decode_runtime_watch_frame, encode_runtime_watch_frame, op,
 };
 use serde_json::{Value, json};
@@ -194,6 +194,72 @@ fn observation_enums_keep_an_unknown_case() {
     );
     assert_eq!(cert.last_error, None);
     assert_eq!(cert.backoff, None);
+}
+
+/// The sentence a Machine records when the Tunnel Door serves every certificate is on the wire
+/// as plain `last_error` text, which every reader, old or new, knows by its exact spelling.
+#[test]
+fn a_certificate_the_tunnel_serves_is_carried_as_plain_last_error_text() {
+    let sentence = "Cloudflare serves the certificate while every Server uses the Tunnel Door";
+    let cert: CertificateObservation = serde_json::from_value(json!({
+        "hostname": "app.example.com",
+        "status": "failure",
+        "last_error": sentence,
+        "issuer": "future",
+        "held": "tunnel_serves"
+    }))
+    .unwrap();
+    assert_eq!(cert.status, CertificateAvailability::Failure);
+    assert_eq!(cert.last_error.as_deref(), Some(sentence));
+    assert_eq!(
+        serde_json::to_value(&cert).unwrap(),
+        json!({
+            "hostname": "app.example.com",
+            "status": "failure",
+            "last_error": sentence,
+            "backoff": null,
+            "via_proxy": false,
+        }),
+        "an unknown field is dropped and the frame gains no field"
+    );
+}
+
+#[test]
+fn a_hold_is_the_failure_row_whose_last_error_is_exactly_its_sentence() {
+    let sentence = "Cloudflare serves the certificate while every Server uses the Tunnel Door";
+    assert_eq!(CertificateHold::TunnelServes.sentence(), sentence);
+    assert_eq!(
+        CertificateHold::of_sentence(CertificateHold::TunnelServes.sentence()),
+        Some(CertificateHold::TunnelServes)
+    );
+    let observed = |status: &str, last_error: Option<&str>| -> CertificateObservation {
+        serde_json::from_value(json!({
+            "hostname": "app.example.com",
+            "status": status,
+            "last_error": last_error,
+        }))
+        .unwrap()
+    };
+    assert_eq!(
+        observed("failure", Some(sentence)).hold(),
+        Some(CertificateHold::TunnelServes)
+    );
+    for status in ["available", "pending", "unknown", "renewing"] {
+        assert_eq!(observed(status, Some(sentence)).hold(), None, "{status}");
+    }
+    for last_error in [
+        None,
+        Some(""),
+        Some("Cloudflare serves the certificate"),
+        Some("cloudflare serves the certificate while every server uses the tunnel door"),
+        Some(&format!("{sentence}; stored HTTP-01 challenge is invalid")),
+    ] {
+        assert_eq!(
+            observed("failure", last_error).hold(),
+            None,
+            "{last_error:?}"
+        );
+    }
 }
 
 fn insert_json_field(payload: &mut Value, pointer: &str, key: &str, value: Value) {

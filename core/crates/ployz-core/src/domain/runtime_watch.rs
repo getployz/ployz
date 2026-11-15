@@ -52,6 +52,34 @@ impl CertificateFailureKind {
     }
 }
 
+/// Why a Machine orders no certificate for a hostname though nothing failed. A hold has no
+/// field of its own: it travels as the sentence in the row's `last_error`, which older readers
+/// and the dashboard show as written and which every reader recognizes by its exact spelling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CertificateHold {
+    /// Every Server uses the Tunnel Door, so Cloudflare serves the certificate.
+    TunnelServes,
+}
+
+impl CertificateHold {
+    const TUNNEL_SERVES: &'static str =
+        "Cloudflare serves the certificate while every Server uses the Tunnel Door";
+
+    /// The sentence recorded in `last_error` for this hold.
+    #[must_use]
+    pub const fn sentence(self) -> &'static str {
+        match self {
+            Self::TunnelServes => Self::TUNNEL_SERVES,
+        }
+    }
+
+    /// The hold `last_error` records, if it is exactly one hold's sentence.
+    #[must_use]
+    pub fn of_sentence(last_error: &str) -> Option<Self> {
+        (last_error == Self::TUNNEL_SERVES).then_some(Self::TunnelServes)
+    }
+}
+
 /// Shared backoff clock after a refusal or an authority failure.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CertificateBackoff {
@@ -74,6 +102,20 @@ pub struct CertificateObservation {
     /// The issued certificate was ordered through a proxy in front of this Cluster.
     #[serde(default)]
     pub via_proxy: bool,
+}
+
+impl CertificateObservation {
+    /// The hold that withholds this certificate. A certificate a Machine still serves, or one
+    /// still being ordered, is not withheld, whatever sentence `last_error` lingers with.
+    #[must_use]
+    pub fn hold(&self) -> Option<CertificateHold> {
+        if self.status != CertificateAvailability::Failure {
+            return None;
+        }
+        self.last_error
+            .as_deref()
+            .and_then(CertificateHold::of_sentence)
+    }
 }
 
 /// Typed incomplete replicated IDs. An incomplete row is not a delete.

@@ -1273,6 +1273,64 @@ async fn only_rank_0_records_a_refusal() {
     task.abort();
 }
 
+/// While every Server uses the Tunnel Door, each pass records the same sentence on the wanted
+/// hostname and leaves the row as it is on the next pass.
+#[tokio::test]
+async fn every_server_on_the_tunnel_door_records_one_sentence_for_each_wanted_hostname() {
+    let db = corrosion_db();
+    let machine = machine_with_endpoint("a", "192.0.2.1");
+    db.execute(
+        "INSERT INTO machines (id, info) VALUES (?, ?)",
+        rusqlite::params![
+            machine.id.as_str(),
+            serde_json::to_string(&machine).unwrap()
+        ],
+    )
+    .unwrap();
+    let proxy = ServiceId::parse("c".repeat(32)).unwrap();
+    let token = ployz_core::Ciphertext::from_bytes(vec![7; 48]);
+    let tunnel =
+        crate::images::DoorSpecs::new(proxy, ployz_core::IngressPorts::Closed, Some(&token));
+    for container in [
+        observation(1, "api", vec![ingress(UNREACHED, HttpProtocol::Https)]),
+        door_on(&machine, &tunnel.holder),
+    ] {
+        db.execute(
+            "INSERT INTO containers (id, machine_id, container) VALUES (?, ?, ?)",
+            rusqlite::params![
+                container.container_id.to_string(),
+                container.machine_id.to_string(),
+                serde_json::to_string(&container).unwrap()
+            ],
+        )
+        .unwrap();
+    }
+    let (store, task) = identity_store(db).await;
+    let account_dir =
+        std::env::temp_dir().join(format!("ployzd-acme-tunnel-{}", MachineId::random()));
+    let directory = Some(NO_DIRECTORY_SERVER.to_owned());
+    for _ in 0..2 {
+        let wait = issue_wanted(
+            &store,
+            &directory,
+            &account_dir,
+            &machine.id,
+            &mut BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(wait, RETRY_INTERVAL);
+        let row = store.certificate_row(&host(UNREACHED)).await.unwrap();
+        assert_eq!(
+            row.last_error(),
+            Some("Cloudflare serves the certificate while every Server uses the Tunnel Door")
+        );
+        assert_eq!(row.clock(), None);
+        assert_eq!(row.material(), None);
+    }
+    task.abort();
+}
+
 /// A pass that stops before the gate because the policy refuses or names no directory is
 /// blocked, as a held pass is: it ends every hostname's rank delay, so the first pass through
 /// the gate after it starts the delay again.

@@ -19,11 +19,11 @@ use instant_acme::{
     ExternalAccountKey, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use ployz_core::{
-    ACME_CHALLENGE_PREFIX, CertificateHost, CertificateKeyType, CertificatePolicy, ClusterRoute,
-    ContainerObservation, HeldDoor, HostnameProbe, HttpProtocol, IngressHost, IssuanceFailure,
-    Machine, MachineId, TUNNEL_SERVES_CERTIFICATE, VerifyAnswer, hostname_verdict,
-    issuance_failure_clock, issuance_gate, published_hostnames, refusal_reason,
-    resolve_certificate_policy, resolve_ingress_addresses,
+    ACME_CHALLENGE_PREFIX, CertificateHold, CertificateHost, CertificateKeyType, CertificatePolicy,
+    ClusterRoute, ContainerObservation, HeldDoor, HostnameProbe, HttpProtocol, IngressHost,
+    IssuanceFailure, Machine, MachineId, VerifyAnswer, hostname_verdict, issuance_failure_clock,
+    issuance_gate, published_hostnames, refusal_reason, resolve_certificate_policy,
+    resolve_ingress_addresses,
 };
 use ployz_decide::issuance::{
     Held, Issuance, IssuanceAction, Pass, Prev, RETRY_INTERVAL, issuance_action, issued,
@@ -454,7 +454,7 @@ async fn read_pass(
     if standing.public.is_empty() && !standing.closed.is_empty() {
         for hostname in &wanted {
             let write = store
-                .record_certificate_error(hostname, TUNNEL_SERVES_CERTIFICATE)
+                .record_certificate_error(hostname, CertificateHold::TunnelServes.sentence())
                 .await?;
             note_acme_write(hostname, write, "record why no certificate is ordered");
         }
