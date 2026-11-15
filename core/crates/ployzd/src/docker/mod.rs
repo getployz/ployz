@@ -8,6 +8,7 @@ pub(crate) use doors::{Door, DoorEntry};
 pub(crate) use doors::{DoorFacts, NetnsId};
 mod http_health;
 mod images;
+pub use images::Images;
 mod lifecycle;
 mod limits;
 mod managed_service;
@@ -43,14 +44,14 @@ use std::{
 use bollard::{
     Docker,
     models::{ContainerInspectResponse, HealthConfig, ImageManifestSummaryKindEnum},
-    query_parameters::{ListContainersOptionsBuilder, ListImagesOptionsBuilder},
+    query_parameters::ListContainersOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, DiskSpace, DockerVolumeId, DockerVolumeName, Evidence, Gen,
-    HealthObservation, HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineImages,
-    MachineTelemetry, QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
+    ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName, Evidence, Gen,
+    HealthObservation, HealthcheckSpec, ImageSummary, LastHealthCheck, MachineId, MachineTelemetry,
+    QualifiedService, RpcError, RpcErrorCode, ValueError, healthcheck_deadline,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -338,6 +339,7 @@ impl RotationTurn<'_> {
 pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
+    images: Images,
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
     leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
@@ -361,6 +363,7 @@ impl ContainerRuntime {
     #[must_use]
     pub fn new(docker: LocalDocker, specs: MachineSpecStore) -> Self {
         Self {
+            images: Images::new(docker.clone()),
             docker,
             specs,
             sink: None,
@@ -383,6 +386,12 @@ impl ContainerRuntime {
     pub(crate) fn with_machine_root(mut self, root: PathBuf) -> Self {
         self.machine_root = root;
         self
+    }
+
+    /// What Docker holds as images on this Machine.
+    #[must_use]
+    pub fn images(&self) -> &Images {
+        &self.images
     }
 
     /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so
@@ -561,50 +570,6 @@ impl ContainerRuntime {
             LocalDocker::connect()?,
             MachineSpecStore::open(spec_store).await?,
         ))
-    }
-
-    pub async fn list_images(
-        &self,
-        reference: Option<&str>,
-        last_tagged: bool,
-    ) -> Result<MachineImages, Error> {
-        let filters = reference
-            .map(|reference| HashMap::from([("reference", vec![reference])]))
-            .unwrap_or_default();
-        let options = ListImagesOptionsBuilder::default()
-            .all(true)
-            .filters(&filters)
-            .manifests(true)
-            .build();
-        let listed = self.docker.client.list_images(Some(options)).await?;
-        let tagged = if last_tagged {
-            futures_util::future::try_join_all(
-                listed.iter().map(|image| self.last_tagged(&image.id)),
-            )
-            .await?
-        } else {
-            vec![None; listed.len()]
-        };
-        let images = listed
-            .into_iter()
-            .zip(tagged)
-            .map(|(image, last_tagged)| ImageSummary {
-                last_tagged,
-                ..project_image(image)
-            })
-            .collect();
-        let info = self.docker.client.info().await?;
-        Ok(MachineImages {
-            containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
-            images,
-            docker_root: info
-                .docker_root_dir
-                .and_then(|root| crate::host_capacity::filesystem_space(&root).ok())
-                .map(|(total_bytes, free_bytes)| DiskSpace {
-                    total_bytes,
-                    free_bytes,
-                }),
-        })
     }
 
     #[must_use]

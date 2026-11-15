@@ -1453,6 +1453,7 @@ async fn image_cleanup_lists_tag_times_and_removes_only_unused_references() {
         .unwrap();
 
     let listed = runtime
+        .images()
         .list_images(Some(&format!("{repository}:ployz-sha256-*")), true)
         .await
         .unwrap();
@@ -1466,6 +1467,7 @@ async fn image_cleanup_lists_tag_times_and_removes_only_unused_references() {
     assert!(listed.docker_root.is_some());
     let missing = format!("{repository}:ployz-sha256-missing");
     let removed = runtime
+        .images()
         .remove_images(&[unused.clone(), used.clone(), missing.clone()])
         .await
         .unwrap();

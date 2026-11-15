@@ -1127,6 +1127,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         let images = containers
+            .images()
             .list_images(request.reference.as_deref(), request.last_tagged)
             .await
             .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error))?;

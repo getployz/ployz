@@ -5,18 +5,20 @@
 //! Only `repository:ployz-sha256-*` tags, which Direct Image Transfer creates, are
 //! candidates.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use bollard::{
     errors::Error as DockerError,
-    query_parameters::{ListContainersOptionsBuilder, RemoveImageOptions},
+    query_parameters::{
+        ListContainersOptionsBuilder, ListImagesOptionsBuilder, RemoveImageOptions,
+    },
 };
 use ployz_core::{
     DiskFull, DiskSpace, ExposedPort, ImageRemoval, ImageRemovalOutcome, ImageSummary,
-    ImagesRemoved, PullPolicy, RegistryAuth,
+    ImagesRemoved, MachineImages, PullPolicy, RegistryAuth,
 };
 
-use super::{ContainerRuntime, Error, Status, classify};
+use super::{Error, LocalDocker, Status, classify, containerd_store, project_image};
 
 /// What follows a repository in the tag that keeps a pinned image from being pruned. A
 /// daemon of another version reads these tags, so the text does not change.
@@ -44,7 +46,17 @@ const CONTAINERD_ROOT: &str = "/var/lib/containerd";
 /// How long a failed pull waits on `docker info` before reporting the failure as is.
 const DISK_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 
-impl ContainerRuntime {
+/// What Docker holds as images on this Machine: pulling, listing and Image Cleanup.
+#[derive(Clone)]
+pub struct Images {
+    docker: LocalDocker,
+}
+
+impl Images {
+    pub(super) fn new(docker: LocalDocker) -> Self {
+        Self { docker }
+    }
+
     /// Make `image` present as `policy` asks, confirm Docker holds it, and answer
     /// the ports its config exposes.
     ///
@@ -94,6 +106,50 @@ impl ContainerRuntime {
             .and_then(space);
         let stores: Vec<_> = space(CONTAINERD_ROOT.to_owned()).into_iter().collect();
         pull_failure(error, docker_root, &stores)
+    }
+
+    pub async fn list_images(
+        &self,
+        reference: Option<&str>,
+        last_tagged: bool,
+    ) -> Result<MachineImages, Error> {
+        let filters = reference
+            .map(|reference| HashMap::from([("reference", vec![reference])]))
+            .unwrap_or_default();
+        let options = ListImagesOptionsBuilder::default()
+            .all(true)
+            .filters(&filters)
+            .manifests(true)
+            .build();
+        let listed = self.docker.client.list_images(Some(options)).await?;
+        let tagged = if last_tagged {
+            futures_util::future::try_join_all(
+                listed.iter().map(|image| self.last_tagged(&image.id)),
+            )
+            .await?
+        } else {
+            vec![None; listed.len()]
+        };
+        let images = listed
+            .into_iter()
+            .zip(tagged)
+            .map(|(image, last_tagged)| ImageSummary {
+                last_tagged,
+                ..project_image(image)
+            })
+            .collect();
+        let info = self.docker.client.info().await?;
+        Ok(MachineImages {
+            containerd_store: info.driver_status.as_deref().is_some_and(containerd_store),
+            images,
+            docker_root: info
+                .docker_root_dir
+                .and_then(|root| crate::host_capacity::filesystem_space(&root).ok())
+                .map(|(total_bytes, free_bytes)| DiskSpace {
+                    total_bytes,
+                    free_bytes,
+                }),
+        })
     }
 
     /// Unix seconds this Machine last tagged the image, when Docker recorded it.
@@ -744,7 +800,7 @@ mod tests {
 
     /// A Docker that refuses the pull with a registry error in the pull's stream, as
     /// it does for a missing manifest, and never answers `docker info`.
-    async fn runtime_whose_info_never_answers() -> ContainerRuntime {
+    async fn images_whose_info_never_answers() -> Images {
         use axum::{
             Router,
             http::{Method, StatusCode, Uri},
@@ -767,13 +823,7 @@ mod tests {
             bollard::API_DEFAULT_VERSION,
         )
         .unwrap();
-        let specs = super::super::MachineSpecStore::open(std::env::temp_dir().join(format!(
-            "ployzd-pull-failure-{}.db",
-            ployz_core::MachineId::random()
-        )))
-        .await
-        .unwrap();
-        ContainerRuntime::new(super::super::LocalDocker::from_client(docker), specs)
+        Images::new(LocalDocker::from_client(docker))
     }
 
     const MANIFEST_UNKNOWN: &str =
@@ -781,11 +831,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_pull_failure_does_not_wait_on_a_stalled_docker_info() {
-        let runtime = runtime_whose_info_never_answers().await;
+        let images = images_whose_info_never_answers().await;
         let started = std::time::Instant::now();
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            runtime.pull_image("ghcr.io/acme/missing:1", PullPolicy::Always, None),
+            images.pull_image("ghcr.io/acme/missing:1", PullPolicy::Always, None),
         )
         .await
         .expect("the pull failure returns without waiting on docker info")

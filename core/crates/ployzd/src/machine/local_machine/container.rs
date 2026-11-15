@@ -626,7 +626,11 @@ impl LocalMachine {
         request: PruneImagesRequest,
     ) -> Result<ImagesRemoved, Error> {
         self.finish_mutation(move |local| async move {
-            Ok(local.docker()?.prune_images(&request.repositories).await?)
+            Ok(local
+                .docker()?
+                .images()
+                .prune_images(&request.repositories)
+                .await?)
         })
         .await
     }
@@ -671,6 +675,7 @@ impl LocalMachine {
         self.finish_admitted(shared, move |local| async move {
             let exposed_ports = local
                 .docker()?
+                .images()
                 .pull_image(
                     &request.image,
                     request.policy,
@@ -703,7 +708,7 @@ impl LocalMachine {
             )
             .await
             {
-                return Err(containers.pull_failure(error).await.into());
+                return Err(containers.images().pull_failure(error).await.into());
             }
             // Every caller discards this reply; a deploy reads ports from its `PullImage`.
             Ok(ImagePulled::default())
