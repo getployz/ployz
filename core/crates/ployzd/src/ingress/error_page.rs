@@ -87,6 +87,12 @@ pub(super) fn write_error_page(output: &mut String) {
 			ployz-error {ployz_error}
 			cache-control no-store
 		}
+		# An HTTP/2 connection that finishes its handshake during a reload never gets the
+		# old config's GOAWAY and keeps routing to removed containers (caddy#8078). Closing
+		# the connection on any error moves the client onto the current config. HTTP/3
+		# forbids the header, and a client rejects the response that carries it.
+		@not_h3 not protocol http/3
+		header @not_h3 connection close
 		@not_running vars {ployz_error} "##,
     );
     output.push_str(ErrorPage::NotRunning.as_str());
