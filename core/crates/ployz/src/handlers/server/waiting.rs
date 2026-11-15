@@ -6,13 +6,14 @@ use clap::ArgMatches;
 use clap::parser::ValueSource;
 use ployz_core::RpcErrorCode;
 use reqwest::Method;
-use serde::Deserialize;
+use serde::de::IntoDeserializer;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 
 use super::super::route::signed_in;
 use crate::checkin::{
-    DOCKER_INSTALL_FAILED, DockerPrep, HostReport, Issue, Prep, ReportDocker, ReportTarget,
-    ReportZfs, ZfsPrep,
+    DOCKER_INSTALL_FAILED, DockerPrep, HostReport, Prep, ReportDocker, ReportTarget, ReportZfs,
+    ZfsPrep,
 };
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::LoginError;
@@ -53,10 +54,34 @@ enum Status {
 #[derive(Deserialize)]
 struct Summary {
     provider: Option<String>,
+    #[serde(default, deserialize_with = "prep_states")]
     prep: Option<Prep>,
     /// The host's blockers; a list row carries only the first.
     #[serde(default)]
-    blockers: Vec<Issue>,
+    blockers: Vec<Blocker>,
+}
+
+#[derive(Deserialize)]
+struct Blocker {
+    code: String,
+}
+
+/// Reads `prep` as the two strings Cloud serves, so a state this release does not know is
+/// [`DockerPrep::Unknown`] or [`ZfsPrep::Unknown`] and a state of another type is refused as a string.
+fn prep_states<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Prep>, D::Error> {
+    #[derive(Deserialize)]
+    struct Prep {
+        docker: String,
+        zfs: String,
+    }
+    Option::<Prep>::deserialize(deserializer)?
+        .map(|Prep { docker, zfs }| {
+            Ok(crate::checkin::Prep {
+                docker: DockerPrep::deserialize(docker.into_deserializer())?,
+                zfs: ZfsPrep::deserialize(zfs.into_deserializer())?,
+            })
+        })
+        .transpose()
 }
 
 pub(super) struct Detail {
@@ -920,6 +945,88 @@ pub(super) mod tests {
             assert_eq!(&displayed(&detail), shows, "{name}");
             assert_eq!(detail.waiting.raw, raw, "{name}");
             assert_eq!(refusal(serde_json::from_value::<Row>(raw)), None, "{name}");
+        }
+    }
+
+    /// The waiting list reads a row's blockers by their code and its prep by two strings;
+    /// `server show` also reads each blocker's message from the full report.
+    #[test]
+    fn the_list_reads_a_blocker_by_its_code_and_prep_as_two_strings() {
+        let code_absent = "missing field `code`";
+        let null = "invalid type: null, expected a string";
+        let integer = "invalid type: integer `123`, expected a string";
+        let message_absent = "missing field `message`";
+        let set = |pointer, value| vec![(pointer, Some(value))];
+        let gone = |pointer| vec![(pointer, None)];
+        let rows = [
+            (
+                "code absent",
+                gone("/report/blockers/0/code"),
+                Some(code_absent),
+                Some(code_absent),
+            ),
+            (
+                "code null",
+                set("/report/blockers/0/code", json!(null)),
+                Some(null),
+                Some(null),
+            ),
+            (
+                "code wrong",
+                set("/report/blockers/0/code", json!(123)),
+                Some(integer),
+                Some(integer),
+            ),
+            (
+                "message absent",
+                gone("/report/blockers/0/message"),
+                None,
+                Some(message_absent),
+            ),
+            (
+                "message null",
+                set("/report/blockers/0/message", json!(null)),
+                None,
+                Some(null),
+            ),
+            (
+                "message wrong",
+                set("/report/blockers/0/message", json!(123)),
+                None,
+                Some(integer),
+            ),
+            ("prep null", set("/report/prep", json!(null)), None, None),
+            (
+                "prep wrong",
+                set("/report/prep", json!(123)),
+                Some("invalid type: integer `123`, expected struct Prep"),
+                Some("invalid type: integer `123`, expected struct Prep"),
+            ),
+            (
+                "prep docker absent",
+                gone("/report/prep/docker"),
+                Some("missing field `docker`"),
+                Some("missing field `docker`"),
+            ),
+            (
+                "prep zfs wrong",
+                set("/report/prep/zfs", json!(123)),
+                Some(integer),
+                Some(integer),
+            ),
+        ];
+        for (name, edits, list, show) in rows {
+            let mut raw = served("/detail/waiting_server");
+            for (pointer, value) in edits {
+                edit(&mut raw, pointer, value);
+            }
+            let listed = serde_json::from_value::<Row>(raw.clone());
+            assert_eq!(refusal(listed).as_deref(), list, "{name}: list");
+            if list.is_none() {
+                let row = serde_json::from_value::<Row>(raw.clone()).unwrap();
+                assert_eq!(row.readiness().0, "Offline", "{name}");
+            }
+            assert_eq!(refusal(Detail::read(raw)).as_deref(), show, "{name}: show");
         }
     }
 
