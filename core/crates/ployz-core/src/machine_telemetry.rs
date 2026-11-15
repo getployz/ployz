@@ -87,6 +87,9 @@ pub struct MachineTelemetry {
     docker_root_free_bytes: u64,
 }
 
+/// Under this much free space on a Docker root a pull fails or soon will.
+pub const DOCKER_ROOT_NEARLY_FULL_BYTES: u64 = 1_000_000_000;
+
 /// A total byte count and a usable subset that cannot exceed it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ByteCapacity {

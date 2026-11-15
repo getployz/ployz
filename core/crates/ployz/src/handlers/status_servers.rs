@@ -22,6 +22,7 @@ use ployz_store::{DeploymentStatus, DeploymentSummary};
 
 use super::route::{self, Reach, Unreached};
 use super::server;
+use super::shared::disk;
 use super::status::model::{Attention, NotServingCopy, Subject};
 use super::{Error, leaf_matches};
 use crate::cloud_login::LoginError;
@@ -125,7 +126,7 @@ fn disk_attention(
     machines: &[MachineObservation],
     disks: &[(MachineId, ByteCapacity)],
 ) -> Vec<Attention> {
-    server::full_disks(machines, disks)
+    disk::full_disks(machines, disks)
         .into_iter()
         .map(|full| {
             Attention::new(
