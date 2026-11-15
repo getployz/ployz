@@ -229,7 +229,10 @@ pub async fn select_build_machine(
 use crate::{
     build::{BuiltService, CapturedBuild},
     connect::Client,
-    deploy::{DeployError, DeployPlan},
+    deploy::{
+        DeployError, DeployPlan,
+        pipeline::{DeliveryError, ImageDelivery},
+    },
 };
 use ployz_core::DeployIntent;
 use tokio_util::sync::CancellationToken;
@@ -253,6 +256,12 @@ pub enum PreparationError {
     /// gone or no longer run everywhere they may be placed.
     #[error("no upload or usable image for {0:?}")]
     UploadNeeded(Vec<ployz_core::ServiceName>),
+}
+
+impl From<DeliveryError> for PreparationError {
+    fn from(error: DeliveryError) -> Self {
+        Self::Delivery(error.0)
+    }
 }
 
 impl PreparationError {
@@ -293,6 +302,23 @@ pub enum Progress {
         service: ployz_core::ServiceName,
         machine_id: ployz_core::MachineId,
     },
+}
+
+impl From<ImageDelivery> for Progress {
+    fn from(event: ImageDelivery) -> Self {
+        match event {
+            ImageDelivery::Sending { service, machines } => Self::Sending { service, machines },
+            ImageDelivery::Delivered {
+                image,
+                service,
+                machine_id,
+            } => Self::Delivered {
+                image,
+                service,
+                machine_id,
+            },
+        }
+    }
 }
 
 /// Prepared plan with image response streams retained until its owner is dropped.
@@ -347,7 +373,7 @@ pub async fn prepare(
         &machines,
         &plan,
         cancellation,
-        &progress,
+        &|event| progress(event.into()),
     )
     .await?;
     if cancellation.is_cancelled() {

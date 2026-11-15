@@ -302,14 +302,34 @@ impl From<IngressDnsWarning> for DeployWarning {
     }
 }
 
+/// A Build's image cannot reach every destination Machine; nothing was changed.
+#[derive(Debug, Error)]
+#[error("{0}")]
+pub(crate) struct DeliveryError(pub(crate) String);
+
+/// One step of delivering Build images to the destination Machines.
+pub(crate) enum ImageDelivery {
+    /// One Service's image starts going to these Machines, by name.
+    Sending {
+        service: ployz_core::ServiceName,
+        machines: Vec<ployz_core::MachineName>,
+    },
+    /// One Machine received a Service's image.
+    Delivered {
+        image: String,
+        service: ployz_core::ServiceName,
+        machine_id: MachineId,
+    },
+}
+
 pub(crate) async fn push_namespace_images(
     client: &mut Client,
     builds: &[BuiltService],
     machines: &[MachineObservation],
     preview: &DeployPlan,
     cancellation: &CancellationToken,
-    progress: &impl Fn(crate::sdk::prepare::Progress),
-) -> Result<Vec<String>, crate::sdk::prepare::PreparationError> {
+    progress: &impl Fn(ImageDelivery),
+) -> Result<Vec<String>, DeliveryError> {
     let mut failures = Vec::new();
     // Check every actual destination before any image or application changes.
     let deliveries = builds.iter().map(|service| {
@@ -322,11 +342,11 @@ pub(crate) async fn push_namespace_images(
             let compatible = architecture.is_some_and(|architecture|
                 service.built.platforms.iter().any(|platform| crate::image::platform_compatible(platform, architecture)));
             if !compatible {
-                return Err(crate::sdk::prepare::PreparationError::Delivery(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
+                return Err(DeliveryError(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
             }
         }
         Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))
-    }).collect::<Result<Vec<_>, crate::sdk::prepare::PreparationError>>()?;
+    }).collect::<Result<Vec<_>, DeliveryError>>()?;
     for (service, targets) in deliveries {
         if targets.is_empty() {
             continue;
@@ -339,7 +359,7 @@ pub(crate) async fn push_namespace_images(
             .map(|machine| machine.machine.name.clone())
             .collect::<Vec<_>>();
         if !receivers.is_empty() {
-            progress(crate::sdk::prepare::Progress::Sending {
+            progress(ImageDelivery::Sending {
                 service: service.name.clone(),
                 machines: receivers,
             });
@@ -347,7 +367,7 @@ pub(crate) async fn push_namespace_images(
         match push_image(client, service, machines, &targets, cancellation).await {
             Ok((images, service_failures)) => {
                 for image in images {
-                    progress(crate::sdk::prepare::Progress::Delivered {
+                    progress(ImageDelivery::Delivered {
                         image: image.image,
                         service: service.name.clone(),
                         machine_id: image.machine_id,

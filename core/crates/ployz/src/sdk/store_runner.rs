@@ -30,6 +30,7 @@ use ts_rs::TS;
 
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
+use super::run_support::{log_line, only};
 use super::{
     Dialed, ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared,
     connect_expecting,
@@ -1656,58 +1657,6 @@ fn one<T>(service: &ServiceName, value: Option<T>) -> BTreeMap<ServiceName, T> {
     value
         .map(|value| BTreeMap::from([(service.clone(), value)]))
         .unwrap_or_default()
-}
-
-/// Lowering input `input` narrowed to Service `service`: what its own build takes.
-/// A build reads no Config, and Config files may hold secrets. It retires nothing.
-pub(super) fn only(input: &Value, service: &ServiceName) -> Value {
-    let mut input = input.clone();
-    if let Some(input) = input.as_object_mut() {
-        input.remove("configs");
-        input.remove("removals");
-    }
-    if let Some(snapshots) = input.get_mut("snapshots").and_then(Value::as_array_mut) {
-        snapshots.retain(|snapshot| {
-            snapshot
-                .pointer("/config/privateDns")
-                .and_then(Value::as_str)
-                == Some(service.as_str())
-        });
-    }
-    if let Some(selected) = input.get_mut("selected") {
-        *selected = Value::Array(Vec::new());
-    }
-    input
-}
-
-/// What one build progress event adds to its log.
-pub(super) fn log_line(event: &Value) -> String {
-    let text = |pointer: &str| event.pointer(pointer).and_then(Value::as_str);
-    if let Some(machine) = text("/Selected/machine/name") {
-        return format!("Building on {machine}\n");
-    }
-    if text("/Build/Stage") == Some("Queued") {
-        return "Waiting for a build slot\n".to_owned();
-    }
-    if let Some(output) = text("/Build/StepOutput/text") {
-        return output.to_owned();
-    }
-    if let Some(bytes) = event.pointer("/Build/Output").and_then(Value::as_array) {
-        let bytes: Vec<u8> = bytes
-            .iter()
-            .filter_map(|byte| u8::try_from(byte.as_u64()?).ok())
-            .collect();
-        return String::from_utf8_lossy(&bytes).into_owned();
-    }
-    let name = text("/Build/Step/name").unwrap_or_default();
-    if let Some(error) = text("/Build/Step/error") {
-        return format!("ERROR {name}: {error}\n");
-    }
-    if text("/Build/Step/completed").is_some() {
-        let cached = event.pointer("/Build/Step/cached") == Some(&Value::Bool(true));
-        return format!("{} {name}\n", if cached { "CACHED" } else { "DONE" });
-    }
-    String::new()
 }
 
 /// `unprepared` as a Failure. A Server short of storage whose Volumes this Deploy also
