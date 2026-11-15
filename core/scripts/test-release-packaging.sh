@@ -116,6 +116,15 @@ grep -Fq 'release asset set differs' "$TMP/error"
     PLOYZ_SH_SITE_DIR="$TMP/site" PLOYZ_SH_CHANNELS_DIR="$channels" \
         bash "$ROOT/scripts/stage-ployz-sh-site.sh" > /dev/null
     expect "$TMP/site" v0/stable v0.2.10 v1/beta v1.0.0 stable v1.0.0
+    # A 0.x minor never moves the v0 pointers 0.3 Servers and Cloud read; the unscoped ones move.
+    channels="$TMP/channels-0x"
+    publish v0.3.18
+    publish v0.4.0-beta.2
+    expect "$channels" v0/stable v0.3.18 v0/beta v0.3.18 stable v0.3.18 beta v0.4.0-beta.2
+    publish v0.3.19
+    publish v0.4.0
+    expect "$channels" v0/stable v0.3.19 v0/beta v0.3.19 stable v0.4.0 beta v0.4.0
+    channels="$TMP/channels"
     # A separate shell keeps errexit live, as in the Publish workflow.
     rejects() {
         if bash -c 'source "$1"; write_channel_files "$2" "$3"' _ "$ROOT/scripts/promote-release.sh" \

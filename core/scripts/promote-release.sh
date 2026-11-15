@@ -8,10 +8,16 @@ source "$ROOT/scripts/homebrew-formula.sh"
 # shellcheck source=scripts/release-tag.sh
 source "$ROOT/scripts/release-tag.sh"
 
+minor_of() {
+    local rest=${1#*.}
+    printf '%s\n' "${rest%%.*}"
+}
+
 # advance_pointer <dest_dir> <tag> <channel> [line]: moves the channel's pointer (the line's
 # pointer when a line is given) to the tag only when the tag is higher, so an older-line fix never
 # moves a channel backwards. A corrupt pointer (not a tag, a prerelease on stable, or another
-# line's tag) stops the release rather than being kept or overwritten.
+# line's tag) stops the release rather than being kept or overwritten. The v0 pointers stay on
+# the minor they hold.
 advance_pointer() {
     local dest_dir=$1 tag=$2 channel=$3 line=${4:-} current='' valid=release_tag
     local file=$dest_dir/${line:+$line/}$channel
@@ -23,6 +29,9 @@ advance_pointer() {
             return 1
         fi
         release_tag_higher "$tag" "$current" || return 0
+        # Under 0.x a minor is a breaking line, but daemons and Cloud read the major's pointer
+        # (v0/beta), so a 0.4 tag left 0.3 Servers upgrading into a release their Cloud can't drive.
+        [ "$line" = v0 ] && [ "$(minor_of "$tag")" != "$(minor_of "$current")" ] && return 0
     fi
     mkdir -p "$(dirname "$file")"
     printf '%s\n' "$tag" > "$file"
