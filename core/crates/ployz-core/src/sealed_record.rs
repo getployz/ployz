@@ -196,12 +196,10 @@ mod build_secrets {
 
     use super::OpenedSealed;
     use crate::authority::{AttestKey, RecipientKey};
+    use crate::separation;
 
     type Kem = X25519HkdfSha256;
     const ENCAPPED_KEY_LEN: usize = 32;
-
-    /// What every build-secrets seal is bound under, followed by the grant's audience.
-    pub const BUILD_SECRETS_INFO: &[u8] = b"ployz build secrets v1";
 
     /// An X25519 private key: a build's recipient key, or a Machine's attest key.
     pub struct X25519Secret(Zeroizing<[u8; 32]>);
@@ -268,7 +266,7 @@ mod build_secrets {
     }
 
     fn info(audience: &str) -> Vec<u8> {
-        let mut info = BUILD_SECRETS_INFO.to_vec();
+        let mut info = separation::BUILD_SECRETS.to_vec();
         info.extend_from_slice(audience.as_bytes());
         info
     }
@@ -446,7 +444,7 @@ mod build_secrets {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use build_secrets::{BUILD_SECRETS_INFO, BuildSecretsError, X25519Secret};
+pub use build_secrets::{BuildSecretsError, X25519Secret};
 
 #[cfg(test)]
 mod tests {

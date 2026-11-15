@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use iroh::SecretKey;
 use ployz_core::RpcErrorCode;
 use ployz_core::cloud_contract::MAX_SKEW_SECONDS;
+use ployz_core::separation;
 use reqwest::{
     StatusCode,
     header::{AUTHORIZATION, CONTENT_TYPE, DATE, RETRY_AFTER},
@@ -26,7 +27,6 @@ use crate::failure::Failure;
 use super::token_file::FleetToken;
 use super::wire::{self, Answer, CheckinRequest};
 
-const SIGNATURE_CONTEXT: &[u8] = b"ployz-checkin-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -127,7 +127,7 @@ impl CheckinKey {
     }
 
     pub(super) fn sign(&self, ts: i64, body: &[u8]) -> String {
-        let mut message = SIGNATURE_CONTEXT.to_vec();
+        let mut message = separation::CHECKIN_SIGNATURE.to_vec();
         message.extend_from_slice(self.public_hex.as_bytes());
         message.push(0);
         message.extend_from_slice(&ts.to_be_bytes());

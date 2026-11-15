@@ -9,7 +9,7 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use ployz_core::MachineId;
+use ployz_core::{MachineId, separation};
 use reqwest::{
     RequestBuilder, StatusCode, Url,
     header::{CONTENT_TYPE, RETRY_AFTER},
@@ -29,7 +29,6 @@ const RETRY_AFTER_CAP: Duration = Duration::from_secs(60 * 60);
 const UNHEARD_WARN_EVERY: Duration = Duration::from_secs(5 * 60);
 const SALT_REFRESH_EVERY: Duration = Duration::from_secs(5 * 60);
 
-const SIGNATURE_CONTEXT: &[u8] = b"ployz-push-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
 
@@ -86,7 +85,7 @@ fn authenticate(
 }
 
 fn signature(secret: &ManagementSecret, machine_id: &MachineId, ts: i64, body: &[u8]) -> String {
-    let mut message = SIGNATURE_CONTEXT.to_vec();
+    let mut message = separation::PUSH_SIGNATURE.to_vec();
     message.extend_from_slice(machine_id.as_str().as_bytes());
     message.push(0);
     message.extend_from_slice(&ts.to_be_bytes());

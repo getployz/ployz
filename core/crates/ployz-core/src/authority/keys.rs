@@ -14,7 +14,7 @@ use super::{
     session::{Grant, SessionGrant},
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
-use crate::{DeviceCode, DeviceKey, value::hex_newtype};
+use crate::{DeviceCode, DeviceKey, separation, value::hex_newtype};
 
 /// What a signature over a statement is for. Each purpose signs under its own prefix,
 /// so a signature made for one statement never verifies as another.
@@ -66,7 +66,7 @@ pub trait Statement: Serialize + DeserializeOwned {
 #[must_use]
 pub fn signing_input(purpose: Purpose, body: &str) -> Vec<u8> {
     let mut input = Vec::with_capacity(32 + body.len());
-    input.extend_from_slice(b"ployz-authority/v1\n");
+    input.extend_from_slice(separation::AUTHORITY_SIGNING);
     input.extend_from_slice(purpose.as_str().as_bytes());
     input.push(b'\n');
     input.extend_from_slice(body.as_bytes());
@@ -514,7 +514,9 @@ pub struct MachineSigned<T> {
 /// [`signing_input`].
 #[must_use]
 pub fn machine_signing_input(kind: &str, key: MachineKey, body: &str) -> Vec<u8> {
-    format!("ployz-machine/v1\n{kind}\n{key}\n{body}").into_bytes()
+    let mut input = separation::MACHINE_SIGNING.to_vec();
+    input.extend_from_slice(format!("{kind}\n{key}\n{body}").as_bytes());
+    input
 }
 
 impl<T: MachineStatement> MachineSigned<T> {

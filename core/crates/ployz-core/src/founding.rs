@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
+use crate::separation;
 use crate::value::base64_newtype;
 
 /// Names the Cloud pairing that granted a Founding Claim, without carrying its bearer.
@@ -21,7 +22,7 @@ impl FoundingClaim {
     #[must_use]
     pub fn of_pairing(secret: &str) -> Self {
         let mut hasher = Sha256::new();
-        hasher.update(b"ployz founding claim v1\0");
+        hasher.update(separation::FOUNDING_CLAIM);
         hasher.update(secret.as_bytes());
         Self(hasher.finalize().into())
     }

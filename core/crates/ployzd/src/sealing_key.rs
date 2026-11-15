@@ -7,8 +7,8 @@ use hpke::{
     kdf::HkdfSha256, kem::X25519HkdfSha256,
 };
 use ployz_core::{
-    Ciphertext, PLATFORM_SEALED_INFO, PlatformPurpose, SEALED_VALUE_INFO, SealedSealingKey,
-    Sealing, SealingPublicKey, WireGuardPublicKey,
+    Ciphertext, PlatformPurpose, SealedSealingKey, Sealing, SealingPublicKey, WireGuardPublicKey,
+    separation,
 };
 use rand_core::{OsRng, TryRngCore as _};
 use thiserror::Error;
@@ -26,13 +26,6 @@ const GENERATED_FILE_NAME: &str = "recipient-generated.key";
 /// The signed rotation that named the installed recipient key, which a joiner after
 /// activation verifies before it installs the key.
 const ROTATION_FILE_NAME: &str = "recipient-rotation.json";
-const INFO: &[u8] = b"ployz-sealing-key-v1";
-const SHARE_INFO: &[u8] = b"ployz-sealing-key-share-v1";
-/// Distinct from every other label this key is expanded or sealed under, such as the join
-/// confirmation's and the Sealed values' associated data.
-const ATTEST_INFO: &[u8] = b"ployz build-secrets attest v1";
-/// The Cluster's Volume handoff receipt key, distinct from the attest key and every label above.
-const RECEIPT_INFO: &[u8] = b"ployz volume handoff v1";
 const ENCAPPED_KEY_LEN: usize = 32;
 
 type Kem = X25519HkdfSha256;
@@ -130,7 +123,7 @@ impl SealingKey {
     pub(crate) fn attest(&self) -> ployz_core::X25519Secret {
         let mut key = Zeroizing::new([0; 32]);
         hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
-            .expand(ATTEST_INFO, key.as_mut())
+            .expand(separation::BUILD_SECRETS_ATTEST, key.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         ployz_core::X25519Secret::from_bytes(*key)
     }
@@ -141,7 +134,7 @@ impl SealingKey {
     pub(crate) fn receipt_signer(&self) -> ployz_core::authority::Signer {
         let mut seed = Zeroizing::new([0; 32]);
         hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
-            .expand(RECEIPT_INFO, seed.as_mut())
+            .expand(separation::VOLUME_HANDOFF, seed.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         ployz_core::authority::Signer::from_seed(&seed)
     }
@@ -295,7 +288,7 @@ impl SealingKey {
         &self,
         recipient: &WireGuardPublicKey,
     ) -> Result<SealedSealingKey, SealError> {
-        self.seal(&OpModeS::Base, INFO, recipient)
+        self.seal(&OpModeS::Base, separation::SEALING_KEY, recipient)
     }
 
     #[cfg(test)]
@@ -303,7 +296,7 @@ impl SealingKey {
         sealed: &SealedSealingKey,
         wireguard: &WireGuardPrivateKey,
     ) -> Result<Self, OpenError> {
-        Self::open_with(&OpModeR::Base, INFO, sealed, wireguard)
+        Self::open_with(&OpModeR::Base, separation::SEALING_KEY, sealed, wireguard)
     }
 
     /// Seal the key to `recipient` so only `sender`'s WireGuard key could
@@ -322,7 +315,7 @@ impl SealingKey {
         let sender_pk = Kem::sk_to_pk(&sender_sk);
         self.seal(
             &OpModeS::Auth((sender_sk, sender_pk)),
-            SHARE_INFO,
+            separation::SEALING_KEY_SHARE,
             recipient,
         )
     }
@@ -341,7 +334,12 @@ impl SealingKey {
     ) -> Result<Self, OpenError> {
         let sender = <Kem as hpke::Kem>::PublicKey::from_bytes(&sender.0)
             .expect("an X25519 public key is any 32 bytes");
-        Self::open_with(&OpModeR::Auth(sender), SHARE_INFO, sealed, recipient)
+        Self::open_with(
+            &OpModeR::Auth(sender),
+            separation::SEALING_KEY_SHARE,
+            sealed,
+            recipient,
+        )
     }
 
     /// What a joiner that opened `approval`'s capsule with this key sends back.
@@ -374,7 +372,7 @@ impl SealingKey {
         use hkdf::hmac::Mac as _;
         let mut key = Zeroizing::new([0; 32]);
         hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
-            .expand(b"ployz-join-confirmation-v1", key.as_mut())
+            .expand(separation::JOIN_CONFIRMATION, key.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         let mut mac = hkdf::hmac::Hmac::<sha2_0_10::Sha256>::new_from_slice(key.as_ref())
             .expect("HMAC takes a key of any length");
@@ -389,7 +387,7 @@ impl SealingKey {
     ) -> Result<SealedSealingKey, SealError> {
         let mut payload = Zeroizing::new(self.0.to_vec());
         payload.extend(serde_json::to_vec(approval).expect("signed join serializes"));
-        Self::seal_bytes(&payload, &OpModeS::Base, INFO, recipient)
+        Self::seal_bytes(&payload, &OpModeS::Base, separation::SEALING_KEY, recipient)
     }
 
     pub(crate) fn open_join(
@@ -402,7 +400,7 @@ impl SealingKey {
         ),
         OpenError,
     > {
-        let payload = Self::open_bytes(&OpModeR::Base, INFO, sealed, recipient)?;
+        let payload = Self::open_bytes(&OpModeR::Base, separation::SEALING_KEY, sealed, recipient)?;
         let (bytes, body) = payload.split_at_checked(32).ok_or(OpenError::Malformed)?;
         let key = Self(bytes.try_into().map_err(|_| OpenError::Malformed)?);
         let approval = if body.is_empty() {
@@ -489,7 +487,7 @@ impl SealingKey {
     /// Opens one env value sealed to this key under `aad`, or `None` when it
     /// does not open.
     pub(crate) fn open_value(&self, aad: &[u8], sealed: &Ciphertext) -> Option<Zeroizing<Vec<u8>>> {
-        self.open_under(SEALED_VALUE_INFO, aad, sealed)
+        self.open_under(separation::SEALED_VALUE, aad, sealed)
     }
 
     /// Opens a value the platform sealed to this Cluster for `purpose`, or `None`
@@ -502,7 +500,7 @@ impl SealingKey {
         sealed: &Ciphertext,
     ) -> Option<Zeroizing<Vec<u8>>> {
         let aad = purpose.associated_data(&self.public_key());
-        self.open_under(PLATFORM_SEALED_INFO, &aad, sealed)
+        self.open_under(separation::PLATFORM_SEALED, &aad, sealed)
     }
 
     /// Opens a value sealed for `purpose` to the Cluster whose identity is `cluster`, under
@@ -514,7 +512,7 @@ impl SealingKey {
         sealed: &Ciphertext,
     ) -> Option<Zeroizing<Vec<u8>>> {
         self.open_under(
-            PLATFORM_SEALED_INFO,
+            separation::PLATFORM_SEALED,
             &purpose.associated_data(cluster),
             sealed,
         )
@@ -565,7 +563,7 @@ impl SealingKey {
             hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
                 &OpModeS::Base,
                 &recipient,
-                SEALED_VALUE_INFO,
+                separation::SEALED_VALUE,
                 plaintext,
                 aad,
                 &mut OsRng.unwrap_err(),

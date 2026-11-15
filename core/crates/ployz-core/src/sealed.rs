@@ -4,16 +4,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::separation;
 use crate::value::base64_newtype;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sealer::*;
-
-/// HPKE `info` for env values sealed to a Cluster's Sealing Key.
-pub const SEALED_VALUE_INFO: &[u8] = b"ployz-sealed-v1";
-
-/// HPKE `info` for values Ployz itself seals to a Cluster's Sealing Key for one
-/// [`PlatformPurpose`], apart from any Service's env.
-pub const PLATFORM_SEALED_INFO: &[u8] = b"ployz-platform-sealed-v1";
 
 /// What a value Ployz seals to a Cluster is for. A value sealed for one purpose
 /// opens for no other, and for no other Cluster.
@@ -40,7 +34,7 @@ impl PlatformPurpose {
     #[must_use]
     pub fn associated_data(self, cluster: &crate::SealingPublicKey) -> Vec<u8> {
         let mut aad = Vec::new();
-        put(&mut aad, PLATFORM_SEALED_INFO);
+        put(&mut aad, separation::PLATFORM_SEALED);
         put(&mut aad, self.as_str().as_bytes());
         put(&mut aad, cluster.as_bytes());
         aad
@@ -182,7 +176,7 @@ impl SealedValue {
     #[must_use]
     pub fn associated_data(&self, identity: &SealedIdentity) -> Vec<u8> {
         let mut aad = Vec::new();
-        put(&mut aad, SEALED_VALUE_INFO);
+        put(&mut aad, separation::SEALED_VALUE);
         put(&mut aad, identity.organization.as_bytes());
         put(
             &mut aad,
@@ -245,10 +239,8 @@ mod sealer {
     use rand_core::{OsRng, TryRngCore as _};
     use thiserror::Error;
 
-    use super::{
-        Ciphertext, PLATFORM_SEALED_INFO, PlatformPurpose, SEALED_VALUE_INFO, SealedIdentity,
-        SealedScope, SealedValue,
-    };
+    use super::{Ciphertext, PlatformPurpose, SealedIdentity, SealedScope, SealedValue};
+    use crate::separation;
     use crate::{ClientSealedValue, SealingPublicKey};
 
     type Kem = X25519HkdfSha256;
@@ -285,7 +277,7 @@ mod sealer {
             hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
                 &OpModeS::Base,
                 &recipient,
-                SEALED_VALUE_INFO,
+                separation::SEALED_VALUE,
                 plaintext.as_bytes(),
                 &aad,
                 &mut OsRng.unwrap_err(),
@@ -318,7 +310,7 @@ mod sealer {
             hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
                 &OpModeS::Base,
                 &public,
-                PLATFORM_SEALED_INFO,
+                separation::PLATFORM_SEALED,
                 plaintext,
                 &aad,
                 &mut OsRng.unwrap_err(),
@@ -328,9 +320,6 @@ mod sealer {
         sealed.extend(ciphertext);
         Ok(Ciphertext::from_bytes(sealed))
     }
-
-    /// HPKE `info` for a recipient key's private half sealed to one Machine's WireGuard key.
-    const RECIPIENT_KEY_INFO: &[u8] = b"ployz-recipient-key-v1";
 
     /// A Cluster's recipient key, generated where no Cloud page can see it: a Device's CLI,
     /// or the Machine an activation picks.
@@ -404,7 +393,7 @@ mod sealer {
                 hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
                     mode,
                     &public,
-                    RECIPIENT_KEY_INFO,
+                    separation::RECIPIENT_KEY,
                     self.0.as_ref(),
                     binding,
                     &mut OsRng.unwrap_err(),
@@ -451,7 +440,7 @@ mod sealer {
                     mode,
                     &private,
                     &encapped,
-                    RECIPIENT_KEY_INFO,
+                    separation::RECIPIENT_KEY,
                     ciphertext,
                     binding,
                 )
@@ -507,7 +496,7 @@ mod sealer {
                 &hpke::OpModeR::Base,
                 &self.private,
                 &encapped,
-                SEALED_VALUE_INFO,
+                separation::SEALED_VALUE,
                 ciphertext,
                 &aad,
             )
@@ -543,7 +532,7 @@ mod sealer {
                 &hpke::OpModeR::Base,
                 &self.private,
                 &encapped,
-                PLATFORM_SEALED_INFO,
+                separation::PLATFORM_SEALED,
                 ciphertext,
                 &aad,
             )

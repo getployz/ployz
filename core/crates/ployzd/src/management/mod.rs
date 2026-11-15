@@ -27,7 +27,7 @@ use iroh::{
 };
 use ployz_core::{
     BUILD_GRANT_ALPN, ClientKey, DEFAULT_RELAY_URL, FORGOTTEN_ALPN, MANAGEMENT_ALPN,
-    MANAGEMENT_PORT, MANAGEMENT_PROOF_LABEL, ManagementProof, TUNNEL_ALPN,
+    MANAGEMENT_PORT, ManagementProof, TUNNEL_ALPN, separation,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
@@ -307,7 +307,7 @@ async fn authenticate(connection: &Connection) -> Option<(ClientKey, (SendStream
         let proof = ManagementProof::from_bytes(&frame);
         let mut exporter = [0; ManagementProof::EXPORTER_LEN];
         connection
-            .export_keying_material(&mut exporter, MANAGEMENT_PROOF_LABEL, &[])
+            .export_keying_material(&mut exporter, separation::MANAGEMENT_PROOF, &[])
             .ok()?;
         PublicKey::from_bytes(proof.client.as_bytes())
             .ok()?

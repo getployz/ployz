@@ -45,6 +45,7 @@ mod sealed_record;
 mod sealing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sealing_backup;
+pub mod separation;
 pub mod service;
 pub mod shell;
 pub mod startup_refusal;

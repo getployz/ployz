@@ -16,7 +16,7 @@ use super::{
     starting_set::Member,
     trusted_key::TrustedKeys,
 };
-use crate::{OperationId, SealingPublicKey};
+use crate::{OperationId, SealingPublicKey, separation};
 
 /// A person's approval that `cluster` seals new values to `recipient`, which only the
 /// Members named here receive.
@@ -86,7 +86,7 @@ pub fn verify_for_join(
 /// blob sealed for one activation never installs under another.
 #[must_use]
 pub fn sealed_key_binding(cluster: &SealingPublicKey, operation: &OperationId) -> Vec<u8> {
-    let mut aad = b"ployz-recipient-key-v1".to_vec();
+    let mut aad = separation::RECIPIENT_KEY.to_vec();
     aad.extend(cluster.as_bytes());
     aad.extend(operation.to_string().as_bytes());
     aad

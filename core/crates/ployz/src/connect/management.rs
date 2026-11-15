@@ -12,9 +12,9 @@ use iroh::{
 };
 use ployz_core::{
     CLIENT_CLEARED_CLOSE, CLIENT_REFUSED_CLOSE, ClientKey, DEFAULT_RELAY_URL,
-    DescribeContractRequest, MANAGEMENT_ALPN, MANAGEMENT_PROOF_LABEL, MachineRpcClient,
-    ManagementCapability, ManagementProof, SEGMENTATION_OFFLOAD, TUNNEL_ALPN, TUNNEL_FAILED,
-    TUNNEL_NEEDS_FULL, TUNNEL_OPEN, op,
+    DescribeContractRequest, MANAGEMENT_ALPN, MachineRpcClient, ManagementCapability,
+    ManagementProof, SEGMENTATION_OFFLOAD, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_NEEDS_FULL,
+    TUNNEL_OPEN, op, separation,
 };
 use std::{
     io,
@@ -176,7 +176,7 @@ pub fn management_proof(
 ) -> io::Result<ManagementProof> {
     let mut exporter = [0; ManagementProof::EXPORTER_LEN];
     connection
-        .export_keying_material(&mut exporter, MANAGEMENT_PROOF_LABEL, &[])
+        .export_keying_material(&mut exporter, separation::MANAGEMENT_PROOF, &[])
         .map_err(|error| io::Error::other(format!("management proof: {error:?}")))?;
     let key = SecretKey::from_bytes(capability.client_secret());
     Ok(ManagementProof {

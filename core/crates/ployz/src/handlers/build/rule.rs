@@ -17,6 +17,7 @@ use ployz_core::{
         CommitApproval, CommitAuthority, CommitSha, ImageDigest, PolicyDigest, PreviewRule,
         RecipientKey, Review, RuleId, Signed, rule::PolicyCache,
     },
+    separation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -280,7 +281,7 @@ pub(super) fn cache_scope(
         PolicyCache::Actions => {
             let policy = PolicyDigest::of(policy).map_err(Error::command)?;
             let mut scope = Sha256::new()
-                .chain_update(b"ployz build cache v1\0")
+                .chain_update(separation::BUILD_CACHE)
                 .chain_update(policy.to_string().as_bytes())
                 .chain_update(attest.as_bytes());
             if rule.preview {
