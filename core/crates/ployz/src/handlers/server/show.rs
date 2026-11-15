@@ -1,17 +1,17 @@
 use crate::cluster::Call;
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::{
-    ByteCapacity, InspectRequest, LargePackets, Machine, MachineDetails, MachineId, MachineName,
-    MachineObservation, MachineRuntime, MachineStorageObservation, MachineTarget,
-    MachineUpgradeAttempt, MachineUpgradeOutcome, MembershipObservation, RpcErrorCode,
-    TelemetryObservation, op,
+    InspectRequest, LargePackets, Machine, MachineDetails, MachineName, MachineObservation,
+    MachineRuntime, MachineStorageObservation, MachineTarget, MachineUpgradeAttempt,
+    MachineUpgradeOutcome, MembershipObservation, RpcErrorCode, TelemetryObservation, op,
 };
 use serde_json::{Value, json};
 
 use super::super::route::{connect_or_none, has_no_servers, signed_in};
 use super::waiting;
+use crate::handlers::shared::disk::{full_disks, size};
 use crate::{
     cluster::StorageGaps,
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
@@ -213,65 +213,6 @@ fn format_storage(storage: Option<MachineStorageObservation>) -> String {
             size(free_bytes)
         ),
     }
-}
-
-/// Bytes in the decimal GB storage limits are written in (MB under one GB); --json keeps the bytes.
-fn size(bytes: u64) -> String {
-    #[expect(clippy::cast_precision_loss, reason = "display rounding only")]
-    let bytes = bytes as f64;
-    if bytes >= 1e9 {
-        format!("{:.1} GB", bytes / 1e9)
-    } else {
-        format!("{:.0} MB", bytes / 1e6)
-    }
-}
-
-/// Under this much free space a pull fails or soon will, as ployzd judges a full disk.
-const NEARLY_FULL_BYTES: u64 = 1_000_000_000;
-
-/// A Server with little space left under its Docker root.
-pub(in crate::handlers) struct FullDisk<'a> {
-    pub(in crate::handlers) machine: &'a MachineName,
-    pub(in crate::handlers) free_bytes: u64,
-}
-
-impl FullDisk<'_> {
-    /// What is wrong, said of the Server named beside it.
-    pub(in crate::handlers) fn reason(&self) -> String {
-        format!("Its {self:#}")
-    }
-}
-
-impl fmt::Display for FullDisk<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if !f.alternate() {
-            write!(f, "Server {}'s ", self.machine)?;
-        }
-        write!(
-            f,
-            "disk is nearly full: {} free for Docker. Pulling an image onto it can fail until you free space.",
-            size(self.free_bytes)
-        )
-    }
-}
-
-/// Each listed Server whose Docker root has under [`NEARLY_FULL_BYTES`] free.
-pub(in crate::handlers) fn full_disks<'a>(
-    machines: &'a [MachineObservation],
-    disks: &[(MachineId, ByteCapacity)],
-) -> Vec<FullDisk<'a>> {
-    machines
-        .iter()
-        .filter_map(|observed| {
-            let (_, disk) = disks
-                .iter()
-                .find(|(machine, _)| *machine == observed.machine.id)?;
-            (disk.available() < NEARLY_FULL_BYTES).then_some(FullDisk {
-                machine: &observed.machine.name,
-                free_bytes: disk.available(),
-            })
-        })
-        .collect()
 }
 
 /// Show a Server, or else a server waiting to join under that name or id.
@@ -964,38 +905,6 @@ mod tests {
             !String::from_utf8(out.into_inner())
                 .unwrap()
                 .contains("store =")
-        );
-    }
-
-    #[test]
-    fn a_server_whose_docker_disk_is_nearly_full_is_named() {
-        let [full, roomy, unread] = [
-            crate::global_fixtures::machine('a', "machine-1"),
-            crate::global_fixtures::machine('b', "machine-2"),
-            crate::global_fixtures::machine('c', "machine-3"),
-        ];
-        let disks = [
-            (
-                full.id,
-                ployz_core::ByteCapacity::parse(24_000_000_000, 30_000_000).unwrap(),
-            ),
-            (
-                roomy.id,
-                ployz_core::ByteCapacity::parse(24_000_000_000, 1_000_000_000).unwrap(),
-            ),
-        ];
-        let machines = [full, roomy, unread]
-            .map(|machine| MachineObservation::new(machine, MembershipObservation::Up));
-        let named: Vec<String> = full_disks(&machines, &disks)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(
-            named,
-            [
-                "Server machine-1's disk is nearly full: 30 MB free for Docker. \
-              Pulling an image onto it can fail until you free space."
-            ]
         );
     }
 

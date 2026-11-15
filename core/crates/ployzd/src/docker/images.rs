@@ -14,8 +14,8 @@ use bollard::{
     },
 };
 use ployz_core::{
-    DiskFull, DiskSpace, ExposedPort, ImageRemoval, ImageRemovalOutcome, ImageSummary,
-    ImagesRemoved, MachineImages, PullPolicy, RegistryAuth,
+    DOCKER_ROOT_NEARLY_FULL_BYTES, DiskFull, DiskSpace, ExposedPort, ImageRemoval,
+    ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineImages, PullPolicy, RegistryAuth,
 };
 
 use super::{Error, LocalDocker, Status, classify, containerd_store, project_image};
@@ -31,8 +31,6 @@ const KEEP_UNDER_PRESSURE: usize = 1;
 const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// Below this free share of the Docker root, keep only [`KEEP_UNDER_PRESSURE`].
 const PRESSURE_FREE_PERCENT: u64 = 20;
-/// Below this free where a pull writes, a failed layer write is a full disk.
-const DISK_FULL_FREE_BYTES: u64 = 1_000_000_000;
 /// ENOSPC, as Docker words it.
 const OUT_OF_SPACE: &str = "no space left on device";
 /// The steps in which containerd writes a pulled layer to disk.
@@ -311,7 +309,7 @@ fn disk_sign(error: &Error) -> Option<(DiskSign, String)> {
 
 /// A registry or peer pull is the full disk, with Docker's error as its cause, when
 /// Docker says the device is out of space, or when containerd failed writing a
-/// registry layer with under [`DISK_FULL_FREE_BYTES`] free: it then fails with
+/// registry layer with under [`DOCKER_ROOT_NEARLY_FULL_BYTES`] free: it then fails with
 /// whatever call ran out. Each space is a directory and its free bytes. The disk
 /// named is the fullest of `stores` the error wrote under, else `docker_root`; a
 /// store it never wrote under may not be the one in use. Any other failure stays
@@ -331,7 +329,7 @@ fn pull_failure(
         .cloned();
     match written.or(docker_root) {
         Some((dir, free_bytes))
-            if sign == DiskSign::OutOfSpace || free_bytes < DISK_FULL_FREE_BYTES =>
+            if sign == DiskSign::OutOfSpace || free_bytes < DOCKER_ROOT_NEARLY_FULL_BYTES =>
         {
             Error::DiskFull {
                 full: DiskFull {
@@ -688,6 +686,23 @@ mod tests {
                 free_bytes: 500_000_000,
             })
         );
+    }
+
+    #[test]
+    fn a_layer_write_is_a_full_disk_only_under_one_billion_free_bytes() {
+        let write = "failed to extract layer: failed to Lchown \"/var/lib/containerd/tmpmounts/m/shadow.mo\": no such file or directory";
+        for (free_bytes, full) in [(999_999_999, true), (1_000_000_000, false)] {
+            let error = pull_failure(
+                Error::ImagePull(streamed(write)),
+                Some(("/var/lib/docker".into(), free_bytes)),
+                &[],
+            );
+            assert_eq!(
+                matches!(error, Error::DiskFull { .. }),
+                full,
+                "{free_bytes}"
+            );
+        }
     }
 
     #[test]

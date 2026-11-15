@@ -44,6 +44,9 @@ mod route;
 pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
+pub(super) use shared::rerun::config_flag;
+pub(crate) use shared::rerun::typed_with;
+use shared::rerun::{recovery_command, rerun};
 mod status;
 mod status_servers;
 pub(crate) mod store;
@@ -558,69 +561,6 @@ async fn reconnect_client(
     )
     .await
     .map_err(Into::into)
-}
-
-/// `--ployz-config PATH` when the command line gave it. A default or `PLOYZ_CONFIG`
-/// holds for the next command too, and a quoted `~` would not expand.
-pub(super) fn config_flag(matches: &ArgMatches) -> Option<[&str; 2]> {
-    (matches.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine))
-        .then(|| matches.get_one::<String>("ployz-config"))
-        .flatten()
-        .map(|config| ["--ployz-config", config.as_str()])
-}
-
-pub(crate) fn typed_with(extra: &[&str]) -> String {
-    std::iter::once("ployz".to_owned())
-        .chain(std::env::args().skip(1))
-        .chain(extra.iter().map(|arg| (*arg).to_owned()))
-        .map(|arg| crate::ui::shell_word(&arg).into_owned())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
-    let connect = matches.get_one::<String>("connect");
-    let context = matches.try_get_one::<String>("context").ok().flatten();
-    let args = ["ployz"]
-        .into_iter()
-        .chain(config_flag(matches).into_iter().flatten())
-        .chain(
-            connect
-                .map(|connect| ["--connect", connect.as_str()])
-                .into_iter()
-                .flatten(),
-        )
-        .chain(args.iter().copied())
-        .chain(
-            context
-                .map(|context| ["--context", context.as_str()])
-                .into_iter()
-                .flatten(),
-        );
-    shell_words::join(args)
-}
-
-fn recovery_command(matches: &ArgMatches, context: &str, command: &[&str]) -> String {
-    let connect = matches
-        .get_one::<String>("connect")
-        .into_iter()
-        .flat_map(|connect| ["--connect", connect.as_str()]);
-    let args = ["ployz"]
-        .into_iter()
-        .chain(config_flag(matches).into_iter().flatten())
-        .chain(connect)
-        .chain(command.iter().copied())
-        .chain(["--context", context]);
-    debug_assert!(
-        crate::cli::command()
-            .try_get_matches_from(args.clone())
-            .is_ok_and(|matches| {
-                matches.value_source("context") != Some(clap::parser::ValueSource::CommandLine)
-                    || takes_value(command_path(&matches).split(' '), "context")
-            }),
-        "recovery hint does not parse or accept its context: {command:?}"
-    );
-    shell_words::join(args)
 }
 
 /// The headline for a committed step whose Ingress Proxy deploy failed. A failed deploy's

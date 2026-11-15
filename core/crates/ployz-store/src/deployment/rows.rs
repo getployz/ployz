@@ -336,7 +336,7 @@ pub(super) fn of_nodes(
     )?);
     for node in &stored.nodes {
         let id = match node {
-            TargetNode::Service { .. } => continue,
+            TargetNode::Service { .. } | TargetNode::Retire { .. } => continue,
             TargetNode::Volume { id, .. } => id.as_str(),
             TargetNode::Config { id, .. } => id.as_str(),
         };
@@ -349,7 +349,7 @@ pub(super) fn of_nodes(
                 .config_attachments
                 .iter()
                 .any(|mount| mount.config_resource_id == id),
-            TargetNode::Service { .. } => false,
+            TargetNode::Service { .. } | TargetNode::Retire { .. } => false,
         };
         let mut rows: BTreeMap<MachineId, ServerRow> = BTreeMap::new();
         for service in saved.services.iter().filter(mounts) {

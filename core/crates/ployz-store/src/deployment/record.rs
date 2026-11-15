@@ -527,13 +527,9 @@ fn undeleted(
 fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceName) -> &'nodes str {
     nodes
         .iter()
-        .find_map(|node| match node {
-            TargetNode::Service { name, .. } if node.runtimes().contains(&runtime) => {
-                Some(name.as_str())
-            }
-            TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
-                None
-            }
+        .find_map(|node| match node.service() {
+            Some(service) if node.runtimes().contains(&runtime) => Some(service.name.as_str()),
+            Some(_) | None => None,
         })
         .unwrap_or(runtime.as_str())
 }
@@ -645,7 +641,7 @@ fn node_in<'intent>(
     node: &TargetNode,
 ) -> Option<scope::Node<'intent>> {
     match node {
-        TargetNode::Service { .. } => intent
+        TargetNode::Service { .. } | TargetNode::Retire { .. } => intent
             .services
             .iter()
             .find(|service| service.id == node.id())

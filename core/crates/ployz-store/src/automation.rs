@@ -979,11 +979,10 @@ fn last_built(
     for row in &rows {
         let nodes: Vec<deployment::TargetNode> = row.json(2, "Deployment")?;
         let built = row.text(1)?;
-        let ours = nodes.iter().any(|node| match node {
-            deployment::TargetNode::Service { id, runtime, .. } => {
-                id.as_str() == service.id && runtime.as_str() == built
-            }
-            deployment::TargetNode::Volume { .. } | deployment::TargetNode::Config { .. } => false,
+        let ours = nodes.iter().any(|node| {
+            node.service().is_some_and(|ours| {
+                ours.id.as_str() == service.id && ours.runtime.as_str() == built
+            })
         });
         if !ours {
             continue;
@@ -1075,9 +1074,10 @@ pub(crate) fn auto_admit(
     let pins: BTreeMap<ServiceName, CommitSha> = pins
         .iter()
         .filter(|(name, _)| {
-            frozen.nodes.iter().any(|node| {
-                matches!(node, deployment::TargetNode::Service { runtime, .. } if runtime == *name)
-            })
+            frozen
+                .nodes
+                .iter()
+                .any(|node| node.service().is_some_and(|ours| ours.runtime == *name))
         })
         .map(|(name, commit)| (name.clone(), commit.clone()))
         .collect();
@@ -1087,12 +1087,11 @@ pub(crate) fn auto_admit(
         false => frozen
             .nodes
             .iter()
-            .filter(|node| !node.retires())
             .filter_map(|node| match node {
                 deployment::TargetNode::Service { name, .. } => Some(name.clone()),
-                deployment::TargetNode::Volume { .. } | deployment::TargetNode::Config { .. } => {
-                    None
-                }
+                deployment::TargetNode::Retire { .. }
+                | deployment::TargetNode::Volume { .. }
+                | deployment::TargetNode::Config { .. } => None,
             })
             .collect(),
     };

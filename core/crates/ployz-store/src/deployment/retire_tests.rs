@@ -342,11 +342,11 @@ fn a_no_prune_deploy_tears_down_what_saved_state_dropped_and_keeps_the_rest() {
         .expect("the dropped Service is a node");
     assert_eq!(
         api_node,
-        TargetNode::Service {
+        TargetNode::Retire {
             id: api(),
             name: name("api"),
             runtime: name("api"),
-            removals: ployz_core::ServiceRemovals::from_names([name("api")]),
+            runtimes: ployz_core::ServiceRemovals::from_names([name("api")]),
         }
     );
     let claimed = store.claim(&admitted.id, &runner()).unwrap();
@@ -720,11 +720,11 @@ fn a_teardown_alone_stays_targeted_and_removes_only_the_service() {
     // Only the Service: never Volume `data` it mounted, so no Docker Volume is deleted.
     assert_eq!(
         nodes(&store, &admitted.id),
-        [TargetNode::Service {
+        [TargetNode::Retire {
             id: api(),
             name: name("api"),
             runtime: name("api"),
-            removals: ployz_core::ServiceRemovals::from_names([name("api")]),
+            runtimes: ployz_core::ServiceRemovals::from_names([name("api")]),
         }]
     );
     let claimed = store.claim(&admitted.id, &runner()).unwrap();

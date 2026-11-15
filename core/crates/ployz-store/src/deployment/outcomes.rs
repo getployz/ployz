@@ -227,7 +227,8 @@ pub(super) fn node_outcomes(
         Evidence::Executed { .. }
             if succeeded(evidence)
                 && nodes.iter().all(|node| match node {
-                    TargetNode::Service { id, runtime, .. } => {
+                    TargetNode::Service { id, runtime, .. }
+                    | TargetNode::Retire { id, runtime, .. } => {
                         !applied.services.iter().any(|held| {
                             held.id == id.as_str()
                                 && held
@@ -250,7 +251,10 @@ pub(super) fn node_outcomes(
         .iter()
         .map(|node| {
             let status = match node {
-                TargetNode::Service { id, runtime, .. } => service_node(node, id.as_str(), runtime),
+                TargetNode::Service { id, runtime, .. }
+                | TargetNode::Retire { id, runtime, .. } => {
+                    service_node(node, id.as_str(), runtime)
+                }
                 TargetNode::Volume {
                     deletes: Some(deletes),
                     ..

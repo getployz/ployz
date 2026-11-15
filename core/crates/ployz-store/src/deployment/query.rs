@@ -327,7 +327,7 @@ fn redeploy_plan(
             let lowered = deployment::lowered(tx, &stored, &saved)?;
             let mut target = lowered.intent.target;
             // A narrowed Deployment creates only what it ships, as a narrowed Deploy does.
-            if !stored.summary.services.is_empty() {
+            if !stored.targeting().is_full() {
                 target.retain(|spec| lowered.shipped.contains(&spec.name));
             }
             Some(target)

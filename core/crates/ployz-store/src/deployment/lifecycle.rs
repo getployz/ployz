@@ -94,8 +94,8 @@ pub(crate) fn admit(
     let mut nodes = frozen.nodes.clone();
     inherit(tx, environment, (&intent, &intent), &mut nodes)?;
     let mut targets = services.to_vec();
-    for node in nodes.iter().filter(|node| !full && node.retires()) {
-        if let TargetNode::Service { name, .. } = node
+    for node in nodes.iter().filter(|_| !full) {
+        if let TargetNode::Retire { name, .. } = node
             && !targets.contains(name)
         {
             targets.push(name.clone());
@@ -523,9 +523,15 @@ pub(super) fn inherit(
     for row in &rows {
         let queued: Vec<TargetNode> = row.json(0, "Deployment")?;
         for node in queued {
-            let TargetNode::Service {
+            let (TargetNode::Service {
                 id, name, removals, ..
-            } = node
+            }
+            | TargetNode::Retire {
+                id,
+                name,
+                runtimes: removals,
+                ..
+            }) = node
             else {
                 continue;
             };
@@ -540,7 +546,10 @@ pub(super) fn inherit(
             }
             let retire = TargetNode::retire(&Retire { id, name, runtimes })?;
             match nodes.iter_mut().find(|ours| ours.id() == retire.id()) {
-                Some(TargetNode::Service { removals: ours, .. }) if !ours.is_empty() => {
+                Some(
+                    TargetNode::Service { removals: ours, .. }
+                    | TargetNode::Retire { runtimes: ours, .. },
+                ) if !ours.is_empty() => {
                     ours.extend(retire.runtimes().into_iter().cloned());
                 }
                 Some(ours @ TargetNode::Service { .. }) => *ours = retire,
