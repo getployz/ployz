@@ -376,7 +376,7 @@ async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(),
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin, or reads
 /// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop.
 fn pasted_command(cloud: &str, shape: &[String]) -> String {
-    let cloud_flag = if cloud == CloudOrigin::default_cloud().as_str() {
+    let cloud_flag = if CloudOrigin::is_default(cloud) {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")

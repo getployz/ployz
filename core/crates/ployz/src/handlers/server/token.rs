@@ -237,7 +237,7 @@ fn lasts(expires: &str) -> &str {
 /// The line a host runs to install this release of Ployz and ask to join. It carries no token:
 /// install.sh asks for it on the terminal, so it stays out of shell history and `ps`.
 fn install_line(cloud: &str) -> String {
-    let cloud_env = if cloud == CloudOrigin::default_cloud().as_str() {
+    let cloud_env = if CloudOrigin::is_default(cloud) {
         String::new()
     } else {
         format!("PLOYZ_CLOUD_URL='{cloud}' ")

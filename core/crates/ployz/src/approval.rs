@@ -17,7 +17,7 @@ use reqwest::Method;
 use serde::Deserialize;
 
 use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::LoginError;
+use crate::cloud_login::{Delivery, LoginError};
 use crate::failure::Failure;
 
 const POLL: Duration = Duration::from_secs(1);
@@ -447,7 +447,8 @@ pub(crate) fn settle(
             )),
         // Cloud answered, but not with the approval: nothing says it is still pending.
         Some(Err(StoreCallError::Cloud(error))) => {
-            let transient = matches!(error, LoginError::Status { status, .. } if status >= 500);
+            let transient =
+                matches!(error.delivery(), Some(Delivery::Refused { status }) if status >= 500);
             let failure =
                 Failure::from(error).context(format!("Couldn't check approval {}.", asked.id));
             if !transient {
@@ -494,32 +495,10 @@ fn for_another_approver(credential: &Credential, id: &str) -> String {
 
 /// Whether Cloud never answered the approval's read: only then is the approval as it was.
 fn unanswered(error: &LoginError) -> bool {
-    match error {
-        LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => true,
-        // Cloud refused the credential, so nothing says the approval is still pending, and
-        // a retry with that credential fails again. The local ones can't follow `settle()`
-        // having a credential, but would mean the same.
-        LoginError::Store { .. }
-        | LoginError::Corrupt { .. }
-        | LoginError::TokenCloudUnreadable(_)
-        | LoginError::OtherCloud { .. }
-        | LoginError::SignedOut
-        | LoginError::Ended
-        | LoginError::TokenRefused
-        | LoginError::AgentTokenRefused
-        | LoginError::TokenMalformed
-        | LoginError::NotMember(_)
-        | LoginError::Unsupported(_)
-        | LoginError::Status { .. }
-        | LoginError::Reply(_)
-        | LoginError::Expired
-        | LoginError::Denied
-        | LoginError::AwaitingApproval { .. }
-        | LoginError::TokenBound
-        | LoginError::UnknownOrganization(_)
-        | LoginError::UnknownCredential(_)
-        | LoginError::AmbiguousCredential { .. } => false,
-    }
+    // Any other failure is Cloud refusing the credential, so nothing says the approval is still
+    // pending, and a retry with that credential fails again. The local ones can't follow
+    // `settle()` having a credential, but would mean the same.
+    matches!(error.delivery(), Some(Delivery::Unreached | Delivery::Lost))
 }
 
 /// Run `attempt` with `approval` until Cloud stops asking for one: each time it asks,

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::super::route::signed_in;
 use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::LoginError;
+use crate::cloud_login::{Delivery, LoginError};
 use crate::handlers::{Error, runtime};
 use crate::ui::{self, Cell, Fields, Table, Tone, printable};
 use ployz_core::Hint;
@@ -295,31 +295,12 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
                 RpcErrorCode::Internal | RpcErrorCode::Unavailable | RpcErrorCode::Unknown(_)
             )
         }
-        StoreCallError::Cloud(LoginError::Status { status, .. }) => *status >= 500,
-        StoreCallError::Cloud(
-            LoginError::Unreachable { .. } | LoginError::Unanswered { .. } | LoginError::Reply(_),
-        )
-        | StoreCallError::Stopped(_) => true,
-        StoreCallError::Cloud(
-            LoginError::Unsupported(_)
-            | LoginError::Store { .. }
-            | LoginError::Corrupt { .. }
-            | LoginError::TokenCloudUnreadable(_)
-            | LoginError::OtherCloud { .. }
-            | LoginError::SignedOut
-            | LoginError::Expired
-            | LoginError::Denied
-            | LoginError::Ended
-            | LoginError::AwaitingApproval { .. }
-            | LoginError::TokenRefused
-            | LoginError::AgentTokenRefused
-            | LoginError::TokenMalformed
-            | LoginError::NotMember(_)
-            | LoginError::TokenBound
-            | LoginError::UnknownOrganization(_)
-            | LoginError::UnknownCredential(_)
-            | LoginError::AmbiguousCredential { .. },
-        ) => false,
+        StoreCallError::Cloud(error) => match error.delivery() {
+            Some(Delivery::Refused { status }) => status >= 500,
+            Some(Delivery::Unreached | Delivery::Lost | Delivery::Reply) => true,
+            None => false,
+        },
+        StoreCallError::Stopped(_) => true,
     }
 }
 

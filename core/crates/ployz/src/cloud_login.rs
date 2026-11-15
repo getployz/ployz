@@ -98,6 +98,50 @@ pub(crate) enum LoginError {
     AmbiguousCredential { name: String, ids: Vec<String> },
 }
 
+/// How far a failed Cloud call got, for a caller that must know whether Cloud may have acted.
+/// Each caller decides what to do with it: the answers differ on purpose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Delivery {
+    /// The request never left this device.
+    Unreached,
+    /// The request left and no answer came back.
+    Lost,
+    /// Cloud answered with this HTTP status.
+    Refused { status: u16 },
+    /// Cloud answered with something this build cannot read.
+    Reply,
+}
+
+impl LoginError {
+    /// How far the call got; `None` for a failure that is not about a call to Cloud.
+    pub(crate) fn delivery(&self) -> Option<Delivery> {
+        match self {
+            Self::Unreachable { .. } => Some(Delivery::Unreached),
+            Self::Unanswered { .. } => Some(Delivery::Lost),
+            Self::Status { status, .. } => Some(Delivery::Refused { status: *status }),
+            Self::Reply(_) => Some(Delivery::Reply),
+            Self::Unsupported(_)
+            | Self::Store { .. }
+            | Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_)
+            | Self::OtherCloud { .. }
+            | Self::SignedOut
+            | Self::Expired
+            | Self::Denied
+            | Self::Ended
+            | Self::AwaitingApproval { .. }
+            | Self::TokenRefused
+            | Self::AgentTokenRefused
+            | Self::TokenMalformed
+            | Self::NotMember(_)
+            | Self::TokenBound
+            | Self::UnknownOrganization(_)
+            | Self::UnknownCredential(_)
+            | Self::AmbiguousCredential { .. } => None,
+        }
+    }
+}
+
 /// A bearer that never prints.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(transparent)]
