@@ -10,6 +10,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::super::route::signed_in;
+use crate::checkin::{
+    DOCKER_INSTALL_FAILED, DockerPrep, HostReport, Issue, Prep, ReportDocker, ReportTarget,
+    ReportZfs, ZfsPrep,
+};
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::LoginError;
 use crate::handlers::{Error, runtime};
@@ -52,94 +56,13 @@ struct Summary {
     prep: Option<Prep>,
     /// The host's blockers; a list row carries only the first.
     #[serde(default)]
-    blockers: Vec<Blocker>,
-}
-
-#[derive(Deserialize)]
-struct Blocker {
-    code: String,
+    blockers: Vec<Issue>,
 }
 
 pub(super) struct Detail {
     waiting: Waiting,
-    report: Report,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Report {
+    report: HostReport,
     public_ip: Option<String>,
-    os: Os,
-    arch: String,
-    virt: String,
-    cpu_count: u64,
-    memory_total_bytes: u64,
-    disks: Vec<Disk>,
-    docker: Docker,
-    zfs: Zfs,
-    blockers: Vec<Issue>,
-    warnings: Vec<Issue>,
-}
-
-#[derive(Deserialize)]
-struct Os {
-    id: String,
-    version: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Disk {
-    path: String,
-    size_bytes: u64,
-    role: String,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Docker {
-    Absent,
-    Present {
-        version: String,
-    },
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Zfs {
-    Eligible {
-        targets: Vec<ZfsTarget>,
-    },
-    Ineligible {
-        message: String,
-    },
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum ZfsTarget {
-    MainDisk,
-    Disk {
-        #[serde(rename = "byId")]
-        by_id: String,
-    },
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Deserialize)]
-struct Issue {
-    message: String,
-}
-
-#[derive(Deserialize)]
-struct Prep {
-    docker: String,
-    zfs: String,
 }
 
 /// The Organization's waiting servers, oldest first.
@@ -434,7 +357,9 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
 
 /// `server show` for a waiting server: its facts, then what keeps it from joining.
 pub(super) fn show(detail: &Detail) -> Result<(), Error> {
-    let Detail { waiting, report } = detail;
+    let Detail {
+        waiting, report, ..
+    } = detail;
     let row = &waiting.row;
     let now = Utc::now();
     let (status, _) = row.readiness();
@@ -507,12 +432,12 @@ impl Row {
     fn readiness(&self) -> (&'static str, Tone) {
         let prep = self.report.prep.as_ref();
         // The daemon lists a host's own blockers before docker_install_failed, so one of those reads Blocked.
-        let docker_failed = prep.is_some_and(|prep| prep.docker == "failed")
+        let docker_failed = prep.is_some_and(|prep| prep.docker == DockerPrep::Failed)
             && self
                 .report
                 .blockers
                 .first()
-                .is_none_or(|blocker| blocker.code == crate::checkin::DOCKER_INSTALL_FAILED);
+                .is_none_or(|blocker| blocker.code == DOCKER_INSTALL_FAILED);
         match self.status {
             Status::Offline => ("Offline", Tone::Bad),
             Status::Blocked | Status::Preparing if docker_failed => {
@@ -520,7 +445,7 @@ impl Row {
             }
             Status::Blocked => ("Blocked", Tone::Bad),
             Status::Preparing => ("Installing Docker", Tone::Change),
-            Status::Waiting if prep.is_some_and(|prep| prep.zfs == "installing") => {
+            Status::Waiting if prep.is_some_and(|prep| prep.zfs == ZfsPrep::Installing) => {
                 ("Building ZFS", Tone::Change)
             }
             Status::Waiting => ("Ready", Tone::Good),
@@ -533,19 +458,32 @@ impl Detail {
     fn read(raw: Value) -> Result<Self, serde_json::Error> {
         #[derive(Deserialize)]
         struct Full {
-            report: Report,
+            report: HostReport,
+        }
+        #[derive(Deserialize)]
+        struct Served {
+            report: Added,
+        }
+        #[derive(Deserialize)]
+        struct Added {
+            #[serde(rename = "publicIp")]
+            public_ip: Option<String>,
         }
         let row = serde_json::from_value(raw.clone())?;
         let Full { report } = serde_json::from_value(raw.clone())?;
+        let Served {
+            report: Added { public_ip },
+        } = serde_json::from_value(raw.clone())?;
         Ok(Self {
             waiting: Waiting { raw, row },
             report,
+            public_ip,
         })
     }
 
     fn addresses(&self) -> String {
         let observed = &self.waiting.row.observed_ip;
-        match self.report.public_ip.as_deref() {
+        match self.public_ip.as_deref() {
             Some(reported) if reported != observed => format!("{observed} (reports {reported})"),
             _ => observed.clone(),
         }
@@ -562,9 +500,9 @@ impl Detail {
 
     fn docker(&self) -> String {
         match &self.report.docker {
-            Docker::Present { version } => version.clone(),
-            Docker::Absent => "not installed".into(),
-            Docker::Unknown => "unknown".into(),
+            ReportDocker::Present { version, .. } => version.clone(),
+            ReportDocker::Absent => "not installed".into(),
+            ReportDocker::Unknown => "unknown".into(),
         }
     }
 
@@ -575,24 +513,24 @@ impl Detail {
             .report
             .prep
             .as_ref()
-            .is_some_and(|prep| prep.zfs == "failed")
+            .is_some_and(|prep| prep.zfs == ZfsPrep::Failed)
         {
             return "Docker volumes; the ZFS build failed".into();
         }
         match &self.report.zfs {
-            Zfs::Eligible { targets } => {
+            ReportZfs::Eligible { targets, .. } => {
                 let on = targets
                     .iter()
                     .map(|target| match target {
-                        ZfsTarget::MainDisk => "the main disk".to_owned(),
-                        ZfsTarget::Disk { by_id } => by_id.clone(),
-                        ZfsTarget::Unknown => "another disk".to_owned(),
+                        ReportTarget::MainDisk => "the main disk".to_owned(),
+                        ReportTarget::Disk { by_id } => by_id.clone(),
+                        ReportTarget::Unknown => "another disk".to_owned(),
                     })
                     .collect::<Vec<_>>();
                 format!("ZFS on {}", on.join(" or "))
             }
-            Zfs::Ineligible { message } => format!("Docker volumes; {message}"),
-            Zfs::Unknown => "unknown".into(),
+            ReportZfs::Ineligible { message, .. } => format!("Docker volumes; {message}"),
+            ReportZfs::Unknown => "unknown".into(),
         }
     }
 }
@@ -732,9 +670,9 @@ pub(super) mod tests {
         let mut host = shown(None);
         assert_eq!(host.waiting.row.ip(), "203.0.113.9");
         assert_eq!(host.addresses(), "203.0.113.9 (reports 198.51.100.4)");
-        host.report.public_ip = Some("203.0.113.9".into());
+        host.public_ip = Some("203.0.113.9".into());
         assert_eq!(host.addresses(), "203.0.113.9");
-        host.report.public_ip = None;
+        host.public_ip = None;
         assert_eq!(host.addresses(), "203.0.113.9");
     }
 
@@ -746,6 +684,35 @@ pub(super) mod tests {
         );
         let failed = shown(Some(json!({ "docker": "ready", "zfs": "failed" })));
         assert_eq!(failed.storage(), "Docker volumes; the ZFS build failed");
+    }
+
+    #[test]
+    fn a_kind_a_newer_cloud_adds_still_reads_and_shows_as_unknown() {
+        let mut raw = served("/detail/waiting_server");
+        *raw.pointer_mut("/report/docker/kind").unwrap() = json!("podman");
+        *raw.pointer_mut("/report/zfs").unwrap() = json!({ "kind": "btrfs" });
+        *raw.pointer_mut("/report/disks/1/role").unwrap() = json!("spare");
+        *raw.pointer_mut("/report/prep").unwrap() = json!({ "docker": "paused", "zfs": "later" });
+        let detail = Detail::read(raw.clone()).unwrap();
+        assert_eq!(detail.docker(), "unknown");
+        assert_eq!(detail.storage(), "unknown");
+        assert_eq!(detail.disks(), "/dev/sda 40 GB root, /dev/sdb 100 GB spare");
+        assert_eq!(detail.waiting.row.readiness().0, "Offline");
+        *raw.pointer_mut("/status").unwrap() = json!("waiting");
+        assert_eq!(
+            Detail::read(raw).unwrap().waiting.row.readiness().0,
+            "Ready"
+        );
+        let mut raw = served("/detail/waiting_server");
+        raw.pointer_mut("/report/zfs/targets")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "kind": "tape" }));
+        assert_eq!(
+            Detail::read(raw).unwrap().storage(),
+            "ZFS on the main disk or /dev/disk/by-id/scsi-0HC_Volume_1 or another disk"
+        );
     }
 
     #[test]

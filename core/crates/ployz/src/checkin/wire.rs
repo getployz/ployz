@@ -14,6 +14,7 @@ use ployz_core::probe_document::{
     Virtualization, ZfsEligibility, ZfsTarget,
 };
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::cloud_enroll::EnrollStage;
 
@@ -24,9 +25,9 @@ pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
 pub(crate) const DOCKER_INSTALL_FAILED: &str = "docker_install_failed";
 const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CheckinRequest<'a> {
+pub(crate) struct CheckinRequest<'a> {
     pub(super) protocol_version: u8,
     pub(super) checkin_key: &'a str,
     pub(super) cli_version: &'static str,
@@ -35,20 +36,25 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) enroll_options: &'static [&'static str],
     pub(super) report: &'a HostReport,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub(super) prep: Option<Prep>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub(super) probe: Option<probe::Report>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub(super) attempt: Option<&'a Attempt>,
 }
 
 /// The enroll attempt this host is running, or last ran, for Cloud's instruction `attempt_id`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "EnrollAttempt")]
 pub(crate) struct Attempt {
     pub(crate) attempt_id: String,
     pub(crate) stage: EnrollStage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub(crate) failure: Option<AttemptFailure>,
 }
 
@@ -69,7 +75,7 @@ impl Attempt {
 
 /// This build writes it only through [`Attempt::fail`]. A record an older build wrote can still
 /// hold a committed attempt with a failure below Joining.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 pub(crate) struct AttemptFailure {
     stage: EnrollStage,
     message: String,
@@ -121,98 +127,130 @@ pub(crate) struct EnrollPolicy {
     pub(crate) accepts_ingress: bool,
 }
 
-#[derive(Debug, Serialize)]
+/// What a host tells Cloud about itself, and what Cloud serves back for a waiting server.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct HostReport {
-    pub(super) hostname: String,
-    pub(super) os: Os,
-    pub(super) kernel: String,
-    pub(super) arch: String,
-    pub(super) virt: String,
-    pub(super) cpu_count: u32,
-    pub(super) memory_total_bytes: u64,
-    pub(super) disks: Vec<ReportDisk>,
-    pub(super) docker: ReportDocker,
-    pub(super) cgroup: &'static str,
-    pub(super) zfs: ReportZfs,
-    pub(super) blockers: Vec<Issue>,
-    pub(super) warnings: Vec<Issue>,
+pub(crate) struct HostReport {
+    pub(crate) hostname: String,
+    pub(crate) os: Os,
+    pub(crate) kernel: String,
+    pub(crate) arch: String,
+    pub(crate) virt: String,
+    pub(crate) cpu_count: u32,
+    pub(crate) memory_total_bytes: u64,
+    pub(crate) disks: Vec<ReportDisk>,
+    pub(crate) docker: ReportDocker,
+    pub(crate) cgroup: Cgroup,
+    pub(crate) zfs: ReportZfs,
+    pub(crate) blockers: Vec<Issue>,
+    pub(crate) warnings: Vec<Issue>,
 }
 
-#[derive(Debug, Serialize)]
-pub(super) struct Os {
-    pub(super) id: String,
-    pub(super) version: String,
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
+#[ts(rename = "HostOs")]
+pub(crate) struct Os {
+    pub(crate) id: String,
+    pub(crate) version: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct ReportDisk {
-    pub(super) path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) by_id: Option<String>,
-    pub(super) size_bytes: u64,
-    pub(super) role: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) available_bytes: Option<u64>,
+pub(crate) struct ReportDisk {
+    pub(crate) path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) by_id: Option<String>,
+    pub(crate) size_bytes: u64,
+    /// `root` or `empty`; a role a newer Cloud adds is shown as it spells it.
+    pub(crate) role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub(crate) available_bytes: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-pub(super) enum ReportDocker {
+pub(crate) enum ReportDocker {
     Absent,
     Present {
         version: String,
         api: String,
         compatible: bool,
     },
+    /// A kind this release does not know, which a newer Cloud may serve.
+    #[serde(other)]
+    Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Cgroup {
+    V1,
+    V2,
+    Hybrid,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-pub(super) enum ReportZfs {
+pub(crate) enum ReportZfs {
     Eligible {
         targets: Vec<ReportTarget>,
-        #[serde(rename = "buildMinutes")]
-        build_minutes: u32,
+        #[serde(
+            default,
+            rename = "buildMinutes",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[ts(optional)]
+        build_minutes: Option<u32>,
     },
     Ineligible {
         code: String,
         message: String,
     },
+    #[serde(other)]
+    Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum ReportTarget {
+pub(crate) enum ReportTarget {
     MainDisk,
     Disk {
         #[serde(rename = "byId")]
         by_id: String,
     },
+    #[serde(other)]
+    Unknown,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
+#[ts(rename = "HostIssue")]
 pub(crate) struct Issue {
     pub(crate) code: String,
     pub(crate) message: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
+#[ts(rename = "HostPrep")]
 pub(crate) struct Prep {
     pub(crate) docker: DockerPrep,
     pub(crate) zfs: ZfsPrep,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum DockerPrep {
     Installing,
     Ready,
     Failed,
+    /// A state this release does not know, which a newer Cloud may serve.
+    #[serde(other)]
+    Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ZfsPrep {
     Installing,
@@ -220,6 +258,8 @@ pub(crate) enum ZfsPrep {
     Failed,
     Skipped,
     Off,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -504,7 +544,7 @@ pub(super) fn host_report(
                     ZfsTarget::Disk { by_id } => ReportTarget::Disk { by_id },
                 })
                 .collect(),
-            build_minutes: prepare_minutes,
+            build_minutes: Some(prepare_minutes),
         },
         ZfsEligibility::Ineligible { reason } => ReportZfs::Ineligible {
             code: reason.code.as_str().to_owned(),
@@ -570,6 +610,7 @@ pub(super) fn host_report(
                     DiskRole::Root { available } => ("root", Some(available)),
                     DiskRole::Empty => ("empty", None),
                 };
+                let role = role.to_owned();
                 ReportDisk {
                     path: disk.path,
                     by_id: disk.by_id,
@@ -590,9 +631,9 @@ pub(super) fn host_report(
             }
         },
         cgroup: match facts.cgroup {
-            Some(CgroupVersion::V2) => "v2",
-            Some(CgroupVersion::Hybrid) => "hybrid",
-            Some(CgroupVersion::V1) | None => "v1",
+            Some(CgroupVersion::V2) => Cgroup::V2,
+            Some(CgroupVersion::Hybrid) => Cgroup::Hybrid,
+            Some(CgroupVersion::V1) | None => Cgroup::V1,
         },
         zfs,
         blockers,

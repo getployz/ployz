@@ -140,3 +140,45 @@ fn the_activation_statements_and_requests_are_declared() {
         );
     }
 }
+
+/// Cloud reads the check-in request and the host report from these declarations, so the
+/// spelling of the wire is pinned: camelCase fields, optional keys left out, tagged kinds.
+#[test]
+fn the_check_in_request_and_the_host_report_are_declared_as_the_wire_spells_them() {
+    let payloads = file("payloads.d.ts");
+    let declared = |name: &str| {
+        payloads
+            .lines()
+            .find(|line| line.starts_with(&format!("export type {name} =")))
+            .unwrap_or_else(|| panic!("{name} is not declared"))
+    };
+    assert_eq!(
+        declared("HostReport"),
+        "export type HostReport = { hostname: string, os: HostOs, kernel: string, arch: string, virt: string, cpuCount: number, memoryTotalBytes: number, disks: Array<ReportDisk>, docker: ReportDocker, cgroup: Cgroup, zfs: ReportZfs, blockers: Array<HostIssue>, warnings: Array<HostIssue>, };"
+    );
+    assert_eq!(
+        declared("HostPrep"),
+        "export type HostPrep = { docker: DockerPrep, zfs: ZfsPrep, };"
+    );
+    assert_eq!(
+        declared("ReportZfs"),
+        "export type ReportZfs = { \"kind\": \"eligible\", targets: Array<ReportTarget>, buildMinutes?: number, } | { \"kind\": \"ineligible\", code: string, message: string, } | { \"kind\": \"unknown\" };"
+    );
+    let request = payloads
+        .split("export type CheckinRequest =")
+        .nth(1)
+        .and_then(|rest| rest.split(";\n").next())
+        .unwrap_or_else(|| panic!("CheckinRequest is not declared"));
+    for field in [
+        "protocolVersion: number",
+        "checkinKey: string",
+        "cliVersion: string",
+        "enrollOptions: Array<string>",
+        "report: HostReport",
+        "prep?: HostPrep",
+        "probe?: ProbeReport",
+        "attempt?: EnrollAttempt",
+    ] {
+        assert!(request.contains(field), "{field} is not in {request}");
+    }
+}

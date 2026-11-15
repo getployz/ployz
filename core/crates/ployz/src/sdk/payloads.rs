@@ -66,7 +66,9 @@ fn typescript_declarations() -> String {
     };
     declarations.add::<ployz_core::BuildGrantInspected>();
     declarations.add::<ployz_core::BuildGrantMinted>();
+    declarations.add::<crate::checkin::CheckinRequest>();
     declarations.add::<ClusterTeardown>();
+    declarations.add::<crate::checkin::HostReport>();
     declarations.add::<ployz_core::InspectBuildGrantRequest>();
     declarations.add::<ployz_core::MintBuildGrantRequest>();
     declarations.add::<ContractDescription>();

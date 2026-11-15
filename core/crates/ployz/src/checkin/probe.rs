@@ -33,6 +33,7 @@ use tokio::{
     time::{Instant, MissedTickBehavior},
 };
 use tokio_util::sync::CancellationToken;
+use ts_rs::TS;
 
 use super::CheckinKey;
 
@@ -103,9 +104,10 @@ struct Target {
     port: u16,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct Report {
+#[ts(rename = "ProbeReport")]
+pub(crate) struct Report {
     handout: String,
     heard_from: Vec<String>,
     bind_failed: Vec<String>,

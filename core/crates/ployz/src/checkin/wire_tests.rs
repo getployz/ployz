@@ -1,7 +1,7 @@
 use ployz_core::host_preparation::PrepSteps;
 use serde_json::{Value, json};
 
-use super::host_report;
+use super::{Cgroup, DockerPrep, HostReport, Prep, ReportDocker, ReportZfs, ZfsPrep, host_report};
 use ployz_core::probe_document::ProbeDocument;
 
 /// What `ployzd install --probe --json` prints for a ready host: `assessment` first, keys sorted.
@@ -192,6 +192,35 @@ fn ready_report() -> Value {
 #[test]
 fn a_ready_hosts_document_reads_as_ployzd_prints_it() {
     assert_eq!(report(&eligible()), ready_report());
+}
+
+#[test]
+fn the_report_cloud_serves_back_reads_as_the_host_sent_it() {
+    let sent = ready_report();
+    let read: HostReport = serde_json::from_value(sent.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&read).unwrap(), sent);
+    let mut served = sent;
+    for (pointer, value) in [
+        ("/docker", json!({"kind": "podman"})),
+        ("/zfs", json!({"kind": "btrfs"})),
+        ("/cgroup", json!("v3")),
+    ] {
+        *at(&mut served, pointer) = value;
+    }
+    let read: HostReport = serde_json::from_value(served).unwrap();
+    assert_eq!(read.docker, ReportDocker::Unknown);
+    assert_eq!(read.zfs, ReportZfs::Unknown);
+    assert_eq!(read.cgroup, Cgroup::Unknown);
+}
+
+#[test]
+fn a_prep_state_a_newer_cloud_adds_reads_as_unknown() {
+    let prep: Prep = serde_json::from_value(json!({"docker": "paused", "zfs": "later"})).unwrap();
+    assert_eq!(prep.docker, DockerPrep::Unknown);
+    assert_eq!(prep.zfs, ZfsPrep::Unknown);
+    let sent = json!({"docker": "installing", "zfs": "skipped"});
+    let prep: Prep = serde_json::from_value(sent.clone()).unwrap();
+    assert_eq!(serde_json::to_value(prep).unwrap(), sent);
 }
 
 #[test]
