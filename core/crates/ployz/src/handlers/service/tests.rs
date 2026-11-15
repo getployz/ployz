@@ -52,28 +52,20 @@ fn process_sort_orders_match_the_cli_contract() {
 
 #[test]
 fn stop_options_are_only_read_for_stop_actions() {
-    for (command, action) in [
-        ("start", ContainerAction::Start),
-        ("rm", ContainerAction::Remove),
-    ] {
-        let matches = crate::cli::command()
-            .try_get_matches_from(["ployz", "service", command, "api"])
-            .unwrap();
-        assert_eq!(
-            stop_options(leaf_matches(&matches), &[action]).unwrap(),
-            (None, None)
-        );
-    }
+    let matches = crate::cli::command()
+        .try_get_matches_from(["ployz", "service", "start", "api"])
+        .unwrap();
+    assert_eq!(
+        stop_options(leaf_matches(&matches), Lifecycle::Start).unwrap(),
+        (None, None)
+    );
 
-    for (command, actions) in [
-        ("stop", &[ContainerAction::Stop][..]),
-        ("restart", &[ContainerAction::Restart]),
-    ] {
+    for (command, action) in [("stop", Lifecycle::Stop), ("restart", Lifecycle::Restart)] {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "service", command, "api"])
             .unwrap();
         assert_eq!(
-            stop_options(leaf_matches(&matches), actions).unwrap(),
+            stop_options(leaf_matches(&matches), action).unwrap(),
             (Some("SIGTERM".into()), Some(10))
         );
     }
@@ -450,14 +442,9 @@ fn changed(partial: bool) -> ServiceActionOutcome {
 async fn a_lifecycle_cancelled_before_its_first_step_exits_cancelled() {
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let outcome = run_batches(
-        &[()],
-        &[ContainerAction::Stop],
-        &cancellation,
-        |(), _| async { Ok(changed(false)) },
-    )
-    .await
-    .unwrap();
+    let outcome = run_batches(&[()], &cancellation, |()| async { Ok(changed(false)) })
+        .await
+        .unwrap();
     assert!(outcome.partial);
     assert_eq!(cancelled_exit(&outcome), 130);
 }
@@ -466,16 +453,11 @@ async fn a_lifecycle_cancelled_before_its_first_step_exits_cancelled() {
 async fn a_lifecycle_cancelled_between_batches_exits_cancelled() {
     let cancellation = CancellationToken::new();
     let mut steps = 0;
-    let outcome = run_batches(
-        &[(), ()],
-        &[ContainerAction::Restart],
-        &cancellation,
-        |(), _| {
-            steps += 1;
-            cancellation.cancel();
-            async { Ok(changed(false)) }
-        },
-    )
+    let outcome = run_batches(&[(), ()], &cancellation, |()| {
+        steps += 1;
+        cancellation.cancel();
+        async { Ok(changed(false)) }
+    })
     .await
     .unwrap();
     assert_eq!(steps, 1);
@@ -487,15 +469,10 @@ async fn a_lifecycle_cancelled_between_batches_exits_cancelled() {
 #[tokio::test]
 async fn a_lifecycle_cancelled_during_its_last_step_exits_cancelled() {
     let cancellation = CancellationToken::new();
-    let outcome = run_batches(
-        &[()],
-        &[ContainerAction::Restart],
-        &cancellation,
-        |(), _| {
-            cancellation.cancel();
-            async { Ok(changed(true)) }
-        },
-    )
+    let outcome = run_batches(&[()], &cancellation, |()| {
+        cancellation.cancel();
+        async { Ok(changed(true)) }
+    })
     .await
     .unwrap();
     assert_eq!(cancelled_exit(&outcome), 130);
@@ -518,15 +495,10 @@ async fn a_restart_that_fails_a_copy_exits_partial() {
         ..changed(true)
     };
     let mut steps = vec![failed(), changed(false), changed(false)].into_iter();
-    let outcome = run_batches(
-        &[(), (), ()],
-        &[ContainerAction::Restart],
-        &CancellationToken::new(),
-        |(), _| {
-            let step = steps.next().unwrap();
-            async { Ok(step) }
-        },
-    )
+    let outcome = run_batches(&[(), (), ()], &CancellationToken::new(), |()| {
+        let step = steps.next().unwrap();
+        async { Ok(step) }
+    })
     .await
     .unwrap();
     let error = outcome.finish().unwrap_err();
@@ -620,7 +592,7 @@ async fn a_broken_device_key_still_sends_an_unsigned_restart() {
     });
     let services = live.services();
     let services: Vec<_> = services.iter().collect();
-    let approvals = restart_approvals(&key, &[], &services, ContainerAction::Restart).unwrap();
+    let approvals = restart_approvals(&key, &[], &services, Lifecycle::Restart).unwrap();
     let wants = Arc::new(Mutex::new(Vec::new()));
     let received = Arc::clone(&wants);
     let (client, server) = crate::connect::test_support::rpc_client(move |rpc| {
@@ -706,9 +678,9 @@ fn each_copy_gets_its_own_container_bound_approval() {
         ployz_core::MembershipObservation::Up,
     );
     for (action, kind) in [
-        (ContainerAction::Restart, WorkflowKind::Restart),
-        (ContainerAction::Stop, WorkflowKind::Stop),
-        (ContainerAction::Start, WorkflowKind::Start),
+        (Lifecycle::Restart, WorkflowKind::Restart),
+        (Lifecycle::Stop, WorkflowKind::Stop),
+        (Lifecycle::Start, WorkflowKind::Start),
     ] {
         let approvals = restart_approvals(
             &key,

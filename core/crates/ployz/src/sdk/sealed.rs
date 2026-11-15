@@ -79,10 +79,10 @@ struct Env {
 
 type EnvRead = Shared<BoxFuture<'static, Arc<Env>>>;
 
-/// Whether a Container's lines can be shown now, and under which forms.
-enum Verdict {
+/// Whether a Container's lines are shown, and under which forms, once no more names or env
+/// are being waited for.
+enum Settled {
     Show(Arc<SealedForms>),
-    Wait,
     Hide,
 }
 
@@ -170,27 +170,26 @@ impl SealedNames {
         opened: Option<u64>,
         deadline: Instant,
         cancel: &CancellationToken,
-    ) -> Verdict {
+    ) -> Settled {
         let mut changes = self.shared.read.subscribe();
         if matches!(changes.borrow().names, Names::Unread) {
             self.want();
         }
         let env = tokio::select! {
-            () = cancel.cancelled() => return Verdict::Hide,
+            () = cancel.cancelled() => return Settled::Hide,
             env = tokio::time::timeout_at(deadline, env.clone()) => env.ok(),
         };
         loop {
             let read = Arc::clone(&changes.borrow_and_update());
-            let verdict = verdict(&read, env.as_deref(), opened, &self.shared.none);
-            if !matches!(verdict, Verdict::Wait) {
-                return verdict;
+            if let Some(settled) = verdict(&read, env.as_deref(), opened, &self.shared.none) {
+                return settled;
             }
             self.want();
             tokio::select! {
-                () = cancel.cancelled() => return Verdict::Hide,
+                () = cancel.cancelled() => return Settled::Hide,
                 changed = tokio::time::timeout_at(deadline, changes.changed()) => {
                     if !matches!(changed, Ok(Ok(()))) {
-                        return Verdict::Hide;
+                        return Settled::Hide;
                     }
                 }
             }
@@ -221,29 +220,30 @@ impl PendingNames {
     }
 }
 
-/// The fail-closed table. `env` is None until the Container's env has been read; `opened` is
-/// the newest `begin` before a history page opened.
+/// The fail-closed table: what the lines show, or None while names or the env are still to
+/// come. `env` is None until the Container's env has been read; `opened` is the newest
+/// `begin` before a history page opened.
 fn verdict(
     read: &Read,
     env: Option<&Env>,
     opened: Option<u64>,
     none: &Arc<SealedForms>,
-) -> Verdict {
+) -> Option<Settled> {
     match &read.names {
-        Names::Failed => Verdict::Hide,
-        Names::Unread => Verdict::Wait,
+        Names::Failed => Some(Settled::Hide),
+        Names::Unread => None,
         // Nothing was Sealed when these stored lines were read, so no env could hold a value.
         Names::Only(names)
             if names.is_empty() && opened.is_some_and(|opened| read.generation > opened) =>
         {
-            Verdict::Show(Arc::clone(none))
+            Some(Settled::Show(Arc::clone(none)))
         }
         Names::Every | Names::Only(_) => match env {
-            None => Verdict::Wait,
+            None => None,
             // A Deploy may have Sealed a name and started this Container after these names were read.
-            Some(env) if read.generation <= env.after => Verdict::Wait,
-            Some(Env { values: None, .. }) => Verdict::Hide,
-            Some(env) => Verdict::Show(env.forms(read)),
+            Some(env) if read.generation <= env.after => None,
+            Some(Env { values: None, .. }) => Some(Settled::Hide),
+            Some(env) => Some(Settled::Show(env.forms(read))),
         },
     }
 }
@@ -404,21 +404,19 @@ impl ScrubbedLogStream {
         self.raw.cancel();
     }
 
-    fn verdict(&self) -> Verdict {
-        match verdict(
+    fn verdict(&self) -> Settled {
+        verdict(
             &self.names.read(),
             Some(&self.env),
             None,
             &self.names.shared.none,
-        ) {
-            Verdict::Wait => Verdict::Hide,
-            verdict @ (Verdict::Show(_) | Verdict::Hide) => verdict,
-        }
+        )
+        .unwrap_or(Settled::Hide)
     }
 }
 
 impl LiveRead {
-    fn take(&mut self, entry: LogEntry, verdict: Verdict) {
+    fn take(&mut self, entry: LogEntry, verdict: Settled) {
         let (channel, bytes) = match entry.body {
             LogBody::Stdout(bytes) => (Channel::Stdout, bytes),
             LogBody::Stderr(bytes) => (Channel::Stderr, bytes),
@@ -439,11 +437,11 @@ impl LiveRead {
         };
         self.last = Some((entry.metadata.clone(), entry.timestamp_unix_nanos));
         match verdict {
-            Verdict::Show(forms) => {
+            Settled::Show(forms) => {
                 let shown = self.scrub.push(channel, &bytes, &forms);
                 self.show(channel, shown, entry.metadata, entry.timestamp_unix_nanos);
             }
-            Verdict::Wait | Verdict::Hide => {
+            Settled::Hide => {
                 self.scrub.discard(channel);
                 self.hide(channel, entry.metadata, entry.timestamp_unix_nanos);
             }
@@ -451,19 +449,19 @@ impl LiveRead {
     }
 
     /// Show what is held, scrubbed, and end the stream.
-    fn end(&mut self, verdict: Verdict) {
+    fn end(&mut self, verdict: Settled) {
         self.ended = true;
         let scrub = std::mem::take(&mut self.scrub);
         let Some((source, timestamp)) = self.last.take() else {
             return;
         };
         match verdict {
-            Verdict::Show(forms) => {
+            Settled::Show(forms) => {
                 for (channel, shown) in scrub.finish(&forms) {
                     self.show(channel, shown, source.clone(), timestamp);
                 }
             }
-            Verdict::Wait | Verdict::Hide => {
+            Settled::Hide => {
                 for (channel, _) in scrub.finish(&SealedForms::none()) {
                     self.hide(channel, source.clone(), timestamp);
                 }
@@ -551,7 +549,7 @@ impl ScrubbedHistoryStream {
             .await;
         let timestamp_nanos = ts.to_string();
         Ok(Some(match verdict {
-            Verdict::Show(forms) => {
+            Settled::Show(forms) => {
                 let message = forms.scrub(&String::from_utf8_lossy(&text), &mut 0);
                 LogHistoryRecord::Line {
                     container_id,
@@ -561,7 +559,7 @@ impl ScrubbedHistoryStream {
                     message,
                 }
             }
-            Verdict::Wait | Verdict::Hide => LogHistoryRecord::Hidden {
+            Settled::Hide => LogHistoryRecord::Hidden {
                 container_id,
                 timestamp_nanos,
             },

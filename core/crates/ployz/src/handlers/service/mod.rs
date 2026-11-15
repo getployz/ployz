@@ -342,23 +342,51 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
 /// Restart the addressed Environment's Services. Every Container is started again
 /// even when stopping one failed, so a failed restart never leaves a Service down.
 pub(super) fn restart(root: &ArgMatches) -> Result<(), Error> {
-    lifecycle(root, &[ContainerAction::Restart])
+    lifecycle(root, Lifecycle::Restart)
 }
 
 pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
-    lifecycle(root, &[ContainerAction::Start])
+    lifecycle(root, Lifecycle::Start)
 }
 
 pub(super) fn stop(root: &ArgMatches) -> Result<(), Error> {
-    lifecycle(root, &[ContainerAction::Stop])
+    lifecycle(root, Lifecycle::Stop)
+}
+
+/// What start, stop and restart do to a Container: the actions a Device approval signs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Lifecycle {
+    Start,
+    Stop,
+    Restart,
+}
+
+impl From<Lifecycle> for ContainerAction {
+    fn from(lifecycle: Lifecycle) -> Self {
+        match lifecycle {
+            Lifecycle::Start => Self::Start,
+            Lifecycle::Stop => Self::Stop,
+            Lifecycle::Restart => Self::Restart,
+        }
+    }
+}
+
+impl From<Lifecycle> for WorkflowKind {
+    fn from(lifecycle: Lifecycle) -> Self {
+        match lifecycle {
+            Lifecycle::Start => Self::Start,
+            Lifecycle::Stop => Self::Stop,
+            Lifecycle::Restart => Self::Restart,
+        }
+    }
 }
 
 /// Start or stop the addressed Environment's Services.
-fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(), Error> {
+fn lifecycle(root: &ArgMatches, action: Lifecycle) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let namespace = super::operator::scope(root)?;
     let selectors = change_selectors(leaf, namespace.as_ref())?;
-    let (signal, timeout) = stop_options(leaf, actions)?;
+    let (signal, timeout) = stop_options(leaf, action)?;
     let hint = super::store::next(leaf, &["ps"]);
     let device_key = super::device::key::path(&super::config_path(leaf)?);
     with_client(root, |client| {
@@ -378,7 +406,7 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             let services = select_services(&observed, &selectors)?;
             // A restart rolls: each Container is stopped, then started and serving, before the next one stops,
             // so a Service with more than one replica keeps serving throughout.
-            let rolling: Vec<ServiceObservation> = if actions == [ContainerAction::Restart] {
+            let rolling: Vec<ServiceObservation> = if action == Lifecycle::Restart {
                 services
                     .iter()
                     .flat_map(|service| {
@@ -403,25 +431,21 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             let cancellation = cancellation_on_ctrl_c();
             let _cancel_listener = cancellation.clone().drop_guard();
             let client = &*client;
-            let outcome = run_batches(&batches, actions, &cancellation, |services, action| {
+            let outcome = run_batches(&batches, &cancellation, |services| {
                 let (signal, timeout) = match action {
-                    ContainerAction::Stop | ContainerAction::Restart => (signal.clone(), timeout),
-                    ContainerAction::Start | ContainerAction::Remove => (None, None),
+                    Lifecycle::Stop | Lifecycle::Restart => (signal.clone(), timeout),
+                    Lifecycle::Start => (None, None),
                 };
                 let (live, names, device_key, machines, cancellation) =
                     (&live, &names, &device_key, &machines, &cancellation);
                 async move {
-                    let approvals = if action != ContainerAction::Remove {
-                        restart_approvals(device_key, machines, services, action)?
-                    } else {
-                        HashMap::new()
-                    };
+                    let approvals = restart_approvals(device_key, machines, services, action)?;
                     apply_service_action(
                         client,
                         live,
                         names,
                         services,
-                        (action, signal, timeout),
+                        (action.into(), signal, timeout),
                         &approvals,
                         cancellation,
                     )
@@ -438,16 +462,15 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
     })
 }
 
-/// Run each action on each batch in turn. A run `cancellation` cut short ends as
+/// Run the action on each batch in turn. A run `cancellation` cut short ends as
 /// cancelled.
 async fn run_batches<'a, B, F, Fut>(
     batches: &'a [B],
-    actions: &[ContainerAction],
     cancellation: &CancellationToken,
     mut step: F,
 ) -> Result<ServiceActionOutcome, Error>
 where
-    F: FnMut(&'a B, ContainerAction) -> Fut,
+    F: FnMut(&'a B) -> Fut,
     Fut: Future<Output = Result<ServiceActionOutcome, Error>>,
 {
     let mut outcome = ServiceActionOutcome {
@@ -456,14 +479,12 @@ where
         partial: false,
         interrupted: false,
     };
-    'batches: for services in batches {
-        for &action in actions {
-            if cancellation.is_cancelled() {
-                outcome.partial = true;
-                break 'batches;
-            }
-            outcome = outcome.then(step(services, action).await?);
+    for services in batches {
+        if cancellation.is_cancelled() {
+            outcome.partial = true;
+            break;
         }
+        outcome = outcome.then(step(services).await?);
     }
     outcome.interrupted = cancellation.is_cancelled();
     Ok(outcome)
@@ -541,7 +562,7 @@ fn restart_approvals(
     device_key: &Path,
     machines: &[MachineObservation],
     services: &[&ServiceObservation],
-    action: ContainerAction,
+    action: Lifecycle,
 ) -> Result<HashMap<ContainerId, Signed<RestartApproval>>, Error> {
     let Ok(Some(signing)) = super::device::DeviceSigning::load(device_key) else {
         return Ok(HashMap::new());
@@ -555,19 +576,14 @@ fn restart_approvals(
         .iter()
         .flat_map(|service| {
             service
-                .containers_for(action)
+                .containers_for(action.into())
                 .map(move |container| (*service, container.as_observation()))
         })
         .map(|(service, container)| {
             let approval = RestartApproval {
                 cluster,
                 operation: OperationId::random(),
-                kind: match action {
-                    ContainerAction::Stop => WorkflowKind::Stop,
-                    ContainerAction::Restart => WorkflowKind::Restart,
-                    ContainerAction::Start => WorkflowKind::Start,
-                    ContainerAction::Remove => unreachable!("a removal signs no approval"),
-                },
+                kind: action.into(),
                 namespace: service.identity.namespace.clone(),
                 service: service.identity.name.clone(),
                 machines: vec![container.machine_id],
@@ -748,12 +764,9 @@ fn select_services<'a>(
 
 fn stop_options(
     matches: &ArgMatches,
-    actions: &[ContainerAction],
+    action: Lifecycle,
 ) -> Result<(Option<String>, Option<u16>), Error> {
-    if !actions
-        .iter()
-        .any(|action| matches!(action, ContainerAction::Stop | ContainerAction::Restart))
-    {
+    if action == Lifecycle::Start {
         return Ok((None, None));
     }
     let signal = matches.get_one::<String>("signal").cloned();
