@@ -348,21 +348,18 @@ fn a_value_sealed_to_a_low_order_key_is_refused_as_a_failed_seal() {
     let low_order = SealingPublicKey::from_bytes([0; 32]);
     assert!(matches!(
         seal_value(&low_order, &identity(), "TOKEN", "hunter2"),
-        Err(SealError::Seal)
+        Err(SealError)
     ));
     assert!(matches!(
         seal_platform(&low_order, &low_order, PlatformPurpose::IngressTunnel, b"x"),
-        Err(SealError::Seal)
+        Err(SealError)
     ));
     let secret = RecipientSecret::from_secret(SECRET);
     let zero = WireGuardPublicKey([0; 32]);
-    assert!(matches!(
-        secret.seal_to(&zero, b"binding"),
-        Err(SealError::Seal)
-    ));
+    assert!(matches!(secret.seal_to(&zero, b"binding"), Err(SealError)));
     assert!(matches!(
         secret.seal_from(&SENDER, &zero, b"binding"),
-        Err(SealError::Seal)
+        Err(SealError)
     ));
 }
 

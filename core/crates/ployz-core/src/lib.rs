@@ -17,6 +17,8 @@ pub mod hex;
 mod hint;
 mod host_config;
 pub mod host_preparation;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod hpke_suite;
 pub mod labels;
 mod log_level;
 mod machine_layout;
