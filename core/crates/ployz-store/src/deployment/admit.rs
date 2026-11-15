@@ -579,7 +579,7 @@ fn deploy(
             frozen
                 .nodes
                 .iter()
-                .filter(|node| matches!(node, TargetNode::Service { .. }))
+                .filter(|node| node.service().is_some())
                 .map(TargetNode::id)
                 .collect(),
         ),

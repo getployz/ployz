@@ -90,7 +90,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
             services: nodes
                 .iter()
                 .filter_map(|node| match node {
-                    TargetNode::Service { .. } => saved
+                    TargetNode::Service { .. } | TargetNode::Retire { .. } => saved
                         .services
                         .iter()
                         .find(|service| service.id == node.id()),
@@ -107,6 +107,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                         .iter()
                         .find(|volume| volume.resource_id == node.id()),
                     TargetNode::Service { .. }
+                    | TargetNode::Retire { .. }
                     | TargetNode::Config { .. }
                     | TargetNode::Volume {
                         deletes: Some(_), ..
@@ -121,7 +122,9 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                         .configs
                         .iter()
                         .find(|config| config.resource_id == node.id()),
-                    TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
+                    TargetNode::Service { .. }
+                    | TargetNode::Retire { .. }
+                    | TargetNode::Volume { .. } => None,
                 })
                 .cloned()
                 .collect(),
@@ -185,8 +188,9 @@ fn may_run(
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
              AND (status IN ('unknown', 'failed', 'cancelled') OR {lapsed}) \
              AND number > COALESCE((SELECT MAX(number) FROM config_deployment \
-              WHERE environment_id = ?1 AND status = 'applied' AND services = '[]'), 0)",
-            lapsed = lapsed_sql()
+              WHERE environment_id = ?1 AND status = 'applied' AND {full}), 0)",
+            lapsed = lapsed_sql(),
+            full = scope_sql::FULL
         ),
         &[environment.as_str().into()],
     )?;
@@ -205,9 +209,9 @@ fn may_run(
             BTreeSet::new()
         };
         for node in &nodes {
-            let TargetNode::Service { .. } = node else {
+            if node.service().is_none() {
                 continue;
-            };
+            }
             let doubtful = match run.nodes.get(node.id()) {
                 Some(NodeStatus::Failed | NodeStatus::Unknown) => true,
                 Some(NodeStatus::Deployed | NodeStatus::Removed | NodeStatus::Unchanged) => false,
@@ -620,7 +624,8 @@ pub(crate) fn view(
         .nodes
         .iter()
         .filter_map(|node| match node {
-            TargetNode::Service { name, runtime, .. } => Some((name.clone(), runtime.clone())),
+            TargetNode::Service { name, runtime, .. }
+            | TargetNode::Retire { name, runtime, .. } => Some((name.clone(), runtime.clone())),
             TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
         })
         .collect();

@@ -12,6 +12,8 @@ mod landing;
 mod lifecycle;
 pub(crate) mod loss;
 mod lowering;
+#[cfg(test)]
+mod node_tests;
 mod outcomes;
 pub(crate) mod query;
 mod record;
@@ -24,6 +26,7 @@ mod rows;
 mod status;
 #[cfg(test)]
 mod status_tests;
+mod targeting;
 pub(crate) mod uploads;
 pub(crate) use claim::*;
 pub(crate) use history::*;
@@ -35,6 +38,8 @@ pub(crate) use record::*;
 pub(crate) use retry::*;
 pub(crate) use rows::server_names;
 pub(crate) use status::*;
+pub(crate) use targeting::Targeting;
+use targeting::scope_sql;
 
 pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
@@ -638,25 +643,58 @@ pub struct Claimed {
     pub teardown: Option<ployz_core::authority::TeardownApproval>,
 }
 
-/// One node a Deployment targets, as frozen at admission.
+/// One node a Deployment targets, as frozen at admission. A row stores a Service the
+/// Deployment tears down as a Service whose `removals` hold its own `runtime`; here it
+/// is a [`Self::Retire`], and it stores as that row again.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(from = "NodeRow", into = "NodeRow")]
 pub(crate) enum TargetNode {
+    /// A Service the Deployment ships.
     Service {
         id: ServiceLineageId,
         name: ServiceName,
         /// The runtime Service it lowers to, which its Node Outcome is confirmed by.
         runtime: ServiceName,
         /// The runtime Services it tears down beside `runtime`, which it ran as and
-        /// no longer does; for a Service the Deployment retires, every runtime
-        /// Service it tears down, `runtime` among them.
+        /// no longer does.
+        removals: ServiceRemovals,
+    },
+    /// A Service the Deployment tears down.
+    Retire {
+        id: ServiceLineageId,
+        name: ServiceName,
+        /// The runtime Service its Node Outcome is confirmed by, among `runtimes`.
+        runtime: ServiceName,
+        /// Every runtime Service it tears down.
+        runtimes: ServiceRemovals,
+    },
+    Volume {
+        id: VolumeId,
+        name: VolumeName,
+        /// For a Volume the Deployment removes: the Docker Volumes it deletes.
+        deletes: Option<Vec<DockerVolumeId>>,
+    },
+    Config {
+        id: ConfigId,
+        name: ConfigName,
+    },
+}
+
+/// The row a [`TargetNode`] is stored as, which older readers and a rolling deploy
+/// decode: a teardown is a Service whose `removals` hold its `runtime`.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum NodeRow {
+    Service {
+        id: ServiceLineageId,
+        name: ServiceName,
+        runtime: ServiceName,
         #[serde(default, skip_serializing_if = "ServiceRemovals::is_empty")]
         removals: ServiceRemovals,
     },
     Volume {
         id: VolumeId,
         name: VolumeName,
-        /// For a Volume the Deployment removes: the Docker Volumes it deletes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         deletes: Option<Vec<DockerVolumeId>>,
     },
@@ -664,6 +702,63 @@ pub(crate) enum TargetNode {
         id: ConfigId,
         name: ConfigName,
     },
+}
+
+impl From<NodeRow> for TargetNode {
+    fn from(row: NodeRow) -> Self {
+        match row {
+            NodeRow::Service {
+                id,
+                name,
+                runtime,
+                removals,
+            } if removals.contains(&runtime) => Self::Retire {
+                id,
+                name,
+                runtime,
+                runtimes: removals,
+            },
+            NodeRow::Service {
+                id,
+                name,
+                runtime,
+                removals,
+            } => Self::Service {
+                id,
+                name,
+                runtime,
+                removals,
+            },
+            NodeRow::Volume { id, name, deletes } => Self::Volume { id, name, deletes },
+            NodeRow::Config { id, name } => Self::Config { id, name },
+        }
+    }
+}
+
+impl From<TargetNode> for NodeRow {
+    fn from(node: TargetNode) -> Self {
+        match node {
+            TargetNode::Service {
+                id,
+                name,
+                runtime,
+                removals,
+            }
+            | TargetNode::Retire {
+                id,
+                name,
+                runtime,
+                runtimes: removals,
+            } => Self::Service {
+                id,
+                name,
+                runtime,
+                removals,
+            },
+            TargetNode::Volume { id, name, deletes } => Self::Volume { id, name, deletes },
+            TargetNode::Config { id, name } => Self::Config { id, name },
+        }
+    }
 }
 
 /// The `LIKE` pattern matching a Deployment's `nodes` text when it targets node `id`.
@@ -675,15 +770,33 @@ pub(crate) fn node_pattern(id: &str) -> String {
 pub(crate) fn shipped(nodes: &[TargetNode]) -> Vec<ServiceName> {
     nodes
         .iter()
-        .filter_map(|node| match node {
-            TargetNode::Service { name, .. } => Some(name.clone()),
-            TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
-        })
+        .filter_map(|node| node.service().map(|service| service.name.clone()))
         .collect()
 }
 
+/// A Service node's identity, whether its Deployment ships it or tears it down.
+pub(crate) struct ServiceNode<'a> {
+    pub(crate) id: &'a ServiceLineageId,
+    pub(crate) name: &'a ServiceName,
+    /// The runtime Service its Node Outcome is confirmed by.
+    pub(crate) runtime: &'a ServiceName,
+}
+
 impl TargetNode {
-    fn service(service: &SavedServiceIntent) -> Result<Self, RpcError> {
+    /// The Service it is, shipped or torn down; none for a Volume or Config.
+    pub(crate) fn service(&self) -> Option<ServiceNode<'_>> {
+        match self {
+            Self::Service {
+                id, name, runtime, ..
+            }
+            | Self::Retire {
+                id, name, runtime, ..
+            } => Some(ServiceNode { id, name, runtime }),
+            Self::Volume { .. } | Self::Config { .. } => None,
+        }
+    }
+
+    fn ships(service: &SavedServiceIntent) -> Result<Self, RpcError> {
         Ok(Self::Service {
             id: parse_stored(&service.id)?,
             name: ServiceName::parse(service.slug.as_str())
@@ -700,23 +813,23 @@ impl TargetNode {
                 json!({ "service": retire.id }),
             )
         })?;
-        Ok(Self::Service {
+        Ok(Self::Retire {
             id: retire.id.clone(),
             name: retire.name.clone(),
             runtime: runtime.clone(),
-            removals: retire.runtimes.clone(),
+            runtimes: retire.runtimes.clone(),
         })
     }
 
     /// Whether it is a Service the Deployment tears down.
     pub(crate) fn retires(&self) -> bool {
-        matches!(self, Self::Service { runtime, removals, .. } if removals.contains(runtime))
+        matches!(self, Self::Retire { .. })
     }
 
     /// The runtime Services it ships or tears down, whose rows are its own.
     pub(crate) fn runtimes(&self) -> Vec<&ServiceName> {
         match self {
-            Self::Service { removals, .. } if self.retires() => removals.iter().collect(),
+            Self::Retire { runtimes, .. } => runtimes.iter().collect(),
             Self::Service {
                 runtime, removals, ..
             } => std::iter::once(runtime).chain(removals.iter()).collect(),
@@ -744,7 +857,7 @@ impl TargetNode {
 
     pub(crate) fn id(&self) -> &str {
         match self {
-            Self::Service { id, .. } => id.as_str(),
+            Self::Service { id, .. } | Self::Retire { id, .. } => id.as_str(),
             Self::Volume { id, .. } => id.as_str(),
             Self::Config { id, .. } => id.as_str(),
         }
@@ -754,7 +867,9 @@ impl TargetNode {
     /// review does.
     pub(crate) fn listed(&self) -> (EnvironmentNodeType, &str) {
         match self {
-            Self::Service { name, .. } => (EnvironmentNodeType::Service, name.as_str()),
+            Self::Service { name, .. } | Self::Retire { name, .. } => {
+                (EnvironmentNodeType::Service, name.as_str())
+            }
             Self::Volume { name, .. } => (EnvironmentNodeType::Volume, name.as_str()),
             Self::Config { name, .. } => (EnvironmentNodeType::Config, name.as_str()),
         }
@@ -768,9 +883,8 @@ impl TargetNode {
     ) -> (EnvironmentNodeType, &str, bool, &str) {
         let id = self.id();
         let stays = match self {
-            Self::Service { .. } => {
-                !self.retires() && saved.services.iter().any(|service| service.id == id)
-            }
+            Self::Service { .. } => saved.services.iter().any(|service| service.id == id),
+            Self::Retire { .. } => false,
             Self::Volume { deletes, .. } => {
                 deletes.is_none() && saved.volumes.iter().any(|volume| volume.resource_id == id)
             }
@@ -783,10 +897,12 @@ impl TargetNode {
     /// The node as views name it.
     fn shown(&self) -> DeployedNode {
         match self {
-            Self::Service { id, name, .. } => DeployedNode::Service {
-                id: id.clone(),
-                name: name.clone(),
-            },
+            Self::Service { id, name, .. } | Self::Retire { id, name, .. } => {
+                DeployedNode::Service {
+                    id: id.clone(),
+                    name: name.clone(),
+                }
+            }
             Self::Volume { id, name, .. } => DeployedNode::Volume {
                 id: id.clone(),
                 name: name.clone(),
@@ -867,9 +983,9 @@ impl Frozen {
 
     /// Whether this Deployment ships Service `name`, named or referenced.
     pub(crate) fn ships(&self, name: &ServiceName) -> bool {
-        self.nodes.iter().any(
-            |node| matches!(node, TargetNode::Service { name: service, .. } if service == name),
-        )
+        self.nodes
+            .iter()
+            .any(|node| node.service().is_some_and(|service| service.name == name))
     }
 }
 
@@ -946,52 +1062,56 @@ impl Stored {
     /// Service it ran as then, unless a Service of `saved` runs as it now and so
     /// replaces it.
     pub(crate) fn lowering(&self, saved: &SavedEnvironmentIntent) -> Ships {
-        let full = self.summary.services.is_empty();
+        let targeting = self.targeting();
+        let full = targeting.is_full();
         let mut shipped = Vec::new();
         let mut removals = ServiceRemovals::default();
         for node in &self.nodes {
-            if let TargetNode::Service {
-                id,
-                name,
-                runtime,
-                removals: gone,
-            } = node
-            {
-                if node.retires() {
-                    removals.extend(gone.iter().cloned());
-                } else if full
-                    && !saved
-                        .services
-                        .iter()
-                        .any(|service| service.id == id.as_str())
-                {
-                    if !saved
-                        .services
-                        .iter()
-                        .any(|service| service.config.private_dns == *runtime)
-                    {
-                        removals.extend([runtime.clone()]);
-                    }
-                } else {
-                    removals.extend(gone.iter().cloned());
-                    shipped.push(name);
+            match node {
+                TargetNode::Retire { runtimes, .. } => {
+                    removals.extend(runtimes.iter().cloned());
                 }
+                TargetNode::Service {
+                    id,
+                    name,
+                    runtime,
+                    removals: gone,
+                } => {
+                    if full
+                        && !saved
+                            .services
+                            .iter()
+                            .any(|service| service.id == id.as_str())
+                    {
+                        if !saved
+                            .services
+                            .iter()
+                            .any(|service| service.config.private_dns == *runtime)
+                        {
+                            removals.extend([runtime.clone()]);
+                        }
+                    } else {
+                        removals.extend(gone.iter().cloned());
+                        shipped.push(name);
+                    }
+                }
+                TargetNode::Volume { .. } | TargetNode::Config { .. } => {}
             }
         }
-        if full {
-            return Ships::All {
+        match targeting {
+            Targeting::Full => Ships::All {
                 removals,
                 prune: self.run.prune,
-            };
+            },
+            Targeting::Named(targeted) => {
+                let services = targeted
+                    .iter()
+                    .filter(|service| shipped.contains(service))
+                    .cloned()
+                    .collect();
+                Ships::Named { services, removals }
+            }
         }
-        let services = self
-            .summary
-            .services
-            .iter()
-            .filter(|service| shipped.contains(service))
-            .cloned()
-            .collect();
-        Ships::Named { services, removals }
     }
 }
 

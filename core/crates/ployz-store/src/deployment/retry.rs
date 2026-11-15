@@ -139,12 +139,12 @@ pub(crate) fn retry(
     rollback.retires = nodes
         .iter()
         .filter_map(|node| match node {
+            TargetNode::Retire { id, .. } => Some(id.clone()),
             TargetNode::Service { id, .. }
-                if node.retires()
-                    || revision
-                        .services
-                        .iter()
-                        .all(|service| service.id != id.as_str()) =>
+                if revision
+                    .services
+                    .iter()
+                    .all(|service| service.id != id.as_str()) =>
             {
                 Some(id.clone())
             }
@@ -158,8 +158,8 @@ pub(crate) fn retry(
         nodes
             .iter()
             .filter_map(|node| match node {
-                TargetNode::Service { id, .. } if !node.retires() => Some(id.clone()),
-                TargetNode::Service { .. }
+                TargetNode::Service { id, .. } => Some(id.clone()),
+                TargetNode::Retire { .. }
                 | TargetNode::Volume { .. }
                 | TargetNode::Config { .. } => None,
             })
@@ -197,7 +197,16 @@ pub(crate) fn retry(
     };
     rollback.replays_destruction = !dropped.is_empty()
         || nodes.iter().any(|node| match node {
-            TargetNode::Service { id, removals, .. } => !removals.is_empty() && !gone(id, removals),
+            TargetNode::Service {
+                id,
+                removals: owned,
+                ..
+            }
+            | TargetNode::Retire {
+                id,
+                runtimes: owned,
+                ..
+            } => !owned.is_empty() && !gone(id, owned),
             TargetNode::Volume { deletes, .. } => deletes.is_some(),
             TargetNode::Config { .. } => false,
         });
@@ -205,21 +214,35 @@ pub(crate) fn retry(
     // a Service it tears down that Cloud saw running, it removes.
     let stray = nodes.iter().filter_map(|node| match node {
         TargetNode::Service {
-            id, name, removals, ..
-        } if seen(removals) => Some(crate::review::DestructiveEffect {
+            id,
+            name,
+            removals: owned,
+            ..
+        }
+        | TargetNode::Retire {
+            id,
+            name,
+            runtimes: owned,
+            ..
+        } if seen(owned) => Some(crate::review::DestructiveEffect {
             kind: crate::review::DestructiveKind::RemovesService,
             name: name.to_string(),
             node: id.to_string(),
             path: name.to_string(),
             lost_after: None,
         }),
-        TargetNode::Service { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => None,
+        TargetNode::Service { .. }
+        | TargetNode::Retire { .. }
+        | TargetNode::Volume { .. }
+        | TargetNode::Config { .. } => None,
     });
     rollback.replays = dropped
         .into_iter()
         .filter(|effect| {
             nodes.iter().any(|node| match node {
-                TargetNode::Service { id, .. } => id.as_str() == effect.node,
+                TargetNode::Service { id, .. } | TargetNode::Retire { id, .. } => {
+                    id.as_str() == effect.node
+                }
                 TargetNode::Volume { id, .. } => id.as_str() == effect.node,
                 TargetNode::Config { .. } => false,
             })
@@ -419,7 +442,7 @@ pub(crate) fn rollback_removed(
             });
         }
     }
-    if !stored.summary.services.is_empty() {
+    if !stored.targeting().is_full() {
         removed.retain(|volume| {
             stored.nodes.iter().any(|node| {
                 matches!(
@@ -456,8 +479,11 @@ fn retried(
     // A full Deployment tears down what Saved dropped too; superseding it runs that
     // Service again from the retried revision, as it always has.
     for row in &tx.query(
-        "SELECT nodes FROM config_deployment \
-         WHERE environment_id = ?1 AND status = 'queued' AND services != '[]'",
+        &format!(
+            "SELECT nodes FROM config_deployment \
+             WHERE environment_id = ?1 AND status = 'queued' AND {named}",
+            named = scope_sql::NAMED
+        ),
         &[environment.as_str().into()],
     )? {
         let queued: Vec<TargetNode> = row.json(0, "Deployment")?;
@@ -496,7 +522,7 @@ fn retried(
             name: loss.volume.name,
             deletes: Some(loss.deletes),
         });
-    if stored.summary.services.is_empty() {
+    if stored.targeting().is_full() {
         // A full rollback freezes its revision over Applied State now: it removes
         // what newer Deployments added and deletes only the losses reviewed afresh.
         let mut nodes = match &fresh {
@@ -530,9 +556,12 @@ fn retried(
     let mut nodes = Vec::new();
     for node in &stored.nodes {
         match node {
-            TargetNode::Service {
-                id, name, removals, ..
-            } if node.retires() => {
+            TargetNode::Retire {
+                id,
+                name,
+                runtimes: removals,
+                ..
+            } => {
                 if latest
                     .services
                     .iter()
@@ -583,7 +612,7 @@ fn retried(
     let named = |target: &ServiceName| {
         nodes
             .iter()
-            .any(|node| matches!(node, TargetNode::Service { name, .. } if name == target))
+            .any(|node| node.service().is_some_and(|service| service.name == target))
     };
     let mut services: Vec<ServiceName> = stored
         .summary
@@ -593,7 +622,7 @@ fn retried(
         .cloned()
         .collect();
     for node in nodes.iter().filter(|node| node.retires()) {
-        if let TargetNode::Service { name, .. } = node
+        if let Some(ServiceNode { name, .. }) = node.service()
             && !services.contains(name)
         {
             services.push(name.clone());

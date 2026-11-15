@@ -154,6 +154,11 @@ fn ran_as(
                 name: then,
                 removals,
                 ..
+            }
+            | TargetNode::Retire {
+                name: then,
+                runtimes: removals,
+                ..
             } = node
             {
                 name.get_or_insert_with(|| then.clone());
@@ -234,13 +239,13 @@ pub(crate) fn dropped(
     for row in &rows {
         let nodes: Vec<TargetNode> = row.json(0, "Deployment")?;
         for node in nodes {
-            if let TargetNode::Service { id, .. } = node
+            if let Some(ServiceNode { id, .. }) = node.service()
                 && !saved
                     .services
                     .iter()
                     .any(|service| service.id == id.as_str())
             {
-                removed.insert(id);
+                removed.insert(id.clone());
             }
         }
     }
@@ -379,7 +384,7 @@ pub(crate) fn freeze(
         |service: &SavedServiceIntent| retire.iter().find(|gone| gone.id.as_str() == service.id);
     let mut nodes: Vec<TargetNode> = if full {
         let shipping = |service: &SavedServiceIntent| {
-            let mut node = TargetNode::service(service)?;
+            let mut node = TargetNode::ships(service)?;
             if let (Some(gone), TargetNode::Service { removals, .. }) = (holds(service), &mut node)
             {
                 removals.extend(gone.runtimes.iter().cloned());
@@ -388,7 +393,7 @@ pub(crate) fn freeze(
         };
         // A dropped Service that ran is its teardown; one that never ran is just gone.
         let tearing_down = |service: &SavedServiceIntent| {
-            holds(service).map_or_else(|| TargetNode::service(service), TargetNode::retire)
+            holds(service).map_or_else(|| TargetNode::ships(service), TargetNode::retire)
         };
         // A teardown of a Service nothing may run is one a failed attempt left behind.
         let left_behind = retire.iter().filter(|gone| {
@@ -413,7 +418,7 @@ pub(crate) fn freeze(
                     .services
                     .iter()
                     .find(|service| service.slug == name.as_str())
-                    .map(TargetNode::service)
+                    .map(TargetNode::ships)
                     .transpose()?
                     .ok_or_else(|| {
                         let staged = dropped
@@ -462,7 +467,7 @@ pub(crate) fn freeze(
                     && !nodes.iter().any(|node| node.id() == service.id)
                     && changed(service)
             })
-            .map(TargetNode::service)
+            .map(TargetNode::ships)
             .collect::<Result<_, _>>()?;
         nodes.extend(referenced);
     }

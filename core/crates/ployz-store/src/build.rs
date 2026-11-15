@@ -515,15 +515,10 @@ impl BuildRow {
             service: stored
                 .nodes
                 .iter()
-                .find_map(|node| match node {
-                    crate::deployment::TargetNode::Service { name, runtime, .. }
-                        if *runtime == self.service =>
-                    {
-                        Some(name.clone())
-                    }
-                    crate::deployment::TargetNode::Service { .. }
-                    | crate::deployment::TargetNode::Volume { .. }
-                    | crate::deployment::TargetNode::Config { .. } => None,
+                .find_map(|node| {
+                    node.service()
+                        .filter(|ours| *ours.runtime == self.service)
+                        .map(|ours| ours.name.clone())
                 })
                 .unwrap_or_else(|| self.service.clone()),
             commit: self.commit.clone(),

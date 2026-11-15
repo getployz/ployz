@@ -228,7 +228,9 @@ fn take(
         .iter()
         .filter_map(|node| match node {
             TargetNode::Volume { deletes, .. } => deletes.clone(),
-            TargetNode::Service { .. } | TargetNode::Config { .. } => None,
+            TargetNode::Service { .. } | TargetNode::Retire { .. } | TargetNode::Config { .. } => {
+                None
+            }
         })
         .flatten()
         .collect();
