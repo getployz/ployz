@@ -7,7 +7,7 @@ use std::{fs, path::Path, time::Duration};
 use ployz_core::cloud_contract::{CHECKIN_PROTOCOL_VERSION, ENROLL_OPTIONS};
 use tokio::sync::watch;
 
-use super::plan::{Next, read_prep_state};
+use super::plan::{Next, Pass, read_prep_state};
 use super::status::{LocalCheckin, Seen, record};
 use super::{Attempt, EnrollInstruction, Prep};
 use super::{
@@ -76,10 +76,11 @@ pub(super) async fn attempt<H: Host>(
     report: &Report<'_>,
     instruction: &EnrollInstruction,
     mut status: LocalCheckin,
-) -> Next {
-    status.answer = Seen::Enroll;
-    status.message = None;
+) -> Pass {
+    status.view.answer = Seen::Enroll;
+    status.view.message = None;
     let mut attempt = status
+        .memory
         .attempt
         .take()
         .filter(|attempt| attempt.attempt_id == instruction.attempt_id && attempt.failure.is_none())
@@ -146,31 +147,31 @@ pub(super) async fn attempt<H: Host>(
                 tracing::warn!(%message, "Enrollment committed; follow-up failed");
                 crate::ui::note(format!("Enrolled, but follow-up failed: {message}"));
             }
-            status.message = committed.follow_up;
-            status.answer = Seen::Joined;
-            status.attempt = Some(attempt);
+            status.view.message = committed.follow_up;
+            status.view.answer = Seen::Joined;
+            status.memory.attempt = Some(attempt);
             record(&status, paths);
-            Next::Enrolled
+            Pass::Joined
         }
         _ if rejected.is_some() => {
             let message = rejected.expect("rejection checked above");
-            status.answer = Seen::Stop;
-            status.reason = Some(StopReason::Rejected);
-            status.message = Some(message.clone());
-            status.attempt = Some(attempt);
+            status.view.answer = Seen::Stop;
+            status.view.reason = Some(StopReason::Rejected);
+            status.view.message = Some(message.clone());
+            status.memory.attempt = Some(attempt);
             record(&status, paths);
-            Next::Stop(StopReason::Rejected, message)
+            Pass::Next(Next::Stop(StopReason::Rejected, message))
         }
         Err(message) => {
             let line = failure_line(attempt.fail(*moved.borrow(), message));
             crate::ui::note(error_chain::then_sentence(&line, "Waiting for Cloud."));
-            status.answer = Seen::Wait;
-            status.message = Some(line);
-            status.attempt = Some(attempt);
+            status.view.answer = Seen::Wait;
+            status.view.message = Some(line);
+            status.memory.attempt = Some(attempt);
             record(&status, paths);
-            Next::Wait {
+            Pass::Next(Next::Wait {
                 after: Duration::ZERO,
-            }
+            })
         }
     }
 }
@@ -184,7 +185,7 @@ async fn heartbeat(
     attempt: &mut Attempt,
     moved: &mut watch::Receiver<EnrollStage>,
 ) -> Option<String> {
-    status.attempt = Some(attempt.clone());
+    status.memory.attempt = Some(attempt.clone());
     record(status, paths);
     let request = CheckinRequest {
         protocol_version: CHECKIN_PROTOCOL_VERSION,

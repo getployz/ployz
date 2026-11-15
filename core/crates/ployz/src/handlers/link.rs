@@ -598,7 +598,8 @@ struct ThisServer {
 impl ThisServer {
     fn read(checkin: LocalCheckin, left: bool, loop_stopped: bool) -> Self {
         // A loop that ended or joined meant to stop; one that didn't left its last answer behind.
-        let stopped = loop_stopped && checkin.answer != Seen::Joined && !checkin.headline().ended;
+        let stopped =
+            loop_stopped && checkin.view.answer != Seen::Joined && !checkin.headline().ended;
         Self {
             checkin,
             left,
@@ -789,7 +790,7 @@ fn this_server() -> Option<ThisServer> {
         })
         .ok()
         .flatten()?;
-    let left = checkin.answer == Seen::Joined
+    let left = checkin.view.answer == Seen::Joined
         && super::runtime().is_ok_and(|runtime| {
             runtime
                 .block_on(crate::checkin::local_machine(LOCAL_INSPECT))
@@ -856,7 +857,7 @@ fn status_record(status: &Status) -> Fields {
             title: headline,
             ended,
         } = checkin.headline();
-        let tone = match (checkin.answer, ended) {
+        let tone = match (checkin.view.answer, ended) {
             (Seen::Joined, _) => Tone::Good,
             (_, true) => Tone::Bad,
             (_, false) => Tone::Change,
@@ -867,10 +868,15 @@ fn status_record(status: &Status) -> Fields {
         } else {
             record.push("this server", Cell::status(headline, tone));
         }
-        for blocker in &checkin.blockers {
+        for blocker in &checkin.view.blockers {
             record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
         }
-        if let Some(message) = checkin.message.as_deref().filter(|_| checkin.says_why()) {
+        if let Some(message) = checkin
+            .view
+            .message
+            .as_deref()
+            .filter(|_| checkin.says_why())
+        {
             record.push("reason", message);
         }
         if *stopped {
@@ -881,7 +887,7 @@ fn status_record(status: &Status) -> Fields {
         }
         record.push(
             "checked in",
-            crate::checkin::ago(checkin.at, chrono::Utc::now()),
+            crate::checkin::ago(checkin.view.at, chrono::Utc::now()),
         );
     }
     if let Some(machine) = &status.this_machine {

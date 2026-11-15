@@ -387,11 +387,12 @@ async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
         "systemd retries it"
     );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::NoPloyzd);
+    assert_eq!(status.view.answer, Seen::NoPloyzd);
     assert_eq!(status.headline().title, "No ployzd");
     assert!(status.says_why());
     assert!(
         status
+            .view
             .message
             .unwrap()
             .starts_with("No ployzd on PATH or at "),
@@ -844,7 +845,7 @@ async fn an_install_records_what_cloud_said_only_for_the_token_it_keeps() {
         let status = fs::read_to_string(paths.status()).unwrap();
         if kept {
             let seen = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-            assert!(seen.token_fingerprint.is_some(), "{status}");
+            assert!(seen.memory.token_fingerprint.is_some(), "{status}");
         } else {
             assert_eq!(status, OTHER_STATUS, "{held}");
         }
@@ -889,7 +890,10 @@ fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it()
             after: std::time::Duration::from_secs(60),
             why: "Could not reach Ployz Cloud: refused.".to_owned(),
         };
-        let pass = checkin::InstallPass { next, seen: None };
+        let pass = checkin::InstallPass {
+            posted: next.into(),
+            seen: None,
+        };
         answer_install(pass, &sending(NEW_TOKEN), &paths, PIPED).map_err(|error| error.to_string())
     });
     // real-wait: gives the install thread time to block on the token directory's flock; a blocked flock emits no event

@@ -3,7 +3,7 @@
 use chrono::Utc;
 
 use super::paths::Paths;
-use super::plan::{Next, REFUSED_ONCE, pass_from};
+use super::plan::{Next, Pass, REFUSED_ONCE, loop_pass};
 use super::probe::Probes;
 use super::token_file::{self, Held, replaced_token};
 use super::{CheckinClient, CheckinKey, Host, StopReason, client, enroll, unit};
@@ -25,7 +25,11 @@ pub(crate) async fn run<H: Host>(
     let mut said = Said::default();
     let mut probes = Probes::load(paths.probe(), host.binder());
     loop {
-        match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
+        let next = match loop_pass(host, client, key, paths, Utc::now(), &mut probes).await {
+            Pass::Next(next) => next,
+            Pass::Joined => return enroll::finish(host, paths).await,
+        };
+        match next {
             Next::Wait { after } => {
                 said.fresh(None);
                 tokio::time::sleep(after).await;
@@ -75,8 +79,6 @@ pub(crate) async fn run<H: Host>(
                 ));
                 tokio::time::sleep(client::BACKOFF).await;
             }
-            Next::Enrolled => return enroll::finish(host, paths).await,
-            Next::Enrolling => unreachable!("only an install pass leaves enrolling to the loop"),
         }
     }
 }

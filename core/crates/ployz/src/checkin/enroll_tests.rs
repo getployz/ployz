@@ -12,7 +12,10 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::super::wire::{self, EnrollPolicy};
-use super::super::{FleetToken, Headline, pass, probe::Sockets, run};
+use super::super::{
+    FleetToken, Headline, Memory, Pass, Posted, View, install_pass_with, loop_pass, pass, passed,
+    probe::Sockets, run,
+};
 use super::*;
 use ployz_core::probe_document::ProbeDocument;
 
@@ -401,7 +404,7 @@ async fn cloud_hears_every_stage_in_order_and_the_loop_ends_enrolled() {
             .iter()
             .all(|attempt| attempt["attemptId"] == "att_1" && attempt.get("failure").is_none())
     );
-    assert_eq!(fixture.status().answer, Seen::Joined);
+    assert_eq!(fixture.status().view.answer, Seen::Joined);
     assert_eq!(
         fixture.status().headline(),
         Headline {
@@ -419,7 +422,7 @@ async fn the_enroll_token_is_never_written_to_the_status_or_sent_back() {
     let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
     let host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
 
-    pass(
+    passed(
         &host,
         &mut fixture.client(&cloud),
         &fixture.key,
@@ -458,7 +461,7 @@ async fn a_failed_enroll_goes_back_to_waiting_and_tells_cloud_where_it_failed() 
         }
     );
     let status = fixture.status();
-    assert_eq!(status.answer, Seen::Wait);
+    assert_eq!(status.view.answer, Seen::Wait);
     assert_eq!(
         status.headline(),
         Headline {
@@ -468,7 +471,7 @@ async fn a_failed_enroll_goes_back_to_waiting_and_tells_cloud_where_it_failed() 
     );
     assert!(status.says_why());
     assert_eq!(
-        status.message.as_deref(),
+        status.view.message.as_deref(),
         Some("Enroll failed at enrolling: Docker is not running")
     );
 
@@ -500,26 +503,30 @@ async fn an_attempt_cut_short_is_sent_again_so_cloud_serves_it_to_resume() {
     let host = Scripted::new(&cloud, Vec::new(), Ok(()));
     record(
         &LocalCheckin {
-            answer: Seen::Enroll,
-            token_fingerprint: Some(
-                CheckinClient::new("https://cloud.example", FleetToken::literal(FLEET))
-                    .unwrap()
-                    .fingerprint(),
-            ),
-            reason: None,
-            message: None,
-            at: Utc::now(),
-            prep: None,
-            blockers: Vec::new(),
-            prepare_retries: 0,
-            prepare_started: None,
-            refused: None,
-            attempt: Some(Attempt {
-                attempt_id: "att_1".to_owned(),
-                stage: EnrollStage::Joining,
-                failure: None,
-            }),
-            no_cluster: false,
+            memory: Memory {
+                token_fingerprint: Some(
+                    CheckinClient::new("https://cloud.example", FleetToken::literal(FLEET))
+                        .unwrap()
+                        .fingerprint(),
+                ),
+                prepare_retries: 0,
+                prepare_started: None,
+                refused: None,
+                attempt: Some(Attempt {
+                    attempt_id: "att_1".to_owned(),
+                    stage: EnrollStage::Joining,
+                    failure: None,
+                }),
+            },
+            view: View {
+                answer: Seen::Enroll,
+                reason: None,
+                message: None,
+                at: Utc::now(),
+                prep: None,
+                blockers: Vec::new(),
+                no_cluster: false,
+            },
         },
         &fixture.paths,
     );
@@ -577,7 +584,7 @@ async fn a_server_enrolled_without_storage_discards_the_zfs_build_prep_began_fir
         let cloud = Arc::new(Cloud::answering(vec![instruction(storage)]).await);
         let host = Scripted::new(&cloud, Vec::new(), Ok(()));
 
-        pass(
+        passed(
             &host,
             &mut fixture.client(&cloud),
             &fixture.key,
@@ -615,7 +622,7 @@ async fn a_zfs_build_that_cannot_be_discarded_fails_the_attempt_before_enrolling
 
     assert_eq!(host.events(), ["discard"]);
     assert_eq!(
-        fixture.status().message.as_deref(),
+        fixture.status().view.message.as_deref(),
         Some("Enroll failed at installing: Could not discard the ZFS build: dkms remove exited 3")
     );
 }
@@ -701,26 +708,30 @@ fn a_failure_sent_to_cloud_keeps_the_cause_under_its_sentence() {
 fn previous(fixture: &Fixture, answer: Seen, stage: EnrollStage) {
     record(
         &LocalCheckin {
-            answer,
-            token_fingerprint: Some(
-                CheckinClient::new("https://cloud.example", FleetToken::literal(FLEET))
-                    .unwrap()
-                    .fingerprint(),
-            ),
-            reason: None,
-            message: None,
-            at: Utc::now(),
-            prep: None,
-            blockers: Vec::new(),
-            prepare_retries: 0,
-            prepare_started: None,
-            refused: None,
-            attempt: Some(Attempt {
-                attempt_id: "att_1".to_owned(),
-                stage,
-                failure: None,
-            }),
-            no_cluster: false,
+            memory: Memory {
+                token_fingerprint: Some(
+                    CheckinClient::new("https://cloud.example", FleetToken::literal(FLEET))
+                        .unwrap()
+                        .fingerprint(),
+                ),
+                prepare_retries: 0,
+                prepare_started: None,
+                refused: None,
+                attempt: Some(Attempt {
+                    attempt_id: "att_1".to_owned(),
+                    stage,
+                    failure: None,
+                }),
+            },
+            view: View {
+                answer,
+                reason: None,
+                message: None,
+                at: Utc::now(),
+                prep: None,
+                blockers: Vec::new(),
+                no_cluster: false,
+            },
         },
         &fixture.paths,
     );
@@ -732,7 +743,7 @@ async fn a_committed_enroll_with_failed_follow_up_cleans_up_as_joined() {
     let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
     let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
     host.follow_up = Some("Global catch-up failed".to_owned());
-    let next = pass(
+    let next = passed(
         &host,
         &mut fixture.client(&cloud),
         &fixture.key,
@@ -740,14 +751,14 @@ async fn a_committed_enroll_with_failed_follow_up_cleans_up_as_joined() {
         Utc::now(),
     )
     .await;
-    assert_eq!(next, Next::Enrolled);
+    assert_eq!(next, Pass::Joined);
     assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
-    assert_eq!(fixture.status().answer, Seen::Joined);
+    assert_eq!(fixture.status().view.answer, Seen::Joined);
     assert_eq!(
-        fixture.status().message.as_deref(),
+        fixture.status().view.message.as_deref(),
         Some("Global catch-up failed")
     );
-    assert!(fixture.status().attempt.unwrap().failure.is_none());
+    assert!(fixture.status().memory.attempt.unwrap().failure.is_none());
     assert!(!fixture.paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 1);
 }
@@ -786,8 +797,8 @@ async fn rejection_during_installing_or_slot_wait_stops_before_storage() {
             Next::Stop(StopReason::Rejected, "Rejected by owner".to_owned()),
             "{stage:?}"
         );
-        assert_eq!(fixture.status().answer, Seen::Stop);
-        assert_eq!(fixture.status().reason, Some(StopReason::Rejected));
+        assert_eq!(fixture.status().view.answer, Seen::Stop);
+        assert_eq!(fixture.status().view.reason, Some(StopReason::Rejected));
         assert!(!host.events().contains(&"finished"));
         assert!(fixture.paths.token_file.exists());
     }
@@ -820,7 +831,7 @@ async fn rejection_after_storage_allows_committed_work_to_finish() {
             Ok(()),
         );
         host.pace = Some(pause(Duration::from_millis(250)));
-        let next = pass(
+        let next = passed(
             &host,
             &mut fixture.client(&cloud),
             &fixture.key,
@@ -828,11 +839,11 @@ async fn rejection_after_storage_allows_committed_work_to_finish() {
             Utc::now(),
         )
         .await;
-        assert_eq!(next, Next::Enrolled, "saved {stage:?}");
+        assert_eq!(next, Pass::Joined, "saved {stage:?}");
         assert!(host.events().contains(&"finished"));
-        assert_eq!(fixture.status().answer, Seen::Joined);
+        assert_eq!(fixture.status().view.answer, Seen::Joined);
         assert_eq!(
-            fixture.status().attempt.unwrap().stage,
+            fixture.status().memory.attempt.unwrap().stage,
             EnrollStage::Publishing
         );
         assert!(fixture.paths.token_file.exists());
@@ -867,7 +878,7 @@ async fn committed_resume_keeps_heartbeat_pacing_when_cloud_keeps_rejecting() {
     host.pace = Some(pause(Duration::from_millis(250)));
 
     assert_eq!(
-        pass(
+        passed(
             &host,
             &mut fixture.client(&cloud),
             &fixture.key,
@@ -875,7 +886,7 @@ async fn committed_resume_keeps_heartbeat_pacing_when_cloud_keeps_rejecting() {
             Utc::now(),
         )
         .await,
-        Next::Enrolled
+        Pass::Joined
     );
     assert!(host.events().contains(&"finished"));
     assert!(
@@ -916,8 +927,8 @@ async fn rejected_committed_resume_reports_its_actual_failure() {
         }
     );
     assert!(host.events().contains(&"finished"));
-    assert_eq!(fixture.status().answer, Seen::Wait);
-    let failure = fixture.status().attempt.unwrap().failure.unwrap();
+    assert_eq!(fixture.status().view.answer, Seen::Wait);
+    let failure = fixture.status().memory.attempt.unwrap().failure.unwrap();
     assert_eq!(failure.stage(), EnrollStage::Joining);
     assert_eq!(failure.message(), "Publish failed");
     assert!(fixture.paths.token_file.exists());
@@ -946,7 +957,7 @@ async fn a_resumed_committed_attempt_that_fails_before_joining_keeps_its_committ
             after: Duration::ZERO
         }
     );
-    let attempt = fixture.status().attempt.unwrap();
+    let attempt = fixture.status().memory.attempt.unwrap();
     assert_eq!(attempt.stage, EnrollStage::Joining);
     let failure = attempt.failure.unwrap();
     assert_eq!(failure.stage(), EnrollStage::Joining);
@@ -978,7 +989,7 @@ async fn a_resumed_uncommitted_attempt_fails_at_the_stage_it_was_retrying() {
             after: Duration::ZERO
         }
     );
-    let failure = fixture.status().attempt.unwrap().failure.unwrap();
+    let failure = fixture.status().memory.attempt.unwrap().failure.unwrap();
     assert_eq!(failure.stage(), EnrollStage::Installing);
     assert_eq!(
         failure_line(&failure),
@@ -1017,7 +1028,7 @@ async fn persisted_joined_resumes_cleanup_before_another_checkin() {
     let cloud = Arc::new(Cloud::answering(vec![]).await);
     previous(&fixture, Seen::Joined, EnrollStage::Publishing);
     let host = Scripted::new(&cloud, vec![], Ok(()));
-    let next = pass(
+    let next = passed(
         &host,
         &mut fixture.client(&cloud),
         &fixture.key,
@@ -1025,7 +1036,7 @@ async fn persisted_joined_resumes_cleanup_before_another_checkin() {
         Utc::now(),
     )
     .await;
-    assert_eq!(next, Next::Enrolled);
+    assert_eq!(next, Pass::Joined);
     assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
     assert!(cloud.bodies.lock().unwrap().is_empty());
     assert!(!fixture.paths.token_file.exists());
@@ -1039,7 +1050,7 @@ async fn participating_after_callback_resumes_cleanup_when_cloud_answers_wait() 
     previous(&fixture, Seen::Enroll, EnrollStage::Publishing);
     let mut host = Scripted::new(&cloud, vec![], Ok(()));
     host.participating = true;
-    let next = pass(
+    let next = passed(
         &host,
         &mut fixture.client(&cloud),
         &fixture.key,
@@ -1047,9 +1058,9 @@ async fn participating_after_callback_resumes_cleanup_when_cloud_answers_wait() 
         Utc::now(),
     )
     .await;
-    assert_eq!(next, Next::Enrolled);
+    assert_eq!(next, Pass::Joined);
     assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
-    assert_eq!(fixture.status().answer, Seen::Joined);
+    assert_eq!(fixture.status().view.answer, Seen::Joined);
     assert!(!fixture.paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 1);
 }
@@ -1073,7 +1084,7 @@ async fn resumed_attempt_reports_only_forward_moves() {
     let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
     host.first = EnrollStage::Joining;
     assert_eq!(
-        pass(
+        passed(
             &host,
             &mut fixture.client(&cloud),
             &fixture.key,
@@ -1081,7 +1092,7 @@ async fn resumed_attempt_reports_only_forward_moves() {
             Utc::now()
         )
         .await,
-        Next::Enrolled
+        Pass::Joined
     );
     assert_eq!(cloud.stages(), ["joining", "publishing"]);
 }
@@ -1094,7 +1105,7 @@ async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
     host.mid_post = true;
     let next = tokio::time::timeout(
         HEARTBEAT / 2,
-        pass(
+        passed(
             &host,
             &mut fixture.client(&cloud),
             &fixture.key,
@@ -1104,7 +1115,7 @@ async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
     )
     .await
     .unwrap();
-    assert_eq!(next, Next::Enrolled);
+    assert_eq!(next, Pass::Joined);
     assert_eq!(cloud.stages(), ["installing", "publishing"]);
     assert_eq!(cloud.attempts().len(), 2);
 }
@@ -1272,16 +1283,31 @@ async fn replace_token(installing: bool) {
         let new_token = "pflt_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
         fs::write(&fixture.paths.token_file, new_token).unwrap();
         let mut client = CheckinClient::new(&cloud.url, FleetToken::literal(new_token)).unwrap();
-        let next = super::super::pass_from(
-            &host,
-            &mut client,
-            &fixture.key,
-            &fixture.paths,
-            Utc::now(),
-            installing,
-            &mut super::super::Probes::load(fixture.paths.probe(), Arc::new(Sockets)),
-        )
-        .await;
+        let mut probes = super::super::Probes::load(fixture.paths.probe(), Arc::new(Sockets));
+        let next = if installing {
+            install_pass_with(
+                &host,
+                &mut client,
+                &fixture.key,
+                &fixture.paths,
+                Utc::now(),
+                &mut probes,
+            )
+            .await
+            .record(&fixture.paths)
+            .next()
+        } else {
+            loop_pass(
+                &host,
+                &mut client,
+                &fixture.key,
+                &fixture.paths,
+                Utc::now(),
+                &mut probes,
+            )
+            .await
+            .next()
+        };
         assert_eq!(
             next,
             Next::Wait {
@@ -1290,10 +1316,10 @@ async fn replace_token(installing: bool) {
             "{answer:?}, install {installing}"
         );
         assert!(cloud.attempts().is_empty());
-        assert!(fixture.status().attempt.is_none());
-        assert_eq!(fixture.status().answer, Seen::Wait);
+        assert!(fixture.status().memory.attempt.is_none());
+        assert_eq!(fixture.status().view.answer, Seen::Wait);
         assert_eq!(
-            fixture.status().token_fingerprint,
+            fixture.status().memory.token_fingerprint,
             Some(client.fingerprint())
         );
         assert_eq!(
@@ -1410,7 +1436,7 @@ async fn a_check_in_reports_the_saved_probe_and_token_bound_attempt_together() {
 
 #[tokio::test]
 async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes() {
-    use super::super::{Probes, pass_from, probe::Sockets};
+    use super::super::{Probes, probe::Sockets};
 
     for installing in [true, false] {
         let fixture = Fixture::new("ready");
@@ -1435,25 +1461,39 @@ async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes
             .await;
         assert!(std::net::UdpSocket::bind(("0.0.0.0", port)).is_err());
 
-        let next = pass_from(
-            &host,
-            &mut fixture.client(&cloud),
-            &fixture.key,
-            &fixture.paths,
-            Utc::now(),
-            installing,
-            &mut probes,
-        )
-        .await;
+        let mut client = fixture.client(&cloud);
+        let (posted, passed) = if installing {
+            let pass = install_pass_with(
+                &host,
+                &mut client,
+                &fixture.key,
+                &fixture.paths,
+                Utc::now(),
+                &mut probes,
+            )
+            .await;
+            (Some(pass.record(&fixture.paths)), None)
+        } else {
+            let pass = loop_pass(
+                &host,
+                &mut client,
+                &fixture.key,
+                &fixture.paths,
+                Utc::now(),
+                &mut probes,
+            )
+            .await;
+            (None, Some(pass))
+        };
 
         assert!(std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok());
         assert!(probes.report().await.is_none());
         if installing {
-            assert_eq!(next, Next::Enrolling);
+            assert_eq!(posted, Some(Posted::EnrollReady));
             assert!(host.events().is_empty());
         } else {
-            assert_eq!(next, Next::Enrolled);
-            assert_eq!(fixture.status().answer, Seen::Joined);
+            assert_eq!(passed, Some(Pass::Joined));
+            assert_eq!(fixture.status().view.answer, Seen::Joined);
         }
     }
 }
