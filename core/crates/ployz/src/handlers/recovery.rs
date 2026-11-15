@@ -613,7 +613,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::cloud_login::tests::fake_cloud;
+    use crate::cloud_account::testing::fake_cloud;
     use crate::connect::test_support::unix_daemon_describing;
     use crate::handlers::verbs;
 

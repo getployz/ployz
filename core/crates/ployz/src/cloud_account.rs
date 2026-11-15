@@ -19,7 +19,7 @@ mod store;
 mod token;
 
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 #[cfg(test)]
 mod transcript_tests;
 
@@ -35,7 +35,7 @@ pub(crate) use org::{
     OrganizationEntry, Target, new_organization, organizations, remove_organization,
     use_organization,
 };
-pub(crate) use reply::{SIGN_IN_PAST_TOKEN, StoreCallError, public_error, refusal};
+pub(crate) use reply::{SIGN_IN_PAST_TOKEN, StoreCallError, refusal, refusal_of};
 #[cfg(test)]
 pub(crate) use servers::Reach;
 pub(crate) use servers::{

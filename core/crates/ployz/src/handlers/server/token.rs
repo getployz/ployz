@@ -218,8 +218,7 @@ async fn ask<T: DeserializeOwned>(
 ) -> Result<Result<T, RpcError>, LoginError> {
     match cloud_account::call(credential, method, path, body).await {
         Err(LoginError::Status { body, .. })
-            if let Some(refused) = cloud_account::refusal(body.as_bytes())
-                .or_else(|| cloud_account::public_error(body.as_bytes())) =>
+            if let Some(refused) = cloud_account::refusal_of(body.as_bytes()) =>
         {
             Ok(Err(refused))
         }
@@ -238,7 +237,7 @@ fn lasts(expires: &str) -> &str {
 /// The line a host runs to install this release of Ployz and ask to join. It carries no token:
 /// install.sh asks for it on the terminal, so it stays out of shell history and `ps`.
 fn install_line(cloud: &str) -> String {
-    let cloud_env = if cloud == CloudOrigin::default_cloud().as_str() {
+    let cloud_env = if CloudOrigin::is_default(cloud) {
         String::new()
     } else {
         format!("PLOYZ_CLOUD_URL='{cloud}' ")
@@ -264,6 +263,25 @@ mod tests {
                 "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='http://localhost:3000' sh -s -- {version} --enroll"
             )
         );
+    }
+
+    #[test]
+    fn only_the_default_cloud_written_exactly_is_left_unnamed_in_the_install_line() {
+        for cloud in [
+            "ployz.dev",
+            "https://ployz.dev/",
+            "HTTPS://ployz.dev",
+            "http://ployz.dev",
+            "https://ployz.dev:443",
+            "https://www.ployz.dev",
+            "",
+        ] {
+            assert!(
+                install_line(cloud).contains(&format!("PLOYZ_CLOUD_URL='{cloud}' ")),
+                "{cloud}"
+            );
+        }
+        assert!(!install_line("https://ployz.dev").contains("PLOYZ_CLOUD_URL"));
     }
 
     #[test]

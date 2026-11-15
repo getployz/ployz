@@ -350,32 +350,10 @@ fn cut_off(tool: &str, deadline: Duration) -> RpcError {
     .with_details(writes_unknown(Value::Null))
 }
 
-/// Whether Cloud may have acted on a request that failed this way.
+/// Whether Cloud may have acted on a request that failed this way: any call that reached for
+/// it, whatever it answered.
 fn may_have_landed(error: &LoginError) -> bool {
-    match error {
-        LoginError::Unreachable { .. }
-        | LoginError::Unanswered { .. }
-        | LoginError::Status { .. }
-        | LoginError::Reply(_) => true,
-        LoginError::Unsupported(_)
-        | LoginError::Store { .. }
-        | LoginError::Corrupt { .. }
-        | LoginError::TokenCloudUnreadable(_)
-        | LoginError::OtherCloud { .. }
-        | LoginError::SignedOut
-        | LoginError::Expired
-        | LoginError::Denied
-        | LoginError::Ended
-        | LoginError::AwaitingApproval { .. }
-        | LoginError::TokenRefused
-        | LoginError::AgentTokenRefused
-        | LoginError::TokenMalformed
-        | LoginError::NotMember(_)
-        | LoginError::TokenBound
-        | LoginError::UnknownOrganization(_)
-        | LoginError::UnknownCredential(_)
-        | LoginError::AmbiguousCredential { .. } => false,
-    }
+    error.delivery().is_some()
 }
 
 /// The registry refuses Cloud tools on a local Store before asking, so a Cloud step

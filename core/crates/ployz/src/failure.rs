@@ -398,18 +398,6 @@ pub(crate) fn push_rpc_error(error: PushError) -> RpcError {
     RpcError::new(error.code(), error.to_string())
 }
 
-/// The `--json` code of a Cloud HTTP refusal.
-fn http_status_code(status: u16) -> RpcErrorCode {
-    match status {
-        401 | 403 => RpcErrorCode::Unauthenticated,
-        404 => RpcErrorCode::NotFound,
-        409 => RpcErrorCode::Conflict,
-        408 | 429 => RpcErrorCode::Unavailable,
-        400..=499 => RpcErrorCode::InvalidArgument,
-        _ => RpcErrorCode::Unavailable,
-    }
-}
-
 pub(crate) fn io_code(error: &io::Error) -> RpcErrorCode {
     use io::ErrorKind;
     let kind = error.kind();
@@ -502,8 +490,7 @@ impl From<LoginError> for Failure {
     /// a route's `PublicError` keeps its sentence.
     fn from(error: LoginError) -> Self {
         if let LoginError::Status { body, .. } = &error
-            && let Some(refused) = crate::cloud_account::refusal(body.as_bytes())
-                .or_else(|| crate::cloud_account::public_error(body.as_bytes()))
+            && let Some(refused) = crate::cloud_account::refusal_of(body.as_bytes())
         {
             return Self::command(refused);
         }
@@ -549,7 +536,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => RpcErrorCode::Unavailable,
         LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
-        LoginError::Status { status, .. } => http_status_code(*status),
+        LoginError::Status { status, .. } => crate::cloud_reply::status_code(*status),
         LoginError::Reply(_)
         | LoginError::Store { .. }
         | LoginError::Corrupt { .. }
@@ -963,6 +950,51 @@ mod tests {
                 body: String::new(),
             });
             assert_eq!(failure.report().code, code, "HTTP {status}");
+        }
+    }
+
+    #[test]
+    fn every_cloud_status_reads_as_one_code_whichever_cloud_call_met_it() {
+        use RpcErrorCode::{Conflict, InvalidArgument, NotFound, Unauthenticated, Unavailable};
+        for (status, code) in [
+            (0, Unavailable),
+            (100, Unavailable),
+            (200, Unavailable),
+            (302, Unavailable),
+            (399, Unavailable),
+            (400, InvalidArgument),
+            (401, Unauthenticated),
+            (402, InvalidArgument),
+            (403, Unauthenticated),
+            (404, NotFound),
+            (405, InvalidArgument),
+            (407, InvalidArgument),
+            (408, Unavailable),
+            (409, Conflict),
+            (410, InvalidArgument),
+            (413, InvalidArgument),
+            (422, InvalidArgument),
+            (428, InvalidArgument),
+            (429, Unavailable),
+            (430, InvalidArgument),
+            (499, InvalidArgument),
+            (500, Unavailable),
+            (502, Unavailable),
+            (503, Unavailable),
+            (599, Unavailable),
+            (600, Unavailable),
+            (u16::MAX, Unavailable),
+        ] {
+            let signed_in = LoginError::Status {
+                status,
+                body: String::new(),
+            };
+            assert_eq!(login_code(&signed_in), code, "login HTTP {status}");
+            let enrolled = Failure::from(cloud_enroll::Error::Status {
+                status,
+                body: String::new(),
+            });
+            assert_eq!(enrolled.report().code, code, "enroll HTTP {status}");
         }
     }
 

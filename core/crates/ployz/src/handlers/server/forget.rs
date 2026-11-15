@@ -292,7 +292,7 @@ mod tests {
             "volumes": [],
         });
         let (forgets, forgot) = std::sync::mpsc::channel();
-        let cloud = crate::cloud_login::tests::fake_cloud(move |route, body| match route {
+        let cloud = crate::cloud_account::testing::fake_cloud(move |route, body| match route {
             "GET /api/cli/forget-servers" => (200, check.clone()),
             "POST /api/cli/forget-servers" => {
                 forgets.send(body.to_owned()).unwrap();

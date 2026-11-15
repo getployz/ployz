@@ -645,7 +645,7 @@ async fn post_callback(
                     | Error::RetrySameCommand { .. }
                     | Error::CloudCantReach) => return error,
                 };
-                if crate::cloud_login::cloud_message(body.as_bytes())
+                if crate::cloud_reply::message(body.as_bytes())
                     .is_some_and(|message| message.starts_with(CLOUD_CANT_REACH))
                 {
                     return Error::CloudCantReach;

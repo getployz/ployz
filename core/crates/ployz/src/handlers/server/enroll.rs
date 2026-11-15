@@ -376,7 +376,7 @@ async fn paste(acting: &Acting, minted: &Minted, shape: &[String]) -> Result<(),
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin, or reads
 /// an exported `PLOYZ_ENROLL_TOKEN`, which plain `sudo` would drop.
 fn pasted_command(cloud: &str, shape: &[String]) -> String {
-    let cloud_flag = if cloud == CloudOrigin::default_cloud().as_str() {
+    let cloud_flag = if CloudOrigin::is_default(cloud) {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")
@@ -497,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_enrollment_voided_by_forgetting_the_servers_ends_the_wait() {
-        let cloud = crate::cloud_login::tests::fake_cloud(|route, _| match route {
+        let cloud = crate::cloud_account::testing::fake_cloud(|route, _| match route {
             "POST /api/cli/servers/enrollment" => (
                 404,
                 json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "The requested resource was not found." }),
@@ -539,6 +539,25 @@ mod tests {
             pasted_command("http://localhost:3000", &[])
                 .ends_with("ployz server add --cloud-url 'http://localhost:3000'")
         );
+    }
+
+    #[test]
+    fn only_the_default_cloud_written_exactly_is_left_unnamed_in_the_pasted_line() {
+        for cloud in [
+            "ployz.dev",
+            "https://ployz.dev/",
+            "HTTPS://ployz.dev",
+            "http://ployz.dev",
+            "https://ployz.dev:443",
+            "https://www.ployz.dev",
+            "",
+        ] {
+            assert!(
+                pasted_command(cloud, &[]).contains(&format!(" --cloud-url '{cloud}'")),
+                "{cloud}"
+            );
+        }
+        assert!(!pasted_command("https://ployz.dev", &[]).contains("--cloud-url"));
     }
 
     #[test]

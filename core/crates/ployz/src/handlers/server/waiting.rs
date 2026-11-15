@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::super::route::signed_in;
 use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::LoginError;
+use crate::cloud_login::{Delivery, LoginError};
 use crate::handlers::{Error, runtime};
 use crate::ui::{self, Cell, Fields, Table, Tone, printable};
 use ployz_core::Hint;
@@ -295,31 +295,12 @@ pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
                 RpcErrorCode::Internal | RpcErrorCode::Unavailable | RpcErrorCode::Unknown(_)
             )
         }
-        StoreCallError::Cloud(LoginError::Status { status, .. }) => *status >= 500,
-        StoreCallError::Cloud(
-            LoginError::Unreachable { .. } | LoginError::Unanswered { .. } | LoginError::Reply(_),
-        )
-        | StoreCallError::Stopped(_) => true,
-        StoreCallError::Cloud(
-            LoginError::Unsupported(_)
-            | LoginError::Store { .. }
-            | LoginError::Corrupt { .. }
-            | LoginError::TokenCloudUnreadable(_)
-            | LoginError::OtherCloud { .. }
-            | LoginError::SignedOut
-            | LoginError::Expired
-            | LoginError::Denied
-            | LoginError::Ended
-            | LoginError::AwaitingApproval { .. }
-            | LoginError::TokenRefused
-            | LoginError::AgentTokenRefused
-            | LoginError::TokenMalformed
-            | LoginError::NotMember(_)
-            | LoginError::TokenBound
-            | LoginError::UnknownOrganization(_)
-            | LoginError::UnknownCredential(_)
-            | LoginError::AmbiguousCredential { .. },
-        ) => false,
+        StoreCallError::Cloud(error) => match error.delivery() {
+            Some(Delivery::Refused { status }) => status >= 500,
+            Some(Delivery::Unreached | Delivery::Lost | Delivery::Reply) => true,
+            None => false,
+        },
+        StoreCallError::Stopped(_) => true,
     }
 }
 
@@ -758,5 +739,40 @@ pub(super) mod tests {
         assert_eq!(age("2026-10-15T03:00:00Z", now), "24h");
         assert_eq!(age("2026-10-12T03:00:00Z", now), "4d");
         assert_eq!(age("2026-10-16T03:00:10Z", now), "0s");
+    }
+
+    #[test]
+    fn a_waiting_list_call_may_have_acted_only_when_cloud_did_not_say_otherwise() {
+        for (name, error) in crate::cloud_account::testing::every_login_error(400) {
+            let acted = ["Unreachable", "Unanswered", "Reply"].contains(&name);
+            assert_eq!(
+                may_have_acted(&StoreCallError::Cloud(error)),
+                acted,
+                "{name}"
+            );
+        }
+        for (status, acted) in [
+            (0, false),
+            (200, false),
+            (400, false),
+            (404, false),
+            (429, false),
+            (499, false),
+            (500, true),
+            (502, true),
+            (503, true),
+            (599, true),
+            (600, true),
+        ] {
+            let error = LoginError::Status {
+                status,
+                body: String::new(),
+            };
+            assert_eq!(
+                may_have_acted(&StoreCallError::Cloud(error)),
+                acted,
+                "HTTP {status}"
+            );
+        }
     }
 }

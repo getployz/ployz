@@ -18,6 +18,10 @@ use ployz_core::cloud_contract::CLIENT_ID;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod wire;
+
+use wire::{CodeReply, DeviceTokenError, Reply, SessionReply, TokenError, TokenReply};
+
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// RFC 8628 §3.5: a `slow_down` answer adds five seconds to the polling interval.
 const SLOW_DOWN: Duration = Duration::from_secs(5);
@@ -92,6 +96,50 @@ pub(crate) enum LoginError {
     UnknownCredential(String),
     #[error("Tokens named `{name}` here: {}. No changes made.", ids.join(", "))]
     AmbiguousCredential { name: String, ids: Vec<String> },
+}
+
+/// How far a failed Cloud call got, for a caller that must know whether Cloud may have acted.
+/// Each caller decides what to do with it: the answers differ on purpose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Delivery {
+    /// The request never left this device.
+    Unreached,
+    /// The request left and no answer came back.
+    Lost,
+    /// Cloud answered with this HTTP status.
+    Refused { status: u16 },
+    /// Cloud answered with something this build cannot read.
+    Reply,
+}
+
+impl LoginError {
+    /// How far the call got; `None` for a failure that is not about a call to Cloud.
+    pub(crate) fn delivery(&self) -> Option<Delivery> {
+        match self {
+            Self::Unreachable { .. } => Some(Delivery::Unreached),
+            Self::Unanswered { .. } => Some(Delivery::Lost),
+            Self::Status { status, .. } => Some(Delivery::Refused { status: *status }),
+            Self::Reply(_) => Some(Delivery::Reply),
+            Self::Unsupported(_)
+            | Self::Store { .. }
+            | Self::Corrupt { .. }
+            | Self::TokenCloudUnreadable(_)
+            | Self::OtherCloud { .. }
+            | Self::SignedOut
+            | Self::Expired
+            | Self::Denied
+            | Self::Ended
+            | Self::AwaitingApproval { .. }
+            | Self::TokenRefused
+            | Self::AgentTokenRefused
+            | Self::TokenMalformed
+            | Self::NotMember(_)
+            | Self::TokenBound
+            | Self::UnknownOrganization(_)
+            | Self::UnknownCredential(_)
+            | Self::AmbiguousCredential { .. } => None,
+        }
+    }
 }
 
 /// A bearer that never prints.
@@ -385,15 +433,6 @@ pub(crate) struct SignedOut {
 /// Returns a failure Cloud answered with, keeping the stored sign-in so logout can be
 /// retried, or a store failure.
 pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>, LoginError> {
-    #[derive(Deserialize)]
-    struct Reply {
-        signed_out: Device,
-        servers: crate::cloud_account::ServerClears,
-    }
-    #[derive(Deserialize)]
-    struct Device {
-        id: String,
-    }
     let signed_out = match store.replaceable()? {
         None => {
             store.clear()?;
@@ -451,39 +490,6 @@ enum Poll {
     Approved(Secret),
     Denied,
     Expired,
-}
-
-#[derive(Deserialize)]
-struct CodeReply {
-    device_code: String,
-    user_code: String,
-    verification_uri_complete: String,
-    expires_in: u64,
-    interval: u64,
-}
-
-#[derive(Deserialize)]
-struct TokenReply {
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct TokenError {
-    error: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionReply {
-    user: Account,
-    session: SessionFields,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionFields {
-    active_organization_id: Option<String>,
-    active_organization_slug: Option<String>,
 }
 
 async fn request_code(
@@ -554,13 +560,14 @@ async fn poll(http: &reqwest::Client, pending: &Pending) -> Result<Poll, LoginEr
         .await
         .map_err(|error| unreachable(&pending.cloud, error))?;
     let reply: TokenError = decode(body.to_vec())?;
-    Ok(match reply.error.as_str() {
-        "authorization_pending" => Poll::Pending,
-        "slow_down" => Poll::SlowDown,
-        "access_denied" => Poll::Denied,
-        // An unknown device code has been spent or swept: it can never be approved.
-        "expired_token" | "invalid_grant" => Poll::Expired,
-        other => return Err(LoginError::Reply(format!("device token error {other}"))),
+    Ok(match DeviceTokenError::from_wire(&reply.error) {
+        DeviceTokenError::Pending => Poll::Pending,
+        DeviceTokenError::SlowDown => Poll::SlowDown,
+        DeviceTokenError::Denied => Poll::Denied,
+        DeviceTokenError::Expired => Poll::Expired,
+        DeviceTokenError::Unknown(other) => {
+            return Err(LoginError::Reply(format!("device token error {other}")));
+        }
     })
 }
 
@@ -638,30 +645,8 @@ async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginErr
 
 /// Cloud's own sentence for a failed call, else its status and any readable body.
 pub(crate) fn answered(prefix: &str, status: u16, body: &str) -> String {
-    cloud_message(body.as_bytes())
+    crate::cloud_reply::message(body.as_bytes())
         .unwrap_or_else(|| format!("{prefix} HTTP {status}{}", readable(body)))
-}
-
-/// The sentence a Cloud refusal carries: a route's `PublicError`, the `{error}` a
-/// public endpoint sends, or the `{error: {code, message}}` a command refuses with.
-pub(crate) fn cloud_message(body: &[u8]) -> Option<String> {
-    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    let text = |value: &serde_json::Value, field: &str| {
-        value
-            .get(field)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-    };
-    match text(&body, "_tag").as_deref() {
-        Some("PublicError") => text(&body, "code").and(text(&body, "message")),
-        _ => {
-            let error = body.get("error")?;
-            if let Some(said) = error.as_str() {
-                return Some(said.to_owned());
-            }
-            text(error, "code").and(text(error, "message"))
-        }
-    }
 }
 
 /// `body` as the tail of a status line: a short text or JSON answer is worth
@@ -707,53 +692,10 @@ fn now() -> u64 {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::{
-        io::{BufRead, BufReader, Read, Write},
-        net::TcpListener,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use super::*;
-
-    /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
-    pub(crate) fn fake_cloud(
-        reply: impl Fn(&str, &str) -> (u16, serde_json::Value) + Send + 'static,
-    ) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut request_line = String::new();
-                reader.read_line(&mut request_line).unwrap();
-                let mut length = 0;
-                loop {
-                    let mut header = String::new();
-                    reader.read_line(&mut header).unwrap();
-                    if header == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:")
-                    {
-                        length = value.trim().parse().unwrap();
-                    }
-                }
-                let mut body = vec![0; length];
-                reader.read_exact(&mut body).unwrap();
-                let route = request_line.rsplit_once(' ').unwrap().0;
-                let (status, json) = reply(route, &String::from_utf8(body).unwrap());
-                let json = json.to_string();
-                write!(
-                    stream,
-                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
-                    json.len()
-                )
-                .unwrap();
-            }
-        });
-        url
-    }
+    use crate::cloud_account::testing::fake_cloud;
 
     /// Cloud's device flow for one code, approved once `approved` is set.
     fn device_cloud(approved: Arc<Mutex<Option<&'static str>>>) -> String {
@@ -965,6 +907,264 @@ pub(crate) mod tests {
             signed_in(&store).await,
             Err(LoginError::SignedOut)
         ));
+    }
+
+    #[tokio::test]
+    async fn the_device_token_route_reads_as_one_poll_outcome_or_one_refusal() {
+        let table: [(u16, serde_json::Value, &str); 22] = [
+            (
+                400,
+                serde_json::json!({ "error": "authorization_pending" }),
+                "pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "slow_down" }),
+                "slow_down",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "access_denied" }),
+                "denied",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "expired_token" }),
+                "expired",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "invalid_grant" }),
+                "expired",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "authorization_pending", "error_description": "x" }),
+                "pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "nope" }),
+                "reply: device token error nope",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "" }),
+                "reply: device token error ",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "Authorization_Pending" }),
+                "reply: device token error Authorization_Pending",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": "slow_down " }),
+                "reply: device token error slow_down ",
+            ),
+            (
+                400,
+                serde_json::json!({}),
+                "reply: missing field `error` at line 1 column 2",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": 7 }),
+                "reply: invalid type: integer `7`, expected a string at line 1 column 10",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": null }),
+                "reply: invalid type: null, expected a string at line 1 column 13",
+            ),
+            (
+                400,
+                serde_json::json!({ "error": { "code": "x" } }),
+                "reply: invalid type: map, expected a string at line 1 column 9",
+            ),
+            (200, serde_json::json!({ "access_token": "t" }), "approved"),
+            (
+                200,
+                serde_json::json!({ "access_token": "t", "token_type": "Bearer" }),
+                "approved",
+            ),
+            (
+                200,
+                serde_json::json!({}),
+                "reply: missing field `access_token` at line 1 column 2",
+            ),
+            (
+                200,
+                serde_json::json!({ "access_token": null }),
+                "reply: invalid type: null, expected a string at line 1 column 20",
+            ),
+            (
+                200,
+                serde_json::json!({ "error": "access_denied" }),
+                "reply: missing field `access_token` at line 1 column 25",
+            ),
+            (
+                401,
+                serde_json::json!({ "error": "authorization_pending" }),
+                r#"status 401: {"error":"authorization_pending"}"#,
+            ),
+            (
+                404,
+                serde_json::json!({ "error": "expired_token" }),
+                r#"status 404: {"error":"expired_token"}"#,
+            ),
+            (
+                500,
+                serde_json::json!({ "error": "slow_down" }),
+                r#"status 500: {"error":"slow_down"}"#,
+            ),
+        ];
+        for (status, body, expected) in table {
+            let said = body.clone();
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/auth/device/token" => (status, said.clone()),
+                other => panic!("unexpected {other}"),
+            });
+            let pending = Pending {
+                cloud,
+                device_code: Secret("device-secret".to_owned()),
+                code: "ABCD2345".to_owned(),
+                url: "http://cloud/device".to_owned(),
+                expires_at: now() + 600,
+                interval_secs: 1,
+            };
+            let http = reqwest::Client::new();
+            let read = match poll(&http, &pending).await {
+                Ok(Poll::Pending) => "pending".to_owned(),
+                Ok(Poll::SlowDown) => "slow_down".to_owned(),
+                Ok(Poll::Denied) => "denied".to_owned(),
+                Ok(Poll::Expired) => "expired".to_owned(),
+                Ok(Poll::Approved(token)) => {
+                    assert_eq!(token.expose(), "t");
+                    "approved".to_owned()
+                }
+                Err(LoginError::Reply(said)) => format!("reply: {said}"),
+                Err(LoginError::Status { status, body }) => format!("status {status}: {body}"),
+                Err(other) => format!("other: {other:?}"),
+            };
+            assert_eq!(read, expected, "{status} {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_code_that_has_run_out_is_expired_without_asking_cloud() {
+        let pending = Pending {
+            cloud: "http://127.0.0.1:1".to_owned(),
+            device_code: Secret("device-secret".to_owned()),
+            code: "ABCD2345".to_owned(),
+            url: "http://cloud/device".to_owned(),
+            expires_at: 0,
+            interval_secs: 1,
+        };
+        assert!(matches!(
+            poll(&reqwest::Client::new(), &pending).await,
+            Ok(Poll::Expired)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_device_code_reply_decodes_only_what_cloud_must_send() {
+        let full = serde_json::json!({
+            "device_code": "d", "user_code": "U", "verification_uri_complete": "http://c/d?u=U",
+            "expires_in": 60, "interval": 0,
+        });
+        let without = |field: &str| {
+            let mut body = full.clone();
+            body.as_object_mut().unwrap().remove(field);
+            body
+        };
+        let with = |field: &str, value: serde_json::Value| {
+            let mut body = full.clone();
+            body.as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), value);
+            body
+        };
+        let table = [
+            (404, serde_json::json!({}), "unsupported"),
+            (200, full.clone(), "ok interval 1"),
+            (
+                200,
+                with("verification_uri", serde_json::json!("http://c/d")),
+                "ok interval 1",
+            ),
+            (200, with("interval", serde_json::json!(5)), "ok interval 5"),
+            (
+                200,
+                without("device_code"),
+                "reply: missing field `device_code` at line 1 column 91",
+            ),
+            (
+                200,
+                without("user_code"),
+                "reply: missing field `user_code` at line 1 column 93",
+            ),
+            (
+                200,
+                without("verification_uri_complete"),
+                "reply: missing field `verification_uri_complete` at line 1 column 64",
+            ),
+            (
+                200,
+                without("expires_in"),
+                "reply: missing field `expires_in` at line 1 column 93",
+            ),
+            (
+                200,
+                without("interval"),
+                "reply: missing field `interval` at line 1 column 96",
+            ),
+            (
+                200,
+                with("interval", serde_json::json!(-1)),
+                "reply: invalid value: integer `-1`, expected u64 at line 1 column 48",
+            ),
+            (
+                200,
+                with("interval", serde_json::json!("5")),
+                "reply: invalid type: string \"5\", expected u64 at line 1 column 49",
+            ),
+            (
+                200,
+                with("expires_in", serde_json::json!(null)),
+                "reply: invalid type: null, expected u64 at line 1 column 36",
+            ),
+            (
+                500,
+                serde_json::json!({ "error": "down" }),
+                r#"status 500: {"error":"down"}"#,
+            ),
+            (
+                403,
+                serde_json::json!({ "error": "no" }),
+                r#"status 403: {"error":"no"}"#,
+            ),
+        ];
+        for (status, body, expected) in table {
+            let said = body.clone();
+            let cloud = fake_cloud(move |route, _| match route {
+                "POST /api/auth/device/code" => (status, said.clone()),
+                other => panic!("unexpected {other}"),
+            });
+            let (_dir, store) = store();
+            let read = match start(&store, &cloud).await {
+                Ok(Start::Pending { pending, .. }) => {
+                    assert!(pending.expires_in() <= 60);
+                    format!("ok interval {}", pending.interval_secs)
+                }
+                Ok(_) => "other start".to_owned(),
+                Err(LoginError::Unsupported(_)) => "unsupported".to_owned(),
+                Err(LoginError::Reply(said)) => format!("reply: {said}"),
+                Err(LoginError::Status { status, body }) => format!("status {status}: {body}"),
+                Err(other) => format!("other: {other:?}"),
+            };
+            assert_eq!(read, expected, "{status} {body}");
+        }
     }
 
     #[tokio::test]

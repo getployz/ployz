@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use serde_json::Value;
 
-use super::{Failure, Message, http_status_code, io_code, login_code};
+use super::{Failure, Message, io_code, login_code};
 use crate::{
     cloud_enroll,
     cloud_login::LoginError,
@@ -373,7 +373,7 @@ impl Reported for cloud_enroll::Error {
             | cloud_enroll::Error::FounderWait => RpcErrorCode::Unavailable,
             cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
             cloud_enroll::Error::TokenRefused => RpcErrorCode::Unauthenticated,
-            cloud_enroll::Error::Status { status, .. } => http_status_code(*status),
+            cloud_enroll::Error::Status { status, .. } => crate::cloud_reply::status_code(*status),
             cloud_enroll::Error::CodedConflict { .. } => RpcErrorCode::Conflict,
         }
     }

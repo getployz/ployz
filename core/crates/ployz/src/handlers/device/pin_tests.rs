@@ -24,7 +24,7 @@ fn token(cloud: String) -> Credential {
 
 /// A Cloud whose Organization backs up `backed_up` as its Cluster's key.
 fn cloud(backed_up: SealingPublicKey) -> Credential {
-    token(crate::cloud_login::tests::fake_cloud(
+    token(crate::cloud_account::testing::fake_cloud(
         move |route, _| match route {
             "GET /api/cli/organizations" => (
                 200,

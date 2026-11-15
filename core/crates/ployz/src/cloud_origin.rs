@@ -42,6 +42,11 @@ impl CloudOrigin {
         Self::new(DEFAULT_CLOUD)
     }
 
+    /// Whether `cloud`, written exactly as stored or typed, is the default Cloud's origin.
+    pub(crate) fn is_default(cloud: &str) -> bool {
+        cloud == Self::default_cloud().as_str()
+    }
+
     /// What `PLOYZ_CLOUD_URL` says, as written: the only place the variable is read.
     pub(crate) fn named_by_env() -> Option<String> {
         std::env::var(env::CLOUD_URL).ok()

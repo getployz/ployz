@@ -11,6 +11,7 @@ use super::{
     reply::{StoreCallError, answer, refusal, store_answer, stored},
 };
 use crate::cloud_login::LoginError;
+use crate::cloud_reply::{EndedCode, RunState};
 
 /// Start a durable Cloud run at `/api/cli/<path>`, carrying `approval` when Cloud asked
 /// for one, and return the run's id.
@@ -132,8 +133,7 @@ pub(crate) async fn follow_run<T: DeserializeOwned>(
             () = interrupted.cancelled() => return Err(stopped()),
             read = refusable(credential, Method::GET, path, None) => read?,
         };
-        let state = read.get("state").and_then(serde_json::Value::as_str);
-        if !matches!(state, Some("pending" | "running")) {
+        if !RunState::of(&read).going() {
             return serde_json::from_value(read)
                 .map(Some)
                 .map_err(|error| LoginError::Reply(error.to_string()).into());
@@ -192,10 +192,7 @@ impl<T> Settled<T> {
         match self {
             Self::Finished(result) => Ok(result),
             Self::Ended { code, message } => {
-                let code = match code.as_str() {
-                    "refused" => ployz_core::RpcErrorCode::Conflict,
-                    _ => ployz_core::RpcErrorCode::Unavailable,
-                };
+                let code = EndedCode::from_wire(&code).rpc_code();
                 Err(crate::failure::Failure::coded(code, message))
             }
         }
@@ -281,6 +278,78 @@ mod tests {
             refused.details,
             serde_json::json!({ "valid_children": ["acme/web"] })
         );
+    }
+
+    #[tokio::test]
+    async fn a_run_is_followed_only_while_cloud_says_pending_or_running() {
+        for (state, followed) in [
+            (serde_json::json!("pending"), true),
+            (serde_json::json!("running"), true),
+            (serde_json::json!("finished"), false),
+            (serde_json::json!("ended"), false),
+            (serde_json::json!("Pending"), false),
+            (serde_json::json!("running "), false),
+            (serde_json::json!("queued"), false),
+            (serde_json::json!(""), false),
+            (serde_json::json!(null), false),
+            (serde_json::json!(7), false),
+            (serde_json::json!(["running"]), false),
+        ] {
+            let body = serde_json::json!({ "state": state, "id": "run_1" });
+            let cloud = fake_cloud(move |_, _| (200, body.clone()));
+            let past = Some(tokio::time::Instant::now());
+            let read = follow_run::<serde_json::Value>(&token(&cloud), "runs/run_1", "Run", past)
+                .await
+                .unwrap();
+            assert_eq!(read.is_none(), followed, "{state}");
+        }
+        let cloud = fake_cloud(|_, _| (200, serde_json::json!({ "id": "run_1" })));
+        let past = Some(tokio::time::Instant::now());
+        let read = follow_run::<serde_json::Value>(&token(&cloud), "runs/run_1", "Run", past)
+            .await
+            .unwrap();
+        assert_eq!(read, Some(serde_json::json!({ "id": "run_1" })));
+    }
+
+    #[test]
+    fn a_run_that_ended_without_a_result_maps_its_code_to_one_failure() {
+        let ended = |code: &str| {
+            serde_json::from_value::<Settled<u8>>(
+                serde_json::json!({ "state": "ended", "code": code, "message": "Said." }),
+            )
+            .unwrap()
+            .finished()
+            .unwrap_err()
+            .report()
+        };
+        for (code, rpc) in [
+            ("refused", "conflict"),
+            ("busy", "unavailable"),
+            ("failed", "unavailable"),
+            ("Refused", "unavailable"),
+            ("REFUSED", "unavailable"),
+            ("refused ", "unavailable"),
+            ("", "unavailable"),
+        ] {
+            let report = ended(code);
+            assert_eq!(report.code.as_str(), rpc, "{code}");
+            assert_eq!(report.message, "Said.", "{code}");
+        }
+        let finished = serde_json::from_value::<Settled<u8>>(
+            serde_json::json!({ "state": "finished", "extra": true }),
+        );
+        assert!(finished.is_err(), "a finished run carries its result");
+        for body in [
+            serde_json::json!({ "state": "ended", "message": "m" }),
+            serde_json::json!({ "state": "ended", "code": "refused" }),
+            serde_json::json!({ "state": "running" }),
+            serde_json::json!({ "code": "refused", "message": "m" }),
+        ] {
+            assert!(
+                serde_json::from_value::<Settled<u8>>(body.clone()).is_err(),
+                "{body}"
+            );
+        }
     }
 
     #[tokio::test]

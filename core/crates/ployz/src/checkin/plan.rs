@@ -13,9 +13,10 @@ use super::probe::{self, Handout, Probes};
 use super::status::{LocalCheckin, Recalled, Refusal, Seen, record};
 use super::wire::{Answer, CheckinRequest, HostReport, PrepRecord, Wait, host_report};
 use super::{
-    Attempt, CheckinClient, CheckinKey, EnrollInstruction, Hold, Host, Issue, Prep, StopReason,
-    client, enroll, unit,
+    Attempt, CheckinClient, CheckinKey, EnrollInstruction, Host, Issue, Prep, StopReason, client,
+    enroll, unit,
 };
+use crate::cloud_reply::Hold;
 
 pub(super) const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 pub(super) const PREPARE_TRIES: u32 = 3;
