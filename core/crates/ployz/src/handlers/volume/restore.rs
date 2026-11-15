@@ -210,16 +210,7 @@ fn observed_epoch(copy: &VolumeCopy) -> u32 {
         VolumeCopy::Slot { .. } => 0,
     };
     let named = newest(copy)
-        .and_then(|newest| {
-            let name = newest.name.as_str();
-            let rest = name
-                .strip_prefix("w-")
-                .or_else(|| name.strip_prefix("f-"))?;
-            let digits = rest
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(rest.len());
-            rest.get(..digits)?.parse().ok()
-        })
+        .and_then(|newest| newest.name.epoch())
         .unwrap_or(0);
     root.max(named)
 }

@@ -749,6 +749,40 @@ async fn a_run_of_a_kind_or_state_this_cli_predates_still_lists_by_its_word() {
 }
 
 #[test]
+fn each_run_kind_keeps_the_word_cloud_files_it_under() {
+    let kinds = [
+        (VolumeRunKind::Mirror, "mirror"),
+        (VolumeRunKind::Sync, "sync"),
+        (VolumeRunKind::DeleteMirror, "delete_mirror"),
+        (VolumeRunKind::Move, "move"),
+        (VolumeRunKind::Release, "release"),
+        (VolumeRunKind::Restore, "restore"),
+        (VolumeRunKind::Resize, "resize"),
+    ];
+    assert_eq!(kinds.len(), VolumeRunKind::ALL.len());
+    for (kind, word) in kinds {
+        assert_eq!(kind.as_wire(), word);
+        assert_eq!(VolumeRunKind::from_wire(word), Some(kind));
+        assert_eq!(serde_json::to_value(kind).unwrap(), json!(word));
+        assert_eq!(
+            serde_json::from_value::<MaybeKnown<VolumeRunKind>>(json!(word)).unwrap(),
+            MaybeKnown::Known(kind)
+        );
+        assert_eq!(
+            store::word(&MaybeKnown::Known(kind)),
+            word.replace('_', " ")
+        );
+    }
+    for unknown in ["seed", "Mirror", "delete-mirror", "delete_old_copy", ""] {
+        assert_eq!(VolumeRunKind::from_wire(unknown), None, "{unknown}");
+        assert_eq!(
+            serde_json::from_value::<MaybeKnown<VolumeRunKind>>(json!(unknown)).unwrap(),
+            MaybeKnown::Unknown(unknown.to_owned())
+        );
+    }
+}
+
+#[test]
 fn a_wait_stops_on_a_state_this_cli_predates_and_names_it() {
     let paused: VolumeRun =
         serde_json::from_value(run("paused_for_review", "move", json!({ "to": "web-2" }))).unwrap();
