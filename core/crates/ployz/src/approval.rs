@@ -1135,4 +1135,14 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn an_approval_stays_as_it_was_only_when_cloud_never_answered() {
+        for status in [0, 400, 404, 500, 503] {
+            for (name, error) in crate::cloud_account::testing::every_login_error(status) {
+                let never = ["Unreachable", "Unanswered"].contains(&name);
+                assert_eq!(super::unanswered(&error), never, "{name} {status}");
+            }
+        }
+    }
 }

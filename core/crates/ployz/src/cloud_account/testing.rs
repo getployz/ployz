@@ -6,7 +6,7 @@ use std::{
 };
 
 use super::credential::{Credential, TokenFrom};
-use crate::cloud_login::{CredentialStore, Secret};
+use crate::cloud_login::{CredentialStore, LoginError, Secret};
 
 /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
 pub(crate) fn fake_cloud(
@@ -68,4 +68,92 @@ pub(crate) fn token(cloud: &str) -> Credential {
         token: Secret::new("ployz_secret".to_owned()),
         from: TokenFrom::Env,
     }
+}
+
+/// One of every [`LoginError`], named by its variant, with an in-flight failure that never
+/// connected standing in for both transport variants.
+pub(crate) fn every_login_error(status: u16) -> Vec<(&'static str, LoginError)> {
+    let transport = || reqwest::Client::new().get("not a url").build().unwrap_err();
+    let path = || std::path::PathBuf::from("cloud.json");
+    let cloud = || "https://cloud.test".to_owned();
+    vec![
+        (
+            "Unreachable",
+            LoginError::Unreachable {
+                cloud: cloud(),
+                error: transport(),
+            },
+        ),
+        (
+            "Unanswered",
+            LoginError::Unanswered {
+                cloud: cloud(),
+                error: transport(),
+            },
+        ),
+        ("Unsupported", LoginError::Unsupported(cloud())),
+        (
+            "Status",
+            LoginError::Status {
+                status,
+                body: String::new(),
+            },
+        ),
+        ("Reply", LoginError::Reply("odd".to_owned())),
+        (
+            "Store",
+            LoginError::Store {
+                path: path(),
+                source: std::io::Error::other("disk"),
+            },
+        ),
+        (
+            "Corrupt",
+            LoginError::Corrupt {
+                path: path(),
+                source: serde_json::from_str::<()>("{").unwrap_err(),
+            },
+        ),
+        (
+            "TokenCloudUnreadable",
+            LoginError::TokenCloudUnreadable(path()),
+        ),
+        (
+            "OtherCloud",
+            LoginError::OtherCloud {
+                signed_in: cloud(),
+                requested: "https://other.test".to_owned(),
+            },
+        ),
+        ("SignedOut", LoginError::SignedOut),
+        ("Expired", LoginError::Expired),
+        ("Denied", LoginError::Denied),
+        ("Ended", LoginError::Ended),
+        (
+            "AwaitingApproval",
+            LoginError::AwaitingApproval {
+                url: "https://cloud.test/device".to_owned(),
+            },
+        ),
+        ("TokenRefused", LoginError::TokenRefused),
+        ("AgentTokenRefused", LoginError::AgentTokenRefused),
+        ("TokenMalformed", LoginError::TokenMalformed),
+        ("NotMember", LoginError::NotMember("acme".to_owned())),
+        ("TokenBound", LoginError::TokenBound),
+        (
+            "UnknownOrganization",
+            LoginError::UnknownOrganization("acme".to_owned()),
+        ),
+        (
+            "UnknownCredential",
+            LoginError::UnknownCredential("t1".to_owned()),
+        ),
+        (
+            "AmbiguousCredential",
+            LoginError::AmbiguousCredential {
+                name: "ci".to_owned(),
+                ids: vec!["t1".to_owned(), "t2".to_owned()],
+            },
+        ),
+    ]
 }

@@ -3082,3 +3082,18 @@ mod tool_facts {
         }
     }
 }
+
+#[test]
+fn only_a_call_that_reached_for_cloud_may_have_landed() {
+    for (name, error) in crate::cloud_account::testing::every_login_error(400) {
+        let landed = ["Unreachable", "Unanswered", "Status", "Reply"].contains(&name);
+        assert_eq!(may_have_landed(&error), landed, "{name}");
+    }
+    for status in [0, 200, 400, 404, 429, 499, 500, 503, 599] {
+        let error = LoginError::Status {
+            status,
+            body: String::new(),
+        };
+        assert!(may_have_landed(&error), "HTTP {status}");
+    }
+}

@@ -759,4 +759,39 @@ pub(super) mod tests {
         assert_eq!(age("2026-10-12T03:00:00Z", now), "4d");
         assert_eq!(age("2026-10-16T03:00:10Z", now), "0s");
     }
+
+    #[test]
+    fn a_waiting_list_call_may_have_acted_only_when_cloud_did_not_say_otherwise() {
+        for (name, error) in crate::cloud_account::testing::every_login_error(400) {
+            let acted = ["Unreachable", "Unanswered", "Reply"].contains(&name);
+            assert_eq!(
+                may_have_acted(&StoreCallError::Cloud(error)),
+                acted,
+                "{name}"
+            );
+        }
+        for (status, acted) in [
+            (0, false),
+            (200, false),
+            (400, false),
+            (404, false),
+            (429, false),
+            (499, false),
+            (500, true),
+            (502, true),
+            (503, true),
+            (599, true),
+            (600, true),
+        ] {
+            let error = LoginError::Status {
+                status,
+                body: String::new(),
+            };
+            assert_eq!(
+                may_have_acted(&StoreCallError::Cloud(error)),
+                acted,
+                "HTTP {status}"
+            );
+        }
+    }
 }

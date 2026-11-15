@@ -542,6 +542,25 @@ mod tests {
     }
 
     #[test]
+    fn only_the_default_cloud_written_exactly_is_left_unnamed_in_the_pasted_line() {
+        for cloud in [
+            "ployz.dev",
+            "https://ployz.dev/",
+            "HTTPS://ployz.dev",
+            "http://ployz.dev",
+            "https://ployz.dev:443",
+            "https://www.ployz.dev",
+            "",
+        ] {
+            assert!(
+                pasted_command(cloud, &[]).contains(&format!(" --cloud-url '{cloud}'")),
+                "{cloud}"
+            );
+        }
+        assert!(!pasted_command("https://ployz.dev", &[]).contains("--cloud-url"));
+    }
+
+    #[test]
     fn the_pasted_line_carries_only_the_flags_given() {
         let matches = add_matches(&["ployz", "server", "add", "--command"]);
         assert_eq!(

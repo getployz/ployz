@@ -266,6 +266,25 @@ mod tests {
     }
 
     #[test]
+    fn only_the_default_cloud_written_exactly_is_left_unnamed_in_the_install_line() {
+        for cloud in [
+            "ployz.dev",
+            "https://ployz.dev/",
+            "HTTPS://ployz.dev",
+            "http://ployz.dev",
+            "https://ployz.dev:443",
+            "https://www.ployz.dev",
+            "",
+        ] {
+            assert!(
+                install_line(cloud).contains(&format!("PLOYZ_CLOUD_URL='{cloud}' ")),
+                "{cloud}"
+            );
+        }
+        assert!(!install_line("https://ployz.dev").contains("PLOYZ_CLOUD_URL"));
+    }
+
+    #[test]
     fn a_day_reads_as_24_hours() {
         assert_eq!(lasts("1d"), "24h");
         assert_eq!(lasts("7d"), "7d");
