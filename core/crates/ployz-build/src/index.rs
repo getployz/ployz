@@ -55,22 +55,17 @@ pub(crate) fn build(
                     crate::capture::railpack_scratch(request.working_dir).join("variant.tar");
                 let metadata =
                     crate::capture::railpack_scratch(request.working_dir).join("variant.json");
-                let mut args = bake_arguments(
+                let args = bake_arguments(
                     request,
-                    crate::Produce::Output(crate::Output::Load),
+                    crate::Bake::OciArchive {
+                        destination: &archive,
+                        platform,
+                    },
                     builder.name(),
                     target,
                     &metadata,
                     overrides,
                 );
-                args.retain(|arg| arg != "--load");
-                for setting in [
-                    format!("{}.platform={platform}", target.bake),
-                    format!("{}.output=type=oci,dest={}", target.bake, archive.display()),
-                    format!("{}.attest=type=provenance,disabled=true", target.bake),
-                ] {
-                    args.extend(["--set".into(), setting]);
-                }
                 if let Some(progress) = docker.progress {
                     progress(Progress::Stage(Stage::Building));
                 }

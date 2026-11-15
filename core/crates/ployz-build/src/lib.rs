@@ -17,6 +17,8 @@ mod fence;
 pub use fence::{CgroupPath, Fence, FenceInstaller};
 mod image_contexts;
 mod index;
+mod limits;
+pub use limits::{LIMITS, Limits, TIMING, Timing};
 mod owner;
 mod policy;
 pub use policy::clear_cache;
@@ -193,6 +195,24 @@ pub enum Output {
 enum Produce {
     Output(Output),
     Cache,
+}
+
+/// What one bake invocation emits: an attempt's [`Produce`], or one platform of a
+/// multi-platform Railpack image as an OCI archive for assembly. Only the second
+/// is never an attempt's own result, so it stays out of [`Produce`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Bake<'a> {
+    Produce(Produce),
+    OciArchive {
+        destination: &'a Path,
+        platform: &'a str,
+    },
+}
+
+impl From<Produce> for Bake<'_> {
+    fn from(produce: Produce) -> Self {
+        Self::Produce(produce)
+    }
 }
 
 /// Whether a Build solves with opened values that its cache or provenance would
@@ -684,9 +704,9 @@ fn plan(targets: &[Target]) -> Result<Vec<Planned<'_>>, BuildError> {
         .collect()
 }
 
-fn bake_arguments(
+fn bake_arguments<'a>(
     request: &Request<'_>,
-    produce: Produce,
+    kind: impl Into<Bake<'a>>,
     builder: &str,
     planned: &Planned<'_>,
     metadata: &Path,
@@ -706,21 +726,28 @@ fn bake_arguments(
             overrides.to_string_lossy().into_owned(),
         ]);
     }
-    match produce {
+    let kind = kind.into();
+    let metadata_file = |arguments: &mut Vec<String>| {
+        arguments.push("--metadata-file".to_owned());
+        arguments.push(metadata.to_string_lossy().into_owned());
+    };
+    match kind {
         // Check runs the frontend only; an image would contradict the result.
-        Produce::Output(Output::Validate) => arguments.push("--check".to_owned()),
+        Bake::Produce(Produce::Output(Output::Validate)) => arguments.push("--check".to_owned()),
         // Publication leaves the image with its registry, so there is no local
         // result to bind and no metadata to read.
-        Produce::Output(Output::Registry) => arguments.push("--push".to_owned()),
-        Produce::Output(Output::Load) => {
+        Bake::Produce(Produce::Output(Output::Registry)) => arguments.push("--push".to_owned()),
+        Bake::Produce(Produce::Output(Output::Load)) => {
             arguments.push("--load".to_owned());
-            arguments.push("--metadata-file".to_owned());
-            arguments.push(metadata.to_string_lossy().into_owned());
+            metadata_file(&mut arguments);
         }
-        Produce::Cache => {
+        Bake::Produce(Produce::Cache) => {
             arguments.push("--set".to_owned());
             arguments.push(format!("{}.output=type=cacheonly", planned.bake));
         }
+        // The archive replaces the image store, so no `--load`; the metadata still
+        // names the tags the assembled index carries.
+        Bake::OciArchive { .. } => metadata_file(&mut arguments),
     }
     if request.no_cache {
         arguments.push("--no-cache".to_owned());
@@ -735,7 +762,7 @@ fn bake_arguments(
         let scope = request.cache_scope.unwrap_or(bake);
         arguments.push("--set".to_owned());
         arguments.push(format!("{bake}.cache-from=type=gha,scope={scope}"));
-        if produce == Produce::Cache {
+        if kind == Bake::Produce(Produce::Cache) {
             arguments.push("--set".to_owned());
             arguments.push(format!("{bake}.cache-to=type=gha,scope={scope},mode=max"));
         }
@@ -746,6 +773,23 @@ fn bake_arguments(
         arguments.push(format!("*.args.{argument}"));
     }
     arguments.push(planned.bake.clone());
+    if let Bake::OciArchive {
+        destination,
+        platform,
+    } = kind
+    {
+        for setting in [
+            format!("{}.platform={platform}", planned.bake),
+            format!(
+                "{}.output=type=oci,dest={}",
+                planned.bake,
+                destination.display()
+            ),
+            format!("{}.attest=type=provenance,disabled=true", planned.bake),
+        ] {
+            arguments.extend(["--set".to_owned(), setting]);
+        }
+    }
     arguments
 }
 

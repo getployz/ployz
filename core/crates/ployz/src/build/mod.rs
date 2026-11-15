@@ -70,6 +70,66 @@ pub enum RemoteBuildFailure {
     },
 }
 
+impl RemoteBuildFailure {
+    fn work(&self) -> &WorkEvidence {
+        let (Self::Failed { work, .. } | Self::Unknown { work, .. }) = self;
+        work
+    }
+
+    /// The same diagnosis with `evidence` as its observed work.
+    #[must_use]
+    fn with_work(mut self, evidence: WorkEvidence) -> Self {
+        let (Self::Failed { work, .. } | Self::Unknown { work, .. }) = &mut self;
+        *work = evidence;
+        self
+    }
+
+    fn into_message(self) -> String {
+        let (Self::Failed { message, .. } | Self::Unknown { message, .. }) = self;
+        message
+    }
+}
+
+/// The Build Machine's report when it names a failure; any other report comes back.
+impl TryFrom<Outcome> for RemoteBuildFailure {
+    type Error = Outcome;
+
+    fn try_from(outcome: Outcome) -> Result<Self, Outcome> {
+        match outcome {
+            Outcome::Failed {
+                stage,
+                message,
+                work,
+            } => Ok(Self::Failed {
+                stage,
+                message,
+                work,
+            }),
+            Outcome::Unknown {
+                stage,
+                message,
+                work,
+            } => Ok(Self::Unknown {
+                stage,
+                message,
+                work,
+            }),
+            outcome @ (Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
+            | Outcome::Validated { .. }
+            | Outcome::Published { .. }) => Err(outcome),
+        }
+    }
+}
+
+impl From<RemoteBuildFailure> for Error {
+    fn from(failure: RemoteBuildFailure) -> Self {
+        Self::RemoteBuild {
+            outcome: Box::new(failure),
+        }
+    }
+}
+
 /// Why a Build could not be captured, run, or bound to its Service.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum Error {
@@ -380,13 +440,12 @@ impl CapturedBuild {
         let mut completed = Vec::new();
         for captured in self.targets {
             if cancellation.is_cancelled() {
-                return Err(remote_error(
-                    remote::failed(
-                        Stage::Admission,
-                        "Build cancelled before the next target was submitted",
-                    )
-                    .with_work(work),
-                ));
+                return Err(remote::failed(
+                    Stage::Admission,
+                    "Build cancelled before the next target was submitted",
+                )
+                .with_work(work)
+                .into());
             }
             let outcome = remote::execute(
                 captured.inputs,
@@ -424,25 +483,14 @@ impl CapturedBuild {
                         _retention: Some(stream),
                     });
                 }
-                remote::Completion::Report(
-                    outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }),
-                ) => {
-                    if let Outcome::Failed { work: observed, .. }
-                    | Outcome::Unknown { work: observed, .. } = &outcome
-                        && let Some(evidence) = observed.0.get(&captured.target.name)
-                    {
+                remote::Completion::Failed(failure) => {
+                    if let Some(evidence) = failure.work().0.get(&captured.target.name) {
                         work.0
                             .insert(captured.target.name.clone(), evidence.clone());
                     }
-                    return Err(remote_error(outcome.with_work(work)));
+                    return Err(failure.with_work(work).into());
                 }
                 remote::Completion::Withdrawn => return Err(Error::Withdrawn),
-                remote::Completion::Report(
-                    Outcome::CapabilitiesChecked { .. }
-                    | Outcome::Validated { .. }
-                    | Outcome::Published { .. }
-                    | Outcome::Images { .. },
-                ) => unreachable!("adapter validated output disposition"),
             }
         }
         Ok(completed)
@@ -469,38 +517,6 @@ pub(crate) fn bind(intent: &mut DeployIntent, builds: &[BuiltService]) -> Result
         }
     }
     Ok(())
-}
-
-fn remote_error(outcome: Outcome) -> Error {
-    let failure = match outcome {
-        Outcome::Failed {
-            stage,
-            message,
-            work,
-        } => RemoteBuildFailure::Failed {
-            stage,
-            message,
-            work,
-        },
-        Outcome::Unknown {
-            stage,
-            message,
-            work,
-        } => RemoteBuildFailure::Unknown {
-            stage,
-            message,
-            work,
-        },
-        Outcome::CapabilitiesChecked { .. }
-        | Outcome::Images { .. }
-        | Outcome::Validated { .. }
-        | Outcome::Published { .. } => {
-            return invalid("Build produced no image available for Direct Image Transfer");
-        }
-    };
-    Error::RemoteBuild {
-        outcome: Box::new(failure),
-    }
 }
 
 fn invalid(message: impl Into<String>) -> Error {

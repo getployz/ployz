@@ -501,6 +501,69 @@ fn requested_output_selects_exclusive_bake_behavior() {
 }
 
 #[test]
+fn a_railpack_variant_bakes_one_platform_to_an_oci_archive() {
+    let environment = BTreeMap::new();
+    let targets = [target("api", Some("linux/arm64"))];
+    let planned = super::plan(&targets).unwrap();
+    let planned = planned.first().unwrap();
+    let image_contexts = BTreeMap::new();
+    let build_args = ["MODE=release".to_owned()];
+    let request = Request {
+        image_contexts: &image_contexts,
+        railpack: &[],
+        compose_file: Path::new("/private/compose.yaml"),
+        sealed_override: None,
+        working_dir: Path::new("/private"),
+        environment: &environment,
+        docker: None,
+        targets: &targets,
+        build_args: &build_args,
+        output: Output::Load,
+        no_cache: true,
+        pull: true,
+        sealed: false,
+        cache_scope: None,
+    };
+    let args = bake_arguments(
+        &request,
+        Bake::OciArchive {
+            destination: Path::new("/private/variant.tar"),
+            platform: "linux/arm64",
+        },
+        &builder_name(),
+        planned,
+        Path::new("/private/variant.json"),
+        Some(Path::new("/private/railpack.compose.yaml")),
+    );
+    assert_eq!(
+        args,
+        [
+            "buildx",
+            "bake",
+            "--builder",
+            &builder_name(),
+            "--file",
+            "/private/compose.yaml",
+            "--file",
+            "/private/railpack.compose.yaml",
+            "--metadata-file",
+            "/private/variant.json",
+            "--no-cache",
+            "--pull",
+            "--set",
+            "*.args.MODE=release",
+            "api",
+            "--set",
+            "api.platform=linux/arm64",
+            "--set",
+            "api.output=type=oci,dest=/private/variant.tar",
+            "--set",
+            "api.attest=type=provenance,disabled=true",
+        ]
+    );
+}
+
+#[test]
 fn cancellation_terminates_the_process_before_returning() {
     let cancellation = Cancellation::default();
     cancellation.cancel();

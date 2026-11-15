@@ -1,10 +1,11 @@
 //! The client-side adapter: one captured Build, one already-selected Machine,
 //! one submission. It never opens Docker or inspects a local image.
 
+use super::RemoteBuildFailure;
 use super::inputs::BuildInputs;
 use crate::connect::Client;
 use ployz_build::{
-    Progress, Stage,
+    Progress, Stage, TIMING,
     remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::error_chain;
@@ -39,27 +40,19 @@ impl Client {
         {
             Ok(admitted) => admitted,
             Err(Refused {
-                outcome: Outcome::Failed { message, .. } | Outcome::Unknown { message, .. },
+                failure,
                 by_enforcement,
             }) => {
+                let message = failure.into_message();
                 return Err(if by_enforcement {
                     CapabilityCheckError::RefusedByEnforcement(message)
                 } else {
                     remote::InputError::from(message).into()
                 });
             }
-            Err(Refused {
-                outcome:
-                    Outcome::CapabilitiesChecked { .. }
-                    | Outcome::Images { .. }
-                    | Outcome::Validated { .. }
-                    | Outcome::Published { .. },
-                ..
-            }) => unreachable!("admission returns only terminal failures"),
         };
         // Keep the admitted sender alive: closing it would cancel the worker check.
-        let deadline =
-            tokio::time::Instant::now() + admitted.active_timeout + Duration::from_secs(70);
+        let deadline = tokio::time::Instant::now() + TIMING.result_wait(admitted.active_timeout);
         let unusable =
             |message: &str| CapabilityCheckError::from(remote::InputError::from(message));
         tokio::select! {
@@ -84,7 +77,8 @@ pub(super) enum Completion {
         images: Vec<ployz_build::BuiltImage>,
         stream: Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>,
     },
-    Report(Outcome),
+    /// The Build Machine reported the attempt failed, or its termination unconfirmed.
+    Failed(RemoteBuildFailure),
     /// No admission by the caller's deadline; the Build was withdrawn before any source left.
     Withdrawn,
 }
@@ -144,14 +138,14 @@ struct Admitted {
 }
 
 struct Refused {
-    outcome: Outcome,
+    failure: RemoteBuildFailure,
     by_enforcement: bool,
 }
 
-impl From<Outcome> for Refused {
-    fn from(outcome: Outcome) -> Self {
+impl From<RemoteBuildFailure> for Refused {
+    fn from(failure: RemoteBuildFailure) -> Self {
         Self {
-            outcome,
+            failure,
             by_enforcement: false,
         }
     }
@@ -181,7 +175,7 @@ async fn open_and_admit(
     sender.send(start).await.expect("request receiver is owned");
     let target = MachineTarget::from(&machine_id);
     let mut responses = match tokio::time::timeout(
-        Duration::from_secs(10),
+        TIMING.admission_wait,
         client.open_stream::<op::Build>(Some(&target), ReceiverStream::new(receiver)),
     )
     .await
@@ -192,7 +186,7 @@ async fn open_and_admit(
             // An enforcing Machine's refusal is a sentence of its own, not a failure to reach it.
             if crate::connect::refused_by_enforcement(&refusal, ployz_core::BUILD_CAPABILITY) {
                 return Err(Refused {
-                    outcome: failed(Stage::Admission, refusal.message),
+                    failure: failed(Stage::Admission, refusal.message),
                     by_enforcement: true,
                 });
             }
@@ -213,8 +207,15 @@ async fn open_and_admit(
             .into());
         }
     };
+    let invalid_response = || {
+        failed(
+            Stage::Admission,
+            "invalid Build admission response; source was not uploaded",
+        )
+        .with_work(evidence.clone())
+    };
     let waiting_since = tokio::time::Instant::now();
-    let mut admission_deadline = waiting_since + Duration::from_secs(10);
+    let mut admission_deadline = waiting_since + TIMING.admission_wait;
     let mut queued = false;
     let active_timeout = loop {
         tokio::select! {
@@ -227,15 +228,15 @@ async fn open_and_admit(
             result = responses.message() => match result {
                 Ok(Some(payload)) => match remote::decode::<Event>(&payload) {
                     Ok(Event::Admitted { machine_id: admitted, active_timeout })
-                        if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= Duration::from_secs(86400) => break active_timeout,
+                        if admitted == machine_id && !active_timeout.is_zero() && active_timeout <= TIMING.max_policy_timeout => break active_timeout,
                     Ok(Event::Progress(Progress::Stage(Stage::Queued))) if !queued => {
                         queued = true;
                         // The Machine's validated local policy is bounded at 24h.
-                        admission_deadline = waiting_since + Duration::from_secs(86410);
+                        admission_deadline = waiting_since + TIMING.queued_admission_wait();
                         progress(Progress::Stage(Stage::Queued));
                     }
-                    Ok(Event::Finished(outcome @ (Outcome::Failed { .. } | Outcome::Unknown { .. }))) => return Err(outcome.with_work(evidence.clone()).into()),
-                    _ => return Err(failed(Stage::Admission, "invalid Build admission response; source was not uploaded").with_work(evidence.clone()).into()),
+                    Ok(Event::Finished(outcome)) => return Err(RemoteBuildFailure::try_from(outcome).map(|failure| failure.with_work(evidence.clone())).unwrap_or_else(|_| invalid_response()).into()),
+                    _ => return Err(invalid_response().into()),
                 },
                 Ok(None) => return Err(failed(Stage::Admission, "Build stream ended before admission; source was not uploaded").with_work(evidence.clone()).into()),
                 Err(status) => return Err(failed(Stage::Admission, format!("{}; source was not uploaded", disconnected(status))).with_work(evidence.clone()).into()),
@@ -264,7 +265,7 @@ async fn execute_attempt(
     if let Err(error) =
         remote::validate_capture(inputs.root(), &definition, remote::SealedFiles::Pending)
     {
-        return Completion::Report(
+        return Completion::Failed(
             failed(Stage::Preparation, error.to_string()).with_work(evidence),
         );
     }
@@ -292,7 +293,7 @@ async fn execute_attempt(
         active_timeout,
     } = match admitted {
         Ok(admitted) => admitted,
-        Err(Refused { outcome, .. }) => return Completion::Report(outcome),
+        Err(Refused { failure, .. }) => return Completion::Failed(failure),
     };
     let mut retained = None;
     let outcome = async {
@@ -321,7 +322,7 @@ async fn execute_attempt(
         let mut uploaded = false;
         let mut cancelling = false;
         let mut stage = Stage::Upload;
-        let mut deadline = tokio::time::Instant::now() + active_timeout + Duration::from_secs(70);
+        let mut deadline = tokio::time::Instant::now() + TIMING.result_wait(active_timeout);
         loop {
             tokio::select! {
                 result = responses.message() => match result {
@@ -332,52 +333,48 @@ async fn execute_attempt(
                             progress(event);
                         }
                         Ok(Event::Finished(outcome)) => {
-                            let outcome = validate_outcome(outcome, machine_id, expected, evidence);
-                            if matches!(outcome, Outcome::Images { .. }) { retained = Some(responses); }
-                            return outcome;
+                            let validated = validate_outcome(outcome, machine_id, expected, evidence);
+                            if validated.is_ok() { retained = Some(responses); }
+                            return validated;
                         },
-                        _ => return unknown(stage, "invalid Build response; termination was not confirmed").with_work(evidence),
+                        _ => return Err(unknown(stage, "invalid Build response; termination was not confirmed").with_work(evidence)),
                     },
-                    Ok(None) => return unknown(stage, "Build stream ended without a result; termination was not confirmed").with_work(evidence),
-                    Err(status) => return unknown(stage, format!("{}; termination was not confirmed", disconnected(status))).with_work(evidence),
+                    Ok(None) => return Err(unknown(stage, "Build stream ended without a result; termination was not confirmed").with_work(evidence)),
+                    Err(status) => return Err(unknown(stage, format!("{}; termination was not confirmed", disconnected(status))).with_work(evidence)),
                 },
                 result = &mut upload, if !uploaded => {
                     uploaded = true;
                     if !matches!(result, Ok(Ok(()))) && !cancelling {
                         cancelling = true;
-                        deadline = tokio::time::Instant::now() + Duration::from_secs(70);
+                        deadline = tokio::time::Instant::now() + TIMING.termination_grace;
                         // The capture cannot be completed; ask the host to release
                         // admission and wait for its typed termination evidence.
                         if send_cancellation(&sender).await.is_err() {
-                            return unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence);
+                            return Err(unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence));
                         }
                     }
                 },
                 () = cancellation.cancelled(), if !cancelling => {
                     cancelling = true;
-                    deadline = tokio::time::Instant::now() + Duration::from_secs(70);
+                    deadline = tokio::time::Instant::now() + TIMING.termination_grace;
                     // Stop the producer first so cancellation cannot sit behind an
                     // unbounded upload. Only two bounded frames can be in flight.
                     if send_cancellation(&sender).await.is_err() {
-                        return unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence);
+                        return Err(unknown(stage, "Build cancellation could not be delivered; termination was not confirmed").with_work(evidence));
                     }
                 },
-                () = tokio::time::sleep_until(deadline) => return unknown(stage, "Build response deadline expired; termination was not confirmed").with_work(evidence),
+                () = tokio::time::sleep_until(deadline) => return Err(unknown(stage, "Build response deadline expired; termination was not confirmed").with_work(evidence)),
             }
         }
     }.await;
     match outcome {
-        Outcome::Images { images, .. } => Completion::Images {
+        Ok(images) => Completion::Images {
             images,
             stream: Arc::new(Mutex::new(
                 retained.expect("validated loaded images retain their response stream"),
             )),
         },
-        outcome @ (Outcome::CapabilitiesChecked { .. }
-        | Outcome::Validated { .. }
-        | Outcome::Published { .. }
-        | Outcome::Failed { .. }
-        | Outcome::Unknown { .. }) => Completion::Report(outcome),
+        Err(failure) => Completion::Failed(failure),
     }
 }
 
@@ -392,14 +389,14 @@ async fn send_cancellation(
 }
 
 fn validate_outcome(
-    mut outcome: Outcome,
+    outcome: Outcome,
     expected: MachineId,
     count: usize,
     evidence: ployz_build::WorkEvidence,
-) -> Outcome {
-    match &outcome {
+) -> Result<Vec<ployz_build::BuiltImage>, RemoteBuildFailure> {
+    match outcome {
         Outcome::Images { machine_id, images }
-            if *machine_id == expected && images.len() == count =>
+            if machine_id == expected && images.len() == count =>
         {
             if images.iter().any(|image| {
                 ployz_core::ReportedImageDigest::parse(image.reference.as_str()).is_err()
@@ -410,31 +407,52 @@ fn validate_outcome(
                         .iter()
                         .any(|platform| !remote::linux_platform(platform))
             }) {
-                return unknown(
+                return Err(unknown(
                     Stage::Output,
                     "Build returned an invalid image identity or platform",
                 )
-                .with_work(evidence);
+                .with_work(evidence));
             }
+            Ok(images)
         }
-        Outcome::Failed { .. } | Outcome::Unknown { .. } => {}
+        Outcome::Failed {
+            stage,
+            message,
+            work,
+        } => Err(RemoteBuildFailure::Failed {
+            stage,
+            message,
+            work: observed_first(work, evidence),
+        }),
+        Outcome::Unknown {
+            stage,
+            message,
+            work,
+        } => Err(RemoteBuildFailure::Unknown {
+            stage,
+            message,
+            work: observed_first(work, evidence),
+        }),
         Outcome::CapabilitiesChecked { .. }
         | Outcome::Images { .. }
         | Outcome::Validated { .. }
-        | Outcome::Published { .. } => {
-            return unknown(
-                Stage::Output,
-                "Build result does not match the admitted request",
-            )
-            .with_work(evidence);
-        }
+        | Outcome::Published { .. } => Err(unknown(
+            Stage::Output,
+            "Build result does not match the admitted request",
+        )
+        .with_work(evidence)),
     }
-    if let Outcome::Failed { work, .. } | Outcome::Unknown { work, .. } = &mut outcome {
-        for (name, observed) in evidence.0 {
-            work.0.entry(name).or_insert(observed);
-        }
+}
+
+/// `work` as the Build Machine reported it, plus what this client saw of the targets it left out.
+fn observed_first(
+    mut work: ployz_build::WorkEvidence,
+    observed: ployz_build::WorkEvidence,
+) -> ployz_build::WorkEvidence {
+    for (name, seen) in observed.0 {
+        work.0.entry(name).or_insert(seen);
     }
-    outcome
+    work
 }
 
 fn disconnected(status: tonic::Status) -> String {
@@ -444,15 +462,15 @@ fn disconnected(status: tonic::Status) -> String {
     )
 }
 
-pub(super) fn failed(stage: Stage, message: impl Into<String>) -> Outcome {
-    Outcome::Failed {
+pub(super) fn failed(stage: Stage, message: impl Into<String>) -> RemoteBuildFailure {
+    RemoteBuildFailure::Failed {
         work: Default::default(),
         stage,
         message: message.into(),
     }
 }
-fn unknown(stage: Stage, message: impl Into<String>) -> Outcome {
-    Outcome::Unknown {
+fn unknown(stage: Stage, message: impl Into<String>) -> RemoteBuildFailure {
+    RemoteBuildFailure::Unknown {
         work: Default::default(),
         stage,
         message: message.into(),
@@ -496,7 +514,7 @@ mod tests {
                 }],
             },
         ] {
-            let Outcome::Unknown { work: retained, .. } =
+            let Err(RemoteBuildFailure::Unknown { work: retained, .. }) =
                 validate_outcome(outcome, machine_id, 1, work.clone())
             else {
                 panic!("malformed success was accepted")
@@ -508,7 +526,7 @@ mod tests {
             format!("sha256:{}g", "1".repeat(63)),
             "1".repeat(64),
         ] {
-            let Outcome::Unknown { message, .. } = validate_outcome(
+            let Err(RemoteBuildFailure::Unknown { message, .. }) = validate_outcome(
                 Outcome::Images {
                     machine_id,
                     images: vec![BuiltImage {
@@ -533,7 +551,7 @@ mod tests {
             format!("sha256:{}", "A".repeat(64)),
             format!("sha256:{}", "aB1".repeat(21) + "f"),
         ] {
-            let Outcome::Images { images, .. } = validate_outcome(
+            let Ok(images) = validate_outcome(
                 Outcome::Images {
                     machine_id,
                     images: vec![BuiltImage {
@@ -590,7 +608,7 @@ mod tests {
         })
         .await;
         let Err(Refused {
-            outcome: Outcome::Failed { stage, message, .. },
+            failure: RemoteBuildFailure::Failed { stage, message, .. },
             ..
         }) = open_and_admit(
             &client,

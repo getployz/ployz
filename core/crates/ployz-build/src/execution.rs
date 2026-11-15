@@ -178,7 +178,7 @@ impl HostPolicy {
                 .queue_timeout
                 .iter()
                 .chain([&self.active_timeout])
-                .any(|timeout| timeout.is_zero() || *timeout > Duration::from_secs(86400))
+                .any(|timeout| timeout.is_zero() || *timeout > crate::TIMING.max_policy_timeout)
         {
             return Err(BuildError::Prerequisite("Build policy requires queue capacity 0–1024 and positive timeouts no greater than 86400 seconds".into()));
         }
