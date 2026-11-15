@@ -70,11 +70,6 @@ pub const CLOUDFLARE_RANGES: [&str; 22] = [
 pub fn tunnel_origin_listener() -> String {
     format!("unix/{INGRESS_RUNTIME_MOUNT}/tunnel/{TUNNEL_ORIGIN_SOCKET}|0222")
 }
-/// Why a Machine orders no certificate while every Server uses the Tunnel Door. The
-/// daemon records it on each wanted hostname, and a domain's status reads it back.
-pub const TUNNEL_SERVES_CERTIFICATE: &str =
-    "Cloudflare serves the certificate while every Server uses the Tunnel Door";
-
 /// The origin the connector proxies every request to: the Tunnel Origin's listener,
 /// which a tunnel managed in Cloudflare's dashboard names as `http://localhost:8480`.
 #[must_use]

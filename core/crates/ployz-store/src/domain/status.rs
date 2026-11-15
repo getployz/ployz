@@ -161,8 +161,7 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
     let certificate = observed.flatten();
     // DNS points at Cloudflare and port 80 is closed on purpose, so neither applies.
     if certificate.is_some_and(|certificate| {
-        certificate.status == CertificateAvailability::Failure
-            && certificate.last_error.as_deref() == Some(ployz_core::TUNNEL_SERVES_CERTIFICATE)
+        certificate.hold() == Some(ployz_core::CertificateHold::TunnelServes)
     }) {
         return (DomainStatus::Ready, Some("via tunnel".to_owned()), None);
     }
@@ -609,7 +608,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({
                 "hostname": "app.example.com",
                 "status": "failure",
-                "last_error": ployz_core::TUNNEL_SERVES_CERTIFICATE,
+                "last_error": ployz_core::CertificateHold::TunnelServes.sentence(),
                 "backoff": null,
             }))
             .unwrap(),
