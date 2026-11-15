@@ -9,11 +9,12 @@ use ployz_core::host_preparation::{PrepSteps, StateError, read_state};
 
 use super::host::PROBE_TIMEOUT;
 use super::paths::Paths;
-use super::probe::{self, Probes};
-use super::status::{LocalCheckin, Refusal, Seen, record};
-use super::wire::{Answer, CheckinRequest, PrepRecord, host_report};
+use super::probe::{self, Handout, Probes};
+use super::status::{LocalCheckin, Recalled, Refusal, Seen, record};
+use super::wire::{Answer, CheckinRequest, HostReport, PrepRecord, Wait, host_report};
 use super::{
-    Attempt, CheckinClient, CheckinKey, Hold, Host, Issue, StopReason, client, enroll, unit,
+    Attempt, CheckinClient, CheckinKey, EnrollInstruction, Hold, Host, Issue, Prep, StopReason,
+    client, enroll, unit,
 };
 
 pub(super) const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
@@ -28,13 +29,12 @@ const STALE_PLOYZD: &str = "ployzd_outdated";
 const IN_ANOTHER_CLUSTER: &str = "in_another_cluster";
 const WIREGUARD_PORT_IN_USE: &str = "wireguard_port_in_use";
 
+/// What the loop does after a pass that did not join this host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Next {
     Wait {
         after: Duration,
     },
-    /// Cloud has an enrollment ready. Only an install pass answers this, and leaves it to the loop.
-    Enrolling,
     Retry {
         after: Duration,
         why: String,
@@ -50,7 +50,50 @@ pub(crate) enum Next {
     Stop(StopReason, String),
     ClockOff(String),
     NotCloud(String),
-    Enrolled,
+}
+
+/// How a pass of the loop ended.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Pass {
+    Next(Next),
+    /// This host joined: the pass saw it had, or ran the enrollment that did it.
+    Joined,
+}
+
+/// What an explicit `--install` pass got back. Cloud's enrollment is the loop's to run, so the
+/// install only learns that it is ready.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Posted {
+    Said(Next),
+    EnrollReady,
+}
+
+impl From<Next> for Posted {
+    fn from(next: Next) -> Self {
+        Self::Said(next)
+    }
+}
+
+#[cfg(test)]
+impl Posted {
+    /// The `Next` of a pass that was not ready to enroll.
+    pub(crate) fn next(self) -> Next {
+        match self {
+            Self::Said(next) => next,
+            Self::EnrollReady => panic!("Cloud was ready to enroll"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Pass {
+    /// The `Next` of a pass that did not join.
+    pub(crate) fn next(self) -> Next {
+        match self {
+            Self::Next(next) => next,
+            Self::Joined => panic!("the pass joined this host"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -61,34 +104,66 @@ pub(crate) async fn pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(
+    pass_with(
         host,
         client,
         key,
         paths,
         now,
-        false,
         &mut Probes::load(paths.probe(), host.binder()),
     )
     .await
+}
+
+#[cfg(test)]
+pub(crate) async fn passed<H: Host>(
+    host: &H,
+    client: &mut CheckinClient,
+    key: &CheckinKey,
+    paths: &Paths,
+    now: DateTime<Utc>,
+) -> Pass {
+    loop_pass(
+        host,
+        client,
+        key,
+        paths,
+        now,
+        &mut Probes::load(paths.probe(), host.binder()),
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn pass_with<H: Host>(
+    host: &H,
+    client: &mut CheckinClient,
+    key: &CheckinKey,
+    paths: &Paths,
+    now: DateTime<Utc>,
+    probes: &mut Probes,
+) -> Next {
+    loop_pass(host, client, key, paths, now, probes)
+        .await
+        .next()
 }
 
 /// What an explicit `--install` pass got back, and what it saw for status.json. The install
 /// records `seen` only once it keeps the token sent: a replacement Cloud didn't take leaves the
 /// held token's status, and its enrollment, as they were.
 pub(crate) struct InstallPass {
-    pub(crate) next: Next,
+    pub(crate) posted: Posted,
     pub(crate) seen: Option<LocalCheckin>,
 }
 
 #[cfg(test)]
 impl InstallPass {
     /// Records what the pass saw, as a pass the install keeps does.
-    pub(crate) fn record(self, paths: &Paths) -> Next {
+    pub(crate) fn record(self, paths: &Paths) -> Posted {
         if let Some(seen) = &self.seen {
             record(seen, paths);
         }
-        self.next
+        self.posted
     }
 }
 
@@ -106,61 +181,342 @@ pub(crate) async fn install_pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> InstallPass {
-    let (next, seen) = check_in(
+    install_pass_with(
         host,
         client,
         key,
         paths,
         now,
-        true,
         &mut Probes::load(paths.probe(), host.binder()),
     )
-    .await;
-    InstallPass { next, seen }
+    .await
 }
 
-pub(super) async fn pass_from<H: Host>(
+pub(super) async fn install_pass_with<H: Host>(
     host: &H,
     client: &mut CheckinClient,
     key: &CheckinKey,
     paths: &Paths,
     now: DateTime<Utc>,
-    installing: bool,
     probes: &mut Probes,
-) -> Next {
-    let (next, seen) = check_in(host, client, key, paths, now, installing, probes).await;
-    if let Some(seen) = seen {
-        record(&seen, paths);
+) -> InstallPass {
+    let start = Start {
+        mode: Mode::Install,
+        recalled: Recalled::of(LocalCheckin::recall(&paths.status()), &client.fingerprint()),
+    };
+    let exchange = match exchange(host, client, key, paths, now, start, probes).await {
+        Ok(exchange) => exchange,
+        Err(unprobed) => {
+            return InstallPass {
+                posted: unprobed.next.into(),
+                seen: Some(unprobed.status),
+            };
+        }
+    };
+    let Exchange {
+        mut status,
+        heard,
+        sent,
+        ..
+    } = exchange;
+    let posted = match heard {
+        Heard::Wait(wait) => waiting(&mut status, wait).into(),
+        Heard::Probe(wait, handout) => {
+            probes.open(handout, key, sent).await;
+            crate::ui::note(format!(
+                "Listening on the probe ports for up to {}s.",
+                probe::WINDOW_CAP.as_secs()
+            ));
+            probes.finish().await;
+            status.waited(wait);
+            Next::Wait { after: wait.after }.into()
+        }
+        Heard::Enroll(_) => {
+            probes.close().await;
+            status.view.answer = Seen::Wait;
+            Posted::EnrollReady
+        }
+        Heard::Verdict(verdict) => {
+            let next = verdict.write(&mut status);
+            if matches!(next, Next::Stop(..)) {
+                probes.close().await;
+            }
+            next.into()
+        }
+    };
+    InstallPass {
+        posted,
+        seen: Some(status),
     }
-    next
 }
 
-/// One check-in, and the status it saw. No status means an enroll attempt ran and recorded its
-/// own.
-async fn check_in<H: Host>(
+/// One pass of the check-in loop, which records what it saw. A host Cloud's enrollment already
+/// joined ends the pass before it asks anything of the host or Cloud.
+pub(super) async fn loop_pass<H: Host>(
     host: &H,
     client: &mut CheckinClient,
     key: &CheckinKey,
     paths: &Paths,
     now: DateTime<Utc>,
-    installing: bool,
     probes: &mut Probes,
-) -> (Next, Option<LocalCheckin>) {
-    let previous = LocalCheckin::read(&paths.status()).ok().flatten();
-    let enrollment = previous.as_ref().filter(|status| {
-        status.token_fingerprint.as_deref() == Some(client.fingerprint().as_str())
-    });
-    if !installing && enrollment.is_some_and(|status| status.answer == Seen::Joined) {
-        return (Next::Enrolled, None);
+) -> Pass {
+    let recalled = Recalled::of(LocalCheckin::recall(&paths.status()), &client.fingerprint());
+    if recalled.joined {
+        return Pass::Joined;
     }
-    let refusal = previous
-        .as_ref()
-        .filter(|status| status.answer == Seen::Refused)
-        .and_then(|status| status.refused.clone())
-        .filter(|refusal| refusal.token == client.fingerprint());
-    let mut prepare_retries = previous.as_ref().map_or(0, |status| status.prepare_retries);
-    let attempt = enrollment.and_then(|status| status.attempt.clone());
-    let mut prepare_started = previous.and_then(|status| status.prepare_started);
+    let start = Start {
+        mode: Mode::Loop,
+        recalled,
+    };
+    let exchange = match exchange(host, client, key, paths, now, start, probes).await {
+        Ok(exchange) => exchange,
+        Err(unprobed) => {
+            record(&unprobed.status, paths);
+            return Pass::Next(unprobed.next);
+        }
+    };
+    let Exchange {
+        mut status,
+        report,
+        prep,
+        heard,
+        sent,
+    } = exchange;
+    let pass = match heard {
+        Heard::Wait(_) if joined(host, status.memory.attempt.as_ref()).await => {
+            status.view.answer = Seen::Joined;
+            Pass::Joined
+        }
+        Heard::Wait(wait) => Pass::Next(waiting(&mut status, wait)),
+        Heard::Probe(wait, handout) => {
+            probes.open(handout, key, sent).await;
+            status.waited(wait);
+            Pass::Next(Next::Wait { after: wait.after })
+        }
+        Heard::Enroll(instruction) => {
+            probes.close().await;
+            return enroll::attempt(
+                host,
+                client,
+                key,
+                paths,
+                &enroll::Report {
+                    report: &report,
+                    prep,
+                },
+                &instruction,
+                status,
+            )
+            .await;
+        }
+        Heard::Verdict(verdict) => Pass::Next(verdict.write(&mut status)),
+    };
+    if matches!(pass, Pass::Joined | Pass::Next(Next::Stop(..))) {
+        probes.close().await;
+    }
+    record(&status, paths);
+    pass
+}
+
+/// Whether a pass is the loop's own or the one an explicit `--install` makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Loop,
+    Install,
+}
+
+/// How a pass starts: its mode, and what it recalls of the record the last pass left.
+struct Start {
+    mode: Mode,
+    recalled: Recalled,
+}
+
+/// A pass that got as far as posting, and what Cloud answered.
+struct Exchange {
+    status: LocalCheckin,
+    report: HostReport,
+    prep: Prep,
+    heard: Heard,
+    sent: tokio::time::Instant,
+}
+
+/// A pass that never reached Cloud, since the host's probe failed.
+struct Unprobed {
+    next: Next,
+    status: LocalCheckin,
+}
+
+/// What Cloud's reply asks of the pass. A wait, a probe window and an enrollment mean something
+/// different to the loop and to an install; every other reply is a [`Verdict`] either would reach.
+enum Heard {
+    Wait(Wait),
+    Probe(Wait, Handout),
+    Enroll(Box<EnrollInstruction>),
+    Verdict(Verdict),
+}
+
+/// What a reply that ends the pass the same way in either mode says: what `ployz status` shows,
+/// and what the loop does next.
+struct Verdict {
+    seen: Seen,
+    reason: Option<StopReason>,
+    message: String,
+    refused: Option<Refusal>,
+    next: Next,
+}
+
+impl Verdict {
+    fn said(seen: Seen, message: String, next: Next) -> Self {
+        Self {
+            seen,
+            reason: None,
+            message,
+            refused: None,
+            next,
+        }
+    }
+
+    fn stop(reason: StopReason, message: String) -> Self {
+        Self {
+            reason: Some(reason),
+            ..Self::said(Seen::Stop, message.clone(), Next::Stop(reason, message))
+        }
+    }
+
+    /// Cloud's refusal of this token, dated `date`. A second one, dated BACKOFF after the first
+    /// within [`REFUSAL_SPAN`], confirms it.
+    fn refused(date: DateTime<Utc>, refusal: Option<Refusal>, fingerprint: &str) -> Self {
+        let since = |first: &Refusal| date.signed_duration_since(first.date).to_std();
+        let first = refusal
+            .filter(|first| since(first).is_ok_and(|gap| gap <= REFUSAL_SPAN))
+            .unwrap_or_else(|| Refusal {
+                token: fingerprint.to_owned(),
+                date,
+            });
+        let waited = since(&first).unwrap_or_default();
+        if waited >= client::BACKOFF {
+            Self::stop(StopReason::TokenRevoked, REVOKED.to_owned())
+        } else {
+            Self {
+                refused: Some(first),
+                ..Self::said(
+                    Seen::Refused,
+                    REFUSED_ONCE.to_owned(),
+                    Next::RefusedOnce {
+                        after: client::BACKOFF
+                            .saturating_sub(waited)
+                            .max(Duration::from_secs(1)),
+                    },
+                )
+            }
+        }
+    }
+
+    /// A failed post. A report still owed retries sooner after a failure, but never sooner than a
+    /// Retry-After asked: the caller passes the wait it settled on.
+    fn unreachable(after: Duration, why: String) -> Self {
+        Self::said(
+            Seen::Unreachable,
+            why.clone(),
+            Next::Retry {
+                after,
+                why: format!(
+                    "Could not reach Ployz Cloud: {}.",
+                    why.trim_end_matches('.')
+                ),
+            },
+        )
+    }
+
+    /// Writes what the pass saw into `status` and returns what to do next.
+    fn write(self, status: &mut LocalCheckin) -> Next {
+        status.view.answer = self.seen;
+        status.view.reason = self.reason;
+        status.view.message = Some(self.message);
+        status.memory.refused = self.refused;
+        self.next
+    }
+}
+
+/// Sorts what Cloud answered by what it asks of the pass.
+fn hear(
+    reply: client::Reply,
+    refusal: Option<Refusal>,
+    fingerprint: &str,
+    probes: &Probes,
+) -> Heard {
+    let verdict = match reply {
+        client::Reply::Answer(Answer::Wait(wait)) => return Heard::Wait(wait),
+        client::Reply::Answer(Answer::Probe(wait, handout)) => return Heard::Probe(wait, handout),
+        client::Reply::Answer(Answer::Enroll(instruction)) => return Heard::Enroll(instruction),
+        client::Reply::Answer(Answer::Stop(reason, message)) => Verdict::stop(reason, message),
+        client::Reply::Refused(date) => Verdict::refused(date, refusal, fingerprint),
+        client::Reply::Held(after, hold, why) => Verdict::said(
+            Seen::Held,
+            why.clone(),
+            Next::Held {
+                after,
+                hold,
+                why: format!("Cloud held this check-in back: {why}"),
+            },
+        ),
+        client::Reply::Unreachable(after, why) => {
+            Verdict::unreachable(probes.retry_after(after), why)
+        }
+        client::Reply::Throttled(after, why) => Verdict::unreachable(after, why),
+        client::Reply::NotCloud(why) => {
+            Verdict::said(Seen::NotCloud, why.clone(), Next::NotCloud(why))
+        }
+        client::Reply::ClockOff(why) => {
+            Verdict::said(Seen::ClockOff, why.clone(), Next::ClockOff(why))
+        }
+        client::Reply::Outdated(why) => Verdict::said(
+            Seen::Outdated,
+            why.clone(),
+            Next::Retry {
+                after: client::OUTDATED_BACKOFF,
+                why: format!("{why}."),
+            },
+        ),
+    };
+    Heard::Verdict(verdict)
+}
+
+/// A wait Cloud answered, which says why when the enroll attempt it follows failed.
+fn waiting(status: &mut LocalCheckin, wait: Wait) -> Next {
+    status.waited(wait);
+    if status.enroll_failed() {
+        status.view.message = status
+            .memory
+            .attempt
+            .as_ref()
+            .and_then(|attempt| attempt.failure.as_ref())
+            .map(enroll::failure_line);
+    }
+    Next::Wait { after: wait.after }
+}
+
+/// The steps both modes share: read the host and its preparation, probe it, post the check-in and
+/// sort Cloud's reply.
+async fn exchange<H: Host>(
+    host: &H,
+    client: &mut CheckinClient,
+    key: &CheckinKey,
+    paths: &Paths,
+    now: DateTime<Utc>,
+    start: Start,
+    probes: &mut Probes,
+) -> Result<Exchange, Unprobed> {
+    let Start {
+        mode,
+        recalled: Recalled {
+            mut memory,
+            refusal,
+            ..
+        },
+    } = start;
+    let installing = mode == Mode::Install;
+    let fingerprint = client.fingerprint();
     let stale = host.stale_ployzd().map(|message| Issue {
         code: STALE_PLOYZD.to_owned(),
         message,
@@ -175,8 +531,8 @@ async fn check_in<H: Host>(
         state.as_ref(),
         written.flatten(),
         liveness,
-        prepare_retries,
-        prepare_started,
+        memory.prepare_retries,
+        memory.prepare_started,
         now,
     );
     let mut preparing = liveness == Liveness::Live;
@@ -184,16 +540,7 @@ async fn check_in<H: Host>(
     let run = if stale.is_some() || installing {
         None
     } else {
-        match preparation {
-            Preparation::NotStarted => Some(PrepareRun::Start),
-            Preparation::RetryDue => Some(PrepareRun::Retry),
-            Preparation::Running
-            | Preparation::Unknown
-            | Preparation::DiedMidStep
-            | Preparation::Failed
-            | Preparation::Finished
-            | Preparation::GaveUp => None,
-        }
+        preparation.run()
     };
     if let Some(run) = run {
         match host.start_prepare().await {
@@ -201,33 +548,22 @@ async fn check_in<H: Host>(
                 // The run just started may already be installing Docker before the probe below.
                 // This pass printed its notes above.
                 preparing = observe_liveness(host, paths).await.0 == Liveness::Live;
-                prepare_started = Some(now);
+                memory.prepare_started = Some(now);
                 if run == PrepareRun::Retry {
-                    prepare_retries += 1;
+                    memory.prepare_retries += 1;
                 }
             }
             Err(why) => crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE)),
         }
     }
     let gave_up = preparation == Preparation::GaveUp && !installing;
+    let prepare_started = memory.prepare_started;
     let state = state.unwrap_or_default();
     let prep = state.prep(gave_up);
-    let mut status = LocalCheckin {
-        answer: Seen::ProbeFailed,
-        token_fingerprint: Some(client.fingerprint()),
-        reason: None,
-        message: None,
-        at: now,
-        prep: Some(prep),
-        blockers: Vec::new(),
-        prepare_retries,
-        prepare_started,
-        refused: None,
-        attempt,
-        no_cluster: false,
-    };
-    status.blockers.extend(stale.clone());
-    let member = if status.attempt.is_none() {
+    let mut status = LocalCheckin::new(Seen::ProbeFailed, now, memory);
+    status.view.prep = Some(prep);
+    status.view.blockers.extend(stale.clone());
+    let member = if status.memory.attempt.is_none() {
         host.participating().await.map(|name| Issue {
             code: IN_ANOTHER_CLUSTER.to_owned(),
             message: format!(
@@ -237,7 +573,7 @@ async fn check_in<H: Host>(
     } else {
         None
     };
-    status.blockers.extend(member.clone());
+    status.view.blockers.extend(member.clone());
     // Someone else on WireGuard's port leaves ployzd crash-looping once it starts.
     let port_taken = host.wireguard_port_holder().map(|holder| Issue {
         code: WIREGUARD_PORT_IN_USE.to_owned(),
@@ -247,7 +583,7 @@ async fn check_in<H: Host>(
             ployz_core::WIREGUARD_PORT
         ),
     });
-    status.blockers.extend(port_taken.clone());
+    status.view.blockers.extend(port_taken.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
         .await
         .unwrap_or_else(|_| {
@@ -259,12 +595,12 @@ async fn check_in<H: Host>(
     let probe = match probed {
         Ok(probe) => probe,
         Err(why) => {
-            status.message = Some(why.clone());
+            status.view.message = Some(why.clone());
             let next = Next::Retry {
                 after: probes.retry_after(client::BACKOFF),
                 why: format!("Could not probe this server: {why}."),
             };
-            return (next, Some(status));
+            return Err(Unprobed { next, status });
         }
     };
     let mut report = host_report(
@@ -278,7 +614,7 @@ async fn check_in<H: Host>(
     report.blockers.extend(stale);
     report.blockers.extend(member);
     report.blockers.extend(port_taken);
-    status.blockers.clone_from(&report.blockers);
+    status.view.blockers.clone_from(&report.blockers);
     let request = CheckinRequest {
         protocol_version: CHECKIN_PROTOCOL_VERSION,
         checkin_key: key.public_hex(),
@@ -286,7 +622,7 @@ async fn check_in<H: Host>(
         enroll_options: ENROLL_OPTIONS,
         report: &report,
         prep: Some(prep),
-        attempt: status.attempt.as_ref(),
+        attempt: status.memory.attempt.as_ref(),
         probe: probes.report().await,
     };
     let sent = tokio::time::Instant::now();
@@ -294,139 +630,14 @@ async fn check_in<H: Host>(
     if request.probe.is_some() && matches!(&reply, client::Reply::Answer(_)) {
         probes.reported();
     }
-    let throttled = matches!(reply, client::Reply::Throttled(..));
-    let next = match reply {
-        client::Reply::Answer(Answer::Wait(_))
-            if !installing && joined(host, status.attempt.as_ref()).await =>
-        {
-            status.answer = Seen::Joined;
-            Next::Enrolled
-        }
-        client::Reply::Answer(Answer::Wait(wait)) => {
-            status.waited(wait);
-            if status.enroll_failed() {
-                status.message = status
-                    .attempt
-                    .as_ref()
-                    .and_then(|attempt| attempt.failure.as_ref())
-                    .map(enroll::failure_line);
-            }
-            Next::Wait { after: wait.after }
-        }
-        client::Reply::Answer(Answer::Probe(wait, handout)) => {
-            probes.open(handout, key, sent).await;
-            if installing {
-                crate::ui::note(format!(
-                    "Listening on the probe ports for up to {}s.",
-                    probe::WINDOW_CAP.as_secs()
-                ));
-                probes.finish().await;
-            }
-            status.waited(wait);
-            Next::Wait { after: wait.after }
-        }
-        client::Reply::Answer(Answer::Enroll(_)) if installing => {
-            probes.close().await;
-            status.answer = Seen::Wait;
-            Next::Enrolling
-        }
-        client::Reply::Answer(Answer::Enroll(instruction)) => {
-            probes.close().await;
-            let next = enroll::attempt(
-                host,
-                client,
-                key,
-                paths,
-                &enroll::Report {
-                    report: &report,
-                    prep,
-                },
-                &instruction,
-                status,
-            )
-            .await;
-            return (next, None);
-        }
-        client::Reply::Answer(Answer::Stop(reason, message)) => {
-            status.answer = Seen::Stop;
-            status.reason = Some(reason);
-            status.message = Some(message.clone());
-            Next::Stop(reason, message)
-        }
-        client::Reply::Refused(date) => {
-            let since = |first: &Refusal| date.signed_duration_since(first.date).to_std();
-            let first = refusal
-                .filter(|first| since(first).is_ok_and(|gap| gap <= REFUSAL_SPAN))
-                .unwrap_or_else(|| Refusal {
-                    token: client.fingerprint(),
-                    date,
-                });
-            let waited = since(&first).unwrap_or_default();
-            if waited >= client::BACKOFF {
-                status.answer = Seen::Stop;
-                status.reason = Some(StopReason::TokenRevoked);
-                status.message = Some(REVOKED.to_owned());
-                Next::Stop(StopReason::TokenRevoked, REVOKED.to_owned())
-            } else {
-                status.answer = Seen::Refused;
-                status.message = Some(REFUSED_ONCE.to_owned());
-                status.refused = Some(first);
-                Next::RefusedOnce {
-                    after: client::BACKOFF
-                        .saturating_sub(waited)
-                        .max(Duration::from_secs(1)),
-                }
-            }
-        }
-        client::Reply::Held(after, hold, why) => {
-            status.answer = Seen::Held;
-            status.message = Some(why.clone());
-            Next::Held {
-                after,
-                hold,
-                why: format!("Cloud held this check-in back: {why}"),
-            }
-        }
-        client::Reply::Unreachable(after, why) | client::Reply::Throttled(after, why) => {
-            // A report still owed retries sooner after a failure, but never sooner than a Retry-After asked.
-            let after = if throttled {
-                after
-            } else {
-                probes.retry_after(after)
-            };
-            status.answer = Seen::Unreachable;
-            status.message = Some(why.clone());
-            Next::Retry {
-                after,
-                why: format!(
-                    "Could not reach Ployz Cloud: {}.",
-                    why.trim_end_matches('.')
-                ),
-            }
-        }
-        client::Reply::NotCloud(why) => {
-            status.answer = Seen::NotCloud;
-            status.message = Some(why.clone());
-            Next::NotCloud(why)
-        }
-        client::Reply::ClockOff(why) => {
-            status.answer = Seen::ClockOff;
-            status.message = Some(why.clone());
-            Next::ClockOff(why)
-        }
-        client::Reply::Outdated(why) => {
-            status.answer = Seen::Outdated;
-            status.message = Some(why.clone());
-            Next::Retry {
-                after: client::OUTDATED_BACKOFF,
-                why: format!("{why}."),
-            }
-        }
-    };
-    if matches!(next, Next::Stop(..) | Next::Enrolled) {
-        probes.close().await;
-    }
-    (next, Some(status))
+    let heard = hear(reply, refusal, &fingerprint, probes);
+    Ok(Exchange {
+        status,
+        report,
+        prep,
+        heard,
+        sent,
+    })
 }
 
 /// After Cloud answers an explicit `--install`: a failed or unfinished preparation starts over at
@@ -440,23 +651,17 @@ pub(crate) async fn restart_preparation<H: Host>(
     let (liveness, notes) = observe_liveness(host, paths).await;
     notes.into_iter().for_each(crate::ui::note);
     let (state, written) = read_prep_state(&paths.prepare_state).unzip();
-    let status = LocalCheckin::read(&paths.status()).ok().flatten();
+    let status = LocalCheckin::recall(&paths.status());
+    let memory = status.as_ref().map(|status| &status.memory);
     let preparation = preparation(
         state.as_ref(),
         written.flatten(),
         liveness,
-        status.as_ref().map_or(0, |status| status.prepare_retries),
-        status.as_ref().and_then(|status| status.prepare_started),
+        memory.map_or(0, |memory| memory.prepare_retries),
+        memory.and_then(|memory| memory.prepare_started),
         now,
     );
-    let settled = match preparation {
-        Preparation::Running | Preparation::Unknown | Preparation::Finished => true,
-        Preparation::NotStarted
-        | Preparation::DiedMidStep
-        | Preparation::Failed
-        | Preparation::RetryDue
-        | Preparation::GaveUp => false,
-    };
+    let settled = preparation.settled();
     if settled || host.stale_ployzd().is_some() {
         return false;
     }
@@ -576,6 +781,32 @@ pub(super) enum Preparation {
     RetryDue,
     /// The retries are spent, and a run stopped with a step unfinished.
     GaveUp,
+}
+
+impl Preparation {
+    /// The run this loop starts for it, if any.
+    fn run(self) -> Option<PrepareRun> {
+        match self {
+            Self::NotStarted => Some(PrepareRun::Start),
+            Self::RetryDue => Some(PrepareRun::Retry),
+            Self::Running
+            | Self::Unknown
+            | Self::DiedMidStep
+            | Self::Failed
+            | Self::Finished
+            | Self::GaveUp => None,
+        }
+    }
+
+    /// Whether an install leaves it alone: a run is live, may be, or finished.
+    fn settled(self) -> bool {
+        match self {
+            Self::Running | Self::Unknown | Self::Finished => true,
+            Self::NotStarted | Self::DiedMidStep | Self::Failed | Self::RetryDue | Self::GaveUp => {
+                false
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

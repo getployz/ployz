@@ -14,9 +14,9 @@ use ployz_core::RpcErrorCode;
 use super::client::key_failure;
 use super::token_file::{self, FleetToken, TokenFileLock};
 use super::{
-    CheckinClient, CheckinKey, Hold, Host, InstallPass, NO_CLUSTER, NO_CLUSTER_WHY, Next, Paths,
-    StopReason, System, install_pass, joined, loop_token, no_ployzd, record, restart_preparation,
-    systemctl, unit,
+    CheckinClient, CheckinKey, Hold, InstallPass, LoopControl, NO_CLUSTER, NO_CLUSTER_WHY, Next,
+    Paths, Posted, StopReason, System, install_pass, joined, loop_token, no_ployzd, probes_in_time,
+    record, restart_preparation, systemctl, unit,
 };
 use crate::failure::Failure;
 
@@ -52,7 +52,8 @@ pub(crate) async fn install(
     install_with: Install<'_>,
 ) -> Result<(), Failure> {
     let cloud_url = install_with.cloud_url;
-    let host = System::with(install_ployzd(paths, process_env::var_os("PATH").as_deref()).await?);
+    let ployzd = install_ployzd(paths, process_env::var_os("PATH").as_deref()).await?;
+    let host = System::new(ployzd, None, cloud_url);
     let ployz = process_env::current_exe().map_err(|error| {
         Failure::caused(
             RpcErrorCode::Internal,
@@ -74,7 +75,11 @@ pub(crate) async fn install(
     crate::ui::stream("Checking in");
     let pass = install_pass(&host, client, key, paths, Utc::now()).await;
     let mut seen = pass.seen.clone();
-    let joined = joined(&host, seen.as_ref().and_then(|seen| seen.attempt.as_ref())).await;
+    let joined = joined(
+        &host,
+        seen.as_ref().and_then(|seen| seen.memory.attempt.as_ref()),
+    )
+    .await;
     let answered = answer_install(pass, client, paths, install_with)?;
     unit::write(unit::CHECKIN, &checkin_unit)?;
     unit::write(unit::PREPARE, &prepare_unit)?;
@@ -90,12 +95,13 @@ pub(crate) async fn install(
     systemd(&["restart", unit::CHECKIN]).await?;
     if answered == Answered::Waiting {
         let blockers: Vec<String> = seen.as_ref().map_or_else(Vec::new, |seen| {
-            seen.blockers
+            seen.view
+                .blockers
                 .iter()
                 .map(|blocker| blocker.message.clone())
                 .collect()
         });
-        let no_cluster = seen.is_some_and(|seen| seen.no_cluster);
+        let no_cluster = seen.is_some_and(|seen| seen.view.no_cluster);
         for line in waiting_lines(joined, &blockers, no_cluster) {
             crate::ui::stream(line);
         }
@@ -138,7 +144,7 @@ pub(crate) fn answer_install(
         Token::Piped => Some(TokenFileLock::take(&paths.token_file)?),
         Token::InFile => None,
     };
-    let answered = keep_answered_token(pass.next, client, &paths.token_file, install_with);
+    let answered = keep_answered_token(pass.posted, client, &paths.token_file, install_with);
     if let Some(seen) = &pass.seen
         && !token_file::replaces(&paths.token_file, |held| client.sends(held)).unwrap_or(true)
     {
@@ -149,12 +155,18 @@ pub(crate) fn answer_install(
 
 /// A piped token is written here, so the caller holds `lock_token_file` around this.
 pub(crate) fn keep_answered_token(
-    next: Next,
+    posted: impl Into<Posted>,
     client: &CheckinClient,
     token_file: &Path,
     install_with: Install<'_>,
 ) -> Result<Answered, Failure> {
-    let answered = install_outcome(next, install_with)?;
+    let answered = match posted.into() {
+        Posted::Said(next) => install_outcome(next, install_with)?,
+        Posted::EnrollReady => {
+            crate::ui::note("Cloud is ready to enroll this server. The check-in loop runs it.");
+            Answered::Enrolling
+        }
+    };
     let unconfirmed = match &answered {
         Answered::Waiting | Answered::Enrolling => None,
         Answered::Unconfirmed(why) | Answered::Held(_, why) => Some(why),
@@ -202,11 +214,6 @@ pub(crate) fn install_outcome(next: Next, install_with: Install<'_>) -> Result<A
     let cloud_url = install_with.cloud_url;
     match next {
         Next::Wait { .. } => Ok(Answered::Waiting),
-        Next::Enrolling => {
-            crate::ui::note("Cloud is ready to enroll this server. The check-in loop runs it.");
-            Ok(Answered::Enrolling)
-        }
-        Next::Enrolled => unreachable!("an install pass leaves enrolling to the loop"),
         Next::Held { hold, why, .. } => Ok(Answered::Held(hold, why)),
         Next::Retry { why, .. } => Ok(Answered::Unconfirmed(why)),
         Next::RefusedOnce { .. } => Err(Failure::coded(
@@ -256,7 +263,7 @@ pub(crate) struct LoopPloyzd {
 
 /// The token, then the ployzd, the loop runs with. A missing token ends the loop before it looks
 /// for a ployzd it would not use. `stopper` only disables the loop.
-pub(crate) async fn loop_start<H: Host>(
+pub(crate) async fn loop_start<H: LoopControl>(
     stopper: &H,
     pinned: Option<PathBuf>,
     paths: &Paths,
@@ -298,7 +305,7 @@ pub(crate) async fn loop_ployzd(
     }
     let mut probing = None;
     for path in &found {
-        if System::probes(path).await {
+        if probes_in_time(path).await {
             probing = Some(path.clone());
             break;
         }

@@ -31,7 +31,6 @@ pub(crate) trait Host {
         Arc::new(Sockets)
     }
     async fn start_prepare(&self) -> Result<(), String>;
-    async fn disable_loop(&self) -> Result<(), String>;
     /// Why the ployzd this loop runs with should be replaced, when it is older than this CLI.
     fn stale_ployzd(&self) -> Option<String>;
     /// Run `server add` here as `instruction` says, telling `progress` each stage it starts.
@@ -49,6 +48,23 @@ pub(crate) trait Host {
     }
 }
 
+/// What ends the check-in loop: disabling its systemd unit. The loop's start and stop need no
+/// more of the host than this.
+pub(crate) trait LoopControl {
+    async fn disable_loop(&self) -> Result<(), String>;
+}
+
+/// The host's systemd, which runs the check-in loop.
+pub(crate) struct Systemd;
+
+impl LoopControl for Systemd {
+    async fn disable_loop(&self) -> Result<(), String> {
+        systemctl(&["disable", unit::CHECKIN]).await
+    }
+}
+
+/// The host a check-in loop or install runs on, with the ployzd it probes and prepares with and
+/// the Cloud `server add` enrolls it through.
 pub(crate) struct System {
     pub(crate) ployzd: PathBuf,
     pub(crate) stale: Option<String>,
@@ -56,49 +72,50 @@ pub(crate) struct System {
 }
 
 impl System {
-    pub(crate) fn with(ployzd: PathBuf) -> Self {
+    pub(crate) fn new(ployzd: PathBuf, stale: Option<String>, cloud: &str) -> Self {
         Self {
             ployzd,
-            stale: None,
-            cloud: String::new(),
+            stale,
+            cloud: cloud.to_owned(),
         }
     }
 }
 
-impl System {
-    /// Whether this ployzd answers the host probe in time, so the loop can run with it.
-    pub(crate) async fn probes(ployzd: &Path) -> bool {
-        tokio::time::timeout(PROBE_TIMEOUT, Self::with(ployzd.to_owned()).probe())
-            .await
-            .is_ok_and(|probed| probed.is_ok())
+/// Whether this ployzd answers the host probe in time, so the loop can run with it.
+pub(crate) async fn probes_in_time(ployzd: &Path) -> bool {
+    tokio::time::timeout(PROBE_TIMEOUT, run_probe(ployzd))
+        .await
+        .is_ok_and(|probed| probed.is_ok())
+}
+
+async fn run_probe(ployzd: &Path) -> Result<ProbeDocument, String> {
+    let run = |error: io::Error| format!("run {}: {error}", ployzd.display());
+    let child = tokio::process::Command::new(ployzd)
+        .args(["install", "--probe", "--json"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(run)?;
+    let group = ProcessGroup(child.id());
+    let output = child.wait_with_output().await.map_err(run)?;
+    // Reaped, so the id may already belong to someone else's group.
+    group.reaped();
+    if !output.status.success() {
+        return Err(format!(
+            "ployzd install --probe exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
+    serde_json::from_slice(&output.stdout).map_err(|error| format!("read the host probe: {error}"))
 }
 
 impl Host for System {
     async fn probe(&self) -> Result<ProbeDocument, String> {
-        let run = |error: io::Error| format!("run {}: {error}", self.ployzd.display());
-        let child = tokio::process::Command::new(&self.ployzd)
-            .args(["install", "--probe", "--json"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(run)?;
-        let group = ProcessGroup(child.id());
-        let output = child.wait_with_output().await.map_err(run)?;
-        // Reaped, so the id may already belong to someone else's group.
-        group.reaped();
-        if !output.status.success() {
-            return Err(format!(
-                "ployzd install --probe exited with {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        serde_json::from_slice(&output.stdout)
-            .map_err(|error| format!("read the host probe: {error}"))
+        run_probe(&self.ployzd).await
     }
 
     fn hostname(&self) -> String {
@@ -118,10 +135,6 @@ impl Host for System {
 
     async fn start_prepare(&self) -> Result<(), String> {
         systemctl(&["start", "--no-block", unit::PREPARE]).await
-    }
-
-    async fn disable_loop(&self) -> Result<(), String> {
-        systemctl(&["disable", unit::CHECKIN]).await
     }
 
     fn stale_ployzd(&self) -> Option<String> {
@@ -151,6 +164,12 @@ impl Host for System {
                 .machine
                 .map_or_else(|| self.hostname(), |machine| machine.name.to_string())
         })
+    }
+}
+
+impl LoopControl for System {
+    async fn disable_loop(&self) -> Result<(), String> {
+        Systemd.disable_loop().await
     }
 }
 

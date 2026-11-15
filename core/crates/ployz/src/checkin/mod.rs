@@ -20,9 +20,11 @@ mod wire;
 
 pub(crate) use client::{CheckinClient, CheckinKey, Hold, KeyError, key_failure};
 pub(crate) use enroll::Committed;
-pub(crate) use host::{Host, System, local_machine, process_is_root, systemctl};
+pub(crate) use host::{
+    Host, LoopControl, System, Systemd, local_machine, probes_in_time, process_is_root, systemctl,
+};
 pub(crate) use paths::{Paths, hold_loop, loop_stopped};
-pub(crate) use plan::{InstallPass, Next, install_pass, joined, restart_preparation};
+pub(crate) use plan::{InstallPass, Next, Posted, install_pass, joined, restart_preparation};
 pub(crate) use run::{CheckinEnd, run};
 pub(crate) use status::{
     Headline, LocalCheckin, NO_CLUSTER, NO_CLUSTER_WHY, Seen, ago, no_ployzd, record,
@@ -40,12 +42,12 @@ use {
     host::preparation_marked,
     plan::{
         Liveness, PREPARE_RETRY, PREPARE_TRIES, Preparation, REFUSED_ONCE, REVOKED,
-        observe_liveness, pass_from, preparation, read_prep_state,
+        install_pass_with, loop_pass, observe_liveness, pass_with, preparation, read_prep_state,
     },
     ployz_core::{MachineLayout, host_preparation::PrepSteps, probe_document::ProbeDocument},
     probe::{Binder, Probes, Sockets},
     run::{Said, stop},
-    status::Refusal,
+    status::{Memory, Refusal, View},
     std::{
         io,
         path::{Path, PathBuf},
@@ -55,7 +57,10 @@ use {
 };
 
 #[cfg(test)]
-pub(crate) use {plan::pass, token_file::replaces as replaces_token};
+pub(crate) use {
+    plan::{Pass, pass, passed},
+    token_file::replaces as replaces_token,
+};
 
 #[cfg(test)]
 #[path = "checkin_tests.rs"]

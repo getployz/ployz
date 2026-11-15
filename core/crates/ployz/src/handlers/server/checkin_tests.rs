@@ -17,8 +17,8 @@ use crate::checkin::install::{
     loop_ployzd, loop_start, waiting_lines,
 };
 use crate::checkin::{
-    self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, Next, Paths, Seen,
-    StopReason, System, unit,
+    self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, LoopControl, Next,
+    Paths, Seen, StopReason, System, unit,
 };
 use ployz_core::probe_document::ProbeDocument;
 
@@ -232,10 +232,6 @@ impl Host for Chosen {
         panic!("an older ployzd never prepares")
     }
 
-    async fn disable_loop(&self) -> Result<(), String> {
-        unreachable!("the check-in waits")
-    }
-
     fn stale_ployzd(&self) -> Option<String> {
         self.0.stale_ployzd()
     }
@@ -272,11 +268,7 @@ async fn a_stale_pin_that_fails_its_probe_gives_way_to_an_older_ployzd_that_answ
         .await
         .unwrap();
     assert_eq!(found.path, on_path);
-    let host = Chosen(System {
-        ployzd: found.path,
-        stale: found.stale,
-        cloud: String::new(),
-    });
+    let host = Chosen(System::new(found.path, found.stale, ""));
 
     fs::write(
         &paths.token_file,
@@ -298,46 +290,10 @@ struct Stopper {
     disables: AtomicU32,
 }
 
-impl Host for Stopper {
-    async fn probe(&self) -> Result<ProbeDocument, String> {
-        unreachable!("the loop never starts")
-    }
-
-    fn hostname(&self) -> String {
-        unreachable!("the loop never starts")
-    }
-
-    async fn prepare_running(&self) -> Result<bool, String> {
-        unreachable!("the loop never starts")
-    }
-
-    async fn start_prepare(&self) -> Result<(), String> {
-        unreachable!("the loop never starts")
-    }
-
+impl LoopControl for Stopper {
     async fn disable_loop(&self) -> Result<(), String> {
         self.disables.fetch_add(1, Ordering::SeqCst);
         Ok(())
-    }
-
-    fn stale_ployzd(&self) -> Option<String> {
-        unreachable!("the loop never starts")
-    }
-
-    async fn enroll(
-        &self,
-        _: &crate::checkin::EnrollInstruction,
-        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
-    ) -> Result<crate::checkin::Committed, String> {
-        unreachable!("the check-in never enrolls here")
-    }
-
-    async fn participating(&self) -> Option<String> {
-        None
-    }
-
-    async fn discard_zfs_build(&self) -> Result<(), String> {
-        unreachable!("the check-in never enrolls here")
     }
 }
 
@@ -387,11 +343,12 @@ async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
         "systemd retries it"
     );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::NoPloyzd);
+    assert_eq!(status.view.answer, Seen::NoPloyzd);
     assert_eq!(status.headline().title, "No ployzd");
     assert!(status.says_why());
     assert!(
         status
+            .view
             .message
             .unwrap()
             .starts_with("No ployzd on PATH or at "),
@@ -773,11 +730,7 @@ async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answerin
         let paths = temp_paths(&dir);
         let ployzd = dir.path().join("bin/ployzd");
         probing_daemon(&ployzd, "0.0.1");
-        let host = Chosen(System {
-            ployzd,
-            stale: Some("Older.".to_owned()),
-            cloud: String::new(),
-        });
+        let host = Chosen(System::new(ployzd, Some("Older.".to_owned()), ""));
         let landed = paths.token_file.clone();
         let other_status = paths.status();
         let (url, server) = answering_once(status, body, move || {
@@ -824,11 +777,7 @@ async fn an_install_records_what_cloud_said_only_for_the_token_it_keeps() {
     let paths = temp_paths(&dir);
     let ployzd = dir.path().join("bin/ployzd");
     probing_daemon(&ployzd, "0.0.1");
-    let host = Chosen(System {
-        ployzd,
-        stale: Some("Older.".to_owned()),
-        cloud: String::new(),
-    });
+    let host = Chosen(System::new(ployzd, Some("Older.".to_owned()), ""));
     let key = CheckinKey::load_or_create(&paths.key()).unwrap();
     fs::create_dir_all(paths.token_file.parent().unwrap()).unwrap();
     fs::create_dir_all(paths.status().parent().unwrap()).unwrap();
@@ -844,7 +793,7 @@ async fn an_install_records_what_cloud_said_only_for_the_token_it_keeps() {
         let status = fs::read_to_string(paths.status()).unwrap();
         if kept {
             let seen = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-            assert!(seen.token_fingerprint.is_some(), "{status}");
+            assert!(seen.memory.token_fingerprint.is_some(), "{status}");
         } else {
             assert_eq!(status, OTHER_STATUS, "{held}");
         }
@@ -859,11 +808,7 @@ async fn an_install_cloud_already_enrolls_does_not_say_it_waits_for_approval() {
     let paths = temp_paths(&dir);
     let ployzd = dir.path().join("bin/ployzd");
     probing_daemon(&ployzd, "0.0.1");
-    let host = Chosen(System {
-        ployzd,
-        stale: Some("Older.".to_owned()),
-        cloud: String::new(),
-    });
+    let host = Chosen(System::new(ployzd, Some("Older.".to_owned()), ""));
     let key = CheckinKey::load_or_create(&paths.key()).unwrap();
     fs::create_dir_all(paths.status().parent().unwrap()).unwrap();
     let (url, server) = answering_once("200 OK", ENROLL, || {}).await;
@@ -889,7 +834,10 @@ fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it()
             after: std::time::Duration::from_secs(60),
             why: "Could not reach Ployz Cloud: refused.".to_owned(),
         };
-        let pass = checkin::InstallPass { next, seen: None };
+        let pass = checkin::InstallPass {
+            posted: next.into(),
+            seen: None,
+        };
         answer_install(pass, &sending(NEW_TOKEN), &paths, PIPED).map_err(|error| error.to_string())
     });
     // real-wait: gives the install thread time to block on the token directory's flock; a blocked flock emits no event

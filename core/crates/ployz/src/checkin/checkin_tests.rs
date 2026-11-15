@@ -83,6 +83,13 @@ struct FakeHost {
     binder: Option<Arc<dyn Binder>>,
 }
 
+impl LoopControl for FakeHost {
+    async fn disable_loop(&self) -> Result<(), String> {
+        self.disables.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 impl Host for FakeHost {
     fn binder(&self) -> Arc<dyn Binder> {
         self.binder.clone().unwrap_or_else(|| Arc::new(Sockets))
@@ -134,11 +141,6 @@ impl Host for FakeHost {
     async fn start_prepare(&self) -> Result<(), String> {
         self.preparing.store(true, Ordering::SeqCst);
         self.prepares.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn disable_loop(&self) -> Result<(), String> {
-        self.disables.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -250,6 +252,61 @@ fn an_answer_this_cli_cannot_read_waits_a_minute() {
     ] {
         assert_eq!(wire::answer(huge), Some(Answer::Wait(wait(3600))));
     }
+}
+
+#[test]
+fn a_known_answer_with_a_bad_field_waits_as_an_unknown_one_does() {
+    for body in [
+        &br#"{"kind":"stop"}"#[..],
+        br#"{"kind":"stop","reason":"gone"}"#,
+        br#"{"kind":"enroll"}"#,
+        br#"{"kind":"wait","retryAfter":"soon"}"#,
+        br#"{"kind":"reboot","retryAfter":30}"#,
+    ] {
+        assert_eq!(wire::answer(body), Some(Answer::Wait(wait(60))));
+    }
+}
+
+#[test]
+fn a_known_kind_cloud_sends_wrong_is_told_from_a_kind_this_cli_does_not_know() {
+    use super::wire::Decoded;
+
+    assert_eq!(
+        wire::decode(br#"{"kind":"reboot","retryAfter":30}"#),
+        Some(Decoded::UnknownKind)
+    );
+    assert!(matches!(
+        wire::decode(br#"{"kind":"stop","reason":"gone"}"#),
+        Some(Decoded::Malformed { kind, .. }) if kind == "stop"
+    ));
+    assert!(matches!(
+        wire::decode(br#"{"kind":"wait","retryAfter":"soon"}"#),
+        Some(Decoded::Malformed { kind, .. }) if kind == "wait"
+    ));
+    assert_eq!(wire::decode(b"{}"), None);
+}
+
+#[tokio::test]
+async fn an_unreadable_status_file_starts_the_pass_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(&paths.checkin_dir).unwrap();
+    fs::write(paths.status(), "{not json").unwrap();
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    let host = FakeHost::default();
+    let mut client = client(&url);
+    let next = pass(&host, &mut client, &key(), &paths, Utc::now()).await;
+    server.await.unwrap();
+    assert_eq!(
+        next,
+        Next::Wait {
+            after: Duration::from_secs(30)
+        }
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.view.answer, Seen::Wait);
+    assert_eq!(status.memory.prepare_retries, 0);
+    assert_eq!(status.memory.attempt, None);
 }
 
 #[test]
@@ -691,13 +748,12 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
     });
     let requested = tokio::time::Instant::now();
     let mut probes = Probes::default();
-    pass_from(
+    pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -938,9 +994,9 @@ async fn a_check_in_is_signed_and_its_answer_recorded() {
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
 
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::Wait);
-    assert_eq!(status.at, now);
-    assert_eq!(status.blockers.first().unwrap().code, "kernel_too_old");
+    assert_eq!(status.view.answer, Seen::Wait);
+    assert_eq!(status.view.at, now);
+    assert_eq!(status.view.blockers.first().unwrap().code, "kernel_too_old");
     assert_eq!(
         fs::metadata(paths.status()).unwrap().permissions().mode() & 0o777,
         0o644
@@ -966,16 +1022,16 @@ async fn a_wait_on_an_organization_with_no_cluster_says_to_enroll_one_server() {
     .await;
 
     let mut status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert!(status.no_cluster);
+    assert!(status.view.no_cluster);
     assert!(status.says_why());
     assert_eq!(
-        status.message.as_deref(),
+        status.view.message.as_deref(),
         Some("Enroll one server in Ployz Cloud to start it.")
     );
-    status.blockers.clear();
-    status.prep = None;
+    status.view.blockers.clear();
+    status.view.prep = None;
     assert_eq!(status.headline(), Headline::open("No cluster yet"));
-    status.no_cluster = false;
+    status.view.no_cluster = false;
     assert_eq!(status.headline(), Headline::open("Waiting for approval"));
 }
 
@@ -1027,16 +1083,7 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
         if pass == 2 {
             probes.finish().await;
         }
-        let next = pass_from(
-            &host,
-            &mut client,
-            &key(),
-            &paths,
-            Utc::now(),
-            false,
-            &mut probes,
-        )
-        .await;
+        let next = pass_with(&host, &mut client, &key(), &paths, Utc::now(), &mut probes).await;
         assert_eq!(
             next,
             Next::Wait {
@@ -1060,7 +1107,11 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
         "{requests:?}"
     );
     assert_eq!(
-        LocalCheckin::read(&paths.status()).unwrap().unwrap().answer,
+        LocalCheckin::read(&paths.status())
+            .unwrap()
+            .unwrap()
+            .view
+            .answer,
         Seen::Wait
     );
 }
@@ -1104,13 +1155,12 @@ async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_repor
     assert_eq!(greeted.await.unwrap(), 22);
 
     let mut restarted = Probes::load(paths.probe(), compressed());
-    pass_from(
+    pass_with(
         &host,
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut restarted,
     )
     .await;
@@ -1158,16 +1208,16 @@ async fn handed(paths: &Paths, probes: &mut Probes, handout: &str, port: u16, wi
         1,
     )
     .await;
-    let next = pass_from(
+    let next = loop_pass(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         paths,
         Utc::now(),
-        false,
         probes,
     )
-    .await;
+    .await
+    .next();
     assert!(matches!(next, Next::Wait { .. }), "{next:?}");
     server.await.unwrap();
 }
@@ -1222,13 +1272,12 @@ async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_n
     let (url, server) = answering_cloud("200 OK".to_owned(), body, 1).await;
 
     let handed_out = std::time::Instant::now();
-    let next = pass_from(
+    let next = pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -1254,13 +1303,12 @@ async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_n
         tokio::task::yield_now().await;
     }
     let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
-    pass_from(
+    pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -1286,7 +1334,7 @@ async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle
     };
     let unreachable = || client("http://127.0.0.1:9");
     let pass = async |host: &FakeHost, client: &mut CheckinClient, probes: &mut Probes| {
-        pass_from(host, client, &key(), &paths, Utc::now(), false, probes).await
+        pass_with(host, client, &key(), &paths, Utc::now(), probes).await
     };
 
     retries_after(&pass(&failing, &mut unreachable(), &mut probes).await, 10);
@@ -1336,13 +1384,12 @@ async fn a_429_from_in_front_of_cloud_waits_what_it_asked_even_with_a_report_owe
         1,
     )
     .await;
-    let throttled = pass_from(
+    let throttled = pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -1363,13 +1410,12 @@ async fn a_429_without_retry_after_from_in_front_of_cloud_still_retries_a_report
         1,
     )
     .await;
-    let throttled = pass_from(
+    let throttled = pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -1393,13 +1439,12 @@ async fn a_429_cut_off_mid_body_still_waits_what_it_asked() {
             .await
             .unwrap();
     });
-    let throttled = pass_from(
+    let throttled = pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths(&dir),
         Utc::now(),
-        false,
         &mut Probes::default(),
     )
     .await;
@@ -1421,13 +1466,12 @@ async fn a_rate_limited_report_keeps_its_retry_grace() {
         1,
     )
     .await;
-    let limited = pass_from(
+    let limited = pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -1437,7 +1481,7 @@ async fn a_rate_limited_report_keeps_its_retry_grace() {
     let [request]: [String; 1] = server.await.unwrap().try_into().unwrap();
     assert!(request.contains(r#""probe":{"handout":"h""#), "{request}");
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let failed = pass_from(
+    let failed = pass_with(
         &FakeHost {
             probe_fails: true,
             ..FakeHost::default()
@@ -1446,7 +1490,6 @@ async fn a_rate_limited_report_keeps_its_retry_grace() {
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -1467,13 +1510,12 @@ async fn a_failed_pass_after_a_restart_still_retries_inside_cloud_s_settle() {
         ..FakeHost::default()
     };
     let pass = async |probes: &mut Probes| {
-        pass_from(
+        pass_with(
             &failing,
             &mut client("http://127.0.0.1:9"),
             &key(),
             &paths,
             Utc::now(),
-            false,
             probes,
         )
         .await
@@ -1576,7 +1618,8 @@ async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
         Utc::now(),
     )
     .await
-    .record(&paths);
+    .record(&paths)
+    .next();
     assert!(matches!(next, Next::Retry { .. }), "{next:?}");
     assert_eq!(saved(&paths).await, Some(kept));
 }
@@ -1596,13 +1639,12 @@ async fn a_confirmed_refusal_closes_the_open_window() {
     )
     .await;
 
-    let next = pass_from(
+    let next = pass_with(
         &FakeHost::default(),
         &mut client(&url),
         &key(),
         &paths,
         Utc::now(),
-        false,
         &mut probes,
     )
     .await;
@@ -1623,21 +1665,25 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
     let at = Utc::now() - ago;
     record(
         &LocalCheckin {
-            token_fingerprint: None,
-            answer: Seen::Refused,
-            reason: None,
-            message: Some(REFUSED_ONCE.to_owned()),
-            at,
-            prep: None,
-            blockers: Vec::new(),
-            prepare_retries: 0,
-            prepare_started: None,
-            attempt: None,
-            no_cluster: false,
-            refused: Some(Refusal {
-                token: sending(token).fingerprint(),
-                date: at,
-            }),
+            memory: Memory {
+                token_fingerprint: None,
+                prepare_retries: 0,
+                prepare_started: None,
+                refused: Some(Refusal {
+                    token: sending(token).fingerprint(),
+                    date: at,
+                }),
+                attempt: None,
+            },
+            view: View {
+                answer: Seen::Refused,
+                reason: None,
+                message: Some(REFUSED_ONCE.to_owned()),
+                at,
+                prep: None,
+                blockers: Vec::new(),
+                no_cluster: false,
+            },
         },
         paths,
     );
@@ -1669,6 +1715,7 @@ async fn refused_pass(
         install_pass(&host, &mut client, &key(), paths, now)
             .await
             .record(paths)
+            .next()
     } else {
         pass(&host, &mut client, &key(), paths, now).await
     }
@@ -1700,7 +1747,7 @@ async fn a_restart_after_one_refusal_waits_out_the_minute_before_confirming_it()
     refused_again_after(&early, 45);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Token refused");
-    assert_eq!(status.refused.unwrap().date, first);
+    assert_eq!(status.memory.refused.unwrap().date, first);
     let late = refused_pass(&paths, OLD, now, first + TimeDelta::seconds(60), false).await;
     assert_eq!(
         late,
@@ -1719,7 +1766,7 @@ async fn a_token_swapped_in_after_a_refusal_gets_its_own_two_refusals_across_res
     refused_again_after(&refused_pass(&paths, NEW, now, swapped, false).await, 60);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(
-        status.refused,
+        status.memory.refused,
         Some(Refusal {
             token: sending(NEW).fingerprint(),
             date: swapped
@@ -1805,7 +1852,7 @@ async fn a_first_refusal_dated_ahead_of_cloud_starts_over_instead_of_confirming_
         60,
     );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.refused.unwrap().date, date);
+    assert_eq!(status.memory.refused.unwrap().date, date);
     assert!(paths.token_file.exists());
     let late = refused_pass(
         &paths,
@@ -1833,7 +1880,7 @@ async fn a_first_refusal_dated_too_long_ago_starts_over() {
         60,
     );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.refused.unwrap().date, date);
+    assert_eq!(status.memory.refused.unwrap().date, date);
     assert!(paths.token_file.exists());
 }
 
@@ -2047,7 +2094,7 @@ async fn a_probe_that_never_finishes_is_cut_off_and_retried() {
     assert_eq!(after, Duration::from_secs(60));
     assert!(why.contains("did not finish in 60s"), "{why}");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::ProbeFailed);
+    assert_eq!(status.view.answer, Seen::ProbeFailed);
 }
 
 #[tokio::test(start_paused = true)]
@@ -2071,7 +2118,7 @@ async fn one_failed_preparation_is_retried_once_however_often_the_loop_polls() {
     }
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, 1);
+    assert_eq!(status.memory.prepare_retries, 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -2097,7 +2144,7 @@ async fn a_failed_preparation_is_retried_after_each_reboot_up_to_the_cap() {
     }
     assert_eq!(prepares, PREPARE_TRIES);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, PREPARE_TRIES);
+    assert_eq!(status.memory.prepare_retries, PREPARE_TRIES);
 }
 
 #[tokio::test(start_paused = true)]
@@ -2146,8 +2193,8 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
     restart_preparation(&reinstalled, &paths, answered).await;
     assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, 0);
-    assert_eq!(status.prepare_started, Some(answered));
+    assert_eq!(status.memory.prepare_retries, 0);
+    assert_eq!(status.memory.prepare_started, Some(answered));
     // ployzd records what it added in the state file, so the restart leaves it alone.
     assert_eq!(fs::read_to_string(&paths.prepare_state).unwrap(), state);
 }
@@ -2156,6 +2203,7 @@ fn blocker_codes(paths: &Paths) -> Vec<String> {
     LocalCheckin::read(&paths.status())
         .unwrap()
         .unwrap()
+        .view
         .blockers
         .into_iter()
         .map(|blocker| blocker.code)
@@ -2193,7 +2241,12 @@ async fn an_install_that_retries_a_failed_docker_install_drops_that_failure_from
     assert!(restart_preparation(&host, &paths, now).await);
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
     seen.restarted_preparation(now);
-    let codes: Vec<_> = seen.blockers.iter().map(|blocker| &blocker.code).collect();
+    let codes: Vec<_> = seen
+        .view
+        .blockers
+        .iter()
+        .map(|blocker| &blocker.code)
+        .collect();
     // The host's own blocker still stands.
     assert_eq!(codes, ["kernel_too_old"]);
     assert_eq!(blocker_codes(&paths), ["kernel_too_old"]);
@@ -2225,18 +2278,22 @@ async fn a_preparation_that_stopped_without_retrying_docker_leaves_its_failure_s
     let started = at("2026-10-16T01:00:00Z");
     record(
         &LocalCheckin {
-            token_fingerprint: None,
-            answer: Seen::Wait,
-            reason: None,
-            message: None,
-            at: started,
-            prep: None,
-            blockers: Vec::new(),
-            prepare_retries: PREPARE_TRIES,
-            prepare_started: Some(started),
-            refused: None,
-            attempt: None,
-            no_cluster: false,
+            memory: Memory {
+                token_fingerprint: None,
+                prepare_retries: PREPARE_TRIES,
+                prepare_started: Some(started),
+                refused: None,
+                attempt: None,
+            },
+            view: View {
+                answer: Seen::Wait,
+                reason: None,
+                message: None,
+                at: started,
+                prep: None,
+                blockers: Vec::new(),
+                no_cluster: false,
+            },
         },
         &paths,
     );
@@ -2265,18 +2322,22 @@ async fn a_docker_install_that_failed_after_its_preparation_started_still_blocks
     docker_failed_at(&paths, "2026-10-16T00:05:00Z");
     record(
         &LocalCheckin {
-            token_fingerprint: None,
-            answer: Seen::Wait,
-            reason: None,
-            message: None,
-            at: started,
-            prep: None,
-            blockers: Vec::new(),
-            prepare_retries: 0,
-            prepare_started: Some(started),
-            refused: None,
-            attempt: None,
-            no_cluster: false,
+            memory: Memory {
+                token_fingerprint: None,
+                prepare_retries: 0,
+                prepare_started: Some(started),
+                refused: None,
+                attempt: None,
+            },
+            view: View {
+                answer: Seen::Wait,
+                reason: None,
+                message: None,
+                at: started,
+                prep: None,
+                blockers: Vec::new(),
+                no_cluster: false,
+            },
         },
         &paths,
     );
@@ -2393,7 +2454,7 @@ async fn a_probe_cut_off_takes_the_processes_it_started_with_it() {
     )
     .unwrap();
     fs::set_permissions(&ployzd, fs::Permissions::from_mode(0o755)).unwrap();
-    let system = System::with(ployzd);
+    let system = System::new(ployzd, None, "https://cloud.example");
     let probed = tokio::time::timeout(Duration::from_secs(2), system.probe()).await;
     assert!(probed.is_err(), "the probe should hang until cut off");
     let pid = fs::read_to_string(&child).unwrap();
@@ -2900,8 +2961,15 @@ mod mark {
         }
         assert_eq!(prepares, 0, "the marked run is still preparing");
         let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-        assert_eq!(status.prep.map(|prep| prep.zfs), Some(ZfsPrep::Installing));
-        assert!(status.blockers.is_empty(), "{:?}", status.blockers);
+        assert_eq!(
+            status.view.prep.map(|prep| prep.zfs),
+            Some(ZfsPrep::Installing)
+        );
+        assert!(
+            status.view.blockers.is_empty(),
+            "{:?}",
+            status.view.blockers
+        );
     }
 
     #[tokio::test]
@@ -2950,7 +3018,7 @@ async fn a_preparation_that_died_mid_step_is_retried_up_to_the_cap() {
     }
     assert_eq!(prepares, PREPARE_TRIES);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, PREPARE_TRIES);
+    assert_eq!(status.memory.prepare_retries, PREPARE_TRIES);
 }
 
 #[tokio::test(start_paused = true)]
@@ -2978,7 +3046,7 @@ async fn a_start_that_writes_no_state_waits_out_the_retry_delay() {
         assert_eq!(prepares, expected, "minute {minute}");
     }
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, 1);
+    assert_eq!(status.memory.prepare_retries, 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -3044,7 +3112,7 @@ async fn a_preparation_that_finishes_while_its_unit_is_checked_reads_as_finished
     assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(
-        status.prep,
+        status.view.prep,
         Some(Prep {
             docker: DockerPrep::Ready,
             zfs: ZfsPrep::Ready
@@ -3080,9 +3148,9 @@ async fn a_step_left_installing_after_the_last_retry_reads_as_failed() {
         .await;
     }
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, PREPARE_TRIES);
+    assert_eq!(status.memory.prepare_retries, PREPARE_TRIES);
     assert_eq!(
-        status.prep,
+        status.view.prep,
         Some(Prep {
             docker: DockerPrep::Failed,
             zfs: ZfsPrep::Failed
@@ -3105,18 +3173,22 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
     .unwrap();
     record(
         &LocalCheckin {
-            token_fingerprint: None,
-            answer: Seen::Wait,
-            reason: None,
-            message: None,
-            at: Utc::now(),
-            prep: None,
-            blockers: Vec::new(),
-            prepare_retries: PREPARE_TRIES,
-            prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
-            refused: None,
-            attempt: None,
-            no_cluster: false,
+            memory: Memory {
+                token_fingerprint: None,
+                prepare_retries: PREPARE_TRIES,
+                prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
+                refused: None,
+                attempt: None,
+            },
+            view: View {
+                answer: Seen::Wait,
+                reason: None,
+                message: None,
+                at: Utc::now(),
+                prep: None,
+                blockers: Vec::new(),
+                no_cluster: false,
+            },
         },
         &paths,
     );
@@ -3173,6 +3245,7 @@ async fn a_program_on_the_wireguard_port_blocks_the_server_by_name() {
     assert_eq!(status.headline().title, "Blocked");
     assert_eq!(
         status
+            .view
             .blockers
             .last()
             .map(|blocker| blocker.message.as_str()),
@@ -3199,7 +3272,13 @@ async fn an_older_ployzd_blocks_the_server_in_cloud_and_in_status() {
     assert!(request.contains(r#""code":"ployzd_outdated""#), "{request}");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Blocked");
-    assert!(status.blockers.iter().any(|issue| issue.message == stale));
+    assert!(
+        status
+            .view
+            .blockers
+            .iter()
+            .any(|issue| issue.message == stale)
+    );
     assert_eq!(
         host.prepares.load(Ordering::SeqCst),
         0,
@@ -3215,9 +3294,13 @@ async fn an_older_ployzd_blocks_the_server_in_cloud_and_in_status() {
     let mut unused = client("http://127.0.0.1:9");
     pass(&host, &mut unused, &key(), &paths, Utc::now()).await;
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::ProbeFailed);
+    assert_eq!(status.view.answer, Seen::ProbeFailed);
     assert!(
-        status.blockers.iter().any(|issue| issue.message == stale),
+        status
+            .view
+            .blockers
+            .iter()
+            .any(|issue| issue.message == stale),
         "a probe the older ployzd fails still says why"
     );
 }
@@ -3312,21 +3395,25 @@ async fn a_running_preparation_is_left_alone() {
 #[test]
 fn the_headline_says_where_the_host_stands() {
     let mut status = LocalCheckin {
-        token_fingerprint: None,
-        answer: Seen::Wait,
-        reason: None,
-        message: None,
-        at: Utc::now(),
-        prep: Some(Prep {
-            docker: DockerPrep::Installing,
-            zfs: ZfsPrep::Installing,
-        }),
-        blockers: Vec::new(),
-        prepare_retries: 0,
-        prepare_started: None,
-        refused: None,
-        attempt: None,
-        no_cluster: false,
+        memory: Memory {
+            token_fingerprint: None,
+            prepare_retries: 0,
+            prepare_started: None,
+            refused: None,
+            attempt: None,
+        },
+        view: View {
+            answer: Seen::Wait,
+            reason: None,
+            message: None,
+            at: Utc::now(),
+            prep: Some(Prep {
+                docker: DockerPrep::Installing,
+                zfs: ZfsPrep::Installing,
+            }),
+            blockers: Vec::new(),
+            no_cluster: false,
+        },
     };
     assert_eq!(
         status.headline(),
@@ -3335,7 +3422,7 @@ fn the_headline_says_where_the_host_stands() {
             ended: false
         }
     );
-    status.prep = Some(Prep {
+    status.view.prep = Some(Prep {
         docker: DockerPrep::Ready,
         zfs: ZfsPrep::Installing,
     });
@@ -3346,7 +3433,7 @@ fn the_headline_says_where_the_host_stands() {
             ended: false
         }
     );
-    status.prep = Some(Prep {
+    status.view.prep = Some(Prep {
         docker: DockerPrep::Ready,
         zfs: ZfsPrep::Ready,
     });
@@ -3357,7 +3444,7 @@ fn the_headline_says_where_the_host_stands() {
             ended: false
         }
     );
-    status.blockers = vec![Issue {
+    status.view.blockers = vec![Issue {
         code: "docker_stopped".into(),
         message: "Docker is installed but not running.".into(),
     }];
@@ -3368,8 +3455,8 @@ fn the_headline_says_where_the_host_stands() {
             ended: false
         }
     );
-    status.answer = Seen::Stop;
-    status.reason = Some(StopReason::TokenExpired);
+    status.view.answer = Seen::Stop;
+    status.view.reason = Some(StopReason::TokenExpired);
     assert_eq!(
         status.headline(),
         Headline {
@@ -3415,6 +3502,62 @@ fn checkin_state_stays_out_of_the_daemon_data_dir() {
             path.display()
         );
     }
+}
+
+/// Every field of status.json set, in the order the file has always written them. An older loop
+/// or `ployz status` reads this file across a release, so its keys and their order stay.
+const FULL_STATUS: &str = r#"{
+  "answer": "refused",
+  "token_fingerprint": "0123456789abcdef",
+  "reason": "token_revoked",
+  "message": "Cloud refused this Fleet Token. It is checked once more before the loop removes it",
+  "at": "2026-10-22T01:21:48Z",
+  "prep": {
+    "docker": "ready",
+    "zfs": "installing"
+  },
+  "blockers": [
+    {
+      "code": "docker_stopped",
+      "message": "Docker is installed but not running."
+    }
+  ],
+  "prepare_retries": 2,
+  "prepare_started": "2026-10-22T01:00:00Z",
+  "refused": {
+    "token": "0123456789abcdef",
+    "date": "2026-10-22T01:21:00Z"
+  },
+  "attempt": {
+    "attemptId": "att_1",
+    "stage": "joining",
+    "failure": {
+      "stage": "joining",
+      "message": "no route"
+    }
+  },
+  "no_cluster": true
+}"#;
+
+#[test]
+fn status_json_keeps_its_keys_and_their_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let status: LocalCheckin = serde_json::from_str(FULL_STATUS).unwrap();
+    record(&status, &paths);
+    assert_eq!(fs::read_to_string(paths.status()).unwrap(), FULL_STATUS);
+    // `ployz status --json` flattens the same record into its `this_server`.
+    assert_eq!(
+        serde_json::to_string(&status).unwrap(),
+        r#"{"answer":"refused","token_fingerprint":"0123456789abcdef","reason":"token_revoked","message":"Cloud refused this Fleet Token. It is checked once more before the loop removes it","at":"2026-10-22T01:21:48Z","prep":{"docker":"ready","zfs":"installing"},"blockers":[{"code":"docker_stopped","message":"Docker is installed but not running."}],"prepare_retries":2,"prepare_started":"2026-10-22T01:00:00Z","refused":{"token":"0123456789abcdef","date":"2026-10-22T01:21:00Z"},"attempt":{"attemptId":"att_1","stage":"joining","failure":{"stage":"joining","message":"no route"}},"no_cluster":true}"#
+    );
+
+    let waiting = waiting_record();
+    record(&waiting, &paths);
+    assert_eq!(
+        fs::read_to_string(paths.status()).unwrap(),
+        "{\n  \"answer\": \"wait\",\n  \"at\": \"2026-10-22T01:21:48Z\",\n  \"blockers\": [],\n  \"prepare_retries\": 0\n}"
+    );
 }
 
 fn waiting_record() -> LocalCheckin {
@@ -3530,12 +3673,13 @@ async fn a_run_that_died_mid_step_is_retried_then_given_up_when_its_mark_cannot_
         .await;
         let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
         let gave_up = status
+            .view
             .blockers
             .iter()
             .any(|blocker| blocker.message.contains("stopped mid-step on every try"));
         passes.push((
             host.prepares.load(Ordering::SeqCst),
-            status.prepare_retries,
+            status.memory.prepare_retries,
             gave_up,
         ));
     }
@@ -3557,7 +3701,7 @@ async fn a_run_that_died_mid_step_is_retried_then_given_up_when_its_mark_cannot_
     assert!(restart_preparation(&reinstalled, &paths, died + TimeDelta::minutes(70)).await);
     assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, 0);
+    assert_eq!(status.memory.prepare_retries, 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -3588,11 +3732,12 @@ async fn a_failed_step_is_retried_then_reported_when_its_mark_cannot_be_read() {
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert!(
         status
+            .view
             .blockers
             .iter()
             .any(|blocker| blocker.message == "Docker 29.1.3 is too old."),
         "{:?}",
-        status.blockers
+        status.view.blockers
     );
 }
 
@@ -3617,7 +3762,7 @@ async fn a_host_never_prepared_starts_when_its_mark_cannot_be_read() {
     .await;
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, 0);
+    assert_eq!(status.memory.prepare_retries, 0);
 }
 
 /// Absence of evidence that preparation runs is not evidence that it stopped.
@@ -3649,8 +3794,11 @@ async fn a_preparation_whose_unit_and_lock_cannot_be_read_is_neither_restarted_n
     }
     assert_eq!(prepares, 0, "nothing says preparation stopped");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.prepare_retries, 0);
-    assert_eq!(status.prep.map(|prep| prep.zfs), Some(ZfsPrep::Installing));
+    assert_eq!(status.memory.prepare_retries, 0);
+    assert_eq!(
+        status.view.prep.map(|prep| prep.zfs),
+        Some(ZfsPrep::Installing)
+    );
     let host = unreadable();
     assert!(!restart_preparation(&host, &paths, written + TimeDelta::minutes(90)).await);
     assert_eq!(host.prepares.load(Ordering::SeqCst), 0);

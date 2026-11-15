@@ -29,32 +29,110 @@ pub(crate) enum Seen {
     NoPloyzd,
 }
 
+/// What a check-in pass leaves in status.json, as the two readers of the file take it apart: the
+/// next pass reads the [`Memory`], and `ployz status` prints the [`View`]. On disk they are one
+/// flat object, in the order the file has always had its keys, since an older loop or `ployz
+/// status` reads the file across a release.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(from = "Document", into = "Document")]
 pub(crate) struct LocalCheckin {
-    pub(crate) answer: Seen,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) memory: Memory,
+    pub(crate) view: View,
+}
+
+/// What the next pass reads back from status.json, however long ago and under whichever restart
+/// it was written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Memory {
     pub(crate) token_fingerprint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reason: Option<StopReason>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) message: Option<String>,
-    pub(crate) at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) prep: Option<Prep>,
-    #[serde(default)]
-    pub(crate) blockers: Vec<Issue>,
-    #[serde(default)]
     pub(crate) prepare_retries: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) prepare_started: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refused: Option<Refusal>,
     /// The enroll attempt Cloud last instructed, sent on every check-in until Cloud replaces it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) attempt: Option<Attempt>,
+}
+
+/// What `ployz status` prints of the last pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct View {
+    pub(crate) answer: Seen,
+    pub(crate) reason: Option<StopReason>,
+    pub(crate) message: Option<String>,
+    pub(crate) at: DateTime<Utc>,
+    pub(crate) prep: Option<Prep>,
+    pub(crate) blockers: Vec<Issue>,
     /// Cloud's last wait said the Organization has no cluster for this host to join yet.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) no_cluster: bool,
+}
+
+/// status.json as written.
+#[derive(Deserialize, Serialize)]
+struct Document {
+    answer: Seen,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<StopReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prep: Option<Prep>,
+    #[serde(default)]
+    blockers: Vec<Issue>,
+    #[serde(default)]
+    prepare_retries: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prepare_started: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refused: Option<Refusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempt: Option<Attempt>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    no_cluster: bool,
+}
+
+impl From<Document> for LocalCheckin {
+    fn from(document: Document) -> Self {
+        Self {
+            memory: Memory {
+                token_fingerprint: document.token_fingerprint,
+                prepare_retries: document.prepare_retries,
+                prepare_started: document.prepare_started,
+                refused: document.refused,
+                attempt: document.attempt,
+            },
+            view: View {
+                answer: document.answer,
+                reason: document.reason,
+                message: document.message,
+                at: document.at,
+                prep: document.prep,
+                blockers: document.blockers,
+                no_cluster: document.no_cluster,
+            },
+        }
+    }
+}
+
+impl From<LocalCheckin> for Document {
+    fn from(status: LocalCheckin) -> Self {
+        let LocalCheckin { memory, view } = status;
+        Self {
+            answer: view.answer,
+            token_fingerprint: memory.token_fingerprint,
+            reason: view.reason,
+            message: view.message,
+            at: view.at,
+            prep: view.prep,
+            blockers: view.blockers,
+            prepare_retries: memory.prepare_retries,
+            prepare_started: memory.prepare_started,
+            refused: memory.refused,
+            attempt: memory.attempt,
+            no_cluster: view.no_cluster,
+        }
+    }
 }
 
 /// Cloud's first refusal of a token, dated by Cloud's clock. A second refusal of the same token
@@ -63,6 +141,47 @@ pub(crate) struct LocalCheckin {
 pub(crate) struct Refusal {
     pub(crate) token: String,
     pub(crate) date: DateTime<Utc>,
+}
+
+/// What a pass takes from the record it finds for the token it sends. The preparation memory
+/// carries over whichever token wrote it; the enroll attempt, the join and the refusal only count
+/// for the token they were recorded under.
+pub(super) struct Recalled {
+    /// The memory the pass's own record starts from.
+    pub(super) memory: Memory,
+    pub(super) joined: bool,
+    pub(super) refusal: Option<Refusal>,
+}
+
+impl Recalled {
+    pub(super) fn of(previous: Option<LocalCheckin>, fingerprint: &str) -> Self {
+        let Some(previous) = previous else {
+            return Self {
+                memory: Memory {
+                    token_fingerprint: Some(fingerprint.to_owned()),
+                    ..Memory::default()
+                },
+                joined: false,
+                refusal: None,
+            };
+        };
+        let this_token = previous.memory.token_fingerprint.as_deref() == Some(fingerprint);
+        let refusal = (previous.view.answer == Seen::Refused)
+            .then_some(previous.memory.refused)
+            .flatten()
+            .filter(|refusal| refusal.token == fingerprint);
+        Self {
+            joined: this_token && previous.view.answer == Seen::Joined,
+            refusal,
+            memory: Memory {
+                token_fingerprint: Some(fingerprint.to_owned()),
+                prepare_retries: previous.memory.prepare_retries,
+                prepare_started: previous.memory.prepare_started,
+                refused: None,
+                attempt: this_token.then_some(previous.memory.attempt).flatten(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +206,22 @@ impl Headline {
 const STATUS_READABLE_BY_ALL: u32 = 0o644;
 
 impl LocalCheckin {
+    /// A record of what a pass saw at `at`, with nothing said yet beyond `answer`.
+    pub(crate) fn new(answer: Seen, at: DateTime<Utc>, memory: Memory) -> Self {
+        Self {
+            memory,
+            view: View {
+                answer,
+                reason: None,
+                message: None,
+                at,
+                prep: None,
+                blockers: Vec::new(),
+                no_cluster: false,
+            },
+        }
+    }
+
     pub(crate) fn read(path: &Path) -> io::Result<Option<Self>> {
         match fs::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
@@ -97,10 +232,16 @@ impl LocalCheckin {
         }
     }
 
+    /// The record the last pass left, or none when there is none or it can't be read. A pass that
+    /// finds none starts fresh, as on a host that never checked in.
+    pub(super) fn recall(path: &Path) -> Option<Self> {
+        Self::read(path).ok().flatten()
+    }
+
     /// Whether `ployz status` should show the message: it says what ended the loop or what to fix.
     pub(crate) fn says_why(&self) -> bool {
         matches!(
-            self.answer,
+            self.view.answer,
             Seen::Stop
                 | Seen::Refused
                 | Seen::Held
@@ -110,37 +251,39 @@ impl LocalCheckin {
                 | Seen::ProbeFailed
                 | Seen::NoPloyzd
         ) || self.enroll_failed()
-            || (self.answer == Seen::Wait && self.no_cluster)
+            || (self.view.answer == Seen::Wait && self.view.no_cluster)
     }
 
     pub(super) fn waited(&mut self, wait: Wait) {
-        self.answer = Seen::Wait;
-        self.no_cluster = wait.no_cluster;
+        self.view.answer = Seen::Wait;
+        self.view.no_cluster = wait.no_cluster;
         if wait.no_cluster {
-            self.message = Some(NO_CLUSTER_WHY.to_owned());
+            self.view.message = Some(NO_CLUSTER_WHY.to_owned());
         }
     }
 
     /// A preparation started at `now` tries Docker's install again, so its last failure no
     /// longer stands, and its automatic retries are restored.
     pub(crate) fn restarted_preparation(&mut self, now: DateTime<Utc>) {
-        self.prepare_started = Some(now);
-        self.prepare_retries = 0;
-        self.blockers
+        self.memory.prepare_started = Some(now);
+        self.memory.prepare_retries = 0;
+        self.view
+            .blockers
             .retain(|blocker| blocker.code != DOCKER_INSTALL_FAILED);
     }
 
     pub(super) fn enroll_failed(&self) -> bool {
-        self.answer == Seen::Wait
+        self.view.answer == Seen::Wait
             && self
+                .memory
                 .attempt
                 .as_ref()
                 .is_some_and(|attempt| attempt.failure.is_some())
     }
 
     pub(crate) fn headline(&self) -> Headline {
-        match self.answer {
-            Seen::Stop => Headline::ended(self.reason.map_or("Stopped", StopReason::title)),
+        match self.view.answer {
+            Seen::Stop => Headline::ended(self.view.reason.map_or("Stopped", StopReason::title)),
             Seen::Refused => Headline::open("Token refused"),
             Seen::Held => Headline::open("Held by Cloud"),
             Seen::Unreachable => Headline::open("Can't reach Cloud"),
@@ -150,19 +293,20 @@ impl LocalCheckin {
             Seen::ProbeFailed => Headline::open("Can't inspect this host"),
             Seen::NoPloyzd => Headline::open("No ployzd"),
             Seen::Enroll => Headline::open(
-                self.attempt
+                self.memory
+                    .attempt
                     .as_ref()
                     .map_or("Enrolling", |attempt| enroll::title(attempt.stage)),
             ),
             Seen::Joined => Headline::open("Joined"),
-            Seen::Wait if !self.blockers.is_empty() => Headline::open("Blocked"),
+            Seen::Wait if !self.view.blockers.is_empty() => Headline::open("Blocked"),
             Seen::Wait if self.enroll_failed() => Headline::open("Enroll failed"),
-            Seen::Wait => match self.prep {
+            Seen::Wait => match self.view.prep {
                 Some(prep) if prep.docker == DockerPrep::Installing => {
                     Headline::open("Installing Docker")
                 }
                 Some(prep) if prep.zfs == ZfsPrep::Installing => Headline::open("Building ZFS"),
-                Some(_) | None if self.no_cluster => Headline::open(NO_CLUSTER),
+                Some(_) | None if self.view.no_cluster => Headline::open(NO_CLUSTER),
                 Some(_) | None => Headline::open("Waiting for approval"),
             },
         }
@@ -195,23 +339,19 @@ impl LocalCheckin {
 
 /// Says in status.json why the loop can't start, keeping what the last pass saw of the host.
 pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
-    let previous = LocalCheckin::read(&paths.status()).ok().flatten();
-    let status = LocalCheckin {
-        answer: Seen::NoPloyzd,
-        token_fingerprint: previous
-            .as_ref()
-            .and_then(|status| status.token_fingerprint.clone()),
-        reason: None,
-        message: Some(why.to_owned()),
-        at: now,
-        prep: previous.as_ref().and_then(|status| status.prep),
-        blockers: Vec::new(),
-        prepare_retries: previous.as_ref().map_or(0, |status| status.prepare_retries),
-        prepare_started: previous.as_ref().and_then(|status| status.prepare_started),
-        refused: None,
-        attempt: previous.and_then(|status| status.attempt),
-        no_cluster: false,
-    };
+    let (memory, prep) = LocalCheckin::recall(&paths.status()).map_or_else(
+        || (Memory::default(), None),
+        |previous| {
+            let memory = Memory {
+                refused: None,
+                ..previous.memory
+            };
+            (memory, previous.view.prep)
+        },
+    );
+    let mut status = LocalCheckin::new(Seen::NoPloyzd, now, memory);
+    status.view.message = Some(why.to_owned());
+    status.view.prep = prep;
     record(&status, paths);
 }
 
