@@ -835,7 +835,7 @@ fn a_receipt_names_the_snapshot_and_epoch_the_step_lands_on() {
 
 fn passkey_approval(workflow: VolumeWorkflow) -> VolumeApproval {
     VolumeApproval {
-        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        signer: SignerKey::Passkey(crate::authority::keys::OwnPrompt::Passkey),
         ..approval(workflow)
     }
 }

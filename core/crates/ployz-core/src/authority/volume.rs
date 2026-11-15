@@ -14,11 +14,11 @@ use super::{
     canonical::{self, Timestamp},
     deploy::{ApprovedChange, ApprovedService},
     keys::{
-        Approver, MachineSigned, MachineStatement, Purpose, Signed, SigningPublicKey, Statement,
+        Approver, MachineSigned, MachineStatement, Purpose, Signed, SignerKey, SigningPublicKey,
+        Statement,
     },
     proposal::StepDigest,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     shown::Shown,
     trusted_key::TrustedKeys,
 };

@@ -16,11 +16,10 @@ use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp},
-    keys::{Approver, Purpose, Signed, Statement},
+    canonical::{self, CanonicalError, Timestamp, drop_nulls},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement},
     proposal::{self, ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     rule_draft::{Signs, settings},
     session::{ActionFamily, GrantScope},
     shown::Shown,
@@ -84,17 +83,6 @@ impl PayloadDigest {
         let mut text = self.to_string();
         text.truncate(12);
         text
-    }
-}
-
-pub(super) fn drop_nulls(value: &mut Value) {
-    match value {
-        Value::Object(fields) => {
-            fields.retain(|_, field| !field.is_null());
-            fields.values_mut().for_each(drop_nulls);
-        }
-        Value::Array(items) => items.iter_mut().for_each(drop_nulls),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 

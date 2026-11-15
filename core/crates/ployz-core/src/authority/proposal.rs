@@ -16,9 +16,9 @@ use ts_rs::TS;
 
 use super::{
     canonical::Timestamp,
-    keys::{Approver, Purpose, Signed, Statement},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::{Approved, RestartApproval, RestartFacts, SignerKey, WorkflowKind},
+    restart::{Approved, RestartApproval, RestartFacts, WorkflowKind},
     session::GrantScope,
     trusted_key::TrustedKeys,
 };

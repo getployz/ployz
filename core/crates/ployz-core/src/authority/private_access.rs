@@ -13,9 +13,8 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, Timestamp, hex_bytes, write_hex},
-    keys::{Approver, Purpose, Signed, Statement, signing_input},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement, signing_input},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
 use crate::{Ciphertext, SealingPublicKey};

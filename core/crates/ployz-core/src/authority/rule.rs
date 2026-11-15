@@ -15,11 +15,10 @@ use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp},
-    deploy::{Creation, PayloadDigest, content_addressed, drop_nulls},
-    keys::{Approver, Purpose, Signed, Statement},
+    canonical::{self, CanonicalError, Timestamp, drop_nulls},
+    deploy::{Creation, PayloadDigest, content_addressed},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };

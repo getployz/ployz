@@ -6,7 +6,7 @@
 //! refused; every reply reports this Machine's copy as it is now. No Machine records
 //! the run or reads another Machine's copy or floor.
 
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -14,61 +14,8 @@ use ts_rs::TS;
 use crate::{
     CodedRefusal, ContainerId, DockerVolumeName, Evidence, Gen, MachineId, ManagementAddress,
     Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole,
-    SnapshotGuid, SnapshotName, VolumeCopy,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeGen, WriterEpoch,
 };
-
-/// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
-/// on the root and only ever raises it. A root without one reads as 0.
-#[derive(
-    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
-)]
-#[serde(transparent)]
-pub struct WriterEpoch(u32);
-
-impl WriterEpoch {
-    #[must_use]
-    pub const fn new(epoch: u32) -> Self {
-        Self(epoch)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Display for WriterEpoch {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-/// Which lane Cloud opened on a Volume. The Machine keeps the newest one it accepted per
-/// Volume as its floor and refuses a lower one. A request without one reads as 0.
-#[derive(
-    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
-)]
-#[serde(transparent)]
-#[ts(type = "number")]
-pub struct VolumeGen(u64);
-
-impl VolumeGen {
-    #[must_use]
-    pub const fn new(gen_: u64) -> Self {
-        Self(gen_)
-    }
-
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-impl fmt::Display for VolumeGen {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
 
 /// The idempotency key a driver gives a new Container.
 ///

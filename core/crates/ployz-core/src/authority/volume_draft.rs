@@ -11,7 +11,7 @@ use ts_rs::TS;
 use super::{
     canonical::{self, Timestamp},
     deploy::{ApprovedChange, content_addressed},
-    restart::SignerKey,
+    keys::SignerKey,
     shown::Shown,
     validity::MAX_LIFETIME_MILLIS,
     volume::{ApprovedVolumeChange, VolumeApproval, VolumeWorkflow},

@@ -10,9 +10,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    Approver, AuthorityRefusal, Purpose, Signed, Statement, Timestamp,
+    Approver, AuthorityRefusal, Purpose, Signed, SignerKey, Statement, Timestamp,
     refusal::{field, first_mismatch},
-    restart::SignerKey,
     rule::{RuleStatement, verify_signature},
     starting_set::Member,
     trusted_key::TrustedKeys,

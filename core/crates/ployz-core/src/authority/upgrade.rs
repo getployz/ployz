@@ -11,9 +11,8 @@ use ts_rs::TS;
 
 use super::{
     canonical::Timestamp,
-    keys::{Purpose, Signed, Statement},
+    keys::{Purpose, Signed, SignerKey, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     rule::{RuleStatement, verify_signature},
     trusted_key::TrustedKeys,
 };
@@ -94,8 +93,7 @@ mod tests {
     use crate::DeviceKey;
     use crate::authority::{
         canonical,
-        keys::Signer,
-        restart::OwnPrompt,
+        keys::{OwnPrompt, Signer},
         session::{ActionFamily, Delegation, GrantBody, SessionGrant},
         trusted_key::tests::{Answer, Authenticator, HONEST, trusting},
     };

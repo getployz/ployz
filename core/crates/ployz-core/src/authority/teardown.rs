@@ -12,11 +12,11 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, Timestamp},
-    keys::{Approver, Purpose, Signed, Statement},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement},
     preview::{PreviewRule, is_preview_namespace},
     private_access::key_approval_challenge,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::{RestartStep, SignerKey},
+    restart::RestartStep,
     rule::verify_signature,
     shown::Shown,
     trusted_key::{PasskeyAssertion, TrustedKeys},

@@ -2,8 +2,7 @@ use super::*;
 use crate::{
     DeviceKey,
     authority::{
-        keys::Signer,
-        restart::OwnPrompt,
+        keys::{OwnPrompt, Signer},
         session::{ActionFamily, Delegation, GrantBody, SessionGrant},
         trusted_key::tests::{Answer, Authenticator, HONEST},
         trusted_key::{PasskeyApprover, TrustedPasskey},

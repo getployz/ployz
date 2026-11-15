@@ -40,8 +40,8 @@ pub use deploy::{
 };
 pub use join::JoinApproval;
 pub use keys::{
-    Approver, KeySignature, MachineKey, MachineSigned, MachineStatement, Purpose, Signed, Signer,
-    SigningPublicKey, Statement,
+    Approver, KeySignature, MachineKey, MachineSigned, MachineStatement, OwnPrompt, Purpose,
+    Signed, Signer, SignerKey, SigningPublicKey, Statement,
 };
 pub use preview::{
     CheckedReview, PreviewCreation, PreviewFacts, PreviewKey, PreviewProof, PreviewReview,
@@ -54,9 +54,7 @@ pub use private_access::{
 };
 pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind};
 pub use refusal::AuthorityRefusal;
-pub use restart::{
-    Approved, OwnPrompt, RestartApproval, RestartFacts, RestartStep, SignerKey, WorkflowKind,
-};
+pub use restart::{Approved, RestartApproval, RestartFacts, RestartStep, WorkflowKind};
 pub use rotation::SealingRotation;
 pub use rule::{
     ApprovalDigest, ApprovalFacts, AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage,
