@@ -269,3 +269,66 @@ fn the_approval_signs_its_golden_canonical_body() {
         r#"{"auth_key":"b46bd9542401ebbac0c8ebd84b1f68c3ea7bd953fc9ae765c19df423350ae57f","cluster":"CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=","expires_at":901000,"issued_at":1000,"signer":"passkey"}"#
     );
 }
+
+#[test]
+fn a_key_approval_is_checked_in_one_fixed_order() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusted(&passkey);
+
+    let unreadable: KeyApproval = KeyApproval::Signed(
+        serde_json::from_value(serde_json::json!({"body": "{}", "signatures": []})).unwrap(),
+    );
+    assert!(matches!(
+        check(&unreadable, &trusted, &sealed()),
+        Err(AuthorityRefusal::Malformed {
+            purpose: Purpose::Workflow,
+            ..
+        })
+    ));
+
+    let stranger = SignerKey::Device(DeviceKey::from(Signer::from_seed(&[3; 32]).public()));
+    let mut named = Signed::sign(&approval(stranger), &device()).unwrap();
+    named.proposal = Some(super::super::proposal::stub_bundle());
+    assert_eq!(
+        check(&KeyApproval::Signed(named.clone()), &trusted, &sealed()),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a proposal"
+        })
+    );
+    named.proposal = None;
+    let no_cluster = |approval: &KeyApproval| {
+        verify(
+            approval,
+            &PrivateAccessFacts {
+                cluster: None,
+                trusted: &trusted,
+                sealed: &sealed(),
+                now: at(2_000),
+            },
+        )
+    };
+    assert_eq!(
+        no_cluster(&KeyApproval::Signed(named)),
+        Err(AuthorityRefusal::Mismatch {
+            field: "the signer"
+        })
+    );
+    assert_eq!(
+        no_cluster(&by_device()),
+        Err(AuthorityRefusal::NoClusterIdentity)
+    );
+
+    let elsewhere_and_late = verify(
+        &by_device(),
+        &PrivateAccessFacts {
+            cluster: Some(SealingPublicKey::from_bytes([8; 32])),
+            trusted: &trusted,
+            sealed: &Ciphertext::from_bytes(vec![4; 80]),
+            now: at(10_000_000),
+        },
+    );
+    assert_eq!(
+        elsewhere_and_late,
+        Err(AuthorityRefusal::Mismatch { field: "a Cluster" })
+    );
+}

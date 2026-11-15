@@ -664,4 +664,45 @@ mod tests {
         );
         assert!(serde_json::from_str::<JoinConfirmation>("\"abab\"").is_err());
     }
+
+    #[test]
+    fn a_join_signature_is_checked_in_one_fixed_order() {
+        let joiner = joiner();
+        let devices = [device(1)];
+        let unreadable: Signed<JoinApproval> =
+            serde_json::from_value(serde_json::json!({"body": "{}", "signatures": []})).unwrap();
+        assert_eq!(
+            verify_signature(&unreadable, &devices, now()).unwrap_err(),
+            AuthorityRefusal::Unsigned {
+                purpose: Purpose::Join
+            }
+        );
+
+        let two_and_late = JoinApproval {
+            admitting_machines: vec![joiner.id, MachineId::parse("b".repeat(32)).unwrap()],
+            ..approval(&joiner)
+        };
+        let late = now().plus(1_000_000);
+        assert_eq!(
+            verify_signature(&sign(&two_and_late, 1), &devices, late).unwrap_err(),
+            AuthorityRefusal::Mismatch {
+                field: "one admitting Machine"
+            }
+        );
+        let one_and_late = approval(&joiner);
+        assert_eq!(
+            verify_signature(&sign(&one_and_late, 1), &devices, late).unwrap_err(),
+            AuthorityRefusal::Expired
+        );
+        let other_signer = JoinApproval {
+            signer: device(2),
+            ..two_and_late
+        };
+        assert_eq!(
+            verify_signature(&sign(&other_signer, 1), &devices, late).unwrap_err(),
+            AuthorityRefusal::Mismatch {
+                field: "the signer"
+            }
+        );
+    }
 }

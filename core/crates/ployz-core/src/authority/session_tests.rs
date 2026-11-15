@@ -628,3 +628,17 @@ fn a_stop_or_start_runs_only_under_a_grant_whose_families_name_it() {
         "a start approval never stops"
     );
 }
+
+#[test]
+fn a_grant_that_does_not_cover_the_approval_is_refused_before_its_window_is_read() {
+    let passkey = Authenticator::es256(4);
+    let grant = granted(&passkey, &grant_body(60 * MINUTE), "webauthn.get");
+    let fix_api = Namespace::parse("fix-api").unwrap();
+    let signed = envelope(&approval(fix_api.clone(), vec![machine('2')]), grant);
+    assert_eq!(
+        check(&signed, &trusting(&passkey), &fix_api, ISSUED + 30 * MINUTE),
+        Err(AuthorityRefusal::Mismatch {
+            field: "an Environment"
+        })
+    );
+}

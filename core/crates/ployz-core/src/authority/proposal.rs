@@ -230,6 +230,26 @@ pub fn verify_step(
     Ok(Approved { body, by })
 }
 
+/// A bundle for a test that needs only an envelope to ride one.
+#[cfg(test)]
+pub(super) fn stub_bundle() -> Box<Signed<ProposalApproval>> {
+    let at = |millis| Timestamp::from_millis(millis).unwrap();
+    let bundle = ProposalApproval {
+        cluster: SealingPublicKey::from_bytes([9; 32]),
+        environment: Namespace::parse("app").unwrap(),
+        operation: OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
+        steps: vec![ProposalStep {
+            index: 0,
+            kind: StepKind::Deploy,
+            digest: StepDigest::of("a step"),
+        }],
+        issued_at: at(100_000),
+        expires_at: at(1_000_000),
+        signer: SignerKey::Device(crate::DeviceKey::from_bytes([1; 32])),
+    };
+    Box::new(Signed::unsigned(&bundle).unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

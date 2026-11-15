@@ -269,4 +269,34 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_channel_statement_is_checked_in_one_fixed_order() {
+        let unreadable: Signed<UpgradeChannel> =
+            serde_json::from_value(serde_json::json!({"body": "{}", "signatures": []})).unwrap();
+        assert_eq!(
+            verify(&unreadable, &devices(&device()), cluster(), now()).unwrap_err(),
+            AuthorityRefusal::Unsigned {
+                purpose: Purpose::Rule
+            }
+        );
+
+        let stranger = UpgradeChannel {
+            signer: SignerKey::Device(DeviceKey::from(Signer::from_seed(&[3; 32]).public())),
+            ..statement()
+        };
+        let signed = Signed::sign(&stranger, &device()).unwrap();
+        assert_eq!(
+            verify(
+                &signed,
+                &devices(&device()),
+                SealingPublicKey::from_bytes([8; 32]),
+                now()
+            )
+            .unwrap_err(),
+            AuthorityRefusal::Mismatch {
+                field: "the signer"
+            }
+        );
+    }
 }

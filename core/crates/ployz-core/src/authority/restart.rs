@@ -678,4 +678,48 @@ mod tests {
         assert_eq!(RestartStep::of(&out), Some((RestartStep::Out, &locator)));
         assert!(RestartStep::Hold < RestartStep::Stop && RestartStep::Stop < RestartStep::Start);
     }
+
+    #[test]
+    fn a_single_approval_is_checked_in_one_fixed_order() {
+        let approver = signer(1);
+        let host = machine(&[&approver]);
+        let sign = |body: &RestartApproval| Signed::sign(body, &approver).unwrap();
+        let mut body = RestartApproval {
+            signer: SignerKey::Device(device(&signer(2))),
+            proposal: Some(ProposalRef {
+                operation: approval(&approver).operation,
+                index: 0,
+            }),
+            ..approval(&approver)
+        };
+        let mut facts = host.facts();
+        facts.cluster = None;
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::NoClusterIdentity)
+        );
+        facts.cluster = Some(SealingPublicKey::from_bytes([9; 32]));
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::Mismatch {
+                field: "a proposal"
+            })
+        );
+        body.proposal = None;
+        body.cluster = SealingPublicKey::from_bytes([8; 32]);
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::Mismatch {
+                field: "the signer"
+            })
+        );
+        body.signer = SignerKey::Device(device(&approver));
+        facts.now = Timestamp::from_millis(2_000_000).unwrap();
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::Mismatch { field: "a Cluster" })
+        );
+        body.cluster = SealingPublicKey::from_bytes([9; 32]);
+        assert_eq!(verify(&sign(&body), &facts), Err(AuthorityRefusal::Expired));
+    }
 }

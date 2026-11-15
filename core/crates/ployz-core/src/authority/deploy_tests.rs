@@ -1341,3 +1341,92 @@ fn a_planted_escape_shows_as_text() {
         "{lines:#?}"
     );
 }
+
+#[test]
+fn a_deploy_approval_is_checked_in_one_fixed_order() {
+    let approver = signer(1);
+    let base = requested(requested_json());
+    let spec = resolved(&base);
+    let host = Machine::new(&[&approver]);
+    let sign = |body: &DeployApproval| Signed::sign(body, &approver).unwrap();
+    let mut body = DeployApproval {
+        signer: SignerKey::Device(DeviceKey::from(signer(2).public())),
+        proposal: Some(ProposalRef {
+            operation: proposal_operation(),
+            index: 0,
+        }),
+        ..approval(&approver, &base)
+    };
+    let mut facts = host.facts(Some(service(&spec)));
+    facts.cluster = None;
+    assert_eq!(
+        verify(&sign(&body), &facts).unwrap_err(),
+        AuthorityRefusal::NoClusterIdentity
+    );
+    facts.cluster = Some(SealingPublicKey::from_bytes([9; 32]));
+    assert_eq!(
+        verify(&sign(&body), &facts).unwrap_err(),
+        AuthorityRefusal::Mismatch {
+            field: "a proposal"
+        }
+    );
+    body.proposal = None;
+    body.cluster = SealingPublicKey::from_bytes([8; 32]);
+    body.machines = vec![machine_id('3')];
+    assert_eq!(
+        verify(&sign(&body), &facts).unwrap_err(),
+        AuthorityRefusal::Mismatch {
+            field: "the signer"
+        }
+    );
+    body.signer = SignerKey::Device(DeviceKey::from(approver.public()));
+    assert_eq!(
+        verify(&sign(&body), &facts).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "a Cluster" }
+    );
+    body.cluster = SealingPublicKey::from_bytes([9; 32]);
+    facts.now = Timestamp::from_millis(2_000_000).unwrap();
+    assert_eq!(
+        verify(&sign(&body), &facts).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "Machines" }
+    );
+    body.machines = vec![machine_id('1'), machine_id('2')];
+    assert_eq!(
+        verify(&sign(&body), &facts).unwrap_err(),
+        AuthorityRefusal::Expired
+    );
+}
+
+#[test]
+fn a_browser_approval_meets_its_grant_then_host_reach_then_its_window() {
+    let (_, reaching) = reaching_specs().remove(0);
+    let reaching = requested(reaching);
+    let made = resolved(&reaching);
+    let expired = Timestamp::from_millis(2_000_000).unwrap();
+
+    let (signed, host) = browser_approval_of(vec![ActionFamily::Restart], &reaching);
+    let mut facts = host.facts(Some(service(&made)));
+    facts.now = expired;
+    assert_eq!(
+        verify(&signed, &facts).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "an action" }
+    );
+
+    let (signed, host) = browser_approval_of(vec![ActionFamily::Deploy], &reaching);
+    let mut facts = host.facts(Some(service(&made)));
+    facts.now = expired;
+    assert_eq!(
+        verify(&signed, &facts).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: HOST_ACCESS }
+    );
+
+    let contained = requested(contained_json());
+    let made = resolved(&contained);
+    let (signed, host) = browser_approval_of(vec![ActionFamily::Deploy], &contained);
+    let mut facts = host.facts(Some(service(&made)));
+    facts.now = expired;
+    assert_eq!(
+        verify(&signed, &facts).unwrap_err(),
+        AuthorityRefusal::Expired
+    );
+}
