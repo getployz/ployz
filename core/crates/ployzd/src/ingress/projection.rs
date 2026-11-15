@@ -1,20 +1,16 @@
 //! The observer-local projection of ingress state that Caddy's config is rendered from.
 
-use ployz_core::labels;
 use ployz_core::{
-    CertificateHost, ContainerAddress, ContainerId, DeploymentLogId, HttpProtocol, IngressHost,
-    Machine, MachineId, PortPublication, ProxyRoutes, QualifiedService, ServiceContainer,
-    hostname_owners, published_hostnames,
+    CertificateHost, ContainerAddress, ContainerId, HttpProtocol, IngressHost, Machine, MachineId,
+    PortPublication, ProxyRoutes, QualifiedService, ServiceContainer, hostname_owners,
+    published_hostnames,
 };
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
-    fs, io,
-    num::{NonZeroU16, NonZeroUsize},
-    os::unix::fs::PermissionsExt,
-    path::Path,
+    collections::BTreeMap, fs, io, num::NonZeroU16, os::unix::fs::PermissionsExt, path::Path,
 };
 
+use super::publication_trace::{NO_TRACE, PublicationTrace};
 use crate::{
     corrosion::{CertificateChallenge, CertificateMaterial, CertificateRow, published_cover},
     filesystem::set_ployz_group,
@@ -27,6 +23,9 @@ pub(crate) struct IngressProjection {
     pub(super) machine: Machine,
     /// Hostname-grouped ingress routes in stable hostname order.
     pub(super) sites: Vec<IngressSite>,
+    /// What the public trace page reports per Service that owns a site. It is rendered, never
+    /// served: a change here alone leaves Caddy's config as it is until a route changes.
+    pub(super) traces: BTreeMap<QualifiedService, PublicationTrace>,
 }
 
 /// All projected ingress state for one hostname.
@@ -49,82 +48,6 @@ pub(crate) struct IngressPublication {
     pub(super) http: Option<Vec<IngressEndpoint>>,
     /// Ordered Serving Container endpoints published over HTTPS.
     pub(super) https: Option<Vec<IngressEndpoint>>,
-    /// What the public trace page reports about the owner.
-    pub(super) trace: PublicationTrace,
-}
-
-/// The owner facts the trace page shows, independent of health and endpoint eligibility.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
-pub(crate) struct PublicationTrace {
-    /// Deployment attempt of the owner's newest Service Container that is In, or when none
-    /// is, the newest held or pending one, or else the newest of any; when it carries a
-    /// valid one. So it changes only with the In set, which changes only with a route.
-    pub(super) deploy: Option<DeploymentLogId>,
-    /// Count of the owner's observed Service Containers per Machine, in any runtime state,
-    /// leaving out copies rotated Out: only their removal follows, and that removal changes
-    /// no route, so counting them would keep a deploy's old copies on the page.
-    pub(super) placement: BTreeMap<MachineId, NonZeroUsize>,
-}
-
-impl PublicationTrace {
-    /// Trace facts for every Service, from one pass over its observed Service Containers.
-    fn by_service<'a>(
-        containers: impl IntoIterator<Item = &'a ServiceContainer>,
-    ) -> BTreeMap<QualifiedService, Self> {
-        let mut grouped = BTreeMap::<
-            QualifiedService,
-            (BTreeMap<MachineId, NonZeroUsize>, &'a ServiceContainer),
-        >::new();
-        for container in containers {
-            let observation = container.as_observation();
-            let (placement, newest) = grouped
-                .entry(observation.identity())
-                .or_insert_with(|| (BTreeMap::new(), container));
-            if !retired(container) {
-                placement
-                    .entry(observation.machine_id)
-                    .and_modify(|count| *count = count.saturating_add(1))
-                    .or_insert(NonZeroUsize::MIN);
-            }
-            if (
-                naming_rank(container),
-                container.as_observation().recency_key(),
-            ) > (naming_rank(newest), newest.as_observation().recency_key())
-            {
-                *newest = container;
-            }
-        }
-        grouped
-            .into_iter()
-            .map(|(service, (placement, newest))| {
-                // Only the newest Container names the attempt; an older sibling's label would be stale.
-                let deploy = newest
-                    .as_observation()
-                    .labels
-                    .get(labels::DEPLOYMENT_ID)
-                    .and_then(|label| DeploymentLogId::parse(label).ok());
-                (service, Self { deploy, placement })
-            })
-            .collect()
-    }
-}
-
-/// Which copies name the trace page's deploy first: In, then held or pending, then Out. A
-/// copy leaving or joining without a route change then never changes the name.
-fn naming_rank(container: &ServiceContainer) -> u8 {
-    match container.as_observation().rotation() {
-        ployz_core::CopyRotation::In => 2,
-        ployz_core::CopyRotation::Held(_) | ployz_core::CopyRotation::Pending => 1,
-        ployz_core::CopyRotation::Out => 0,
-    }
-}
-
-/// Rotated Out for good: only its removal follows, which changes no route.
-fn retired(container: &ServiceContainer) -> bool {
-    matches!(
-        container.as_observation().rotation(),
-        ployz_core::CopyRotation::Out
-    )
 }
 
 /// One Serving Container address and container port.
@@ -246,6 +169,13 @@ impl IngressSite {
 }
 
 impl IngressProjection {
+    /// What the trace page reports about `owner`, which reports nothing for a Service it has
+    /// no copy of.
+    #[must_use]
+    pub(super) fn trace(&self, owner: &QualifiedService) -> &PublicationTrace {
+        self.traces.get(owner).unwrap_or(&NO_TRACE)
+    }
+
     #[must_use]
     pub(crate) fn derive(
         machine: &Machine,
@@ -317,22 +247,20 @@ impl IngressProjection {
                 site.certificate.get_or_insert_default().material = Some(material.clone());
             }
         }
-        let traces = PublicationTrace::by_service(containers);
+        let mut traces = PublicationTrace::by_service(containers);
+        traces.retain(|service, _| {
+            sites
+                .values()
+                .any(|site| site.owner.as_ref() == Some(service))
+        });
         let sites = sites
             .into_iter()
-            .map(|(hostname, site)| {
-                let trace = site
-                    .owner
-                    .as_ref()
-                    .and_then(|owner| traces.get(owner))
-                    .cloned()
-                    .unwrap_or_default();
-                site.into_site(hostname, trace)
-            })
+            .map(|(hostname, site)| site.into_site(hostname))
             .collect();
         Self {
             machine: machine.clone(),
             sites,
+            traces,
         }
     }
 }
@@ -359,12 +287,11 @@ impl SiteBuilder {
         }
     }
 
-    fn into_site(self, hostname: IngressHost, trace: PublicationTrace) -> IngressSite {
+    fn into_site(self, hostname: IngressHost) -> IngressSite {
         let publication = self.owner.map(|owner| IngressPublication {
             owner,
             http: self.http,
             https: self.https,
-            trace,
         });
         IngressSite {
             hostname,
@@ -399,8 +326,7 @@ mod tests {
     use ployz_core::{ContainerAddress, IngressHost, QualifiedService};
 
     use super::{
-        IngressEndpoint, IngressPublication, IngressSite, ProjectedCertificate, PublicationTrace,
-        Serve, Unrouted,
+        IngressEndpoint, IngressPublication, IngressSite, ProjectedCertificate, Serve, Unrouted,
     };
     use crate::{
         corrosion::CertificateChallenge, ingress::projection::HttpProtocol,
@@ -443,7 +369,6 @@ mod tests {
                 owner: QualifiedService::parse("app/web").unwrap(),
                 http,
                 https,
-                trace: PublicationTrace::default(),
             }),
             certificate: (material || challenge).then(|| ProjectedCertificate {
                 challenge: challenge.then(|| {

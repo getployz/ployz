@@ -7,8 +7,7 @@ use ployz_core::{CLOUDFLARE_RANGES, MachineId, tunnel_origin_listener};
 use std::fmt::Write as _;
 
 use crate::ingress::{
-    error_page::ErrorPage,
-    projection::{IngressEndpoint, PublicationTrace},
+    error_page::ErrorPage, projection::IngressEndpoint, publication_trace::PublicationTrace,
 };
 
 /// Path the trace page answers on every routed hostname.

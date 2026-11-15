@@ -17,11 +17,9 @@ fn input(projection: IngressProjection, caddy: Option<ContainerId>) -> CaddyInpu
 }
 
 fn clear_traces(projection: &mut IngressProjection) {
-    for site in &mut projection.sites {
-        if let Some(publication) = &mut site.publication {
-            publication.trace.deploy = Some(DeploymentLogId::parse("elsewhere").unwrap());
-            publication.trace.placement.clear();
-        }
+    for trace in projection.traces.values_mut() {
+        trace.deploy = Some(DeploymentLogId::parse("elsewhere").unwrap());
+        trace.placement.clear();
     }
 }
 
@@ -127,7 +125,7 @@ fn an_unloaded_certificate_is_left_out_with_its_error_untouched() {
 
 #[test]
 fn a_refused_certificate_is_left_out_and_named_and_forgotten_once_its_site_is_gone() {
-    let mut projection = renderer_projection();
+    let projection = renderer_projection();
     let stem = secure_stem(&projection);
 
     let mut certificates = CaddyCertificates::default();
@@ -137,7 +135,7 @@ fn a_refused_certificate_is_left_out_and_named_and_forgotten_once_its_site_is_go
     certificates
         .refused
         .insert("gone".to_owned(), "old".to_owned());
-    certificates.quarantine(&mut projection);
+    let projection = certificates.quarantine(projection);
 
     let certificate = secure(&projection).certificate.as_ref().unwrap();
     assert!(certificate.material.is_none());

@@ -1,7 +1,7 @@
 //! Trace page facts in the projection and their rendering.
 
 use super::{ingress, observation, projection};
-use crate::ingress::projection::{IngressProjection, PublicationTrace};
+use crate::ingress::{projection::IngressProjection, publication_trace::PublicationTrace};
 use ployz_core::labels;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DeploymentLogId,
@@ -54,13 +54,14 @@ fn derive(containers: Vec<ContainerObservation>) -> IngressProjection {
 }
 
 fn trace(projection: &IngressProjection) -> &PublicationTrace {
-    &projection
+    let owner = &projection
         .sites
         .iter()
         .find(|site| site.hostname.as_str() == "api.example")
         .and_then(|site| site.publication.as_ref())
         .expect("api.example is published")
-        .trace
+        .owner;
+    projection.trace(owner)
 }
 
 fn placement(entries: &[(char, usize)]) -> BTreeMap<MachineId, NonZeroUsize> {
