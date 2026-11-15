@@ -75,6 +75,7 @@ Staging is deployed separately.
 
 - Writes one-line pointer files (`v0.2.0`) on the `channels` branch: the tag's line pointer (`v0/stable` or `v0/beta`) and the unscoped one (`stable` or `beta`). A stable tag also writes both `beta` pointers.
 - A pointer only moves to a higher semver tag. Publishing an older-line fix moves that line's pointers only; an older tag moves nothing.
+- The `v0` pointers stay on the minor they hold, since 0.3 Servers and Cloud read them and can't drive 0.4. A 0.4 tag moves only the unscoped pointers, so 0.4 Servers upgrade by exact version until 0.4 has its own line pointer.
 - Only when the unscoped `stable` pointer names the published tag: regenerates `Formula/ployz.rb` from `checksums.txt` and pushes `getployz/homebrew-ployz`.
 
 Promotion runs one at a time. GitHub keeps only one waiting run, so publishing three releases in quick succession cancels the middle one's promotion: re-run any cancelled **Promote published release** run. Re-running is safe; pointers only move forward.
