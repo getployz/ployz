@@ -20,7 +20,7 @@ use thiserror::Error;
 
 mod wire;
 
-use wire::{CodeReply, DeviceTokenError, LogoutReply, SessionReply, TokenError, TokenReply};
+use wire::{CodeReply, DeviceTokenError, Reply, SessionReply, TokenError, TokenReply};
 
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// RFC 8628 §3.5: a `slow_down` answer adds five seconds to the polling interval.
@@ -468,7 +468,7 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
                     Some(LoginError::NotMember(signed_in.organization.slug.clone())),
                 ),
                 Ok(response) => {
-                    let reply: LogoutReply = decode(ensure_success(response).await?)?;
+                    let reply: Reply = decode(ensure_success(response).await?)?;
                     (Some(reply.signed_out.id), reply.servers, None)
                 }
             };

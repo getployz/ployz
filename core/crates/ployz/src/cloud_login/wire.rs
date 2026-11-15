@@ -60,13 +60,39 @@ pub(super) struct SessionFields {
     pub(super) active_organization_slug: Option<String>,
 }
 
+/// Named `Reply` and `Device` because serde's decode errors name the struct, and those
+/// sentences reach the user as they always did.
 #[derive(Deserialize)]
-pub(super) struct LogoutReply {
-    pub(super) signed_out: SignedOutDevice,
+pub(super) struct Reply {
+    pub(super) signed_out: Device,
     pub(super) servers: crate::cloud_account::ServerClears,
 }
 
 #[derive(Deserialize)]
-pub(super) struct SignedOutDevice {
+pub(super) struct Device {
     pub(super) id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Device, Reply};
+
+    #[test]
+    fn a_logout_reply_that_does_not_decode_names_the_structs_it_always_named() {
+        let error = |body: &str| {
+            serde_json::from_str::<Reply>(body)
+                .err()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            error("null"),
+            "invalid type: null, expected struct Reply at line 1 column 4"
+        );
+        assert_eq!(
+            error(r#"{"signed_out":null,"servers":{"confirmed":[],"unconfirmed":[]}}"#),
+            "invalid type: null, expected struct Device at line 1 column 18"
+        );
+        assert!(serde_json::from_str::<Device>(r#"{"id":1}"#).is_err());
+    }
 }
