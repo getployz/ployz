@@ -9,7 +9,7 @@ use super::prepare::BuildPreference;
 use crate::build::{BuildSpec, BuiltService, CapturedBuild, Recipe};
 use ployz_core::{
     DeployIntent, RpcError, ServiceName,
-    config::{BuildMethod, ServiceBuildConfig, ServiceSource},
+    config::{BuildMethod, LowerDeploymentInput, ServiceBuildConfig, ServiceSource},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -419,20 +419,34 @@ struct Frozen {
     uploaded: BTreeMap<ServiceName, UploadDigest>,
 }
 
+/// What a build's fingerprint covers about its source and recipe. Hashed through
+/// `serde_json::to_value`, which sorts its keys, so its bytes are the ones the Build
+/// receipts hold.
+#[derive(Serialize)]
+struct BuildIdentity<'a> {
+    version: u8,
+    sdk: &'a str,
+    buildkit: &'a str,
+    source: Value,
+    root: &'a str,
+    build: &'a ServiceBuildConfig,
+}
+
 fn freeze(
     mut deployment: Value,
     source_commits: &mut BTreeMap<ServiceName, String>,
     uploads: &mut BTreeMap<ServiceName, UploadDigest>,
 ) -> Result<Frozen, RpcError> {
     let snapshots = deployment
-        .get_mut("snapshots")
-        .and_then(Value::as_array_mut)
+        .get("snapshots")
+        .and_then(Value::as_array)
         .ok_or_else(|| invalid("deployment snapshots must be an array"))?;
     let mut checkouts = BTreeMap::new();
     let mut identities = BTreeMap::new();
     let mut uploaded = BTreeMap::new();
+    let mut built = BTreeMap::new();
     let mut seen = BTreeSet::new();
-    for snapshot in snapshots {
+    for (index, snapshot) in snapshots.iter().enumerate() {
         let config = ployz_core::config::parse_service_config(snapshot["config"].clone())
             .map_err(invalid)?;
         let name = &config.settings.private_dns;
@@ -475,33 +489,22 @@ fn freeze(
         if let Some(source) = source {
             identities.insert(
                 name.clone(),
-                json!({
-                    "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE.as_str(),
-                    "source": source, "root": root_dir, "build": config.settings.build,
-                }),
+                serde_json::to_value(BuildIdentity {
+                    version: 1,
+                    sdk: VERSION,
+                    buildkit: ployz_build::BUILDKIT_IMAGE.as_str(),
+                    source,
+                    root: root_dir,
+                    build: &config.settings.build,
+                })
+                .expect("build identity serializes"),
             );
         }
         checkouts.insert(
             name.clone(),
             (root_dir.clone(), config.settings.build.clone()),
         );
-        snapshot
-            .as_object_mut()
-            .expect("validated snapshot object")
-            .insert(
-                "builtWith".into(),
-                json!(config.settings.build.build_method),
-            );
-        // This tag never escapes preparation: binding replaces it with verified content.
-        snapshot
-            .get_mut("config")
-            .and_then(Value::as_object_mut)
-            .expect("validated config object")
-            .insert(
-                "source".into(),
-                json!({"type":"image", "version":1,
-            "image":ployz_core::pending_image(&name), "credentials":{"type":"none"}}),
-            );
+        built.insert(index, (config.settings.build.build_method, name.clone()));
     }
     if !source_commits.is_empty() {
         return Err(invalid("checkout supplied for a non-Git service"));
@@ -509,9 +512,24 @@ fn freeze(
     if !uploads.is_empty() {
         return Err(invalid("upload supplied for a Service that pulls an image"));
     }
-    let intent =
-        ployz_core::config::lower_deployment(serde_json::from_value(deployment).map_err(invalid)?)
-            .map_err(invalid)?;
+    // Whatever `builtWith` the caller sent is replaced, never read: it is cleared before the
+    // input is typed, as the key was overwritten before it was parsed.
+    for snapshot in deployment
+        .get_mut("snapshots")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        snapshot.insert("builtWith".into(), Value::Null);
+    }
+    let mut input: LowerDeploymentInput = serde_json::from_value(deployment).map_err(invalid)?;
+    for (index, snapshot) in input.snapshots.iter_mut().enumerate() {
+        if let Some((method, name)) = built.get(&index) {
+            snapshot.build_with(*method, name);
+        }
+    }
+    let intent = ployz_core::config::lower_deployment(input).map_err(invalid)?;
     Ok(Frozen {
         intent,
         checkouts,
@@ -732,6 +750,74 @@ mod tests {
                 error.code,
                 RpcErrorCode::InvalidArgument,
                 "{refused}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fingerprint_hashes_the_identity_as_one_key_sorted_object() {
+        let deployment = json!({"namespace": "app", "snapshots": [{"config": {
+            "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
+            "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
+                "access":{"type":"public"}, "rootDir":"/app", "branch":{"type":"connected", "name":"main"}},
+            "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
+        }}]});
+        let commit = "a".repeat(40);
+        let web = ServiceName::parse("web").unwrap();
+        let settings = ployz_core::config::parse_service_config(
+            deployment.pointer("/snapshots/0/config").unwrap().clone(),
+        )
+        .unwrap()
+        .settings;
+        let build = serde_json::to_string(&json!(settings.build)).unwrap();
+        let identity = format!(
+            r#"{{"build":{build},"buildkit":"{}","root":"/app","sdk":"{VERSION}","source":{{"commit":"{commit}","repository":42,"type":"git"}},"version":1}}"#,
+            ployz_build::BUILDKIT_IMAGE.as_str(),
+        );
+        let environment = frozen_intent(deployment.clone())
+            .unwrap()
+            .target
+            .first()
+            .unwrap()
+            .container
+            .environment
+            .clone();
+        let read = serde_json::to_string(&environment).unwrap();
+        assert_eq!(read, r#"{"PORT":"8080"}"#);
+        let expected = hex::encode(Sha256::digest(format!("[{identity},{read}]")));
+        let fingerprints =
+            expected_fingerprints(deployment, BTreeMap::from([(web.clone(), commit)])).unwrap();
+        assert_eq!(fingerprints.get(&web), Some(&expected));
+    }
+
+    #[test]
+    fn a_builtwith_the_caller_sent_is_replaced_whatever_it_holds() {
+        let snapshot = |built_with: Option<Value>| {
+            let mut snapshot = json!({"config": {
+                "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
+                "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
+                    "access":{"type":"public"}, "rootDir":"/app", "branch":{"type":"connected", "name":"main"}},
+                "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
+            }});
+            if let (Some(built_with), Some(object)) = (built_with, snapshot.as_object_mut()) {
+                object.insert("builtWith".into(), built_with);
+            }
+            json!({"namespace": "app", "snapshots": [snapshot]})
+        };
+        let expected = serde_json::to_value(frozen_intent(snapshot(None)).unwrap()).unwrap();
+        for sent in [
+            json!("garbage"),
+            json!(5),
+            json!({"a": 1}),
+            json!(null),
+            json!("dockerfile"),
+        ] {
+            let intent = frozen_intent(snapshot(Some(sent.clone())))
+                .unwrap_or_else(|error| panic!("builtWith {sent} is replaced: {error:?}"));
+            assert_eq!(
+                serde_json::to_value(intent).unwrap(),
+                expected,
+                "builtWith {sent}"
             );
         }
     }

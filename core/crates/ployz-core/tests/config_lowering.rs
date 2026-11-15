@@ -819,3 +819,38 @@ fn lowering_names_the_first_faulty_part_in_lowering_order() {
         )
     );
 }
+
+#[test]
+fn a_build_input_keeps_one_service_and_drops_configs_removals_and_selection() {
+    use ployz_core::ServiceName;
+    use ployz_core::config::{BuildMethod, LowerDeploymentInput};
+    let input: LowerDeploymentInput = serde_json::from_value(json!({
+        "namespace": "production",
+        "snapshots": [
+            {"config": {"privateDns": "web"}, "resolvedEnv": {}},
+            {"config": {"privateDns": "api"}, "resolvedEnv": {}},
+        ],
+        "configs": [{"configResourceId": "cfg", "name": "sentry",
+            "files": {"config.yml": {"content": "dsn", "mode": "0444", "uid": 0, "gid": 0}}}],
+        "selected": [{"name": "web"}, {"name": "old"}],
+        "removals": ["old"],
+    }))
+    .unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    let mut narrowed = serde_json::to_value(input.narrowed_to(&web)).unwrap();
+    assert_eq!(narrowed["selected"], json!([]));
+    assert_eq!(narrowed["snapshots"].as_array().unwrap().len(), 1);
+    for key in ["configs", "removals"] {
+        assert!(narrowed.get(key).is_none(), "{key}");
+    }
+
+    let mut snapshot: LowerDeploymentInput = serde_json::from_value(narrowed.take()).unwrap();
+    let snapshot = &mut snapshot.snapshots[0];
+    snapshot.build_with(BuildMethod::Railpack, &web);
+    assert_eq!(snapshot.built_with, Some(BuildMethod::Railpack));
+    assert_eq!(
+        snapshot.config["source"],
+        json!({"type": "image", "version": 1,
+            "image": ployz_core::pending_image(&web), "credentials": {"type": "none"}})
+    );
+}

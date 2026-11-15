@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use super::stream::{container_env, frames, newest_lines};
 use crate::connect::{Client, ConnectError};
+use crate::sdk::sealed::{Names, values_under};
 
 /// How long reading one Machine's lines for an agent may take, env included.
 const SERVICE_TAIL_READ: Duration = Duration::from_secs(10);
@@ -75,7 +76,7 @@ pub(crate) async fn service_tail(
                 .map(|container| container_env(client, machine, *container)),
         )
         .await;
-        let mut values = SealedValues::none();
+        let mut read_envs = Vec::new();
         let mut readable = Vec::new();
         let mut withheld = Vec::new();
         for (container, env) in containers.iter().zip(envs) {
@@ -88,10 +89,7 @@ pub(crate) async fn service_tail(
                 );
                 continue;
             };
-            values.extend(
-                env.into_iter()
-                    .filter(|(name, _)| sealed.is_none_or(|sealed| sealed.contains(name))),
-            );
+            read_envs.push(env);
             readable.push(*container);
         }
         if readable.is_empty() {
@@ -102,6 +100,7 @@ pub(crate) async fn service_tail(
                 withheld,
             }));
         }
+        let values = values_under(read_envs.into_iter().flatten(), &Names::held(sealed));
         let frames = frames(
             newest
                 .into_iter()

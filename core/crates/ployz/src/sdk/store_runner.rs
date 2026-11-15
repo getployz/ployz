@@ -31,6 +31,7 @@ use ts_rs::TS;
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::run_support::{log_line, only};
+use super::sealed::{Names, values_under};
 use super::{
     Dialed, ImageCleanup, PreparedDeploy, Running, RunningBuild, Session, Unprepared,
     connect_expecting,
@@ -550,12 +551,10 @@ impl Scrub {
     /// The values under `names` from the claim and from `env`, what the Container's
     /// Machine reports: an image can supply a variable the claim never named.
     fn values(&self, names: &BTreeSet<String>, env: BTreeMap<String, String>) -> SealedValues {
-        self.claim
-            .iter()
-            .filter(|(key, _)| names.contains(key))
-            .cloned()
-            .chain(env.into_iter().filter(|(key, _)| names.contains(key)))
-            .collect()
+        values_under(
+            self.claim.iter().cloned().chain(env),
+            &Names::Only(names.clone()),
+        )
     }
 }
 
@@ -776,7 +775,7 @@ impl Run {
         for (index, target) in targets.iter().enumerate() {
             let service = &target.service;
             let mut input = PreparationInput {
-                deployment: only(&claimed.input, service),
+                deployment: only(&claimed.input, service)?,
                 build_receipts: one(service, Some(receipts(claimed, service))),
                 build_index: index,
                 preferred_machine: match &target.build {
