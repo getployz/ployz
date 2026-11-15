@@ -83,9 +83,13 @@ pub(super) fn write_error_page(output: &mut String) {
 		}
 		# Headers set on the failed route do not reach this response.
 		import ployz_headers {args[0]}
+		# An HTTP/2 connection that finishes its handshake during a reload never gets the
+		# old config's GOAWAY and keeps routing to removed containers (caddy#8078). Closing
+		# the connection on any error moves the client onto the current config.
 		header {
 			ployz-error {ployz_error}
 			cache-control no-store
+			connection close
 		}
 		@not_running vars {ployz_error} "##,
     );
