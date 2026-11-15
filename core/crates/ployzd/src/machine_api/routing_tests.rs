@@ -580,6 +580,63 @@ async fn client_streaming_methods_reject_fanout_before_reading_input() {
     }
 }
 
+/// The router refuses an Operator the one route no statement admits, with the words and
+/// capability the handler answered it with, and serves a Full caller and every other route.
+#[tokio::test]
+async fn an_operator_is_refused_the_route_no_statement_admits_and_nothing_else() {
+    use ployz_core::{authority::coverage::AUTHORIZATION, op, rpc::Rpc};
+
+    let outright: Vec<_> = AUTHORIZATION
+        .iter()
+        .filter(|(capability, _)| ployz_core::authority::coverage::refuses_operator(capability))
+        .map(|(capability, _)| *capability)
+        .collect();
+    assert_eq!(outright, [ployz_core::BUILD_CAPABILITY]);
+
+    let local = machine('1', "local", 1);
+    let proxy = MachineProxy::new(Routes::new(EchoService::default()), local.id, 1, None);
+    let call = |path: &str, operator: bool| {
+        let request = http::Request::builder()
+            .uri(path)
+            .header("content-type", "application/grpc");
+        let request = if operator {
+            request.header(ployz_core::OPERATOR_SCOPE_HEADER, "1")
+        } else {
+            request
+        };
+        request.body(Body::empty()).unwrap()
+    };
+
+    let refused = proxy
+        .dispatch_with_snapshot(call(op::Build::PATH, true), std::slice::from_ref(&local))
+        .await;
+    let status = tonic::Status::from_header_map(refused.headers()).unwrap();
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+    assert_eq!(
+        status.message(),
+        "This server runs only builds an approved device starts."
+    );
+    assert_eq!(
+        ployz_core::rpc::status_details(status.details()),
+        Some(serde_json::json!({ "capability": ployz_core::BUILD_CAPABILITY }))
+    );
+
+    for (path, operator) in [
+        (op::Build::PATH, false),
+        (op::InspectContainer::PATH, true),
+        (op::MintBuildGrant::PATH, true),
+    ] {
+        let served = proxy
+            .dispatch_with_snapshot(call(path, operator), std::slice::from_ref(&local))
+            .await;
+        assert_eq!(
+            tonic::Status::from_header_map(served.headers()).map(|status| status.code()),
+            None,
+            "{path} from an Operator: {operator}"
+        );
+    }
+}
+
 /// A Machine whose record predates enforcement serves an Operator no route a statement must
 /// admit, since the keys it would check them against were never vouched for. Its upgrade
 /// and its activation still reach it, and so does a Full caller's call.

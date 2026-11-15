@@ -255,6 +255,9 @@ impl MachineProxy {
         {
             return refused;
         }
+        if let Some(refused) = refuse_operator(&request) {
+            return refused;
+        }
         let mut local = self.local.clone();
         poll_fn(|context| Service::<http::Request<Body>>::poll_ready(&mut local, context))
             .await
@@ -514,6 +517,21 @@ impl Service<http::Request<Body>> for MachineProxy {
             Ok(proxy.dispatch(request, routing, &visible).await)
         })
     }
+}
+
+/// An Operator's call to a route the coverage table says no statement admits, refused before
+/// its request stream is read, so no source or recipe is taken. Only `Build` is one today,
+/// and a test holds the table to that, since the refusal below is `Build`'s.
+fn refuse_operator(request: &http::Request<Body>) -> Option<http::Response<Body>> {
+    if !Provenance::of_headers(request.headers()).operator() {
+        return None;
+    }
+    let capability = ployz_core::capability_of(request.uri().path())?;
+    if !ployz_core::authority::coverage::refuses_operator(capability) {
+        return None;
+    }
+    let error = crate::machine::LocalMachineError::BuildRefused { capability };
+    Some(super::local::build_refused(&error, capability).into_http())
 }
 
 /// An Operator's call to a route a statement must admit, refused while this Machine awaits

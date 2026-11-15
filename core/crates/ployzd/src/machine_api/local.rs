@@ -885,13 +885,6 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<Self::BuildStream>, Status> {
-        // Refused before the request stream is read, so no source or recipe is taken.
-        if Provenance::of(&request).operator() {
-            let error = LocalMachineError::BuildRefused {
-                capability: ployz_core::BUILD_CAPABILITY,
-            };
-            return Err(build_refused(&error, ployz_core::BUILD_CAPABILITY));
-        }
         let containers = self
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
@@ -1988,7 +1981,7 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
 }
 
 /// The refusal an enforcing Machine answers an Operator's `Build` or `MintBuildGrant` with.
-fn build_refused(error: &LocalMachineError, capability: &'static str) -> Status {
+pub(super) fn build_refused(error: &LocalMachineError, capability: &'static str) -> Status {
     ployz_core::rpc::hinted_status(
         tonic::Code::PermissionDenied,
         error,
