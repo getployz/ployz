@@ -433,7 +433,7 @@ struct BuildIdentity<'a> {
 }
 
 fn freeze(
-    deployment: Value,
+    mut deployment: Value,
     source_commits: &mut BTreeMap<ServiceName, String>,
     uploads: &mut BTreeMap<ServiceName, UploadDigest>,
 ) -> Result<Frozen, RpcError> {
@@ -511,6 +511,17 @@ fn freeze(
     }
     if !uploads.is_empty() {
         return Err(invalid("upload supplied for a Service that pulls an image"));
+    }
+    // Whatever `builtWith` the caller sent is replaced, never read: it is cleared before the
+    // input is typed, as the key was overwritten before it was parsed.
+    for snapshot in deployment
+        .get_mut("snapshots")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        snapshot.insert("builtWith".into(), Value::Null);
     }
     let mut input: LowerDeploymentInput = serde_json::from_value(deployment).map_err(invalid)?;
     for (index, snapshot) in input.snapshots.iter_mut().enumerate() {
@@ -777,6 +788,38 @@ mod tests {
         let fingerprints =
             expected_fingerprints(deployment, BTreeMap::from([(web.clone(), commit)])).unwrap();
         assert_eq!(fingerprints.get(&web), Some(&expected));
+    }
+
+    #[test]
+    fn a_builtwith_the_caller_sent_is_replaced_whatever_it_holds() {
+        let snapshot = |built_with: Option<Value>| {
+            let mut snapshot = json!({"config": {
+                "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
+                "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
+                    "access":{"type":"public"}, "rootDir":"/app", "branch":{"type":"connected", "name":"main"}},
+                "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
+            }});
+            if let (Some(built_with), Some(object)) = (built_with, snapshot.as_object_mut()) {
+                object.insert("builtWith".into(), built_with);
+            }
+            json!({"namespace": "app", "snapshots": [snapshot]})
+        };
+        let expected = serde_json::to_value(frozen_intent(snapshot(None)).unwrap()).unwrap();
+        for sent in [
+            json!("garbage"),
+            json!(5),
+            json!({"a": 1}),
+            json!(null),
+            json!("dockerfile"),
+        ] {
+            let intent = frozen_intent(snapshot(Some(sent.clone())))
+                .unwrap_or_else(|error| panic!("builtWith {sent} is replaced: {error:?}"));
+            assert_eq!(
+                serde_json::to_value(intent).unwrap(),
+                expected,
+                "builtWith {sent}"
+            );
+        }
     }
 
     #[test]
