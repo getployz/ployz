@@ -14,6 +14,7 @@ pub mod coverage;
 pub mod deploy;
 pub mod join;
 pub mod keys;
+mod open;
 pub mod preview;
 pub mod private_access;
 pub mod proposal;

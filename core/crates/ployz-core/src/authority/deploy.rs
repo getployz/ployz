@@ -18,10 +18,11 @@ use ts_rs::TS;
 use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
-    proposal::{self, ProposalRef, StepBody, StepKind},
+    open::{covered, open_approval},
+    proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
     rule_draft::{Signs, settings},
-    session::{ActionFamily, GrantScope},
+    session::ActionFamily,
     shown::Shown,
     trusted_key::TrustedKeys,
 };
@@ -522,6 +523,9 @@ impl StepBody for DeployApproval {
     fn namespace(&self) -> &Namespace {
         &self.namespace
     }
+    fn machines(&self) -> &[MachineId] {
+        &self.machines
+    }
     fn window(&self) -> (Timestamp, Timestamp) {
         (self.issued_at, self.expires_at)
     }
@@ -691,12 +695,7 @@ pub fn verify(
     approval: &Signed<DeployApproval>,
     facts: &DeployFacts<'_>,
 ) -> Result<DeployApproved, AuthorityRefusal> {
-    let (body, by, cluster) = match &approval.proposal {
-        Some(bundle) => {
-            proposal::open_step(bundle, approval, facts.trusted, facts.cluster, facts.now)?
-        }
-        None => open_signed(approval, facts)?,
-    };
+    let (body, by, cluster) = open_approval(approval, facts.trusted, facts.cluster, facts.now)?;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),
         (
@@ -705,18 +704,9 @@ pub fn verify(
         ),
         (field::ENVIRONMENT, &body.namespace == facts.namespace),
     ])?;
-    if let Approver::Browser { grant, .. } = &by {
-        grant.body.covers(&GrantScope {
-            cluster,
-            environment: &body.namespace,
-            machines: &body.machines,
-            family: ActionFamily::Deploy,
-            issued_at: body.issued_at,
-            expires_at: body.expires_at,
-        })?;
-        if let Some(creation) = facts.creation {
-            refuse_host_reach(creation.spec, facts.namespace)?;
-        }
+    covered(&by, cluster, &body, ActionFamily::Deploy)?;
+    if let (Approver::Browser { .. }, Some(creation)) = (&by, facts.creation) {
+        refuse_host_reach(creation.spec, facts.namespace)?;
     }
     super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
     if let Some(creation) = facts.creation {
@@ -789,29 +779,6 @@ pub fn sealed_scope_allows(by: &Approver, spec: &ResolvedServiceSpec) -> bool {
             .sealed_identity
             .as_ref()
             .is_some_and(|identity| identity.environment == grant.body.environment_id)
-}
-
-fn open_signed(
-    approval: &Signed<DeployApproval>,
-    facts: &DeployFacts<'_>,
-) -> Result<(DeployApproval, Approver, SealingPublicKey), AuthorityRefusal> {
-    let approvers = approval.approvers(facts.trusted, facts.now)?;
-    let body = approval.open()?;
-    let Some(cluster) = facts.cluster else {
-        return Err(AuthorityRefusal::NoClusterIdentity);
-    };
-    if body.proposal.is_some() {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
-        });
-    }
-    let by = approvers
-        .into_iter()
-        .find(|approver| approver.signs_as(body.signer))
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })?;
-    Ok((body, by, cluster))
 }
 
 fn creation_digest(

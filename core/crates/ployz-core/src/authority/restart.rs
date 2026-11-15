@@ -7,9 +7,10 @@ use ts_rs::TS;
 use super::{
     canonical::{self, Timestamp},
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
+    open::{covered, open_approval},
     proposal::ProposalRef,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    session::{ActionFamily, GrantScope},
+    session::ActionFamily,
     trusted_key::TrustedKeys,
 };
 use crate::{
@@ -188,7 +189,7 @@ pub struct Approved {
 /// Check `approval` approves exactly this request, signed by one of this Machine's Devices
 /// or by a browser key a trusted passkey lent a grant covering it. A passkey itself signs
 /// no envelope, so it is never among the signers. A step of a proposal carries the signed
-/// bundle instead of a signature and is checked by [`super::proposal::verify_step`].
+/// bundle instead of a signature and is opened by [`super::proposal::open_step`].
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature or grant problem, a
@@ -201,48 +202,13 @@ pub fn verify(
     approval: &Signed<RestartApproval>,
     facts: &RestartFacts<'_>,
 ) -> Result<Approved, AuthorityRefusal> {
-    let approved = match &approval.proposal {
-        Some(bundle) => super::proposal::verify_step(bundle, approval, facts)?,
-        None => verify_single(approval, facts)?,
-    };
-    if approved.body.kind != WorkflowKind::Stop && matches!(approved.by, Approver::Browser { .. }) {
+    let (body, by, cluster) = open_approval(approval, facts.trusted, facts.cluster, facts.now)?;
+    body.matches(cluster, facts)?;
+    covered(&by, cluster, &body, body.kind.family())?;
+    verify_time(&body, facts.now)?;
+    if body.kind != WorkflowKind::Stop && matches!(by, Approver::Browser { .. }) {
         super::deploy::refuse_host_reach(facts.spec, facts.namespace)?;
     }
-    Ok(approved)
-}
-
-fn verify_single(
-    approval: &Signed<RestartApproval>,
-    facts: &RestartFacts<'_>,
-) -> Result<Approved, AuthorityRefusal> {
-    let approvers = approval.approvers(facts.trusted, facts.now)?;
-    let body = approval.open()?;
-    let Some(cluster) = facts.cluster else {
-        return Err(AuthorityRefusal::NoClusterIdentity);
-    };
-    if body.proposal.is_some() {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
-        });
-    }
-    let by = approvers
-        .into_iter()
-        .find(|approver| approver.signs_as(body.signer))
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })?;
-    body.matches(cluster, facts)?;
-    if let Approver::Browser { grant, .. } = &by {
-        grant.body.covers(&GrantScope {
-            cluster,
-            environment: &body.namespace,
-            machines: &body.machines,
-            family: body.kind.family(),
-            issued_at: body.issued_at,
-            expires_at: body.expires_at,
-        })?;
-    }
-    verify_time(&body, facts.now)?;
     Ok(Approved { body, by })
 }
 

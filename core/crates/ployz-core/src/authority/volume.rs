@@ -17,6 +17,7 @@ use super::{
         Approver, MachineSigned, MachineStatement, Purpose, Signed, SignerKey, SigningPublicKey,
         Statement,
     },
+    open::the_signer,
     proposal::StepDigest,
     refusal::{AuthorityRefusal, field, first_mismatch},
     shown::Shown,
@@ -683,15 +684,9 @@ pub fn verify(
             field: "a proposal",
         });
     }
-    let by = approvers
-        .into_iter()
-        .find(|approver| {
-            matches!(approver, Approver::Device(_) | Approver::Passkey(_))
-                && approver.signs_as(body.signer)
-        })
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })?;
+    let by = the_signer(approvers, body.signer, |approver| {
+        matches!(approver, Approver::Device(_) | Approver::Passkey(_))
+    })?;
     let cluster = facts.cluster.ok_or(AuthorityRefusal::NoClusterIdentity)?;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),
