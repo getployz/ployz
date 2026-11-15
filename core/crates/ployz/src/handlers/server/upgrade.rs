@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     cloud_account::{self, Credential, Settled, StoreCallError},
+    cloud_reply::{self, EndedCode},
     cluster::Client,
     connect::ConnectError,
     ingress::Followed,
@@ -148,6 +149,57 @@ struct CloudUpgrade {
     message: Option<String>,
 }
 
+/// An upgrade Cloud ran and the Server it ran on, as `--json` prints it.
+#[derive(Serialize)]
+struct CloudAttempted {
+    server: MachineId,
+    /// Cloud's run.
+    id: String,
+    #[serde(flatten)]
+    upgrade: CloudUpgrade,
+}
+
+impl CloudAttempted {
+    /// Whether this Server moved to another version.
+    fn upgraded(&self) -> bool {
+        self.upgrade.outcome == "succeeded"
+            && self.upgrade.from_version != self.upgrade.target_version
+    }
+}
+
+/// A Server that took no Upgrade, as `--json` prints it.
+#[derive(Serialize)]
+struct SkippedServer<'a> {
+    server: MachineId,
+    reason: &'a str,
+}
+
+/// What `--json` prints for a run on either path. Each path leaves out the keys it never
+/// had, so the bytes are the ones each printed before they shared this type; the keys come
+/// out sorted because [`Report::value`] goes through `serde_json::Value`.
+#[derive(Serialize)]
+struct Report<'a, A> {
+    attempts: Vec<A>,
+    unattempted: Vec<MachineId>,
+    /// Cloud's runs list the Servers that took no Upgrade; a direct run has no such key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skipped: Option<Vec<SkippedServer<'a>>>,
+    /// A direct run that upgraded every Server says how the Ingress Proxy moved, `null` when
+    /// no Server held the ingress role; a run that stopped, and Cloud's, have no such key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ingress: Option<Option<&'a [Followed]>>,
+}
+
+impl<A: Serialize> Report<'_, A> {
+    fn value(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("an upgrade report serializes")
+    }
+}
+
+fn ids(machines: &[Machine]) -> Vec<MachineId> {
+    machines.iter().map(|machine| machine.id).collect()
+}
+
 fn direct(root: &ArgMatches, args: &[&str]) -> Result<Option<Hint>, Error> {
     let config = ConnectionOptions::from_matches(root)?.load_or_empty_config()?;
     Ok(config.current_context().map(|context| {
@@ -200,9 +252,7 @@ fn through_cloud(
         ));
         let run = match started {
             Ok(run) => run,
-            Err(StoreCallError::Refused(refused))
-                if refused.code.as_str() == "channel_mismatch" =>
-            {
+            Err(StoreCallError::Refused(refused)) if cloud_reply::channel_mismatch(&refused) => {
                 let along = refused
                     .details
                     .get("channel")
@@ -246,7 +296,7 @@ fn through_cloud(
             }
         };
         let finished = match settled {
-            Settled::Ended { code, message } if code == "busy" => {
+            Settled::Ended { code, message } if EndedCode::from_wire(&code) == EndedCode::Busy => {
                 skipped.push(skip(machine, selector, message));
                 continue;
             }
@@ -261,30 +311,29 @@ fn through_cloud(
         let stopped = stopped(name, &upgrade).map(|stopped| {
             // A Server that failed outright, with none moved before it, fails the run;
             // it is partial only after an upgrade, and uncertain while Cloud can't tell.
-            let upgraded = attempts.iter().any(|attempt| {
-                attempt["outcome"] == "succeeded"
-                    && attempt["from_version"] != attempt["target_version"]
-            });
+            let upgraded = attempts.iter().any(CloudAttempted::upgraded);
             if matches!(upgrade.outcome.as_str(), "failed" | "interrupted") && !upgraded {
                 stopped.outcome()
             } else {
                 stopped
             }
         });
-        attempts.push(json!({
-            "server": id,
-            "id": run,
-            "outcome": upgrade.outcome,
-            "from_version": upgrade.from_version,
-            "target_version": upgrade.target_version,
-            "message": upgrade.message,
-        }));
+        attempts.push(CloudAttempted {
+            server: id,
+            id: run,
+            upgrade,
+        });
         if let Some(stopped) = stopped {
             return cut_short(attempts, unattempted(index + 1), &skipped, name, stopped);
         }
     }
-    let result =
-        json!({ "attempts": attempts, "unattempted": [], "skipped": skipped_json(&skipped) });
+    let result = Report {
+        attempts,
+        unattempted: Vec::new(),
+        skipped: Some(skipped_servers(&skipped)),
+        ingress: None,
+    }
+    .value();
     let names = skipped
         .iter()
         .map(|(machine, _, _)| machine.name.as_str())
@@ -304,7 +353,7 @@ fn through_cloud(
 /// End the run on `error`, which Server `after` raised. Upgrades already attempted are
 /// committed, so they print with the error rather than vanish behind it.
 fn cut_short(
-    attempts: Vec<serde_json::Value>,
+    attempts: Vec<CloudAttempted>,
     unattempted: &[Machine],
     skipped: &[Skipped<'_>],
     after: &str,
@@ -316,11 +365,13 @@ fn cut_short(
     if let Some(warning) = unattempted_warning(names(unattempted), after) {
         crate::ui::warn(warning);
     }
-    let result = json!({
-        "attempts": attempts,
-        "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
-        "skipped": skipped_json(skipped),
-    });
+    let result = Report {
+        attempts,
+        unattempted: ids(unattempted),
+        skipped: Some(skipped_servers(skipped)),
+        ingress: None,
+    }
+    .value();
     crate::ui::emit_committed(result, Err(error))
 }
 
@@ -332,10 +383,13 @@ fn skip<'a>(machine: &'a Machine, selector: &'a str, reason: String) -> Skipped<
     (machine, selector, reason)
 }
 
-fn skipped_json(skipped: &[Skipped<'_>]) -> serde_json::Value {
+fn skipped_servers<'a>(skipped: &'a [Skipped<'_>]) -> Vec<SkippedServer<'a>> {
     skipped
         .iter()
-        .map(|(machine, _, reason)| json!({ "server": machine.id, "reason": reason }))
+        .map(|(machine, _, reason)| SkippedServer {
+            server: machine.id,
+            reason,
+        })
         .collect()
 }
 
@@ -538,10 +592,13 @@ async fn run_all(
         };
         // A recorded attempt is a result: print it, then exit by `stopped`.
         let result = (!attempts.is_empty()).then(|| {
-            json!({
-                "attempts": attempts,
-                "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
-            })
+            Report {
+                attempts,
+                unattempted: ids(unattempted),
+                skipped: None,
+                ingress: None,
+            }
+            .value()
         });
         return (result, Err(stopped));
     }
@@ -556,11 +613,19 @@ async fn run_all(
     } else {
         Ok(None)
     };
-    let result = json!({
-        "attempts": attempts,
-        "unattempted": [],
-        "ingress": moved.as_ref().ok().and_then(Option::as_ref),
-    });
+    let result = Report {
+        attempts,
+        unattempted: Vec::new(),
+        skipped: None,
+        ingress: Some(
+            moved
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .map(Vec::as_slice),
+        ),
+    }
+    .value();
     let outcome = moved
         .map(drop)
         .map_err(|error| super::ingress_incomplete("Servers upgraded", error, rerun));
@@ -1452,11 +1517,78 @@ mod tests {
         }
     }
 
+    fn cloud_upgrade(
+        outcome: &str,
+        from: Option<&str>,
+        target: Option<&str>,
+        message: Option<&str>,
+    ) -> CloudUpgrade {
+        CloudUpgrade {
+            outcome: outcome.into(),
+            from_version: from.map(Into::into),
+            target_version: target.map(Into::into),
+            message: message.map(Into::into),
+        }
+    }
+
+    fn upgraded_on(machine: &Machine) -> CloudAttempted {
+        CloudAttempted {
+            server: machine.id,
+            id: "run_1".into(),
+            upgrade: cloud_upgrade("succeeded", Some("1.2.2"), Some("1.2.3"), None),
+        }
+    }
+
+    #[test]
+    fn a_cloud_run_prints_one_shape_per_outcome() {
+        let (a, b) = (machine('a', 1), machine('b', 2));
+        let attempts = vec![
+            upgraded_on(&a),
+            CloudAttempted {
+                server: b.id,
+                id: "run_2".into(),
+                upgrade: cloud_upgrade("failed", None, Some("1.2.3"), Some("It broke.")),
+            },
+        ];
+        let skipped = [(&b, "b", "Busy.".to_owned())];
+        let report = Report {
+            attempts,
+            unattempted: ids(&[]),
+            skipped: Some(skipped_servers(&skipped)),
+            ingress: None,
+        };
+        assert_eq!(
+            report.value().to_string(),
+            format!(
+                r#"{{"attempts":[{{"from_version":"1.2.2","id":"run_1","message":null,"outcome":"succeeded","server":"{A}","target_version":"1.2.3"}},{{"from_version":null,"id":"run_2","message":"It broke.","outcome":"failed","server":"{B}","target_version":"1.2.3"}}],"skipped":[{{"reason":"Busy.","server":"{B}"}}],"unattempted":[]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn a_cloud_server_moved_only_by_a_succeeded_run_that_changed_its_version() {
+        let on = |outcome, from, target| CloudAttempted {
+            server: machine('a', 1).id,
+            id: "run_1".into(),
+            upgrade: cloud_upgrade(outcome, from, target, None),
+        };
+        for (attempt, moved) in [
+            (on("succeeded", Some("1.2.2"), Some("1.2.3")), true),
+            (on("succeeded", Some("1.2.3"), Some("1.2.3")), false),
+            (on("succeeded", None, None), false),
+            (on("succeeded", Some("1.2.2"), None), true),
+            (on("succeeded", None, Some("1.2.3")), true),
+            (on("failed", Some("1.2.2"), Some("1.2.3")), false),
+            (on("interrupted", Some("1.2.2"), Some("1.2.3")), false),
+        ] {
+            assert_eq!(attempt.upgraded(), moved, "{}", attempt.upgrade.outcome);
+        }
+    }
+
     #[test]
     fn a_cut_short_run_prints_its_skipped_servers_and_the_error() {
         let machines = [machine('a', 1), machine('b', 2)];
-        let attempts =
-            vec![serde_json::json!({ "server": machines[0].id, "outcome": "succeeded" })];
+        let attempts = vec![upgraded_on(&machines[0])];
         let skipped = [(&machines[0], "a", "No answer.".to_owned())];
         let mode = crate::ui::test_mode(true);
         let (result, captured) = crate::ui::captured(|| {
@@ -1473,7 +1605,7 @@ mod tests {
         assert_eq!(
             captured.unwrap().to_string(),
             format!(
-                r#"{{"attempts":[{{"outcome":"succeeded","server":"{A}"}}],"follow_up_error":{{"cause":[],"code":"unavailable","details":null,"message":"Could not reach Cloud."}},"skipped":[{{"reason":"No answer.","server":"{A}"}}],"unattempted":["{B}"],"warnings":["Did not upgrade Server b: Server a stopped the run."]}}"#
+                r#"{{"attempts":[{{"from_version":"1.2.2","id":"run_1","message":null,"outcome":"succeeded","server":"{A}","target_version":"1.2.3"}}],"follow_up_error":{{"cause":[],"code":"unavailable","details":null,"message":"Could not reach Cloud."}},"skipped":[{{"reason":"No answer.","server":"{A}"}}],"unattempted":["{B}"],"warnings":["Did not upgrade Server b: Server a stopped the run."]}}"#
             )
         );
     }
@@ -1757,8 +1889,7 @@ mod tests {
     #[test]
     fn a_failed_cloud_run_still_reports_the_upgrades_before_it() {
         let machines = [machine('a', 1), machine('b', 2), machine('c', 3)];
-        let attempts =
-            vec![serde_json::json!({ "server": machines[0].id, "outcome": "succeeded" })];
+        let attempts = vec![upgraded_on(&machines[0])];
         let error = Error::coded(RpcErrorCode::Unavailable, "Could not reach Cloud.");
         let mode = crate::ui::test_mode(true);
         let (result, captured) =

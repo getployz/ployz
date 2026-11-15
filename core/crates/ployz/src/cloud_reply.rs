@@ -117,6 +117,8 @@ impl RunState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EndedCode {
     Refused,
+    /// The Server was busy and took nothing; the run ended with its words.
+    Busy,
     Unknown(String),
 }
 
@@ -124,6 +126,7 @@ impl EndedCode {
     pub(crate) fn from_wire(code: &str) -> Self {
         match code {
             "refused" => Self::Refused,
+            "busy" => Self::Busy,
             other => Self::Unknown(other.to_owned()),
         }
     }
@@ -131,9 +134,15 @@ impl EndedCode {
     pub(crate) fn rpc_code(&self) -> RpcErrorCode {
         match self {
             Self::Refused => RpcErrorCode::Conflict,
-            Self::Unknown(_) => RpcErrorCode::Unavailable,
+            Self::Busy | Self::Unknown(_) => RpcErrorCode::Unavailable,
         }
     }
+}
+
+/// Whether a refused start of a Cloud upgrade names the Release Channel the Organization
+/// follows, which `RpcErrorCode` has no word for. Its `details.channel` says which.
+pub(crate) fn channel_mismatch(refused: &RpcError) -> bool {
+    refused.code.as_str() == "channel_mismatch"
 }
 
 /// Why Cloud held a check-in back: it is busy, or the token has all the waiting servers it allows.

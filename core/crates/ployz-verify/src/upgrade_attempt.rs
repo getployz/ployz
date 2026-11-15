@@ -173,7 +173,7 @@ enum Caller {
     /// The Inspect RPC (`LocalMachine::inspect`), through `latest`.
     Inspect,
     /// A resend of the same attempt (local_machine/upgrade.rs:27-31), through `replay`. The
-    /// CLI's poll (ployz handlers/server/upgrade.rs poll_upgrade at :80-98, :700-701) and Cloud's resend
+    /// CLI's poll (ployz handlers/server/upgrade.rs `poll_upgrade`, called from `run_one`'s poll loop) and Cloud's resend
     /// (dashboard server-upgrade.server.ts:288-292) send it.
     Replay,
     /// Leave's `depart` (`LocalMachine::depart`), through `latest`, then `finish_mutation`.
@@ -1960,7 +1960,7 @@ mod tests {
     /// The CLI's poll is a resend (`replay`), so it settles, but it can read the terminal
     /// receipt while the worker still holds the lock. `settle`'s `try_installation`
     /// answers Busy and it returns without clearing (:258-263); the poller stops at that
-    /// terminal reply (ployz handlers/server/upgrade.rs:710-711). The worker then stops
+    /// terminal reply (the `is_terminal` check in `run_one`'s poll loop, ployz handlers/server/upgrade.rs). The worker then stops
     /// before its own `clear_active`. A filter on the path cannot pick this schedule: the
     /// checker keeps only the first path to each state, and the last state is the same
     /// with or without the poll.
