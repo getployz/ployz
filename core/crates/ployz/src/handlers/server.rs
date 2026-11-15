@@ -205,7 +205,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?;
     let update = parse_update(matches)?;
-    let rerun = ingress_rerun(matches, selector);
+    let rerun = ingress_set(matches, selector, true);
     let selector = MachineTarget::parse(selector)?;
     let seed = update
         .advertised_endpoints
@@ -261,12 +261,62 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// The `server set` that finishes turning web traffic on for the Server `selector` names.
-fn ingress_rerun(matches: &ArgMatches, selector: &str) -> String {
-    super::rerun(
-        matches,
-        &["server", "set", selector, "--accepts-ingress=true"],
-    )
+/// The `server set` that turns web traffic on, or back off, for the Server `selector` names.
+fn ingress_set(matches: &ArgMatches, selector: &str, on: bool) -> String {
+    let flag = if on {
+        "--accepts-ingress=true"
+    } else {
+        "--accepts-ingress=false"
+    };
+    super::rerun(matches, &["server", "set", selector, flag])
+}
+
+/// The hints for an Ingress Proxy that did not follow a `server set` on `machine`, which its
+/// reader selected as `selector` (#3341).
+struct IngressFollowUp<'a> {
+    recovery: &'a ArgMatches,
+    machine: MachineId,
+    selector: &'a str,
+}
+
+impl IngressFollowUp<'_> {
+    fn command(&self, args: &[&str]) -> String {
+        super::rerun(self.recovery, args)
+    }
+
+    /// How a hint selects Server `id`: as the reader selected `machine`, which already
+    /// resolved to one Server, or else by Machine ID, since another Server's name may be
+    /// ambiguous.
+    fn server(&self, id: &MachineId) -> String {
+        if *id == self.machine {
+            self.selector.to_owned()
+        } else {
+            id.to_string()
+        }
+    }
+
+    /// The log hints, and a retry that is left out when it would repeat `next`.
+    fn hints(&self, error: Error, next: &str) -> Error {
+        let retry = error
+            .diagnostic()
+            .and_then(|diagnostic| diagnostic.failed_machine)
+            .map(|failed| {
+                self.command(&[
+                    "server",
+                    "set",
+                    &self.server(&failed),
+                    "--accepts-ingress=true",
+                ])
+            })
+            .filter(|retry| retry != next)
+            .map(Hint::Retry);
+        self.log_hints(error).hint(retry)
+    }
+
+    /// The log hints alone, for a failure that has the reader do something else first.
+    fn log_hints(&self, error: Error) -> Error {
+        super::ingress_log_hints(error, |args| self.command(args), |id| self.server(id))
+    }
 }
 
 /// The Doors each Server holds open now. A Server that didn't list its containers is
@@ -482,29 +532,21 @@ pub(crate) async fn apply_update(
             // A rename in this same command leaves the typed selector naming nothing (#3449).
             let (selector, rerun) = if renamed {
                 let id = machine.id.to_string();
-                let rerun = ingress_rerun(&recovery, &id);
+                let rerun = ingress_set(&recovery, &id, true);
                 (id, rerun)
             } else {
                 (selector.as_str().to_owned(), rerun)
             };
+            let follow_up = IngressFollowUp {
+                recovery: &recovery,
+                machine: machine.id,
+                selector: &selector,
+            };
             let error = match own_start_failure(&error, machine.id, was_off) {
                 Some(failure) if nothing_serves(client, machine.id).await => {
-                    turn_back_off(
-                        client,
-                        &mut machine,
-                        failure,
-                        error,
-                        rerun,
-                        &recovery,
-                        &selector,
-                    )
-                    .await
+                    turn_back_off(client, &mut machine, failure, error, rerun, &follow_up).await
                 }
-                _ => ingress_incomplete(
-                    "Server updated",
-                    set_hints(error, &recovery, machine.id, &selector, &rerun),
-                    rerun,
-                ),
+                _ => ingress_incomplete("Server updated", follow_up.hints(error, &rerun), rerun),
             };
             (None, Err(error))
         }
@@ -607,8 +649,7 @@ async fn turn_back_off(
     failure: StartFailure,
     failed: Error,
     rerun: String,
-    recovery: &ArgMatches,
-    selector: &str,
+    follow_up: &IngressFollowUp<'_>,
 ) -> Error {
     let off = MachineUpdate {
         accepts_ingress: Some(false),
@@ -635,7 +676,8 @@ async fn turn_back_off(
                     &failed,
                 ),
             };
-            set_hints(failed, recovery, machine.id, selector, &rerun)
+            follow_up
+                .hints(failed, &rerun)
                 .context(headline)
                 .hint(Hint::Next(rerun))
         }
@@ -647,47 +689,13 @@ async fn turn_back_off(
                 ),
                 &failed,
             );
-            let off = super::rerun(
-                recovery,
-                &["server", "set", selector, "--accepts-ingress=false"],
-            );
-            let id = machine.id;
-            let server = |machine: &MachineId| server_selector(*machine, id, selector);
-            super::ingress_log_hints(failed, |args| super::rerun(recovery, args), server)
+            let off = ingress_set(follow_up.recovery, follow_up.selector, false);
+            follow_up
+                .log_hints(failed)
                 .context(headline)
                 .with_detail("rollback_error", json!(RpcError::from(error)))
                 .hint(Hint::Next(off))
         }
-    }
-}
-
-/// The Ingress Proxy hints for `server set` on `machine`, which its reader selected as
-/// `selector` (#3341). The retry is left out when it would repeat `next`.
-fn set_hints(
-    error: Error,
-    recovery: &ArgMatches,
-    machine: MachineId,
-    selector: &str,
-    next: &str,
-) -> Error {
-    let command = |args: &[&str]| super::rerun(recovery, args);
-    let server = |failed: &MachineId| server_selector(*failed, machine, selector);
-    let retry = error
-        .diagnostic()
-        .and_then(|diagnostic| diagnostic.failed_machine)
-        .map(|failed| command(&["server", "set", &server(&failed), "--accepts-ingress=true"]))
-        .filter(|retry| retry != next)
-        .map(Hint::Retry);
-    super::ingress_log_hints(error, command, server).hint(retry)
-}
-
-/// How a hint selects Server `id`: as the reader selected `machine`, which already resolved
-/// to one Server, or else by Machine ID, since another Server's name may be ambiguous.
-fn server_selector(id: MachineId, machine: MachineId, selector: &str) -> String {
-    if id == machine {
-        selector.to_owned()
-    } else {
-        id.to_string()
     }
 }
 
@@ -1363,6 +1371,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_ingress_follow_up_commands_are_pinned() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "set", "edge", "--accepts-ingress=true"])
+            .unwrap();
+        let leaf = leaf_matches(&root);
+        assert_eq!(
+            ingress_set(leaf, "edge", true),
+            "ployz server set edge '--accepts-ingress=true'"
+        );
+        assert_eq!(
+            ingress_set(leaf, "edge", false),
+            "ployz server set edge '--accepts-ingress=false'"
+        );
+    }
+
     /// `server set` hints select its Server as the reader did, not by Machine ID, and don't
     /// repeat `next:` as `retry:` (#3341). Another Server stays selected by Machine ID.
     #[test]
@@ -1398,8 +1422,12 @@ mod tests {
             recovery,
             &["server", "set", "machine-3", "--accepts-ingress=true"],
         );
-        let hints =
-            |error, next: &str| set_hints(error, recovery, target, "machine-3", next).hints();
+        let follow_up = IngressFollowUp {
+            recovery,
+            machine: target,
+            selector: "machine-3",
+        };
+        let hints = |error, next: &str| follow_up.hints(error, next).hints();
 
         assert_eq!(
             hints(failed_on(target), &next),
