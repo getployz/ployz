@@ -675,6 +675,24 @@ impl MachineUpdate {
             && self.advertised_endpoints.is_none()
             && self.build_concurrency == BuildConcurrencyUpdate::Keep
     }
+
+    /// Whether the patch sets none of the name, public IP and Advertised Endpoints, so what
+    /// it changes is admission policy, which applies without waiting for active Builds.
+    /// Every field is named here, so a new one is placed before this compiles.
+    #[must_use]
+    pub fn is_policy_edit(&self) -> bool {
+        let Self {
+            label_changes: _,
+            accepts_builds: _,
+            accepts_services: _,
+            accepts_ingress: _,
+            name,
+            public_ip,
+            advertised_endpoints,
+            build_concurrency: _,
+        } = self;
+        name.is_none() && *public_ip == PublicIpUpdate::Keep && advertised_endpoints.is_none()
+    }
 }
 
 /// A metadata edit that cannot be applied to the observed Machine set.
