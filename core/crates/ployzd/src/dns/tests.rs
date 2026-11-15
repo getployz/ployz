@@ -691,8 +691,8 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
     unloaded.observations = observations.clone();
     assert!(
         !unloaded
-            .down
-            .update(Err(CorrosionError::Protocol("not loaded".into())))
+            .reach
+            .update_down(Err(CorrosionError::Protocol("not loaded".into())))
     );
     assert_eq!(
         answers(&mut unloaded),
@@ -705,10 +705,10 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
 
     let mut inputs = ProjectionInputs::new(local);
     inputs.observations = observations;
-    assert!(inputs.down.update(Ok(down_machines.clone())));
-    assert!(!inputs.down.update(Ok(down_machines)));
-    assert!(inputs.down.contains(&down));
-    assert!(!inputs.down.contains(&local));
+    assert!(inputs.reach.update_down(Ok(down_machines.clone())));
+    assert!(!inputs.reach.update_down(Ok(down_machines)));
+    assert!(inputs.reach.is_down(&down));
+    assert!(!inputs.reach.is_down(&local));
     assert_eq!(
         answers(&mut inputs),
         vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
@@ -717,10 +717,10 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
     // A failed sample is unknown evidence, so the stale Down set does not stay.
     assert!(
         inputs
-            .down
-            .update(Err(CorrosionError::Protocol("unavailable".into())))
+            .reach
+            .update_down(Err(CorrosionError::Protocol("unavailable".into())))
     );
-    assert!(!inputs.down.contains(&down));
+    assert!(!inputs.reach.is_down(&down));
     assert_eq!(
         answers(&mut inputs),
         vec![
@@ -752,7 +752,7 @@ fn a_down_machine_keeps_its_answers_while_no_other_copy_serves() {
     };
     assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
 
-    inputs.down.update(Ok(BTreeSet::from([remote])));
+    inputs.reach.update_down(Ok(BTreeSet::from([remote])));
 
     assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
 }
@@ -791,7 +791,7 @@ fn a_running_copy_set_out_keeps_answering_while_its_replacement_owner_is_down() 
     old.try_update(|parts| parts.rotation = Some(CopyRotation::Out))
         .unwrap();
     inputs.observations = vec![old, replacement];
-    inputs.down.update(Ok(BTreeSet::from([remote])));
+    inputs.reach.update_down(Ok(BTreeSet::from([remote])));
 
     assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 1, 2)]);
 }
@@ -990,7 +990,7 @@ fn a_routed_copy_last_seen_stopped_on_a_down_machine_keeps_answering() {
     copy.try_update(|parts| parts.runtime = ContainerRuntimeObservation::Restarting)
         .unwrap();
     inputs.observations = vec![copy];
-    inputs.down.update(Ok(BTreeSet::from([remote])));
+    inputs.reach.update_down(Ok(BTreeSet::from([remote])));
 
     assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
 }

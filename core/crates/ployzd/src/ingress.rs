@@ -2,7 +2,7 @@
 
 use ployz_core::{
     CertificateHost, ContainerAddress, ContainerId, HttpProtocol, Machine, MachineId, ProxyRoutes,
-    QualifiedService, ServiceContainer, proxy_routes, reachable_routes, service_containers,
+    QualifiedService, ServiceContainer, service_containers,
 };
 use ployz_decide::caddy_load::{self as load, Applied, CaddyFile, Input, Probe};
 use std::{
@@ -21,7 +21,8 @@ use crate::{
         WatchPolicy,
     },
     filesystem::set_ployz_group,
-    route_acks::{DownMachines, load_down},
+    reach::Reach,
+    route_acks::load_down,
 };
 
 /// The run dir's subdirectory the Ingress Proxy's runtime mount shows.
@@ -343,9 +344,7 @@ where
     // unchanged input is never reloaded.
     let mut load = CaddyLoad::Unapplied;
     let mut acked = BTreeMap::new();
-    // Kept while every copy is out of reach.
-    let mut routed = ProxyRoutes::new();
-    let mut down = DownMachines::new(machine.id);
+    let mut reach = Reach::new(machine.id);
     let mut certificates = CaddyCertificates::default();
     let mut changes = ChangeWatch::new(
         "ingress",
@@ -375,7 +374,7 @@ where
         return Ok(());
     }
     loop {
-        down.update(load_down().await);
+        reach.update_down(load_down().await);
         // Read each pass, since turning the role off doesn't restart the daemon.
         let takes_ingress = !matches!(
             replicated.machine(machine.id.as_str()).await,
@@ -390,13 +389,7 @@ where
         ) {
             (Ok(containers), Ok(rows)) => {
                 let containers = service_containers(containers.observations);
-                let (routes, mut projection) = next_pass(
-                    &machine,
-                    &containers,
-                    &rows,
-                    |machine| down.contains(machine),
-                    &routed,
-                );
+                let (routes, mut projection) = next_pass(&machine, &containers, &rows, &reach);
                 certificates.quarantine(&mut projection);
                 Ok((
                     newest_local_ingress(&machine, &containers),
@@ -502,7 +495,7 @@ where
                         publishes.routes = published;
                     });
                 }
-                routed = routes;
+                reach.keep(routes);
             }
             Err(error) => {
                 eprintln!(
@@ -530,23 +523,17 @@ fn woke(wake: Result<Wake, CorrosionError>) -> io::Result<bool> {
 /// One watch pass: the route this proxy carries and acks, and what Caddy loads.
 ///
 /// Caddy dials only the copies a client can reach now. The route keeps every copy
-/// [`proxy_routes`] keeps, so the acks and the next pass match a proxy that
+/// [`ployz_core::proxy_routes`] keeps, so the acks and the next pass match a proxy that
 /// dialed them all.
 fn next_pass(
     machine: &Machine,
     containers: &[ServiceContainer],
     certificates: &BTreeMap<CertificateHost, CertificateRow>,
-    is_down: impl Fn(&MachineId) -> bool,
-    routed: &ProxyRoutes,
+    reach: &Reach,
 ) -> (ProxyRoutes, IngressProjection) {
-    let routes = proxy_routes(containers, &is_down, routed);
-    let reachable = reachable_routes(
-        &routes,
-        containers.iter().map(ServiceContainer::as_observation),
-        &is_down,
-    );
-    let projection = IngressProjection::derive(machine, containers, certificates, &reachable);
-    (routes, projection)
+    let pass = reach.pass(containers);
+    let projection = IngressProjection::derive(machine, containers, certificates, &pass.reachable);
+    (pass.routes, projection)
 }
 
 fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAck> {

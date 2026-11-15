@@ -19,12 +19,12 @@ use hickory_server::proto::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     ClusterName, ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService,
-    ServiceId, proxy_routes, reachable_routes, service_containers,
+    ServiceId, service_containers,
 };
 use tokio::sync::watch;
 
 use super::query::{InternalQuery, MachineServiceTarget, Query, parse};
-use crate::route_acks::DownMachines;
+use crate::reach::Reach;
 
 /// How long a caller-relative query from an unknown bridge address waits for a
 /// projection that names its caller. A container asks as soon as it starts, before
@@ -53,9 +53,7 @@ pub(super) struct Projection {
 pub(super) struct ProjectionInputs {
     pub(super) observations: Vec<ContainerObservation>,
     pub(super) cluster: Option<ClusterName>,
-    pub(super) down: DownMachines,
-    /// Kept while no copy of a Service is reachable.
-    routed: ProxyRoutes,
+    pub(super) reach: Reach,
 }
 
 pub(super) struct Snapshot {
@@ -73,24 +71,16 @@ impl ProjectionInputs {
         Self {
             observations: Vec::new(),
             cluster: None,
-            down: DownMachines::new(local_id),
-            routed: ProxyRoutes::new(),
+            reach: Reach::new(local_id),
         }
     }
 
     pub(super) fn build(&mut self) -> Projection {
         let containers = service_containers(self.observations.iter().cloned());
-        let routes = proxy_routes(
-            &containers,
-            |machine| self.down.contains(machine),
-            &self.routed,
-        );
-        let reachable = reachable_routes(&routes, &self.observations, |machine| {
-            self.down.contains(machine)
-        });
-        let mut projection = Projection::from_routes(&self.observations, &reachable);
+        let pass = self.reach.pass(&containers);
+        let mut projection = Projection::from_routes(&self.observations, &pass.reachable);
         projection.cluster.clone_from(&self.cluster);
-        self.routed = routes;
+        self.reach.keep(pass.routes);
         projection
     }
 }

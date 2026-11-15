@@ -374,7 +374,7 @@ async fn watch_projection(
         token,
         ..
     } = connection;
-    let local_id = inputs.down.local_id();
+    let local_id = inputs.reach.local_id();
     let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + tick, tick);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // `Then` retains an in-flight membership read when another select branch wins, so slow
@@ -433,7 +433,7 @@ async fn watch_projection(
                 if read_token(token_file).is_ok_and(|current| &current != token) {
                     return Ok(Watched::Lost(Lost::TokenRotated));
                 }
-                let membership = inputs.down.update(result);
+                let membership = inputs.reach.update_down(result);
                 let retried = pending_snapshot
                     && reload_snapshot(replicated, inputs, &mut pending_snapshot, &epoch).await;
                 membership || retried
