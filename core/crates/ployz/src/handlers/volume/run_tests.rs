@@ -153,18 +153,120 @@ fn a_mirror_name_splits_at_the_one_volume_it_starts_with() {
             .map(|name| VolumeName::parse(*name).unwrap())
             .collect()
     };
-    let (volume, server) = mirror_of(&names(&["data", "logs"]), "data-web-2").unwrap();
-    assert_eq!((volume.as_str(), server.as_str()), ("data", "web-2"));
-    let (volume, server) = mirror_of(&names(&["my-data", "logs"]), "my-data-fsn-2").unwrap();
-    assert_eq!((volume.as_str(), server.as_str()), ("my-data", "fsn-2"));
+    let mirror = MirrorName::resolve(&names(&["data", "logs"]), "data-web-2").unwrap();
+    assert_eq!(
+        (mirror.volume.as_str(), mirror.slot.as_str()),
+        ("data", "web-2")
+    );
+    assert_eq!(mirror.to_string(), "data-web-2");
+    let mirror = MirrorName::resolve(&names(&["my-data", "logs"]), "my-data-fsn-2").unwrap();
+    assert_eq!(
+        (mirror.volume.as_str(), mirror.slot.as_str()),
+        ("my-data", "fsn-2")
+    );
+    assert_eq!(mirror.to_string(), "my-data-fsn-2");
 
-    let error = mirror_of(&names(&["data", "data-web"]), "data-web-2").unwrap_err();
+    let error = MirrorName::resolve(&names(&["data", "data-web"]), "data-web-2").unwrap_err();
     assert_eq!(error.report().code, RpcErrorCode::Ambiguous);
-    let error = mirror_of(&names(&["logs"]), "data-web-2").unwrap_err();
+    assert_eq!(
+        error.report().message,
+        "Mirror data-web-2 could belong to more than one Volume here; delete it from the dashboard's Volume page."
+    );
+    let error = MirrorName::resolve(&names(&["logs"]), "data-web-2").unwrap_err();
     assert_eq!(error.report().code, RpcErrorCode::NotFound);
+    assert_eq!(
+        error.report().message,
+        "No Volume here has Mirror data-web-2; a Mirror is named VOLUME-SERVER, like data-web-2."
+    );
     assert_eq!(error.hints(), [Hint::valid(["logs"])]);
-    let error = mirror_of(&names(&["data"]), "data").unwrap_err();
+    let error = MirrorName::resolve(&names(&["data"]), "data").unwrap_err();
     assert_eq!(error.report().code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn each_ask_names_its_run_and_its_retry_command() {
+    let data = VolumeName::parse("data").unwrap();
+    let web = |name: &str| MachineName::parse(name).unwrap();
+    let asks = [
+        (
+            RunAsk::Mirror {
+                to: web("web-2"),
+                approval: None,
+            },
+            "Mirror of Volume data onto web-2",
+            OperationVerb::Mirror,
+            "volume mirror data --to web-2",
+        ),
+        (
+            RunAsk::Sync {
+                full: Full,
+                approval: None,
+            },
+            "full Sync of Volume data's Mirror",
+            OperationVerb::Sync,
+            "volume sync data --full",
+        ),
+        (
+            RunAsk::DeleteMirror {
+                slot: web("web-2"),
+                confirm: Some("data".to_owned()),
+                approval: None,
+            },
+            "deletion of Mirror data-web-2",
+            OperationVerb::RemoveMirror,
+            "volume mirror rm data-web-2 --confirm data",
+        ),
+        (
+            RunAsk::DeleteOldCopy {
+                slot: web("web-1"),
+                confirm: None,
+                approval: None,
+            },
+            "deletion of Mirror data-web-1",
+            OperationVerb::RemoveMirror,
+            "volume mirror rm data-web-1 --if-old-copy",
+        ),
+        (
+            RunAsk::Move {
+                to: web("web-2"),
+                approval: None,
+                service: None,
+            },
+            "Move of Volume data onto web-2",
+            OperationVerb::Move,
+            "volume move data --to web-2",
+        ),
+        (
+            RunAsk::Release,
+            "Release of Volume data",
+            OperationVerb::Release,
+            "volume release data",
+        ),
+        (
+            RunAsk::Restore {
+                from: web("web-2"),
+                approval: None,
+            },
+            "Restore of Volume data from web-2",
+            OperationVerb::Restore,
+            "volume restore data --from web-2",
+        ),
+        (
+            RunAsk::Resize {
+                maximum_bytes: twenty_gb(),
+                approval: None,
+            },
+            "resize of Volume data to 20 GB",
+            OperationVerb::Resize,
+            "volume set data --size 20GB",
+        ),
+    ];
+    for (ask, started, verb, retry) in asks {
+        assert_eq!(ask.started(&data), started);
+        let (said, words) = ask.rerun(&data);
+        assert_eq!(said, verb);
+        assert_eq!(words.join(" "), retry);
+    }
 }
 
 #[test]

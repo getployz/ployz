@@ -293,6 +293,103 @@ impl RunAsk {
             | Self::Resize { .. } => None,
         }
     }
+
+    /// What names this run in the lines that start and end it, as in "Started the {it}".
+    fn started(&self, volume: &VolumeName) -> String {
+        match self {
+            Self::Mirror { to, .. } => format!("Mirror of Volume {volume} onto {to}"),
+            Self::Sync { .. } => format!("full Sync of Volume {volume}'s Mirror"),
+            Self::DeleteMirror { slot, .. } | Self::DeleteOldCopy { slot, .. } => {
+                format!("deletion of Mirror {}", MirrorName::new(volume, slot))
+            }
+            Self::Move { to, .. } => format!("Move of Volume {volume} onto {to}"),
+            Self::Release => format!("Release of Volume {volume}"),
+            Self::Restore { from, .. } => format!("Restore of Volume {volume} from {from}"),
+            Self::Resize { maximum_bytes, .. } => {
+                format!("resize of Volume {volume} to {maximum_bytes}")
+            }
+        }
+    }
+
+    /// The approval's verb and the command that asks again for this run, up to `--approval`.
+    fn rerun(&self, volume: &VolumeName) -> (OperationVerb, Vec<String>) {
+        // A Protected Environment asks someone who can't protect it before these too.
+        let words = |verb: &str, rest: &[&str]| {
+            ["volume", verb, volume.as_str()]
+                .into_iter()
+                .chain(rest.iter().copied())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        match self {
+            Self::DeleteMirror { slot, confirm, .. } => (
+                OperationVerb::RemoveMirror,
+                removal_words(volume, slot, false, confirm.as_deref()),
+            ),
+            Self::DeleteOldCopy { slot, confirm, .. } => (
+                OperationVerb::RemoveMirror,
+                removal_words(volume, slot, true, confirm.as_deref()),
+            ),
+            Self::Release => (OperationVerb::Release, words("release", &[])),
+            Self::Move { to, .. } => (OperationVerb::Move, words("move", &["--to", to.as_str()])),
+            Self::Restore { from, .. } => (
+                OperationVerb::Restore,
+                words("restore", &["--from", from.as_str()]),
+            ),
+            Self::Resize { maximum_bytes, .. } => (
+                OperationVerb::Resize,
+                words("set", &["--size", size_word(*maximum_bytes).as_str()]),
+            ),
+            Self::Mirror { to, .. } => (
+                OperationVerb::Mirror,
+                words("mirror", &["--to", to.as_str()]),
+            ),
+            Self::Sync { .. } => (OperationVerb::Sync, words("sync", &["--full"])),
+        }
+    }
+}
+
+/// A Mirror as `volume mirror rm` names it: its Volume and the Server that holds it, `VOLUME-SERVER`.
+#[derive(Debug, PartialEq)]
+pub(crate) struct MirrorName {
+    pub(crate) volume: VolumeName,
+    pub(crate) slot: MachineName,
+}
+
+impl MirrorName {
+    fn new(volume: &VolumeName, slot: &MachineName) -> Self {
+        Self {
+            volume: volume.clone(),
+            slot: slot.clone(),
+        }
+    }
+
+    /// Split `text` at the one Volume of `volumes` it starts with.
+    pub(crate) fn resolve(volumes: &[VolumeName], text: &str) -> Result<Self, Error> {
+        let mut found = volumes.iter().filter_map(|volume| {
+            let server = text.strip_prefix(volume.as_str())?.strip_prefix('-')?;
+            Some(Self {
+                volume: volume.clone(),
+                slot: MachineName::parse(server).ok()?,
+            })
+        });
+        match (found.next(), found.next()) {
+            (Some(only), None) => Ok(only),
+            (Some(_), Some(_)) => Err(Error::ambiguous(format!(
+                "Mirror {text} could belong to more than one Volume here; delete it from the dashboard's Volume page."
+            ))),
+            (None, _) => Err(Error::not_found(format!(
+                "No Volume here has Mirror {text}; a Mirror is named VOLUME-SERVER, like data-web-2."
+            ))
+            .hint(Hint::valid(volumes.iter().map(ToString::to_string)))),
+        }
+    }
+}
+
+impl std::fmt::Display for MirrorName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}-{}", self.volume, self.slot)
+    }
 }
 
 /// An older Cloud's refusal of `--if-old-copy`: its body schema knows no `delete_old_copy`.
@@ -322,7 +419,7 @@ pub(super) fn removal_words(
     confirm: Option<&str>,
 ) -> Vec<String> {
     let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
-    words.push(format!("{volume}-{slot}"));
+    words.push(MirrorName::new(volume, slot).to_string());
     if if_old_copy {
         words.push("--if-old-copy".to_owned());
     }
@@ -548,24 +645,32 @@ fn cloud(backend: &Backend) -> Result<(&tokio::runtime::Runtime, &Credential), E
     }
 }
 
+/// A Volume found in the Environment a command names.
+struct Located {
+    volume_id: VolumeId,
+    environment: EnvironmentSummary,
+}
+
 fn located(
     store: &store::Store<'_>,
     matches: &ArgMatches,
     name: &VolumeName,
-) -> Result<(VolumeId, EnvironmentSummary), Error> {
+) -> Result<Located, Error> {
     let view = store.read(&VolumeQuery {
         environment: store::environment(matches)?,
         volume: name.clone(),
     })?;
-    Ok((view.volume.volume.id, view.environment))
+    Ok(Located {
+        volume_id: view.volume.volume.id,
+        environment: view.environment,
+    })
 }
 
 pub(crate) fn mirror(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let to = server_name(matches, "to")?;
-    let started = format!("Mirror of Volume {volume} onto {to}");
-    approved_mirror(root, &volume, started, MirrorOn::Server(&to), |approval| {
+    approved_mirror(root, &volume, MirrorOn::Server(&to), |approval| {
         RunAsk::Mirror {
             to: to.clone(),
             approval,
@@ -579,14 +684,11 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     if !matches.get_flag("full") {
         return hand_off(root, &volume);
     }
-    let started = format!("full Sync of Volume {volume}'s Mirror");
     // A full Sync destroys the Mirror's copy and copies it again, so it needs an approval
     // of its own: one admitted before the copy went is withdrawn with it.
-    approved_mirror(root, &volume, started, MirrorOn::Current, |approval| {
-        RunAsk::Sync {
-            full: Full,
-            approval,
-        }
+    approved_mirror(root, &volume, MirrorOn::Current, |approval| RunAsk::Sync {
+        full: Full,
+        approval,
     })
 }
 
@@ -595,36 +697,24 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
 fn approved_mirror(
     root: &ArgMatches,
     volume: &VolumeName,
-    started: String,
     on: MirrorOn<'_>,
     ask: impl FnOnce(Option<Signed<VolumeApproval>>) -> RunAsk,
 ) -> Result<(), Error> {
     let store = store::store(root)?;
     cloud(store.backend())?;
-    let (volume_id, environment) = located(&store, leaf_matches(root), volume)?;
+    let found = located(&store, leaf_matches(root), volume)?;
     let replace = matches!(on, MirrorOn::Current);
     let approval = super::approve::sign(
         root,
         &store,
-        (volume, &volume_id, &environment),
+        (volume, &found.volume_id, &found.environment),
         on,
         replace,
     )?;
     let (signed, change) = approval.map_or((None, None), |approval| {
         (Some(approval.signed), Some(approval.change))
     });
-    request_located(
-        root,
-        &store,
-        volume,
-        &volume_id,
-        environment,
-        (started, change.as_ref()),
-        |environment| RunRequest {
-            environment,
-            ask: ask(signed),
-        },
-    )
+    request(root, &store, volume, found, change.as_ref(), ask(signed))
 }
 
 /// What `POST volumes/{id}/sync` asks for.
@@ -661,15 +751,15 @@ fn hand_off(root: &ArgMatches, volume: &VolumeName) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store::store(root)?;
     let (runtime, credential) = cloud(store.backend())?;
-    let (volume_id, environment) = located(&store, matches, volume)?;
+    let found = located(&store, matches, volume)?;
     let asked = SyncRequest {
         environment: RunEnvironment {
-            project: environment.project,
-            environment: environment.name,
+            project: found.environment.project,
+            environment: found.environment.name,
         },
     };
     let synced = runtime
-        .block_on(sync_mirror(credential, &volume_id, &asked))
+        .block_on(sync_mirror(credential, &found.volume_id, &asked))
         .map_err(|error| store.fail(error))?;
     crate::ui::finish(&Next::new(&synced, None), || {
         for line in &synced.lines {
@@ -684,18 +774,20 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let to = server_name(matches, "to")?;
-    let started = format!("Move of Volume {volume} onto {to}");
     let store = store::store(root)?;
     cloud(store.backend())?;
     let view = store.read(&VolumeQuery {
         environment: store::environment(matches)?,
         volume: volume.clone(),
     })?;
-    let volume_id = view.volume.volume.id;
+    let found = Located {
+        volume_id: view.volume.volume.id,
+        environment: view.environment,
+    };
     let approval = super::approve::sign_move(
         root,
         &store,
-        (&volume, &volume_id, &view.environment),
+        (&volume, &found.volume_id, &found.environment),
         &to,
         view.volume.recorded_storage,
     )?;
@@ -706,32 +798,21 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
             Some(approval.change),
         )
     });
-    request_located(
-        root,
-        &store,
-        &volume,
-        &volume_id,
-        view.environment,
-        (started, change.as_ref()),
-        |environment| RunRequest {
-            environment,
-            ask: RunAsk::Move {
-                to: to.clone(),
-                approval: signed,
-                service,
-            },
-        },
-    )
+    let ask = RunAsk::Move {
+        to,
+        approval: signed,
+        service,
+    };
+    request(root, &store, &volume, found, change.as_ref(), ask)
 }
 
 pub(crate) fn release(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
-    let started = format!("Release of Volume {volume}");
-    request(root, &volume, started, |environment| RunRequest {
-        environment,
-        ask: RunAsk::Release,
-    })
+    let store = store::store(root)?;
+    cloud(store.backend())?;
+    let found = located(&store, matches, &volume)?;
+    request(root, &store, &volume, found, None, RunAsk::Release)
 }
 
 pub(crate) fn restore(root: &ArgMatches) -> Result<(), Error> {
@@ -740,36 +821,32 @@ pub(crate) fn restore(root: &ArgMatches) -> Result<(), Error> {
     let from = server_name(matches, "from")?;
     let store = store::store(root)?;
     if let Backend::Local(..) = store.backend() {
-        let (volume_id, environment) = located(&store, matches, &volume)?;
-        return super::restore::standalone(root, &store, &volume, &volume_id, &environment, &from);
+        let found = located(&store, matches, &volume)?;
+        return super::restore::standalone(
+            root,
+            &store,
+            &volume,
+            &found.volume_id,
+            &found.environment,
+            &from,
+        );
     }
     cloud(store.backend())?;
-    let (volume_id, environment) = located(&store, matches, &volume)?;
+    let found = located(&store, matches, &volume)?;
     let approval = super::loss_approval::sign_restore(
         root,
         &store,
-        (&volume, &volume_id, &environment),
+        (&volume, &found.volume_id, &found.environment),
         &from,
     )?;
     let (signed, change) = approval.map_or((None, None), |approval| {
         (Some(approval.signed), Some(approval.change))
     });
-    let started = format!("Restore of Volume {volume} from {from}");
-    request_located(
-        root,
-        &store,
-        &volume,
-        &volume_id,
-        environment,
-        (started, change.as_ref()),
-        |environment| RunRequest {
-            environment,
-            ask: RunAsk::Restore {
-                from: from.clone(),
-                approval: signed,
-            },
-        },
-    )
+    let ask = RunAsk::Restore {
+        from,
+        approval: signed,
+    };
+    request(root, &store, &volume, found, change.as_ref(), ask)
 }
 
 /// `volume set NAME --size N` on a deployed Volume: Cloud sets every copy's size, then records
@@ -789,7 +866,6 @@ pub(crate) fn resize(
             ),
         ));
     }
-    let started = format!("resize of Volume {volume} to {maximum_bytes}");
     let volume_id = &view.volume.volume.id;
     let approval = super::resize_approval::sign(
         root,
@@ -801,21 +877,15 @@ pub(crate) fn resize(
     let (signed, change) = approval.map_or((None, None), |approval| {
         (Some(approval.signed), Some(approval.change))
     });
-    request_located(
-        root,
-        store,
-        volume,
-        volume_id,
-        view.environment.clone(),
-        (started, change.as_ref()),
-        |environment| RunRequest {
-            environment,
-            ask: RunAsk::Resize {
-                maximum_bytes,
-                approval: signed,
-            },
-        },
-    )
+    let found = Located {
+        volume_id: volume_id.clone(),
+        environment: view.environment.clone(),
+    };
+    let ask = RunAsk::Resize {
+        maximum_bytes,
+        approval: signed,
+    };
+    request(root, store, volume, found, change.as_ref(), ask)
 }
 
 pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
@@ -833,103 +903,62 @@ pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
         .iter()
         .map(|listing| listing.volume.name.clone())
         .collect();
-    let (volume, slot) = mirror_of(&names, &mirror)?;
-    let (volume_id, environment) = located(&store, matches, &volume)?;
+    let MirrorName { volume, slot } = MirrorName::resolve(&names, &mirror)?;
+    let found = located(&store, matches, &volume)?;
     let approval = super::loss_approval::sign_removal(
         root,
         &store,
-        (&volume, &volume_id, &environment),
+        (&volume, &found.volume_id, &found.environment),
         &slot,
         (confirm.as_deref(), if_old_copy),
     )?;
     let (signed, change) = approval.map_or((None, None), |approval| {
         (Some(approval.signed), Some(approval.change))
     });
-    let started = format!("deletion of Mirror {mirror}");
-    request_located(
-        root,
-        &store,
-        &volume,
-        &volume_id,
-        environment,
-        (started, change.as_ref()),
-        |environment| RunRequest {
-            environment,
-            ask: if if_old_copy {
-                RunAsk::DeleteOldCopy {
-                    slot: slot.clone(),
-                    confirm: confirm.clone(),
-                    approval: signed,
-                }
-            } else {
-                RunAsk::DeleteMirror {
-                    slot: slot.clone(),
-                    confirm: confirm.clone(),
-                    approval: signed,
-                }
-            },
-        },
-    )
+    let ask = if if_old_copy {
+        RunAsk::DeleteOldCopy {
+            slot,
+            confirm,
+            approval: signed,
+        }
+    } else {
+        RunAsk::DeleteMirror {
+            slot,
+            confirm,
+            approval: signed,
+        }
+    };
+    request(root, &store, &volume, found, change.as_ref(), ask)
 }
 
-/// Split `mirror`, `VOLUME-SERVER`, at the one Volume of `volumes` it starts with.
-pub(crate) fn mirror_of(
-    volumes: &[VolumeName],
-    mirror: &str,
-) -> Result<(VolumeName, MachineName), Error> {
-    let mut found = volumes.iter().filter_map(|volume| {
-        let server = mirror.strip_prefix(volume.as_str())?.strip_prefix('-')?;
-        Some((volume.clone(), MachineName::parse(server).ok()?))
-    });
-    match (found.next(), found.next()) {
-        (Some(only), None) => Ok(only),
-        (Some(_), Some(_)) => Err(Error::ambiguous(format!(
-            "Mirror {mirror} could belong to more than one Volume here; delete it from the dashboard's Volume page."
-        ))),
-        (None, _) => Err(Error::not_found(format!(
-            "No Volume here has Mirror {mirror}; a Mirror is named VOLUME-SERVER, like data-web-2."
-        ))
-        .hint(Hint::valid(volumes.iter().map(ToString::to_string)))),
-    }
-}
-
+/// Start `ask` on the Volume `found`, saying what started it by `ask.started`, with the change
+/// this Device approved for it, if any.
 fn request(
-    root: &ArgMatches,
-    volume: &VolumeName,
-    started: String,
-    ask: impl FnOnce(RunEnvironment) -> RunRequest,
-) -> Result<(), Error> {
-    let store = store::store(root)?;
-    cloud(store.backend())?;
-    let (volume_id, environment) = located(&store, leaf_matches(root), volume)?;
-    request_located(
-        root,
-        &store,
-        volume,
-        &volume_id,
-        environment,
-        (started, None),
-        ask,
-    )
-}
-
-/// `started` names the run, with the change this Device approved for it, if any.
-fn request_located(
     root: &ArgMatches,
     store: &store::Store<'_>,
     volume: &VolumeName,
-    volume_id: &VolumeId,
-    environment: EnvironmentSummary,
-    (started, change): (String, Option<&ApprovedVolumeChange>),
-    ask: impl FnOnce(RunEnvironment) -> RunRequest,
+    found: Located,
+    change: Option<&ApprovedVolumeChange>,
+    ask: RunAsk,
 ) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let (runtime, credential) = cloud(store.backend())?;
-    let asked = ask(RunEnvironment {
-        project: environment.project,
-        environment: environment.name,
-    });
-    let run = match approved(runtime, credential, matches, volume, volume_id, &asked)? {
+    let started = ask.started(volume);
+    let asked = RunRequest {
+        environment: RunEnvironment {
+            project: found.environment.project,
+            environment: found.environment.name,
+        },
+        ask,
+    };
+    let run = match approved(
+        runtime,
+        credential,
+        matches,
+        volume,
+        &found.volume_id,
+        &asked,
+    )? {
         Ok(run) => run,
         Err(error) => {
             return Err(predates_if_old_copy(&asked.ask, &error)
@@ -979,41 +1008,7 @@ fn approved(
     volume_id: &VolumeId,
     asked: &RunRequest,
 ) -> Result<Result<VolumeRun, StoreCallError>, Error> {
-    let (verb, mut words) = if let Some((slot, confirm, if_old_copy)) = asked.ask.removal() {
-        (
-            OperationVerb::RemoveMirror,
-            removal_words(volume, slot, if_old_copy, confirm),
-        )
-    } else {
-        // A Protected Environment asks someone who can't protect it before these too.
-        let words = |verb: &str, rest: &[&str]| {
-            ["volume", verb, volume.as_str()]
-                .into_iter()
-                .chain(rest.iter().copied())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
-        match &asked.ask {
-            RunAsk::Release => (OperationVerb::Release, words("release", &[])),
-            RunAsk::Move { to, .. } => (OperationVerb::Move, words("move", &["--to", to.as_str()])),
-            RunAsk::Restore { from, .. } => (
-                OperationVerb::Restore,
-                words("restore", &["--from", from.as_str()]),
-            ),
-            RunAsk::Resize { maximum_bytes, .. } => (
-                OperationVerb::Resize,
-                words("set", &["--size", size_word(*maximum_bytes).as_str()]),
-            ),
-            RunAsk::Mirror { to, .. } => (
-                OperationVerb::Mirror,
-                words("mirror", &["--to", to.as_str()]),
-            ),
-            RunAsk::Sync { .. } => (OperationVerb::Sync, words("sync", &["--full"])),
-            RunAsk::DeleteMirror { .. } | RunAsk::DeleteOldCopy { .. } => {
-                return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
-            }
-        }
-    };
+    let (verb, mut words) = asked.ask.rerun(volume);
     words.push("--approval".to_owned());
     let retry = |id: &str| {
         let mut args: Vec<&str> = words.iter().map(String::as_str).collect();
@@ -1116,12 +1111,12 @@ pub(crate) fn runs(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let store = store::store(root)?;
     let (runtime, credential) = cloud(store.backend())?;
-    let (volume_id, environment) = located(&store, matches, &volume)?;
+    let found = located(&store, matches, &volume)?;
     if let Some(id) = wanted {
         let run = runtime
             .block_on(get(credential, &id))
             .map_err(|error| store.fail(error))?;
-        if run.volume_id != volume_id {
+        if run.volume_id != found.volume_id {
             return Err(
                 Error::not_found(format!("Volume {volume} has no run {id}.")).hint(Hint::Inspect(
                     store::next(matches, &["volume", "runs", volume.as_str()]),
@@ -1131,7 +1126,7 @@ pub(crate) fn runs(root: &ArgMatches) -> Result<(), Error> {
         return crate::ui::fields(&OneRun { run: run.clone() }, &record(&run));
     }
     let runs = runtime
-        .block_on(list(credential, &volume_id, &environment.id))
+        .block_on(list(credential, &found.volume_id, &found.environment.id))
         .map_err(|error| store.fail(error))?;
     let mut table = Table::new(
         ["RUN", "KIND", "STATE", "ASKED", "STARTED", "MESSAGE"],
