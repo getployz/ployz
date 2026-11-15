@@ -2908,3 +2908,177 @@ mod published {
         assert!(!home.path().join("published").exists());
     }
 }
+
+mod tool_facts {
+    use super::*;
+
+    const SERVER: &[&str] = &[
+        "server_show",
+        "server_logs",
+        "server_metrics",
+        "server_drain",
+        "server_set",
+        "server_upgrade",
+        "server_clean",
+        "server_remove",
+        "server_forget",
+    ];
+    const VOLUME: &[&str] = &[
+        "volume_add",
+        "volume_update",
+        "volume_remove",
+        "volume_show",
+        "volume_mirror",
+        "volume_mirror_remove",
+        "volume_move",
+        "volume_release",
+        "volume_restore",
+    ];
+    const SERVICE: &[&str] = &[
+        "service_inspect",
+        "service_add",
+        "service_update",
+        "service_rename",
+        "service_remove",
+        "service_status",
+        "service_logs",
+        "service_metrics",
+        "service_restart",
+        "service_start",
+        "service_stop",
+    ];
+    const DEPLOYMENT: &[&str] = &[
+        "docs",
+        "environment_show",
+        "project_create",
+        "project_rename",
+        "domain_check",
+        "domain_add",
+        "domain_update",
+        "domain_remove",
+        "config_write",
+        "config_rename",
+        "config_remove",
+        "review",
+        "discard",
+        "history",
+        "deploy",
+        "deployment_list",
+        "deployment_show",
+        "deployment_retry",
+        "deployment_start",
+        "deployment_cancel",
+        "environment_pr",
+        "environment_protect",
+        "environment_setup",
+        "github_ls",
+        "github_connect",
+        "environment_remove",
+        "project_remove",
+    ];
+
+    fn diff() -> Asked {
+        serde_json::from_value(json!({
+            "approval_id": "a1", "approval": "d1", "effects": [],
+            "diff": {
+                "environment": { "id": "00000000-0000-4000-8000-000000000002", "project": "shop", "name": "production", "revision": 3 },
+                "version": "3:2:0.1", "saved": 2, "holds_staged": false, "changes": [], "total_count": 3,
+            },
+        }))
+        .unwrap()
+    }
+
+    fn operation() -> Asked {
+        serde_json::from_value(json!({
+            "approval_id": "a1", "approval": "d1", "effects": [],
+            "operation": { "verb": "drain", "name": "box" },
+        }))
+        .unwrap()
+    }
+
+    fn status_of(tool: &str) -> &'static str {
+        let family = [
+            (SERVER, "server_show"),
+            (VOLUME, "volume_show"),
+            (SERVICE, "service_status"),
+            (DEPLOYMENT, "deployment_show"),
+        ];
+        family
+            .into_iter()
+            .find_map(|(tools, status)| tools.contains(&tool).then_some(status))
+            .unwrap_or_else(|| panic!("{tool} is in no family"))
+    }
+
+    #[test]
+    fn the_table_names_every_tool_once() {
+        let named = [SERVER, VOLUME, SERVICE, DEPLOYMENT].concat();
+        let catalog = tools::catalog();
+        let mut catalogued: Vec<&str> = catalog.iter().map(|def| def.name).collect();
+        let mut named_sorted = named.clone();
+        catalogued.sort_unstable();
+        named_sorted.sort_unstable();
+        assert_eq!(named_sorted, catalogued);
+    }
+
+    #[test]
+    fn a_stopped_call_names_the_read_that_shows_what_it_started() {
+        for def in tools::catalog() {
+            assert_eq!(
+                overdue(def.name, Duration::from_secs(90)),
+                format!(
+                    "ployz mcp stopped `{}` after 90 seconds. What it started may still be \
+                     running; check with `{}`.",
+                    def.name,
+                    status_of(def.name),
+                ),
+                "{}",
+                def.name
+            );
+        }
+    }
+
+    #[test]
+    fn an_approval_of_a_diff_is_worded_by_its_tool() {
+        let diff = diff();
+        for def in tools::catalog() {
+            let expected = match def.name {
+                "environment_remove" | "project_remove" => Verb::Operation(OperationVerb::Remove),
+                "deployment_retry" => Verb::Retry,
+                _ => Verb::Deploy,
+            };
+            for input in [json!({}), json!({ "skip_deploy": false })] {
+                assert_eq!(verb(def.name, &input, &diff), expected, "{}", def.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_deploy_that_skips_the_deploy_is_a_save() {
+        let diff = diff();
+        assert_eq!(
+            verb("deploy", &json!({ "skip_deploy": true }), &diff),
+            Verb::Publish
+        );
+        assert_eq!(
+            verb("deploy", &json!({ "skip_deploy": "true" }), &diff),
+            Verb::Deploy
+        );
+        for def in tools::catalog().iter().filter(|def| def.name != "deploy") {
+            let input = json!({ "skip_deploy": true });
+            assert_ne!(verb(def.name, &input, &diff), Verb::Publish, "{}", def.name);
+        }
+    }
+
+    #[test]
+    fn an_approval_of_an_operation_is_worded_by_its_operation() {
+        let operation = operation();
+        for def in tools::catalog() {
+            assert_eq!(
+                verb(def.name, &json!({ "skip_deploy": true }), &operation),
+                Verb::Operation(OperationVerb::Drain),
+                "{}",
+                def.name
+            );
+        }
+    }
+}

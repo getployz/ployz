@@ -50,3 +50,45 @@ fn every_tool_name_literal_in_tools_names_a_tool() {
     assert!(found >= 20, "the scan found {found} literals");
     assert!(unknown.is_empty(), "no tool is named {unknown:?}");
 }
+
+#[test]
+fn the_tool_def_binding_is_what_a_model_client_reads() {
+    use ts_rs::TS;
+    assert_eq!(
+        super::ToolDef::decl(&ts_rs::Config::default()),
+        "type ToolDef = { name: string, description: string, input_schema: JsonValue, output_schema: JsonValue, read_only: boolean, destructive: boolean, gate: Gate, };"
+    );
+}
+
+#[test]
+fn every_tool_names_a_read_to_check_what_it_started() {
+    for entry in TOOLS {
+        assert!(
+            entry.facts.status.read_only(),
+            "{} names {:?}, which writes",
+            entry.name,
+            entry.facts.status
+        );
+    }
+}
+
+#[test]
+fn only_these_tools_word_an_approval_of_a_diff_otherwise() {
+    use super::DiffVerb;
+    use serde_json::json;
+
+    for entry in TOOLS {
+        let expected = match entry.name {
+            "environment_remove" | "project_remove" => DiffVerb::Remove,
+            "deployment_retry" => DiffVerb::Retry,
+            _ => DiffVerb::Deploy,
+        };
+        assert_eq!(entry.facts.verb(&json!({})), expected, "{}", entry.name);
+        let skipping = entry.facts.verb(&json!({ "skip_deploy": true }));
+        let expected = match entry.name {
+            "deploy" => DiffVerb::Publish,
+            _ => expected,
+        };
+        assert_eq!(skipping, expected, "{}", entry.name);
+    }
+}

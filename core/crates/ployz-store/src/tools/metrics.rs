@@ -92,6 +92,7 @@ tool_input! {
 
 impl Tool for ServiceMetrics {
     const NAME: &'static str = "service_metrics";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str = "A Service's CPU, memory, network and disk (now, avg, peak) and its OOM kills, exits and restarts. Default: the last hour.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
@@ -204,6 +205,7 @@ pub(crate) struct ServerMetrics {
 
 impl Tool for ServerMetrics {
     const NAME: &'static str = "server_metrics";
+    const STATUS: ToolId = ToolId::ServerShow;
     const DESCRIPTION: &'static str = "A server's CPU, memory, network and disk (now, avg, peak) and its containers' OOM kills, exits and restarts. Default: the last hour.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };

@@ -69,6 +69,7 @@ tool_input! {
 
 impl Tool for VolumeShow {
     const NAME: &'static str = "volume_show";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Where a Volume's data is: its writable copy, its mirror and last sync, and recent runs with how each ended.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
@@ -183,6 +184,7 @@ tool_input! {
 
 impl Tool for VolumeMirror {
     const NAME: &'static str = "volume_mirror";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
@@ -274,6 +276,7 @@ tool_input! {
 
 impl Tool for VolumeMirrorRemove {
     const NAME: &'static str = "volume_mirror_remove";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str =
         "Delete a Volume's mirror; if it is the last copy, its data goes too.";
     const GATE: Gate = Gate::Cloud;
@@ -314,6 +317,7 @@ tool_input! {
 
 impl Tool for VolumeMove {
     const NAME: &'static str = "volume_move";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Put a Volume and the Service using it on server to. The Service is down only for the final copy; the old server keeps a mirror. If a move stopped, the same call continues it.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
@@ -353,6 +357,7 @@ tool_input! {
 
 impl Tool for VolumeRelease {
     const NAME: &'static str = "volume_release";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;
@@ -395,6 +400,7 @@ tool_input! {
 
 impl Tool for VolumeRestore {
     const NAME: &'static str = "volume_restore";
+    const STATUS: ToolId = ToolId::VolumeShow;
     const DESCRIPTION: &'static str = "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down until the next deploy.";
     const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Remove;

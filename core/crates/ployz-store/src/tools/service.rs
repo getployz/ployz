@@ -4,6 +4,7 @@
 use schemars::{Schema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
+use super::ToolId;
 use super::domain::row;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool, effects_ask, written};
@@ -29,6 +30,7 @@ tool_input! {
 
 impl Tool for ServiceInspect {
     const NAME: &'static str = "service_inspect";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str = "Everything about one Service: Settings with values and defaults, variables, mounts, Configs, domains with status, and what is Staged.";
     const EFFECT: Effect = Effect::Read;
 
@@ -119,6 +121,7 @@ tool_input! {
 
 impl Tool for ServiceAdd {
     const NAME: &'static str = "service_add";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str = "Create a Service. Give image to run a container image, or repository to build a GitHub repository. Staged: it runs after the next Deploy.";
     const EFFECT: Effect = Effect::Change;
 
@@ -289,6 +292,7 @@ fn generate_secret_schema(_: &mut SchemaGenerator) -> Schema {
 
 impl Tool for ServiceUpdate {
     const NAME: &'static str = "service_update";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. A secret's value never passes through here; generate_secret makes a random one.";
     const EFFECT: Effect = Effect::Change;
 
@@ -523,6 +527,7 @@ tool_input! {
 
 impl Tool for ServiceRename {
     const NAME: &'static str = "service_rename";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str =
         "Rename a Service. Private DNS names and references to it follow. Staged.";
     const EFFECT: Effect = Effect::Change;
@@ -559,6 +564,7 @@ tool_input! {
 
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
+    const STATUS: ToolId = ToolId::ServiceState;
     const DESCRIPTION: &'static str = "Remove a Service, staged until a deploy a human approves. `broken`: references deploys skip.";
     const EFFECT: Effect = Effect::Change;
 

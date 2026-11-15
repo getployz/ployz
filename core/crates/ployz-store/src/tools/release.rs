@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::deployment::follow_call;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, written};
+use super::machine::{Cx, DiffVerb, Effect, Stop, Tool, written};
 use super::refusal::Refusal;
 use super::step::{Gate, version_for_loss};
 use crate::catalog::NODE_NAME;
@@ -242,6 +242,13 @@ impl Tool for DeployInput {
     const DESCRIPTION: &'static str = "Deploys everything staged. Deploying every Service removes other Services running in the Environment, unless no_prune. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain.";
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
+
+    fn verb(input: &Value) -> DiffVerb {
+        match input.get("skip_deploy").and_then(Value::as_bool) {
+            Some(true) => DiffVerb::Publish,
+            _ => DiffVerb::Deploy,
+        }
+    }
 
     fn example() -> Value {
         json!({ "services": ["web"], "message": "Raise web's log level", "request_key": "h4Rv9sNb6YeD" })

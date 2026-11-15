@@ -37,7 +37,10 @@ pub use crate::error::{Accept, Confirmation};
 pub use logs::{
     Channel, FrameScrub, LineCap, LogExcerpt, LogText, SealedForms, SealedValues, Withheld,
 };
-pub use machine::{Place, STEP_BUDGET, State, StoreAt, ToolDef, WAIT_CAP_SECONDS, resume, start};
+pub use machine::{
+    DiffVerb, Place, STEP_BUDGET, State, StoreAt, ToolDef, ToolFacts, WAIT_CAP_SECONDS, resume,
+    start,
+};
 pub use refusal::{Call, NOT_SETTINGS, Refusal, ToolResult, Writes};
 pub use schema::{lint, portable};
 pub use status::{ServiceStatus, service_status};
@@ -147,6 +150,16 @@ tools! {
 #[must_use]
 pub fn catalog() -> Vec<ToolDef> {
     TOOLS.iter().map(|entry| (entry.def)()).collect()
+}
+
+/// What a host knows of the tool named `tool` beyond what a model is told, if there is one
+/// by that name.
+#[must_use]
+pub fn facts(tool: &str) -> Option<ToolFacts> {
+    TOOLS
+        .iter()
+        .find(|entry| entry.name == tool)
+        .map(|entry| entry.facts)
 }
 
 /// A complete, decodable input for `tool`, if there is one by that name.

@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::ToolId;
 use super::input::tool_input;
-use super::machine::{Cx, Effect, Stop, Tool, store};
+use super::machine::{Cx, DiffVerb, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal};
 use super::step::{Gate, version_for_loss};
 use crate::{
@@ -366,6 +366,10 @@ impl Tool for DeploymentRetry {
     const DESCRIPTION: &'static str = "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy.";
     const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
+
+    fn verb(_input: &Value) -> DiffVerb {
+        DiffVerb::Retry
+    }
 
     fn example() -> Value {
         json!({ "deployment": 12, "request_key": "r8Tq2wLm5XcV" })

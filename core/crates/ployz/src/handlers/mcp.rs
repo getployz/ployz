@@ -11,7 +11,7 @@ use clap::{ArgMatches, Command};
 use futures_util::future::join_all;
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
-    self, Act, Action, Ask, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
+    self, Act, Action, Ask, DiffVerb, Gate, INSTRUCTIONS, Place, RequestKey, State, Step, StoreAt,
     ToolResult, Write,
 };
 use ployz_store::{Actor, ConfigStore, OperationVerb, OrganizationId};
@@ -917,15 +917,14 @@ struct Call<'a> {
 }
 
 fn verb(tool: &str, input: &Value, asked: &Asked) -> Verb {
-    let skips = input.get("skip_deploy").and_then(Value::as_bool) == Some(true);
-    match (&asked.required.subject, tool) {
-        (Subject::Operation(operation), _) => Verb::Operation(operation.verb),
-        (Subject::Diff(_), "deploy") if skips => Verb::Publish,
-        (Subject::Diff(_), "environment_remove" | "project_remove") => {
-            Verb::Operation(OperationVerb::Remove)
-        }
-        (Subject::Diff(_), "deployment_retry") => Verb::Retry,
-        (Subject::Diff(_), _) => Verb::Deploy,
+    match &asked.required.subject {
+        Subject::Operation(operation) => Verb::Operation(operation.verb),
+        Subject::Diff(_) => match tools::facts(tool).map(|facts| facts.verb(input)) {
+            Some(DiffVerb::Publish) => Verb::Publish,
+            Some(DiffVerb::Retry) => Verb::Retry,
+            Some(DiffVerb::Remove) => Verb::Operation(OperationVerb::Remove),
+            Some(DiffVerb::Deploy) | None => Verb::Deploy,
+        },
     }
 }
 
@@ -1227,13 +1226,18 @@ enum Answer {
     Refused(CallToolResult),
 }
 
+/// A compiled tool names its own status read. A published command is no tool: the word
+/// it starts with picks the read.
 fn overdue(tool: &str, deadline: Duration) -> String {
-    let status = match tool.split('_').next() {
-        Some("server") => "server_show",
-        Some("volume") => "volume_show",
-        Some("service") => "service_status",
-        _ => "deployment_show",
-    };
+    let status = tools::facts(tool).map_or_else(
+        || match tool.split('_').next() {
+            Some("server") => "server_show",
+            Some("volume") => "volume_show",
+            Some("service") => "service_status",
+            _ => "deployment_show",
+        },
+        |facts| facts.status.name(),
+    );
     format!(
         "ployz mcp stopped `{tool}` after {}. What it started may still be running; check \
          with `{status}`.",
