@@ -96,6 +96,19 @@ pub struct LowerDeploymentInput {
     pub sealed_for: Option<SealedFor>,
 }
 
+impl LowerDeploymentInput {
+    /// What the build of Service `service` takes: its own snapshot, nothing selected and
+    /// nothing retired. A build reads no Config, and Config files may hold secrets.
+    #[must_use]
+    pub fn narrowed_to(mut self, service: &ServiceName) -> Self {
+        self.configs = Vec::new();
+        self.removals = ServiceRemovals::default();
+        self.snapshots.retain(|snapshot| snapshot.serves(service));
+        self.selected = Some(Vec::new());
+        self
+    }
+}
+
 /// The Organization and Environment a Deploy's Sealed values were sealed for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -127,6 +140,29 @@ pub struct LowerDeploymentSnapshot {
     /// start command, any other has the start command replace it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_with: Option<BuildMethod>,
+}
+
+impl LowerDeploymentSnapshot {
+    /// Whether this snapshot's config names Service `service`.
+    fn serves(&self, service: &ServiceName) -> bool {
+        self.config.pointer("/privateDns").and_then(Value::as_str) == Some(service.as_str())
+    }
+
+    /// Built by `method` from a source that is not an image yet: the config's source
+    /// becomes the pending image of Service `service`, which binding replaces with
+    /// verified content.
+    pub fn build_with(&mut self, method: BuildMethod, service: &ServiceName) {
+        self.built_with = Some(method);
+        if let Some(config) = self.config.as_object_mut() {
+            config.insert(
+                "source".into(),
+                serde_json::json!({
+                    "type": "image", "version": 1,
+                    "image": crate::pending_image(service), "credentials": {"type": "none"},
+                }),
+            );
+        }
+    }
 }
 
 /// One Volume the Namespace holds.

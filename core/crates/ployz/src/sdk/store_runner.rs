@@ -775,7 +775,7 @@ impl Run {
         for (index, target) in targets.iter().enumerate() {
             let service = &target.service;
             let mut input = PreparationInput {
-                deployment: only(&claimed.input, service),
+                deployment: only(&claimed.input, service)?,
                 build_receipts: one(service, Some(receipts(claimed, service))),
                 build_index: index,
                 preferred_machine: match &target.build {

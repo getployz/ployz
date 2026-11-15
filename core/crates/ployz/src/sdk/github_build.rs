@@ -127,7 +127,7 @@ pub async fn github_start(
             foreign: Vec::new(),
         });
     }
-    let deployment = only(&built.input, &id.service);
+    let deployment = only(&built.input, &id.service)?;
     let commit = built.commit;
     let receipt = built
         .receipt
@@ -223,7 +223,7 @@ async fn reuse_approved(
     let foreign = session.foreign();
     let outside = session
         .outside_build(OutsideBuildInput {
-            deployment: only(&built.input, &id.service),
+            deployment: only(&built.input, &id.service)?,
             commit: built.commit.to_string(),
             receipt: Some(receipt),
         })
@@ -333,7 +333,7 @@ pub async fn github_check_in(
         move |store| store.github_input(&id)
     })
     .await?;
-    let deployment = only(&built.input, &id.service);
+    let deployment = only(&built.input, &id.service)?;
     let commit = built.commit;
     let fingerprint = super::expected_fingerprints(
         deployment.clone(),
@@ -494,7 +494,7 @@ pub async fn github_rule_check_in(
     };
     Ok(Dialed {
         outcome: RuleCheckIn {
-            deployment: only(&built.input, &id.service),
+            deployment: only(&built.input, &id.service)?,
             build: id.clone(),
             rule: rule.into(),
             cluster: public_key,
@@ -555,7 +555,7 @@ pub async fn github_rule_grant(
             "The grant asks for another Service than its build's",
         ));
     }
-    let deployment = only(&built.input, &id.service);
+    let deployment = only(&built.input, &id.service)?;
     let fingerprint = super::expected_fingerprints(
         deployment.clone(),
         BTreeMap::from([(id.service.clone(), built.commit.to_string())]),
