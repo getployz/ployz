@@ -7,13 +7,13 @@
 
 use crate::machine::has_cluster_identity;
 use ployz_core::{
-    LocalMachinePhase, PLATFORM_SEALED_INFO, RecipientKeySet, RecipientSecret, ResealValue,
-    ResealValuesRequest, SEALED_VALUE_INFO, SealingPublicKey, SetRecipientKeyRequest,
-    ValuesResealed,
+    LocalMachinePhase, RecipientKeySet, RecipientSecret, ResealValue, ResealValuesRequest,
+    SealingPublicKey, SetRecipientKeyRequest, ValuesResealed,
     authority::{
         AuthorityRefusal, Member, SealingRotation, Signed, Timestamp,
         rotation::{self, sealed_key_binding},
     },
+    separation,
 };
 
 use super::{Error, LocalMachine};
@@ -209,13 +209,14 @@ impl LocalMachine {
             .map(|value| match value {
                 ResealValue::Env { identity, value } => {
                     let aad = value.associated_data(identity);
-                    keys.open_value(&aad, &value.sealed)
-                        .map(|plaintext| recipient.seal_under(SEALED_VALUE_INFO, &aad, &plaintext))
+                    keys.open_value(&aad, &value.sealed).map(|plaintext| {
+                        recipient.seal_under(separation::SEALED_VALUE, &aad, &plaintext)
+                    })
                 }
                 ResealValue::Platform { purpose, sealed } => {
                     keys.open_platform(*purpose, sealed).map(|plaintext| {
                         recipient.seal_under(
-                            PLATFORM_SEALED_INFO,
+                            separation::PLATFORM_SEALED,
                             &purpose.associated_data(&cluster),
                             &plaintext,
                         )

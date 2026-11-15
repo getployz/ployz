@@ -10,7 +10,7 @@ use super::{
     AuthorityRefusal, Purpose, Signed, SigningPublicKey, Statement, Timestamp,
     refusal::{field, first_mismatch},
 };
-use crate::{DeviceKey, Machine, MachineId, SealingPublicKey, WireGuardPublicKey};
+use crate::{DeviceKey, Machine, MachineId, SealingPublicKey, WireGuardPublicKey, separation};
 
 /// The immutable enrollment allocation. Runtime observations confer no authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -66,7 +66,7 @@ impl JoinAllocation {
 #[must_use]
 pub fn code(machine: MachineId, key: WireGuardPublicKey) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"ployz-join-v1\n");
+    digest.update(separation::JOIN_CODE);
     digest.update(machine.as_str().as_bytes());
     digest.update(key.0);
     let digest = digest.finalize();

@@ -1393,7 +1393,7 @@ impl WireGuardPublicKey {
         use sha2::{Digest as _, Sha256};
 
         let mut digest = Sha256::new();
-        digest.update(b"ployz-wireguard-key-v1\n");
+        digest.update(crate::separation::WIREGUARD_KEY_DIGEST);
         digest.update(self.0);
         let digest = digest.finalize();
         let bits = u128::from_be_bytes(

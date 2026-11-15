@@ -11,10 +11,9 @@ use rand_core::{OsRng, RngCore as _, TryRngCore as _};
 use sha2_0_10::Sha256;
 use zeroize::Zeroizing;
 
-use crate::{RecoveryCode, SealingKeyBackup};
+use crate::{RecoveryCode, SealingKeyBackup, separation};
 
 const VERSION: u8 = 1;
-const INFO: &[u8] = b"ployz-sealing-key-backup-v1";
 const HEADER: [u8; 1] = [VERSION];
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
@@ -103,7 +102,7 @@ fn seal(
 fn cipher(code: &RecoveryCode, salt: &[u8]) -> ChaCha20Poly1305 {
     let mut key = Zeroizing::new([0; 32]);
     Hkdf::<Sha256>::new(Some(salt), code.as_bytes())
-        .expand(INFO, key.as_mut_slice())
+        .expand(separation::SEALING_KEY_BACKUP, key.as_mut_slice())
         .expect("32 bytes is a valid HKDF-SHA256 output length");
     ChaCha20Poly1305::new_from_slice(key.as_slice())
         .expect("HKDF gives ChaCha20-Poly1305 its 32-byte key")

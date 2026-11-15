@@ -527,3 +527,42 @@ fn a_build_refuses_an_approval_of_another_commit_or_service_or_under_a_preview_r
         assert!(authority(&checked_in, commit).is_err());
     }
 }
+
+#[test]
+fn a_cache_scope_is_the_digest_of_its_own_domain_policy_and_attest_key() {
+    use sha2::Digest as _;
+
+    let attest = AttestKey::from_bytes([0x55; 32]);
+    let cached = BuildPolicy {
+        cache: PolicyCache::Actions,
+        ..lab_policy(&[])
+    };
+    let production = opened(&rule(cached.clone()));
+    let digest = PolicyDigest::of(&cached).unwrap().to_string();
+    let oracle = |preview: &str| {
+        hex::encode(
+            Sha256::new()
+                .chain_update(b"ployz build cache v1\0")
+                .chain_update(digest.as_bytes())
+                .chain_update(attest.as_bytes())
+                .chain_update(preview.as_bytes())
+                .finalize(),
+        )
+    };
+    let scope = cache_scope(&production, &cached, &attest).unwrap().unwrap();
+    assert_eq!(scope, oracle(""));
+    assert_eq!(
+        scope,
+        "7481302a037669b05abeb1239b5f07578a34e39c91311fc9bf9c42ddc94b6468"
+    );
+
+    let preview = Opened {
+        preview: true,
+        ..opened(&rule(cached.clone()))
+    };
+    let named = format!("\0preview\0{}", preview.rule);
+    assert_eq!(
+        cache_scope(&preview, &cached, &attest).unwrap().unwrap(),
+        oracle(&named)
+    );
+}

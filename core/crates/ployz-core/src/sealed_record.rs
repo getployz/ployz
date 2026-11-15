@@ -186,22 +186,13 @@ impl<'de> Deserialize<'de> for OpenedSealed {
 /// for exactly this build.
 #[cfg(not(target_arch = "wasm32"))]
 mod build_secrets {
-    use hpke::{
-        Deserializable as _, Kem as _, OpModeR, OpModeS, Serializable as _, aead::ChaCha20Poly1305,
-        kdf::HkdfSha256, kem::X25519HkdfSha256,
-    };
-    use rand_core::{OsRng, TryRngCore as _};
     use thiserror::Error;
     use zeroize::Zeroizing;
 
     use super::OpenedSealed;
     use crate::authority::{AttestKey, RecipientKey};
-
-    type Kem = X25519HkdfSha256;
-    const ENCAPPED_KEY_LEN: usize = 32;
-
-    /// What every build-secrets seal is bound under, followed by the grant's audience.
-    pub const BUILD_SECRETS_INFO: &[u8] = b"ployz build secrets v1";
+    use crate::hpke_suite::{self, OpenAs, SealAs};
+    use crate::separation;
 
     /// An X25519 private key: a build's recipient key, or a Machine's attest key.
     pub struct X25519Secret(Zeroizing<[u8; 32]>);
@@ -209,14 +200,7 @@ mod build_secrets {
     impl X25519Secret {
         #[must_use]
         pub fn generate() -> Self {
-            let (secret, _) = Kem::gen_keypair(&mut OsRng.unwrap_err());
-            Self::from_bytes(
-                secret
-                    .to_bytes()
-                    .as_slice()
-                    .try_into()
-                    .expect("an X25519 private key is 32 bytes"),
-            )
+            Self(hpke_suite::generate_private())
         }
 
         #[must_use]
@@ -224,29 +208,16 @@ mod build_secrets {
             Self(Zeroizing::new(bytes))
         }
 
-        fn private(&self) -> <Kem as hpke::Kem>::PrivateKey {
-            <Kem as hpke::Kem>::PrivateKey::from_bytes(self.0.as_slice())
-                .expect("an X25519 private key is any 32 bytes")
-        }
-
-        fn public(&self) -> [u8; 32] {
-            Kem::sk_to_pk(&self.private())
-                .to_bytes()
-                .as_slice()
-                .try_into()
-                .expect("an X25519 public key is 32 bytes")
-        }
-
         /// This key's public half, as a build names its recipient.
         #[must_use]
         pub fn recipient(&self) -> RecipientKey {
-            RecipientKey::from_bytes(self.public())
+            RecipientKey::from_bytes(hpke_suite::public_key(&self.0))
         }
 
         /// This key's public half, as a Cluster names its attest key.
         #[must_use]
         pub fn attest(&self) -> AttestKey {
-            AttestKey::from_bytes(self.public())
+            AttestKey::from_bytes(hpke_suite::public_key(&self.0))
         }
     }
 
@@ -268,7 +239,7 @@ mod build_secrets {
     }
 
     fn info(audience: &str) -> Vec<u8> {
-        let mut info = BUILD_SECRETS_INFO.to_vec();
+        let mut info = separation::BUILD_SECRETS.to_vec();
         info.extend_from_slice(audience.as_bytes());
         info
     }
@@ -285,25 +256,16 @@ mod build_secrets {
             recipient: &RecipientKey,
             audience: &str,
         ) -> Result<Vec<u8>, BuildSecretsError> {
-            let recipient = <Kem as hpke::Kem>::PublicKey::from_bytes(recipient.as_bytes())
-                .map_err(|_| BuildSecretsError::Seal)?;
-            let sender_private = sender.private();
-            let sender_public = Kem::sk_to_pk(&sender_private);
             let plaintext =
                 Zeroizing::new(serde_json::to_vec(self).map_err(|_| BuildSecretsError::Seal)?);
-            let (encapped, ciphertext) =
-                hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
-                    &OpModeS::Auth((sender_private, sender_public)),
-                    &recipient,
-                    &info(audience),
-                    &plaintext,
-                    &[],
-                    &mut OsRng.unwrap_err(),
-                )
-                .map_err(|_| BuildSecretsError::Seal)?;
-            let mut sealed = encapped.to_bytes().to_vec();
-            sealed.extend(ciphertext);
-            Ok(sealed)
+            hpke_suite::seal(
+                SealAs::Auth(&sender.0),
+                recipient.as_bytes(),
+                &info(audience),
+                &[],
+                &plaintext,
+            )
+            .map_err(|_| BuildSecretsError::Seal)
         }
 
         /// Open values sealed by [`Self::seal_for_build`] for `recipient`, only if
@@ -319,24 +281,14 @@ mod build_secrets {
             sender: &AttestKey,
             audience: &str,
         ) -> Result<Self, BuildSecretsError> {
-            let (encapped, ciphertext) = sealed
-                .split_at_checked(ENCAPPED_KEY_LEN)
-                .ok_or(BuildSecretsError::Unopenable)?;
-            let encapped = <Kem as hpke::Kem>::EncappedKey::from_bytes(encapped)
-                .map_err(|_| BuildSecretsError::Unopenable)?;
-            let sender = <Kem as hpke::Kem>::PublicKey::from_bytes(sender.as_bytes())
-                .map_err(|_| BuildSecretsError::Unopenable)?;
-            let opened = Zeroizing::new(
-                hpke::single_shot_open::<ChaCha20Poly1305, HkdfSha256, Kem>(
-                    &OpModeR::Auth(sender),
-                    &recipient.private(),
-                    &encapped,
-                    &info(audience),
-                    ciphertext,
-                    &[],
-                )
-                .map_err(|_| BuildSecretsError::Unopenable)?,
-            );
+            let opened = hpke_suite::open(
+                OpenAs::Auth(sender.as_bytes()),
+                &recipient.0,
+                &info(audience),
+                &[],
+                sealed,
+            )
+            .map_err(|_| BuildSecretsError::Unopenable)?;
             serde_json::from_slice(&opened).map_err(|_| BuildSecretsError::Malformed)
         }
     }
@@ -404,22 +356,15 @@ mod build_secrets {
         fn a_build_refuses_values_sealed_in_base_mode() {
             let attest = X25519Secret::generate();
             let recipient = X25519Secret::generate();
-            let public =
-                <Kem as hpke::Kem>::PublicKey::from_bytes(recipient.recipient().as_bytes())
-                    .unwrap();
             let plaintext = serde_json::to_vec(&values()).unwrap();
-            let (encapped, ciphertext) =
-                hpke::single_shot_seal::<ChaCha20Poly1305, HkdfSha256, Kem, _>(
-                    &OpModeS::Base,
-                    &public,
-                    &info(AUDIENCE),
-                    &plaintext,
-                    &[],
-                    &mut OsRng.unwrap_err(),
-                )
-                .unwrap();
-            let mut sealed = encapped.to_bytes().to_vec();
-            sealed.extend(ciphertext);
+            let sealed = hpke_suite::seal(
+                SealAs::Base,
+                recipient.recipient().as_bytes(),
+                &info(AUDIENCE),
+                &[],
+                &plaintext,
+            )
+            .unwrap();
             assert!(matches!(
                 OpenedSealed::open_build(&sealed, &recipient, &attest.attest(), AUDIENCE),
                 Err(BuildSecretsError::Unopenable)
@@ -446,7 +391,7 @@ mod build_secrets {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use build_secrets::{BUILD_SECRETS_INFO, BuildSecretsError, X25519Secret};
+pub use build_secrets::{BuildSecretsError, X25519Secret};
 
 #[cfg(test)]
 mod tests {

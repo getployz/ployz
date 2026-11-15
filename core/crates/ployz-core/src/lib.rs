@@ -17,6 +17,8 @@ pub mod hex;
 mod hint;
 mod host_config;
 pub mod host_preparation;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod hpke_suite;
 pub mod labels;
 mod log_level;
 mod machine_layout;
@@ -39,10 +41,13 @@ pub mod rpc;
 mod rpc_catalog;
 pub mod scrub;
 mod sealed;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod sealed_pins_tests;
 mod sealed_record;
 mod sealing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sealing_backup;
+pub mod separation;
 pub mod service;
 pub mod shell;
 pub mod startup_refusal;

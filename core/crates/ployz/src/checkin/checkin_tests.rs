@@ -3834,3 +3834,28 @@ fn the_check_in_reads_a_state_file_by_its_steps_alone() {
         assert!(read_prep_state(&paths.prepare_state).is_none(), "{text}");
     }
 }
+
+#[test]
+fn a_check_in_is_signed_under_its_own_context_with_a_known_answer() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest as _, Sha256};
+
+    let key = client::CheckinKey::new(SecretKey::from_bytes(&[7; 32]));
+    assert_eq!(
+        key.public_hex(),
+        "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+    );
+    let body = br#"{"probe":"one"}"#;
+    let ts = 1_760_000_000_i64;
+    let mut message = b"ployz-checkin-v1\0".to_vec();
+    message.extend_from_slice(key.public_hex().as_bytes());
+    message.push(0);
+    message.extend_from_slice(&ts.to_be_bytes());
+    message.extend_from_slice(&Sha256::digest(body));
+    let oracle = URL_SAFE_NO_PAD.encode(SecretKey::from_bytes(&[7; 32]).sign(&message).to_bytes());
+    assert_eq!(key.sign(ts, body), oracle);
+    assert_eq!(
+        key.sign(ts, body),
+        "3DnUuysTvzOpmtmiPidfR5XLd2nxqDLKmiKm-XDK88vcgUWC9hHl0Em6xkYONjQhHta3frICfedoWbvtoYXyAw"
+    );
+}

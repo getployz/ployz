@@ -5,7 +5,7 @@ use std::fmt;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 
-use crate::{ClientKey, ValueError};
+use crate::{ClientKey, ValueError, separation};
 
 /// The only relay the management transport is configured with. Public relays are never used.
 pub const DEFAULT_RELAY_URL: &str = "https://relay.ployz.dev";
@@ -52,10 +52,6 @@ pub const SEGMENTATION_OFFLOAD: bool = false;
 /// v0.3.4 CLI prints it as it is, and knows no other close code, so it names the way on.
 pub const TUNNEL_NEEDS_FULL: &str = "tunnels need Full access: run `ployz device request` (update ployz first if it has no `device` command)";
 
-/// TLS exporter label for a [`ManagementProof`]. The exporter is unique to one
-/// connection's handshake, so a proof verifies on no other connection.
-pub const MANAGEMENT_PROOF_LABEL: &[u8] = b"ployz management client proof v1";
-
 /// A Management Client's proof that it holds its client key on one connection: the
 /// client public key and its Ed25519 signature over [`ManagementProof::message`].
 ///
@@ -70,13 +66,14 @@ pub struct ManagementProof {
 impl ManagementProof {
     /// Encoded size: the client public key, then the signature.
     pub const LEN: usize = 96;
-    /// Bytes of keying material both ends export under [`MANAGEMENT_PROOF_LABEL`].
+    /// Bytes of keying material both ends export under [`separation::MANAGEMENT_PROOF`]. The exporter is unique to one
+    /// connection's handshake, so a proof verifies on no other connection.
     pub const EXPORTER_LEN: usize = 32;
 
     /// What the client signs: the label, then the connection's exported keying material.
     #[must_use]
     pub fn message(exporter: &[u8; Self::EXPORTER_LEN]) -> Vec<u8> {
-        [MANAGEMENT_PROOF_LABEL, exporter.as_slice()].concat()
+        [separation::MANAGEMENT_PROOF, exporter.as_slice()].concat()
     }
 
     #[must_use]
