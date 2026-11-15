@@ -18,6 +18,10 @@ use ployz_core::cloud_contract::CLIENT_ID;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod wire;
+
+use wire::{CodeReply, DeviceTokenError, LogoutReply, SessionReply, TokenError, TokenReply};
+
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// RFC 8628 §3.5: a `slow_down` answer adds five seconds to the polling interval.
 const SLOW_DOWN: Duration = Duration::from_secs(5);
@@ -385,15 +389,6 @@ pub(crate) struct SignedOut {
 /// Returns a failure Cloud answered with, keeping the stored sign-in so logout can be
 /// retried, or a store failure.
 pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>, LoginError> {
-    #[derive(Deserialize)]
-    struct Reply {
-        signed_out: Device,
-        servers: crate::cloud_account::ServerClears,
-    }
-    #[derive(Deserialize)]
-    struct Device {
-        id: String,
-    }
     let signed_out = match store.replaceable()? {
         None => {
             store.clear()?;
@@ -429,7 +424,7 @@ pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>,
                     Some(LoginError::NotMember(signed_in.organization.slug.clone())),
                 ),
                 Ok(response) => {
-                    let reply: Reply = decode(ensure_success(response).await?)?;
+                    let reply: LogoutReply = decode(ensure_success(response).await?)?;
                     (Some(reply.signed_out.id), reply.servers, None)
                 }
             };
@@ -451,39 +446,6 @@ enum Poll {
     Approved(Secret),
     Denied,
     Expired,
-}
-
-#[derive(Deserialize)]
-struct CodeReply {
-    device_code: String,
-    user_code: String,
-    verification_uri_complete: String,
-    expires_in: u64,
-    interval: u64,
-}
-
-#[derive(Deserialize)]
-struct TokenReply {
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct TokenError {
-    error: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionReply {
-    user: Account,
-    session: SessionFields,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionFields {
-    active_organization_id: Option<String>,
-    active_organization_slug: Option<String>,
 }
 
 async fn request_code(
@@ -554,13 +516,14 @@ async fn poll(http: &reqwest::Client, pending: &Pending) -> Result<Poll, LoginEr
         .await
         .map_err(|error| unreachable(&pending.cloud, error))?;
     let reply: TokenError = decode(body.to_vec())?;
-    Ok(match reply.error.as_str() {
-        "authorization_pending" => Poll::Pending,
-        "slow_down" => Poll::SlowDown,
-        "access_denied" => Poll::Denied,
-        // An unknown device code has been spent or swept: it can never be approved.
-        "expired_token" | "invalid_grant" => Poll::Expired,
-        other => return Err(LoginError::Reply(format!("device token error {other}"))),
+    Ok(match DeviceTokenError::from_wire(&reply.error) {
+        DeviceTokenError::Pending => Poll::Pending,
+        DeviceTokenError::SlowDown => Poll::SlowDown,
+        DeviceTokenError::Denied => Poll::Denied,
+        DeviceTokenError::Expired => Poll::Expired,
+        DeviceTokenError::Unknown(other) => {
+            return Err(LoginError::Reply(format!("device token error {other}")));
+        }
     })
 }
 
@@ -685,53 +648,10 @@ fn now() -> u64 {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::{
-        io::{BufRead, BufReader, Read, Write},
-        net::TcpListener,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use super::*;
-
-    /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
-    pub(crate) fn fake_cloud(
-        reply: impl Fn(&str, &str) -> (u16, serde_json::Value) + Send + 'static,
-    ) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut request_line = String::new();
-                reader.read_line(&mut request_line).unwrap();
-                let mut length = 0;
-                loop {
-                    let mut header = String::new();
-                    reader.read_line(&mut header).unwrap();
-                    if header == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:")
-                    {
-                        length = value.trim().parse().unwrap();
-                    }
-                }
-                let mut body = vec![0; length];
-                reader.read_exact(&mut body).unwrap();
-                let route = request_line.rsplit_once(' ').unwrap().0;
-                let (status, json) = reply(route, &String::from_utf8(body).unwrap());
-                let json = json.to_string();
-                write!(
-                    stream,
-                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
-                    json.len()
-                )
-                .unwrap();
-            }
-        });
-        url
-    }
+    use crate::cloud_account::testing::fake_cloud;
 
     /// Cloud's device flow for one code, approved once `approved` is set.
     fn device_cloud(approved: Arc<Mutex<Option<&'static str>>>) -> String {

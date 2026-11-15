@@ -173,7 +173,7 @@ fn token(cloud: String) -> Credential {
 
 #[tokio::test]
 async fn request_shows_the_code_its_own_key_hashes_to() {
-    let cloud = crate::cloud_login::tests::fake_cloud(|route, body| {
+    let cloud = crate::cloud_account::testing::fake_cloud(|route, body| {
         assert_eq!(route, "POST /api/cli/device-requests");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(body).unwrap(),
@@ -192,7 +192,7 @@ async fn request_shows_the_code_its_own_key_hashes_to() {
 async fn a_refused_request_writes_no_key_and_a_filed_one_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = key::path(&dir.path().join("config.yaml"));
-    let refusing = crate::cloud_login::tests::fake_cloud(|_, _| {
+    let refusing = crate::cloud_account::testing::fake_cloud(|_, _| {
         (
             403,
             json!({ "code": "FORBIDDEN", "message": "Only a signed-in person can request a Device. No changes made." }),
@@ -202,7 +202,7 @@ async fn a_refused_request_writes_no_key_and_a_filed_one_keeps_it() {
     request_at(&token(refusing), &path).await.unwrap_err();
     assert!(!path.exists(), "a refused request left {}", path.display());
 
-    let filing = crate::cloud_login::tests::fake_cloud(|_, body| {
+    let filing = crate::cloud_account::testing::fake_cloud(|_, body| {
         let key = serde_json::from_str::<Pending>(body).unwrap().key;
         (200, json!({ "code": key.code(), "expires_at": "x" }))
     });
@@ -220,7 +220,7 @@ async fn a_request_that_loses_a_race_files_the_key_the_winner_wrote() {
     let path = key::path(&dir.path().join("config.yaml"));
     let winner = key::generate();
     let filed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let cloud = crate::cloud_login::tests::fake_cloud({
+    let cloud = crate::cloud_account::testing::fake_cloud({
         let (path, filed) = (path.clone(), filed.clone());
         move |_, body| {
             let key = serde_json::from_str::<Pending>(body).unwrap().key;
@@ -241,7 +241,7 @@ async fn a_request_that_loses_a_race_files_the_key_the_winner_wrote() {
 
 #[tokio::test]
 async fn request_refuses_a_reply_naming_another_code() {
-    let cloud = crate::cloud_login::tests::fake_cloud(|_, _| {
+    let cloud = crate::cloud_account::testing::fake_cloud(|_, _| {
         (200, json!({ "code": key(1).code(), "expires_at": "x" }))
     });
 
@@ -271,7 +271,7 @@ async fn a_key_that_only_shares_the_codes_name_is_refused_before_any_machine() {
     let (printed, ground) = same_name_keys();
     assert_eq!(printed.code().as_str(), "25vjlh52bc");
     assert_eq!(ground.code(), printed.code());
-    let cloud = crate::cloud_login::tests::fake_cloud(move |route, _| {
+    let cloud = crate::cloud_account::testing::fake_cloud(move |route, _| {
         assert_eq!(route, "GET /api/cli/device-requests/25vjlh52bc");
         (
             200,
@@ -383,7 +383,7 @@ fn a_device_key_other_users_can_read_is_refused() {
 
 #[test]
 fn each_device_command_parses_and_reaches_its_connection() {
-    let cloud = crate::cloud_login::tests::fake_cloud(|route, _| {
+    let cloud = crate::cloud_account::testing::fake_cloud(|route, _| {
         assert_eq!(
             route,
             format!("GET /api/cli/device-requests/{}", key(0).code())
@@ -836,7 +836,7 @@ fn waiting_passkey(public_key: PasskeyPublicKey) -> serde_json::Value {
 
 #[tokio::test]
 async fn a_waiting_passkey_answers_for_this_clis_cloud_not_the_one_cloud_names() {
-    let cloud = crate::cloud_login::tests::fake_cloud(|route, _| {
+    let cloud = crate::cloud_account::testing::fake_cloud(|route, _| {
         assert_eq!(
             route,
             format!("GET /api/cli/passkey-requests/{}", passkey_key(1).code())
@@ -858,7 +858,7 @@ async fn a_waiting_passkey_answers_for_this_clis_cloud_not_the_one_cloud_names()
 #[tokio::test]
 async fn a_passkey_whose_key_does_not_hash_to_the_code_is_refused() {
     let cloud =
-        crate::cloud_login::tests::fake_cloud(|_, _| (200, waiting_passkey(passkey_key(2))));
+        crate::cloud_account::testing::fake_cloud(|_, _| (200, waiting_passkey(passkey_key(2))));
 
     let error = pending_passkey(&token(cloud), passkey_key(1).code())
         .await

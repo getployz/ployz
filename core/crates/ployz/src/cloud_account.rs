@@ -19,7 +19,7 @@ mod store;
 mod token;
 
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 #[cfg(test)]
 mod transcript_tests;
 

@@ -163,7 +163,7 @@ fn enroll_waiting_storage_readiness_and_join_line_are_distinct() {
 
 #[tokio::test]
 async fn enroll_waiting_plan_route_has_no_trailing_slash_and_start_refusal_survives() {
-    let cloud = crate::cloud_login::tests::fake_cloud(|route, _| match route {
+    let cloud = crate::cloud_account::testing::fake_cloud(|route, _| match route {
         "POST /api/cli/enrollments/plan" => (200, serde_json::to_value(plan()).unwrap()),
         "POST /api/cli/enrollments" => (
             409,

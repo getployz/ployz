@@ -5,7 +5,7 @@ use ployz_store::{Actor, ConfigStore, OrganizationId, SealingKey};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::cloud_login::{Secret, tests::fake_cloud};
+use crate::{cloud_account::testing::fake_cloud, cloud_login::Secret};
 
 const VOLUME: &str = "11111111-1111-4111-8111-111111111111";
 const RUN: &str = "22222222-2222-4222-8222-222222222222";

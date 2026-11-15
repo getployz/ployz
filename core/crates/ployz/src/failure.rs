@@ -398,18 +398,6 @@ pub(crate) fn push_rpc_error(error: PushError) -> RpcError {
     RpcError::new(error.code(), error.to_string())
 }
 
-/// The `--json` code of a Cloud HTTP refusal.
-fn http_status_code(status: u16) -> RpcErrorCode {
-    match status {
-        401 | 403 => RpcErrorCode::Unauthenticated,
-        404 => RpcErrorCode::NotFound,
-        409 => RpcErrorCode::Conflict,
-        408 | 429 => RpcErrorCode::Unavailable,
-        400..=499 => RpcErrorCode::InvalidArgument,
-        _ => RpcErrorCode::Unavailable,
-    }
-}
-
 pub(crate) fn io_code(error: &io::Error) -> RpcErrorCode {
     use io::ErrorKind;
     let kind = error.kind();
@@ -548,7 +536,7 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::Unreachable { .. } | LoginError::Unanswered { .. } => RpcErrorCode::Unavailable,
         LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
-        LoginError::Status { status, .. } => http_status_code(*status),
+        LoginError::Status { status, .. } => crate::cloud_reply::status_code(*status),
         LoginError::Reply(_)
         | LoginError::Store { .. }
         | LoginError::Corrupt { .. }

@@ -497,7 +497,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_enrollment_voided_by_forgetting_the_servers_ends_the_wait() {
-        let cloud = crate::cloud_login::tests::fake_cloud(|route, _| match route {
+        let cloud = crate::cloud_account::testing::fake_cloud(|route, _| match route {
             "POST /api/cli/servers/enrollment" => (
                 404,
                 json!({ "_tag": "PublicError", "code": "NOT_FOUND", "message": "The requested resource was not found." }),

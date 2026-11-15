@@ -27,6 +27,18 @@ pub(crate) fn message(body: &[u8]) -> Option<String> {
     }
 }
 
+/// The `--json` code of a Cloud HTTP refusal.
+pub(crate) fn status_code(status: u16) -> RpcErrorCode {
+    match status {
+        401 | 403 => RpcErrorCode::Unauthenticated,
+        404 => RpcErrorCode::NotFound,
+        409 => RpcErrorCode::Conflict,
+        408 | 429 => RpcErrorCode::Unavailable,
+        400..=499 => RpcErrorCode::InvalidArgument,
+        _ => RpcErrorCode::Unavailable,
+    }
+}
+
 /// The `code` of a route's `PublicError`. Cloud may name one this build does not know.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PublicCode {
