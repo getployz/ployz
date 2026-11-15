@@ -835,7 +835,7 @@ fn a_receipt_names_the_snapshot_and_epoch_the_step_lands_on() {
 
 fn passkey_approval(workflow: VolumeWorkflow) -> VolumeApproval {
     VolumeApproval {
-        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        signer: SignerKey::Passkey(crate::authority::keys::OwnPrompt::Passkey),
         ..approval(workflow)
     }
 }
@@ -960,5 +960,54 @@ fn a_passkeys_answer_still_meets_every_other_check() {
             &VolumeStep::Copy(CopyTransition::NoneToMirror)
         ),
         mismatch("a Volume step")
+    );
+}
+
+#[test]
+fn a_volume_approval_is_checked_in_one_fixed_order() {
+    let stranger = SignerKey::Device(DeviceKey::from(Signer::from_seed(&[3; 32]).public()));
+    let mut named = Signed::sign(
+        &VolumeApproval {
+            signer: stranger,
+            ..approval(moving())
+        },
+        &signer(),
+    )
+    .unwrap();
+    named.proposal = Some(crate::authority::proposal::stub_bundle());
+    assert_eq!(check(&named, &a(), &cut(), 200_000), mismatch("a proposal"));
+    named.proposal = None;
+    let without_cluster = |signed: &Signed<VolumeApproval>| {
+        verify(
+            signed,
+            &VolumeFacts {
+                cluster: None,
+                machine: &a(),
+                trusted: &trusted(),
+                volume: &volume(),
+                step: &cut(),
+                now: at(200_000),
+                handed: None,
+            },
+        )
+    };
+    assert_eq!(without_cluster(&named), mismatch("the signer"));
+    let right = Signed::sign(&approval(moving()), &signer()).unwrap();
+    assert_eq!(
+        without_cluster(&right),
+        Err(AuthorityRefusal::NoClusterIdentity)
+    );
+
+    let other_volume = Signed::sign(
+        &VolumeApproval {
+            volume: DockerVolumeName::parse("elsewhere").unwrap(),
+            ..approval(moving())
+        },
+        &signer(),
+    )
+    .unwrap();
+    assert_eq!(
+        check(&other_volume, &a(), &cut(), 10_000_000),
+        mismatch("a Volume")
     );
 }

@@ -6,7 +6,7 @@ use super::*;
 use crate::{
     ContainerPath, RawVolumeSource, ServiceMount, ServiceVolume, ServiceVolumeGraph,
     ServiceVolumeReference,
-    authority::{canonical, restart::OwnPrompt},
+    authority::{canonical, keys::OwnPrompt},
 };
 
 const OPERATION: &str = "0f8fad5bd9cb469fa16570867728950e";

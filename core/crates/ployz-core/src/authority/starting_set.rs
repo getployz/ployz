@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    Approver, AuthorityRefusal, Purpose, Signed, Statement, Timestamp,
-    restart::SignerKey,
+    Approver, AuthorityRefusal, Purpose, Signed, SignerKey, Statement, Timestamp,
     rule::{RuleStatement, verify_signature},
     trusted_key::TrustedKeys,
 };

@@ -21,9 +21,8 @@ use uuid::Uuid;
 use super::{
     canonical::{self, Timestamp},
     deploy::{Creation, PayloadDigest, content_addressed},
-    keys::{Approver, Purpose, Signed, SigningPublicKey, Statement, signing_input},
+    keys::{Approver, Purpose, Signed, SignerKey, SigningPublicKey, Statement, signing_input},
     refusal::AuthorityRefusal,
-    restart::SignerKey,
     rule::{
         AttestKey, BuildClaim, BuildPolicy, BuildStage, ClaimRule, CommitAuthority, CommitSha,
         GithubClaims, ImageDigest, PolicyDigest, ReviewDigest, RuleId, RuleIdentity, RuleSource,
@@ -532,7 +531,7 @@ impl PreviewRule {
 pub fn secrets_digest(record: &crate::SealedRecord) -> Result<SealedDigest, super::CanonicalError> {
     let mut value = serde_json::to_value(record.values())
         .map_err(|error| super::CanonicalError::Parse(error.to_string()))?;
-    super::deploy::drop_nulls(&mut value);
+    canonical::drop_nulls(&mut value);
     Ok(SealedDigest::from_bytes(
         Sha256::digest(canonical::to_canonical(&value)?).into(),
     ))

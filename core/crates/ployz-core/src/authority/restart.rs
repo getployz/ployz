@@ -6,15 +6,16 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, Timestamp},
-    keys::{Approver, Purpose, Signed, SigningPublicKey, Statement},
+    keys::{Approver, Purpose, Signed, Statement},
+    open::{covered, open_approval},
     proposal::ProposalRef,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    session::{ActionFamily, GrantScope},
+    session::ActionFamily,
     trusted_key::TrustedKeys,
 };
 use crate::{
-    ContainerId, ContainerKind, ContainerLocator, ContainerWant, DeviceKey, MachineId, Namespace,
-    OperationId, ResolvedServiceSpec, RunTarget, SealingPublicKey, ServiceName,
+    ContainerId, ContainerKind, ContainerLocator, ContainerWant, MachineId, Namespace, OperationId,
+    ResolvedServiceSpec, RunTarget, SealingPublicKey, ServiceName,
 };
 
 /// The workflow an approval is for. One approval never serves another kind.
@@ -68,26 +69,6 @@ impl std::fmt::Display for WorkflowKind {
     }
 }
 
-/// The key a statement says signed it. A Device's key is written bare, as before browser
-/// keys existed, so a Device's approval keeps the bytes an older daemon reads. A browser
-/// key is written as `{"browser": key}`, which an older daemon refuses to parse. A rule a
-/// passkey answers for itself says `"passkey"`: the browser writes the body before the
-/// person picks which passkey answers, and the answer names it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(untagged)]
-pub enum SignerKey {
-    Device(DeviceKey),
-    Browser { browser: SigningPublicKey },
-    Passkey(OwnPrompt),
-}
-
-/// The one value [`SignerKey::Passkey`] takes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub enum OwnPrompt {
-    #[serde(rename = "passkey")]
-    Passkey,
-}
-
 /// A Device, or a browser key under a session grant, approves one Container's lifecycle
 /// steps in one Cluster and Service, under one operation with a bounded lifetime.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -138,7 +119,10 @@ impl RestartApproval {
     }
 }
 
-pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
+pub use super::{
+    keys::{OwnPrompt, SignerKey},
+    validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS},
+};
 
 impl Statement for RestartApproval {
     const PURPOSE: Purpose = Purpose::Workflow;
@@ -208,7 +192,7 @@ pub struct Approved {
 /// Check `approval` approves exactly this request, signed by one of this Machine's Devices
 /// or by a browser key a trusted passkey lent a grant covering it. A passkey itself signs
 /// no envelope, so it is never among the signers. A step of a proposal carries the signed
-/// bundle instead of a signature and is checked by [`super::proposal::verify_step`].
+/// bundle instead of a signature and is opened by [`super::proposal::open_step`].
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature or grant problem, a
@@ -221,48 +205,13 @@ pub fn verify(
     approval: &Signed<RestartApproval>,
     facts: &RestartFacts<'_>,
 ) -> Result<Approved, AuthorityRefusal> {
-    let approved = match &approval.proposal {
-        Some(bundle) => super::proposal::verify_step(bundle, approval, facts)?,
-        None => verify_single(approval, facts)?,
-    };
-    if approved.body.kind != WorkflowKind::Stop && matches!(approved.by, Approver::Browser { .. }) {
+    let (body, by, cluster) = open_approval(approval, facts.trusted, facts.cluster, facts.now)?;
+    body.matches(cluster, facts)?;
+    covered(&by, cluster, &body, body.kind.family())?;
+    verify_time(&body, facts.now)?;
+    if body.kind != WorkflowKind::Stop && matches!(by, Approver::Browser { .. }) {
         super::deploy::refuse_host_reach(facts.spec, facts.namespace)?;
     }
-    Ok(approved)
-}
-
-fn verify_single(
-    approval: &Signed<RestartApproval>,
-    facts: &RestartFacts<'_>,
-) -> Result<Approved, AuthorityRefusal> {
-    let approvers = approval.approvers(facts.trusted, facts.now)?;
-    let body = approval.open()?;
-    let Some(cluster) = facts.cluster else {
-        return Err(AuthorityRefusal::NoClusterIdentity);
-    };
-    if body.proposal.is_some() {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "a proposal",
-        });
-    }
-    let by = approvers
-        .into_iter()
-        .find(|approver| approver.signs_as(body.signer))
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })?;
-    body.matches(cluster, facts)?;
-    if let Approver::Browser { grant, .. } = &by {
-        grant.body.covers(&GrantScope {
-            cluster,
-            environment: &body.namespace,
-            machines: &body.machines,
-            family: body.kind.family(),
-            issued_at: body.issued_at,
-            expires_at: body.expires_at,
-        })?;
-    }
-    verify_time(&body, facts.now)?;
     Ok(Approved { body, by })
 }
 
@@ -289,6 +238,7 @@ pub(crate) fn contained_spec() -> ResolvedServiceSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DeviceKey;
     use crate::authority::keys::Signer;
 
     fn signer(seed: u8) -> Signer {
@@ -696,5 +646,49 @@ mod tests {
         );
         assert_eq!(RestartStep::of(&out), Some((RestartStep::Out, &locator)));
         assert!(RestartStep::Hold < RestartStep::Stop && RestartStep::Stop < RestartStep::Start);
+    }
+
+    #[test]
+    fn a_single_approval_is_checked_in_one_fixed_order() {
+        let approver = signer(1);
+        let host = machine(&[&approver]);
+        let sign = |body: &RestartApproval| Signed::sign(body, &approver).unwrap();
+        let mut body = RestartApproval {
+            signer: SignerKey::Device(device(&signer(2))),
+            proposal: Some(ProposalRef {
+                operation: approval(&approver).operation,
+                index: 0,
+            }),
+            ..approval(&approver)
+        };
+        let mut facts = host.facts();
+        facts.cluster = None;
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::NoClusterIdentity)
+        );
+        facts.cluster = Some(SealingPublicKey::from_bytes([9; 32]));
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::Mismatch {
+                field: "a proposal"
+            })
+        );
+        body.proposal = None;
+        body.cluster = SealingPublicKey::from_bytes([8; 32]);
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::Mismatch {
+                field: "the signer"
+            })
+        );
+        body.signer = SignerKey::Device(device(&approver));
+        facts.now = Timestamp::from_millis(2_000_000).unwrap();
+        assert_eq!(
+            verify(&sign(&body), &facts),
+            Err(AuthorityRefusal::Mismatch { field: "a Cluster" })
+        );
+        body.cluster = SealingPublicKey::from_bytes([9; 32]);
+        assert_eq!(verify(&sign(&body), &facts), Err(AuthorityRefusal::Expired));
     }
 }

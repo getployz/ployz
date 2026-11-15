@@ -407,7 +407,7 @@ fn a_browser_key_under_a_valid_session_grant_cannot_sign_a_rule() {
 
 fn passkey_rule() -> AutoDeployRule {
     AutoDeployRule {
-        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        signer: SignerKey::Passkey(crate::authority::keys::OwnPrompt::Passkey),
         ..rule()
     }
 }

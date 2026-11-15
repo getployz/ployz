@@ -133,7 +133,7 @@ fn rotating(
     }
 }
 
-const PASSKEY: SignerKey = SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey);
+const PASSKEY: SignerKey = SignerKey::Passkey(crate::authority::keys::OwnPrompt::Passkey);
 
 /// Cloud serves the page a passkey answers, so it can have the passkey name a key of its
 /// own and seal that key to each Server's public WireGuard key. No Server may take it.

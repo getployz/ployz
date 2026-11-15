@@ -11,7 +11,6 @@ use super::{
     canonical::{self, CanonicalError, Timestamp},
     proposal::ProposalApproval,
     refusal::AuthorityRefusal,
-    restart::SignerKey,
     session::{Grant, SessionGrant},
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
@@ -113,6 +112,26 @@ impl fmt::Debug for SigningPublicKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "SigningPublicKey({})", self.code())
     }
+}
+
+/// The key a statement says signed it. A Device's key is written bare, as before browser
+/// keys existed, so a Device's approval keeps the bytes an older daemon reads. A browser
+/// key is written as `{"browser": key}`, which an older daemon refuses to parse. A rule a
+/// passkey answers for itself says `"passkey"`: the browser writes the body before the
+/// person picks which passkey answers, and the answer names it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum SignerKey {
+    Device(DeviceKey),
+    Browser { browser: SigningPublicKey },
+    Passkey(OwnPrompt),
+}
+
+/// The one value [`SignerKey::Passkey`] takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub enum OwnPrompt {
+    #[serde(rename = "passkey")]
+    Passkey,
 }
 
 /// The private half of a signing key, built from the 32-byte seed a Device keeps in

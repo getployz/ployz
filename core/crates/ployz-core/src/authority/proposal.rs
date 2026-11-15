@@ -16,14 +16,13 @@ use ts_rs::TS;
 
 use super::{
     canonical::Timestamp,
-    keys::{Approver, Purpose, Signed, Statement},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::{Approved, RestartApproval, RestartFacts, SignerKey, WorkflowKind},
-    session::GrantScope,
+    restart::{RestartApproval, WorkflowKind},
     trusted_key::TrustedKeys,
 };
 use crate::value::hex_newtype;
-use crate::{Namespace, OperationId, SealingPublicKey};
+use crate::{MachineId, Namespace, OperationId, SealingPublicKey};
 
 hex_newtype!(
     /// SHA-256 of one step's canonical body, written as 64 lowercase hex digits.
@@ -124,6 +123,7 @@ pub(super) trait StepBody: Statement {
     fn signer(&self) -> SignerKey;
     fn cluster(&self) -> SealingPublicKey;
     fn namespace(&self) -> &Namespace;
+    fn machines(&self) -> &[MachineId];
     fn window(&self) -> (Timestamp, Timestamp);
 }
 
@@ -142,6 +142,9 @@ impl StepBody for RestartApproval {
     }
     fn namespace(&self) -> &Namespace {
         &self.namespace
+    }
+    fn machines(&self) -> &[MachineId] {
+        &self.machines
     }
     fn window(&self) -> (Timestamp, Timestamp) {
         (self.issued_at, self.expires_at)
@@ -203,31 +206,24 @@ pub(super) fn open_step<T: StepBody>(
     Ok((body, by, cluster))
 }
 
-/// Check that `step`, an unsigned restart step, is the step of `bundle` it names, and
-/// that the bundle approves exactly this request.
-///
-/// # Errors
-/// Returns the first [`AuthorityRefusal`] [`open_step`] finds, a request the step does
-/// not match, a grant that does not cover it, or a bundle whose window has passed.
-pub fn verify_step(
-    bundle: &Signed<ProposalApproval>,
-    step: &Signed<RestartApproval>,
-    facts: &RestartFacts<'_>,
-) -> Result<Approved, AuthorityRefusal> {
-    let (body, by, cluster) = open_step(bundle, step, facts.trusted, facts.cluster, facts.now)?;
-    body.matches(cluster, facts)?;
-    if let Approver::Browser { grant, .. } = &by {
-        grant.body.covers(&GrantScope {
-            cluster,
-            environment: &body.namespace,
-            machines: &body.machines,
-            family: body.kind.family(),
-            issued_at: body.issued_at,
-            expires_at: body.expires_at,
-        })?;
-    }
-    super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
-    Ok(Approved { body, by })
+/// A bundle for a test that needs only an envelope to ride one.
+#[cfg(test)]
+pub(super) fn stub_bundle() -> Box<Signed<ProposalApproval>> {
+    let at = |millis| Timestamp::from_millis(millis).unwrap();
+    let bundle = ProposalApproval {
+        cluster: SealingPublicKey::from_bytes([9; 32]),
+        environment: Namespace::parse("app").unwrap(),
+        operation: OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
+        steps: vec![ProposalStep {
+            index: 0,
+            kind: StepKind::Deploy,
+            digest: StepDigest::of("a step"),
+        }],
+        issued_at: at(100_000),
+        expires_at: at(1_000_000),
+        signer: SignerKey::Device(crate::DeviceKey::from_bytes([1; 32])),
+    };
+    Box::new(Signed::unsigned(&bundle).unwrap())
 }
 
 #[cfg(test)]
@@ -237,7 +233,7 @@ mod tests {
         ContainerId, ContainerKind, MachineId, ServiceName,
         authority::{
             ActionFamily, GrantBody, RestartStep, SessionGrant, Signer, TrustedKeys, canonical,
-            restart::{self, verify},
+            restart::{self, Approved, RestartFacts, verify},
             session::Delegation,
             trusted_key::tests::{Answer, Authenticator, HONEST, trusting},
         },

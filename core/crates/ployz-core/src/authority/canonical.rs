@@ -62,6 +62,17 @@ pub fn from_canonical<T: Serialize + DeserializeOwned>(body: &str) -> Result<T, 
     Ok(value)
 }
 
+pub(super) fn drop_nulls(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            fields.retain(|_, field| !field.is_null());
+            fields.values_mut().for_each(drop_nulls);
+        }
+        Value::Array(items) => items.iter_mut().for_each(drop_nulls),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
 fn write_value(value: &Value, out: &mut String) -> Result<(), CanonicalError> {
     match value {
         Value::Null => Err(CanonicalError::Null),

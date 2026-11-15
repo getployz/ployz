@@ -15,11 +15,11 @@ use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp},
-    deploy::{Creation, PayloadDigest, content_addressed, drop_nulls},
-    keys::{Approver, Purpose, Signed, Statement},
+    canonical::{self, CanonicalError, Timestamp, drop_nulls},
+    deploy::{Creation, PayloadDigest, content_addressed},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement},
+    open::the_signer,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };
@@ -481,15 +481,10 @@ pub fn verify_signature<T: RuleStatement>(
 ) -> Result<(T, Approver), AuthorityRefusal> {
     let approvers = rule.approvers(trusted, now)?;
     let body = rule.open()?;
-    approvers
-        .into_iter()
-        .find(|approver| {
-            !matches!(approver, Approver::Browser { .. }) && approver.signs_as(body.signer())
-        })
-        .map(|approver| (body, approver))
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })
+    let by = the_signer(approvers, body.signer(), |approver| {
+        !matches!(approver, Approver::Browser { .. })
+    })?;
+    Ok((body, by))
 }
 
 /// Which authority a build claims for its commit.

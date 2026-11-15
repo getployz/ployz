@@ -2,8 +2,7 @@ use super::*;
 use crate::{
     DeviceKey,
     authority::{
-        keys::Signer,
-        restart::OwnPrompt,
+        keys::{OwnPrompt, Signer},
         session::{ActionFamily, Delegation, GrantBody, SessionGrant},
         trusted_key::tests::{Answer, Authenticator, HONEST},
         trusted_key::{PasskeyApprover, TrustedPasskey},
@@ -561,5 +560,84 @@ fn the_device_the_body_names_approves_whatever_order_its_signature_comes_in() {
             remove_in(&namespace("shop"))
         ),
         Ok(Approver::Device(device().public()))
+    );
+}
+
+#[test]
+fn a_teardown_is_checked_in_one_fixed_order() {
+    let passkey = Authenticator::es256(4);
+    let trusted = trusted(&passkey);
+    let shop_namespace = namespace("shop");
+    let stranger = SignerKey::Device(DeviceKey::from(Signer::from_seed(&[3; 32]).public()));
+    let mut named = Signed::sign(&teardown(shop(), stranger), &device()).unwrap();
+    named.proposal = Some(super::super::proposal::stub_bundle());
+    assert_eq!(
+        check(
+            &TeardownApproval::Signed(named.clone()),
+            &trusted,
+            'a',
+            remove_in(&shop_namespace)
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a proposal"
+        })
+    );
+    named.proposal = None;
+    let without_cluster = |approval: &TeardownApproval| {
+        verify(
+            approval,
+            &TeardownFacts {
+                cluster: None,
+                machine: &machine('a'),
+                trusted: &trusted,
+                step: remove_in(&shop_namespace),
+                now: at(2_000),
+            },
+        )
+        .map(|approved| approved.by)
+    };
+    assert_eq!(
+        without_cluster(&TeardownApproval::Signed(named)),
+        Err(AuthorityRefusal::Mismatch {
+            field: "the signer"
+        })
+    );
+    assert_eq!(
+        without_cluster(&by_device(shop())),
+        Err(AuthorityRefusal::NoClusterIdentity)
+    );
+
+    let spoiled = by_device(TeardownScope::Namespace {
+        namespaces: vec![namespace("shop")],
+        machines: vec![machine('a')],
+        volumes: vec![volume("staging_data")],
+    });
+    let elsewhere_and_late = verify(
+        &spoiled,
+        &TeardownFacts {
+            cluster: Some(SealingPublicKey::from_bytes([8; 32])),
+            machine: &machine('a'),
+            trusted: &trusted,
+            step: remove_in(&shop_namespace),
+            now: at(10_000_000),
+        },
+    );
+    assert_eq!(
+        elsewhere_and_late.map(|approved| approved.by),
+        Err(AuthorityRefusal::Mismatch { field: "a Cluster" })
+    );
+    let spoiled_and_late = verify(
+        &spoiled,
+        &TeardownFacts {
+            cluster: Some(cluster()),
+            machine: &machine('a'),
+            trusted: &trusted,
+            step: remove_in(&shop_namespace),
+            now: at(10_000_000),
+        },
+    );
+    assert_eq!(
+        spoiled_and_late.map(|approved| approved.by),
+        Err(AuthorityRefusal::Mismatch { field: "a Volume" })
     );
 }

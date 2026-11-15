@@ -11,7 +11,7 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp},
-    restart::SignerKey,
+    keys::SignerKey,
     rotation::SealingRotation,
     shown::Shown,
     starting_set::{Member, StartingSet},

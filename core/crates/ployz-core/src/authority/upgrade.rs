@@ -11,9 +11,8 @@ use ts_rs::TS;
 
 use super::{
     canonical::Timestamp,
-    keys::{Purpose, Signed, Statement},
+    keys::{Purpose, Signed, SignerKey, Statement},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     rule::{RuleStatement, verify_signature},
     trusted_key::TrustedKeys,
 };
@@ -94,8 +93,7 @@ mod tests {
     use crate::DeviceKey;
     use crate::authority::{
         canonical,
-        keys::Signer,
-        restart::OwnPrompt,
+        keys::{OwnPrompt, Signer},
         session::{ActionFamily, Delegation, GrantBody, SessionGrant},
         trusted_key::tests::{Answer, Authenticator, HONEST, trusting},
     };
@@ -270,5 +268,35 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn a_channel_statement_is_checked_in_one_fixed_order() {
+        let unreadable: Signed<UpgradeChannel> =
+            serde_json::from_value(serde_json::json!({"body": "{}", "signatures": []})).unwrap();
+        assert_eq!(
+            verify(&unreadable, &devices(&device()), cluster(), now()).unwrap_err(),
+            AuthorityRefusal::Unsigned {
+                purpose: Purpose::Rule
+            }
+        );
+
+        let stranger = UpgradeChannel {
+            signer: SignerKey::Device(DeviceKey::from(Signer::from_seed(&[3; 32]).public())),
+            ..statement()
+        };
+        let signed = Signed::sign(&stranger, &device()).unwrap();
+        assert_eq!(
+            verify(
+                &signed,
+                &devices(&device()),
+                SealingPublicKey::from_bytes([8; 32]),
+                now()
+            )
+            .unwrap_err(),
+            AuthorityRefusal::Mismatch {
+                field: "the signer"
+            }
+        );
     }
 }

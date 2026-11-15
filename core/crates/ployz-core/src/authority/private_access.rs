@@ -13,9 +13,9 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, Timestamp, hex_bytes, write_hex},
-    keys::{Approver, Purpose, Signed, Statement, signing_input},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement, signing_input},
+    open::the_signer,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::SignerKey,
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
 use crate::{Ciphertext, SealingPublicKey};
@@ -189,14 +189,9 @@ pub fn verify(
                     field: "a proposal",
                 });
             }
-            approvers
-                .into_iter()
-                .find(|approver| {
-                    matches!(approver, Approver::Device(_)) && approver.signs_as(body.signer)
-                })
-                .ok_or(AuthorityRefusal::Mismatch {
-                    field: "the signer",
-                })?
+            the_signer(approvers, body.signer, |approver| {
+                matches!(approver, Approver::Device(_))
+            })?
         }
     };
     if !by.signs_as(body.signer) {

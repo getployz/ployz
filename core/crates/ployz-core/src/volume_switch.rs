@@ -7,8 +7,60 @@ use ts_rs::TS;
 
 use crate::{
     CodedRefusal, CopyRole, DockerVolumeName, Evidence, MachineName, RpcError, RpcErrorCode,
-    VolumeGen, WriterEpoch,
 };
+
+/// Which run of writes a Writer root belongs to. Cloud numbers it; the Machine stores it
+/// on the root and only ever raises it. A root without one reads as 0.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
+)]
+#[serde(transparent)]
+pub struct WriterEpoch(u32);
+
+impl WriterEpoch {
+    #[must_use]
+    pub const fn new(epoch: u32) -> Self {
+        Self(epoch)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for WriterEpoch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Which lane Cloud opened on a Volume. The Machine keeps the newest one it accepted per
+/// Volume as its floor and refuses a lower one. A request without one reads as 0.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
+)]
+#[serde(transparent)]
+#[ts(type = "number")]
+pub struct VolumeGen(u64);
+
+impl VolumeGen {
+    #[must_use]
+    pub const fn new(gen_: u64) -> Self {
+        Self(gen_)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for VolumeGen {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
 
 /// How long a Machine waits on one call to its volume plugin, such as the call that
 /// mounts a handed-over Volume and starts its Container.

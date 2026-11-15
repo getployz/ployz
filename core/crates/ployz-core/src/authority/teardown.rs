@@ -12,11 +12,12 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, Timestamp},
-    keys::{Approver, Purpose, Signed, Statement},
+    keys::{Approver, Purpose, Signed, SignerKey, Statement},
+    open::the_signer,
     preview::{PreviewRule, is_preview_namespace},
     private_access::key_approval_challenge,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    restart::{RestartStep, SignerKey},
+    restart::RestartStep,
     rule::verify_signature,
     shown::Shown,
     trusted_key::{PasskeyAssertion, TrustedKeys},
@@ -414,14 +415,9 @@ pub fn verify(
                     field: "a proposal",
                 });
             }
-            let by = approvers
-                .into_iter()
-                .find(|approver| {
-                    matches!(approver, Approver::Device(_)) && approver.signs_as(body.signer)
-                })
-                .ok_or(AuthorityRefusal::Mismatch {
-                    field: "the signer",
-                })?;
+            let by = the_signer(approvers, body.signer, |approver| {
+                matches!(approver, Approver::Device(_))
+            })?;
             (by, body)
         }
     };

@@ -10,10 +10,8 @@ use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp},
-    deploy::drop_nulls,
-    keys::Signed,
-    restart::SignerKey,
+    canonical::{self, CanonicalError, Timestamp, drop_nulls},
+    keys::{Signed, SignerKey},
     rule::{
         AutoDeployRule, BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleId,
         RuleService, RuleSource, Runner, SealedDigest, template,

@@ -729,7 +729,7 @@ fn a_preview_rule_is_signed_by_a_device_or_a_passkeys_own_prompt_never_a_session
     );
 
     let own = PreviewRule {
-        signer: SignerKey::Passkey(crate::authority::restart::OwnPrompt::Passkey),
+        signer: SignerKey::Passkey(crate::authority::keys::OwnPrompt::Passkey),
         ..rule()
     };
     let unsigned = Signed::unsigned(&own).unwrap();
