@@ -293,7 +293,7 @@ impl LocalMachine {
                                 .remove(&id)
                                 .unwrap_or_default();
                             if recorded == CopyRotation::In {
-                                let leaving = containers.leave(id);
+                                let leaving = containers.lifecycle().leave(id);
                                 let refusal = local.last_in(&copy, routed).await?;
                                 (
                                     Some(leaving),
@@ -307,7 +307,7 @@ impl LocalMachine {
                         | GuardReads::NewerIn(..)
                         | GuardReads::Decided(_)) => (None, reads),
                     };
-                    let turn = match containers.rotation_turn(&id).await {
+                    let turn = match containers.lifecycle().rotation_turn(&id).await {
                         Ok(turn) => turn,
                         Err(crate::docker::Error::ContainerNotFound(_)) => {
                             return Ok(Written::Refused(not_found_refusal(&locator)));
@@ -683,12 +683,12 @@ pub(super) async fn start_fenced(
     run: Option<DeploymentLogId>,
     expect: Option<&CopyRotation>,
 ) -> Result<Option<ContainerRefusal>, Error> {
-    let turn = containers.rotation_turn(id).await?;
+    let turn = containers.lifecycle().rotation_turn(id).await?;
     match decide(turn.rotation(), &RotationWant::In { run }, expect) {
         Checked::Refused(refusal) => return Ok(Some(refusal)),
         Checked::Met | Checked::Allowed(_) => {}
     }
-    containers.start(id).await?;
+    containers.lifecycle().start(id).await?;
     drop(turn);
     Ok(None)
 }

@@ -390,6 +390,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         "printf 'container-out\\n'; sleep 0.05; printf 'container-err\\n' >&2; sleep 30".into(),
     ];
     let created = runtime
+        .lifecycle()
         .create_for_test(
             &machine.id,
             TEST_GATEWAY,
@@ -399,7 +400,11 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         )
         .await
         .unwrap();
-    runtime.start(&created.container_id).await.unwrap();
+    runtime
+        .lifecycle()
+        .start(&created.container_id)
+        .await
+        .unwrap();
 
     let api = MachineApi::builder(machine_store.clone())
         .with_local(
@@ -552,6 +557,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     );
 
     runtime
+        .lifecycle()
         .remove(&created.container_id, true, true)
         .await
         .unwrap();

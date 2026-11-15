@@ -796,6 +796,7 @@ pub(super) async fn runtime_with_running_container() -> (ContainerRuntime, FakeD
     .await;
     let machine = machine();
     let created = runtime
+        .lifecycle()
         .create_for_test(
             &machine.id,
             machine.subnet.gateway(),

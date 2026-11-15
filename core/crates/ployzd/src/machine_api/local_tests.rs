@@ -1374,7 +1374,11 @@ mod ingress_doors {
             "a daemon restart leaves the running doors alone"
         );
 
-        runtime.stop(&connector, None, None).await.unwrap();
+        runtime
+            .lifecycle()
+            .stop(&connector, None, None)
+            .await
+            .unwrap();
         runtime.remove_tunnel_token().unwrap();
         assert!(!running(&runtime).await && !token.exists());
 
@@ -1417,7 +1421,11 @@ mod ingress_doors {
         let connector = placed.tunnel.unwrap().now.container_id;
         let token = data_dir.join("root/run/ployz/tunnel/token");
         let reboot = || async {
-            runtime.stop(&connector, None, None).await.unwrap();
+            runtime
+                .lifecycle()
+                .stop(&connector, None, None)
+                .await
+                .unwrap();
             runtime.remove_tunnel_token().unwrap();
         };
 
@@ -1459,7 +1467,11 @@ mod ingress_doors {
         let switching = set_doors(&service, both, false).await.unwrap().unwrap();
         assert_eq!(switching.failure, None, "{switching:?}");
         let connector = switching.tunnel.unwrap().now.container_id;
-        runtime.stop(&connector, None, None).await.unwrap();
+        runtime
+            .lifecycle()
+            .stop(&connector, None, None)
+            .await
+            .unwrap();
         runtime.remove_tunnel_token().unwrap();
         assert!(!connector_running().await);
         let restored = service.local.restore_doors().await.unwrap().unwrap();
@@ -1570,6 +1582,7 @@ mod ingress_doors {
             .to_resolved(ployz_core::ServiceId::random(), Default::default())
             .unwrap();
         let old = runtime
+            .lifecycle()
             .create_for_test(
                 &placed.id,
                 placed.subnet.gateway(),
@@ -1580,7 +1593,7 @@ mod ingress_doors {
             .await
             .unwrap()
             .container_id;
-        runtime.start(&old).await.unwrap();
+        runtime.lifecycle().start(&old).await.unwrap();
 
         fake.refuse_create_of
             .lock()
@@ -1937,6 +1950,7 @@ mod ingress_doors {
             .to_resolved(proxy_id(), Default::default())
             .unwrap();
         let created = runtime
+            .lifecycle()
             .create_for_test(
                 &machine.id,
                 machine.subnet.gateway(),
@@ -1946,7 +1960,11 @@ mod ingress_doors {
             )
             .await
             .unwrap();
-        runtime.start(&created.container_id).await.unwrap();
+        runtime
+            .lifecycle()
+            .start(&created.container_id)
+            .await
+            .unwrap();
         created.container_id
     }
 
@@ -2073,13 +2091,21 @@ mod ingress_doors {
             .unwrap();
         let mut holder = None;
         for entry in runtime.doors().door_inventory(&machine).await.unwrap() {
-            runtime.stop(&entry.facts.id, None, None).await.unwrap();
+            runtime
+                .lifecycle()
+                .stop(&entry.facts.id, None, None)
+                .await
+                .unwrap();
             match entry.facts.door {
                 crate::docker::Door::Holder => holder = Some(entry.facts.id),
                 crate::docker::Door::Proxy
                 | crate::docker::Door::TunnelOrigin
                 | crate::docker::Door::Tunnel => {
-                    runtime.remove(&entry.facts.id, true, true).await.unwrap();
+                    runtime
+                        .lifecycle()
+                        .remove(&entry.facts.id, true, true)
+                        .await
+                        .unwrap();
                 }
             }
         }
@@ -2371,7 +2397,7 @@ mod private_access {
             "a daemon restart leaves the running router alone"
         );
 
-        runtime.stop(&router, None, None).await.unwrap();
+        runtime.lifecycle().stop(&router, None, None).await.unwrap();
         runtime.remove_private_access_key().unwrap();
         assert!(!running().await && !key_file(&data_dir).exists());
         std::fs::write(node_state(&data_dir).join("tailscaled.state"), b"node").unwrap();
@@ -2924,7 +2950,7 @@ mod set_volume_copy {
     /// Asserts the cut holds the floor lock, so a floor want polled now queues behind it.
     async fn floor_lock_held(service: &MachineService) {
         let local = service.local();
-        let turn = std::pin::pin!(local.containers().unwrap().floor_turn());
+        let turn = std::pin::pin!(local.containers().unwrap().lifecycle().floor_turn());
         assert!(
             futures_util::poll!(turn).is_pending(),
             "the cut holds the floor lock"
@@ -3620,6 +3646,7 @@ mod set_volume_copy {
         let floor = service
             .containers()
             .unwrap()
+            .lifecycle()
             .floor_turn()
             .await
             .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(5))
@@ -3651,6 +3678,7 @@ mod set_volume_copy {
         let lower = service
             .containers()
             .unwrap()
+            .lifecycle()
             .floor_turn()
             .await
             .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
@@ -3681,7 +3709,7 @@ mod set_volume_copy {
     #[tokio::test]
     async fn a_floor_queued_on_the_floor_lock_across_a_reset_refuses_and_raises_no_floor() {
         let (data_dir, store, service, _fake) = fake_docker_service("ployzd-copy-reset").await;
-        let turn = service.containers().unwrap().floor_turn().await;
+        let turn = service.containers().unwrap().lifecycle().floor_turn().await;
         let mut queued = std::pin::pin!(set_copy(&service, floor(5)));
         assert!(
             futures_util::poll!(queued.as_mut()).is_pending(),
@@ -3698,6 +3726,7 @@ mod set_volume_copy {
         let lower = service
             .containers()
             .unwrap()
+            .lifecycle()
             .floor_turn()
             .await
             .admit(&VOLUME.parse().unwrap(), ployz_core::VolumeGen::new(0))
@@ -5969,6 +5998,7 @@ mod ensure_container {
             let id = present(&created).container_id;
             fixture
                 .runtime
+                .lifecycle()
                 .rotation_turn(&id)
                 .await
                 .unwrap()
@@ -6018,6 +6048,7 @@ mod ensure_container {
                 .container_id;
             fixture
                 .runtime
+                .lifecycle()
                 .rotation_turn(&id)
                 .await
                 .unwrap()

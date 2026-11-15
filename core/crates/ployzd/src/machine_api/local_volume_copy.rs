@@ -461,7 +461,7 @@ impl MachineService {
                 .map_err(|_| LocalMachineError::NotParticipating)
         };
         joined()?;
-        let turn = self.containers()?.floor_turn().await;
+        let turn = self.containers()?.lifecycle().floor_turn().await;
         // Checked again under the floor lock: a reset may have begun while this queued.
         joined()?;
         Ok(turn)
@@ -528,6 +528,7 @@ impl MachineService {
                     .machine()
                     .ok_or(LocalMachineError::NotParticipating)?;
                 containers
+                    .lifecycle()
                     .find_creation(
                         machine,
                         namespace,

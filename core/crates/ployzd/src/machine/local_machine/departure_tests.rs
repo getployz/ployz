@@ -122,6 +122,7 @@ async fn leave_forgets_every_volume_floor() {
     let containers = test.local.containers.as_ref().unwrap();
     let data = "data".parse().unwrap();
     let raised = containers
+        .lifecycle()
         .floor_turn()
         .await
         .admit(&data, VolumeGen::new(7))
@@ -131,6 +132,7 @@ async fn leave_forgets_every_volume_floor() {
 
     test.local.leave(LeaveRequest::default()).await.unwrap();
     let after = containers
+        .lifecycle()
         .floor_turn()
         .await
         .admit(&data, VolumeGen::new(0))

@@ -16,6 +16,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
     };
 
     let ordinary = runtime
+        .lifecycle()
         .create_with_admission(
             &machine,
             ContainerRequest {
@@ -42,7 +43,10 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
     );
     request.creation_key = "unknown-storage";
     assert!(matches!(
-        runtime.create_with_admission(&machine, request).await,
+        runtime
+            .lifecycle()
+            .create_with_admission(&machine, request)
+            .await,
         Err(Error::StorageUnobservable)
     ));
     assert!(fake.requests.lock().unwrap().iter().all(|(method, path)| {
@@ -73,6 +77,7 @@ async fn service_and_hook_creation_reach_the_same_volume_ensure() {
     ] {
         assert!(matches!(
             runtime
+                .lifecycle()
                 .create_with_admission(
                     &machine,
                     container_request(kind, &namespace, &spec, std::future::ready(None)),

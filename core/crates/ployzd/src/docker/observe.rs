@@ -202,7 +202,7 @@ impl ContainerRuntime {
         // Bollard opens this lazy stream when first polled. The cursor replays any event
         // between capturing `since` and completing the initial snapshot.
         let mut events = Box::pin(self.docker.client.events(Some(options)));
-        let mut stopping = self.standing.subscribe();
+        let mut stopping = self.observation.standing.subscribe();
         let mut rotations = self.specs.subscribe_rotations();
         sync(self, sink).await?;
 
@@ -303,7 +303,7 @@ impl ContainerRuntime {
         {
             // Off the event loop, so a slow Docker start never delays later scans.
             let runtime = self.clone();
-            tokio::spawn(async move { runtime.recover(repair, creates).await });
+            tokio::spawn(async move { runtime.lifecycle().recover(repair, creates).await });
         }
         Ok(())
     }
@@ -1164,6 +1164,7 @@ mod tests {
 
         wait_for(CopyRotation::Pending).await;
         runtime
+            .lifecycle()
             .rotation_turn(&id)
             .await
             .unwrap()

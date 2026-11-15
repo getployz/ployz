@@ -269,7 +269,7 @@ impl LocalMachine {
     /// container.
     pub(crate) async fn start_container(&self, container_id: ContainerId) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
-            local.docker()?.start(&container_id).await?;
+            local.docker()?.lifecycle().start(&container_id).await?;
             Ok(())
         })
         .await
@@ -292,7 +292,13 @@ impl LocalMachine {
     ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
-            if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+            if let Err(floor) = containers
+                .lifecycle()
+                .floor_turn()
+                .await
+                .admit(&name, r#gen)
+                .await?
+            {
                 return Ok(Err(floor));
             }
             let container_id = match start {
@@ -318,7 +324,7 @@ impl LocalMachine {
                         .container_id
                 }
             };
-            containers.start(&container_id).await?;
+            containers.lifecycle().start(&container_id).await?;
             Ok(Ok(()))
         })
         .await
@@ -340,6 +346,7 @@ impl LocalMachine {
         self.finish_mutation(move |local| async move {
             local
                 .docker()?
+                .lifecycle()
                 .remove(&container_id, remove_volumes, force)
                 .await?;
             Ok(())
@@ -456,6 +463,7 @@ impl LocalMachine {
         };
         let issued = chrono::Utc::now();
         containers
+            .lifecycle()
             .stop(
                 container,
                 stop.signal.as_deref(),
@@ -472,7 +480,7 @@ impl LocalMachine {
         };
         drop(held);
         if let Some(run) = ended {
-            containers.record_stop(container, &run).await?;
+            containers.lifecycle().record_stop(container, &run).await?;
         }
         drop(turn);
         Ok(Ok(containers
@@ -564,7 +572,13 @@ impl LocalMachine {
             }
             record(&running)?;
             for holder in holders {
-                if let Err(floor) = containers.floor_turn().await.admit(&name, r#gen).await? {
+                if let Err(floor) = containers
+                    .lifecycle()
+                    .floor_turn()
+                    .await
+                    .admit(&name, r#gen)
+                    .await?
+                {
                     return Ok(Err(CutRefusal::Stale(floor)));
                 }
                 let observed = match local
@@ -582,7 +596,7 @@ impl LocalMachine {
             if local.volume_holder_running(&name).await? {
                 return Ok(Err(CutRefusal::Busy));
             }
-            let mut floor = containers.floor_turn().await;
+            let mut floor = containers.lifecycle().floor_turn().await;
             if let Err(floor) = floor.admit(&name, r#gen).await? {
                 return Ok(Err(CutRefusal::Stale(floor)));
             }
@@ -825,7 +839,7 @@ impl LocalMachine {
             && self
                 .containers
                 .as_ref()
-                .is_some_and(ContainerRuntime::departing)
+                .is_some_and(|containers| containers.lifecycle().departing())
         {
             return self.marked_departing(ensured);
         }
@@ -1237,7 +1251,7 @@ impl LocalMachine {
                             Ok(turn) => turn,
                             Err(refusal) => return Ok(Some(refusal)),
                         };
-                    containers.stop(&id, None, None).await?;
+                    containers.lifecycle().stop(&id, None, None).await?;
                     drop(turn);
                     Ok(None)
                 })
@@ -1319,7 +1333,12 @@ impl LocalMachine {
                 Err(crate::docker::Error::ContainerNotFound(_)) => None,
                 Err(error) => return Err(error.into()),
             },
-            ContainerLocator::Key(slot) => containers.inspect_slot(&machine_id, slot).await?,
+            ContainerLocator::Key(slot) => {
+                containers
+                    .lifecycle()
+                    .inspect_slot(&machine_id, slot)
+                    .await?
+            }
         };
         Ok(observed.map_or_else(
             || ContainerNow::Absent {
@@ -1380,7 +1399,7 @@ impl LocalMachine {
                     )
                     .await;
                 }
-                containers.start(&created.container_id).await?;
+                containers.lifecycle().start(&created.container_id).await?;
                 Ok(None)
             })
             .await?;
@@ -1407,6 +1426,7 @@ impl LocalMachine {
         }
         let machine = record.machine().ok_or(Error::NotParticipating)?;
         containers
+            .lifecycle()
             .create_with_admission(
                 machine,
                 ContainerRequest {
@@ -1489,7 +1509,7 @@ impl<'a> StopGuard for Fence<'a> {
     }
 
     async fn withdraw(&self) -> Result<Result<Withdrawal, VolumeGen>, Error> {
-        Ok(Ok(self.containers.withdraw(*self.container)))
+        Ok(Ok(self.containers.lifecycle().withdraw(*self.container)))
     }
 
     async fn drained(&self) -> Result<Result<(), VolumeGen>, Error> {
@@ -1498,6 +1518,7 @@ impl<'a> StopGuard for Fence<'a> {
         };
         Ok(self
             .containers
+            .lifecycle()
             .floor_turn()
             .await
             .admit(name, r#gen)
@@ -1508,7 +1529,7 @@ impl<'a> StopGuard for Fence<'a> {
         let Some((name, r#gen)) = self.fence else {
             return Ok(Ok(None));
         };
-        let mut floor = self.containers.floor_turn().await;
+        let mut floor = self.containers.lifecycle().floor_turn().await;
         Ok(floor.admit(name, r#gen).await?.map(|()| Some(floor)))
     }
 }
@@ -1532,7 +1553,7 @@ impl<'a> StopGuard for Leaving<'a> {
     async fn withdraw(&self) -> Result<Result<Withdrawal, ContainerRefusal>, Error> {
         Ok(leave_rotation(self.containers, self.container, self.target)
             .await?
-            .map(|_turn| self.containers.withdraw(*self.container)))
+            .map(|_turn| self.containers.lifecycle().withdraw(*self.container)))
     }
 
     async fn drained(&self) -> Result<Result<(), ContainerRefusal>, Error> {
@@ -1752,7 +1773,7 @@ async fn leave_rotation<'a>(
     container: &ContainerId,
     target: &RotationTarget,
 ) -> Result<Result<RotationTurn<'a>, ContainerRefusal>, Error> {
-    let turn = containers.rotation_turn(container).await?;
+    let turn = containers.lifecycle().rotation_turn(container).await?;
     Ok(if in_rotation(turn.rotation(), target) {
         Err(in_rotation_refusal(container, turn.rotation()))
     } else {
@@ -1770,7 +1791,10 @@ async fn remove_out_of_rotation(
         Ok(Ok(turn)) => turn.remove(remove_volumes, false).await?,
         Ok(Err(refusal)) => return Ok(Some(refusal)),
         Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {
-            containers.remove(container, remove_volumes, false).await?;
+            containers
+                .lifecycle()
+                .remove(container, remove_volumes, false)
+                .await?;
         }
         Err(error) => return Err(error),
     }

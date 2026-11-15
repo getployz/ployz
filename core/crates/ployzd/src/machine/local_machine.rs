@@ -1436,7 +1436,7 @@ impl LocalMachine {
             && began_reset
             && let Some(containers) = &self.containers
         {
-            containers.departure_failed();
+            containers.lifecycle().departure_failed();
         }
         departed
     }
@@ -1448,7 +1448,7 @@ impl LocalMachine {
         exit: StorageExit,
     ) -> Result<(), Error> {
         if let Some(containers) = &self.containers
-            && let Err(error) = containers.remove_all_managed().await
+            && let Err(error) = containers.lifecycle().remove_all_managed().await
         {
             return Err(Error::Cleanup(ployz_core::error_chain::inline(&error)));
         }
@@ -1517,12 +1517,16 @@ impl LocalMachine {
                 left.join("; ")
             )));
         }
-        containers.clear_floors().await.map_err(|error| {
-            Error::Cleanup(format!(
-                "the Volume floors stayed: {}",
-                ployz_core::error_chain::inline(&error)
-            ))
-        })
+        containers
+            .lifecycle()
+            .clear_floors()
+            .await
+            .map_err(|error| {
+                Error::Cleanup(format!(
+                    "the Volume floors stayed: {}",
+                    ployz_core::error_chain::inline(&error)
+                ))
+            })
     }
 }
 

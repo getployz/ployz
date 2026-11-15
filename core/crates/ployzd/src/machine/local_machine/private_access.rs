@@ -346,7 +346,7 @@ impl LocalMachine {
         }
         let mut stays = None;
         for retiree in &plan.retire {
-            match containers.remove(&retiree.id, true, true).await {
+            match containers.lifecycle().remove(&retiree.id, true, true).await {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 Err(source) if wanted.is_none() => {
@@ -374,7 +374,7 @@ impl LocalMachine {
     ) -> Result<Option<DoorOutcome>, Error> {
         for retiree in &plan.retire {
             self.reserved_effect(Gate::Router)?;
-            match containers.stop(&retiree.id, None, None).await {
+            match containers.lifecycle().stop(&retiree.id, None, None).await {
                 Ok(()) => {
                     if retiree.running {
                         effects.stopped.push(retiree.id);

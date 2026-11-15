@@ -88,12 +88,18 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .unwrap()
         .clone();
     fake.existing_container.lock().unwrap().as_mut().unwrap()["Config"] = json!({"Labels": labels});
-    runtime.start(&existing.container_id).await.unwrap();
     runtime
+        .lifecycle()
+        .start(&existing.container_id)
+        .await
+        .unwrap();
+    runtime
+        .lifecycle()
         .stop(&existing.container_id, None, None)
         .await
         .unwrap();
     runtime
+        .lifecycle()
         .remove(&existing.container_id, false, false)
         .await
         .unwrap();
@@ -1569,6 +1575,7 @@ mod stopped_on_request {
 
         fixture
             .runtime
+            .lifecycle()
             .remove(&fixture.id, true, false)
             .await
             .unwrap();
@@ -1581,6 +1588,7 @@ mod stopped_on_request {
         // A stop that lost the race to that removal records only afterwards.
         fixture
             .runtime
+            .lifecycle()
             .record_stop(
                 &fixture.id,
                 &ContainerRun {

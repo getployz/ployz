@@ -610,7 +610,7 @@ impl MachineRpc for MachineService {
             Err(error) => return respond(error),
         };
         let machine_id = self.local_record().id();
-        match containers.list_managed(&machine_id).await {
+        match containers.lifecycle().list_managed(&machine_id).await {
             Ok(mut observations) => {
                 if request.environment == EnvironmentValues::Redacted {
                     observations

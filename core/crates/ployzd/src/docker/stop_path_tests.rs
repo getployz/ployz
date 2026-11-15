@@ -115,6 +115,7 @@ async fn create(
 ) -> ContainerId {
     let namespace = Namespace::system();
     runtime
+        .lifecycle()
         .create_with_admission::<_, _, Error>(
             &machine(),
             ContainerRequest {
@@ -141,7 +142,12 @@ async fn a_stop_inspects_the_container_then_stops_it() {
     let doors = Doors::new().await;
     doors.calls();
 
-    doors.runtime.stop(&doors.caddy, None, None).await.unwrap();
+    doors
+        .runtime
+        .lifecycle()
+        .stop(&doors.caddy, None, None)
+        .await
+        .unwrap();
 
     assert_eq!(
         doors.calls(),
@@ -155,7 +161,11 @@ async fn a_stop_of_a_container_docker_lost_asks_docker_once_and_never_stops() {
     doors.containers.lock().unwrap().clear();
     doors.calls();
 
-    let stopped = doors.runtime.stop(&doors.caddy, None, None).await;
+    let stopped = doors
+        .runtime
+        .lifecycle()
+        .stop(&doors.caddy, None, None)
+        .await;
 
     assert!(matches!(stopped, Err(Error::ContainerNotFound(id)) if id == doors.caddy));
     assert_eq!(doors.calls(), lines(&["GET /containers/caddy/json"]));
@@ -169,12 +179,20 @@ async fn a_stop_that_a_refusal_wins_sends_no_stop_and_holds_nothing() {
 
     let stopped = doors
         .runtime
+        .lifecycle()
         .stop_if(&doors.caddy, None, None, async { Ok::<_, Error>(false) })
         .await;
 
     assert!(matches!(stopped, Ok(false)));
     assert_eq!(doors.calls(), lines(&["GET /containers/caddy/json"]));
-    assert!(!doors.runtime.recovery.is_held(&doors.caddy).await);
+    assert!(
+        !doors
+            .runtime
+            .lifecycle()
+            .recovery
+            .is_held(&doors.caddy)
+            .await
+    );
 }
 
 #[tokio::test]
@@ -183,12 +201,25 @@ async fn a_requested_stop_holds_the_door_and_a_requested_start_lifts_the_hold() 
     doors.fail_start(&doors.caddy);
     doors.calls();
 
-    doors.runtime.stop(&doors.caddy, None, None).await.unwrap();
-    assert!(doors.runtime.recovery.is_held(&doors.caddy).await);
+    doors
+        .runtime
+        .lifecycle()
+        .stop(&doors.caddy, None, None)
+        .await
+        .unwrap();
+    assert!(
+        doors
+            .runtime
+            .lifecycle()
+            .recovery
+            .is_held(&doors.caddy)
+            .await
+    );
     doors.calls();
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
+        .lifecycle()
         .recover(
             Repair::StartCaddy {
                 holder: Some(doors.holder),
@@ -202,8 +233,15 @@ async fn a_requested_stop_holds_the_door_and_a_requested_start_lifts_the_hold() 
         "a held door is not even inspected"
     );
 
-    doors.runtime.start(&doors.caddy).await.unwrap();
-    assert!(!doors.runtime.recovery.is_held(&doors.caddy).await);
+    doors.runtime.lifecycle().start(&doors.caddy).await.unwrap();
+    assert!(
+        !doors
+            .runtime
+            .lifecycle()
+            .recovery
+            .is_held(&doors.caddy)
+            .await
+    );
     assert_eq!(
         doors.calls(),
         lines(&["GET /containers/caddy/json", "POST /containers/caddy/start",]),
@@ -219,6 +257,7 @@ async fn a_caddy_whose_start_failed_is_started_once_its_holder_runs() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
+        .lifecycle()
         .recover(
             Repair::StartCaddy {
                 holder: Some(doors.holder),
@@ -248,6 +287,7 @@ async fn a_caddy_is_left_alone_while_its_holder_is_stopped() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
+        .lifecycle()
         .recover(
             Repair::StartCaddy {
                 holder: Some(doors.holder),
@@ -272,6 +312,7 @@ async fn a_holder_whose_start_failed_is_started() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
+        .lifecycle()
         .recover(Repair::StartHolder(doors.holder), creates)
         .await;
 
@@ -295,6 +336,7 @@ async fn a_rejoin_that_finds_both_doors_in_one_network_does_nothing() {
     let creates = doors.runtime.docker.creates();
     doors
         .runtime
+        .lifecycle()
         .recover(
             Repair::Rejoin {
                 owner: doors.holder,
@@ -315,7 +357,12 @@ async fn leaving_retires_the_caddy_before_the_holder_it_joins() {
     let doors = Doors::new().await;
     doors.calls();
 
-    doors.runtime.remove_all_managed().await.unwrap();
+    doors
+        .runtime
+        .lifecycle()
+        .remove_all_managed()
+        .await
+        .unwrap();
 
     let calls = doors.calls();
     let position = |call: &str| {
@@ -351,16 +398,24 @@ async fn leaving_retires_the_caddy_before_the_holder_it_joins() {
 #[tokio::test]
 async fn a_leave_marks_the_machine_departing_until_it_fails() {
     let doors = Doors::new().await;
-    assert!(!doors.runtime.departing());
+    assert!(!doors.runtime.lifecycle().departing());
 
-    doors.runtime.remove_all_managed().await.unwrap();
+    doors
+        .runtime
+        .lifecycle()
+        .remove_all_managed()
+        .await
+        .unwrap();
     assert!(
-        doors.runtime.departing(),
+        doors.runtime.lifecycle().departing(),
         "a committed Leave keeps the mark"
     );
 
-    doors.runtime.departure_failed();
-    assert!(!doors.runtime.departing(), "a failed Leave clears it");
+    doors.runtime.lifecycle().departure_failed();
+    assert!(
+        !doors.runtime.lifecycle().departing(),
+        "a failed Leave clears it"
+    );
 }
 
 #[tokio::test]
@@ -373,10 +428,17 @@ async fn a_leave_that_cannot_retire_a_container_still_marks_the_machine_departin
         .unwrap()
         .insert("ingress".to_owned());
 
-    assert!(doors.runtime.remove_all_managed().await.is_err());
+    assert!(
+        doors
+            .runtime
+            .lifecycle()
+            .remove_all_managed()
+            .await
+            .is_err()
+    );
 
     assert!(
-        doors.runtime.departing(),
+        doors.runtime.lifecycle().departing(),
         "the caller clears it when the Leave fails"
     );
 }

@@ -460,7 +460,7 @@ impl LocalMachine {
                 .iter()
                 .filter(|entry| shares_holders_netns(entry) && !entry.facts.at_rest())
             {
-                match containers.stop(&entry.facts.id, None, None).await {
+                match containers.lifecycle().stop(&entry.facts.id, None, None).await {
                     Ok(()) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
                     Err(error) => return Err(error.into()),
                 }
@@ -637,7 +637,7 @@ impl LocalMachine {
         };
         let mut connector_stays = false;
         for retiree in plan.retirees() {
-            match containers.remove(&retiree.id, true, true).await {
+            match containers.lifecycle().remove(&retiree.id, true, true).await {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 // Stopped and held, it serves nothing, and the next call retires it.
@@ -710,7 +710,7 @@ impl LocalMachine {
         effects: &mut Effects,
     ) -> Result<(), Error> {
         self.door_effect()?;
-        match containers.stop(&retiree.id, None, None).await {
+        match containers.lifecycle().stop(&retiree.id, None, None).await {
             Ok(()) => {
                 if retiree.running {
                     effects.stopped.push(retiree.id);
@@ -767,7 +767,7 @@ impl LocalMachine {
             }
             JoinedStep::Rejoin(id) => {
                 self.door_effect()?;
-                containers.stop(id, None, None).await?;
+                containers.lifecycle().stop(id, None, None).await?;
                 self.start_door(containers, id, Gate::Ingress).await?;
                 (*id, DoorChange::Rejoined)
             }
@@ -808,7 +808,7 @@ impl LocalMachine {
         if self
             .containers
             .as_ref()
-            .is_some_and(ContainerRuntime::departing)
+            .is_some_and(|containers| containers.lifecycle().departing())
         {
             return Err(Error::Departing {
                 server: machine.name.clone(),
@@ -825,7 +825,7 @@ impl LocalMachine {
         gate: Gate,
     ) -> Result<(), Error> {
         self.reserved_effect(gate)?;
-        containers.start(id).await?;
+        containers.lifecycle().start(id).await?;
         let machine_id = self.record().id();
         let deadline = tokio::time::Instant::now() + DOOR_START_WAIT;
         loop {
@@ -890,7 +890,7 @@ impl LocalMachine {
     ) -> Error {
         let mut cleared = true;
         for id in effects.created.iter().rev() {
-            if let Err(removal) = containers.remove(id, true, true).await {
+            if let Err(removal) = containers.lifecycle().remove(id, true, true).await {
                 cleared = false;
                 error = Error::Cleanup(format!(
                     "{}; removing the new Ingress door {id} failed too: {}",
@@ -900,7 +900,7 @@ impl LocalMachine {
             }
         }
         for id in effects.started.iter().rev() {
-            if let Err(stop) = containers.stop(id, None, None).await {
+            if let Err(stop) = containers.lifecycle().stop(id, None, None).await {
                 cleared = false;
                 error = Error::Cleanup(format!(
                     "{}; stopping the Ingress door {id} again failed too: {}",
@@ -920,7 +920,7 @@ impl LocalMachine {
             };
         }
         for id in effects.stopped.iter().rev() {
-            if let Err(restart) = containers.start(id).await {
+            if let Err(restart) = containers.lifecycle().start(id).await {
                 error = Error::Cleanup(format!(
                     "{}; starting the previous Ingress door {id} again failed: {}",
                     ployz_core::error_chain::inline(&error),

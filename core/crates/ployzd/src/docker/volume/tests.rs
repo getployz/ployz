@@ -70,6 +70,7 @@ async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
 
     assert!(matches!(
         runtime
+            .lifecycle()
             .create_with_admission(
                 &machine(),
                 container_request(
@@ -84,6 +85,7 @@ async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
     ));
     assert!(matches!(
         runtime
+            .lifecycle()
             .create_with_admission(
                 &machine(),
                 container_request(
@@ -569,6 +571,7 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
 
     assert!(
         runtime
+            .lifecycle()
             .create_with_admission(
                 &machine(),
                 container_request(

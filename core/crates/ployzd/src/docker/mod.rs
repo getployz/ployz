@@ -11,6 +11,7 @@ mod http_health;
 mod images;
 pub use images::Images;
 mod lifecycle;
+pub use lifecycle::Lifecycle;
 mod limits;
 mod managed_service;
 mod observe;
@@ -51,7 +52,6 @@ use bollard::{
     models::{ContainerInspectResponse, HealthConfig, ImageManifestSummaryKindEnum},
     query_parameters::ListContainersOptionsBuilder,
 };
-use futures_util::StreamExt;
 use ployz_core::{
     BridgeEndpointCapacity, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName, Evidence, Gen,
@@ -299,7 +299,7 @@ pub struct ServiceCopy {
 /// One existing copy's rotation, read under the lock `remove` takes and held until
 /// the rotation is written or the Container stopped or removed.
 pub struct RotationTurn<'a> {
-    runtime: &'a ContainerRuntime,
+    runtime: &'a Lifecycle,
     operation: spec_store::ConfigOperation<'a>,
     container_id: ContainerId,
     rotation: ployz_core::CopyRotation,
@@ -323,11 +323,11 @@ impl RotationTurn<'_> {
             .await?)
     }
 
-    /// Remove the Container and its records, as [`ContainerRuntime::remove`] does.
+    /// Remove the Container and its records, as [`Lifecycle::remove`] does.
     ///
     /// # Errors
     ///
-    /// As [`ContainerRuntime::remove`].
+    /// As [`Lifecycle::remove`].
     pub async fn remove(mut self, remove_volumes: bool, force: bool) -> Result<(), Error> {
         self.runtime
             .remove_locked(
@@ -349,12 +349,8 @@ pub struct ContainerRuntime {
     volumes: Volumes,
     observation: Observation,
     doors: Doors,
-    standing: Standing,
+    lifecycle: Lifecycle,
     first_synced: watch::Sender<bool>,
-    recovery: IngressRecovery,
-    /// Set when a Leave begins removing every managed Container, and cleared only when
-    /// that Leave fails, so a committed Leave keeps it set.
-    departure: lifecycle::Departure,
 }
 
 /// What the builders set, which the handles are assembled from.
@@ -403,18 +399,31 @@ impl ContainerRuntime {
             checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
             sealing_key_dir: settings.sealing_key_dir.clone(),
         };
-        Self {
-            images: Images::new(docker.clone()),
-            volumes: Volumes::new(docker.clone()),
-            doors: Doors::new(docker.clone(), observation.clone()),
-            observation,
+        let images = Images::new(docker.clone());
+        let volumes = Volumes::new(docker.clone());
+        let doors = Doors::new(docker.clone(), observation.clone());
+        let lifecycle = Lifecycle {
+            docker: docker.clone(),
+            specs: specs.clone(),
+            observation: observation.clone(),
+            volumes: volumes.clone(),
+            doors: doors.clone(),
+            images: images.clone(),
             standing,
+            recovery: IngressRecovery::default(),
+            log_store: settings.log_store.clone(),
+            departure: lifecycle::Departure::default(),
+        };
+        Self {
+            images,
+            volumes,
+            observation,
+            doors,
+            lifecycle,
             docker,
             specs,
             settings,
             first_synced: watch::Sender::new(false),
-            recovery: IngressRecovery::default(),
-            departure: lifecycle::Departure::default(),
         }
     }
 
@@ -457,6 +466,12 @@ impl ContainerRuntime {
         &self.doors
     }
 
+    /// Creating, starting, stopping and removing the managed Containers.
+    #[must_use]
+    pub fn lifecycle(&self) -> &Lifecycle {
+        &self.lifecycle
+    }
+
     /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
     #[must_use]
     pub fn with_sealing_key(self, data_dir: PathBuf) -> Self {
@@ -468,91 +483,16 @@ impl ContainerRuntime {
         self.configured(|settings| settings.log_store = log_store)
     }
 
-    /// Whether a Leave is removing every managed Container here, or has committed. A
-    /// Container call that overlapped it met the Leave's stops.
-    #[must_use]
-    pub fn departing(&self) -> bool {
-        self.departure.under_way()
-    }
-
-    /// A Leave that failed leaves this Machine in the Cluster, taking Container work again.
-    pub fn departure_failed(&self) {
-        self.departure.failed();
-    }
-
-    pub async fn floor_turn(&self) -> FloorTurn<'_> {
-        self.specs.floor_turn().await
-    }
-
-    pub async fn clear_floors(&self) -> Result<(), Error> {
-        Ok(self.specs.clear_floors().await?)
-    }
-
-    /// Take the lock `remove` takes and read a copy's rotation under it, so no other
-    /// rotation write or removal lands before the turn is spent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ContainerNotFound`] when Docker no longer has the Container,
-    /// and when the Machine database cannot be read.
-    pub async fn rotation_turn(
-        &self,
-        container_id: &ContainerId,
-    ) -> Result<RotationTurn<'_>, Error> {
-        let operation = self.specs.config_operation().await;
-        self.observation().ensure_managed(container_id).await?;
-        let rotation = self.specs.rotation(container_id).await?.unwrap_or_default();
-        Ok(RotationTurn {
-            runtime: self,
-            operation,
-            container_id: *container_id,
-            rotation,
-        })
-    }
-
-    /// Record that this Machine stopped `run` of the Container for a `Stopped` want.
-    /// Observations of that run, once exited, report it stopped; a later run does not.
-    ///
-    /// # Errors
-    ///
-    /// Returns when the Machine database cannot be written.
-    pub async fn record_stop(
-        &self,
-        container_id: &ContainerId,
-        run: &ployz_core::ContainerRun,
-    ) -> Result<(), Error> {
-        Ok(self
-            .specs
-            .config_operation()
-            .await
-            .set_stopped(container_id, run)
-            .await?)
-    }
-
-    /// Report this Container as `stopping` until the returned Withdrawal drops,
-    /// so the Ingress Proxies stop routing to it before it stops. Each operation
-    /// holds its own; the Container returns to ingress once none is held.
-    pub fn withdraw(&self, container_id: ContainerId) -> Withdrawal {
-        self.standing.withdraw(container_id)
-    }
-
-    /// Mark this Container leaving until the returned guard drops, so a peer's inspect
-    /// reports it. The caller holds the Machine's exclusive admission turn.
-    #[must_use]
-    pub fn leave(&self, container_id: ContainerId) -> Leaving {
-        self.standing.leave(container_id)
-    }
-
     #[cfg(test)]
     pub(crate) fn stopping_ids_for_test(&self) -> std::collections::BTreeSet<ContainerId> {
-        self.standing.withdrawn_ids()
+        self.lifecycle.standing.withdrawn_ids()
     }
 
     #[cfg(test)]
     pub(crate) fn subscribe_stopping_for_test(
         &self,
     ) -> watch::Receiver<BTreeMap<ContainerId, usize>> {
-        self.standing.subscribe()
+        self.lifecycle.standing.subscribe()
     }
 
     #[cfg(test)]
@@ -560,62 +500,9 @@ impl ContainerRuntime {
         self.specs.path_for_test()
     }
 
-    /// Drop what the daemon remembers about a container Docker no longer has.
-    async fn forget(&self, container_id: &ContainerId) {
-        self.observation.forget(container_id);
-        self.recovery.forget(container_id).await;
-    }
-
     #[must_use]
     pub(crate) fn local_docker(&self) -> LocalDocker {
         self.docker.clone()
-    }
-
-    pub async fn list_managed(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<Vec<ContainerObservation>, Error> {
-        let mut observations = Vec::new();
-        let mut inspected =
-            futures_util::stream::iter(self.observation().managed_inventory().await?)
-                .map(|container_id| async move {
-                    (
-                        container_id,
-                        self.observation()
-                            .inspect_managed(&container_id, machine_id)
-                            .await,
-                    )
-                })
-                .buffered(8);
-        while let Some((container_id, result)) = inspected.next().await {
-            match result {
-                Ok(observation) => observations.push(observation),
-                Err(Error::SpecNotFound(_))
-                    if self
-                        .discard_half_made(&container_id)
-                        .await
-                        .unwrap_or_else(|error| {
-                            eprintln!(
-                                "couldn't remove container {container_id}, which has no spec: {error}",
-                                error = ployz_core::error_chain::inline(&error),
-                            );
-                            false
-                        }) =>
-                {
-                    eprintln!(
-                        "removed container {container_id}, which a crash left without its spec before it started"
-                    );
-                }
-                Err(error) if malformed_container(&error) => {
-                    eprintln!(
-                        "ignoring malformed managed container {container_id}: {error}",
-                        error = ployz_core::error_chain::inline(&error),
-                    );
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(observations)
     }
 
     /// Read fresh Docker bridge and host telemetry.
@@ -3214,6 +3101,7 @@ async fn inspection_reports_failing_once_the_check_passed_since_this_start() {
     let namespace = Namespace::parse("app").unwrap();
     let spec = test_support::spec_with_sources(Vec::new());
     let created = runtime
+        .lifecycle()
         .create_with_admission::<_, _, Error>(
             &machine,
             container_request(
@@ -3284,6 +3172,7 @@ mod sealed_output_tests {
     use super::*;
     use crate::sealed_env::{OpenError, test_support::Cluster};
     use crate::sealing_key::SealingKey;
+    use futures_util::StreamExt;
 
     const OPENED: &str = "opened-t0ken";
 
@@ -3334,6 +3223,7 @@ mod sealed_output_tests {
         spec.container.sealed_identity = Some(cluster.identity.clone());
         spec.container.environment.insert("TOKEN".into(), token);
         let created = runtime
+            .lifecycle()
             .create_with_admission::<_, _, Error>(
                 &machine,
                 container_request(
