@@ -9,10 +9,10 @@ use std::{
 use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClientKey,
     ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
-    ContractDescription, EndpointSelected, EnvironmentValues, LiveLogTarget, LocalMachinePhase,
-    LogMetadata, LogOrigin, MachineLayout, MachineLogService, MachineRpc, OpaquePayload,
-    PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
+    ContractDescription, EndpointSelected, EnvironmentValues, Evidence, Gate, GateReason,
+    LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLayout, MachineLogService,
+    MachineRpc, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -1460,120 +1460,103 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
             ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
         ),
-        LocalMachineError::RestartRefused(_) | LocalMachineError::RestartReachesHost => {
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                serde_json::json!({
-                    "capability": ployz_core::RESTART_APPROVAL_CAPABILITY,
-                    "next": "ployz service restart from an approved device",
-                }),
-            ))
+        LocalMachineError::RestartRefused(ref refusal) => {
+            let gate = Gate::new(ployz_core::RESTART_APPROVAL_CAPABILITY)
+                .next("ployz service restart from an approved device");
+            let gate = if matches!(
+                refusal,
+                ployz_core::authority::AuthorityRefusal::Unsigned { .. }
+            ) {
+                gate.because(GateReason::Unsigned)
+            } else {
+                gate
+            };
+            Err(gated(tonic::Code::PermissionDenied, &error, &gate))
         }
-        LocalMachineError::DeployRefused(_) => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::RestartReachesHost => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({
-                "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY,
-                "next": "ployz deploy from an approved device",
-            }),
+            &Gate::new(ployz_core::RESTART_APPROVAL_CAPABILITY)
+                .next("ployz service restart from an approved device"),
         )),
-        LocalMachineError::HostnameOwned { capability, .. } => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::DeployRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({ "capability": capability }),
+            &Gate::new(ployz_core::DEPLOY_APPROVAL_CAPABILITY).next("ployz deploy from an approved device"),
+        )),
+        LocalMachineError::HostnameOwned { capability, .. } => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(capability),
         )),
         LocalMachineError::RuleDeployRefused(ref refusal) => {
-            let details = match refusal.next() {
-                Some(next) => serde_json::json!({
-                    "capability": ployz_core::DEPLOY_RULE_CAPABILITY,
-                    "next": next,
-                }),
-                None => serde_json::json!({ "capability": ployz_core::DEPLOY_RULE_CAPABILITY }),
+            let gate = Gate::new(ployz_core::DEPLOY_RULE_CAPABILITY);
+            let gate = match refusal.next() {
+                Some(next) => gate.next(next),
+                None => gate,
             };
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                details,
-            ))
+            Err(gated(tonic::Code::PermissionDenied, &error, &gate))
         }
         LocalMachineError::PreviewDeployRefused(ref refusal) => {
-            let details = match refusal.next() {
-                Some(next) => serde_json::json!({
-                    "capability": ployz_core::DEPLOY_PREVIEW_CAPABILITY,
-                    "next": next,
-                }),
-                None => serde_json::json!({ "capability": ployz_core::DEPLOY_PREVIEW_CAPABILITY }),
+            let gate = Gate::new(ployz_core::DEPLOY_PREVIEW_CAPABILITY);
+            let gate = match refusal.next() {
+                Some(next) => gate.next(next),
+                None => gate,
             };
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                details,
-            ))
+            Err(gated(tonic::Code::PermissionDenied, &error, &gate))
         }
         LocalMachineError::PreviewGrantRefused(_) => Err(build_refused(
             &error,
             ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY,
         )),
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
-        LocalMachineError::TeardownRefused(_) => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::TeardownRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({
-                "capability": ployz_core::TEARDOWN_CAPABILITY,
-                "next": "delete it again with your passkey in the dashboard, or from an approved device",
+            &Gate::new(ployz_core::TEARDOWN_CAPABILITY).next(
+                "delete it again with your passkey in the dashboard, or from an approved device",
+            ),
+        )),
+        LocalMachineError::UpgradeChannelRefused(_) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::UPGRADE_CHANNEL_CAPABILITY).next(
+                "ployz server upgrade-policy set --channel stable or beta from an approved device",
+            ),
+        )),
+        LocalMachineError::DepartureRefused { capability, .. } => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(capability).next(if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
+                "ployz server forget from an approved device, or Forget server with your passkey in the dashboard"
+            } else {
+                "ployz server rm from an approved device, or Remove server with your passkey in the dashboard"
             }),
         )),
-        LocalMachineError::UpgradeChannelRefused(_) => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::PrivateAccessRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({
-                "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
-                "next": "ployz server upgrade-policy set --channel stable or beta from an approved device",
-            }),
+            &Gate::new(ployz_core::PRIVATE_ACCESS_APPROVAL_CAPABILITY).next(
+                "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
+            ),
         )),
-        LocalMachineError::DepartureRefused { capability, .. } => {
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                serde_json::json!({
-                    "capability": capability,
-                    "next": if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
-                        "ployz server forget from an approved device, or Forget server with your passkey in the dashboard"
-                    } else {
-                        "ployz server rm from an approved device, or Remove server with your passkey in the dashboard"
-                    },
-                }),
-            ))
-        }
-        LocalMachineError::PrivateAccessRefused(_) => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::VolumeRefused { capability } => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({
-                "capability": ployz_core::PRIVATE_ACCESS_APPROVAL_CAPABILITY,
-                "next": "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
-            }),
+            &Gate::new(capability)
+                .next("approve the change from an approved device or with your passkey"),
         )),
-        LocalMachineError::VolumeRefused { capability } => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::VolumeStepRefused(ref refusal) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({
-                "capability": capability,
-                "next": "approve the change from an approved device or with your passkey",
-            }),
-        )),
-        LocalMachineError::VolumeStepRefused(ref refusal) => Err(ployz_core::rpc::hinted_status(
-            tonic::Code::PermissionDenied,
-            &error,
-            serde_json::json!({
-                "capability": ployz_core::VOLUME_APPROVAL_CAPABILITY,
-                "next": if matches!(refusal, ployz_core::authority::AuthorityRefusal::Unreceipted) {
+            &Gate::new(ployz_core::VOLUME_APPROVAL_CAPABILITY).next(
+                if matches!(refusal, ployz_core::authority::AuthorityRefusal::Unreceipted) {
                     // A new approval would not help: only the source's receipt makes this Machine the writer.
                     "ployz volume release asks the move's source where the move ends"
                 } else {
                     "approve the Volume change again from an approved device"
                 },
-            }),
+            ),
         )),
         LocalMachineError::RuleGrantRefused(_)
         | LocalMachineError::RuleProofRefused(_)
@@ -1581,88 +1564,69 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             ployz_core::BUILD_GRANT_RULE_CAPABILITY,
         )),
-        LocalMachineError::EnforcementRefused(_) => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::EnforcementRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({
-                "capability": ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY,
-                "next": "ployz device enforce from an approved device",
-            }),
+            &Gate::new(ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY)
+                .next("ployz device enforce from an approved device"),
         )),
-        LocalMachineError::JoinConsumed(_) => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::JoinConsumed(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            serde_json::json!({
-                "capability": ployz_core::JOIN_APPROVAL_CAPABILITY,
-                "reason": "join_already_admitted",
-                "inspect": ["ployz server ls"],
-            }),
+            &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY)
+                .because(GateReason::JoinAlreadyAdmitted)
+                .inspecting(&["ployz server ls"]),
         )),
         LocalMachineError::JoinRefused(_)
-        | LocalMachineError::Store(StoreError::JoinRefused(_)) => {
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                serde_json::json!({ "capability": ployz_core::JOIN_APPROVAL_CAPABILITY, "next": "ployz device approve --join CODE from an approved device" }),
-            ))
-        }
+        | LocalMachineError::Store(StoreError::JoinRefused(_)) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY)
+                .next("ployz device approve --join CODE from an approved device"),
+        )),
         LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
         LocalMachineError::ActivationRecord(_) => Err(internal_response(error)),
         LocalMachineError::RecipientKey(_) => Err(internal_response(error)),
-        LocalMachineError::RecipientRefused { capability, .. } => {
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                serde_json::json!({ "capability": capability }),
-            ))
-        }
-        LocalMachineError::AwaitingActivation { capability } => {
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                serde_json::json!({
-                    "capability": capability,
-                    "reason": "awaiting_activation",
-                    "next": "ployz device enforce",
-                }),
-            ))
-        }
-        LocalMachineError::Activating => Err(ployz_core::rpc::hinted_status(
+        LocalMachineError::RecipientRefused { capability, .. } => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(capability),
+        )),
+        LocalMachineError::AwaitingActivation { capability } => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(capability)
+                .because(GateReason::AwaitingActivation)
+                .next("ployz device enforce"),
+        )),
+        LocalMachineError::Activating => Err(gated(
             tonic::Code::Unavailable,
             &error,
-            serde_json::json!({
-                "capability": ployz_core::ENFORCED_CAPABILITY,
-                "reason": "activating",
-            }),
+            &Gate::new(ployz_core::ENFORCED_CAPABILITY).because(GateReason::Activating),
         )),
         LocalMachineError::ActivationRefused {
             capability,
             ref reason,
         } => {
             use crate::machine::local_machine::activation::Refusal;
-            let mut details = serde_json::Map::from_iter([
-                ("capability".to_owned(), serde_json::json!(capability)),
-                (
-                    "next".to_owned(),
-                    serde_json::json!(
-                        "ployz device enforce from an approved device, over SSH to each Server"
-                    ),
-                ),
-            ]);
-            match reason {
-                Refusal::LegacyMember(id) => {
-                    details.insert("legacy_member".to_owned(), serde_json::json!(id));
+            let mut details = Gate::new(capability)
+                .next("ployz device enforce from an approved device, over SSH to each Server")
+                .to_details();
+            if let serde_json::Value::Object(fields) = &mut details {
+                match reason {
+                    Refusal::LegacyMember(id) => {
+                        fields.insert("legacy_member".to_owned(), serde_json::json!(id));
+                    }
+                    Refusal::LegacyKey(code) => {
+                        fields.insert("legacy_key".to_owned(), serde_json::json!(code));
+                    }
+                    Refusal::Authority(_)
+                    | Refusal::NoOff
+                    | Refusal::Activated
+                    | Refusal::BornEnforcing => {}
                 }
-                Refusal::LegacyKey(code) => {
-                    details.insert("legacy_key".to_owned(), serde_json::json!(code));
-                }
-                Refusal::Authority(_)
-                | Refusal::NoOff
-                | Refusal::Activated
-                | Refusal::BornEnforcing => {}
             }
-            let details = serde_json::Value::Object(details);
             Err(ployz_core::rpc::hinted_status(
                 tonic::Code::PermissionDenied,
                 &error,
@@ -1982,11 +1946,13 @@ fn request_body(request: Request<OpaquePayload>) -> Result<RpcRequestBody, Statu
 
 /// The refusal an enforcing Machine answers an Operator's `Build` or `MintBuildGrant` with.
 pub(super) fn build_refused(error: &LocalMachineError, capability: &'static str) -> Status {
-    ployz_core::rpc::hinted_status(
-        tonic::Code::PermissionDenied,
-        error,
-        serde_json::json!({ "capability": capability }),
-    )
+    gated(tonic::Code::PermissionDenied, error, &Gate::new(capability))
+}
+
+/// `error` as the status a gate answers with: its message and causes, and `gate` as the
+/// details.
+fn gated(code: tonic::Code, error: &LocalMachineError, gate: &Gate) -> Status {
+    ployz_core::rpc::hinted_status(code, error, gate.to_details())
 }
 
 fn withhold_opened(environment: &mut Option<BTreeMap<String, String>>, opened: &BTreeSet<String>) {
@@ -2010,6 +1976,9 @@ fn internal_response(error: impl std::error::Error + 'static) -> Status {
 #[cfg(test)]
 #[path = "authorization_tests.rs"]
 mod authorization_tests;
+#[cfg(test)]
+#[path = "gate_tests.rs"]
+mod gate_tests;
 #[cfg(test)]
 #[path = "rotation_fleet_tests.rs"]
 mod rotation_fleet_tests;

@@ -41,14 +41,13 @@ pub(crate) struct AccessMachine {
 
 impl AccessMachine {
     pub(crate) fn of(machine: &Machine) -> Self {
-        let capabilities = &machine.runtime.capabilities;
         Self {
             id: machine.id,
             name: machine.name.clone(),
-            // An empty list is a row that predates it, which claims nothing, so the
-            // daemon is asked and answers for itself.
-            supported: capabilities.is_empty()
-                || capabilities.contains(SET_PRIVATE_ACCESS_CAPABILITY),
+            supported: machine
+                .runtime
+                .claim(SET_PRIVATE_ACCESS_CAPABILITY)
+                .may_ask(),
         }
     }
 

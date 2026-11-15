@@ -210,6 +210,127 @@ impl Evidence for DiskFull {
     const KEY: Option<&'static str> = Some("disk_full");
 }
 
+/// Why a Machine's gate refused a call, beside the capability it names. A reader that does
+/// not know the reason reads it as absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateReason {
+    /// The approval the call needed carried no signature.
+    Unsigned,
+    /// The join this call asked to admit was already admitted.
+    JoinAlreadyAdmitted,
+    /// The Machine awaits its Cluster's activation.
+    AwaitingActivation,
+    /// The Machine is turning on Device enforcement.
+    Activating,
+}
+
+/// What a Machine's refusal of a gated call names: the capability that gates it and the
+/// hints a person can act on. Every field but `capability` reads as absent when it has a
+/// shape this reader does not know. Written as the whole of the refusal's `details`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gate {
+    pub capability: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub reason: Option<GateReason>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub next: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "lenient_list"
+    )]
+    pub inspect: Vec<String>,
+}
+
+impl Evidence for Gate {
+    const KEY: Option<&'static str> = None;
+}
+
+impl Gate {
+    #[must_use]
+    pub fn new(capability: &str) -> Self {
+        Self {
+            capability: capability.to_owned(),
+            reason: None,
+            next: None,
+            inspect: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn because(self, reason: GateReason) -> Self {
+        Self {
+            reason: Some(reason),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn next(self, next: &str) -> Self {
+        Self {
+            next: Some(next.to_owned()),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn inspecting(self, commands: &[&str]) -> Self {
+        Self {
+            inspect: commands
+                .iter()
+                .map(|command| (*command).to_owned())
+                .collect(),
+            ..self
+        }
+    }
+}
+
+fn lenient<'de, D: serde::Deserializer<'de>, T: DeserializeOwned>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Ok(T::deserialize(Value::deserialize(deserializer)?).ok())
+}
+
+fn lenient_list<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    Ok(lenient(deserializer)?.unwrap_or_default())
+}
+
+impl RpcError {
+    /// The gate these details name, whatever the code: an object naming its `capability`
+    /// as text. A refusal from a Machine too old to name a reason still reads; the other
+    /// keys can be anything.
+    #[must_use]
+    pub fn gate(&self) -> Option<Gate> {
+        // A list would read as the struct's fields in order, which no peer ever sent.
+        if !self.details.is_object() {
+            return None;
+        }
+        self.evidence()
+    }
+
+    /// The gate a Machine that enforces Device approval refused this call at: [`Self::gate`]
+    /// under the code `forbidden`.
+    #[must_use]
+    pub fn enforcement(&self) -> Option<Gate> {
+        if self.code.as_str() == crate::FORBIDDEN_CODE {
+            self.gate()
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

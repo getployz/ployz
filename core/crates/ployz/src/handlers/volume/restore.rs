@@ -12,7 +12,7 @@ use chrono::DateTime;
 use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ployz_core::{
-    CopyRefusal, DockerVolumeName, ExpectedCopy, Hint, InspectVolumeCopyRequest, MachineId,
+    Claim, CopyRefusal, DockerVolumeName, ExpectedCopy, Hint, InspectVolumeCopyRequest, MachineId,
     MachineName, MachineStorageObservation, MachineTarget, Namespace, RpcErrorCode,
     SetVolumeCopyRefused, SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy,
     VolumeGen, WantedCopy, WriterEpoch, op,
@@ -281,10 +281,7 @@ pub(super) async fn copies(
                 )
                 .await
                 .map_err(crate::connect::rpc_error);
-            let capabilities = &observed.machine.runtime.capabilities;
-            // An empty list is a record that predates it, which claims nothing.
-            let unfenced =
-                !capabilities.is_empty() && !capabilities.contains(VOLUME_FLOOR_CAPABILITY);
+            let unfenced = observed.machine.runtime.claim(VOLUME_FLOOR_CAPABILITY) == Claim::Lacks;
             match inspected {
                 Ok(view) if unfenced && view.copy.is_some() => Err(Unseen::Unfenced),
                 Ok(view) => Ok(view.copy),

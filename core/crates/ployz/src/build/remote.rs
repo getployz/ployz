@@ -159,6 +159,15 @@ pub(crate) enum CapabilityCheckError {
     Failed(#[from] remote::InputError),
 }
 
+impl CapabilityCheckError {
+    /// Whether the Machine refused by Device enforcement. A daemon from before refusals
+    /// named their capability sent the sentence as a failure message, and reads by it.
+    pub(crate) fn refused_by_enforcement(&self) -> bool {
+        matches!(self, Self::RefusedByEnforcement(_))
+            || self.to_string() == ployz_core::BUILD_REFUSED_BY_ENFORCEMENT
+    }
+}
+
 async fn open_and_admit(
     client: &Client,
     request: Input,
@@ -594,6 +603,20 @@ mod tests {
             matches!(&error, CapabilityCheckError::RefusedByEnforcement(message)
                 if message == ployz_core::BUILD_REFUSED_BY_ENFORCEMENT),
             "{error:?}"
+        );
+    }
+
+    #[test]
+    fn an_enforcement_refusal_is_a_typed_one_or_a_failure_that_says_the_sentence() {
+        let failed = |message: &str| CapabilityCheckError::from(remote::InputError::from(message));
+        assert!(
+            CapabilityCheckError::RefusedByEnforcement("any text".into()).refused_by_enforcement()
+        );
+        assert!(failed(ployz_core::BUILD_REFUSED_BY_ENFORCEMENT).refused_by_enforcement());
+        assert!(!failed("Build capability deadline expired").refused_by_enforcement());
+        assert!(
+            !failed(&format!("{} ", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT))
+                .refused_by_enforcement()
         );
     }
 

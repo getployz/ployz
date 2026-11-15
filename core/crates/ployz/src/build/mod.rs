@@ -27,7 +27,6 @@ mod platforms;
 pub use platforms::placement_platforms;
 mod remote;
 pub use local::LocalImage;
-pub(crate) use remote::CapabilityCheckError;
 mod reuse;
 pub(crate) use reuse::{Cancelled, image_stores, place, place_listing};
 mod sealed;
