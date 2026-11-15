@@ -1,4 +1,4 @@
-use super::{message, public_error};
+use super::{EndedCode, channel_mismatch, message, public_error};
 
 #[test]
 fn a_refusal_sentence_reads_the_same_from_every_envelope_cloud_uses() {
@@ -98,4 +98,36 @@ fn a_route_s_public_error_reads_as_the_code_it_stands_for() {
         (extra.code.as_str(), extra.message.as_str()),
         ("conflict", "m")
     );
+}
+
+#[test]
+fn an_ended_run_reads_only_its_exact_words_as_busy_or_refused() {
+    use ployz_core::{RpcError, RpcErrorCode};
+    for (word, code, rpc) in [
+        ("refused", EndedCode::Refused, RpcErrorCode::Conflict),
+        ("busy", EndedCode::Busy, RpcErrorCode::Unavailable),
+        (
+            "Busy",
+            EndedCode::Unknown("Busy".into()),
+            RpcErrorCode::Unavailable,
+        ),
+        (
+            "busy ",
+            EndedCode::Unknown("busy ".into()),
+            RpcErrorCode::Unavailable,
+        ),
+        (
+            "",
+            EndedCode::Unknown(String::new()),
+            RpcErrorCode::Unavailable,
+        ),
+    ] {
+        assert_eq!(EndedCode::from_wire(word), code, "{word:?}");
+        assert_eq!(code.rpc_code(), rpc, "{word:?}");
+    }
+    let refused = |code: &str| RpcError::new(RpcErrorCode::from(code), "Said.");
+    assert!(channel_mismatch(&refused("channel_mismatch")));
+    for other in ["Channel_Mismatch", "channel_mismatch ", "conflict", ""] {
+        assert!(!channel_mismatch(&refused(other)), "{other:?}");
+    }
 }
