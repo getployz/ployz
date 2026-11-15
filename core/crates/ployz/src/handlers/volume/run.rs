@@ -65,7 +65,8 @@ impl std::fmt::Display for VolumeRunId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum VolumeRunKind {
     Mirror,
     Sync,
@@ -74,51 +75,6 @@ pub(crate) enum VolumeRunKind {
     Release,
     Restore,
     Resize,
-}
-
-impl VolumeRunKind {
-    const ALL: [Self; 7] = [
-        Self::Mirror,
-        Self::Sync,
-        Self::DeleteMirror,
-        Self::Move,
-        Self::Release,
-        Self::Restore,
-        Self::Resize,
-    ];
-
-    /// The word Cloud keeps this kind of run under.
-    pub(crate) const fn as_wire(self) -> &'static str {
-        match self {
-            Self::Mirror => "mirror",
-            Self::Sync => "sync",
-            Self::DeleteMirror => "delete_mirror",
-            Self::Move => "move",
-            Self::Release => "release",
-            Self::Restore => "restore",
-            Self::Resize => "resize",
-        }
-    }
-
-    /// The kind Cloud's `word` names; a Cloud newer than this CLI may name one it does not know.
-    pub(crate) fn from_wire(word: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.as_wire() == word)
-    }
-}
-
-impl Serialize for VolumeRunKind {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_wire())
-    }
-}
-
-impl<'de> Deserialize<'de> for VolumeRunKind {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let word = String::deserialize(deserializer)?;
-        Self::from_wire(&word).ok_or_else(|| {
-            serde::de::Error::custom(format_args!("unknown Volume run kind {word:?}"))
-        })
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

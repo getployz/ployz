@@ -861,10 +861,7 @@ fn each_run_kind_keeps_the_word_cloud_files_it_under() {
         (VolumeRunKind::Restore, "restore"),
         (VolumeRunKind::Resize, "resize"),
     ];
-    assert_eq!(kinds.len(), VolumeRunKind::ALL.len());
     for (kind, word) in kinds {
-        assert_eq!(kind.as_wire(), word);
-        assert_eq!(VolumeRunKind::from_wire(word), Some(kind));
         assert_eq!(serde_json::to_value(kind).unwrap(), json!(word));
         assert_eq!(
             serde_json::from_value::<MaybeKnown<VolumeRunKind>>(json!(word)).unwrap(),
@@ -874,9 +871,13 @@ fn each_run_kind_keeps_the_word_cloud_files_it_under() {
             store::word(&MaybeKnown::Known(kind)),
             word.replace('_', " ")
         );
+        // A reader keeps the externally tagged form the derived reader always took.
+        assert_eq!(
+            serde_json::from_value::<MaybeKnown<VolumeRunKind>>(json!({ word: null })).unwrap(),
+            MaybeKnown::Known(kind)
+        );
     }
     for unknown in ["seed", "Mirror", "delete-mirror", "delete_old_copy", ""] {
-        assert_eq!(VolumeRunKind::from_wire(unknown), None, "{unknown}");
         assert_eq!(
             serde_json::from_value::<MaybeKnown<VolumeRunKind>>(json!(unknown)).unwrap(),
             MaybeKnown::Unknown(unknown.to_owned())
