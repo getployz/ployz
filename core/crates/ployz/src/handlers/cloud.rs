@@ -15,6 +15,7 @@ use ployz_core::{
 };
 
 use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
+use super::server::EnrollPlan;
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{
     self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, Initialize,
@@ -33,14 +34,12 @@ pub(super) fn enroll(
     token: CloudEnrollToken,
     cloud_url: &str,
 ) -> Result<(), Error> {
-    if leaf_matches(root)
-        .get_one::<String>("destination")
-        .is_some()
-    {
+    let plan = EnrollPlan::from_matches(root);
+    if plan.destination().is_some() {
         // A remote host is provisioned up front, in `enroll_steps`.
-        return enroll_token(root, token, cloud_url, &|_| async { Ok(()) });
+        return enroll_token(&plan, token, cloud_url, &|_| async { Ok(()) });
     }
-    enroll_token(root, token, cloud_url, &|installation| async move {
+    enroll_token(&plan, token, cloud_url, &|installation| async move {
         match installation {
             Installation::Host(storage) => {
                 crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), &storage).await?;
@@ -74,7 +73,7 @@ where
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .map_or(DEFAULT_CLOUD, String::as_str);
-    enroll_token(root, token, cloud_url, install)
+    enroll_token(&EnrollPlan::from_matches(root), token, cloud_url, install)
 }
 
 /// Setup's outcome: `Ok` once the final callback succeeded, holding what printing the
@@ -90,7 +89,7 @@ pub(crate) enum Reader {
 
 /// Enroll, then send Cloud the best-effort setup report for the outcome.
 fn enroll_token<Install, InstallFuture>(
-    root: &ArgMatches,
+    plan: &EnrollPlan,
     token: CloudEnrollToken,
     cloud_url: &str,
     install: &Install,
@@ -102,7 +101,7 @@ where
     runtime()?
         .block_on(run_enrollment(
             EnrollCommand::ServerAdd,
-            root,
+            plan,
             &token,
             cloud_url,
             install,
@@ -120,7 +119,7 @@ where
 /// enrollment, then send Cloud the best-effort setup report for the outcome.
 pub(crate) async fn run_enrollment<Install, InstallFuture>(
     command: EnrollCommand,
-    root: &ArgMatches,
+    plan: &EnrollPlan,
     token: &CloudEnrollToken,
     cloud_url: &str,
     install: &Install,
@@ -134,7 +133,7 @@ where
     let mut report = SetupReport::start();
     let setup = enroll_steps(
         command,
-        root,
+        plan,
         token,
         cloud_url,
         install,
@@ -159,7 +158,7 @@ where
 )]
 async fn enroll_steps<Install, InstallFuture>(
     command: EnrollCommand,
-    root: &ArgMatches,
+    plan: &EnrollPlan,
     token: &CloudEnrollToken,
     cloud_url: &str,
     install: &Install,
@@ -171,39 +170,41 @@ where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    let matches = leaf_matches(root);
-    let remote = matches.get_one::<String>("destination").is_some();
+    let remote = plan.destination().is_some();
     // First, so a failed first install still reports what it ran on.
-    if dials_this_host(matches) {
+    if dials_this_host(plan) {
         report.read_host();
     }
-    let initial_policy = super::server::enrollment_policy(matches)?;
+    let initial_policy = plan.shaping().policy()?;
     let url = CloudOrigin::new(cloud_url).enroll_url();
-    let requested_name = super::server::requested_name(matches)?;
-    let cluster_name = super::server::founding_cluster_name(matches)?;
-    let requested_storage = super::server::requested_storage(matches);
+    let requested_name = plan.shaping().name()?;
+    let cluster_name = plan.shaping().cluster_name()?;
+    let requested_storage = plan.shaping().storage();
     // `--public-ip` and `--wg-endpoint` shape the identity Cloud registers, and pin what the
     // daemon would otherwise rediscover, as a direct join does (#3515).
-    let token_request = super::server::token_request(matches)?;
+    let token_request = plan.shaping().token_request()?;
     let pinned = super::server::pinned(&token_request);
-    let cluster_network = *matches
-        .get_one::<Ipv4Net>("network")
-        .expect("Cluster network has a default");
+    let cluster_network = plan.shaping().network();
 
     progress(EnrollStage::Installing);
-    if remote && !matches.get_flag("no-install") {
+    if remote && !plan.no_install() {
         // A remote host is provisioned once, up front, with this CLI's release.
-        crate::provisioning::provision(matches, &requested_storage).await?;
+        crate::provisioning::provision_target(
+            plan.remote_target(),
+            &plan.shaping().version(),
+            &requested_storage,
+        )
+        .await?;
     }
-    let mut client = connect_machine(matches, install).await?;
-    client = synchronize_daemon(matches, client, install).await?;
-    if matches.get_flag("reset") {
-        client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
+    let mut client = connect_machine(plan, install).await?;
+    client = synchronize_daemon(plan, client, install).await?;
+    if plan.shaping().reset() {
+        client = ensure_uninitialized(plan, plan.shaping().yes(), true, client).await?;
     }
     report.step(Step::Enroll);
     let (details, machine_token, name, identity, outcome) = enroll_current_identity(
         command,
-        matches,
+        plan,
         &mut client,
         token_request,
         requested_name,
@@ -222,12 +223,12 @@ where
             if cluster_name.is_some() {
                 super::server::joined_unnamed();
             }
-            if matches.get_flag("ingress-closed") {
+            if plan.shaping().ingress_closed() {
                 super::server::joined_open();
             }
             enroll_join(
                 command,
-                matches,
+                plan,
                 client,
                 details,
                 *join,
@@ -252,7 +253,7 @@ where
             report.enrolled(storage.choice(), true);
             enroll_founder(
                 command,
-                matches,
+                plan,
                 client,
                 details,
                 machine_token,
@@ -345,7 +346,7 @@ fn refuse_another_cluster(join: Join) -> Error {
 )]
 async fn enroll_current_identity(
     command: EnrollCommand,
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     client: &mut Client,
     token_request: InspectRequest,
     requested_name: Option<MachineName>,
@@ -380,9 +381,9 @@ async fn enroll_current_identity(
         Err(error)
             if error.capability().as_deref() == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
         {
-            let config = super::config_path(matches)?;
+            let config = super::config_path(plan.reach())?;
             if super::device::key::load(&super::device::key::path(&config))?.is_some() {
-                let mut entry = super::route::connect(matches, None).await?;
+                let mut entry = super::route::connect(plan.reach(), None).await?;
                 let expected = ployz_core::RegisterRequest {
                     join_approval: None,
                     join_confirmation: None,
@@ -410,7 +411,7 @@ async fn enroll_current_identity(
                 } else {
                     return Err(error.into());
                 }
-            } else if !dials_this_host(matches) {
+            } else if !dials_this_host(plan) {
                 return Err(unpinnable_join(&name));
             } else {
                 return Err(Error::from(error).hint(Hint::Next(format!(
@@ -429,16 +430,16 @@ async fn enroll_current_identity(
 /// with no Device key, nothing could pin the join, so it is refused. Run on the Server itself
 /// from Cloud's printed line, it is the install line's residual and goes unpinned.
 fn cli_join_pin(
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     name: &MachineName,
 ) -> Result<Option<ployz_core::JoinPin>, Error> {
-    let own = super::device::key::load(&super::device::key::path(&config_path(matches)?))?
+    let own = super::device::key::load(&super::device::key::path(&config_path(plan.reach())?))?
         .map(|secret| super::device::key::public(&secret));
     match own {
         Some(device) => Ok(Some(ployz_core::JoinPin {
             devices: vec![device],
         })),
-        None if !dials_this_host(matches) => Err(unpinnable_join(name)),
+        None if !dials_this_host(plan) => Err(unpinnable_join(name)),
         None => Ok(None),
     }
 }
@@ -455,7 +456,7 @@ fn unpinnable_join(name: &MachineName) -> Error {
 )]
 async fn enroll_join<Install, InstallFuture>(
     command: EnrollCommand,
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     mut client: Client,
     details: MachineDetails,
     join: Join,
@@ -503,13 +504,13 @@ where
     // Cloud. A rerun that finds the Server still joining replays its Enroll to read it again.
     let relays =
         assigned.join_approval.is_some() && details.phase != LocalMachinePhase::Participating;
-    let pin = cli_join_pin(matches, &assigned.name).map_err(undoable)?;
+    let pin = cli_join_pin(plan, &assigned.name).map_err(undoable)?;
     let member = EnrollRequest {
         role: EnrollAs::Member {
             registration: join.registration,
             pin,
         },
-        wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+        wireguard_mtu: plan.shaping().wg_mtu(),
         pinned,
     };
     let confirmation = if local.is_some() {
@@ -523,16 +524,11 @@ where
         }
     } else {
         unlisted_participation(&details, &assigned)?;
-        client = ensure_uninitialized(
-            matches,
-            matches.get_flag("yes"),
-            matches.get_flag("reset"),
-            client,
-        )
-        .await
-        .map_err(undoable)?;
+        client = ensure_uninitialized(plan, plan.shaping().yes(), plan.shaping().reset(), client)
+            .await
+            .map_err(undoable)?;
         progress(EnrollStage::Storage);
-        client = provision_storage(matches, client, &join.storage, install)
+        client = provision_storage(plan, client, &join.storage, install)
             .await
             .map_err(undoable)?;
         report.step(Step::Join);
@@ -554,7 +550,7 @@ where
     }
     progress(EnrollStage::Joining);
     let mut ready = wait_phase(
-        matches,
+        plan,
         Awaited::Enrolled {
             id: assigned.id,
             via: client.connection(),
@@ -565,10 +561,10 @@ where
     let sealing = sealing(&mut ready).await?;
     progress(EnrollStage::Publishing);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
-    let capability = set_cloud_management_client(matches, &mut ready).await?;
+    let capability = set_cloud_management_client(plan, &mut ready).await?;
     let (unarrived, catch_up) =
         crate::global_catch_up::follow_globals(&mut ready, &assigned, |args| {
-            super::rerun(matches, args)
+            super::rerun(plan.reach(), args)
         })
         .await;
     // Cloud may use the replacement after publication, revoking this key.
@@ -601,7 +597,7 @@ where
         ),
         catch_up.map_err(|error| {
             crate::global_catch_up::joined_catch_up_error(error, &assigned, |args| {
-                super::rerun(matches, args)
+                super::rerun(plan.reach(), args)
             })
         }),
     ))
@@ -660,7 +656,7 @@ enum FounderLocalState {
 )]
 async fn enroll_founder<Install, InstallFuture>(
     command: EnrollCommand,
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     mut client: Client,
     details: MachineDetails,
     machine_token: MachineToken,
@@ -739,15 +735,11 @@ where
             *machine
         }
         FounderLocalState::Initialize => {
-            client = ensure_uninitialized(
-                matches,
-                matches.get_flag("yes"),
-                matches.get_flag("reset"),
-                client,
-            )
-            .await?;
+            client =
+                ensure_uninitialized(plan, plan.shaping().yes(), plan.shaping().reset(), client)
+                    .await?;
             progress(EnrollStage::Storage);
-            client = provision_storage(matches, client, &storage, install).await?;
+            client = provision_storage(plan, client, &storage, install).await?;
             report.step(Step::Join);
             let request = EnrollRequest {
                 role: EnrollAs::Founder {
@@ -758,7 +750,7 @@ where
                     advertised_endpoints: machine_token.advertised_endpoints,
                     grant: Some(ployz_core::FoundingGrant::Claim { claim }),
                 },
-                wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+                wireguard_mtu: plan.shaping().wg_mtu(),
                 pinned,
             };
             let machine = match &recovery {
@@ -775,7 +767,7 @@ where
         }
     };
     let mut ready = wait_phase(
-        matches,
+        plan,
         Awaited::Enrolled {
             id: machine.id,
             via: client.connection(),
@@ -784,9 +776,9 @@ where
     )
     .await?;
 
-    let unnamed = match super::server::founding_cluster_name(matches)? {
+    let unnamed = match plan.shaping().cluster_name()? {
         Some(name) => {
-            let next = super::rerun(matches, &["cluster", "name", name.as_str()]);
+            let next = super::rerun(plan.reach(), &["cluster", "name", name.as_str()]);
             super::cluster::set(&ready, name).await.err().map(|error| {
                 error
                     .context("Server initialized; the Cluster has no name yet.")
@@ -796,16 +788,16 @@ where
         None => None,
     };
     let mut partial = None;
-    if matches.get_flag("ingress-closed")
+    if plan.shaping().ingress_closed()
         && let Err(error) = crate::ingress::declare_founding_closed(&mut ready).await
     {
         return Err(ingress_incomplete(
             command,
-            super::ingress_hints(error, |args| super::rerun(matches, args)),
+            super::ingress_hints(error, |args| super::rerun(plan.reach(), args)),
         ));
     }
     if machine.accepts_ingress
-        && let Err(error) = if matches.get_flag("ingress-closed") {
+        && let Err(error) = if plan.shaping().ingress_closed() {
             crate::ingress::found_closed(&mut ready).await
         } else {
             crate::ingress::follow_roles(&mut ready).await
@@ -816,7 +808,7 @@ where
         let elsewhere = error.only_elsewhere(&machine.id);
         let error = ingress_incomplete(
             command,
-            super::ingress_hints(error.into(), |args| super::rerun(matches, args)),
+            super::ingress_hints(error.into(), |args| super::rerun(plan.reach(), args)),
         );
         if !elsewhere {
             return Err(error);
@@ -830,7 +822,7 @@ where
         }
     }
     let sealing = sealing(&mut ready).await?;
-    let shown = shows_code(matches, reader, ui::json(), ui::stdout_is_terminal());
+    let shown = shows_code(plan, reader, ui::json(), ui::stdout_is_terminal());
     let code = match recovery {
         Some(Recovery::BackUp) if shown => Some(RecoveryCode::generate()),
         Some(Recovery::BackUp) => {
@@ -849,7 +841,7 @@ where
     };
     progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
-    let capability = set_cloud_management_client(matches, &mut ready)
+    let capability = set_cloud_management_client(plan, &mut ready)
         .await
         .map_err(|error| {
             error.context(format!(
@@ -890,8 +882,9 @@ where
         .and_then(|result| ui::emit_committed(result, partial.map_or(Ok(()), Err))))
 }
 
-fn shows_code(matches: &ArgMatches, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {
-    reader == Reader::Person && super::recovery::shows_code(matches, json, stdout_is_terminal)
+fn shows_code(plan: &EnrollPlan, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {
+    reader == Reader::Person
+        && super::recovery::shows_code(plan.shows_recovery_code(), json, stdout_is_terminal)
 }
 
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
@@ -966,7 +959,7 @@ fn founder_result(
 ///
 /// The Pairing Credential stays with the CLI; the daemon stores only public keys.
 async fn set_cloud_management_client(
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     client: &mut Client,
 ) -> Result<ManagementCapability, Error> {
     let response = client
@@ -984,14 +977,14 @@ async fn set_cloud_management_client(
         )
     })?;
     if matches!(client.connection().transport(), Transport::Management(_)) {
-        crate::context::Config::load(config_path(matches)?)?
+        crate::context::Config::load(config_path(plan.reach())?)?
             .save_management_capability(&capability)?;
     }
     Ok(capability)
 }
 
 async fn provision_storage<Install, InstallFuture>(
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     client: Client,
     storage: &ployz_core::StoragePreparation,
     install: &Install,
@@ -1000,26 +993,23 @@ where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    let storage = cloud_enroll::storage_with_requested_device(
-        storage,
-        &super::server::requested_storage(matches),
-    );
+    let storage = cloud_enroll::storage_with_requested_device(storage, &plan.shaping().storage());
     crate::provisioning::announce_storage(&storage);
     if storage.choice() != StorageChoice::Zfs {
         return Ok(client);
     }
-    if !installs_here(matches, &client) {
+    if !installs_here(plan, &client) {
         return Err(Error::usage(format!(
             "zfs storage preparation requires running ployz server add on the Server itself; connected through {}",
             client.connection()
         )));
     }
     install(Installation::Host(storage)).await?;
-    wait_matching_daemon(matches).await
+    wait_matching_daemon(plan).await
 }
 
 async fn synchronize_daemon<Install, InstallFuture>(
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     mut client: Client,
     install: &Install,
 ) -> Result<Client, Error>
@@ -1036,18 +1026,18 @@ where
     if daemon.daemon_version == env!("CARGO_PKG_VERSION") {
         return Ok(client);
     }
-    if !installs_here(matches, &client) {
+    if !installs_here(plan, &client) {
         return Err(Error::usage(format!(
             "daemon version synchronization requires running ployz server add on the Server itself; connected through {}",
             client.connection()
         )));
     }
     install(Installation::Daemon).await?;
-    wait_matching_daemon(matches).await
+    wait_matching_daemon(plan).await
 }
 
-async fn wait_matching_daemon(matches: &ArgMatches) -> Result<Client, Error> {
-    let mut client = wait_client(matches).await?;
+async fn wait_matching_daemon(plan: &EnrollPlan) -> Result<Client, Error> {
+    let mut client = wait_client(plan).await?;
     let daemon = client
         .call::<op::DescribeContract>(
             DescribeContractRequest {},
@@ -1065,42 +1055,42 @@ async fn wait_matching_daemon(matches: &ArgMatches) -> Result<Client, Error> {
 }
 
 /// The installer reaches the enrolling host: it runs there, or provisioned `DESTINATION`.
-fn installs_here(matches: &ArgMatches, client: &Client) -> bool {
-    matches.get_one::<String>("destination").is_some()
-        || matches!(client.connection().transport(), Transport::Unix(_))
+fn installs_here(plan: &EnrollPlan, client: &Client) -> bool {
+    plan.destination().is_some() || matches!(client.connection().transport(), Transport::Unix(_))
 }
 
 /// Connect to the enrolling host: `DESTINATION`, else `--connect` or the local daemon.
-async fn dial(matches: &ArgMatches) -> Result<Client, ConnectError> {
-    if let Some(destination) = matches.get_one::<String>("destination") {
+async fn dial(plan: &EnrollPlan) -> Result<Client, ConnectError> {
+    if let Some(destination) = plan.destination() {
         let mut connection: Connection = destination.parse()?;
         if matches!(connection.transport(), Transport::Ssh { .. })
-            && let Some(key) = matches.get_one::<String>("ssh-key")
+            && let Some(key) = plan.ssh_key()
         {
             connection = connection.with_ssh_key_file(key)?;
         }
-        return super::server::connect_direct(matches, &connection).await;
+        return super::server::connect_direct(plan.reach(), &connection).await;
     }
     crate::connect::connect_selected_in_order(
-        local_selection(matches)?,
+        local_selection(plan)?,
         std::sync::Arc::new(
             crate::connect::SystemConnector::default()
-                .with_ssh_timeout(crate::cli::ssh_timeout(matches)),
+                .with_ssh_timeout(crate::cli::ssh_timeout(plan.reach())),
         ),
     )
     .await
 }
 
 /// What a run with no destination dials: `--connect`, the current context or the local socket.
-fn local_selection(matches: &ArgMatches) -> Result<SelectedConnections, ConnectError> {
+fn local_selection(plan: &EnrollPlan) -> Result<SelectedConnections, ConnectError> {
+    let reach = plan.reach();
     let config = crate::context::expand_home(std::path::Path::new(
-        matches
+        reach
             .get_one::<String>("ployz-config")
             .expect("ployz-config has a default"),
     ));
     crate::connect::resolve_connections(
         &config,
-        matches.get_one::<String>("connect").map(String::as_str),
+        reach.get_one::<String>("connect").map(String::as_str),
         None,
         &ployz_core::MachineLayout::production().socket(),
     )
@@ -1108,11 +1098,11 @@ fn local_selection(matches: &ArgMatches) -> Result<SelectedConnections, ConnectE
 
 /// Whether a run enrolls this host: it has no destination, and it dials only the local
 /// socket or finds nothing to dial and so installs the daemon here (see `connect_machine`).
-fn dials_this_host(matches: &ArgMatches) -> bool {
-    if matches.get_one::<String>("destination").is_some() {
+fn dials_this_host(plan: &EnrollPlan) -> bool {
+    if plan.destination().is_some() {
         return false;
     }
-    match local_selection(matches) {
+    match local_selection(plan) {
         Ok(selected) => selected
             .connections
             .iter()
@@ -1122,26 +1112,26 @@ fn dials_this_host(matches: &ArgMatches) -> bool {
 }
 
 async fn connect_machine<Install, InstallFuture>(
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     install: &Install,
 ) -> Result<Client, Error>
 where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    match dial(matches).await {
+    match dial(plan).await {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
             install(Installation::Host(StorageChoice::None.into())).await?;
-            wait_client(matches).await
+            wait_client(plan).await
         }
-        Err(error) if error.is_setup_retryable() && dials_this_host(matches) => {
-            if local_selection(matches)?.connections.iter().any(|connection| {
+        Err(error) if error.is_setup_retryable() && dials_this_host(plan) => {
+            if local_selection(plan)?.connections.iter().any(|connection| {
                 matches!(connection.transport(), Transport::Unix(path) if !path.exists())
             }) {
                 install(Installation::Host(StorageChoice::None.into())).await?;
             }
-            wait_client(matches).await
+            wait_client(plan).await
         }
         Err(error) => Err(error.into()),
     }
@@ -1151,21 +1141,21 @@ fn retry_local_connect(error: &ConnectError) -> bool {
     matches!(error, ConnectError::Context(ContextError::NoConfig)) || error.is_setup_retryable()
 }
 
-async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
+async fn wait_client(plan: &EnrollPlan) -> Result<Client, Error> {
     crate::setup_retry::run(
         &mut (),
         &crate::ui::WaitNotices,
         "Waiting for local daemon",
         crate::setup_retry::WAIT,
         retry_local_connect,
-        async |_| dial(matches).await,
+        async |_| dial(plan).await,
     )
     .await
     .map_err(Into::into)
 }
 
 async fn ensure_uninitialized(
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     yes: bool,
     reset: bool,
     mut client: Client,
@@ -1187,7 +1177,7 @@ async fn ensure_uninitialized(
     }
     crate::handlers::server::confirm(yes, "Reset this Server before joining the Cluster?")?;
     crate::handlers::server::leave(&mut client, &details).await?;
-    wait_phase(matches, Awaited::Uninitialized, "The Server did not reset.").await
+    wait_phase(plan, Awaited::Uninitialized, "The Server did not reset.").await
 }
 
 /// What an enrollment waits for after leaving or joining.
@@ -1205,7 +1195,7 @@ enum Awaited<'a> {
 }
 
 async fn wait_phase(
-    matches: &ArgMatches,
+    plan: &EnrollPlan,
     awaited: Awaited<'_>,
     timeout_message: &str,
 ) -> Result<Client, Error> {
@@ -1232,11 +1222,11 @@ async fn wait_phase(
         ConnectError::is_start_retryable,
         async |joining| {
             if let Awaited::Enrolled { id, via } = awaited {
-                let mut client = super::server::connect_direct(matches, via).await?;
+                let mut client = super::server::connect_direct(plan.reach(), via).await?;
                 check_enrolled(&mut client, id, joining).await?;
                 return Ok(client);
             }
-            let mut client = dial(matches).await?;
+            let mut client = dial(plan).await?;
             let details = client
                 .call::<op::Inspect>(
                     InspectRequest::default(),
@@ -1390,7 +1380,7 @@ mod tests {
             ])
             .unwrap();
         let installed = std::cell::Cell::new(false);
-        let error = connect_machine(leaf_matches(&matches), &|_| {
+        let error = connect_machine(&EnrollPlan::from_matches(&matches), &|_| {
             installed.set(true);
             async { Ok(()) }
         })
@@ -1555,7 +1545,7 @@ mod tests {
         let cli = crate::cli::command()
             .try_get_matches_from(["ployz", "--connect", &selection, "server", "add", "--yes"])
             .unwrap();
-        let matches = leaf_matches(&cli);
+        let matches = &EnrollPlan::from_matches(&cli);
         let via = Connection::unix(&enrolled_path).unwrap();
         let ready = wait_phase(
             matches,
@@ -1588,7 +1578,7 @@ mod tests {
         let refused = tokio::time::timeout(
             Duration::from_secs(10),
             wait_phase(
-                leaf_matches(&cli),
+                &EnrollPlan::from_matches(&cli),
                 Awaited::Enrolled {
                     id: crate::global_fixtures::machine('a', "machine-a").id,
                     via: &via,
@@ -1696,7 +1686,7 @@ mod tests {
         let root = crate::cli::command()
             .try_get_matches_from(["ployz", "--connect", &connection, "server", "add", "--yes"])
             .unwrap();
-        let matches = leaf_matches(&root);
+        let matches = &EnrollPlan::from_matches(&root);
         let token = CloudEnrollToken::parse("pmet_resumed_enroll").unwrap();
         let pairing = CloudPairing {
             secret: cloud_enroll::PairingCredential::parse("pairing").unwrap(),
@@ -1855,7 +1845,7 @@ mod tests {
                     "--yes",
                 ])
                 .unwrap();
-            let matches = leaf_matches(&root);
+            let matches = &EnrollPlan::from_matches(&root);
             let token = CloudEnrollToken::parse("pmet_unacknowledged_enroll").unwrap();
             let pairing = CloudPairing {
                 secret: cloud_enroll::PairingCredential::parse("pairing").unwrap(),
@@ -2099,7 +2089,7 @@ mod tests {
                 .unwrap();
             let error = enroll_join(
                 EnrollCommand::ServerAdd,
-                leaf_matches(&root),
+                &EnrollPlan::from_matches(&root),
                 client,
                 details,
                 join,
@@ -2185,7 +2175,7 @@ mod tests {
             let root = crate::cli::command()
                 .try_get_matches_from(arguments)
                 .unwrap();
-            let matches = leaf_matches(&root);
+            let matches = &EnrollPlan::from_matches(&root);
             for json in [false, true] {
                 for terminal in [false, true] {
                     assert!(!shows_code(matches, Reader::Fleet, json, terminal));

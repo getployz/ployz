@@ -9,7 +9,6 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
 use ployz_core::{
@@ -19,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
+use super::Shaping;
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError, Organization};
@@ -134,7 +134,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         return runtime.block_on(wait_joined(&acting, enrollment));
     }
     // Before Cloud mints a token, so a bad flag costs none.
-    let shape = shaping_args(matches)?;
+    let shape = Shaping::from_matches(matches).pasted_args()?;
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
         return runtime.block_on(paste(&acting, &minted, &shape));
@@ -145,53 +145,6 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         CloudEnrollToken::parse(minted.token)?,
         acting.credential.cloud(),
     )
-}
-
-/// `server add` switches and values that shape the Server, which a pasted line repeats.
-const SHAPING_SWITCHES: [&str; 3] = ["reset", "yes", "ingress-closed"];
-const SHAPING_VALUES: [&str; 12] = [
-    "name",
-    "storage",
-    "public-ip",
-    "wg-endpoint",
-    "wg-mtu",
-    "label-add",
-    "accepts-builds",
-    "accepts-services",
-    "accepts-ingress",
-    "network",
-    "cluster-name",
-    "version",
-];
-
-/// The flags given here that shape the Server, as `server add` arguments, once each
-/// parses as enrollment will read it.
-fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
-    super::enrollment_policy(matches)?;
-    super::helpers::checked_token_request(matches)?;
-    super::helpers::requested_name(matches)?;
-    founding_cluster_name(matches)?;
-    let given = |id: &str| {
-        matches!(
-            matches.value_source(id),
-            Some(ValueSource::CommandLine | ValueSource::EnvVariable)
-        )
-    };
-    let switches = SHAPING_SWITCHES
-        .into_iter()
-        .filter(|id| given(id) && matches.get_flag(id))
-        .map(|id| format!("--{id}"));
-    let values = SHAPING_VALUES
-        .into_iter()
-        .filter(|id| given(id))
-        .flat_map(|id| {
-            matches
-                .get_raw(id)
-                .into_iter()
-                .flatten()
-                .flat_map(move |raw| [format!("--{id}"), raw.to_string_lossy().into_owned()])
-        });
-    Ok(values.chain(switches).collect())
 }
 
 /// The enrollment token from its one source: `--token-stdin`, `--token-file` or
@@ -461,10 +414,16 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
 pub(in crate::handlers) fn founding_cluster_name(
     matches: &ArgMatches,
 ) -> Result<Option<ClusterName>, Error> {
-    matches
-        .get_one::<String>("cluster-name")
-        .map(|name| crate::handlers::cluster::parse(name))
-        .transpose()
+    parse_cluster_name(
+        matches
+            .get_one::<String>("cluster-name")
+            .map(String::as_str),
+    )
+}
+
+/// [`founding_cluster_name`] from the `--cluster-name` value given.
+pub(super) fn parse_cluster_name(name: Option<&str>) -> Result<Option<ClusterName>, Error> {
+    name.map(crate::handlers::cluster::parse).transpose()
 }
 
 pub(in crate::handlers) fn joined_open() {
@@ -479,20 +438,88 @@ pub(in crate::handlers) fn joined_unnamed() {
     );
 }
 
-/// Storage the Cloud path asks for; it never prompts.
-pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StoragePreparation {
-    matches
-        .get_one::<StoragePreparation>("storage")
-        .cloned()
-        .unwrap_or(StoragePreparation::Zfs { device: None })
+/// Storage the Cloud path asks for, when `--storage` gave none; it never prompts.
+pub(super) fn storage_or_default(given: Option<StoragePreparation>) -> StoragePreparation {
+    given.unwrap_or(StoragePreparation::Zfs { device: None })
+}
+
+/// Every input the enrollment engine reads from `root`, in the order it reads them, as text:
+/// the first refusal, or the parsed values and flags.
+#[cfg(test)]
+pub(crate) fn engine_view(root: &ArgMatches) -> String {
+    let plan = super::EnrollPlan::from_matches(root);
+    let shaping = plan.shaping();
+    let parsed = (|| -> Result<_, Error> {
+        let policy = shaping.policy()?;
+        let name = shaping.name()?;
+        let cluster = shaping.cluster_name()?;
+        let request = shaping.token_request()?;
+        Ok((policy, name, cluster, shaping.storage(), request))
+    })()
+    .map_err(|error| format!("{error} {:?}", error.hints()));
+    let reach = plan.reach();
+    let text = |id: &str| reach.get_one::<String>(id).cloned();
+    format!(
+        "{parsed:?} {:?} {:?}",
+        (
+            plan.destination().map(str::to_owned),
+            plan.ssh_key().map(str::to_owned),
+            plan.no_install(),
+            shaping.reset(),
+            shaping.yes(),
+            shaping.ingress_closed(),
+            plan.shows_recovery_code(),
+        ),
+        (
+            shaping.wg_mtu(),
+            Some(shaping.network()),
+            Some(shaping.version()),
+            text("ployz-config"),
+            text("connect"),
+            crate::cli::ssh_timeout(reach).as_secs(),
+            text("context"),
+        )
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use clap::parser::ValueSource;
+
     use super::*;
+
+    const SHAPING_SWITCHES: [&str; 3] = ["reset", "yes", "ingress-closed"];
+    const SHAPING_VALUES: [&str; 12] = [
+        "name",
+        "storage",
+        "public-ip",
+        "wg-endpoint",
+        "wg-mtu",
+        "label-add",
+        "accepts-builds",
+        "accepts-services",
+        "accepts-ingress",
+        "network",
+        "cluster-name",
+        "version",
+    ];
+
+    fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
+        Shaping::from_matches(matches).pasted_args()
+    }
 
     fn add_matches(argv: &[&str]) -> ArgMatches {
         crate::cli::command().try_get_matches_from(argv).unwrap()
+    }
+
+    /// `argv` with the config path the command line would default to given outright, so a
+    /// `PLOYZ_CONFIG` in the environment the tests run under cannot reach the views.
+    fn with_default_config<'a>(argv: &[&'a str]) -> Vec<&'a str> {
+        let mut argv = argv.to_vec();
+        if !argv.contains(&"--ployz-config") {
+            argv.extend(["--ployz-config", "~/.config/ployz/config.yaml"]);
+        }
+        argv
     }
 
     #[tokio::test]
@@ -639,6 +666,275 @@ mod tests {
             super::super::helpers::token_request(replayed).unwrap(),
             super::super::helpers::token_request(original).unwrap()
         );
+    }
+
+    /// What `server add --command` pastes for `extra`, or why it refuses before minting a token.
+    fn pasted(extra: &[&str]) -> Result<String, String> {
+        let argv = [&["ployz", "server", "add", "--command"][..], extra].concat();
+        let root = add_matches(&argv);
+        shaping_args(leaf_matches(&root))
+            .map(|shape| pasted_command("https://ployz.dev", &shape))
+            .map_err(|error| format!("{error} {:?}", error.hints()))
+    }
+
+    fn shaped(extra: &[&str]) -> Result<Vec<String>, String> {
+        let argv = [&["ployz", "server", "add", "--command"][..], extra].concat();
+        let root = add_matches(&argv);
+        shaping_args(leaf_matches(&root)).map_err(|error| format!("{error} {:?}", error.hints()))
+    }
+
+    #[test]
+    fn the_pasted_line_repeats_each_given_flag_as_the_command_line_wrote_it() {
+        let cases: [(&[&str], &[&str]); 18] = [
+            (&[], &[]),
+            (&["--name", "web-1"], &["--name", "web-1"]),
+            (&["--name=web-1"], &["--name", "web-1"]),
+            (
+                &["--accepts-builds=false", "--accepts-services", "false"],
+                &["--accepts-builds", "false", "--accepts-services", "false"],
+            ),
+            (
+                &["--label-add", "a=b", "--label-add", "c=d"],
+                &["--label-add", "a=b", "--label-add", "c=d"],
+            ),
+            (
+                &["--label-add", "a=b,c=d"],
+                &["--label-add", "a=b", "--label-add", "c=d"],
+            ),
+            (
+                &[
+                    "--wg-endpoint",
+                    "192.0.2.1,192.0.2.2:7",
+                    "--wg-endpoint",
+                    "[2001:db8::1]:6000",
+                ],
+                &[
+                    "--wg-endpoint",
+                    "192.0.2.1",
+                    "--wg-endpoint",
+                    "192.0.2.2:7",
+                    "--wg-endpoint",
+                    "[2001:db8::1]:6000",
+                ],
+            ),
+            (&["--public-ip", "auto"], &["--public-ip", "auto"]),
+            (&["--public-ip", "none"], &["--public-ip", "none"]),
+            (
+                &["--network", "10.210.0.0/16"],
+                &["--network", "10.210.0.0/16"],
+            ),
+            (&["--wg-mtu", "01380"], &["--wg-mtu", "01380"]),
+            (&["--storage", "none"], &["--storage", "none"]),
+            (
+                &["--storage", "zfs:/dev/disk/by-id/virtio data"],
+                &["--storage", "zfs:/dev/disk/by-id/virtio data"],
+            ),
+            (&["--version", "0.3.0"], &["--version", "0.3.0"]),
+            (&["--cluster-name", "acme"], &["--cluster-name", "acme"]),
+            (
+                &["--ingress-closed", "--yes", "--reset"],
+                &["--reset", "--yes", "--ingress-closed"],
+            ),
+            (&["-y"], &["--yes"]),
+            (
+                &[
+                    "--no-install",
+                    "--ssh-key",
+                    "/k",
+                    "--show-recovery-code",
+                    "--cloud-url",
+                    "x",
+                ],
+                &[],
+            ),
+        ];
+        for (given, expected) in cases {
+            assert_eq!(shaped(given).unwrap(), expected, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn the_pasted_line_orders_values_before_switches_and_quotes_each_word() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            pasted(&[
+                "--ingress-closed",
+                "--yes",
+                "--version",
+                "0.3.0",
+                "--label-add",
+                "k=a b",
+                "--storage",
+                "zfs:/dev/x y",
+                "--name",
+                "web-1",
+            ])
+            .unwrap(),
+            format!(
+                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --name web-1 --storage 'zfs:/dev/x y' --label-add 'k=a b' --version 0.3.0 --yes --ingress-closed"
+            )
+        );
+    }
+
+    #[test]
+    fn a_flag_that_enrollment_would_refuse_is_refused_before_a_token_is_minted() {
+        let cases: [(&[&str], &str); 11] = [
+            (
+                &["--label-add", "x", "--public-ip", "999", "--name", "BAD"],
+                "invalid label \"x\": expected KEY=VALUE []",
+            ),
+            (
+                &[
+                    "--public-ip",
+                    "999",
+                    "--name",
+                    "BAD",
+                    "--cluster-name",
+                    "BAD",
+                ],
+                "invalid public IP \"999\" []",
+            ),
+            (
+                &["--cluster-name", "BAD", "--name", "BAD"],
+                "invalid Machine Name \"BAD\": a 1-63 character lowercase DNS label [Closest(\"bad\")]",
+            ),
+            (
+                &["--label-add", "x"],
+                "invalid label \"x\": expected KEY=VALUE []",
+            ),
+            (
+                &["--label-add", "a=1", "--label-add", "a=2"],
+                "duplicate label key \"a\" []",
+            ),
+            (&["--public-ip", "999"], "invalid public IP \"999\" []"),
+            (
+                &["--public-ip", "127.0.0.1"],
+                "127.0.0.1 is a loopback address, which no visitor can reach. Give the address the internet reaches this Server at, or none. []",
+            ),
+            (
+                &["--wg-endpoint", "nope"],
+                "invalid WireGuard endpoint \"nope\" []",
+            ),
+            (
+                &["--name", "MY SERVER"],
+                "invalid Machine Name \"MY SERVER\": a 1-63 character lowercase DNS label [Closest(\"my-server\")]",
+            ),
+            (
+                &["--name", ""],
+                "invalid Machine Name \"\": a 1-63 character lowercase DNS label []",
+            ),
+            (
+                &["--cluster-name", "Not A Name"],
+                "Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit. []",
+            ),
+        ];
+        for (given, expected) in cases {
+            assert_eq!(shaped(given).unwrap_err(), expected, "{given:?}");
+        }
+    }
+
+    #[test]
+    fn the_engine_reads_what_the_command_line_gave_and_the_defaults_of_the_rest() {
+        let cases: [&[&str]; 6] = [
+            &["--token-stdin"],
+            &[
+                "--token-stdin",
+                "root@host",
+                "-i",
+                "/k",
+                "--no-install",
+                "--ssh-timeout",
+                "7",
+            ],
+            &[
+                "--token-stdin",
+                "--reset",
+                "--yes",
+                "--ingress-closed",
+                "--show-recovery-code",
+            ],
+            &[
+                "--token-stdin",
+                "--wg-mtu",
+                "1380",
+                "--network",
+                "10.9.0.0/16",
+                "--version",
+                "0.3.0",
+            ],
+            &[
+                "--token-stdin",
+                "--name",
+                "web-1",
+                "--storage",
+                "zfs:/dev/x",
+                "--accepts-ingress=false",
+                "--label-add",
+                "a=b",
+                "--cluster-name",
+                "acme",
+                "--public-ip",
+                "192.0.2.9",
+                "--wg-endpoint",
+                "192.0.2.1",
+            ],
+            &[
+                "--ployz-config",
+                "/c.yaml",
+                "--connect",
+                "tcp://127.0.0.1:9",
+                "--context",
+                "x",
+                "--token-stdin",
+            ],
+        ];
+        let views: String = cases
+            .iter()
+            .map(|given| {
+                let argv = [&["ployz", "server", "add"][..], given].concat();
+                format!(
+                    "{given:?} => {}\n",
+                    engine_view(&add_matches(&with_default_config(&argv)))
+                )
+            })
+            .collect();
+        assert_eq!(views, include_str!("enroll_views.golden"));
+    }
+
+    #[test]
+    fn an_environment_sourced_version_is_pasted_and_a_default_is_not() {
+        const CHILD: &str = "PLOYZ_PIN_ENV_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            for (version, pasted_flag) in [(Some("9.9.9"), true), (None, false)] {
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+                child
+                    .args([
+                        "--exact",
+                        "handlers::server::enroll::tests::an_environment_sourced_version_is_pasted_and_a_default_is_not",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, if pasted_flag { "given" } else { "default" })
+                    .env_remove(env::DAEMON_VERSION);
+                if let Some(version) = version {
+                    child.env(env::DAEMON_VERSION, version);
+                }
+                let output = child.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            }
+            return;
+        }
+        let shape = shaped(&[]).unwrap();
+        if std::env::var(CHILD).unwrap() == "given" {
+            assert_eq!(shape, ["--version", "9.9.9"]);
+        } else {
+            assert!(shape.is_empty(), "{shape:?}");
+        }
     }
 
     #[test]

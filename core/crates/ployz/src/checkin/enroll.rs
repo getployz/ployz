@@ -245,13 +245,11 @@ pub(super) async fn server_add(
         name: add_name(&instruction.name, &system.hostname()),
         ..instruction.clone()
     };
-    let root = crate::cli::command()
-        .try_get_matches_from(add_arguments(
-            instruction,
-            &system.cloud,
-            std::env::var_os("HOME").is_some(),
-        ))
-        .map_err(|error| error.to_string())?;
+    let plan = plan_from_instruction(
+        instruction,
+        &system.cloud,
+        std::env::var_os("HOME").is_some(),
+    )?;
     let install = |installation| {
         let ployzd = system.ployzd.clone();
         async move {
@@ -262,7 +260,7 @@ pub(super) async fn server_add(
     };
     let setup = crate::handlers::cloud::run_enrollment(
         crate::cloud_enroll::Command::ServerEnroll,
-        &root,
+        &plan,
         &instruction.token,
         &system.cloud,
         &install,
@@ -271,6 +269,19 @@ pub(super) async fn server_add(
     )
     .await;
     Committed::from_setup(setup)
+}
+
+/// What `instruction` asks to enroll, read as the `server add` arguments built from it: a value
+/// `server add` would refuse is refused here in clap's words.
+fn plan_from_instruction(
+    instruction: &EnrollInstruction,
+    cloud: &str,
+    home_set: bool,
+) -> Result<crate::handlers::server::EnrollPlan, String> {
+    let root = crate::cli::command()
+        .try_get_matches_from(add_arguments(instruction, cloud, home_set))
+        .map_err(|error| error.to_string())?;
+    Ok(crate::handlers::server::EnrollPlan::from_matches(&root))
 }
 
 fn failure_message(error: &crate::handlers::Error) -> String {

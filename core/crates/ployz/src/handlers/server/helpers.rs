@@ -17,7 +17,18 @@ use crate::{
 };
 
 pub(in crate::handlers) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Error> {
-    let request = checked_token_request(matches)?;
+    token_request_for(
+        matches.get_one::<String>("public-ip").map(String::as_str),
+        &string_values(matches, "wg-endpoint"),
+    )
+}
+
+/// [`token_request`] from the `--public-ip` and `--wg-endpoint` values given.
+pub(in crate::handlers) fn token_request_for(
+    public_ip: Option<&str>,
+    wg_endpoints: &[String],
+) -> Result<InspectRequest, Error> {
+    let request = checked_token_request_for(public_ip, wg_endpoints)?;
     if let Some(TokenRequest {
         public_ip: PublicIpDiscovery::Override(ip),
     }) = &request.token
@@ -27,19 +38,18 @@ pub(in crate::handlers) fn token_request(matches: &ArgMatches) -> Result<Inspect
     Ok(request)
 }
 
-/// [`token_request`] without its warnings, for a check before the request it builds is used.
-pub(super) fn checked_token_request(matches: &ArgMatches) -> Result<InspectRequest, Error> {
-    let public_ip = match matches
-        .get_one::<String>("public-ip")
-        .map(String::as_str)
-        .unwrap_or("auto")
-    {
+/// [`token_request_for`] without its warnings, for a check before the request it builds is used.
+pub(super) fn checked_token_request_for(
+    public_ip: Option<&str>,
+    wg_endpoints: &[String],
+) -> Result<InspectRequest, Error> {
+    let public_ip = match public_ip.unwrap_or("auto") {
         "auto" => PublicIpDiscovery::Auto,
         "" | "none" => PublicIpDiscovery::Disabled,
         value => PublicIpDiscovery::Override(reachable_public_ip(value)?),
     };
     Ok(InspectRequest {
-        advertised_endpoints: parse_endpoints(&string_values(matches, "wg-endpoint"))?,
+        advertised_endpoints: parse_endpoints(wg_endpoints)?,
         token: Some(TokenRequest { public_ip }),
         ..Default::default()
     })
@@ -120,18 +130,23 @@ pub(in crate::handlers) async fn inspect_token(
 pub(in crate::handlers) fn requested_name(
     matches: &ArgMatches,
 ) -> Result<Option<MachineName>, Error> {
-    let Some(requested) = matches.get_one::<String>("name") else {
+    machine_name_requested(matches.get_one::<String>("name").map(String::as_str))
+}
+
+/// [`requested_name`] from the `--name` value given.
+pub(in crate::handlers) fn machine_name_requested(
+    requested: Option<&str>,
+) -> Result<Option<MachineName>, Error> {
+    let Some(requested) = requested else {
         return Ok(None);
     };
-    MachineName::parse(requested.as_str())
-        .map(Some)
-        .map_err(|error| {
-            let failure = Error::from(error);
-            match MachineName::from_hostname(requested) {
-                Some(suggested) => failure.hint(Hint::Closest(suggested.into())),
-                None => failure,
-            }
-        })
+    MachineName::parse(requested).map(Some).map_err(|error| {
+        let failure = Error::from(error);
+        match MachineName::from_hostname(requested) {
+            Some(suggested) => failure.hint(Hint::Closest(suggested.into())),
+            None => failure,
+        }
+    })
 }
 
 /// The requested name, or the hostname's normalised form, said on stderr. A hostname with

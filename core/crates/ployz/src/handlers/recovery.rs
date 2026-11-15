@@ -66,12 +66,8 @@ pub(super) fn rotate_command(command: Command) -> Command {
 }
 
 /// Whether a person sees a fresh recovery code: on a terminal, or under `--json` only on request.
-pub(super) fn shows_code(matches: &ArgMatches, json: bool, stdout_is_terminal: bool) -> bool {
-    if json {
-        matches.get_flag("show-recovery-code")
-    } else {
-        stdout_is_terminal
-    }
+pub(super) fn shows_code(requested: bool, json: bool, stdout_is_terminal: bool) -> bool {
+    if json { requested } else { stdout_is_terminal }
 }
 
 pub(super) fn recover(root: &ArgMatches) -> Result<(), Error> {
@@ -182,7 +178,11 @@ pub(super) fn rotate(root: &ArgMatches) -> Result<(), Error> {
 fn rotate_for(root: &ArgMatches, stdout_is_terminal: bool) -> Result<(), Error> {
     let matches = leaf_matches(root);
     // Rotating retires the old code, so never mint a new one no one will see.
-    if !shows_code(matches, ui::json(), stdout_is_terminal) {
+    if !shows_code(
+        matches.get_flag("show-recovery-code"),
+        ui::json(),
+        stdout_is_terminal,
+    ) {
         return Err(Error::usage(NO_ONE_SEES_THE_CODE));
     }
     let runtime = runtime()?;
