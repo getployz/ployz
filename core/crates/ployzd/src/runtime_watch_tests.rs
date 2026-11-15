@@ -279,6 +279,64 @@ fn serialized_frame_redacts_certificate_material_and_dns_credentials() {
 }
 
 #[test]
+fn a_row_the_tunnel_serves_reads_as_a_failure_carrying_the_sentence_and_no_backoff() {
+    const SENTENCE: &str =
+        "Cloudflare serves the certificate while every Server uses the Tunnel Door";
+    let observe = |row: &CertificateRow| {
+        super::redact_certificate(CertificateHost::parse("app.example.com").unwrap(), row)
+    };
+    let held = observe(&CertificateRow::default().with_error(SENTENCE));
+    assert_eq!(held.status, CertificateAvailability::Failure);
+    assert_eq!(held.last_error.as_deref(), Some(SENTENCE));
+    assert_eq!(held.backoff, None);
+
+    // A row an older daemon wrote keeps its clock beside the sentence.
+    let older = CertificateRow::decode(
+        &json!({
+            "last_error": SENTENCE,
+            "next_attempt_at": "2023-11-14T22:13:20Z",
+            "failures": 2,
+            "last_failure": "authority",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let older = observe(&older);
+    assert_eq!(older.status, CertificateAvailability::Failure);
+    assert_eq!(older.last_error.as_deref(), Some(SENTENCE));
+    assert_eq!(
+        older.backoff.map(|backoff| backoff.failure_kind),
+        Some(CertificateFailureKind::Authority)
+    );
+
+    // Material the Tunnel Door has not yet outlived keeps the row available.
+    let kept = observe(
+        &CertificateRow::issued(crate::ingress::tests::test_material(), ClusterRoute::Direct)
+            .with_error(SENTENCE),
+    );
+    assert_eq!(kept.status, CertificateAvailability::Available);
+    assert_eq!(kept.last_error.as_deref(), Some(SENTENCE));
+
+    // A stored body that also fails to decode its challenge joins the problems with "; ".
+    let joined = observe(
+        &CertificateRow::decode(
+            &json!({
+                "last_error": SENTENCE,
+                "challenge_token": "x",
+                "challenge_response": "y",
+            })
+            .to_string(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(joined.status, CertificateAvailability::Failure);
+    assert_eq!(
+        joined.last_error.as_deref(),
+        Some(format!("{SENTENCE}; stored HTTP-01 challenge is invalid").as_str())
+    );
+}
+
+#[test]
 fn unavailable_telemetry_keeps_replicated_machines_with_entry_up() {
     let entry = machine("edge", ENTRY_ID, 1);
     let peer = machine("peer", PEER_ID, 2);

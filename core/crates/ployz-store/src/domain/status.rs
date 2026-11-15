@@ -649,6 +649,66 @@ mod tests {
     }
 
     #[test]
+    fn only_a_failed_certificate_with_the_exact_tunnel_sentence_is_ready_via_tunnel() {
+        const SENTENCE: &str =
+            "Cloudflare serves the certificate while every Server uses the Tunnel Door";
+        let domain = custom("app.example.com");
+        let via_tunnel = (DomainStatus::Ready, Some("via tunnel".to_owned()), None);
+        let read =
+            |availability: &str, last_error: serde_json::Value, backoff: serde_json::Value| {
+                let mut evidence = evidence(None);
+                evidence.certificates = Some(vec![
+                    serde_json::from_value(serde_json::json!({
+                        "hostname": "app.example.com",
+                        "status": availability,
+                        "last_error": last_error,
+                        "backoff": backoff,
+                    }))
+                    .unwrap(),
+                ]);
+                status(&domain, Deployed::Yes, &evidence)
+            };
+        let clock = serde_json::json!({
+            "failure_kind": "authority",
+            "next_attempt_at": "2026-09-29T12:00:00Z",
+            "failures": 2,
+        });
+        let null = serde_json::Value::Null;
+        // A row an older daemon wrote can carry a clock beside the sentence.
+        for backoff in [null.clone(), clock] {
+            assert_eq!(read("failure", SENTENCE.into(), backoff), via_tunnel);
+        }
+        // A certificate still held serves, so the sentence it lingers with names no hold.
+        assert_eq!(
+            read("available", SENTENCE.into(), null.clone()),
+            (DomainStatus::Ready, None, None)
+        );
+        for availability in ["pending", "unknown", "renewing"] {
+            assert_ne!(
+                read(availability, SENTENCE.into(), null.clone()),
+                via_tunnel
+            );
+        }
+        let near_misses = [
+            serde_json::Value::Null,
+            "".into(),
+            SENTENCE.to_lowercase().into(),
+            format!("{SENTENCE} ").into(),
+            format!("{SENTENCE}.").into(),
+            format!("{SENTENCE}; stored HTTP-01 challenge is invalid").into(),
+            "stored HTTP-01 challenge is invalid".into(),
+            "Cloudflare serves the certificate".into(),
+        ];
+        for last_error in near_misses {
+            assert_ne!(
+                read("failure", last_error.clone(), null.clone()),
+                via_tunnel,
+                "{last_error}"
+            );
+        }
+    }
+
+    #[test]
     fn statuses_follow_deploys_certificates_and_the_cluster_domain() {
         let domain = custom("app.example.com");
         let ready = evidence(Some(("available", None)));

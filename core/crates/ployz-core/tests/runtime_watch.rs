@@ -196,6 +196,34 @@ fn observation_enums_keep_an_unknown_case() {
     assert_eq!(cert.backoff, None);
 }
 
+/// The sentence a Machine records when the Tunnel Door serves every certificate is on the wire
+/// as plain `last_error` text, which every reader, old or new, knows by its exact spelling.
+#[test]
+fn a_certificate_the_tunnel_serves_is_carried_as_plain_last_error_text() {
+    let sentence = "Cloudflare serves the certificate while every Server uses the Tunnel Door";
+    let cert: CertificateObservation = serde_json::from_value(json!({
+        "hostname": "app.example.com",
+        "status": "failure",
+        "last_error": sentence,
+        "issuer": "future",
+        "held": "tunnel_serves"
+    }))
+    .unwrap();
+    assert_eq!(cert.status, CertificateAvailability::Failure);
+    assert_eq!(cert.last_error.as_deref(), Some(sentence));
+    assert_eq!(
+        serde_json::to_value(&cert).unwrap(),
+        json!({
+            "hostname": "app.example.com",
+            "status": "failure",
+            "last_error": sentence,
+            "backoff": null,
+            "via_proxy": false,
+        }),
+        "an unknown field is dropped and the frame gains no field"
+    );
+}
+
 fn insert_json_field(payload: &mut Value, pointer: &str, key: &str, value: Value) {
     payload
         .pointer_mut(pointer)
