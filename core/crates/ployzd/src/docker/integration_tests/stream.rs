@@ -87,8 +87,9 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
         .await
         .unwrap();
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
-    let api = MachineApi::builder(crate::machine::RecordOwner::spawn(machine_store).unwrap())
-        .with_optional_containers(Some(runtime))
+    let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();
+    let api = MachineApi::builder(owner.clone())
+        .with_local(crate::machine::LocalMachine::new(owner).with_containers(Some(runtime)))
         .build();
     let socket_dir = tempfile::tempdir().unwrap();
     let (mut client, server) = crate::machine_api::test_socket::served(
@@ -249,8 +250,9 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
         .await
         .unwrap();
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
-    let api = MachineApi::builder(crate::machine::RecordOwner::spawn(machine_store).unwrap())
-        .with_optional_containers(Some(runtime))
+    let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();
+    let api = MachineApi::builder(owner.clone())
+        .with_local(crate::machine::LocalMachine::new(owner).with_containers(Some(runtime)))
         .build();
     let socket_dir = tempfile::tempdir().unwrap();
     let (mut client, server) = crate::machine_api::test_socket::served(
@@ -399,8 +401,10 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
         .unwrap();
     runtime.start(&created.container_id).await.unwrap();
 
-    let api = MachineApi::builder(machine_store)
-        .with_optional_containers(Some(runtime.clone()))
+    let api = MachineApi::builder(machine_store.clone())
+        .with_local(
+            crate::machine::LocalMachine::new(machine_store).with_containers(Some(runtime.clone())),
+        )
         .build();
     let server =
         tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));

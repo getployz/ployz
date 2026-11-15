@@ -21,7 +21,7 @@
 //! Mirror is designed (`seed_tests.rs`
 //! `a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point`).
 //!
-//! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs:557-573)
+//! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs)
 //! checks it against `into`'s floor under the switch lock, before the plugin's
 //! `seed_volume` runs, through `check_gen` (machine_api/local_volume_copy.rs:273-283) and
 //! `FloorTurn::check` (docker/spec_store.rs:558-571). The check refuses a gen below the

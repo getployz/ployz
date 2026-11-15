@@ -5,7 +5,7 @@
 //! root.
 //!
 //! Each daemon runs one certificate loop, `run`, once it participates
-//! (core/crates/ployzd/src/daemon.rs:490-503). Each pass of `issue_wanted` reads the
+//! (the certificates arm of `start_planes` in core/crates/ployzd/src/daemon.rs, after `Participation::wait`). Each pass of `issue_wanted` reads the
 //! row, and `step` moves the loop-local `Issuance` it keeps for the hostname (core/crates/ployz-decide/src/issuance.rs:111-132, :181-212;
 //! `Host`, `run`'s `hosts` and `issue_wanted`'s `hosts.insert`). The hostname is pushed to `to_order` only when `issuance_gate` lets it through
 //! (core/crates/ployz-core/src/domain/issuance.rs:66-98) and `issuance_action` says the
@@ -1593,7 +1593,7 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
     let wait = || wait_words(who, before, after);
     let what = match after.took {
         Some(Branch::Restarted { ended_order, .. }) => format!(
-            "the daemon restarts, and run builds an empty hosts{}; the loop starts again once the daemon participates (core/crates/ployzd/src/daemon.rs:490-503)",
+            "the daemon restarts, and run builds an empty hosts{}; the loop starts again once the daemon participates (the certificates arm of `start_planes` in core/crates/ployzd/src/daemon.rs, after `Participation::wait`)",
             if ended_order {
                 "; the obtain in flight ends with nothing recorded"
             } else {

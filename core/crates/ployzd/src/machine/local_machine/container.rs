@@ -80,6 +80,13 @@ pub(super) struct SettledCreations(
     Arc<std::sync::Mutex<std::collections::BTreeMap<ContainerId, (DeploymentLogId, ContainerRun)>>>,
 );
 
+impl SettledCreations {
+    #[cfg(test)]
+    pub(super) fn is_shared_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// Why the cut's Container half left the root a writer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CutRefusal {

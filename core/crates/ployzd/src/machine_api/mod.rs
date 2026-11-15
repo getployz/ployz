@@ -20,9 +20,8 @@ use tonic::{
 use provenance::Provenance;
 
 use crate::{
-    corrosion::{AdminClient, ReplicatedStore},
-    docker::{ContainerRuntime, ImageIngest},
-    machine::RecordOwner,
+    docker::ImageIngest,
+    machine::{LocalMachine, RecordOwner},
 };
 
 pub use ends_on_shutdown::EndsOnShutdown;
@@ -47,11 +46,12 @@ pub struct MachineApiBuilder {
 }
 
 impl MachineApi {
-    /// A builder over the record `owner` holds, with no Cluster attached until `with_cluster`.
+    /// A builder over the record `owner` holds, with no Cluster or Docker attached until
+    /// `with_local` hands it a Machine that has them.
     #[must_use]
     pub fn builder(owner: RecordOwner) -> MachineApiBuilder {
         MachineApiBuilder {
-            service: local::MachineService::with_cluster(owner, None),
+            service: local::MachineService::over(LocalMachine::new(owner)),
         }
     }
 
@@ -65,6 +65,13 @@ impl MachineApi {
     #[must_use]
     pub(crate) fn from_local(service: MachineService) -> Self {
         wrap(service)
+    }
+
+    /// The Machine this API serves through.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn local_machine(&self) -> LocalMachine {
+        self.service.local()
     }
 }
 
@@ -80,21 +87,11 @@ impl MachineApiBuilder {
         self
     }
 
+    /// Serve through this Machine, the one the daemon's other planes are cloned from, so
+    /// the state its clones share (settled creations among it) is one.
     #[must_use]
-    pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
-        self.service = self.service.with_cluster_option(cluster);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_optional_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
-        self.service = self.service.with_optional_containers(containers);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_volume_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
-        self.service = self.service.with_volume_plugin(plugin);
+    pub(crate) fn with_local(mut self, local: LocalMachine) -> Self {
+        self.service = self.service.with_local(local);
         self
     }
 

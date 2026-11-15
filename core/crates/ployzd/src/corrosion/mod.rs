@@ -3,6 +3,7 @@
 mod admin;
 mod api;
 mod certificate;
+mod link;
 mod machine_view;
 mod publisher;
 mod service;
@@ -24,6 +25,7 @@ pub use certificate::{
     CertificateChallenge, CertificateChallengeError, CertificateMaterial, CertificateMaterialError,
     CertificateRow, published_cover,
 };
+pub(crate) use link::{ClusterContext, ClusterLink};
 pub use machine_view::{MachineView, MachinesSnapshot};
 pub use publisher::{LiveRuntime, run_machine_publisher, wait_for_catch_up};
 pub use service::{

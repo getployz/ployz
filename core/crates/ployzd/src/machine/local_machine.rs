@@ -29,8 +29,8 @@ use super::{
 
 use crate::{
     corrosion::{
-        AdminClient, ClusterSealing, DeclaredDoors, MembershipState, ReplicatedStore,
-        membership_states_by_address,
+        AdminClient, ClusterContext, ClusterSealing, DeclaredDoors, MembershipState,
+        ReplicatedStore, membership_states_by_address,
     },
     docker::{ContainerRuntime, LocalDocker},
     host_capacity, host_facts,
@@ -136,12 +136,6 @@ pub(crate) use teardown::HeldTeardown;
 mod upgrade;
 mod volume_approval;
 pub(crate) use volume_approval::{Admitted, CopyStep};
-
-#[derive(Clone)]
-struct ClusterContext {
-    replicated: ReplicatedStore,
-    admin: AdminClient,
-}
 
 /// Entry-local admin membership, RTT samples, and selected endpoints.
 ///
@@ -521,18 +515,31 @@ impl LocalMachine {
     }
 
     #[must_use]
-    pub(crate) fn with_cluster(mut self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
-        self.cluster = cluster.map(|(replicated, admin)| ClusterContext {
-            replicated: replicated.with_authority(self.owner.clone()),
-            admin,
-        });
+    pub(crate) fn with_cluster_context(mut self, cluster: Option<ClusterContext>) -> Self {
+        self.cluster = cluster;
         self
+    }
+
+    /// The Cluster `replicated` and `admin` reach, answering for this Machine's record.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_cluster(self, cluster: Option<(ReplicatedStore, AdminClient)>) -> Self {
+        let owner = self.owner.clone();
+        self.with_cluster_context(
+            cluster.map(|(replicated, admin)| ClusterContext::new(replicated, admin, owner)),
+        )
     }
 
     #[must_use]
     pub(crate) fn with_containers(mut self, containers: Option<ContainerRuntime>) -> Self {
         self.containers = containers;
         self
+    }
+
+    /// Whether `other` keeps the creations that settled in the same place this one does.
+    #[cfg(test)]
+    pub(crate) fn shares_settled_creations_with(&self, other: &Self) -> bool {
+        self.settled.is_shared_with(&other.settled)
     }
 
     pub(crate) fn has_cluster(&self) -> bool {
@@ -546,6 +553,29 @@ impl LocalMachine {
     /// The Docker this Machine runs containers on, which a Machine without it refuses.
     pub(crate) fn docker(&self) -> Result<&ContainerRuntime, Error> {
         self.containers.as_ref().ok_or(Error::DockerUnavailable)
+    }
+
+    /// Place again the Private Access router and the Ingress doors this Machine held before
+    /// the daemon stopped. A step that fails is warned about and the other still runs, and
+    /// what it could not place stays as it is until the operator asks again.
+    pub(crate) async fn restore_held_at_boot(&self) {
+        if let Err(error) = self.restore_private_access().await {
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "could not place the Private Access router this Machine held again; it stays as it is until the next `ployz private-access on`"
+            );
+        }
+        let unplaced = match self.restore_doors().await {
+            Ok(Some(set)) => set.failure.map(|failure| failure.error.message),
+            Ok(None) => None,
+            Err(error) => Some(ployz_core::error_chain::inline(&error)),
+        };
+        if let Some(error) = unplaced {
+            tracing::warn!(
+                %error,
+                "could not place the Ingress doors this Machine held again; they stay as they are until the next `ployz ingress use`"
+            );
+        }
     }
 
     /// The persisted Local Machine record as last published by its owner.
