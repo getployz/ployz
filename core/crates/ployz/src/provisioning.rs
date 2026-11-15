@@ -238,10 +238,28 @@ struct RemoteHost {
     architecture: String,
 }
 
+/// Where `provision` installs and how it reaches it, as the command line gave them.
+pub(crate) struct RemoteTarget {
+    destination: Option<String>,
+    ssh_key: Option<String>,
+    timeout: std::time::Duration,
+}
+
+impl RemoteTarget {
+    pub(crate) fn from_matches(matches: &ArgMatches) -> Self {
+        Self {
+            destination: matches.get_one::<String>("destination").cloned(),
+            ssh_key: matches.get_one::<String>("ssh-key").cloned(),
+            timeout: crate::cli::ssh_timeout(matches),
+        }
+    }
+}
+
 impl Remote {
-    fn from_matches(matches: &ArgMatches) -> Result<Self, ProvisionError> {
-        let value = matches
-            .get_one::<String>("destination")
+    fn from_target(target: &RemoteTarget) -> Result<Self, ProvisionError> {
+        let value = target
+            .destination
+            .as_ref()
             .ok_or(ProvisionError::MissingDestination)?;
         let connection = value.parse::<Connection>()?;
         let Transport::Ssh { destination, .. } = connection.transport() else {
@@ -249,8 +267,8 @@ impl Remote {
         };
         Ok(Self {
             destination: destination.clone(),
-            key: ssh_key(matches),
-            timeout: crate::cli::ssh_timeout(matches),
+            key: ssh_key(target.ssh_key.as_deref().expect("ssh-key has a default")),
+            timeout: target.timeout,
             version_timeout: bootstrap::VERSION_TIMEOUT,
             control_path: crate::connect::control_path(),
             ssh: "ssh".into(),
@@ -488,10 +506,7 @@ fn remove_command(destination: &SshDestination, key: &Path, directory: &str) -> 
     )
 }
 
-fn ssh_key(matches: &ArgMatches) -> PathBuf {
-    let key = matches
-        .get_one::<String>("ssh-key")
-        .expect("ssh-key has a default");
+fn ssh_key(key: &str) -> PathBuf {
     key.strip_prefix("~/").map_or_else(
         || PathBuf::from(key),
         |relative| {
@@ -578,15 +593,24 @@ pub async fn provision(
     matches: &ArgMatches,
     storage: &StoragePreparation,
 ) -> Result<(), ProvisionError> {
-    let remote = Remote::from_matches(matches)?;
-    let host = remote.preflight().await?;
-    let bootstrap = Bootstrap::acquire(&host.architecture).await?;
     let version = matches
         .get_one::<MachineRelease>("version")
         .expect("version has a default")
         .to_string();
+    provision_target(&RemoteTarget::from_matches(matches), &version, storage).await
+}
+
+/// [`provision`] to a target and release already read from the command line.
+pub(crate) async fn provision_target(
+    target: &RemoteTarget,
+    version: &str,
+    storage: &StoragePreparation,
+) -> Result<(), ProvisionError> {
+    let remote = Remote::from_target(target)?;
+    let host = remote.preflight().await?;
+    let bootstrap = Bootstrap::acquire(&host.architecture).await?;
     remote
-        .install_bootstrap(&host, &bootstrap, &version, storage)
+        .install_bootstrap(&host, &bootstrap, version, storage)
         .await
 }
 
@@ -823,7 +847,7 @@ mod tests {
                 .unwrap()
                 .subcommand_matches("add")
                 .unwrap();
-            let remote = Remote::from_matches(matches).unwrap();
+            let remote = Remote::from_target(&RemoteTarget::from_matches(matches)).unwrap();
             let ssh = remote.ssh();
             let scp = remote.scp();
             for command in [&ssh, &scp] {

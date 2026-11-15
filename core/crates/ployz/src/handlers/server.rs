@@ -37,6 +37,7 @@ pub(super) mod clean;
 pub(super) mod drain;
 mod endpoint;
 pub(super) mod enroll;
+mod enroll_plan;
 mod fence;
 pub(super) mod forget;
 mod helpers;
@@ -52,13 +53,11 @@ mod waiting;
 use add::add;
 #[cfg(test)]
 pub(crate) use enroll::engine_view;
-pub(super) use enroll::{
-    enroll_token, founding_cluster_name, joined_open, joined_unnamed, requested_storage,
-};
+pub(super) use enroll::{enroll_token, founding_cluster_name, joined_open, joined_unnamed};
+pub(crate) use enroll_plan::{EnrollPlan, Shaping};
 pub(super) use helpers::{
     Joining, STARTING, check_listed, confirm, confirmation_missing, connect_direct, enroll,
-    enroll_for_recovery, enroll_member, inspect_token, leave, machine_name, pinned, requested_name,
-    token_request,
+    enroll_for_recovery, enroll_member, inspect_token, leave, machine_name, pinned,
 };
 use init::init;
 pub(super) use remove::remove;
@@ -788,8 +787,17 @@ fn parse_label_add(
     std::collections::BTreeMap<ployz_core::MachineLabelKey, ployz_core::MachineLabelValue>,
     Error,
 > {
+    parse_labels(&string_values(matches, "label-add"))
+}
+
+fn parse_labels(
+    given: &[String],
+) -> Result<
+    std::collections::BTreeMap<ployz_core::MachineLabelKey, ployz_core::MachineLabelValue>,
+    Error,
+> {
     let mut labels = std::collections::BTreeMap::new();
-    for label in string_values(matches, "label-add") {
+    for label in given {
         let (key, value) = label
             .split_once('=')
             .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
@@ -803,20 +811,27 @@ fn parse_label_add(
 pub(super) fn enrollment_policy(
     matches: &ArgMatches,
 ) -> Result<ployz_core::InitialMachinePolicy, Error> {
+    initial_policy(
+        &string_values(matches, "label-add"),
+        [
+            matches.get_one::<bool>("accepts-builds").copied(),
+            matches.get_one::<bool>("accepts-services").copied(),
+            matches.get_one::<bool>("accepts-ingress").copied(),
+        ],
+    )
+}
+
+/// The policy a Server starts with from the labels and the `--accepts-builds`,
+/// `--accepts-services` and `--accepts-ingress` values given, each on unless said off.
+fn initial_policy(
+    labels: &[String],
+    accepts: [Option<bool>; 3],
+) -> Result<ployz_core::InitialMachinePolicy, Error> {
     Ok(ployz_core::InitialMachinePolicy {
-        labels: parse_label_add(matches)?,
-        accepts_builds: matches
-            .get_one::<bool>("accepts-builds")
-            .copied()
-            .unwrap_or(true),
-        accepts_services: matches
-            .get_one::<bool>("accepts-services")
-            .copied()
-            .unwrap_or(true),
-        accepts_ingress: matches
-            .get_one::<bool>("accepts-ingress")
-            .copied()
-            .unwrap_or(true),
+        labels: parse_labels(labels)?,
+        accepts_builds: accepts[0].unwrap_or(true),
+        accepts_services: accepts[1].unwrap_or(true),
+        accepts_ingress: accepts[2].unwrap_or(true),
     })
 }
 

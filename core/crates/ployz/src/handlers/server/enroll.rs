@@ -9,7 +9,6 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::parser::ValueSource;
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
 use ployz_core::{
@@ -19,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
+use super::Shaping;
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::{CredentialStore, LoginError, Organization};
@@ -134,7 +134,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         return runtime.block_on(wait_joined(&acting, enrollment));
     }
     // Before Cloud mints a token, so a bad flag costs none.
-    let shape = shaping_args(matches)?;
+    let shape = Shaping::from_matches(matches).pasted_args()?;
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
         return runtime.block_on(paste(&acting, &minted, &shape));
@@ -145,53 +145,6 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         CloudEnrollToken::parse(minted.token)?,
         acting.credential.cloud(),
     )
-}
-
-/// `server add` switches and values that shape the Server, which a pasted line repeats.
-const SHAPING_SWITCHES: [&str; 3] = ["reset", "yes", "ingress-closed"];
-const SHAPING_VALUES: [&str; 12] = [
-    "name",
-    "storage",
-    "public-ip",
-    "wg-endpoint",
-    "wg-mtu",
-    "label-add",
-    "accepts-builds",
-    "accepts-services",
-    "accepts-ingress",
-    "network",
-    "cluster-name",
-    "version",
-];
-
-/// The flags given here that shape the Server, as `server add` arguments, once each
-/// parses as enrollment will read it.
-fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
-    super::enrollment_policy(matches)?;
-    super::helpers::checked_token_request(matches)?;
-    super::helpers::requested_name(matches)?;
-    founding_cluster_name(matches)?;
-    let given = |id: &str| {
-        matches!(
-            matches.value_source(id),
-            Some(ValueSource::CommandLine | ValueSource::EnvVariable)
-        )
-    };
-    let switches = SHAPING_SWITCHES
-        .into_iter()
-        .filter(|id| given(id) && matches.get_flag(id))
-        .map(|id| format!("--{id}"));
-    let values = SHAPING_VALUES
-        .into_iter()
-        .filter(|id| given(id))
-        .flat_map(|id| {
-            matches
-                .get_raw(id)
-                .into_iter()
-                .flatten()
-                .flat_map(move |raw| [format!("--{id}"), raw.to_string_lossy().into_owned()])
-        });
-    Ok(values.chain(switches).collect())
 }
 
 /// The enrollment token from its one source: `--token-stdin`, `--token-file` or
@@ -461,10 +414,16 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
 pub(in crate::handlers) fn founding_cluster_name(
     matches: &ArgMatches,
 ) -> Result<Option<ClusterName>, Error> {
-    matches
-        .get_one::<String>("cluster-name")
-        .map(|name| crate::handlers::cluster::parse(name))
-        .transpose()
+    parse_cluster_name(
+        matches
+            .get_one::<String>("cluster-name")
+            .map(String::as_str),
+    )
+}
+
+/// [`founding_cluster_name`] from the `--cluster-name` value given.
+pub(super) fn parse_cluster_name(name: Option<&str>) -> Result<Option<ClusterName>, Error> {
+    name.map(crate::handlers::cluster::parse).transpose()
 }
 
 pub(in crate::handlers) fn joined_open() {
@@ -479,48 +438,45 @@ pub(in crate::handlers) fn joined_unnamed() {
     );
 }
 
-/// Storage the Cloud path asks for; it never prompts.
-pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StoragePreparation {
-    matches
-        .get_one::<StoragePreparation>("storage")
-        .cloned()
-        .unwrap_or(StoragePreparation::Zfs { device: None })
+/// Storage the Cloud path asks for, when `--storage` gave none; it never prompts.
+pub(super) fn storage_or_default(given: Option<StoragePreparation>) -> StoragePreparation {
+    given.unwrap_or(StoragePreparation::Zfs { device: None })
 }
 
 /// Every input the enrollment engine reads from `root`, in the order it reads them, as text:
 /// the first refusal, or the parsed values and flags.
 #[cfg(test)]
 pub(crate) fn engine_view(root: &ArgMatches) -> String {
-    let matches = leaf_matches(root);
+    let plan = super::EnrollPlan::from_matches(root);
+    let shaping = plan.shaping();
     let parsed = (|| -> Result<_, Error> {
-        let policy = super::enrollment_policy(matches)?;
-        let name = super::helpers::requested_name(matches)?;
-        let cluster = founding_cluster_name(matches)?;
-        let request = super::helpers::token_request(matches)?;
-        Ok((policy, name, cluster, requested_storage(matches), request))
+        let policy = shaping.policy()?;
+        let name = shaping.name()?;
+        let cluster = shaping.cluster_name()?;
+        let request = shaping.token_request()?;
+        Ok((policy, name, cluster, shaping.storage(), request))
     })()
     .map_err(|error| format!("{error} {:?}", error.hints()));
-    let text = |id: &str| matches.get_one::<String>(id).cloned();
+    let reach = plan.reach();
+    let text = |id: &str| reach.get_one::<String>(id).cloned();
     format!(
         "{parsed:?} {:?} {:?}",
         (
-            text("destination"),
-            text("ssh-key"),
-            matches.get_flag("no-install"),
-            matches.get_flag("reset"),
-            matches.get_flag("yes"),
-            matches.get_flag("ingress-closed"),
-            matches.get_flag("show-recovery-code"),
+            plan.destination().map(str::to_owned),
+            plan.ssh_key().map(str::to_owned),
+            plan.no_install(),
+            shaping.reset(),
+            shaping.yes(),
+            shaping.ingress_closed(),
+            plan.shows_recovery_code(),
         ),
         (
-            matches.get_one::<u32>("wg-mtu").copied(),
-            matches.get_one::<Ipv4Net>("network").copied(),
-            matches
-                .get_one::<ployz_core::MachineRelease>("version")
-                .map(ToString::to_string),
+            shaping.wg_mtu(),
+            Some(shaping.network()),
+            Some(shaping.version()),
             text("ployz-config"),
             text("connect"),
-            crate::cli::ssh_timeout(matches).as_secs(),
+            crate::cli::ssh_timeout(reach).as_secs(),
             text("context"),
         )
     )
@@ -528,7 +484,29 @@ pub(crate) fn engine_view(root: &ArgMatches) -> String {
 
 #[cfg(test)]
 mod tests {
+    use clap::parser::ValueSource;
+
     use super::*;
+
+    const SHAPING_SWITCHES: [&str; 3] = ["reset", "yes", "ingress-closed"];
+    const SHAPING_VALUES: [&str; 12] = [
+        "name",
+        "storage",
+        "public-ip",
+        "wg-endpoint",
+        "wg-mtu",
+        "label-add",
+        "accepts-builds",
+        "accepts-services",
+        "accepts-ingress",
+        "network",
+        "cluster-name",
+        "version",
+    ];
+
+    fn shaping_args(matches: &ArgMatches) -> Result<Vec<String>, Error> {
+        Shaping::from_matches(matches).pasted_args()
+    }
 
     fn add_matches(argv: &[&str]) -> ArgMatches {
         crate::cli::command().try_get_matches_from(argv).unwrap()
