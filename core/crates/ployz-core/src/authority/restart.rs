@@ -6,7 +6,7 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, Timestamp},
-    keys::{Approver, Purpose, Signed, SignerKey, Statement},
+    keys::{Approver, Purpose, Signed, Statement},
     open::{covered, open_approval},
     proposal::ProposalRef,
     refusal::{AuthorityRefusal, field, first_mismatch},
@@ -119,7 +119,10 @@ impl RestartApproval {
     }
 }
 
-pub use super::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
+pub use super::{
+    keys::{OwnPrompt, SignerKey},
+    validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS},
+};
 
 impl Statement for RestartApproval {
     const PURPOSE: Purpose = Purpose::Workflow;
