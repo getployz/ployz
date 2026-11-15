@@ -780,6 +780,7 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
     let labels = BTreeMap::from([("purpose".into(), "machine-local-test".into())]);
 
     let created = runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -793,9 +794,13 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
         .unwrap()
         .into_observation()
         .unwrap();
-    let listed = runtime.list_volumes(&machine_id).await.unwrap();
-    let inspected = runtime.inspect_volume(&machine_id, &name).await.unwrap();
-    runtime.remove_volume(&name, false).await.unwrap();
+    let listed = runtime.volumes().list_volumes(&machine_id).await.unwrap();
+    let inspected = runtime
+        .volumes()
+        .inspect_volume(&machine_id, &name)
+        .await
+        .unwrap();
+    runtime.volumes().remove_volume(&name, false).await.unwrap();
 
     assert_eq!(created.id, DockerVolumeId { machine_id, name });
     assert_eq!(created.driver(), "local");
@@ -839,6 +844,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         ployz_core::DockerVolumeName::parse(format!("ployz-mount-test-{machine_id}")).unwrap();
     let name = Namespace::parse("app").unwrap().volume_name(&logical_name);
     runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -998,7 +1004,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         )
         .await
         .unwrap();
-    runtime.remove_volume(&name, false).await.unwrap();
+    runtime.volumes().remove_volume(&name, false).await.unwrap();
     if created_network {
         docker
             .client

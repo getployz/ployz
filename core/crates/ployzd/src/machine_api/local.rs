@@ -736,7 +736,7 @@ impl MachineRpc for MachineService {
             Ok(containers) => containers,
             Err(error) => return respond(error),
         };
-        match containers.list_volumes(&machine_id).await {
+        match containers.volumes().list_volumes(&machine_id).await {
             Ok(inventory) => respond(inventory),
             Err(error) => respond(RpcError::from(&error)),
         }

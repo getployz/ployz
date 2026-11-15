@@ -569,7 +569,9 @@ impl ContainerRuntime {
         let eligibility =
             spec.placement_eligibility_in_namespace(namespace, machine, storage.as_ref());
         if matches!(eligibility, ServicePlacementEligibility::Eligible) {
-            self.ensure_mounted_volumes(&machine.id, spec).await?;
+            self.volumes()
+                .ensure_mounted_volumes(&machine.id, spec)
+                .await?;
         }
         Ok(eligibility)
     }

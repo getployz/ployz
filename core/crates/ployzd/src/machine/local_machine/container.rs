@@ -141,6 +141,7 @@ impl LocalMachine {
                 }
             }
             containers
+                .volumes()
                 .validate_provisioned_volumes(&machine.id, &specs)
                 .await?;
             for name in requested.keys() {
@@ -151,6 +152,7 @@ impl LocalMachine {
                 .call(crate::volume_copy::STORAGE_PREPARE_ROUTE, &requested)
                 .await?;
             containers
+                .volumes()
                 .ensure_provisioned_volumes(&machine.id, &specs)
                 .await?;
             Ok(ployz_core::PreparedVolumes { names })
@@ -539,7 +541,7 @@ impl LocalMachine {
         self.finish_installed(move |local, installation| async move {
             let containers = local.docker()?;
             let stop = StopOptions::default();
-            let holders = containers.volume_holder_ids(&name).await?;
+            let holders = containers.volumes().volume_holder_ids(&name).await?;
             let machine_id = local.record().id();
             let mut running = Vec::new();
             for holder in &holders {
@@ -586,7 +588,7 @@ impl LocalMachine {
     ) -> Result<bool, Error> {
         let containers = self.docker()?;
         let machine_id = self.record().id();
-        for holder in containers.volume_holder_ids(name).await? {
+        for holder in containers.volumes().volume_holder_ids(name).await? {
             match containers.inspect_managed(&holder, &machine_id).await {
                 Ok(observed) if is_running(&observed.runtime) => return Ok(true),
                 Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
@@ -608,7 +610,11 @@ impl LocalMachine {
         force: bool,
     ) -> Result<VolumeRemoved, Error> {
         self.finish_mutation(move |local| async move {
-            local.docker()?.remove_volume(&name, force).await?;
+            local
+                .docker()?
+                .volumes()
+                .remove_volume(&name, force)
+                .await?;
             Ok(VolumeRemoved {})
         })
         .await
@@ -1407,7 +1413,12 @@ impl LocalMachine {
                         }
                         // Boxed: its Volume inspections would otherwise grow every create's
                         // future.
-                        Box::pin(containers.refuse_managed_external(&machine.id, spec)).await?;
+                        Box::pin(
+                            containers
+                                .volumes()
+                                .refuse_managed_external(&machine.id, spec),
+                        )
+                        .await?;
                         Ok(())
                     },
                     storage: self.observe_storage(),

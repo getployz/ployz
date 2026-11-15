@@ -327,7 +327,7 @@ impl ContainerRuntime {
         let VolumeInventory {
             mut volumes,
             failures,
-        } = match self.list_volumes(&machine_id).await {
+        } = match self.volumes().list_volumes(&machine_id).await {
             Ok(inventory) => inventory,
             Err(error) => {
                 sink.pool_committable_bytes

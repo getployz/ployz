@@ -49,6 +49,7 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
     let foreign_machine_id = MachineId::random();
 
     let external = runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -63,6 +64,7 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
         .into_observation()
         .unwrap();
     let managed = runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -105,11 +107,12 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
         replicated.volume(&stale_foreign.id).await.unwrap().as_ref(),
         Some(&stale_foreign)
     );
-    let listed = runtime.list_volumes(&machine_id).await.unwrap();
+    let listed = runtime.volumes().list_volumes(&machine_id).await.unwrap();
     assert!(listed.volumes.contains(&external));
     assert!(listed.volumes.contains(&managed));
 
     let created = runtime
+        .volumes()
         .create_volume(
             &machine_id,
             CreateVolumeRequest {
@@ -146,6 +149,7 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
     .await;
 
     runtime
+        .volumes()
         .remove_volume(&created.id.name, false)
         .await
         .unwrap();
@@ -165,10 +169,15 @@ async fn docker_volume_events_and_rescans_publish_named_local_observations() {
     shutdown.cancel();
     task.await.unwrap().unwrap();
     runtime
+        .volumes()
         .remove_volume(&external.id.name, true)
         .await
         .unwrap();
-    runtime.remove_volume(&managed.id.name, true).await.unwrap();
+    runtime
+        .volumes()
+        .remove_volume(&managed.id.name, true)
+        .await
+        .unwrap();
     corrosion.cleanup().await.unwrap();
 }
 

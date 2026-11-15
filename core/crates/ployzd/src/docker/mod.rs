@@ -24,6 +24,7 @@ mod telemetry;
 mod tunnel_token;
 mod unregistry;
 mod volume;
+pub use volume::Volumes;
 
 #[cfg(test)]
 mod integration_tests;
@@ -340,6 +341,7 @@ pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
     images: Images,
+    volumes: Volumes,
     sink: Option<ObservationSink>,
     stopping: watch::Sender<BTreeMap<ContainerId, usize>>,
     leaving: Arc<std::sync::Mutex<std::collections::BTreeSet<ContainerId>>>,
@@ -364,6 +366,7 @@ impl ContainerRuntime {
     pub fn new(docker: LocalDocker, specs: MachineSpecStore) -> Self {
         Self {
             images: Images::new(docker.clone()),
+            volumes: Volumes::new(docker.clone()),
             docker,
             specs,
             sink: None,
@@ -392,6 +395,12 @@ impl ContainerRuntime {
     #[must_use]
     pub fn images(&self) -> &Images {
         &self.images
+    }
+
+    /// What Docker holds as Volumes on this Machine.
+    #[must_use]
+    pub fn volumes(&self) -> &Volumes {
+        &self.volumes
     }
 
     /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so

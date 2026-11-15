@@ -1495,7 +1495,7 @@ impl LocalMachine {
         // when a stuck Volume or another kept name fails this departure.
         let mut left = Vec::new();
         for name in &departure.demoted {
-            if let Err(error) = containers.forget_volume(name).await {
+            if let Err(error) = containers.volumes().forget_volume(name).await {
                 left.push(format!("Docker kept Volume {name}: {error}"));
             }
         }
