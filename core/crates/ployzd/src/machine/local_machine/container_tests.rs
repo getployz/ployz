@@ -1497,6 +1497,7 @@ mod stopped_on_request {
         ]);
         let crashed = fixture
             .runtime
+            .observation()
             .inspect_managed(&fixture.id, &fixture.local.record().id())
             .await
             .unwrap();
@@ -1997,6 +1998,7 @@ mod reserved_lifecycle {
         assert_eq!(
             fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &fixture.local.record().id())
                 .await
                 .unwrap()
@@ -2038,6 +2040,7 @@ mod reserved_lifecycle {
         assert_eq!(
             fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &fixture.local.record().id())
                 .await
                 .unwrap()

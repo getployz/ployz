@@ -296,7 +296,7 @@ impl ContainerRuntime {
             namespace,
             spec,
             &network,
-            self.sealing_key_dir.as_deref(),
+            self.sealing_key_dir(),
         )?;
         create::ingress_sysctls(
             &mut body,
@@ -434,7 +434,7 @@ impl ContainerRuntime {
         operation: &mut ConfigOperation<'_>,
         container_id: &ContainerId,
     ) -> Result<bool, Error> {
-        let listed = self.managed_slots().await?;
+        let listed = self.observation().managed_slots().await?;
         let present = listed.iter().map(|(id, _)| *id).collect::<Vec<_>>();
         for (old, new) in operation.adopt_restored(listed).await? {
             eprintln!("adopted restored container {new}, which replaces {old}");
@@ -549,7 +549,8 @@ impl ContainerRuntime {
             field: "container ID",
             source,
         })?;
-        self.inspect_managed(&container_id, machine_id)
+        self.observation()
+            .inspect_managed(&container_id, machine_id)
             .await
             .map(Some)
     }
@@ -577,7 +578,7 @@ impl ContainerRuntime {
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
-        let inspected = self.ensure_managed(container_id).await?;
+        let inspected = self.observation().ensure_managed(container_id).await?;
         self.recovery.release(container_id).await;
         self.start_inspected(container_id, &inspected).await
     }
@@ -590,7 +591,7 @@ impl ContainerRuntime {
         if let Some(network) = lost_network(inspected)
             && let Err(error) = self.rejoin(container_id, network, inspected).await
             // A concurrent start may have attached it first.
-            && lost_network(&self.ensure_managed(container_id).await?).is_some()
+            && lost_network(&self.observation().ensure_managed(container_id).await?).is_some()
         {
             return Err(error);
         }
@@ -657,7 +658,7 @@ impl ContainerRuntime {
         grace_period_seconds: Option<i32>,
         still_wanted: impl std::future::Future<Output = Result<bool, E>>,
     ) -> Result<bool, E> {
-        let managed = self.ensure_managed(container_id).await;
+        let managed = self.observation().ensure_managed(container_id).await;
         let plan = if managed.is_ok() {
             Some(self.recovery.before_stop(container_id).await)
         } else {
@@ -750,7 +751,7 @@ impl ContainerRuntime {
             How::Asked {
                 remove_volumes,
                 force,
-            } => match self.ensure_managed(container_id).await {
+            } => match self.observation().ensure_managed(container_id).await {
                 Ok(_) => {
                     let options = RemoveContainerOptionsBuilder::default()
                         .v(remove_volumes)
@@ -778,29 +779,6 @@ impl ContainerRuntime {
         }
         self.forget(container_id).await;
         Ok(())
-    }
-
-    pub(super) async fn ensure_managed(
-        &self,
-        container_id: &ContainerId,
-    ) -> Result<ContainerInspectResponse, Error> {
-        let inspected = self
-            .docker
-            .client
-            .inspect_container(container_id.as_str(), None)
-            .await
-            .map_err(|error| docker_error(container_id, error))?;
-        let labels = inspected
-            .config
-            .as_ref()
-            .and_then(|config| config.labels.as_ref())
-            .ok_or(Error::NotManaged)?;
-        ServiceLabels::parse(labels)?;
-        self.specs
-            .get(container_id)
-            .await?
-            .ok_or_else(|| Error::SpecNotFound(*container_id))?;
-        Ok(inspected)
     }
 
     /// Stops `container_id`. A Container already stopped or gone is success.
@@ -1550,6 +1528,7 @@ mod tests {
         let (runtime, _, machine, _, id, _) = specless(Some("plan:0"), "running").await;
 
         let error = runtime
+            .observation()
             .inspect_managed(&id, &machine.id)
             .await
             .expect_err("Docker has the Container, but no spec describes it");
@@ -1572,6 +1551,7 @@ mod tests {
             let (runtime, _, machine, _, id, _) = specless(key, status).await;
 
             let error = runtime
+                .observation()
                 .inspect_managed(&id, &machine.id)
                 .await
                 .expect_err("Docker has the Container, but no spec describes it");
@@ -1596,6 +1576,7 @@ mod tests {
         containers.lock().unwrap().clear();
 
         let error = runtime
+            .observation()
             .inspect_managed(&id, &machine.id)
             .await
             .expect_err("Docker no longer has the Container");
@@ -1787,7 +1768,7 @@ mod tests {
     async fn a_container_stays_withdrawn_until_its_last_withdrawal_drops() {
         let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
         for first_released_first in [true, false] {
-            let mut observer = runtime.stopping.subscribe();
+            let mut observer = runtime.standing.subscribe();
             let first = runtime.withdraw(container_id);
             let second = runtime.withdraw(container_id);
             assert!(observer.has_changed().unwrap());
@@ -1799,11 +1780,11 @@ mod tests {
                 (second, first)
             };
             drop(released);
-            assert!(runtime.is_withdrawn(&container_id));
+            assert!(runtime.standing.is_withdrawn(&container_id));
             assert!(!observer.has_changed().unwrap());
 
             drop(held);
-            assert!(!runtime.is_withdrawn(&container_id));
+            assert!(!runtime.standing.is_withdrawn(&container_id));
             assert!(
                 observer.has_changed().unwrap(),
                 "the last release wakes the observer"

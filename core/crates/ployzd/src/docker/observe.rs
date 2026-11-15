@@ -200,7 +200,7 @@ impl ContainerRuntime {
         // Bollard opens this lazy stream when first polled. The cursor replays any event
         // between capturing `since` and completing the initial snapshot.
         let mut events = Box::pin(self.docker.client.events(Some(options)));
-        let mut stopping = self.stopping.subscribe();
+        let mut stopping = self.standing.subscribe();
         let mut rotations = self.specs.subscribe_rotations();
         sync(self, sink).await?;
 
@@ -238,13 +238,17 @@ impl ContainerRuntime {
     async fn sync_observations(&self, sink: &ObservationSink) -> Result<(), Error> {
         let machine_id = sink.local.record().id();
         let creates = self.docker.creates();
-        let inventory = self.managed_inventory().await?;
+        let inventory = self.observation().managed_inventory().await?;
         let mut live = LocalContainerSnapshot::from_inventory(inventory);
         let container_ids = live.ids().cloned().collect::<Vec<_>>();
         let mut doors = Vec::new();
         let mut complete = true;
         for container_id in &container_ids {
-            match self.inspect_managed(container_id, &machine_id).await {
+            match self
+                .observation()
+                .inspect_managed(container_id, &machine_id)
+                .await
+            {
                 Ok(observation) => {
                     live.observed(redacted_container(&observation));
                     match self.door_facts_of(&observation).await {

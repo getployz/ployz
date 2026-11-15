@@ -1744,6 +1744,7 @@ mod ingress_doors {
         );
         assert!(matches!(
             runtime
+                .observation()
                 .inspect_managed(&caddy.container_id, &service.local.record().id())
                 .await,
             Err(crate::docker::Error::ContainerNotFound(_))
@@ -3755,6 +3756,7 @@ mod set_volume_copy {
         let observed = local
             .containers()
             .unwrap()
+            .observation()
             .inspect_managed(&holder, &local.record().id())
             .await
             .unwrap();
@@ -3871,6 +3873,7 @@ mod set_volume_copy {
         );
         assert!(containers.stopping_ids_for_test().is_empty());
         let observed = containers
+            .observation()
             .inspect_managed(&holder, &local.record().id())
             .await
             .unwrap();
@@ -5431,6 +5434,7 @@ mod ensure_container {
         let inspected = local
             .containers()
             .unwrap()
+            .observation()
             .inspect_managed(&id, &local.record().id())
             .await;
         assert!(
@@ -5971,6 +5975,7 @@ mod ensure_container {
             }
             let observed = fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &service.local.record().id())
                 .await
                 .unwrap();
@@ -6019,6 +6024,7 @@ mod ensure_container {
             }
             let observed = fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &service.local.record().id())
                 .await
                 .unwrap();
@@ -6096,6 +6102,7 @@ mod ensure_container {
             );
             let observed = fixture
                 .runtime
+                .observation()
                 .inspect_managed(&replacement, &service.local.record().id())
                 .await
                 .unwrap();
@@ -6129,6 +6136,7 @@ mod ensure_container {
                 .container_id;
             let observed = fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &service.local.record().id())
                 .await
                 .unwrap();
@@ -6158,6 +6166,7 @@ mod ensure_container {
             );
             let observed = fixture
                 .runtime
+                .observation()
                 .inspect_managed(&id, &service.local.record().id())
                 .await
                 .unwrap();
@@ -6523,6 +6532,7 @@ mod ensure_container {
             );
             let observed = fixture
                 .runtime
+                .observation()
                 .inspect_managed(&other, &service.local.record().id())
                 .await
                 .unwrap();

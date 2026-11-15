@@ -152,6 +152,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .await
         .unwrap();
     let inspected = runtime
+        .observation()
         .inspect_managed(&created.container_id, &machine_id)
         .await
         .unwrap();
@@ -195,6 +196,7 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
     assert!(specs.get(&created.container_id).await.unwrap().is_none());
     assert!(matches!(
         runtime
+            .observation()
             .inspect_managed(&created.container_id, &machine_id)
             .await,
         Err(Error::ContainerNotFound(_))
@@ -350,6 +352,7 @@ async fn update_limits_changes_a_running_container_in_place() {
     assert_eq!(host_config.memory_swap, Some(256 << 20));
     assert_eq!(host_config.nano_cpus, Some(500_000_000));
     let inspected = runtime
+        .observation()
         .inspect_managed(&container_id, &machine_id)
         .await
         .unwrap();

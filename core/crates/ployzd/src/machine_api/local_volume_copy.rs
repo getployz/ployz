@@ -542,7 +542,11 @@ impl MachineService {
         let Some(container_id) = container_id else {
             return Ok(None);
         };
-        match containers.inspect_managed(&container_id, &machine_id).await {
+        match containers
+            .observation()
+            .inspect_managed(&container_id, &machine_id)
+            .await
+        {
             Ok(observed) => Ok(Some(observed)),
             Err(crate::docker::Error::ContainerNotFound(_)) => Ok(None),
             Err(error) => Err(error.into()),

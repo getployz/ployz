@@ -287,6 +287,7 @@ impl LocalMachine {
                     let (_leaving, reads) = match reads {
                         GuardReads::LastIn(routed) => {
                             let recorded = containers
+                                .observation()
                                 .rotations(vec![id])
                                 .await?
                                 .remove(&id)
@@ -323,7 +324,7 @@ impl LocalMachine {
                         Checked::Allowed(to) => to,
                     };
                     if let RotationWant::In { .. } = want {
-                        let runtime = containers.inspect_runtime(&id).await?;
+                        let runtime = containers.observation().inspect_runtime(&id).await?;
                         if !super::is_running(&runtime) {
                             return Ok(Written::NotRunning(runtime));
                         }
@@ -442,7 +443,11 @@ impl LocalMachine {
             })
             .map(|observed| (observed.container_id, observed.copy_gen()))
             .collect::<Vec<_>>();
-        for local in containers.service_copies(&copy.service).await? {
+        for local in containers
+            .observation()
+            .service_copies(&copy.service)
+            .await?
+        {
             if local.rotation != CopyRotation::In
                 || Some(local.container_id) == copy.id
                 || local.r#gen <= copy.r#gen
@@ -453,7 +458,7 @@ impl LocalMachine {
                 newer.push((local.container_id, local.r#gen));
                 continue;
             }
-            let spec = containers.spec(&local.container_id).await?;
+            let spec = containers.observation().spec(&local.container_id).await?;
             if spec.is_none_or(|spec| supersedes(&spec, &copy.spec)) {
                 newer.push((local.container_id, local.r#gen));
             }
@@ -643,7 +648,7 @@ impl LocalMachine {
             BTreeMap::new()
         } else {
             let containers = self.docker()?;
-            containers.rotations(local).await?
+            containers.observation().rotations(local).await?
         };
         Ok(others
             .into_iter()

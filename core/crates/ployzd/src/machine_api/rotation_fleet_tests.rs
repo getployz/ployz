@@ -121,6 +121,7 @@ impl Fleet {
                         gate.wait().await;
                     }
                     runtime?
+                        .observation()
                         .inspect_managed_details(&container, &machine)
                         .await
                         .ok()
@@ -479,6 +480,7 @@ impl Drop for Fleet {
 impl Node {
     async fn rotation(&self, container: ContainerId) -> CopyRotation {
         self.runtime
+            .observation()
             .rotations(vec![container])
             .await
             .unwrap()
@@ -1181,11 +1183,16 @@ async fn an_inspect_reports_the_leaving_mark_it_began_under() {
     let leaving = node.runtime.leave(a);
     let docker = node.hold_inspect();
 
-    let (answer, ()) = tokio::join!(node.runtime.inspect_managed_details(&a, &machine), async {
-        docker.wait().await;
-        drop(leaving);
-        docker.wait().await;
-    });
+    let (answer, ()) = tokio::join!(
+        node.runtime
+            .observation()
+            .inspect_managed_details(&a, &machine),
+        async {
+            docker.wait().await;
+            drop(leaving);
+            docker.wait().await;
+        }
+    );
 
     let answer = answer.unwrap();
     assert!(answer.leaving);
@@ -1193,6 +1200,7 @@ async fn an_inspect_reports_the_leaving_mark_it_began_under() {
     assert!(
         !node
             .runtime
+            .observation()
             .inspect_managed_details(&a, &fleet.id(0))
             .await
             .unwrap()

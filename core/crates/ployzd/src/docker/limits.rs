@@ -66,7 +66,7 @@ impl ContainerRuntime {
                 });
             }
         };
-        let inspected = self.ensure_managed(container_id).await?;
+        let inspected = self.observation().ensure_managed(container_id).await?;
         let labels = inspected
             .config
             .as_ref()

@@ -429,7 +429,10 @@ impl LocalMachine {
         let _ = installation;
         let containers = self.docker()?;
         let machine_id = self.record().id();
-        let observed = containers.inspect_managed(container, &machine_id).await?;
+        let observed = containers
+            .observation()
+            .inspect_managed(container, &machine_id)
+            .await?;
         if !is_running(&observed.runtime) {
             return Ok(Ok(observed));
         }
@@ -460,7 +463,10 @@ impl LocalMachine {
             )
             .await?;
         let ended = if guard.records() {
-            containers.run_ended_since(container, issued).await?
+            containers
+                .observation()
+                .run_ended_since(container, issued)
+                .await?
         } else {
             None
         };
@@ -470,6 +476,7 @@ impl LocalMachine {
         }
         drop(turn);
         Ok(Ok(containers
+            .observation()
             .inspect_managed(container, &machine_id)
             .await?))
     }
@@ -491,7 +498,7 @@ impl LocalMachine {
         container: &ContainerId,
         not_before: tokio::time::Instant,
     ) {
-        let Ok(Some(pid)) = containers.pid(container).await else {
+        let Ok(Some(pid)) = containers.observation().pid(container).await else {
             return std::future::pending().await;
         };
         let mut listening = std::collections::BTreeSet::new();
@@ -545,7 +552,11 @@ impl LocalMachine {
             let machine_id = local.record().id();
             let mut running = Vec::new();
             for holder in &holders {
-                match containers.inspect_managed(holder, &machine_id).await {
+                match containers
+                    .observation()
+                    .inspect_managed(holder, &machine_id)
+                    .await
+                {
                     Ok(observed) if is_running(&observed.runtime) => running.push(*holder),
                     Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
                     Err(error) => return Err(error.into()),
@@ -589,7 +600,11 @@ impl LocalMachine {
         let containers = self.docker()?;
         let machine_id = self.record().id();
         for holder in containers.volumes().volume_holder_ids(name).await? {
-            match containers.inspect_managed(&holder, &machine_id).await {
+            match containers
+                .observation()
+                .inspect_managed(&holder, &machine_id)
+                .await
+            {
                 Ok(observed) if is_running(&observed.runtime) => return Ok(true),
                 Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 Err(error) => return Err(error.into()),
@@ -939,7 +954,11 @@ impl LocalMachine {
             ContainerLocator::Key(slot) => QualifiedService::new(slot.namespace, slot.service),
             ContainerLocator::Id(id) => {
                 let containers = self.docker()?;
-                match containers.inspect_managed(&id, &self.record().id()).await {
+                match containers
+                    .observation()
+                    .inspect_managed(&id, &self.record().id())
+                    .await
+                {
                     Ok(observed) => observed.identity(),
                     Err(_) => return Ok(false),
                 }
@@ -1032,7 +1051,9 @@ impl LocalMachine {
             // verdict still answers by the deadline.
             let Ok(inspected) = tokio::time::timeout_at(
                 (started + limit).max(tokio::time::Instant::now() + SETTLE_INSPECT_GRACE),
-                containers.inspect_managed_run(container_id, &machine_id),
+                containers
+                    .observation()
+                    .inspect_managed_run(container_id, &machine_id),
             )
             .await
             else {
@@ -1120,6 +1141,7 @@ impl LocalMachine {
         }
         let containers = self.docker()?;
         let details = containers
+            .observation()
             .inspect_managed_details(container_id, &self.record().id())
             .await?;
         Ok(details.run.as_ref() == Some(&settled_run) && details.container.runtime.may_serve())
@@ -1288,7 +1310,11 @@ impl LocalMachine {
         let containers = self.docker()?;
         let machine_id = self.record().id();
         let observed = match locator {
-            ContainerLocator::Id(id) => match containers.inspect_managed(id, &machine_id).await {
+            ContainerLocator::Id(id) => match containers
+                .observation()
+                .inspect_managed(id, &machine_id)
+                .await
+            {
                 Ok(observed) => Some(observed),
                 Err(crate::docker::Error::ContainerNotFound(_)) => None,
                 Err(error) => return Err(error.into()),
@@ -1335,6 +1361,7 @@ impl LocalMachine {
                 // A racing create adopted a hook another request already started: never run it twice.
                 if new.slot.kind == ContainerKind::PreDeployHook {
                     let adopted = containers
+                        .observation()
                         .inspect_managed(&created.container_id, &local.record().id())
                         .await?;
                     if !never_started(&adopted) {

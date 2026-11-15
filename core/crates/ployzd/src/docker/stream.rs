@@ -46,7 +46,8 @@ impl ContainerRuntime {
         if config.options.command.is_empty() {
             return Err(Status::invalid_argument("exec command cannot be empty"));
         }
-        self.ensure_managed(&config.container_id)
+        self.observation()
+            .ensure_managed(&config.container_id)
             .await
             .map_err(docker_status)?;
         let create = CreateExecOptions {
@@ -156,6 +157,7 @@ impl ContainerRuntime {
         options: &LogsOptions,
     ) -> Result<RpcStream, Status> {
         let observation = self
+            .observation()
             .inspect_managed(&container_id, machine_id)
             .await
             .map_err(docker_status)?;
@@ -179,7 +181,7 @@ impl ContainerRuntime {
         let mut source = self.raw_logs(container_id.as_str(), options)?;
         if let Some(record) = record {
             let secrets = record
-                .secrets(self.sealing_key_dir.as_deref())
+                .secrets(self.sealing_key_dir())
                 .map_err(|error| docker_status(error.into()))?;
             source = sealed_env::scrub_source(source, SealedForms::compile(&secrets));
         }

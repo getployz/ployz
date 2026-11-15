@@ -180,7 +180,7 @@ impl ContainerRuntime {
         let mut entries = Vec::new();
         for door in Door::ALL {
             for (id, _) in self.docker.door_containers(door).await? {
-                let observation = match self.inspect_managed(&id, machine_id).await {
+                let observation = match self.observation().inspect_managed(&id, machine_id).await {
                     Ok(observation) => observation,
                     Err(Error::ContainerNotFound(_)) => continue,
                     Err(Error::SpecNotFound(id)) => {

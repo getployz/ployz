@@ -743,7 +743,10 @@ impl LocalMachine {
                 (id, DoorChange::Created)
             }
         };
-        let now = containers.inspect_managed(&id, &self.record().id()).await?;
+        let now = containers
+            .observation()
+            .inspect_managed(&id, &self.record().id())
+            .await?;
         Ok(DoorOutcome { now, change })
     }
 
@@ -775,7 +778,10 @@ impl LocalMachine {
                 (id, DoorChange::Created)
             }
         };
-        let now = containers.inspect_managed(&id, &self.record().id()).await?;
+        let now = containers
+            .observation()
+            .inspect_managed(&id, &self.record().id())
+            .await?;
         Ok(DoorOutcome { now, change })
     }
 
@@ -823,6 +829,7 @@ impl LocalMachine {
         let deadline = tokio::time::Instant::now() + DOOR_START_WAIT;
         loop {
             let runtime = containers
+                .observation()
                 .inspect_managed(id, &machine_id)
                 .await?
                 .runtime

@@ -401,7 +401,10 @@ impl LocalMachine {
                 (id, DoorChange::Created)
             }
         };
-        let now = containers.inspect_managed(&id, &self.record().id()).await?;
+        let now = containers
+            .observation()
+            .inspect_managed(&id, &self.record().id())
+            .await?;
         Ok(Some(DoorOutcome { now, change }))
     }
 
@@ -422,6 +425,7 @@ impl LocalMachine {
         let deadline = tokio::time::Instant::now() + self.pacing.router_settle;
         loop {
             let runtime = containers
+                .observation()
                 .inspect_managed(&id, &machine_id)
                 .await
                 .map(|observed| observed.runtime.clone())

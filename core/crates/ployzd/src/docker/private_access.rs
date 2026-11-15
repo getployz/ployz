@@ -217,7 +217,7 @@ impl ContainerRuntime {
     ) -> Result<Vec<ContainerObservation>, Error> {
         let mut routers = Vec::new();
         for id in self.docker.router_containers().await? {
-            let observation = match self.inspect_managed(&id, machine_id).await {
+            let observation = match self.observation().inspect_managed(&id, machine_id).await {
                 Ok(observation) => observation,
                 Err(Error::ContainerNotFound(_)) => continue,
                 Err(Error::SpecNotFound(id)) => {

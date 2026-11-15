@@ -331,6 +331,7 @@ impl LocalMachine {
     async fn first_in(&self, namespace: &Namespace, service: &ServiceName) -> Result<bool, Error> {
         let containers = self.docker()?;
         let copies = containers
+            .observation()
             .service_copies(&QualifiedService::new(namespace.clone(), service.clone()))
             .await?;
         Ok(copies.is_empty())

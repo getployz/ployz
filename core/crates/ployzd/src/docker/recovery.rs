@@ -102,7 +102,8 @@ impl IngressRecovery {
         let Ok(_gate) = gate.try_lock() else {
             return;
         };
-        if self.stranded().await.held.contains(&container_id) || runtime.is_withdrawn(&container_id)
+        if self.stranded().await.held.contains(&container_id)
+            || runtime.standing.is_withdrawn(&container_id)
         {
             return;
         }
@@ -146,7 +147,7 @@ async fn repair_door(
             holder: None,
             caddy: container_id,
         } => {
-            let inspected = runtime.ensure_managed(container_id).await?;
+            let inspected = runtime.observation().ensure_managed(container_id).await?;
             // A newer door may be about to take the ports; the next scan decides.
             if !failed_start(&inspected) || !runtime.docker.created_nothing_since(creates) {
                 return Ok(false);
@@ -158,9 +159,9 @@ async fn repair_door(
             holder: Some(holder),
             caddy,
         } => {
-            let inspected = runtime.ensure_managed(caddy).await?;
+            let inspected = runtime.observation().ensure_managed(caddy).await?;
             if !failed_start(&inspected)
-                || !is_running(&runtime.ensure_managed(holder).await?)
+                || !is_running(&runtime.observation().ensure_managed(holder).await?)
                 || !runtime.docker.created_nothing_since(creates)
             {
                 return Ok(false);
@@ -169,8 +170,8 @@ async fn repair_door(
             Ok(true)
         }
         Repair::Rejoin { owner, joined } => {
-            let owner_now = runtime.ensure_managed(owner).await?;
-            let joined_now = runtime.ensure_managed(joined).await?;
+            let owner_now = runtime.observation().ensure_managed(owner).await?;
+            let joined_now = runtime.observation().ensure_managed(joined).await?;
             let stale = match (doors::netns_of(&owner_now), doors::netns_of(&joined_now)) {
                 (Some(owner_ns), Some(joined_ns)) => owner_ns != joined_ns,
                 _ => false,
@@ -189,7 +190,7 @@ async fn repair_door(
                 .stop_container(joined.as_str(), None)
                 .await;
             idempotent_lifecycle_result(joined, result)?;
-            let inspected = runtime.ensure_managed(joined).await?;
+            let inspected = runtime.observation().ensure_managed(joined).await?;
             runtime.start_inspected(joined, &inspected).await?;
             Ok(true)
         }

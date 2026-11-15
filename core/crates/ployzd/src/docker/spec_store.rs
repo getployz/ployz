@@ -998,7 +998,11 @@ mod tests {
 
         let (runtime, _fake, id) = runtime_with_running_container().await;
         let machine = MachineId::random();
-        let observed = runtime.inspect_managed(&id, &machine).await.unwrap();
+        let observed = runtime
+            .observation()
+            .inspect_managed(&id, &machine)
+            .await
+            .unwrap();
         assert_eq!(observed.rotation, Some(CopyRotation::Pending));
         assert_eq!(observed.r#gen, Some(Gen::FIRST));
 
@@ -1016,7 +1020,11 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let observed = restarted.inspect_managed(&id, &machine).await.unwrap();
+        let observed = restarted
+            .observation()
+            .inspect_managed(&id, &machine)
+            .await
+            .unwrap();
         assert_eq!(observed.rotation(), &held);
         assert_eq!(observed.copy_gen(), Gen::FIRST);
     }
@@ -1436,7 +1444,7 @@ mod tests {
         *copy.fake.listed_hold.lock().unwrap() = Some(std::sync::Arc::clone(&listed));
         let mut inventory = tokio::spawn({
             let runtime = copy.runtime.clone();
-            async move { runtime.managed_inventory().await }
+            async move { runtime.observation().managed_inventory().await }
         });
         listed.wait().await;
         let restored = restored_unstarted(&copy);

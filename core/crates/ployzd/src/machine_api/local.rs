@@ -288,6 +288,7 @@ impl MachineService {
         }
         self.containers()
             .map_err(|error| Status::unavailable(error.message))?
+            .observation()
             .sealed_record(&id)
             .await
             .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))
@@ -636,6 +637,7 @@ impl MachineRpc for MachineService {
         };
         let machine_id = self.local_record().id();
         match containers
+            .observation()
             .inspect_managed_details(&request.container_id, &machine_id)
             .await
         {
