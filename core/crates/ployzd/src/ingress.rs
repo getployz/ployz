@@ -2,7 +2,7 @@
 
 use ployz_core::{
     CertificateHost, ContainerAddress, ContainerId, HttpProtocol, Machine, MachineId, ProxyRoutes,
-    QualifiedService, ServiceContainer, proxy_routes, reachable_routes, service_containers,
+    QualifiedService, ServiceContainer, service_containers,
 };
 use ployz_decide::caddy_load::{self as load, Applied, CaddyFile, Input, Probe};
 use std::{
@@ -21,7 +21,8 @@ use crate::{
         WatchPolicy,
     },
     filesystem::set_ployz_group,
-    route_acks::{DownMachines, load_down},
+    reach::Reach,
+    route_acks::load_down,
 };
 
 /// The run dir's subdirectory the Ingress Proxy's runtime mount shows.
@@ -43,12 +44,13 @@ pub(crate) mod caddy;
 mod certificates;
 mod error_page;
 mod projection;
+mod publication_trace;
+mod withheld;
 
 use caddy::CaddyAdmin;
-use certificates::{
-    certificate_file_stem, remove_stale_certificate_files, write_certificate_files,
-};
-use projection::{IngressProjection, IngressPublication, IngressSite, prepare_directory};
+use certificates::{remove_stale_certificate_files, write_certificate_files};
+use projection::{IngressProjection, prepare_directory};
+use withheld::Withheld;
 
 /// What this process's ingress has published since it started: how many writes
 /// succeeded, and the Containers the last one acked per Service. A row already in
@@ -146,47 +148,18 @@ impl Input for CaddyInput {
     /// values until a route changes (#2522).
     fn serves_as(&self, other: &Self) -> bool {
         let Self { projection, caddy } = self;
-        let IngressProjection { machine, sites } = projection;
+        let IngressProjection {
+            machine,
+            sites,
+            traces: _,
+        } = projection;
         *caddy == other.caddy
             && *machine == other.projection.machine
-            && sites.len() == other.projection.sites.len()
-            && sites
-                .iter()
-                .zip(&other.projection.sites)
-                .all(|(site, other)| site.serves_as(other))
+            && *sites == other.projection.sites
     }
 
     fn caddy(&self) -> Option<&ContainerId> {
         self.caddy.as_ref()
-    }
-}
-
-impl IngressSite {
-    fn serves_as(&self, other: &Self) -> bool {
-        let Self {
-            hostname,
-            publication,
-            certificate,
-        } = self;
-        *hostname == other.hostname
-            && *certificate == other.certificate
-            && match (publication, &other.publication) {
-                (Some(publication), Some(other)) => publication.serves_as(other),
-                (None, None) => true,
-                (Some(_), None) | (None, Some(_)) => false,
-            }
-    }
-}
-
-impl IngressPublication {
-    fn serves_as(&self, other: &Self) -> bool {
-        let Self {
-            owner,
-            http,
-            https,
-            trace: _,
-        } = self;
-        *owner == other.owner && *http == other.http && *https == other.https
     }
 }
 
@@ -207,35 +180,21 @@ impl CaddyCertificates {
     /// `projection` without the certificates Caddy has not loaded.
     fn loaded_only(&self, projection: &IngressProjection) -> IngressProjection {
         let unloaded = projection
-            .sites
-            .iter()
-            .filter_map(pinned_stem)
-            .filter(|stem| !self.accepted.contains(stem))
-            .collect();
-        without(projection, &unloaded)
+            .pinned_stems()
+            .filter(|stem| !self.accepted.contains(stem));
+        projection.clone().withhold(&Withheld::unloaded(unloaded))
     }
 
-    /// Leave each refused site out, as if its certificate were still pending, and name the
-    /// refusal in its place, so one site's certificate never blocks the rest of the config.
-    fn quarantine(&mut self, projection: &mut IngressProjection) {
-        let mut current = BTreeSet::new();
-        for site in &mut projection.sites {
-            let Some(stem) = pinned_stem(site) else {
-                continue;
-            };
-            if let Some(error) = self.refused.get(&stem)
-                && let Some(certificate) = &mut site.certificate
-            {
-                certificate.material = None;
-                certificate.last_error = Some(format!("Caddy refused it: {error}"));
-            }
-            current.insert(stem);
-        }
+    /// Leave each refused site out, so one site's certificate never blocks the rest of the
+    /// config, and forget a refusal whose site no longer pins that material.
+    fn quarantine(&mut self, projection: IngressProjection) -> IngressProjection {
+        let current: BTreeSet<_> = projection.pinned_stems().collect();
         self.refused.retain(|stem, _| current.contains(stem));
+        projection.withhold(&Withheld::refused(&self.refused))
     }
 
     fn accept(&mut self, projection: &IngressProjection) {
-        self.accepted = projection.sites.iter().filter_map(pinned_stem).collect();
+        self.accepted = projection.pinned_stems().collect();
     }
 
     /// After Caddy refuses `projection`, load it without the certificates Caddy has not loaded
@@ -250,9 +209,7 @@ impl CaddyCertificates {
             self.accepted = loaded;
         }
         let suspects: Vec<_> = projection
-            .sites
-            .iter()
-            .filter_map(pinned_stem)
+            .pinned_stems()
             .filter(|stem| !self.accepted.contains(stem))
             .collect();
         let mut excluded: BTreeSet<_> = suspects.iter().cloned().collect();
@@ -299,23 +256,11 @@ impl CaddyCertificates {
     }
 }
 
-/// The file stem of the certificate the Caddyfile pins for `site`.
-fn pinned_stem(site: &IngressSite) -> Option<String> {
-    site.pinned()
-        .map(|material| certificate_file_stem(&site.hostname, material))
-}
-
 /// `projection` with the pinned certificates named in `excluded` left out.
 fn without(projection: &IngressProjection, excluded: &BTreeSet<String>) -> IngressProjection {
-    let mut projection = projection.clone();
-    for site in &mut projection.sites {
-        if pinned_stem(site).is_some_and(|stem| excluded.contains(&stem))
-            && let Some(certificate) = &mut site.certificate
-        {
-            certificate.material = None;
-        }
-    }
     projection
+        .clone()
+        .withhold(&Withheld::unloaded(excluded.iter().cloned()))
 }
 
 /// Watch replicated ingress inputs and concretely apply changed projections to Caddy.
@@ -343,9 +288,7 @@ where
     // unchanged input is never reloaded.
     let mut load = CaddyLoad::Unapplied;
     let mut acked = BTreeMap::new();
-    // Kept while every copy is out of reach.
-    let mut routed = ProxyRoutes::new();
-    let mut down = DownMachines::new(machine.id);
+    let mut reach = Reach::new(machine.id);
     let mut certificates = CaddyCertificates::default();
     let mut changes = ChangeWatch::new(
         "ingress",
@@ -375,7 +318,7 @@ where
         return Ok(());
     }
     loop {
-        down.update(load_down().await);
+        reach.update_down(load_down().await);
         // Read each pass, since turning the role off doesn't restart the daemon.
         let takes_ingress = !matches!(
             replicated.machine(machine.id.as_str()).await,
@@ -390,14 +333,8 @@ where
         ) {
             (Ok(containers), Ok(rows)) => {
                 let containers = service_containers(containers.observations);
-                let (routes, mut projection) = next_pass(
-                    &machine,
-                    &containers,
-                    &rows,
-                    |machine| down.contains(machine),
-                    &routed,
-                );
-                certificates.quarantine(&mut projection);
+                let (routes, projection) = next_pass(&machine, &containers, &rows, &reach);
+                let projection = certificates.quarantine(projection);
                 Ok((
                     newest_local_ingress(&machine, &containers),
                     serves_nothing(&machine.id, takes_ingress, &containers),
@@ -502,7 +439,7 @@ where
                         publishes.routes = published;
                     });
                 }
-                routed = routes;
+                reach.keep(routes);
             }
             Err(error) => {
                 eprintln!(
@@ -530,23 +467,17 @@ fn woke(wake: Result<Wake, CorrosionError>) -> io::Result<bool> {
 /// One watch pass: the route this proxy carries and acks, and what Caddy loads.
 ///
 /// Caddy dials only the copies a client can reach now. The route keeps every copy
-/// [`proxy_routes`] keeps, so the acks and the next pass match a proxy that
+/// [`ployz_core::proxy_routes`] keeps, so the acks and the next pass match a proxy that
 /// dialed them all.
 fn next_pass(
     machine: &Machine,
     containers: &[ServiceContainer],
     certificates: &BTreeMap<CertificateHost, CertificateRow>,
-    is_down: impl Fn(&MachineId) -> bool,
-    routed: &ProxyRoutes,
+    reach: &Reach,
 ) -> (ProxyRoutes, IngressProjection) {
-    let routes = proxy_routes(containers, &is_down, routed);
-    let reachable = reachable_routes(
-        &routes,
-        containers.iter().map(ServiceContainer::as_observation),
-        &is_down,
-    );
-    let projection = IngressProjection::derive(machine, containers, certificates, &reachable);
-    (routes, projection)
+    let pass = reach.pass(containers);
+    let projection = IngressProjection::derive(machine, containers, certificates, &pass.reachable);
+    (pass.routes, projection)
 }
 
 fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAck> {

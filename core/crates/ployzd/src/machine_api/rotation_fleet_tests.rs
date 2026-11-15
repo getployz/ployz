@@ -48,7 +48,7 @@ use crate::ingress::PublishedRoutes;
 use crate::machine::{
     EnsurePause, EnsurePausePoint, LocalMachineError, LocalMachineStore, RecordOwner,
 };
-use crate::route_acks::{DownMachines, load_down};
+use crate::{reach::Reach, route_acks::load_down};
 
 const SETTLE: Duration = Duration::from_secs(10);
 const CLUSTER_CONTAINERS: &str = "SELECT id, machine_id, container FROM containers ORDER BY id";
@@ -1644,12 +1644,13 @@ async fn stale_evidence_keeps_in_copy_routed() {
     fleet.addressed(0, a, "10.210.1.2").await;
     let (machines, publishes) = fleet.run_ingress().await;
     fleet.acked_by_all(&publishes, &api, &[a]).await;
-    let mut dns_down = DownMachines::new(fleet.id(2));
-    let routed_before = proxy_routes(
-        &service_containers(fleet.store.containers().await.unwrap().observations),
-        |machine| dns_down.contains(machine),
-        &ProxyRoutes::new(),
-    );
+    let mut dns_reach = Reach::new(fleet.id(2));
+    let routed_before = dns_reach
+        .pass(&service_containers(
+            fleet.store.containers().await.unwrap().observations,
+        ))
+        .routes;
+    dns_reach.keep(routed_before);
 
     let b = fleet.routed(1, "b", "api", 1).await;
     fleet.addressed(1, b, "10.210.2.2").await;
@@ -1658,12 +1659,12 @@ async fn stale_evidence_keeps_in_copy_routed() {
         .await
         .unwrap();
     assert!(down.is_empty(), "no evidence is not Down: {down:?}");
-    dns_down.update(Ok(down));
-    let dns_routes = proxy_routes(
-        &service_containers(fleet.store.containers().await.unwrap().observations),
-        |machine| dns_down.contains(machine),
-        &routed_before,
-    );
+    dns_reach.update_down(Ok(down));
+    let dns_routes = dns_reach
+        .pass(&service_containers(
+            fleet.store.containers().await.unwrap().observations,
+        ))
+        .routes;
     let dns_routed: BTreeSet<_> = dns_routes[&api]
         .iter()
         .map(|serving| serving.as_observation().container_id)

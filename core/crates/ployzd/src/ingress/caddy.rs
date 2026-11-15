@@ -351,7 +351,7 @@ https:// {{\n\
     }
     for site in &projection.sites {
         if let Some(serve) = site.http() {
-            let (trace, answer) = answer(site, serve, local_machine, &unpublished);
+            let (trace, answer) = answer(projection, site, serve, &unpublished);
             // The hostname's own site shadows the catch-all, so it answers the verify probe too.
             write_site(
                 &mut output,
@@ -369,7 +369,7 @@ https:// {{\n\
         let stem = certificate_file_stem(&site.hostname, material);
         let certs = ingress_certs_dir();
         let tls = format!("\ttls {certs}/{stem}.crt {certs}/{stem}.key\n");
-        let (trace, answer) = answer(site, serve, local_machine, &unpublished);
+        let (trace, answer) = answer(projection, site, serve, &unpublished);
         write_site(
             &mut output,
             local_machine,
@@ -385,14 +385,22 @@ https:// {{\n\
 }
 
 /// The trace and `ployz_requests` imports of a routed site, which reports its Service.
-fn published(site: &IngressSite, machine: &MachineId, endpoints: &[IngressEndpoint]) -> String {
+fn published(
+    projection: &IngressProjection,
+    site: &IngressSite,
+    endpoints: &[IngressEndpoint],
+) -> String {
     let publication = site
         .publication
         .as_ref()
         .expect("a routed site has a publication");
     format!(
         "{}\timport ployz_requests {} {}\n",
-        trace::published_import(machine, &publication.trace, endpoints),
+        trace::published_import(
+            &projection.machine.id,
+            projection.trace(&publication.owner),
+            endpoints,
+        ),
         publication.owner.namespace,
         publication.owner.name
     )
@@ -402,15 +410,15 @@ fn published(site: &IngressSite, machine: &MachineId, endpoints: &[IngressEndpoi
 /// reports the HTTPS route it sends visitors to, and an unrouted site publishes nothing, so it
 /// answers like the catch-all.
 fn answer(
+    projection: &IngressProjection,
     site: &IngressSite,
     serve: Serve<'_>,
-    machine: &MachineId,
     unpublished: &str,
 ) -> (String, String) {
     match serve {
-        Serve::Proxy(endpoints) => (published(site, machine, endpoints), proxy(endpoints)),
+        Serve::Proxy(endpoints) => (published(projection, site, endpoints), proxy(endpoints)),
         Serve::RedirectToHttps(endpoints) => (
-            published(site, machine, endpoints),
+            published(projection, site, endpoints),
             REDIRECT_TO_HTTPS.to_owned(),
         ),
         Serve::Unrouted(Unrouted::NotDeployed) => (
@@ -447,7 +455,7 @@ http://:{port} {{\n\
         let Some(endpoints) = site.door() else {
             continue;
         };
-        let trace = published(site, local_machine, endpoints);
+        let trace = published(projection, site, endpoints);
         write_site(
             output,
             local_machine,

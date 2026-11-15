@@ -10,7 +10,10 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use crate::ingress::{next_pass, route_acks};
+use crate::{
+    ingress::{next_pass, route_acks},
+    reach::Reach,
+};
 
 fn machine(id: char) -> MachineId {
     MachineId::parse(id.to_string().repeat(32)).unwrap()
@@ -105,13 +108,11 @@ fn pass(
     routed: &ProxyRoutes,
 ) -> Pass {
     let containers: Vec<ServiceContainer> = service_containers(copies);
-    let (routes, projection) = next_pass(
-        &local(),
-        &containers,
-        &BTreeMap::new(),
-        |machine| down.contains(machine),
-        routed,
-    );
+    // The helper marks any Machine Down, even the projection's own, which `Reach` never does.
+    let mut reach = Reach::new(machine('f'));
+    reach.update_down(Ok(down.iter().copied().collect()));
+    reach.keep(routed.clone());
+    let (routes, projection) = next_pass(&local(), &containers, &BTreeMap::new(), &reach);
     let dialed = projection
         .sites
         .iter()

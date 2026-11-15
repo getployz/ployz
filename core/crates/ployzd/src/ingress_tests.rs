@@ -2,8 +2,8 @@
 
 use super::projection::{
     IngressEndpoint, IngressProjection, IngressPublication, IngressSite, ProjectedCertificate,
-    PublicationTrace,
 };
+use super::publication_trace::PublicationTrace;
 use crate::corrosion::{CertificateChallenge, CertificateMaterial};
 use ployz_core::{
     ContainerAddress, DeploymentLogId, IngressHost, Machine, MachineId, MachineName,
@@ -32,10 +32,10 @@ pub(crate) fn renderer_projection() -> IngressProjection {
             owner: owner.clone(),
             http,
             https,
-            trace: trace.clone(),
         })
     };
     IngressProjection {
+        traces: [(owner.clone(), trace)].into(),
         machine: Machine {
                         labels: Default::default(),
             accepts_builds: true,
@@ -453,6 +453,8 @@ mod rule_f {
 
 #[path = "ingress_tests/reachable.rs"]
 mod reachable;
+#[path = "ingress_tests/serving.rs"]
+mod serving;
 
 #[test]
 fn the_access_log_is_in_the_runtime_mount_under_the_run_dir() {

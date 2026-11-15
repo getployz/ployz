@@ -106,51 +106,6 @@ pub(crate) async fn load_down(
         .collect())
 }
 
-pub(crate) struct DownMachines {
-    local_id: MachineId,
-    down: Option<BTreeSet<MachineId>>,
-}
-
-impl DownMachines {
-    pub(crate) fn new(local_id: MachineId) -> Self {
-        Self {
-            local_id,
-            down: None,
-        }
-    }
-
-    pub(crate) fn local_id(&self) -> MachineId {
-        self.local_id
-    }
-
-    pub(crate) fn contains(&self, machine: &MachineId) -> bool {
-        *machine != self.local_id
-            && self
-                .down
-                .as_ref()
-                .is_some_and(|down| down.contains(machine))
-    }
-
-    pub(crate) fn update(&mut self, loaded: Result<BTreeSet<MachineId>, CorrosionError>) -> bool {
-        match loaded {
-            Ok(down) if self.down.as_ref() == Some(&down) => false,
-            Ok(down) => {
-                self.down = Some(down);
-                true
-            }
-            // A failed sample is unknown evidence, as `ReadRoutes` and the LastIn
-            // guard read it, so no Machine stays filtered as Down on a stale set.
-            Err(error) => {
-                eprintln!(
-                    "failed to load membership for routing; routing every Machine: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                self.down.take().is_some_and(|down| !down.is_empty())
-            }
-        }
-    }
-}
-
 pub(crate) fn required_ackers(
     machines: ReplicatedObservations<Machine, MachineId>,
     local: &MachineId,
