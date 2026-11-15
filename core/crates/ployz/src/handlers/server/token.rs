@@ -218,8 +218,7 @@ async fn ask<T: DeserializeOwned>(
 ) -> Result<Result<T, RpcError>, LoginError> {
     match cloud_account::call(credential, method, path, body).await {
         Err(LoginError::Status { body, .. })
-            if let Some(refused) = cloud_account::refusal(body.as_bytes())
-                .or_else(|| cloud_account::public_error(body.as_bytes())) =>
+            if let Some(refused) = cloud_account::refusal_of(body.as_bytes()) =>
         {
             Ok(Err(refused))
         }

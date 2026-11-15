@@ -11,6 +11,7 @@ use super::{
     reply::{StoreCallError, answer, refusal, store_answer, stored},
 };
 use crate::cloud_login::LoginError;
+use crate::cloud_reply::{EndedCode, RunState};
 
 /// Start a durable Cloud run at `/api/cli/<path>`, carrying `approval` when Cloud asked
 /// for one, and return the run's id.
@@ -132,8 +133,7 @@ pub(crate) async fn follow_run<T: DeserializeOwned>(
             () = interrupted.cancelled() => return Err(stopped()),
             read = refusable(credential, Method::GET, path, None) => read?,
         };
-        let state = read.get("state").and_then(serde_json::Value::as_str);
-        if !matches!(state, Some("pending" | "running")) {
+        if !RunState::of(&read).going() {
             return serde_json::from_value(read)
                 .map(Some)
                 .map_err(|error| LoginError::Reply(error.to_string()).into());
@@ -192,10 +192,7 @@ impl<T> Settled<T> {
         match self {
             Self::Finished(result) => Ok(result),
             Self::Ended { code, message } => {
-                let code = match code.as_str() {
-                    "refused" => ployz_core::RpcErrorCode::Conflict,
-                    _ => ployz_core::RpcErrorCode::Unavailable,
-                };
+                let code = EndedCode::from_wire(&code).rpc_code();
                 Err(crate::failure::Failure::coded(code, message))
             }
         }

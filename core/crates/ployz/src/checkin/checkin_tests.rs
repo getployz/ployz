@@ -14,6 +14,7 @@ use super::client::{self, Reply};
 use super::probe::tests::Faults;
 use super::wire::{self, Answer};
 use super::*;
+use crate::cloud_reply::Hold;
 
 const PROBE: &str = r#"{
     "facts": {

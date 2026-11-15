@@ -10,7 +10,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use super::{
     credential::Credential,
     http::{self, Effect, Reply, Via},
-    reply::{StoreCallError, public_error, refusal, store_answer, stored},
+    reply::{StoreCallError, refusal, store_answer, stored},
 };
 use crate::cloud_login::LoginError;
 
@@ -48,7 +48,7 @@ pub(crate) async fn config_store_if_routed<T: DeserializeOwned>(
     let reply = config_exchange(credential, via, operation, body, None).await?;
     let unrouted = reply.status == StatusCode::NOT_FOUND
         && refusal(&reply.body).is_none()
-        && public_error(&reply.body)
+        && crate::cloud_reply::public_error(&reply.body)
             .is_some_and(|error| error.code == ployz_core::RpcErrorCode::NotFound);
     if unrouted {
         return Ok(None);

@@ -1,5 +1,4 @@
-use crate::cloud_account::public_error;
-use crate::cloud_login::cloud_message as message;
+use super::{message, public_error};
 
 #[test]
 fn a_refusal_sentence_reads_the_same_from_every_envelope_cloud_uses() {

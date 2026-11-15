@@ -14,10 +14,11 @@ use ployz_core::RpcErrorCode;
 use super::client::key_failure;
 use super::token_file::{self, FleetToken, TokenFileLock};
 use super::{
-    CheckinClient, CheckinKey, Hold, InstallPass, LoopControl, NO_CLUSTER, NO_CLUSTER_WHY, Next,
-    Paths, Posted, StopReason, System, install_pass, joined, loop_token, no_ployzd, probes_in_time,
+    CheckinClient, CheckinKey, InstallPass, LoopControl, NO_CLUSTER, NO_CLUSTER_WHY, Next, Paths,
+    Posted, StopReason, System, install_pass, joined, loop_token, no_ployzd, probes_in_time,
     record, restart_preparation, systemctl, unit,
 };
+use crate::cloud_reply::Hold;
 use crate::failure::Failure;
 
 const SKIP_ZFS: &str = "PLOYZ_SKIP_ZFS";

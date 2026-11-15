@@ -20,6 +20,7 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::cloud_reply::{self, Hold};
 use crate::failure::Failure;
 
 use super::token_file::FleetToken;
@@ -32,19 +33,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
 const TRUSTED_SKEW_SECONDS: i64 = MAX_SKEW_SECONDS - 60;
-// Cloud's own words. Only these mean Cloud refused the token or held a check-in back; any other
-// 401 or 429 may come from something in between.
-const CLOUD_REFUSAL: &str = "Authentication is required.";
-const CLOUD_BUSY: [&str; 2] = ["Too many check-ins.", "Busy, retry."];
-const CLOUD_FULL: (&str, &str) = ("This Fleet Token already has ", " waiting servers.");
-
-/// Why Cloud held a check-in back: it is busy, or the token has all the waiting servers it allows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Hold {
-    Busy,
-    Full,
-}
-
 #[derive(Debug, Error)]
 pub enum KeyError {
     #[error("read the Check-in Key at {path}")]
@@ -279,7 +267,7 @@ pub(super) fn reply(
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         let after = retry_after.unwrap_or(BACKOFF).min(wire::WAIT_CAP);
-        return match cloud_hold(body) {
+        return match cloud_reply::checkin_hold(body) {
             // A full token stays full until someone enrolls or removes its waiting servers, so its
             // servers wait a full backoff rather than ask every second.
             Some((Hold::Full, why)) => Reply::Held(after.max(BACKOFF), Hold::Full, why),
@@ -290,7 +278,7 @@ pub(super) fn reply(
             },
         };
     }
-    if let Some(why) = crate::cloud_login::cloud_message(body) {
+    if let Some(why) = cloud_reply::message(body) {
         return Reply::Unreachable(BACKOFF, format!("Cloud answered {status}: {why}"));
     }
     if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
@@ -299,27 +287,10 @@ pub(super) fn reply(
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
 }
 
-/// Cloud holds a check-in back with `{error}` only, the shape its 429 sends.
-fn cloud_hold(body: &[u8]) -> Option<(Hold, String)> {
-    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
-    let said = body.get("error")?.as_str()?;
-    if CLOUD_BUSY.contains(&said) {
-        return Some((Hold::Busy, said.to_owned()));
-    }
-    let cap = said
-        .strip_prefix(CLOUD_FULL.0)?
-        .strip_suffix(CLOUD_FULL.1)?;
-    (!cap.is_empty() && cap.bytes().all(|digit| digit.is_ascii_digit()))
-        .then(|| (Hold::Full, said.to_owned()))
-}
-
 /// A 401 counts against the token only when Cloud itself refused it and the clocks agree well
 /// inside Cloud's window. Anything else may be a proxy or a clock, and says nothing about it.
 fn unauthorized(cloud: Option<DateTime<Utc>>, body: &[u8]) -> Reply {
-    let refused = serde_json::from_slice::<serde_json::Value>(body).is_ok_and(|body| {
-        body.get("error").and_then(serde_json::Value::as_str) == Some(CLOUD_REFUSAL)
-    });
-    if !refused {
+    if !cloud_reply::checkin_refused(body) {
         return Reply::Unreachable(
             BACKOFF,
             format!("Cloud answered {}", StatusCode::UNAUTHORIZED),

@@ -502,8 +502,7 @@ impl From<LoginError> for Failure {
     /// a route's `PublicError` keeps its sentence.
     fn from(error: LoginError) -> Self {
         if let LoginError::Status { body, .. } = &error
-            && let Some(refused) = crate::cloud_account::refusal(body.as_bytes())
-                .or_else(|| crate::cloud_account::public_error(body.as_bytes()))
+            && let Some(refused) = crate::cloud_account::refusal_of(body.as_bytes())
         {
             return Self::command(refused);
         }

@@ -47,7 +47,7 @@ pub(crate) fn stored<T: DeserializeOwned>(
             return Err(StoreCallError::Refused(refused));
         }
         if !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-            && let Some(refused) = public_error(bytes)
+            && let Some(refused) = crate::cloud_reply::public_error(bytes)
         {
             return Err(StoreCallError::Refused(refused));
         }
@@ -94,6 +94,11 @@ pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     Some(past_token(error))
 }
 
+/// What Cloud refused with: a command's refusal, else a route's `PublicError`.
+pub(crate) fn refusal_of(body: &[u8]) -> Option<RpcError> {
+    refusal(body).or_else(|| crate::cloud_reply::public_error(body))
+}
+
 /// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.
 pub(crate) const SIGN_IN_PAST_TOKEN: &str = "unset PLOYZ_TOKEN && ployz login";
 
@@ -108,25 +113,6 @@ fn past_token(mut refused: RpcError) -> RpcError {
         *next = SIGN_IN_PAST_TOKEN.into();
     }
     refused
-}
-
-/// A Cloud route's `PublicError`, as the refusal it stands for.
-pub(crate) fn public_error(body: &[u8]) -> Option<RpcError> {
-    #[derive(Deserialize)]
-    #[serde(tag = "_tag")]
-    enum Public {
-        PublicError { code: String, message: String },
-    }
-    let Public::PublicError { code, message } = serde_json::from_slice(body).ok()?;
-    let code = match code.as_str() {
-        "CONFLICT" => ployz_core::RpcErrorCode::Conflict,
-        "NOT_FOUND" => ployz_core::RpcErrorCode::NotFound,
-        "VALIDATION_FAILED" => ployz_core::RpcErrorCode::InvalidArgument,
-        "UNAUTHORIZED" | "FORBIDDEN" => ployz_core::RpcErrorCode::Unauthenticated,
-        "RATE_LIMITED" => ployz_core::RpcErrorCode::Unavailable,
-        _ => ployz_core::RpcErrorCode::Internal,
-    };
-    Some(RpcError::new(code, message))
 }
 
 pub(crate) fn answer<T: DeserializeOwned>(
