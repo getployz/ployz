@@ -269,17 +269,19 @@ impl ContainerRuntime {
             ..
         } = *creating;
         if create::holds_sealed(kind, spec) {
-            self.log_store.admit_sealed().await?;
+            self.settings.log_store.admit_sealed().await?;
         }
         let network = match spec.container.network {
             None => CreationNetwork::Bridge,
             Some(ServiceNetwork::IngressHolder) => CreationNetwork::Holder(
-                self.running_door(Door::Holder)
+                self.doors()
+                    .running_door(Door::Holder)
                     .await?
                     .ok_or(Error::IngressHolderNotRunning)?,
             ),
             Some(ServiceNetwork::TunnelOrigin) => CreationNetwork::Holder(
-                self.running_door(Door::TunnelOrigin)
+                self.doors()
+                    .running_door(Door::TunnelOrigin)
                     .await?
                     .ok_or(Error::TunnelOriginNotRunning)?,
             ),

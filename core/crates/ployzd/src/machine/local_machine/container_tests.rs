@@ -1946,7 +1946,7 @@ mod reserved_lifecycle {
         /// Whether `want` is still unanswered while the door lifecycle lock is held, and
         /// its answer once the lock is released.
         async fn under_the_lock(&self, want: ContainerWant) -> (bool, EnsuredContainer) {
-            let held = self.runtime.door_lifecycle().await;
+            let held = self.runtime.doors().hold().await;
             let local = self.local.clone();
             let ensuring = tokio::spawn(async move { local.ensure_container(want).await });
             // real-wait: the want reaches the lock through the fake Docker's TCP socket,

@@ -173,27 +173,27 @@ impl super::LocalDocker {
 
 impl ContainerRuntime {
     pub(crate) fn write_private_access_key(&self, key: &[u8]) -> io::Result<()> {
-        write(&self.machine_root, key)
+        write(&self.settings.machine_root, key)
     }
 
     pub(crate) fn remove_private_access_key(&self) -> io::Result<()> {
-        remove(&self.machine_root)
+        remove(&self.settings.machine_root)
     }
 
     pub(crate) fn keep_private_access_state(&self) -> io::Result<PrivateAccessStateId> {
-        keep_state(&self.machine_root)
+        keep_state(&self.settings.machine_root)
     }
 
     pub(crate) fn forget_private_access_state(&self) -> io::Result<()> {
-        forget_state(&self.machine_root)
+        forget_state(&self.settings.machine_root)
     }
 
     pub(crate) fn private_access_state_kept(&self) -> bool {
-        state_kept(&self.machine_root)
+        state_kept(&self.settings.machine_root)
     }
 
     pub(crate) fn private_access_tailnet(&self) -> Option<String> {
-        tailnet(&self.machine_root)
+        tailnet(&self.settings.machine_root)
     }
 
     /// Open `sealed` with this Machine's Sealing Key.

@@ -978,7 +978,7 @@ impl LocalMachine {
         // with the lock, so a caller that stops waiting cannot free the lock while a
         // stop it began still runs.
         let containers = self.docker()?;
-        let doors = containers.door_lifecycle().await;
+        let doors = containers.doors().hold().await;
         let local = self.clone();
         tokio::spawn(async move {
             let _doors = doors;

@@ -1075,6 +1075,7 @@ mod ingress_doors {
         assert_eq!(proxy.now.resolved_spec, specs.proxy);
         assert_eq!(holder.now.resolved_spec, specs.holder);
         let inventory = runtime
+            .doors()
             .door_inventory(&service.local.record().id())
             .await
             .unwrap();
@@ -1128,6 +1129,7 @@ mod ingress_doors {
         assert_eq!(set.proxy.unwrap().change, DoorChange::Created);
         assert!(set.tunnel.is_none(), "{:?}", set.tunnel);
         let inventory = runtime
+            .doors()
             .door_inventory(&service.local.record().id())
             .await
             .unwrap();
@@ -1243,6 +1245,7 @@ mod ingress_doors {
         let token = data_dir.join("root/run/ployz/tunnel/token");
         assert_eq!(std::fs::read(&token).unwrap(), b"cf-token");
         let inventory = runtime
+            .doors()
             .door_inventory(&service.local.record().id())
             .await
             .unwrap();
@@ -1306,6 +1309,7 @@ mod ingress_doors {
         );
         assert_eq!(
             runtime
+                .doors()
                 .door_inventory(&service.local.record().id())
                 .await
                 .unwrap()
@@ -1353,6 +1357,7 @@ mod ingress_doors {
             let machine_id = service.local.record().id();
             async move {
                 runtime
+                    .doors()
                     .door_inventory(&machine_id)
                     .await
                     .unwrap()
@@ -1427,6 +1432,7 @@ mod ingress_doors {
         let machine_id = service.local.record().id();
         let connector_running = || async {
             runtime
+                .doors()
                 .door_inventory(&machine_id)
                 .await
                 .unwrap()
@@ -1484,6 +1490,7 @@ mod ingress_doors {
         let token = data_dir.join("root/run/ployz/tunnel/token");
         let connectors = || async {
             runtime
+                .doors()
                 .door_inventory(&machine)
                 .await
                 .unwrap()
@@ -1716,6 +1723,7 @@ mod ingress_doors {
             .map(|(_, body)| body.clone())
             .expect("the Caddy was created");
         let holder_id = runtime
+            .doors()
             .door_inventory(&service.local.record().id())
             .await
             .unwrap()
@@ -1751,6 +1759,7 @@ mod ingress_doors {
         ));
         assert_eq!(
             runtime
+                .doors()
                 .door_inventory(&service.local.record().id())
                 .await
                 .unwrap()
@@ -1771,6 +1780,7 @@ mod ingress_doors {
             .unwrap()
             .unwrap();
         let observed = runtime
+            .doors()
             .door_inventory(&machine)
             .await
             .unwrap()
@@ -1808,7 +1818,7 @@ mod ingress_doors {
             "{retired:?}"
         );
 
-        let doors = runtime.door_inventory(&machine).await.unwrap();
+        let doors = runtime.doors().door_inventory(&machine).await.unwrap();
         assert_eq!(doors.len(), 2, "one holder and one Caddy remain");
         for entry in &doors {
             assert!(
@@ -1848,6 +1858,7 @@ mod ingress_doors {
         machine: &MachineId,
     ) -> Vec<(ployz_core::ContainerId, bool)> {
         runtime
+            .doors()
             .door_inventory(machine)
             .await
             .unwrap()
@@ -1871,7 +1882,7 @@ mod ingress_doors {
                 .await
                 .unwrap()
                 .unwrap();
-            let doors = runtime.door_inventory(&machine).await.unwrap();
+            let doors = runtime.doors().door_inventory(&machine).await.unwrap();
             let caddy_of = |door| {
                 doors
                     .iter()
@@ -2061,7 +2072,7 @@ mod ingress_doors {
             .unwrap()
             .unwrap();
         let mut holder = None;
-        for entry in runtime.door_inventory(&machine).await.unwrap() {
+        for entry in runtime.doors().door_inventory(&machine).await.unwrap() {
             runtime.stop(&entry.facts.id, None, None).await.unwrap();
             match entry.facts.door {
                 crate::docker::Door::Holder => holder = Some(entry.facts.id),
@@ -2107,6 +2118,7 @@ mod ingress_doors {
             .unwrap()
             .unwrap();
         let holder = runtime
+            .doors()
             .door_inventory(&machine)
             .await
             .unwrap()
@@ -2137,7 +2149,7 @@ mod ingress_doors {
         stop.abort();
         assert!(stop.await.unwrap_err().is_cancelled());
         assert!(
-            futures_util::poll!(std::pin::pin!(runtime.door_lifecycle())).is_pending(),
+            futures_util::poll!(std::pin::pin!(runtime.doors().hold())).is_pending(),
             "the stop its caller left still holds the doors through its drain"
         );
 

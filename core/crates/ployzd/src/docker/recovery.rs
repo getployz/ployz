@@ -90,7 +90,7 @@ impl IngressRecovery {
     /// starts what exists; it never creates.
     async fn run(&self, runtime: &ContainerRuntime, repair: Repair, creates: u64) {
         // Under the doors lock so a route placing the doors never races it.
-        let _doors = runtime.door_lifecycle().await;
+        let _doors = runtime.doors().hold().await;
         let container_id = *repair.target();
         let gate = self
             .stranded()

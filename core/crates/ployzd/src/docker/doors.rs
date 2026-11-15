@@ -5,6 +5,7 @@
 use ployz_core::labels;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::Arc;
 
 use std::collections::HashMap;
 
@@ -17,7 +18,7 @@ use ployz_core::{
 };
 
 use super::{
-    ContainerRuntime, Error, Status, TUNNEL_NETWORK_NAME, classify, docker_error,
+    Error, LocalDocker, Observation, Status, TUNNEL_NETWORK_NAME, classify, docker_error,
     lifecycle::{failed_start, is_running},
 };
 use crate::docker_image::prepare_image;
@@ -170,7 +171,33 @@ pub(crate) fn door_facts(
     }
 }
 
-impl ContainerRuntime {
+/// The reserved Ingress doors as this Machine runs them, and the one lock under which
+/// anything places or retires them.
+#[derive(Clone)]
+pub struct Doors {
+    docker: LocalDocker,
+    observation: Observation,
+    /// Serializes every holder and Caddy lifecycle (a route, a legacy translation and
+    /// recovery), so no two of them place or retire the Ingress doors at once. Taken
+    /// before the admission turn and before any per-id gate.
+    lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl Doors {
+    pub(super) fn new(docker: LocalDocker, observation: Observation) -> Self {
+        Self {
+            docker,
+            observation,
+            lock: Arc::default(),
+        }
+    }
+
+    /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so
+    /// work detached from its caller holds it until that work ends.
+    pub(crate) async fn hold(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.lock).lock_owned().await
+    }
+
     /// Every reserved Ingress Container here, with its stored spec and Docker facts. One
     /// whose spec is missing is skipped with a log, so a half-made one blocks nothing.
     pub(crate) async fn door_inventory(
@@ -180,7 +207,7 @@ impl ContainerRuntime {
         let mut entries = Vec::new();
         for door in Door::ALL {
             for (id, _) in self.docker.door_containers(door).await? {
-                let observation = match self.observation().inspect_managed(&id, machine_id).await {
+                let observation = match self.observation.inspect_managed(&id, machine_id).await {
                     Ok(observation) => observation,
                     Err(Error::ContainerNotFound(_)) => continue,
                     Err(Error::SpecNotFound(id)) => {

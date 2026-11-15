@@ -194,7 +194,7 @@ impl LocalMachine {
         };
         self.reserved_effect(Gate::Router)?;
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
             let routers = containers.routers(&machine_id).await?;
@@ -205,6 +205,7 @@ impl LocalMachine {
                         .map_err(Error::PrivateAccessState)?;
                     let spec = private_access_router(network, &sealed, state);
                     containers
+                        .doors()
                         .prepare_pinned_image(&spec.container.image)
                         .await?;
                     containers
@@ -247,7 +248,7 @@ impl LocalMachine {
         let containers = self.docker()?.clone();
         self.reserved_effect(Gate::Router)?;
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.reserved_effect(Gate::Router)?;
             let routers = containers.routers(&local.record().id()).await?;
             if routers.is_empty() {
@@ -288,7 +289,7 @@ impl LocalMachine {
                 );
             }
             containers
-                .prepare_pinned_image(&pinned.container.image)
+                .doors().prepare_pinned_image(&pinned.container.image)
                 .await?;
             let spec = pinned;
             containers

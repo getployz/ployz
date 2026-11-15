@@ -2,6 +2,7 @@ pub(crate) mod bridge_address;
 mod checks;
 mod create;
 mod doors;
+pub use doors::Doors;
 mod error;
 pub(crate) use doors::{Door, DoorEntry};
 #[cfg(test)]
@@ -343,23 +344,27 @@ impl RotationTurn<'_> {
 pub struct ContainerRuntime {
     docker: LocalDocker,
     specs: MachineSpecStore,
+    settings: Settings,
     images: Images,
     volumes: Volumes,
     observation: Observation,
+    doors: Doors,
     standing: Standing,
-    sink: Option<ObservationSink>,
     first_synced: watch::Sender<bool>,
     recovery: IngressRecovery,
-    /// Serializes every holder and Caddy lifecycle (a route, a legacy translation and
-    /// recovery), so no two of them place or retire the Ingress doors at once. Taken
-    /// before the admission turn and before any per-id gate.
-    doors: Arc<tokio::sync::Mutex<()>>,
-    /// Where Machine paths such as the tunnel token's resolve. `/` outside tests.
-    machine_root: PathBuf,
-    log_store: LogStore,
     /// Set when a Leave begins removing every managed Container, and cleared only when
     /// that Leave fails, so a committed Leave keeps it set.
     departure: lifecycle::Departure,
+}
+
+/// What the builders set, which the handles are assembled from.
+#[derive(Clone)]
+struct Settings {
+    sealing_key_dir: Option<PathBuf>,
+    /// Where Machine paths such as the tunnel token's resolve. `/` outside tests.
+    machine_root: PathBuf,
+    log_store: LogStore,
+    sink: Option<ObservationSink>,
 }
 
 /// What Docker and the Machine database say about the managed Containers, read without
@@ -376,36 +381,56 @@ pub struct Observation {
 impl ContainerRuntime {
     #[must_use]
     pub fn new(docker: LocalDocker, specs: MachineSpecStore) -> Self {
+        Self::assemble(
+            docker,
+            specs,
+            Settings {
+                sealing_key_dir: None,
+                machine_root: PathBuf::from("/"),
+                log_store: LogStore::default(),
+                sink: None,
+            },
+        )
+    }
+
+    /// The handles over one Docker client and spec store, each given what it reads.
+    fn assemble(docker: LocalDocker, specs: MachineSpecStore, settings: Settings) -> Self {
         let standing = Standing::new();
+        let observation = Observation {
+            docker: docker.clone(),
+            specs: specs.clone(),
+            standing: standing.clone(),
+            checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
+            sealing_key_dir: settings.sealing_key_dir.clone(),
+        };
         Self {
             images: Images::new(docker.clone()),
             volumes: Volumes::new(docker.clone()),
-            observation: Observation {
-                docker: docker.clone(),
-                specs: specs.clone(),
-                standing: standing.clone(),
-                checks: Arc::new(std::sync::Mutex::new(CheckRecords::new(chrono::Utc::now()))),
-                sealing_key_dir: None,
-            },
+            doors: Doors::new(docker.clone(), observation.clone()),
+            observation,
             standing,
             docker,
             specs,
-            sink: None,
+            settings,
             first_synced: watch::Sender::new(false),
             recovery: IngressRecovery::default(),
-            doors: Arc::default(),
-            machine_root: PathBuf::from("/"),
-            log_store: LogStore::default(),
             departure: lifecycle::Departure::default(),
         }
+    }
+
+    /// Builds the runtime again with `change` made to its settings. A builder runs
+    /// before the runtime is used, so nothing it forgets was set.
+    fn configured(self, change: impl FnOnce(&mut Settings)) -> Self {
+        let mut settings = self.settings;
+        change(&mut settings);
+        Self::assemble(self.docker, self.specs, settings)
     }
 
     /// Resolves Machine paths under `root` instead of `/`.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_machine_root(mut self, root: PathBuf) -> Self {
-        self.machine_root = root;
-        self
+    pub(crate) fn with_machine_root(self, root: PathBuf) -> Self {
+        self.configured(|settings| settings.machine_root = root)
     }
 
     /// What Docker holds as images on this Machine.
@@ -426,23 +451,21 @@ impl ContainerRuntime {
         &self.observation
     }
 
-    /// Holds the Ingress door lifecycle until the guard drops. The guard is owned so
-    /// work detached from its caller holds it until that work ends.
-    pub(crate) async fn door_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        Arc::clone(&self.doors).lock_owned().await
+    /// The reserved Ingress doors and the lock their lifecycle takes.
+    #[must_use]
+    pub fn doors(&self) -> &Doors {
+        &self.doors
     }
 
     /// Opens Sealed env values with the Sealing Key kept in `data_dir`.
     #[must_use]
-    pub fn with_sealing_key(mut self, data_dir: PathBuf) -> Self {
-        self.observation.sealing_key_dir = Some(data_dir);
-        self
+    pub fn with_sealing_key(self, data_dir: PathBuf) -> Self {
+        self.configured(|settings| settings.sealing_key_dir = Some(data_dir))
     }
 
     #[must_use]
-    pub(crate) fn with_log_store(mut self, log_store: LogStore) -> Self {
-        self.log_store = log_store;
-        self
+    pub(crate) fn with_log_store(self, log_store: LogStore) -> Self {
+        self.configured(|settings| settings.log_store = log_store)
     }
 
     /// Whether a Leave is removing every managed Container here, or has committed. A

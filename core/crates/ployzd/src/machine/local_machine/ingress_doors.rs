@@ -453,9 +453,9 @@ impl LocalMachine {
         let containers = self.docker()?.clone();
         self.door_effect()?;
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.door_effect()?;
-            let inventory = containers.door_inventory(&local.record().id()).await?;
+            let inventory = containers.doors().door_inventory(&local.record().id()).await?;
             for entry in inventory
                 .iter()
                 .filter(|entry| shares_holders_netns(entry) && !entry.facts.at_rest())
@@ -492,7 +492,7 @@ impl LocalMachine {
                 .chain(pinned.tunnel.iter().flat_map(TunnelSpecs::specs))
             {
                 containers
-                    .prepare_pinned_image(&spec.container.image)
+                    .doors().prepare_pinned_image(&spec.container.image)
                     .await?;
             }
             if let Some(sealed) = &held.sealed {
@@ -526,10 +526,10 @@ impl LocalMachine {
         self.door_effect()?;
         let specs = specs.clone();
         self.finish_installed(move |local, _installation| async move {
-            let _doors = containers.door_lifecycle().await;
+            let _doors = containers.doors().hold().await;
             local.door_effect()?;
             let machine_id = local.record().id();
-            let inventory = containers.door_inventory(&machine_id).await?;
+            let inventory = containers.doors().door_inventory(&machine_id).await?;
             let specs = match legacy {
                 Legacy::Caddy => doors_as_found(
                     &inventory,
@@ -543,6 +543,7 @@ impl LocalMachine {
                 .chain(specs.tunnel.iter().flat_map(TunnelSpecs::specs))
             {
                 containers
+                    .doors()
                     .prepare_pinned_image(&spec.container.image)
                     .await?;
             }

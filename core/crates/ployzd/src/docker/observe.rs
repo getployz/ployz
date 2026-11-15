@@ -36,25 +36,26 @@ pub(super) struct ObservationSink {
 impl ContainerRuntime {
     #[must_use]
     pub(crate) fn replicating(
-        mut self,
+        self,
         replicated: ReplicatedStore,
         local: RecordOwner,
         plugin: crate::storage::Plugin,
     ) -> Self {
-        self.sink = Some(ObservationSink {
-            replicated,
-            local,
-            plugin,
-            rescan_interval: RESCAN_INTERVAL,
-            pool_committable_bytes: tokio::sync::watch::Sender::new(None),
-        });
-        self
+        self.configured(|settings| {
+            settings.sink = Some(ObservationSink {
+                replicated,
+                local,
+                plugin,
+                rescan_interval: RESCAN_INTERVAL,
+                pool_committable_bytes: tokio::sync::watch::Sender::new(None),
+            });
+        })
     }
 
     /// What this Machine's Pool could still commit, as of the last storage
     /// observation.
     pub(crate) fn pool_committable_bytes(&self) -> tokio::sync::watch::Receiver<Option<u64>> {
-        self.sink.as_ref().map_or_else(
+        self.settings.sink.as_ref().map_or_else(
             || tokio::sync::watch::channel(None).1,
             |sink| sink.pool_committable_bytes.subscribe(),
         )
@@ -62,11 +63,12 @@ impl ContainerRuntime {
 
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_rescan_interval(mut self, interval: Duration) -> Self {
-        if let Some(sink) = &mut self.sink {
-            sink.rescan_interval = interval;
-        }
-        self
+    pub(crate) fn with_rescan_interval(self, interval: Duration) -> Self {
+        self.configured(|settings| {
+            if let Some(sink) = &mut settings.sink {
+                sink.rescan_interval = interval;
+            }
+        })
     }
 
     /// Turns `true` once this process has published its container observations
@@ -76,7 +78,7 @@ impl ContainerRuntime {
     }
 
     pub async fn publish_observations(&self, shutdown: CancellationToken) -> Result<(), Error> {
-        let Some(sink) = self.sink.clone() else {
+        let Some(sink) = self.settings.sink.clone() else {
             shutdown.cancelled().await;
             return Ok(());
         };
@@ -1189,7 +1191,7 @@ mod tests {
             container_id,
             data_dir,
         } = replicating(Duration::from_millis(20)).await;
-        let sink = runtime.sink.clone().unwrap();
+        let sink = runtime.settings.sink.clone().unwrap();
         let mut synced = runtime.first_synced();
         let run_awhile = async |watcher: tokio::task::JoinHandle<()>,
                                 shutdown: CancellationToken| {
