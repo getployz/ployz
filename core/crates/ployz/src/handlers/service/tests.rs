@@ -1,6 +1,6 @@
 use ployz_core::{
-    HookContainer, MachineFailure, MachineId, PartialResult, RpcError, ServiceContainer, ServiceId,
-    ServiceName, derive_live_services,
+    HookContainer, MachineFailure, MachineId, PartialResult, RpcError, RpcErrorCode,
+    ServiceContainer, ServiceId, ServiceName, derive_live_services,
 };
 use serde_json::json;
 
@@ -701,5 +701,149 @@ fn each_copy_gets_its_own_container_bound_approval() {
             first.expires_at.as_millis() - first.issued_at.as_millis(),
             15 * 60 * 1000
         );
+    }
+}
+
+#[test]
+fn an_unsigned_restart_refusal_is_read_by_its_capability_and_cause_whatever_else_it_carries() {
+    let restart = ployz_core::RESTART_APPROVAL_CAPABILITY;
+    let unsigned = "the workflow approval carries no signature";
+    let refusal = |code: &str, details: serde_json::Value, cause: &[&str]| {
+        let mut error = RpcError::new(RpcErrorCode::from(code), "refused").with_details(details);
+        error.cause = cause.iter().map(|cause| (*cause).to_owned()).collect();
+        error
+    };
+    let cases = [
+        (
+            "the daemon's refusal",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart, "next": "ployz service restart from an approved device"}),
+                &[unsigned],
+            ),
+            true,
+        ),
+        (
+            "any code",
+            refusal("conflict", json!({"capability": restart}), &[unsigned]),
+            true,
+        ),
+        (
+            "extra and odd fields",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart, "reason": 7, "next": ["a"], "other": {"x": null}}),
+                &[unsigned],
+            ),
+            true,
+        ),
+        (
+            "the text among other causes",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart}),
+                &["outer", unsigned],
+            ),
+            true,
+        ),
+        (
+            "no cause",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart}),
+                &[],
+            ),
+            false,
+        ),
+        (
+            "the unsigned reason, from a daemon that sends one",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart, "reason": "unsigned"}),
+                &[],
+            ),
+            true,
+        ),
+        (
+            "the unsigned reason on another capability",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY, "reason": "unsigned"}),
+                &[],
+            ),
+            false,
+        ),
+        (
+            "another reason and no cause",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart, "reason": "awaiting_activation"}),
+                &[],
+            ),
+            false,
+        ),
+        (
+            "a reason this reader does not know, with the text",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart, "reason": "from_a_newer_daemon"}),
+                &[unsigned],
+            ),
+            true,
+        ),
+        (
+            "another cause",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": restart}),
+                &["the approval expired"],
+            ),
+            false,
+        ),
+        (
+            "another capability",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY}),
+                &[unsigned],
+            ),
+            false,
+        ),
+        (
+            "a capability that is not text",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"capability": 4}),
+                &[unsigned],
+            ),
+            false,
+        ),
+        (
+            "no capability",
+            refusal(
+                ployz_core::FORBIDDEN_CODE,
+                json!({"next": "x"}),
+                &[unsigned],
+            ),
+            false,
+        ),
+        (
+            "null details",
+            refusal(ployz_core::FORBIDDEN_CODE, json!(null), &[unsigned]),
+            false,
+        ),
+        (
+            "details that are text",
+            refusal(ployz_core::FORBIDDEN_CODE, json!(restart), &[unsigned]),
+            false,
+        ),
+        (
+            "details that are a list",
+            refusal(ployz_core::FORBIDDEN_CODE, json!([restart]), &[unsigned]),
+            false,
+        ),
+    ];
+    for (name, error, expected) in cases {
+        assert_eq!(refused_unsigned_restart(&error), expected, "{name}");
     }
 }

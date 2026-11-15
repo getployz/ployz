@@ -652,19 +652,7 @@ async fn apply_service_action(
         for failure in outcomes.failures {
             if !noted_unsigned
                 && !approvals.contains_key(&failure.error.container_id)
-                && failure
-                    .error
-                    .error
-                    .details
-                    .get("capability")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(ployz_core::RESTART_APPROVAL_CAPABILITY)
-                && failure
-                    .error
-                    .error
-                    .cause
-                    .iter()
-                    .any(|cause| cause.contains("carries no signature"))
+                && refused_unsigned_restart(&failure.error.error)
             {
                 crate::ui::note(
                     "No Device approval was sent. Check this computer's Device key and approval.",
@@ -792,6 +780,19 @@ const fn past(action: ContainerAction) -> &'static str {
         ContainerAction::Restart => "Restarted",
         ContainerAction::Remove => "Removed",
     }
+}
+
+/// Whether an enforcing Machine refused a restart step because it carried no Device approval.
+/// A daemon from before the `unsigned` reason says so only in its cause text.
+fn refused_unsigned_restart(error: &RpcError) -> bool {
+    error.gate().is_some_and(|gate| {
+        gate.capability == ployz_core::RESTART_APPROVAL_CAPABILITY
+            && (gate.reason == Some(ployz_core::GateReason::Unsigned)
+                || error
+                    .cause
+                    .iter()
+                    .any(|cause| cause.contains("carries no signature")))
+    })
 }
 
 pub(super) mod authored;

@@ -1909,8 +1909,9 @@ impl SshFailure {
 /// Whether a Machine refused `capability` because Device enforcement is on, as it
 /// refuses an Operator's `Build` and `MintBuildGrant`.
 pub(crate) fn refused_by_enforcement(error: &RpcError, capability: &str) -> bool {
-    error.code.as_str() == ployz_core::FORBIDDEN_CODE
-        && error.details.get("capability").and_then(Value::as_str) == Some(capability)
+    error
+        .enforcement()
+        .is_some_and(|gate| gate.capability == capability)
 }
 
 fn rpc_error_code(code: tonic::Code) -> RpcErrorCode {

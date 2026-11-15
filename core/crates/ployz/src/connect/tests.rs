@@ -2517,3 +2517,93 @@ fn every_other_connect_error_keeps_its_facts() {
         );
     }
 }
+
+#[test]
+fn an_enforcement_refusal_is_read_by_its_code_and_capability_whatever_else_it_carries() {
+    let build = ployz_core::BUILD_CAPABILITY;
+    let refusal = |code: &str, details: Value| {
+        RpcError::new(RpcErrorCode::from(code), "refused").with_details(details)
+    };
+    let forbidden = ployz_core::FORBIDDEN_CODE;
+    let cases = [
+        (
+            "the daemon's refusal",
+            refusal(forbidden, json!({"capability": build})),
+            true,
+        ),
+        (
+            "extra and odd fields",
+            refusal(
+                forbidden,
+                json!({"capability": build, "reason": 7, "next": ["a"], "target": null}),
+            ),
+            true,
+        ),
+        (
+            "with the hints a daemon sends",
+            refusal(
+                forbidden,
+                json!({"capability": build, "next": "ployz deploy from an approved device"}),
+            ),
+            true,
+        ),
+        (
+            "another capability",
+            refusal(
+                forbidden,
+                json!({"capability": ployz_core::MINT_BUILD_GRANT_CAPABILITY}),
+            ),
+            false,
+        ),
+        (
+            "a target beside it",
+            refusal(forbidden, json!({"capability": build, "target": "beta"})),
+            true,
+        ),
+        (
+            "a capability that is not text",
+            refusal(forbidden, json!({"capability": 4})),
+            false,
+        ),
+        (
+            "no capability",
+            refusal(forbidden, json!({"next": "x"})),
+            false,
+        ),
+        ("null details", refusal(forbidden, Value::Null), false),
+        (
+            "details that are text",
+            refusal(forbidden, json!(build)),
+            false,
+        ),
+        (
+            "details that are a list",
+            refusal(forbidden, json!([build])),
+            false,
+        ),
+        (
+            "unsupported",
+            refusal(
+                "unsupported",
+                json!({"capability": build, "target": "beta"}),
+            ),
+            false,
+        ),
+        (
+            "unavailable",
+            refusal("unavailable", json!({"capability": build})),
+            false,
+        ),
+        (
+            "approval required",
+            refusal(
+                ployz_core::APPROVAL_REQUIRED_CODE,
+                json!({"capability": build}),
+            ),
+            false,
+        ),
+    ];
+    for (name, error, expected) in cases {
+        assert_eq!(refused_by_enforcement(&error, build), expected, "{name}");
+    }
+}

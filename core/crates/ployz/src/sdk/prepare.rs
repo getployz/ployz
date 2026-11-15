@@ -1,5 +1,4 @@
 //! Cloud preparation: builder eligibility, Builds, planning, and image delivery.
-use crate::build::CapabilityCheckError;
 use crate::cluster::{Call, Deadline};
 use crate::connect::ConnectError;
 use ployz_core::error_chain;
@@ -183,9 +182,7 @@ pub async fn select_build_machine(
                             error_chain::row(&error)
                         ),
                         // A refusal by device enforcement is no failed check: it says what it is.
-                        if matches!(error, CapabilityCheckError::RefusedByEnforcement(_))
-                            || error.to_string() == ployz_core::BUILD_REFUSED_BY_ENFORCEMENT
-                        {
+                        if error.refused_by_enforcement() {
                             ployz_core::BUILD_REFUSED_BY_ENFORCEMENT
                         } else {
                             "its build capability check failed"

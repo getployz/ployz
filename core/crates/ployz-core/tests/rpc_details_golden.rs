@@ -847,3 +847,82 @@ fn a_status_body_decodes_as_the_typed_cause_struct_does() {
     );
     assert_eq!(causes(b"opaque"), None);
 }
+
+#[test]
+fn a_gate_is_the_details_of_an_enforcement_refusal_and_reads_back_whatever_else_they_carry() {
+    use ployz_core::{Gate, GateReason};
+
+    let written = |gate: Gate| gate.to_details();
+    assert_eq!(
+        written(Gate::new("ployz.build.v1")),
+        json!({ "capability": "ployz.build.v1" })
+    );
+    assert_eq!(
+        written(Gate::new("c").next("do it")),
+        json!({ "capability": "c", "next": "do it" })
+    );
+    assert_eq!(
+        written(
+            Gate::new("c")
+                .because(GateReason::JoinAlreadyAdmitted)
+                .inspecting(&["ployz server ls"])
+        ),
+        json!({
+            "capability": "c",
+            "reason": "join_already_admitted",
+            "inspect": ["ployz server ls"],
+        })
+    );
+    assert_eq!(
+        serde_json::to_string(&written(
+            Gate::new("c")
+                .because(GateReason::AwaitingActivation)
+                .next("n")
+        ))
+        .unwrap(),
+        r#"{"capability":"c","next":"n","reason":"awaiting_activation"}"#
+    );
+    for (reason, text) in [
+        (GateReason::Unsigned, "unsigned"),
+        (GateReason::Activating, "activating"),
+    ] {
+        assert_eq!(
+            written(Gate::new("c").because(reason)),
+            json!({ "capability": "c", "reason": text })
+        );
+    }
+
+    let forbidden = |details: Value| {
+        RpcError::new(RpcErrorCode::from(ployz_core::FORBIDDEN_CODE), "m").with_details(details)
+    };
+    let odd = forbidden(json!({
+        "capability": "c",
+        "reason": ["x"],
+        "next": 3,
+        "inspect": "ployz server ls",
+        "target": "beta",
+    }));
+    assert_eq!(odd.enforcement(), Some(Gate::new("c")));
+    assert_eq!(
+        forbidden(json!({ "capability": "c", "reason": "from_a_newer_daemon" })).enforcement(),
+        Some(Gate::new("c"))
+    );
+    assert_eq!(
+        forbidden(json!({ "capability": "c", "reason": "unsigned", "inspect": ["a", 1] }))
+            .enforcement(),
+        Some(Gate::new("c").because(GateReason::Unsigned))
+    );
+    for details in [
+        json!({ "next": "x" }),
+        json!({ "capability": 4 }),
+        json!(null),
+        json!("c"),
+        json!(["c"]),
+    ] {
+        assert_eq!(forbidden(details.clone()).enforcement(), None, "{details}");
+        assert_eq!(forbidden(details).gate(), None);
+    }
+    let unavailable = RpcError::unavailable("m").with_details(json!({ "capability": "c" }));
+    assert_eq!(unavailable.enforcement(), None);
+    assert_eq!(unavailable.gate(), Some(Gate::new("c")));
+}
