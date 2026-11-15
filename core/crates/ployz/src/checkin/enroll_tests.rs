@@ -696,11 +696,16 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
 }
 
 fn built_for(instruction: &EnrollInstruction, home_set: bool) -> String {
-    match crate::cli::command().try_get_matches_from(add_arguments(
-        instruction,
-        "https://cloud.example",
-        home_set,
-    )) {
+    let mut arguments = add_arguments(instruction, "https://cloud.example", home_set);
+    // The config path the command line would default to, given outright, so a `PLOYZ_CONFIG` in
+    // the environment the tests run under cannot reach the view.
+    if !arguments.contains(&"--ployz-config".to_owned()) {
+        arguments.extend([
+            "--ployz-config".to_owned(),
+            "~/.config/ployz/config.yaml".to_owned(),
+        ]);
+    }
+    match crate::cli::command().try_get_matches_from(arguments) {
         Ok(root) => crate::handlers::server::engine_view(&root),
         Err(error) => format!("parse: {error}"),
     }

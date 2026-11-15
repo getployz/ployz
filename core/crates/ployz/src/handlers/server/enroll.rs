@@ -512,6 +512,16 @@ mod tests {
         crate::cli::command().try_get_matches_from(argv).unwrap()
     }
 
+    /// `argv` with the config path the command line would default to given outright, so a
+    /// `PLOYZ_CONFIG` in the environment the tests run under cannot reach the views.
+    fn with_default_config<'a>(argv: &[&'a str]) -> Vec<&'a str> {
+        let mut argv = argv.to_vec();
+        if !argv.contains(&"--ployz-config") {
+            argv.extend(["--ployz-config", "~/.config/ployz/config.yaml"]);
+        }
+        argv
+    }
+
     #[tokio::test]
     async fn an_enrollment_voided_by_forgetting_the_servers_ends_the_wait() {
         let cloud = crate::cloud_account::testing::fake_cloud(|route, _| match route {
@@ -882,7 +892,10 @@ mod tests {
             .iter()
             .map(|given| {
                 let argv = [&["ployz", "server", "add"][..], given].concat();
-                format!("{given:?} => {}\n", engine_view(&add_matches(&argv)))
+                format!(
+                    "{given:?} => {}\n",
+                    engine_view(&add_matches(&with_default_config(&argv)))
+                )
             })
             .collect();
         assert_eq!(views, include_str!("enroll_views.golden"));
