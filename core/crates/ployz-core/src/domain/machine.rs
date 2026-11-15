@@ -294,6 +294,42 @@ pub struct MachineRuntime {
     pub leaving: bool,
 }
 
+/// What a Machine's row says about one capability. An empty list is a row that predates
+/// the field, or a newer peer's record relayed by an older entry, so it claims nothing:
+/// it is never read as a list that lacks the capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Claim {
+    /// The list names the capability.
+    Advertises,
+    /// The list names others but not this one.
+    Lacks,
+    /// The list is empty, so the daemon is asked and answers for itself.
+    Unclaimed,
+}
+
+impl MachineRuntime {
+    /// What this row claims about `capability`.
+    #[must_use]
+    pub fn claim(&self, capability: &str) -> Claim {
+        if self.capabilities.is_empty() {
+            Claim::Unclaimed
+        } else if self.capabilities.contains(capability) {
+            Claim::Advertises
+        } else {
+            Claim::Lacks
+        }
+    }
+}
+
+impl Claim {
+    /// Whether the daemon may be asked: it advertises the capability, or the row claims
+    /// nothing either way.
+    #[must_use]
+    pub fn may_ask(self) -> bool {
+        !matches!(self, Self::Lacks)
+    }
+}
+
 /// How many Builds one Machine runs at once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]
@@ -1387,7 +1423,29 @@ mod placement_tests {
 mod machine_runtime_capabilities_tests {
     use serde_json::json;
 
-    use super::MachineRuntime;
+    use super::{Claim, MachineRuntime};
+
+    #[test]
+    fn a_row_claims_nothing_when_its_list_is_empty_and_lacks_only_what_a_populated_list_omits() {
+        let claim = |capabilities: &[&str], asked: &str| {
+            let runtime = MachineRuntime {
+                capabilities: capabilities.iter().map(|name| (*name).to_owned()).collect(),
+                ..MachineRuntime::default()
+            };
+            runtime.claim(asked)
+        };
+        let cases = [
+            (&[][..], Claim::Unclaimed, true),
+            (&["ployz.a.v1"][..], Claim::Advertises, true),
+            (&["ployz.a.v1", "ployz.b.v1"][..], Claim::Advertises, true),
+            (&["ployz.b.v1"][..], Claim::Lacks, false),
+        ];
+        for (capabilities, expected, may_ask) in cases {
+            let got = claim(capabilities, "ployz.a.v1");
+            assert_eq!(got, expected, "{capabilities:?}");
+            assert_eq!(got.may_ask(), may_ask, "{capabilities:?}");
+        }
+    }
 
     #[test]
     fn runtime_without_capabilities_decodes_to_an_empty_set() {

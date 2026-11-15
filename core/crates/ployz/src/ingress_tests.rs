@@ -1367,3 +1367,36 @@ fn the_doors_a_set_left_open_are_named_public_then_tunnel() {
         "a container that is no canonical holder holds nothing"
     );
 }
+
+// Catches a row that claims nothing being refused, or one that claims other capabilities
+// being asked: only the first is asked blind.
+#[test]
+fn a_door_machine_is_asked_unless_its_row_claims_capabilities_without_the_one_needed() {
+    let claims = |capabilities: &[&str]| {
+        let mut row = machine('a', "one");
+        row.runtime.capabilities = capabilities.iter().map(|name| (*name).to_owned()).collect();
+        let door = DoorMachine::of(&row);
+        (door.supported, door.tunnels)
+    };
+    assert_eq!(claims(&[]), (true, true), "a row that claims nothing");
+    assert_eq!(
+        claims(&[SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY]),
+        (true, true),
+        "both"
+    );
+    assert_eq!(
+        claims(&[SET_INGRESS_DOORS_CAPABILITY]),
+        (true, false),
+        "doors without the tunnel"
+    );
+    assert_eq!(
+        claims(&[SET_INGRESS_TUNNEL_CAPABILITY]),
+        (false, true),
+        "the tunnel without doors"
+    );
+    assert_eq!(
+        claims(&["ployz.something.else.v1"]),
+        (false, false),
+        "others only"
+    );
+}

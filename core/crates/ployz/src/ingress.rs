@@ -6,7 +6,7 @@ use ployz_core::error_chain;
 use std::collections::BTreeMap;
 
 use ployz_core::{
-    ContainerId, ContainerObservation, ContainerRuntimeObservation, DescribeContractRequest,
+    Claim, ContainerId, ContainerObservation, ContainerRuntimeObservation, DescribeContractRequest,
     DoorChange, DoorOutcome, EnvironmentValues, HeldDoor, IngressDoor, IngressDoors,
     IngressDoorsFailure, IngressDoorsSet, IngressStage, Machine, MachineFailure, MachineId,
     MachineName, MachineObservation, MachineTarget, PartialResult, PlatformPurpose,
@@ -53,16 +53,17 @@ pub(crate) struct DoorMachine {
 
 impl DoorMachine {
     pub(crate) fn of(machine: &Machine) -> Self {
-        let capabilities = &machine.runtime.capabilities;
         Self {
             id: machine.id,
             name: machine.name.clone(),
-            // An empty list is a row that predates it, which claims nothing, so the
-            // daemon is asked and answers for itself.
-            supported: capabilities.is_empty()
-                || capabilities.contains(SET_INGRESS_DOORS_CAPABILITY),
-            tunnels: capabilities.is_empty()
-                || capabilities.contains(SET_INGRESS_TUNNEL_CAPABILITY),
+            supported: machine
+                .runtime
+                .claim(SET_INGRESS_DOORS_CAPABILITY)
+                .may_ask(),
+            tunnels: machine
+                .runtime
+                .claim(SET_INGRESS_TUNNEL_CAPABILITY)
+                .may_ask(),
         }
     }
 
@@ -354,8 +355,8 @@ fn declarers_of(machines: &[MachineObservation]) -> Vec<Declarer> {
                 && observation
                     .machine
                     .runtime
-                    .capabilities
-                    .contains(SET_CLUSTER_DOORS_CAPABILITY)
+                    .claim(SET_CLUSTER_DOORS_CAPABILITY)
+                    == Claim::Advertises
         })
         .map(|observation| Declarer {
             machine: observation.machine.id,

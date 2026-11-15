@@ -228,3 +228,21 @@ fn the_auth_key_opens_only_for_the_cluster_it_was_sealed_to() {
         None
     );
 }
+
+// Catches a row that claims nothing being refused, or one that claims other capabilities
+// being asked: only the first is asked blind.
+#[test]
+fn an_access_machine_is_asked_unless_its_row_claims_capabilities_without_the_one_needed() {
+    let supported = |capabilities: &[&str]| {
+        let mut row = crate::global_fixtures::machine('a', "one");
+        row.runtime.capabilities = capabilities.iter().map(|name| (*name).to_owned()).collect();
+        AccessMachine::of(&row).supported
+    };
+    assert!(supported(&[]), "a row that claims nothing");
+    assert!(supported(&[SET_PRIVATE_ACCESS_CAPABILITY]), "it claims it");
+    assert!(
+        supported(&[SET_PRIVATE_ACCESS_CAPABILITY, "ployz.something.else.v1"]),
+        "it claims it among others"
+    );
+    assert!(!supported(&["ployz.something.else.v1"]), "others only");
+}
