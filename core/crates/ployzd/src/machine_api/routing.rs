@@ -526,6 +526,15 @@ fn refuse_operator(request: &http::Request<Body>) -> Option<http::Response<Body>
     if !Provenance::of_headers(request.headers()).operator() {
         return None;
     }
+    // No route here accepts a compressed request, so tonic answers any other encoding
+    // `Unimplemented` before a handler runs; that answer comes first, as it always did.
+    if request
+        .headers()
+        .get("grpc-encoding")
+        .is_some_and(|encoding| encoding.as_bytes() != b"identity")
+    {
+        return None;
+    }
     let capability = ployz_core::capability_of(request.uri().path())?;
     if !ployz_core::authority::coverage::refuses_operator(capability) {
         return None;

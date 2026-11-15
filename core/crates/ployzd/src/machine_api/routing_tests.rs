@@ -621,6 +621,38 @@ async fn an_operator_is_refused_the_route_no_statement_admits_and_nothing_else()
         Some(serde_json::json!({ "capability": ployz_core::BUILD_CAPABILITY }))
     );
 
+    for encoding in ["gzip", "bogus"] {
+        let compressed = http::Request::builder()
+            .uri(op::Build::PATH)
+            .header("content-type", "application/grpc")
+            .header("grpc-encoding", encoding)
+            .header(ployz_core::OPERATOR_SCOPE_HEADER, "1")
+            .body(Body::empty())
+            .unwrap();
+        let served = proxy
+            .dispatch_with_snapshot(compressed, std::slice::from_ref(&local))
+            .await;
+        assert_eq!(
+            tonic::Status::from_header_map(served.headers()).map(|status| status.code()),
+            None,
+            "a {encoding} Build from an Operator is left to tonic's compression refusal"
+        );
+    }
+    let identity = http::Request::builder()
+        .uri(op::Build::PATH)
+        .header("content-type", "application/grpc")
+        .header("grpc-encoding", "identity")
+        .header(ployz_core::OPERATOR_SCOPE_HEADER, "1")
+        .body(Body::empty())
+        .unwrap();
+    let refused = proxy
+        .dispatch_with_snapshot(identity, std::slice::from_ref(&local))
+        .await;
+    assert_eq!(
+        tonic::Status::from_header_map(refused.headers()).map(|status| status.code()),
+        Some(tonic::Code::PermissionDenied)
+    );
+
     for (path, operator) in [
         (op::Build::PATH, false),
         (op::InspectContainer::PATH, true),
