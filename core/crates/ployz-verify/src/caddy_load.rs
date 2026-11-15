@@ -290,7 +290,7 @@ struct State {
 }
 
 impl State {
-    /// `certificates.quarantine(&mut projection)`: the projection the pass holds.
+    /// `projection = certificates.quarantine(projection)`: the projection the pass holds.
     fn derived(&self) -> Config {
         if self.projection.pins_c() && self.certificates.refused_c {
             self.projection.without_c()
