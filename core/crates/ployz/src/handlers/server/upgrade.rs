@@ -1357,6 +1357,127 @@ mod tests {
         assert_eq!(moved, 0);
     }
 
+    const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// A run's `--json` as bytes, with each attempt's random id checked and dropped.
+    fn bytes(mut result: Value) -> String {
+        for attempt in result
+            .get_mut("attempts")
+            .and_then(Value::as_array_mut)
+            .unwrap()
+        {
+            let id = attempt.as_object_mut().unwrap().remove("attempt_id");
+            assert_eq!(id.unwrap().as_str().unwrap().len(), 32);
+        }
+        result.to_string()
+    }
+
+    fn running_at(id: char, subnet: u8, version: &str, ingress: bool) -> Machine {
+        let mut server = machine(id, subnet);
+        server.runtime.daemon_version = version.into();
+        server.accepts_ingress = ingress;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_direct_run_prints_one_shape_per_outcome() {
+        let failed = || MachineUpgradeOutcome::Failed {
+            stage: ployz_core::MachineUpgradeStage::Acquiring,
+            error: "boom".into(),
+        };
+        let interrupted = || MachineUpgradeOutcome::Interrupted {
+            stage: ployz_core::MachineUpgradeStage::Restarting,
+        };
+        let cases = [
+            (
+                vec![running_at('a', 1, "1.2.2", true)],
+                vec![succeeded()],
+                format!(
+                    r#"{{"attempts":[{{"change":"upgraded","from_version":"1.2.2","outcome":"succeeded","server":"{A}","target":"1.2.3","version":"1.2.3"}}],"ingress":[],"unattempted":[]}}"#
+                ),
+            ),
+            (
+                vec![running_at('a', 1, "1.2.3", false)],
+                vec![succeeded()],
+                format!(
+                    r#"{{"attempts":[{{"change":"unchanged","from_version":"1.2.3","outcome":"succeeded","server":"{A}","target":"1.2.3","version":"1.2.3"}}],"ingress":null,"unattempted":[]}}"#
+                ),
+            ),
+            (
+                vec![running_at('a', 1, "1.2.4", false)],
+                vec![succeeded()],
+                format!(
+                    r#"{{"attempts":[{{"change":"downgraded","from_version":"1.2.4","outcome":"succeeded","server":"{A}","target":"1.2.3","version":"1.2.3"}}],"ingress":null,"unattempted":[]}}"#
+                ),
+            ),
+            (
+                vec![running_at('a', 1, "unreadable", false)],
+                vec![succeeded()],
+                format!(
+                    r#"{{"attempts":[{{"from_version":"unreadable","outcome":"succeeded","server":"{A}","target":"1.2.3","version":"1.2.3"}}],"ingress":null,"unattempted":[]}}"#
+                ),
+            ),
+            (
+                vec![
+                    running_at('a', 1, "1.2.2", true),
+                    running_at('b', 2, "1.2.2", true),
+                ],
+                vec![failed()],
+                format!(
+                    r#"{{"attempts":[{{"error":"boom","from_version":"1.2.2","outcome":"failed","server":"{A}","stage":"acquiring","target":"1.2.3"}}],"unattempted":["{B}"]}}"#
+                ),
+            ),
+            (
+                vec![
+                    running_at('a', 1, "1.2.2", true),
+                    running_at('b', 2, "1.2.2", true),
+                ],
+                vec![succeeded(), interrupted()],
+                format!(
+                    r#"{{"attempts":[{{"change":"upgraded","from_version":"1.2.2","outcome":"succeeded","server":"{A}","target":"1.2.3","version":"1.2.3"}},{{"from_version":"1.2.2","outcome":"interrupted","server":"{B}","stage":"restarting","target":"1.2.3"}}],"unattempted":[]}}"#
+                ),
+            ),
+            (
+                vec![running_at('a', 1, "1.2.2", true)],
+                vec![MachineUpgradeOutcome::Accepted],
+                format!(
+                    r#"{{"attempts":[{{"from_version":"1.2.2","outcome":"accepted","server":"{A}","target":"1.2.3"}}],"unattempted":[]}}"#
+                ),
+            ),
+        ];
+        for (machines, outcomes, golden) in cases {
+            let (result, _, _) = run_sequence(&machines, outcomes, None).await;
+            assert_eq!(bytes(result.unwrap()), golden);
+        }
+    }
+
+    #[test]
+    fn a_cut_short_run_prints_its_skipped_servers_and_the_error() {
+        let machines = [machine('a', 1), machine('b', 2)];
+        let attempts =
+            vec![serde_json::json!({ "server": machines[0].id, "outcome": "succeeded" })];
+        let skipped = [(&machines[0], "a", "No answer.".to_owned())];
+        let mode = crate::ui::test_mode(true);
+        let (result, captured) = crate::ui::captured(|| {
+            cut_short(
+                attempts,
+                &machines[1..],
+                &skipped,
+                "a",
+                Error::coded(RpcErrorCode::Unavailable, "Could not reach Cloud."),
+            )
+        });
+        drop(mode);
+        result.unwrap_err();
+        assert_eq!(
+            captured.unwrap().to_string(),
+            format!(
+                r#"{{"attempts":[{{"outcome":"succeeded","server":"{A}"}}],"follow_up_error":{{"cause":[],"code":"unavailable","details":null,"message":"Could not reach Cloud."}},"skipped":[{{"reason":"No answer.","server":"{A}"}}],"unattempted":["{B}"],"warnings":["Did not upgrade Server b: Server a stopped the run."]}}"#
+            )
+        );
+    }
+
     #[tokio::test]
     async fn definitive_busy_rejection_is_not_reported_as_uncertain() {
         let machine = machine('a', 1);
