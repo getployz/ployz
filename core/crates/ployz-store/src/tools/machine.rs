@@ -178,7 +178,7 @@ pub enum DiffVerb {
 }
 
 /// What a host needs to know about a tool beyond what a model is told.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct ToolFacts {
     /// The read that shows what a call to the tool started or changed.
     pub status: ToolId,
@@ -190,6 +190,14 @@ impl ToolFacts {
     #[must_use]
     pub fn verb(&self, input: &Value) -> DiffVerb {
         (self.verb)(input)
+    }
+}
+
+impl std::fmt::Debug for ToolFacts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolFacts")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
     }
 }
 
