@@ -453,6 +453,8 @@ mod rule_f {
 
 #[path = "ingress_tests/reachable.rs"]
 mod reachable;
+#[path = "ingress_tests/serving.rs"]
+mod serving;
 
 #[test]
 fn the_access_log_is_in_the_runtime_mount_under_the_run_dir() {
