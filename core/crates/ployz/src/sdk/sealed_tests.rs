@@ -525,3 +525,23 @@ async fn close_ends_every_names_wait() {
         .await
         .expect("a later wait resolves at once");
 }
+
+#[test]
+fn names_say_which_env_values_are_sealed() {
+    let env = || {
+        [
+            ("TOKEN", "first-secret-value"),
+            ("MODE", "second-plain-value"),
+        ]
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+    };
+    let text = "first-secret-value second-plain-value";
+    let scrubbed =
+        |names: &Names| SealedForms::compile(&values_under(env(), names)).scrub(text, &mut 0);
+    let only = Names::Only(BTreeSet::from(["TOKEN".to_owned()]));
+    assert_eq!(scrubbed(&only), "[secret TOKEN] second-plain-value");
+    assert_eq!(scrubbed(&Names::held(None)), "[secret TOKEN] [secret MODE]");
+    assert_eq!(scrubbed(&Names::held(Some(&BTreeSet::new()))), text);
+    assert_eq!(scrubbed(&Names::Unread), text);
+    assert_eq!(scrubbed(&Names::Failed), text);
+}

@@ -29,13 +29,39 @@ const NAMES_WAIT: std::time::Duration = ROW_DEADLINE;
 
 /// What the Store held Sealed, as of one read.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Names {
+pub(crate) enum Names {
     Unread,
     /// A read failed: nothing is shown until a later read lands.
     Failed,
     /// The Store owns no such Namespace: every env value is scrubbed.
     Every,
     Only(BTreeSet<String>),
+}
+
+impl Names {
+    /// The names a caller holds: `None` means the Store owns no such Namespace.
+    pub(crate) fn held(names: Option<&BTreeSet<String>>) -> Self {
+        names.map_or(Self::Every, |names| Self::Only(names.clone()))
+    }
+
+    /// Whether a Container env value under `name` is scrubbed.
+    fn admits(&self, name: &str) -> bool {
+        match self {
+            Self::Every => true,
+            Self::Only(names) => names.contains(name),
+            Self::Unread | Self::Failed => false,
+        }
+    }
+}
+
+/// The values of a Container's `env` that `names` seal.
+pub(crate) fn values_under(
+    env: impl IntoIterator<Item = (String, String)>,
+    names: &Names,
+) -> SealedValues {
+    env.into_iter()
+        .filter(|(name, _)| names.admits(name))
+        .collect()
 }
 
 #[derive(Debug)]
@@ -256,17 +282,13 @@ impl Env {
         {
             return Arc::clone(forms);
         }
-        let values: SealedValues = self
-            .values
-            .iter()
-            .flatten()
-            .filter(|(name, _)| match &read.names {
-                Names::Every => true,
-                Names::Only(names) => names.contains(*name),
-                Names::Unread | Names::Failed => false,
-            })
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect();
+        let values = values_under(
+            self.values
+                .iter()
+                .flatten()
+                .map(|(name, value)| (name.clone(), value.clone())),
+            &read.names,
+        );
         let forms = Arc::new(SealedForms::compile(&values));
         *cached = Some((read.names.clone(), Arc::clone(&forms)));
         forms
