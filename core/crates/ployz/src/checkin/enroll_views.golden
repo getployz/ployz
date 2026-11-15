@@ -1,0 +1,51 @@
+plain => Ok((InitialMachinePolicy { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true }, Some(MachineName("web-1")), None, None, InspectRequest { advertised_endpoints: [], include_rtts: false, include_storage: false, telemetry: None, token: Some(TokenRequest { public_ip: Auto }) })) (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+without HOME => Ok((InitialMachinePolicy { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true }, Some(MachineName("web-1")), None, None, InspectRequest { advertised_endpoints: [], include_rtts: false, include_storage: false, telemetry: None, token: Some(TokenRequest { public_ip: Auto }) })) (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("/root/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+zfs => Ok((InitialMachinePolicy { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true }, Some(MachineName("web-1")), None, Zfs { device: None }, InspectRequest { advertised_endpoints: [], include_rtts: false, include_storage: false, telemetry: None, token: Some(TokenRequest { public_ip: Auto }) })) (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+zfs device => Ok((InitialMachinePolicy { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true }, Some(MachineName("web-1")), None, Zfs { device: Some(ZfsDevice("/dev/disk/by-id/spare")) }, InspectRequest { advertised_endpoints: [], include_rtts: false, include_storage: false, telemetry: None, token: Some(TokenRequest { public_ip: Auto }) })) (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+zfs empty device => parse: error: invalid value 'zfs:' for '--storage <storage>': invalid ZFS device "": an absolute device path
+
+For more information, try '--help'.
+
+zfs dash device => parse: error: invalid value 'zfs:-x' for '--storage <storage>': invalid ZFS device "-x": an absolute device path
+
+For more information, try '--help'.
+
+no name => Ok((InitialMachinePolicy { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true }, None, None, None, InspectRequest { advertised_endpoints: [], include_rtts: false, include_storage: false, telemetry: None, token: Some(TokenRequest { public_ip: Auto }) })) (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+dash name => parse: error: unexpected argument '-x' found
+
+  tip: to pass '-x' as a value, use '-- -x'
+
+Usage: ployz server add [OPTIONS] [destination]
+
+For more information, try '--help'.
+
+spaced name => Err("invalid Machine Name \"web 1\": a 1-63 character lowercase DNS label [Closest(\"web-1\")]") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+flag name => parse: error: a value is required for '--name <name>' but none was supplied
+
+For more information, try '--help'.
+
+policy => Err("invalid Machine Label value \"a=b\": a nonempty printable ASCII Swarm value without leading or trailing whitespace []") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+label value with comma => Err("invalid label \"c\": expected KEY=VALUE []") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+label key with space => Err("invalid Machine Label key \"Bad Key\": nonempty ASCII letters, digits, '_', '.', or '-' []") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+label key with equals => Err("invalid Machine Label value \"x=v\": a nonempty printable ASCII Swarm value without leading or trailing whitespace []") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+label key with dash => parse: error: unexpected argument '-x' found
+
+  tip: to pass '-x' as a value, use '-- -x'
+
+Usage: ployz server add [OPTIONS] [destination]
+
+For more information, try '--help'.
+
+label empty value => Err("invalid Machine Label value \"\": a nonempty printable ASCII Swarm value without leading or trailing whitespace []") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+cluster name => Ok((InitialMachinePolicy { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true }, Some(MachineName("web-1")), Some(ClusterName("acme")), None, InspectRequest { advertised_endpoints: [], include_rtts: false, include_storage: false, telemetry: None, token: Some(TokenRequest { public_ip: Auto }) })) (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+dash cluster name => parse: error: unexpected argument '-x' found
+
+  tip: to pass '-x' as a value, use '-- -x'
+
+Usage: ployz server add [OPTIONS] [destination]
+
+For more information, try '--help'.
+
+spaced cluster name => Err("Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit. []") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+empty cluster name => Err("Use up to 63 lowercase letters, digits and hyphens. Start and end with a letter or digit. []") (None, Some("~/.ssh/id_ed25519"), false, false, true, false, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)
+ingress closed => Ok((InitialMachinePolicy { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true }, Some(MachineName("web-1")), None, None, InspectRequest { advertised_endpoints: [], include_rtts: false, include_storage: false, telemetry: None, token: Some(TokenRequest { public_ip: Auto }) })) (None, Some("~/.ssh/id_ed25519"), false, false, true, true, false) (None, Some(10.210.0.0/16), Some("0.4.0-beta.2"), Some("~/.config/ployz/config.yaml"), Some("unix:///run/ployz/ployz.sock"), 20, None)

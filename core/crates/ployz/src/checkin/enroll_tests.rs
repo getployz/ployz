@@ -695,6 +695,143 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
     );
 }
 
+fn built_for(instruction: &EnrollInstruction, home_set: bool) -> String {
+    match crate::cli::command().try_get_matches_from(add_arguments(
+        instruction,
+        "https://cloud.example",
+        home_set,
+    )) {
+        Ok(root) => crate::handlers::server::engine_view(&root),
+        Err(error) => format!("parse: {error}"),
+    }
+}
+
+fn odd_instruction() -> EnrollInstruction {
+    EnrollInstruction {
+        attempt_id: "att_1".to_owned(),
+        token: ployz_core::CloudEnrollToken::parse(TOKEN).unwrap(),
+        name: "web-1".to_owned(),
+        storage: EnrollStorage::None,
+        policy: EnrollPolicy {
+            labels: BTreeMap::new(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+        },
+        founding_cluster_name: None,
+        founding_ingress_closed: false,
+    }
+}
+
+fn labelled(labels: &[(&str, &str)]) -> BTreeMap<String, String> {
+    labels
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect()
+}
+
+#[test]
+fn the_engine_reads_an_instruction_as_it_read_the_arguments_built_from_it() {
+    let with = |change: &dyn Fn(&mut EnrollInstruction)| {
+        let mut instruction = odd_instruction();
+        change(&mut instruction);
+        instruction
+    };
+    let zfs = |device: Option<&str>| EnrollStorage::Zfs {
+        device: device.map(str::to_owned),
+    };
+    let cases: Vec<(&str, EnrollInstruction, bool)> = vec![
+        ("plain", odd_instruction(), true),
+        ("without HOME", odd_instruction(), false),
+        ("zfs", with(&|i| i.storage = zfs(None)), true),
+        (
+            "zfs device",
+            with(&|i| i.storage = zfs(Some("/dev/disk/by-id/spare"))),
+            true,
+        ),
+        (
+            "zfs empty device",
+            with(&|i| i.storage = zfs(Some(""))),
+            true,
+        ),
+        (
+            "zfs dash device",
+            with(&|i| i.storage = zfs(Some("-x"))),
+            true,
+        ),
+        ("no name", with(&|i| i.name = String::new()), true),
+        ("dash name", with(&|i| i.name = "-x".to_owned()), true),
+        ("spaced name", with(&|i| i.name = "web 1".to_owned()), true),
+        ("flag name", with(&|i| i.name = "--yes".to_owned()), true),
+        (
+            "policy",
+            with(&|i| {
+                i.policy.labels = labelled(&[("tier", "edge"), ("zone", "a=b")]);
+                i.policy.accepts_builds = false;
+                i.policy.accepts_ingress = false;
+            }),
+            true,
+        ),
+        (
+            "label value with comma",
+            with(&|i| i.policy.labels = labelled(&[("a", "b,c")])),
+            true,
+        ),
+        (
+            "label key with space",
+            with(&|i| i.policy.labels = labelled(&[("Bad Key", "v")])),
+            true,
+        ),
+        (
+            "label key with equals",
+            with(&|i| i.policy.labels = labelled(&[("k=x", "v")])),
+            true,
+        ),
+        (
+            "label key with dash",
+            with(&|i| i.policy.labels = labelled(&[("-x", "v")])),
+            true,
+        ),
+        (
+            "label empty value",
+            with(&|i| i.policy.labels = labelled(&[("a", "")])),
+            true,
+        ),
+        (
+            "cluster name",
+            with(&|i| i.founding_cluster_name = Some("acme".to_owned())),
+            true,
+        ),
+        (
+            "dash cluster name",
+            with(&|i| i.founding_cluster_name = Some("-x".to_owned())),
+            true,
+        ),
+        (
+            "spaced cluster name",
+            with(&|i| i.founding_cluster_name = Some("A B".to_owned())),
+            true,
+        ),
+        (
+            "empty cluster name",
+            with(&|i| i.founding_cluster_name = Some(String::new())),
+            true,
+        ),
+        (
+            "ingress closed",
+            with(&|i| i.founding_ingress_closed = true),
+            true,
+        ),
+    ];
+    let views: String = cases
+        .iter()
+        .map(|(label, instruction, home_set)| {
+            format!("{label} => {}\n", built_for(instruction, *home_set))
+        })
+        .collect();
+    assert_eq!(views, include_str!("enroll_views.golden"));
+}
+
 #[test]
 fn a_failure_sent_to_cloud_keeps_the_cause_under_its_sentence() {
     let error =

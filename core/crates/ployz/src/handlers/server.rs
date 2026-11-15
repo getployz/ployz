@@ -50,6 +50,8 @@ pub(super) mod upgrade_policy;
 mod waiting;
 
 use add::add;
+#[cfg(test)]
+pub(crate) use enroll::engine_view;
 pub(super) use enroll::{
     enroll_token, founding_cluster_name, joined_open, joined_unnamed, requested_storage,
 };
