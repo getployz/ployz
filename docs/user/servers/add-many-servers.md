@@ -61,10 +61,15 @@ check-in refreshes the row. Offline servers have stopped checking in.
 1. Select the servers you recognize by name, source IP and provider, then click **Enroll**.
    You can select servers while they prepare. Blocked and Offline servers cannot be selected. To
    enroll one server, click its name and then **Enroll** in its details.
-2. In a new organization, choose the **First server**. Everything else joins once it is up.
-3. Choose **Volumes**. ZFS gives volumes size limits. ZFS uses the main disk. You can fall back
+2. Under **Region**, each server starts in **Default**. Pick another region by its name, or
+   **New region…** and type a name, like `Sydney`. The new region's key comes from its name, here
+   `sydney`, and the region keeps the name when you click **Enroll N**. A name whose key a region
+   already has, in any case, is refused under the field with that region's name, such as
+   **Region Falkenstein (fsn) already exists.**
+3. In a new organization, choose the **First server**. Everything else joins once it is up.
+4. Choose **Volumes**. ZFS gives volumes size limits. ZFS uses the main disk. You can fall back
    to Docker where ZFS cannot run. **Docker only** has no managed volume size limits.
-4. Keep **Hostnames**, or choose **Pattern** under **Names** and enter `web-{n}` to get
+5. Keep **Hostnames**, or choose **Pattern** under **Names** and enter `web-{n}` to get
    `web-1`, `web-2`, and so on. A hostname becomes a valid server name: lowercase, with each
    run of other characters turned into one hyphen, so `MY-SERVER` becomes `my-server` and
    `my_box.lan` becomes `my-box-lan`. A hostname with no a-z letters or digits gets a name such as

@@ -66,7 +66,8 @@ ployz server add --command --region fsn
 The printed line keeps `--region`. A region is up to 63 lowercase letters, digits and hyphens, and
 starts with a letter or digit. Capitals are lowered, so `FSN` joins `fsn`. `--label-add
 region=fsn` does the same. Give both with different regions and the command stops before anything
-starts, saying to keep `--region`.
+starts, saying to keep `--region`. From the dashboard, you pick each server's region when you
+enroll it; see [Enroll the selection](add-many-servers.md#enroll-the-selection).
 
 Run the command again for a server that already joined and it keeps its region, or stays without
 one if it joined before regions. Name a different region and the command stops and says which
@@ -304,7 +305,8 @@ the servers that are ready, preparing, blocked and offline, with a bar for the m
 to the bottom of the list, and the list never reorders while you look at it. When your very first
 server arrives ready, the tray names it and offers **Enroll** and **Reject** right in the header.
 
-Select a waiting server and click **Enroll** to choose its name, storage and what it runs.
+Select a waiting server and click **Enroll** to choose its region, name, storage and what it runs.
+Each server starts in the **Default** region unless you pick another.
 You can enroll while it prepares. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can enroll or reject servers. For a member,
 **Enroll** and **Reject** are disabled and say so. Follow [Add many servers](add-many-servers.md) for the full
 review and enrollment flow.

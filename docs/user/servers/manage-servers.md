@@ -23,7 +23,7 @@ status only when someone should look.
 | **Upgrading** | Ployz is upgrading it. See [Upgrade Ployz on a server](#upgrade-ployz-on-a-server). |
 | **Upgrade failed** | Its last upgrade didn't finish: it failed, stopped partway, or Cloud couldn't tell how it ended. A failed upgrade goes back to the release it ran before. **Show details** on its page has where it stopped and any error. |
 
-When the list is wide enough, each row also shows the server's region, if it has one, and how much
+When the list is wide enough, each row also shows the name of the server's region, if it has one, and how much
 of its CPU and memory is in use right now. The meters stay empty until the server sends a reading, and an offline server shows
 none. A dash means no recent reading reached Ployz for that meter: the server sent none, or its
 clock runs behind, so its readings look old. The server's page has disk and the full picture.
@@ -661,13 +661,20 @@ command renamed it with `--name`, since the name you typed no longer selects it.
 
 ## Set a server's region
 
-A region is a label on the server named `region`, like `fsn` or `lhr`. The Servers list shows it
-in its own column. Servers with no region leave it blank.
+A region is a label on the server named `region`, like `fsn` or `lhr`. The Servers list shows the
+region's name in its own column, such as **Falkenstein** for `fsn` once you
+[rename it](#list-and-rename-regions). Servers with no region leave it blank.
 
-On a server's page, under **Placement**, open **Region** and pick one a server in your organization already has, **No
-region** to clear it, or **New region…** to type one. A region is up to 63 lowercase letters, digits
-and hyphens, and starts with a letter or digit. Anything else shows the rule under the field and
-sends nothing. Press Enter or click the check to save.
+On a server's page, under **Placement**, open **Region** and pick a region by its name, **No
+region** to clear it, or **New region…** to name a new one. Type its name, like `Sydney`, and press
+Enter or click the check. Its key comes from the name, here `sydney`. A name whose key a region
+already has, in any case, is refused under the field with that region's name, such as
+**Region Falkenstein (fsn) already exists.**, and nothing changes.
+
+When a service on the server belongs to an environment that runs in another region, the change
+asks first. **Move web-2 to Sydney** lists each service that leaves web-2 on the next deploy, with
+its environment and the server it goes to. **Move server** changes the region, and **Cancel** keeps
+the old one. When nothing would leave, the region changes at once.
 
 The page shows the region you picked and **Queued** until the server reports it, then the server's
 own value. If the server hasn't reported it after a minute, the page goes back to what the server
@@ -712,6 +719,11 @@ It prints `Renamed default to Falkenstein. Nothing restarts.` Only the name chan
 server's label and every environment stay as they are, so no service moves or restarts. A name is
 1 to 40 characters on one line. Renaming needs `servers:operate`, which owners and admins have.
 Both commands need `ployz login`.
+
+In the dashboard, click **Rename region** on the **Servers** page. Pick the region, type its new
+name and click **Rename region**. The dialog shows the key the CLI takes, such as
+`--region default`. The Servers list and each server's page show the new name at once. For a
+member who isn't an owner or admin, the button is disabled and says why.
 
 ## Upgrade Ployz on a server
 
