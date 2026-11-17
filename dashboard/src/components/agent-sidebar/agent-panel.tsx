@@ -29,7 +29,7 @@ import { isPageContext, type PageContext } from "#/modules/agent/page-context";
 import { chatTitle } from "#/modules/agent/thread-title";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
-import { pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
+import { answeredBy, pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
 import { ProposalCard } from "./proposal-card";
 import { pendingProposalsOptions } from "./proposals.queries";
 import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
@@ -167,6 +167,9 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
   const { data: proposals } = useQuery(pendingProposalsOptions(organizationSlug));
   const ours = new Set(Object.values(asked));
   const waiting = (pending ?? []).filter((approval) => !ours.has(approval.id));
+  // Whose answer this chat waits on: the member's own, unless every Approval it asked for is one they can't answer.
+  const asks = (pending ?? []).filter((approval) => bound.some(({ approvalId }) => approvalId === approval.id));
+  const asking = chat.interrupts.length === 0 ? null : answeredBy(asks);
   const proposed = proposals ?? [];
   const [decided, setDecided] = useState<readonly string[]>(() => stored(Decided, decidedKey(organizationSlug), []));
   useEffect(() => { localStorage.setItem(decidedKey(organizationSlug), JSON.stringify(decided)); }, [organizationSlug, decided]);
@@ -264,7 +267,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       </MessageScroller>
       <div className="flex shrink-0 flex-col gap-2 border-t p-2">
         <div ref={dock} className="empty:hidden" />
-        <Composer busy={chat.isLoading} asking={chat.interrupts.length > 0} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
+        <Composer busy={chat.isLoading} asking={asking} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
       </div>
     </MessageScrollerProvider>
   );
@@ -435,14 +438,17 @@ function StepGroup({ steps }: { steps: Steps }) {
   );
 }
 
-/** `asking`: an Approval waits in this chat. The client refuses a message until it is answered, so the draft stays and Send waits. */
-function Composer({ busy, asking, onSend, onStop }: { busy: boolean; asking: boolean; onSend: (text: string) => void; onStop: () => void }) {
+/**
+ * `asking`: an Approval waits in this chat, on this member (`you`) or on an owner or admin (`others`). The client
+ * refuses a message until it is answered, so the draft stays and Send waits.
+ */
+function Composer({ busy, asking, onSend, onStop }: { busy: boolean; asking: "you" | "others" | null; onSend: (text: string) => void; onStop: () => void }) {
   const [draft, setDraft] = useState("");
   const { scrollToEnd } = useMessageScroller();
   const send = (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
-    if (!text || busy || asking) return;
+    if (!text || busy || asking !== null) return;
     onSend(text);
     setDraft("");
     // Sending from further up the chat brings the new turn into view, and following resumes from there.
@@ -453,9 +459,13 @@ function Composer({ busy, asking, onSend, onStop }: { busy: boolean; asking: boo
   };
   return (
     <form onSubmit={send} className="flex flex-col gap-2">
-      {asking && <p id="composer-asking" className="text-xs text-muted-foreground">Approve or deny to send a message.</p>}
+      {asking !== null && (
+        <p id="composer-asking" className="text-xs text-muted-foreground">
+          {asking === "you" ? "Approve or deny to send a message." : "You can send a message once an owner or admin answers."}
+        </p>
+      )}
       <InputGroup>
-        <InputGroupTextarea aria-label="Message the agent" aria-describedby={asking ? "composer-asking" : undefined}
+        <InputGroupTextarea aria-label="Message the agent" aria-describedby={asking === null ? undefined : "composer-asking"}
           placeholder="Ask about your servers…" rows={1} value={draft}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} className="max-h-40 min-h-9" />
         <InputGroupAddon align="block-end">
@@ -465,7 +475,7 @@ function Composer({ busy, asking, onSend, onStop }: { busy: boolean; asking: boo
               <span className="sr-only">Stop</span>
             </InputGroupButton>
           ) : (
-            <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={!draft.trim() || asking}>
+            <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={!draft.trim() || asking !== null}>
               <ArrowUpIcon />
               <span className="sr-only">Send</span>
             </InputGroupButton>

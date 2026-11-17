@@ -2,7 +2,7 @@ import type { DestructiveEffect, MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { runChange } from "#/modules/volume-run/run-approval";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
-import { askedLoss, MISMATCHED_ACT, shownTarget } from "./approvals.queries";
+import { answeredBy, askedLoss, MISMATCHED_ACT, shownTarget } from "./approvals.queries";
 
 const effect = (verb: "restart" | "stop", name: string): DestructiveEffect =>
   ({ kind: verb === "stop" ? "stops_service" : "restarts_service", name, node: `env-production/${name}`, path: `services.${name}` });
@@ -93,5 +93,18 @@ describe("askedLoss", () => {
   it("asks nothing for a restore that loses no writes, or for another workflow", () => {
     expect(askedLoss(draft({ kind: "restore", args: { from: "fsn-1" } }))).toBeNull();
     expect(askedLoss(draft({ kind: "mirror", args: { to: "fsn-2" } }))).toBeNull();
+  });
+});
+
+describe("answeredBy", () => {
+  const theirs = { protected: false, yours: true };
+  const anOwners = { protected: true, yours: true };
+
+  it("is the member while any Approval the chat asked for is theirs to answer", () => {
+    expect(answeredBy([anOwners, theirs])).toBe("you");
+  });
+
+  it("is an owner or admin once every Approval the chat asked for is out of the member's hands", () => {
+    expect(answeredBy([anOwners])).toBe("others");
   });
 });

@@ -21,6 +21,10 @@ export type ApprovalView = Awaited<ReturnType<typeof getApprovalServerFn>>;
 /** Whether `approval` waits on this person, rather than on an owner or admin they asked into a Protected Environment. */
 export const waitsOnYou = (approval: Pick<ApprovalView, "protected" | "yours">) => !(approval.protected && approval.yours);
 
+/** Who must answer before a chat that asked for `approvals` can go on: this person, unless none of them is theirs to answer. */
+export const answeredBy = (approvals: readonly Pick<ApprovalView, "protected" | "yours">[]): "you" | "others" =>
+  approvals.length > 0 && !approvals.some(waitsOnYou) ? "others" : "you";
+
 /** How often the sidebar rereads approvals: a CLI or another tab can ask, or answer, at any moment. */
 const APPROVAL_POLL_MS = 2_000;
 

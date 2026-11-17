@@ -124,7 +124,8 @@ click it to see them. Under its name the card says when it was asked, like **9 m
 The agent picks up your answer and carries on. If you denied it, the agent gets your reason.
 
 While a card from this chat waits, the message box keeps what you type but doesn't send it. A line above it
-says **Approve or deny to send a message.**
+says **Approve or deny to send a message.** If the card waits on an owner or admin, it says **You can send a
+message once an owner or admin answers.**
 
 A card for a save, like **Save shop/production**, is marked **Deletes on deploy**: saving deletes
 nothing yet. Approving it saves without deploying, and shows **Approved. Saves without deploying.**
