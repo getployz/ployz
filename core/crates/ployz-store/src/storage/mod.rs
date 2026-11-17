@@ -302,7 +302,6 @@ const MIGRATIONS: &[(&str, Step)] = &[
         Step::Sql(include_str!("migrations/0046_deployment_teardown.sql")),
     ),
     (
-        // The region each applied Service was deployed in.
         "0047_applied_region",
         Step::Sql(include_str!("migrations/0047_applied_region.sql")),
     ),

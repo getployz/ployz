@@ -1864,7 +1864,6 @@ fn storage_eligibility_warnings(
         .collect()
 }
 
-/// The region `spec`'s placement keeps it in, when it names one.
 fn region(spec: &RequestedServiceSpec) -> Option<Region> {
     spec.placement
         .constraints

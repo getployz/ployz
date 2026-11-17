@@ -788,7 +788,6 @@ pub enum PlanError {
     VolumeOutsideRegion {
         /// The Volume, as its owner named it.
         volume: String,
-        /// The Server holding the Volume.
         machine: MachineName,
         /// A Server in the region the Service can run on.
         to: MachineName,

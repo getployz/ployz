@@ -109,7 +109,6 @@ impl<'snapshot> Candidates<'snapshot> {
             .all(|(_, candidacy)| *candidacy == Candidacy::Excluded(Exclusion::PlacementMismatch))
     }
 
-    /// Whether no Machine of the snapshot is in `region`.
     pub(super) fn none_in(&self, region: &Region) -> bool {
         self.0
             .iter()

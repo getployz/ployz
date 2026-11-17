@@ -63,7 +63,6 @@ pub struct DiffView {
     pub changes: Vec<NodeChange>,
     /// The Environment's default region, when the next Deploy changes where its
     /// Services run. No node holds it, so no row of `changes` names it.
-    // An older Cloud doesn't send it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub region: Option<RegionChange>,

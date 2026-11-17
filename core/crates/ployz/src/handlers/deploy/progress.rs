@@ -765,7 +765,6 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // failure the inspect hint above reads.
         bad_image |= pulled && !build_failed && built.is_none();
     }
-    // A Volume outside its Service's region is moved into it, to the Server the plan chose.
     for entry in view.preview.iter().flat_map(|preview| &preview.blocked) {
         let detail = |key| {
             entry

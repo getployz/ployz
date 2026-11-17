@@ -252,10 +252,7 @@ impl<'m> Store<'m> {
         self.approved(command, &Trusted::default(), Some(check))
     }
 
-    /// Stage `edit`. One that sets the Environment's default region goes with the regions
-    /// this CLI saw on the Servers. The in-process Store refuses a region none of them is
-    /// in; Cloud doesn't read their labels, so for Cloud this refuses it. Servers this
-    /// can't reach refuse none, and the Deploy then refuses each Service it can't place.
+    /// Stage `edit`, refusing a default region no observed Server is in.
     pub(crate) fn try_edit(&self, edit: &Edit) -> Result<Edited, StoreCallError> {
         let region = edit.changes.iter().find_map(|change| match change {
             Change::Set { path, value } if path.environment().is_some() => {
@@ -488,9 +485,8 @@ impl<'m> Store<'m> {
         })
     }
 
-    /// The regions the Cluster's Servers are in, by their `region` label, from one Runtime
-    /// Watch frame: the in-process Store's Cluster through `--connect` or the context, Cloud's
-    /// through this credential's Server Access. None when a Server went unobserved.
+    /// The regions the Servers are in, by their `region` label; none when a Server went
+    /// unobserved.
     fn observe_regions(&self) -> Option<BTreeSet<Region>> {
         let runtime = runtime().ok()?;
         let context = self.context();
