@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { EventType } from "@tanstack/ai/client";
 import type { UIMessage } from "@tanstack/ai-react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import AgentPanel, { Turn } from "./agent-panel";
 import { approvalOptions, type ApprovalView } from "./approvals.queries";
+import { approvalInterrupt } from "#/modules/agent/agent";
 import { FAILURES } from "#/modules/agent/provider-error";
 import { agentThreadsOptions, type ThreadSummary } from "./threads.queries";
 import { pendingProposalsOptions, proposalOptions, type ProposalView } from "./proposals.queries";
@@ -70,6 +72,40 @@ it("sends on Enter, keeps Shift+Enter and composing input as a draft", async () 
   await waitFor(() => expect(posted().some((body) => body.includes("list services"))).toBe(true));
   expect(box).toHaveProperty("value", "");
   expect(posted().map((body) => (JSON.parse(body) as { forwardedProps?: unknown }).forwardedProps)).toContainEqual(expect.objectContaining({ page }));
+});
+
+it("keeps a draft in the box and sends nothing while an Approval waits in the chat", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  const interrupt = approvalInterrupt.interrupt({ key: "c1", reason: "approval_required", message: "Deploy?", payload: { approvalId: "a1" } });
+  const run = [
+    { type: EventType.RUN_STARTED, threadId: "thread-acme", runId: "r1", timestamp: 1 },
+    { type: EventType.RUN_FINISHED, threadId: "thread-acme", runId: "r1", outcome: { type: "interrupt", interrupts: [interrupt] }, timestamp: 2 },
+  ].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("");
+  const fetched = vi.fn((_url: string, init?: RequestInit) => Promise.resolve(init?.method === "POST"
+    ? new Response(run, { headers: { "content-type": "text/event-stream" } })
+    : Response.json({ messages: [] })));
+  vi.stubGlobal("fetch", fetched);
+  const rejected = vi.fn();
+  window.addEventListener("unhandledrejection", rejected);
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  render(<QueryClientProvider client={client}><AgentPanel organizationSlug="acme" scope={scope} page={page} threadId="thread-acme"
+    onChat={() => {}} /></QueryClientProvider>);
+  const posted = () => fetched.mock.calls.filter(([, init]) => init?.method === "POST").length;
+  const box = screen.getByRole("textbox", { name: "Message the agent" });
+  fireEvent.change(box, { target: { value: "deploy" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await screen.findByText("Approve or deny to send a message.");
+  const first = posted();
+
+  fireEvent.change(box, { target: { value: "also list services" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await act(() => Promise.resolve());
+  window.removeEventListener("unhandledrejection", rejected);
+
+  expect(box).toHaveProperty("value", "also list services");
+  expect(posted()).toBe(first);
+  expect(rejected).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Send" })).toHaveProperty("disabled", true);
 });
 
 it("shows a member message without the page block it opens with", () => {

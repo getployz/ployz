@@ -264,7 +264,7 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       </MessageScroller>
       <div className="flex shrink-0 flex-col gap-2 border-t p-2">
         <div ref={dock} className="empty:hidden" />
-        <Composer busy={chat.isLoading} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
+        <Composer busy={chat.isLoading} asking={chat.interrupts.length > 0} onSend={(text) => void chat.sendMessage(text)} onStop={chat.stop} />
       </div>
     </MessageScrollerProvider>
   );
@@ -435,13 +435,14 @@ function StepGroup({ steps }: { steps: Steps }) {
   );
 }
 
-function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (text: string) => void; onStop: () => void }) {
+/** `asking`: an Approval waits in this chat. The client refuses a message until it is answered, so the draft stays and Send waits. */
+function Composer({ busy, asking, onSend, onStop }: { busy: boolean; asking: boolean; onSend: (text: string) => void; onStop: () => void }) {
   const [draft, setDraft] = useState("");
   const { scrollToEnd } = useMessageScroller();
   const send = (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
-    if (!text || busy) return;
+    if (!text || busy || asking) return;
     onSend(text);
     setDraft("");
     // Sending from further up the chat brings the new turn into view, and following resumes from there.
@@ -451,9 +452,11 @@ function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (text: stri
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) send(event);
   };
   return (
-    <form onSubmit={send}>
+    <form onSubmit={send} className="flex flex-col gap-2">
+      {asking && <p id="composer-asking" className="text-xs text-muted-foreground">Approve or deny to send a message.</p>}
       <InputGroup>
-        <InputGroupTextarea aria-label="Message the agent" placeholder="Ask about your servers…" rows={1} value={draft}
+        <InputGroupTextarea aria-label="Message the agent" aria-describedby={asking ? "composer-asking" : undefined}
+          placeholder="Ask about your servers…" rows={1} value={draft}
           onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} className="max-h-40 min-h-9" />
         <InputGroupAddon align="block-end">
           {busy ? (
@@ -462,7 +465,7 @@ function Composer({ busy, onSend, onStop }: { busy: boolean; onSend: (text: stri
               <span className="sr-only">Stop</span>
             </InputGroupButton>
           ) : (
-            <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={!draft.trim()}>
+            <InputGroupButton type="submit" size="icon-sm" variant="default" className="ml-auto" disabled={!draft.trim() || asking}>
               <ArrowUpIcon />
               <span className="sr-only">Send</span>
             </InputGroupButton>
