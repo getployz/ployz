@@ -55,7 +55,7 @@ ts-rs.workspace = true
 unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.13.3"
 unicode-width = { version = "0.2.2", default-features = false }
-uuid = { version = "1.24.0", features = ["v4"] }
+uuid = { version = "1.24.0", features = ["v4", "v7"] }
 rmcp = { version = "3.5.1", default-features = false, features = ["elicitation", "server", "transport-io"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

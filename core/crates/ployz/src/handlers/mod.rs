@@ -435,7 +435,7 @@ pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn command_path(mut matches: &ArgMatches) -> String {
+pub(crate) fn command_path(mut matches: &ArgMatches) -> String {
     let mut parts = Vec::new();
     while let Some((name, child)) = matches.subcommand() {
         parts.push(name);
@@ -453,7 +453,7 @@ pub(crate) fn joined<T: ToString>(items: &[T]) -> String {
         .join(", ")
 }
 
-fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
+pub(crate) fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
     while let Some((_, child)) = matches.subcommand() {
         matches = child;
     }
