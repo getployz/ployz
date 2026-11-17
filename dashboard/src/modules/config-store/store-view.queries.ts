@@ -57,6 +57,9 @@ const refreshedBy = {
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
+  // Region names; the regions Servers are in come with the query, from the Runtime.
+  regions: ["store_region"],
+  new_region: ["store_region"],
   // A Sync compares two Environments over what they last shared.
   sync: ["store_environment", "store_deployment"],
   // The Project names its Default Environment; a removal is a Deployment.
