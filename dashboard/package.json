@@ -103,7 +103,7 @@
     "inngest": "^4.21.0",
     "ipaddr.js": "^2.5.0",
     "isbot": "^5.2.2",
-    "minimatch": "^10.2.5",
+    "minimatch": "^11.0.1",
     "pg": "^8.20.0",
     "posthog-node": "^5.54.1",
     "react": "^19.2.5",
