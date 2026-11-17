@@ -20,7 +20,7 @@ impl Tool for RegionList {
     const NAME: &'static str = "region_list";
     const STATUS: ToolId = ToolId::RegionList;
     const TITLE: &'static str = "List regions";
-    const DESCRIPTION: &'static str = "List regions: each one's name, its key and its Servers, and which Servers are in no region. A new Server joins the default region unless it is added to another.";
+    const DESCRIPTION: &'static str = "List regions: name, key and Servers, and the Servers in no region. New Servers join the default region.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
@@ -62,7 +62,8 @@ impl Tool for RegionRename {
     const NAME: &'static str = "region_rename";
     const STATUS: ToolId = ToolId::RegionList;
     const TITLE: &'static str = "Rename a region";
-    const DESCRIPTION: &'static str = "Rename a region. Takes effect right away. Its key, its Servers and every Environment stay as they are, so nothing restarts.";
+    const DESCRIPTION: &'static str =
+        "Rename a region. Its key, Servers and Environments stay as they are, so nothing restarts.";
     const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {

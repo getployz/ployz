@@ -5833,6 +5833,63 @@
     ]
   },
   {
+    "tool": "server_add",
+    "input": {
+      "region": "syd"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-server_add",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "command": "ployz server add --region syd",
+              "region": "syd"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_add",
+    "input": {
+      "region": "syd"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-server_add",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "command": "ployz server add --region syd",
+              "region": "syd"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "region_list",
     "input": {},
     "place": {

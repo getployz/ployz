@@ -354,7 +354,7 @@ fn told(follow_up: FollowUp) -> Told {
     let place =
         |place: &Place| json!({ "project": place.project, "environment": place.environment });
     match follow_up {
-        FollowUp::ServerAdd => Told::Fix(Fix::ConnectServers),
+        FollowUp::ServerAdd { .. } => Told::Fix(Fix::ConnectServers),
         FollowUp::ServerClean { .. } => open(DashboardPage::Servers),
         FollowUp::SetRegistryCredential { .. }
         | FollowUp::SetStopFirst { .. }

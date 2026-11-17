@@ -42,7 +42,7 @@ fn every_store_follow_up_reads_as_main_wrote_it() {
     type Told = (Option<Call>, Option<Fix>);
     let cases: Vec<(FollowUp, Value, Told)> = vec![
         (
-            FollowUp::ServerAdd,
+            FollowUp::ServerAdd { region: None },
             json!("ployz server add"),
             (None, Some(Fix::ConnectServers)),
         ),
@@ -391,7 +391,7 @@ fn another_refusal_keeps_the_same_call_as_its_retry() {
     let error = store_error(
         RpcErrorCode::Conflict,
         "The Environment moved",
-        FollowUp::ServerAdd.details(),
+        FollowUp::ServerAdd { region: None }.details(),
     );
     let refusal = from_store(error, &call, Writes::Committed);
     assert!(refusal.retry.is_same());

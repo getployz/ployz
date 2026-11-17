@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::scope::EnvironmentSummary;
-use crate::{EnvironmentName, ProjectName};
+use crate::{EnvironmentName, ProjectName, RegionKey};
 
 const KEY: &str = "follow_up";
 const NEXT: &str = "next";
@@ -65,7 +65,11 @@ pub(crate) enum Storage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum FollowUp {
-    ServerAdd,
+    ServerAdd {
+        /// The region the Server joins, when the command names one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<RegionKey>,
+    },
     ServerClean {
         namespace: String,
     },
@@ -226,7 +230,10 @@ impl FollowUp {
     fn render(&self) -> Cli {
         let line = Cli::Line;
         match self {
-            Self::ServerAdd => line("ployz server add".into()),
+            Self::ServerAdd { region: None } => line("ployz server add".into()),
+            Self::ServerAdd {
+                region: Some(region),
+            } => line(format!("ployz server add --region {region}")),
             Self::ServerClean { namespace } => line(format!(
                 "ployz server clean --namespace {namespace} --confirm {namespace}"
             )),

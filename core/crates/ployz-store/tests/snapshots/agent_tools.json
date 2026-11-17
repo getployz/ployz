@@ -2105,7 +2105,33 @@
       "title": "Show Servers"
     },
     {
-      "description": "List regions: each one's name, its key and its Servers, and which Servers are in no region. A new Server joins the default region unless it is added to another.",
+      "description": "The command a person runs to add a Server to a region. With no region it joins the default one. Nothing changes until they run it.",
+      "destructive": false,
+      "gate": "never",
+      "idempotent": true,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "region": {
+            "description": "The region it joins, e.g. `syd`. Omit for the default.",
+            "examples": [
+              "syd"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "server_add",
+      "open_world": false,
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true,
+      "title": "Add a Server"
+    },
+    {
+      "description": "List regions: name, key and Servers, and the Servers in no region. New Servers join the default region.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,
@@ -2585,7 +2611,7 @@
       "title": "Set what a Server accepts"
     },
     {
-      "description": "Rename a region. Takes effect right away. Its key, its Servers and every Environment stay as they are, so nothing restarts.",
+      "description": "Rename a region. Its key, Servers and Environments stay as they are, so nothing restarts.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,

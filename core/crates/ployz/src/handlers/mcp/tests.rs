@@ -2988,6 +2988,7 @@ mod tool_facts {
 
     const SERVER: &[&str] = &[
         "server_show",
+        "server_add",
         "server_logs",
         "server_metrics",
         "server_drain",

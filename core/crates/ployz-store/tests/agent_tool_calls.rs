@@ -270,6 +270,7 @@ fn the_catalog_has_the_agreed_tools() {
             "github_ls",
             "github_connect",
             "server_show",
+            "server_add",
             "region_list",
             "server_logs",
             "server_metrics",
@@ -508,6 +509,19 @@ fn github_connect_reads_cloud_s_answer_with_every_field_optional() {
     assert_eq!(
         connect(json!({})),
         json!({ "connected": false, "repositories": [], "connect_at": null })
+    );
+}
+
+#[test]
+fn server_add_gives_the_command_that_puts_a_server_in_a_region() {
+    let add = |input: Value| call(&shop(), "server_add", input, "call-1").ok();
+    assert_eq!(
+        add(json!({})),
+        json!({ "command": "ployz server add", "region": "default" })
+    );
+    assert_eq!(
+        add(json!({ "region": "SYD" })),
+        json!({ "command": "ployz server add --region syd", "region": "syd" })
     );
 }
 
@@ -4109,7 +4123,7 @@ fn docs_answer_from_the_binary_on_any_store() {
 }
 
 /// Read tools with no input that names something which might not exist.
-const NO_MISSING_TARGET: &[&str] = &["github_connect", "region_list"];
+const NO_MISSING_TARGET: &[&str] = &["github_connect", "region_list", "server_add"];
 
 /// Each read tool asked about a name or path that does not exist, one row per
 /// input that names one. A new read tool fails

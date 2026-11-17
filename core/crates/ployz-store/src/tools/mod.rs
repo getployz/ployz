@@ -124,6 +124,7 @@ tools! {
     github::GithubLs,
     github::GithubConnect,
     server::ServerShow,
+    server::ServerAdd,
     region::RegionList,
     server::ServerLogs,
     metrics::ServerMetrics,
