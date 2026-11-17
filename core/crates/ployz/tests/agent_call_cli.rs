@@ -169,8 +169,8 @@ fn cloud(status: Option<u16>) -> (String, Arc<Mutex<Vec<String>>>) {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             let Some(status) = status else {
-                // Hold the connection open past the sender's patience.
-                std::thread::sleep(Duration::from_secs(10));
+                // Answer nothing, and hold the connection until the sender gives up and closes it.
+                let _ = stream.read_to_end(&mut Vec::new());
                 continue;
             };
             let mut request = Vec::new();
