@@ -8982,3 +8982,35 @@ fn a_roll_back_to_a_version_saved_in_another_region_leaves_the_region_as_it_is()
     assert_eq!(staged.region, None);
     assert_eq!(changed(&store, &who), ["web"]);
 }
+
+#[test]
+fn discarding_everything_names_the_region_it_dropped() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &edit).unwrap();
+    set_replicas(&store, &who, "web", 3);
+
+    let discarded = store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(discarded.dropped, ["@environment.region", "web.replicas"]);
+    assert_eq!(diff(&store, &who).total_count, 0);
+}

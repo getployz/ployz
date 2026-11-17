@@ -17,8 +17,9 @@ A server is in a region when its `region` label names it:
 ployz server set web-1 --label-add region=fsn
 ```
 
-Choose any short name made of letters, digits, hyphens, underscores and dots. Servers with the
-same name are in the same region. Upper and lower case are the same, so `FSN` is `fsn`.
+Choose any short name made of letters, digits, hyphens, underscores and dots. A label with other
+characters, such as a space, is not a region. Servers with the same name are in the same region.
+Upper and lower case are the same, so `FSN` is `fsn`.
 
 ## Set an environment's region
 
