@@ -137,21 +137,30 @@ fn exempt(matches: &ArgMatches, command: &Command, path: &str) -> bool {
 fn with_why(args: &[OsString]) -> String {
     let mut line = vec!["ployz".to_owned(), format!("--why \"{PLACEHOLDER}\"")];
     let mut args = args.iter().map(|arg| arg.to_string_lossy().into_owned());
+    // Past `--` every word is the command's own, a `--why` among them too.
+    let mut own = false;
     while let Some(arg) = args.next() {
-        if arg == "--why" {
+        if !own && arg == "--why" {
             args.next();
             continue;
         }
-        if arg.starts_with("--why=") {
+        if !own && arg.starts_with("--why=") {
             continue;
         }
-        line.push(if arg.contains(char::is_whitespace) || arg.is_empty() {
-            format!("'{arg}'")
-        } else {
-            arg
-        });
+        own = own || arg == "--";
+        line.push(quoted(arg));
     }
     line.join(" ")
+}
+
+/// The word as a shell reads it back: bare when it is plain, else in single quotes, with
+/// each quote inside it closed, escaped and reopened.
+fn quoted(arg: String) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_=+,./:@%".contains(c);
+    if !arg.is_empty() && arg.chars().all(plain) {
+        return arg;
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 /// The credential this device holds, without going to Cloud for it: `PLOYZ_TOKEN`, else
@@ -176,6 +185,18 @@ mod tests {
         assert_eq!(
             with_why(&args(&["status", "--json"])),
             "ployz --why \"<the goal this command serves>\" status --json"
+        );
+        assert_eq!(
+            with_why(&args(&[
+                "exec",
+                "web",
+                "--",
+                "echo",
+                "it's ready",
+                "--why",
+                "x"
+            ])),
+            "ployz --why \"<the goal this command serves>\" exec web -- echo 'it'\\''s ready' --why x"
         );
         assert_eq!(
             with_why(&args(&["--why", "", "set", "web.image=x y"])),

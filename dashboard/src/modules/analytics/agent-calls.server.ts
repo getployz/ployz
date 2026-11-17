@@ -127,7 +127,9 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g,
-  /(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*\d)(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/])/g,
+  // An AWS secret key is 40 of these or so and may hold no digit. Neither starts at a `/` or after a `.`, so an absolute path and a URL are kept.
+  /(?<![A-Za-z0-9+/=.])(?!\/)(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9]*[+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/])/g,
+  /(?<![A-Za-z0-9+/.])(?!\/)(?=[A-Za-z0-9+/]*\d)(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/])/g,
   /\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{32,}\b/g,
 ];
 /** Past this the text is cut before it is read, so that a very long one costs no more to redact than a long one. The SDK cuts at 2,048 after. */

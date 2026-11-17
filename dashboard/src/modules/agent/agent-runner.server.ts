@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { Act, Answer, Ask, ConfigCommand, ConfigWritten, DiffView, JsonValue, Place, Write } from "@ployz/sdk";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import type { ToolOutcome } from "#/modules/agent/agent";
 import { agentResume, agentStart, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
 import { callCloud } from "#/modules/agent/call-cloud.server";
@@ -416,8 +416,11 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     return done(refused("invalid_argument", INTENT_REFUSAL));
   }
   // A tool that fails as an Effect failure is a call that failed too: record it, with no word of the cause, and fail the same.
+  // A call that was only interrupted did not fail, so it is not one.
   const result = yield* runTool(caller, { ...call, input }).pipe(
-    Effect.tapCause(() => record({ kind: "call", tool: call.tool, intent, error: { type: "internal", message: "The tool failed." } })),
+    Effect.tapCause((cause) =>
+      Cause.hasInterruptsOnly(cause) ? Effect.void : record({ kind: "call", tool: call.tool, intent, error: { type: "internal", message: "The tool failed." } }),
+    ),
   );
   if ("outcome" in result) yield* record({ kind: "call", tool: call.tool, intent, error: failureOf(result.outcome) });
   return result;

@@ -91,13 +91,14 @@ it("an email and a token in the reason never reach PostHog, and neither do tool 
 
 it.each([
   "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY",
+  "wJalrXUtnFEMI/KxMDENG/bPxRfiCYzEXAMPLEKEY",
   "q3N8vT+2xLm/9KfPz0aRbE7wYc1HdUj4sGiOk6lMnV8=",
   "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7+aB/x",
 ])("the secret %s in a reason is redacted whole, and a path or URL beside it is kept", async (secret) => {
-  const intent = `Rotate ${secret} for /home/user/projects/my-app/src/index.ts, see https://example.com/docs/getting-started/install.`;
-  await withPostHog(recordAgentCall(callReport("cli", { intent })));
+  const kept = "/home/user/Projects/acme/version2/src/index.ts, see https://example.com/docs/getting-started/install.";
+  await withPostHog(recordAgentCall(callReport("cli", { intent: `Rotate ${secret} for ${kept}` })));
   const [event] = await flushed();
-  expect(event?.properties["$mcp_intent"]).toBe("Rotate [redacted] for /home/user/projects/my-app/src/index.ts, see https://example.com/docs/getting-started/install.");
+  expect(event?.properties["$mcp_intent"]).toBe(`Rotate [redacted] for ${kept}`);
 });
 
 it("a call refused for lacking a reason is a failed call of type validation, with no intent", async () => {
