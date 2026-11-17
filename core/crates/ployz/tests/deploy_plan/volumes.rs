@@ -1058,43 +1058,69 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
 
 #[test]
 fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
-    let mut postgres = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
-    add_named_volume(&mut postgres, "data");
-    let postgres = kept_in(postgres, "fsn");
-    let snapshot = DeploySnapshot {
-        machines: vec![
-            in_region(machine('1', "first"), "syd"),
-            in_region(machine('2', "second"), "fsn"),
-        ],
-        volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
-            machine_id('1'),
-            "data",
-        )])
-        .expect("valid Volume Snapshot fixture"),
-        ..Default::default()
-    };
+    let (web, db) = web_and_db();
+    let (web, db) = (kept_in(web, "fsn"), kept_in(db, "fsn"));
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot.machines = snapshot
+        .machines
+        .into_iter()
+        .zip(["fsn", "syd"])
+        .map(|(machine, region)| in_region(machine, region))
+        .collect();
+    snapshot.containers = vec![container('a', '2', &db, &service_id('a'))];
     let intent = DeployIntent::apply_all(
         Namespace::parse("app").unwrap(),
-        [&postgres],
+        [&web, &db],
         PlanOptions::default(),
     );
 
     let preview = runner_preview(&intent, &snapshot).unwrap();
 
-    let rpc = only_blocked(&preview);
-    assert_eq!(rpc.message, "data is on first");
+    let planned: Vec<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(planned, std::slice::from_ref(&web.name));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    let rpc = &blocked.error;
+    assert_eq!(rpc.message, "data is on second");
     assert_eq!(
         rpc.details.get("reason"),
         Some(&serde_json::json!("volume_outside_region"))
     );
     assert_eq!(rpc.details.get("volume"), Some(&serde_json::json!("data")));
-    assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("second")));
+    assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("first")));
     assert!(preview.volumes_to_create.is_empty());
 
-    let whole = preview_deploy(&intent, &snapshot).unwrap_err();
-    assert_eq!(whole.to_string(), "data is on first");
+    preview_deploy(&intent, &snapshot).unwrap_err();
+}
+
+#[test]
+fn a_region_no_server_is_in_stops_a_service_with_a_volume_and_not_the_deploy() {
+    let (web, db) = web_and_db();
+    let (web, db) = (web, kept_in(db, "lhr"));
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot.containers = vec![container('a', '2', &db, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, db.name);
+    assert_eq!(
+        blocked.error.details.get("reason"),
+        Some(&serde_json::json!("region_unmatched"))
+    );
+    assert_eq!(preview.placed_on.keys().collect::<Vec<_>>(), [&web.name]);
 }
 
 /// The one Service `preview` blocked, and why. Fails when it planned work instead.

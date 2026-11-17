@@ -1073,7 +1073,7 @@ fn plan(
     let followed = Next::new(&shown, Some(hint));
     crate::ui::finish(&followed, || {
         let where_ = plan.environment.to_string();
-        if plan.changes.is_empty() {
+        if plan.changes.is_empty() && plan.regions.is_empty() {
             crate::ui::stream(format_args!("No authored changes to deploy in {where_}."));
         }
         for change in &plan.changes {

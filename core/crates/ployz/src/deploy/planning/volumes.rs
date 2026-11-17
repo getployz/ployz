@@ -487,7 +487,9 @@ impl VolumePlan<'_> {
                     PlanError::NoWriter { .. }
                     | PlanError::CopiesUnknown { .. }
                     | PlanError::VolumeHolderUnknown { .. }
-                    | PlanError::VolumeServerTakesNoServices { .. },
+                    | PlanError::VolumeServerTakesNoServices { .. }
+                    | PlanError::RegionUnmatched { .. }
+                    | PlanError::VolumeOutsideRegion { .. },
                 ) => {}
                 Err(error) if super::volume_server_away(&error, snapshot, spec) => {}
                 result => result.map_err(|source| {

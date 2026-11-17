@@ -430,10 +430,17 @@ pub(super) fn region(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let path = SettingPath::REGION;
     let change = match matches.get_one::<String>("region") {
-        Some(region) => Change::Set {
-            path,
-            value: json!(Region::parse(region.as_str())?),
-        },
+        Some(region) => {
+            let region = Region::parse(region.as_str()).map_err(|_| {
+                Error::usage(format!(
+                    "{region:?} can't be a region. Use the value of a Server's region label, for example fsn."
+                ))
+            })?;
+            Change::Set {
+                path,
+                value: json!(region),
+            }
+        }
         None => Change::Unset { path },
     };
     super::config::edit(root, vec![change])
