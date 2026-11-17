@@ -108,6 +108,7 @@ pub fn tunnel_origin_service_spec(image: &str) -> RequestedServiceSpec {
         mode: ServiceMode::Global,
         container,
         placement: Default::default(),
+        regions: BTreeMap::new(),
         ports: Vec::new(),
         mount_graph: ServiceMountGraph::parse(
             read_only_bind(
@@ -162,6 +163,7 @@ pub fn tunnel_service_spec(image: &str, sealed_token: &Ciphertext) -> RequestedS
         mode: ServiceMode::Global,
         container,
         placement: Default::default(),
+        regions: BTreeMap::new(),
         ports: Vec::new(),
         mount_graph: ServiceMountGraph::parse(
             read_only_bind(

@@ -248,6 +248,7 @@ impl Reported for PlanError {
         match self {
             PlanError::Service { source, .. } => source.code(),
             PlanError::ConflictingHostPublications { .. }
+            | PlanError::VolumeInSeveralRegions { .. }
             | PlanError::ConflictingDockerVolumeDefinitions { .. }
             | PlanError::DuplicateTargetService { .. }
             | PlanError::MixedVolumeModes { .. }

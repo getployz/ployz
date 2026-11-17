@@ -464,8 +464,8 @@ impl UpdateOrder {
 pub enum SpecChange {
     UpToDate,
     NeedsUpdate,
-    /// Only the placement differs, on a Replicated Service. The Container can keep
-    /// running wherever the new placement still allows its Machine.
+    /// Only the placement or the counts by region differ, on a Replicated Service.
+    /// The Container can keep running wherever the new ones still allow its Machine.
     NeedsPlacementUpdate,
     NeedsRecreate,
 }
@@ -602,6 +602,10 @@ pub struct RequestedServiceSpec {
     pub mode: ServiceMode,
     pub container: ServiceContainerSpec,
     pub placement: Placement,
+    /// How many replicas run in each region, for a Service that sets its replicas by
+    /// region. It runs only on Servers in these regions, and `mode` holds their sum.
+    /// Empty for one count.
+    pub regions: BTreeMap<crate::Region, std::num::NonZeroU32>,
     pub ports: Vec<PortPublication>,
     pub mount_graph: crate::ServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
@@ -618,6 +622,8 @@ pub struct ResolvedServiceSpec {
     pub mode: ServiceMode,
     pub container: ServiceContainerSpec,
     pub placement: Placement,
+    /// As [`RequestedServiceSpec::regions`], the same on every replica.
+    pub regions: BTreeMap<crate::Region, std::num::NonZeroU32>,
     pub ports: Vec<PortPublication>,
     pub mount_graph: crate::ResolvedServiceMountGraph,
     pub pre_deploy: Option<PreDeployHook>,
@@ -625,6 +631,15 @@ pub struct ResolvedServiceSpec {
 }
 
 impl RequestedServiceSpec {
+    /// This Service on the Servers of `region` alone, to find the Servers that take one
+    /// region's replicas.
+    #[must_use]
+    pub fn held_to(&self, region: &crate::Region) -> Self {
+        let mut held = self.clone();
+        held.placement.constraints.insert(region.constraint());
+        held
+    }
+
     /// Admitted Volume declarations and mounts.
     #[must_use]
     pub fn volume_graph(&self) -> &ServiceVolumeGraph {
@@ -700,6 +715,7 @@ impl RequestedServiceSpec {
             mode: self.mode.clone(),
             container: self.container.clone(),
             placement: self.placement.clone(),
+            regions: self.regions.clone(),
             ports: self.ports.clone(),
             mount_graph: self.mount_graph.clone().try_into()?,
             pre_deploy: self.pre_deploy.clone(),
@@ -781,6 +797,7 @@ impl ResolvedServiceSpec {
             mode: self.mode.clone(),
             container: self.container.clone(),
             placement: self.placement.clone(),
+            regions: self.regions.clone(),
             ports: self.ports.clone(),
             mount_graph: self.mount_graph.to_requested(),
             pre_deploy: self.pre_deploy.clone(),

@@ -1270,6 +1270,7 @@ fn container_on(
                 restart: RestartPolicy::default(),
             },
             placement: Default::default(),
+            regions: Default::default(),
             ports: vec![],
             mount_graph: Default::default(),
             pre_deploy: None,

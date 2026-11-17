@@ -380,6 +380,35 @@ fn a_read_of_every_setting_keeps_the_region_out_of_the_paths_an_older_ployz_pars
 }
 
 #[test]
+fn replicas_by_region_refuse_a_region_no_server_is_in_and_stage_nothing() {
+    let (store, who) = shop();
+    let seen = Trusted {
+        regions: Some(
+            ["fsn", "syd"]
+                .map(|region| Region::parse(region).unwrap())
+                .into(),
+        ),
+        ..Trusted::default()
+    };
+    let typed = set("web.replicas", json!(r#"{"fsn":1,"lhr":1}"#));
+
+    let refused = store
+        .write_trusted(&who, &edit(None, vec![typed]), &seen)
+        .unwrap_err();
+    assert_eq!(refused.message, "No Server is in lhr. Regions: fsn, syd.");
+    assert_eq!(value(&store, &who, "web.replicas"), json!(1));
+
+    let counts = patch(json!({ "replicas": { "FSN": 2, "syd": 1 } }));
+    store
+        .write_trusted(&who, &edit(None, vec![counts]), &seen)
+        .unwrap();
+    assert_eq!(
+        value(&store, &who, "web.replicas"),
+        json!({ "fsn": 2, "syd": 1 })
+    );
+}
+
+#[test]
 fn a_patch_keeps_omitted_settings_and_never_clears() {
     let (store, who) = shop();
     store
@@ -629,7 +658,7 @@ fn wrong_paths_and_values_name_the_fix() {
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert_eq!(error.details["did_you_mean"], "replicas");
     // The closest Setting's type and an example, so the fix needs no second read.
-    assert_eq!(error.details["expected"]["type"], "integer");
+    assert_eq!(error.details["expected"]["anyOf"][0]["type"], "integer");
     assert_eq!(error.details["example"], 3);
     assert_eq!(
         error.details["valid_children"],

@@ -2036,6 +2036,30 @@ fn a_second_replica_on_a_volume_is_refused_until_shared_writes_is_on() {
     edit(&store, &who, replicas(2)).unwrap();
 }
 
+/// Shared writes lets several replicas write a Volume, all on its one Server.
+#[test]
+fn replicas_in_two_regions_on_a_volume_are_refused_with_shared_writes_on() {
+    let (store, who) = shop();
+    set_shared_writes(&store, &who, true).unwrap();
+    let counts = |value| Change::Set {
+        path: path("web.replicas"),
+        value,
+    };
+
+    let refused = edit(&store, &who, counts(json!({ "fsn": 1, "syd": 1 }))).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "data is attached to web; set replicas in one region"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz volume inspect data --env production --project shop"
+    );
+    edit(&store, &who, counts(json!({ "fsn": 2 }))).unwrap();
+}
+
 #[test]
 fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
     let (store, who) = shop();

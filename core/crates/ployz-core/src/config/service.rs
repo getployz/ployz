@@ -1,11 +1,12 @@
 //! Shared authored service settings and their compiled environment and attachment projections.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU8;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{ClientSealedValue, RestartPolicy, ServiceName, UpdateOrder};
+use crate::{ClientSealedValue, Region, RestartPolicy, ServiceName, UpdateOrder};
 
 /// Authored Cloud settings. Runtime specs are compiled from this configuration;
 /// they cannot reconstruct repository authority, build policy, or credentials.
@@ -27,7 +28,7 @@ pub struct AuthoredServiceConfig {
     #[ts(optional)]
     pub update_order: Option<ServiceUpdateOrder>,
     #[serde(default = "default_replicas")]
-    pub replicas: u8,
+    pub replicas: Replicas,
     #[serde(default)]
     pub cpu_limit: Option<f64>,
     #[serde(default)]
@@ -91,8 +92,121 @@ pub const fn default_max_retries() -> u8 {
 }
 /// How many replicas a Service runs when its authored config names none.
 #[must_use]
-pub const fn default_replicas() -> u8 {
-    1
+pub const fn default_replicas() -> Replicas {
+    Replicas::Count(1)
+}
+
+/// How many replicas a Service runs. A count runs in the Environment's region, or on
+/// any Server when it has none. Counts by region run in those regions instead.
+/// A count is written as a bare number, so documents from before regions hash the same.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum Replicas {
+    Count(u8),
+    PerRegion(RegionReplicas),
+}
+
+impl Replicas {
+    /// Every replica, over all its regions.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        match self {
+            Self::Count(count) => u32::from(*count),
+            Self::PerRegion(regions) => {
+                regions.0.values().map(|count| u32::from(count.get())).sum()
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn per_region(&self) -> Option<&BTreeMap<Region, NonZeroU8>> {
+        match self {
+            Self::Count(_) => None,
+            Self::PerRegion(regions) => Some(&regions.0),
+        }
+    }
+
+    /// The regions its counts are by. Empty for one count.
+    pub fn regions(&self) -> impl Iterator<Item = &Region> {
+        self.per_region().into_iter().flat_map(BTreeMap::keys)
+    }
+
+    /// `count` replicas where one count goes: when the counts are by region, in the
+    /// region with the most, the first by name of several, so a PR Environment's one
+    /// replica runs where most of the Service does.
+    #[must_use]
+    pub fn only(&self, count: NonZeroU8) -> Self {
+        match self {
+            Self::Count(_) => Self::Count(count.get()),
+            Self::PerRegion(regions) => Self::PerRegion(RegionReplicas(
+                regions
+                    .0
+                    .iter()
+                    .max_by_key(|(region, replicas)| (**replicas, std::cmp::Reverse(*region)))
+                    .map(|(region, _)| (region.clone(), count))
+                    .into_iter()
+                    .collect(),
+            )),
+        }
+    }
+}
+
+/// A replica count for each region a Service runs in. Never empty.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    try_from = "BTreeMap<String, NonZeroU8>",
+    into = "BTreeMap<Region, NonZeroU8>"
+)]
+#[ts(type = "{ [region in string]: number }")]
+pub struct RegionReplicas(BTreeMap<Region, NonZeroU8>);
+
+/// Why counts by region were refused.
+#[derive(Debug, thiserror::Error)]
+pub enum RegionReplicasError {
+    #[error("replicas by region name no region")]
+    Empty,
+    #[error("region {0} has two counts")]
+    Repeated(Region),
+    #[error("a region is the value of a Server's region label")]
+    Region(#[source] crate::ValueError),
+}
+
+impl RegionReplicas {
+    /// # Errors
+    /// Refuses no regions, and two names for one region, such as `fsn` and `FSN`.
+    pub fn new(
+        counts: impl IntoIterator<Item = (Region, NonZeroU8)>,
+    ) -> Result<Self, RegionReplicasError> {
+        let mut regions = BTreeMap::new();
+        for (region, count) in counts {
+            if regions.insert(region.clone(), count).is_some() {
+                return Err(RegionReplicasError::Repeated(region));
+            }
+        }
+        if regions.is_empty() {
+            return Err(RegionReplicasError::Empty);
+        }
+        Ok(Self(regions))
+    }
+}
+
+impl TryFrom<BTreeMap<String, NonZeroU8>> for RegionReplicas {
+    type Error = RegionReplicasError;
+    fn try_from(counts: BTreeMap<String, NonZeroU8>) -> Result<Self, Self::Error> {
+        Self::new(
+            counts
+                .into_iter()
+                .map(|(region, count)| Ok((Region::parse(region)?, count)))
+                .collect::<Result<Vec<_>, crate::ValueError>>()
+                .map_err(RegionReplicasError::Region)?,
+        )
+    }
+}
+
+impl From<RegionReplicas> for BTreeMap<Region, NonZeroU8> {
+    fn from(regions: RegionReplicas) -> Self {
+        regions.0
+    }
 }
 
 /// Source selection and the authority required to build or pull it.
@@ -448,6 +562,39 @@ mod tests {
         assert_eq!(json(default_max_retries()), "10");
         assert_eq!(json(default_replicas()), "1");
         assert_eq!(json(BuildMethod::default()), r#""railpack""#);
+    }
+
+    #[test]
+    fn a_replica_count_stays_a_bare_number_beside_counts_by_region() {
+        assert_eq!(json!(Replicas::Count(2)).to_string(), "2");
+        let by_region: Replicas = serde_json::from_str(r#"{"syd":1,"FSN":2}"#).unwrap();
+        assert_eq!(json!(by_region).to_string(), r#"{"fsn":2,"syd":1}"#);
+        assert_eq!(by_region.total(), 3);
+        for refused in ["{}", r#"{"fsn":0}"#, r#"{"fsn":1,"FSN":1}"#] {
+            assert!(
+                serde_json::from_str::<Replicas>(refused).is_err(),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_replica_of_counts_by_region_runs_in_the_region_with_the_most() {
+        let one = |counts: &str| {
+            let counts: Replicas = serde_json::from_str(counts).unwrap();
+            json!(counts.only(NonZeroU8::MIN)).to_string()
+        };
+        assert_eq!(one(r#"{"fsn":1,"syd":3}"#), r#"{"syd":1}"#);
+        assert_eq!(one(r#"{"lhr":2,"fsn":2,"syd":1}"#), r#"{"fsn":1}"#);
+        assert_eq!(one("4"), "1");
+    }
+
+    #[test]
+    fn a_service_document_from_before_regions_round_trips_byte_identical() {
+        let document = r#"{"version":2,"source":{"type":"git","version":2,"repository":"acme/api","repositoryId":42,"access":{"type":"github-installation","installationId":7},"rootDir":"/apps/api","branch":{"type":"connected","name":"main"}},"preDeployCommand":"migrate","startCommand":"serve","healthcheck":{"type":"http","path":"/up","timeoutSeconds":5},"restartPolicy":"always","maxRetries":3,"replicas":2,"cpuLimit":0.5,"memLimit":256.0,"privateDns":"api","routes":[],"managedHostnames":[],"build":{"buildMethod":"dockerfile","dockerfilePath":"Dockerfile.prod","command":"make"}}"#;
+        let parsed: AuthoredServiceConfig = serde_json::from_str(document).unwrap();
+        assert_eq!(parsed.replicas, Replicas::Count(2));
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), document);
     }
 
     #[test]

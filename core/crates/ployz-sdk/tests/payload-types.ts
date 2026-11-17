@@ -29,6 +29,7 @@ import type {
   Namespace,
   QualifiedService,
   RegisterRequest,
+  Replicas,
   Registered,
   EnrollmentAssignment,
   EnrollmentSnapshot,
@@ -266,7 +267,7 @@ client.observeEnrollment() satisfies Promise<EnrollmentSnapshot>;
 client.register(assignment) satisfies Promise<Registered>;
 
 import { parseServiceSetting } from '../config';
-parseServiceSetting('replicas', 3) satisfies number;
+parseServiceSetting('replicas', 3) satisfies Replicas;
 
 // A Namespace's Volumes carry their storage, as native decoding requires.
 const withVolumes: PreparationInput = {

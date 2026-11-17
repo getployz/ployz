@@ -104,6 +104,7 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             restart: RestartPolicy::default(),
         },
         placement: Placement::default(),
+        regions: Default::default(),
         ports: Vec::new(),
         mount_graph: Default::default(),
         pre_deploy: None,
@@ -307,6 +308,25 @@ pub(super) fn in_region(mut machine: MachineObservation, region: &str) -> Machin
 
 pub(super) fn kept_in(mut spec: RequestedServiceSpec, region: &str) -> RequestedServiceSpec {
     spec.placement.constraints = [ployz_core::Region::parse(region).unwrap().constraint()].into();
+    spec
+}
+
+pub(super) fn by_region(
+    mut spec: RequestedServiceSpec,
+    counts: &[(&str, u32)],
+) -> RequestedServiceSpec {
+    spec.regions = counts
+        .iter()
+        .map(|(region, count)| {
+            (
+                ployz_core::Region::parse(*region).unwrap(),
+                NonZeroU32::new(*count).unwrap(),
+            )
+        })
+        .collect();
+    spec.mode = ServiceMode::Replicated {
+        replicas: NonZeroU32::new(counts.iter().map(|(_, count)| count).sum()).unwrap(),
+    };
     spec
 }
 

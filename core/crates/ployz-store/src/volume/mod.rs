@@ -585,7 +585,7 @@ pub(crate) fn summary(node: &SavedVolumeIntent) -> Result<VolumeSummary, RpcErro
 mod tests {
     use serde_json::json;
 
-    use ployz_core::config::SavedEnvironmentIntent;
+    use ployz_core::config::{Replicas, SavedEnvironmentIntent};
 
     use super::shared_path;
     use crate::{
@@ -717,7 +717,7 @@ mod tests {
             .unwrap();
         crate::rules::tests::seed(&store, &who, |working| {
             for service in &mut working.services {
-                service.config.replicas = 2;
+                service.config.replicas = Replicas::Count(2);
             }
         });
         let set = |path: &str, value| {

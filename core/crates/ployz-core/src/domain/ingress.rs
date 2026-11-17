@@ -136,6 +136,7 @@ pub fn holder_service_spec(image: &str, ports: IngressPorts) -> RequestedService
         mode: ServiceMode::Global,
         container: holder_container(image.to_owned()),
         placement: Placement::default(),
+        regions: BTreeMap::new(),
         ports: match ports {
             IngressPorts::Public => caddy_ports(),
             IngressPorts::Closed => Vec::new(),
@@ -155,6 +156,7 @@ fn legacy_caddy_spec(
         mode: ServiceMode::Global,
         container: caddy_container(image),
         placement: Placement { constraints },
+        regions: BTreeMap::new(),
         ports: caddy_ports(),
         mount_graph: ServiceMountGraph::parse(caddy_volume_graph(), Default::default())
             .expect("built-in Caddy mounts are valid"),

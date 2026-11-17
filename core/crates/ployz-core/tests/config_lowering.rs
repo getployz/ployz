@@ -129,6 +129,30 @@ fn lowering_keeps_every_service_in_the_default_region_and_nowhere_without_one() 
 }
 
 #[test]
+fn lowering_runs_replicas_by_region_in_their_regions_and_not_the_default_one() {
+    let service = |name: &str, replicas: Value| {
+        json!({"config":{"version":2,"privateDns":name,"replicas":replicas,
+            "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+            "healthcheck":{"type":"none"},"restartPolicy":"on-failure"},"resolvedEnv":{}})
+    };
+    let intent = lowered(json!({"namespace":"production","region":"syd","snapshots":[
+        service("web", json!({"fsn":2,"syd":1})),
+        service("api", json!(2)),
+    ]}))
+    .unwrap();
+    let (web, api) = (&intent["target"][0], &intent["target"][1]);
+
+    assert_eq!(web["regions"], json!({"fsn":2,"syd":1}));
+    assert_eq!(web["placement"]["constraints"], json!([]));
+    assert_eq!(web["mode"]["replicas"], 3);
+    assert_eq!(api.get("regions"), None);
+    assert_eq!(
+        api["placement"]["constraints"],
+        json!(["node.labels.region==syd"])
+    );
+}
+
+#[test]
 fn lowering_refuses_unexpanded_managed_hostnames() {
     let config = json!({"version":2,"privateDns":"api",
         "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},

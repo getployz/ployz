@@ -36,6 +36,7 @@ use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
 };
 use std::collections::BTreeSet;
+use std::num::NonZeroU8;
 
 use ployz_core::config::{SavedEnvironmentIntent, ServiceGitAccess, ServiceSource};
 use ployz_core::{RpcError, ServiceName};
@@ -1642,7 +1643,7 @@ fn free_name(
 fn derive(mut intent: SavedEnvironmentIntent, event: &PullRequest) -> SavedEnvironmentIntent {
     intent = track(intent, event);
     for service in &mut intent.services {
-        service.config.replicas = 1;
+        service.config.replicas = service.config.replicas.only(NonZeroU8::MIN);
     }
     intent
 }

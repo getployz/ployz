@@ -16,7 +16,8 @@ pub fn compare_specs(
         return SpecChange::NeedsRecreate;
     }
     let resources = resource_change(&current.container.resources, &requested.container.resources);
-    if current.serving_shape() == requested.serving_shape() {
+    if current.serving_shape() == requested.serving_shape() && current.regions == requested.regions
+    {
         resources
     } else if resources == SpecChange::UpToDate && differs_in_placement_only(current, requested) {
         SpecChange::NeedsPlacementUpdate
@@ -25,9 +26,10 @@ pub fn compare_specs(
     }
 }
 
-/// A Global Container's Creation Key is fixed when it is created and carries its
-/// serving shape, placement included, so a Global Service's placement changes only
-/// with new Containers.
+/// The counts by region are placement too: they say which Machines may hold a
+/// replica. A Global Container's Creation Key is fixed when it is created and
+/// carries its serving shape, placement included, so a Global Service's placement
+/// changes only with new Containers.
 fn differs_in_placement_only(
     current: &ResolvedServiceSpec,
     requested: &RequestedServiceSpec,
@@ -215,6 +217,45 @@ mod tests {
         let global = spec(json!({"mode": "global"}));
         assert_eq!(
             compare_specs(&global, &in_fsn(&global)),
+            SpecChange::NeedsRecreate
+        );
+    }
+
+    #[test]
+    fn a_change_to_the_counts_by_region_alone_keeps_the_container() {
+        let plain: ResolvedServiceSpec = serde_json::from_value(json!({
+            "service_id": "a".repeat(32), "name": "api",
+            "mode": {"mode": "replicated", "replicas": 2},
+            "container": {"image": "api:1", "pull_policy": "missing"}
+        }))
+        .unwrap();
+        let counted = |counts: serde_json::Value| {
+            let mut spec = plain.to_requested();
+            spec.regions = serde_json::from_value(counts).unwrap();
+            spec
+        };
+        let in_fsn = counted(json!({"fsn": 2}));
+        let mut stored = plain.clone();
+        stored.regions = in_fsn.regions.clone();
+
+        assert_eq!(
+            compare_specs(&plain, &in_fsn),
+            SpecChange::NeedsPlacementUpdate
+        );
+        assert_eq!(compare_specs(&stored, &in_fsn), SpecChange::UpToDate);
+        assert_eq!(
+            compare_specs(&stored, &counted(json!({"fsn": 1, "syd": 1}))),
+            SpecChange::NeedsPlacementUpdate
+        );
+        assert_eq!(
+            compare_specs(&stored, &plain.to_requested()),
+            SpecChange::NeedsPlacementUpdate
+        );
+        let mut with_limit = plain.to_requested();
+        with_limit.container.resources.cpu_nanos =
+            Some(crate::CpuNanos::try_from(500_000_000).unwrap());
+        assert_eq!(
+            compare_specs(&stored, &with_limit),
             SpecChange::NeedsRecreate
         );
     }

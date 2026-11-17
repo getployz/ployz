@@ -280,6 +280,7 @@ fn requested_with_graphs(
             restart: Default::default(),
         },
         placement: Default::default(),
+        regions: BTreeMap::new(),
         ports: Vec::new(),
         mount_graph: ployz_core::ServiceMountGraph::parse(
             ServiceVolumeGraph::parse(volumes, mounts).unwrap(),

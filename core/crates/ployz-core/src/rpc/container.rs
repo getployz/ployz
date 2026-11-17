@@ -562,8 +562,8 @@ pub enum PlacementAdmission {
 }
 
 /// Whether `spec` may take the place of `stored`, the spec of a running Service
-/// Container: only when the two are equal apart from a placement a Replicated
-/// Service can change in place.
+/// Container: only when the two are equal apart from a placement, counts by region
+/// included, that a Replicated Service can change in place.
 ///
 /// A Deploy asks this before it plans the request and the Machine asks it again
 /// on receipt, so a Deploy sends only what a Machine records.
@@ -580,6 +580,7 @@ pub fn admit_placement(
     }
     let placed = ResolvedServiceSpec {
         placement: spec.placement.clone(),
+        regions: spec.regions.clone(),
         ..stored.clone()
     };
     match crate::compare_specs(stored, &spec.to_requested()) {

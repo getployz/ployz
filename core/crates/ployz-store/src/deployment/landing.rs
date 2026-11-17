@@ -47,25 +47,35 @@ impl<'a> Landing<'a> {
             .all(|target| target.region.as_ref() == region)
     }
 
-    /// Whether a Deploy of `service` in `region` changes the region it runs in. One
-    /// that never ran changes it by entering a region.
+    /// Whether a Deploy of `service` with one replica count in `region` changes the
+    /// region it runs in. A version of it with counts by region runs in those,
+    /// whatever region it was deployed in. One that never ran changes it by entering a
+    /// region.
     pub(crate) fn changes_region(
         &self,
         service: &SavedServiceIntent,
         region: Option<&Region>,
     ) -> bool {
-        let ran = self
+        let version = |services: &'a [SavedServiceIntent]| {
+            services.iter().find(|other| other.id == service.id)
+        };
+        let applied = self
             .regions
-            .is_some_and(|regions| regions.contains_key(&service.id))
-            || self
-                .in_flight
-                .iter()
-                .any(|target| target.services.iter().any(|other| other.id == service.id));
-        if ran {
-            !self.in_region(service, region)
-        } else {
-            region.is_some()
+            .and_then(|regions| regions.get(&service.id))
+            .map(|deployed| (version(&self.applied.services), deployed.as_ref()));
+        let in_flight = self.in_flight.iter().filter_map(|target| {
+            version(&target.services).map(|ran| (Some(ran), target.region.as_ref()))
+        });
+        let mut ran = applied.into_iter().chain(in_flight).peekable();
+        if ran.peek().is_none() {
+            return region.is_some();
         }
+        ran.any(|(version, deployed)| {
+            match version.and_then(|version| version.config.replicas.per_region()) {
+                Some(counts) => !counts.keys().eq(region),
+                None => deployed != region,
+            }
+        })
     }
 
     /// Every version of a Service that may run.

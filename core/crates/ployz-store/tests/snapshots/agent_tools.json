@@ -649,15 +649,31 @@
                 "type": "string"
               },
               "replicas": {
-                "default": 1,
-                "description": "How many copies of the Service run.",
-                "examples": [
-                  3
+                "anyOf": [
+                  {
+                    "maximum": 50,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  {
+                    "additionalProperties": {
+                      "maximum": 50,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "type": "object"
+                  }
                 ],
-                "maximum": 50,
-                "minimum": 1,
-                "title": "Replicas",
-                "type": "integer"
+                "default": 1,
+                "description": "How many copies of the Service run. A number, or a count for each region like {\"fsn\":2,\"syd\":1}.",
+                "examples": [
+                  3,
+                  {
+                    "fsn": 2,
+                    "syd": 1
+                  }
+                ],
+                "title": "Replicas"
               },
               "repository": {
                 "description": "The GitHub repository the Service builds, as owner/name. Ployz checks the Organization can read it; a change keeps the branch if the new repository has it, else uses its default branch.",

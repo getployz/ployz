@@ -636,6 +636,19 @@ impl EliminatingConstraints {
     }
 }
 
+fn any_of(regions: &[&Region]) -> String {
+    match regions {
+        [rest @ .., last] if !rest.is_empty() => {
+            let rest = rest
+                .iter()
+                .map(|region| region.as_str())
+                .collect::<Vec<_>>();
+            format!("{} or {last}", rest.join(", "))
+        }
+        regions => regions.iter().map(|region| region.as_str()).collect(),
+    }
+}
+
 fn write_quoted<T: fmt::Display>(f: &mut fmt::Formatter<'_>, items: &[T]) -> fmt::Result {
     let mut first = true;
     for item in items {
@@ -734,10 +747,31 @@ pub enum ServerAway {
     Unreached,
 }
 
-fn region_unmatched(region: &Region, servers: &[(MachineName, ServerAway)]) -> String {
-    if servers.is_empty() {
-        return format!("no Server in {region}");
+/// A region none of whose Servers can run a Service now.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionAway {
+    pub region: Region,
+    /// The Servers in the region, each with why it can't run the Service. Empty when
+    /// no Server is in the region.
+    pub servers: Vec<(MachineName, ServerAway)>,
+}
+
+fn region_unmatched(regions: &[RegionAway]) -> String {
+    let (empty, away): (Vec<_>, Vec<_>) =
+        regions.iter().partition(|region| region.servers.is_empty());
+    let mut clauses = Vec::new();
+    if !empty.is_empty() {
+        let empty = empty.iter().map(|away| &away.region).collect::<Vec<_>>();
+        clauses.push(format!("no Server in {}", any_of(&empty)));
     }
+    clauses.extend(
+        away.iter()
+            .map(|away| servers_away(&away.region, &away.servers)),
+    );
+    clauses.join("; ")
+}
+
+fn servers_away(region: &Region, servers: &[(MachineName, ServerAway)]) -> String {
     let mut clauses = servers
         .iter()
         .filter_map(|(name, away)| {
@@ -814,13 +848,16 @@ pub enum PlanError {
         /// The Machine holding the Volume's writer.
         machine: MachineName,
     },
-    /// No Server in the region the Service is kept in can run it.
-    #[error("{}", region_unmatched(region, servers))]
+    /// No Server in a region the Service runs in can run it.
+    #[error("{}", region_unmatched(regions))]
     RegionUnmatched {
-        region: Region,
-        /// The Servers in the region, each with why it can't run the Service.
-        servers: Vec<(MachineName, ServerAway)>,
+        /// Every such region. Never empty.
+        regions: Vec<RegionAway>,
     },
+    /// The Service sets replicas in several regions and mounts a Volume, which is on
+    /// one Server.
+    #[error("{service} has a Volume, so its replicas run in one region")]
+    VolumeInSeveralRegions { service: ServiceName },
     /// The Service is kept in a region, and its Volume is on a Server outside it.
     #[error("{volume} is on {machine}")]
     VolumeOutsideRegion {
@@ -1012,6 +1049,7 @@ impl PlanError {
     pub fn same_again(&self) -> bool {
         match self {
             Self::ConflictingHostPublications { .. }
+            | Self::VolumeInSeveralRegions { .. }
             | Self::DuplicateTargetService { .. }
             | Self::MixedVolumeModes { .. }
             | Self::DependencyCycle { .. }
@@ -1074,8 +1112,11 @@ impl PlanError {
                 error.to_string(),
             )
             .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
-            error @ Self::RegionUnmatched { .. } => RpcError::conflict(error.to_string())
-                .with_details(serde_json::json!({ "reason": "region_unmatched" })),
+            Self::RegionUnmatched { ref regions } => RpcError::conflict(self.to_string())
+                .with_details(serde_json::json!({
+                    "reason": "region_unmatched",
+                    "regions": regions.iter().map(|away| &away.region).collect::<Vec<_>>(),
+                })),
             Self::VolumeOutsideRegion {
                 ref volume,
                 ref machine,
@@ -1090,6 +1131,7 @@ impl PlanError {
                 RpcError::unavailable(error.to_string())
             }
             error @ (Self::ConflictingHostPublications { .. }
+            | Self::VolumeInSeveralRegions { .. }
             | Self::HostPortConflict { .. }
             | Self::CapacityUnknown
             | Self::InsufficientCapacity
