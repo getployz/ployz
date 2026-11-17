@@ -22,7 +22,8 @@ const Report = Schema.Struct({
   kind: Schema.Literals(["call", "unknownTool", "initialize", "toolsList", "feedback"]),
   tool: Text(200),
   intent: Schema.NullOr(Text(LONG)),
-  session: Schema.String.check(Schema.isPattern(/^ses_[0-9a-f]{32}$/)),
+  // A hashed id is 32 hex characters; a UUID made at connect keeps its hyphens.
+  session: Schema.String.check(Schema.isPattern(/^ses_[0-9a-f-]{32,36}$/)),
   startedAt: Text(40),
   durationMs: Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0, maximum: 86_400_000 })),
   error: Schema.NullOr(Failure),

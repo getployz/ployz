@@ -186,7 +186,7 @@ const FeedbackArguments = Schema.Struct({
 const decodeFeedback = Schema.decodeUnknownOption(FeedbackArguments, { onExcessProperty: "error" });
 
 /** What an MCP request's JSON-RPC body says of the client, which the tool handlers of a stateless server never see. */
-type Hello = { readonly method: string | null; readonly client: CallOrigin["client"]; readonly protocolVersion: string | null };
+type Hello = { readonly method: string | null; readonly tool: string | null; readonly client: CallOrigin["client"]; readonly protocolVersion: string | null };
 
 const CLIENT_INFO_META = "io.modelcontextprotocol/clientInfo";
 const PROTOCOL_META = "io.modelcontextprotocol/protocolVersion";
@@ -199,6 +199,7 @@ const helloOf = async (request: Request): Promise<Hello> => {
   const info = asRecord(params?.["clientInfo"] ?? meta?.[CLIENT_INFO_META]);
   return {
     method: asString(message?.["method"]),
+    tool: asString(params?.["name"]),
     client: { name: asString(info?.["name"]), version: asString(info?.["version"]) },
     protocolVersion: asString(params?.["protocolVersion"] ?? meta?.[PROTOCOL_META]) ?? request.headers.get("mcp-protocol-version"),
   };
@@ -320,8 +321,14 @@ export const serveRemoteMcp = Effect.fn("RemoteMcp.serve")(function* (request: R
     try {
       const answer = await handler.fetch(verified);
       // A stateless server holds the handshake and the list in no tool, so they are recorded here, from the request.
-      const seen: WhatHappened | null = hello.method === "initialize" ? { kind: "initialize" } : hello.method === "tools/list" ? { kind: "toolsList", tools: LISTED_TOOLS } : null;
-      if (seen !== null && answer.ok) {
+      // A call to a tool the server never registered reaches no handler either.
+      const unknown = hello.method === "tools/call" && hello.tool !== null && !LISTED_TOOLS.includes(hello.tool) ? hello.tool : null;
+      const seen: WhatHappened | null = unknown !== null ? { kind: "unknownTool", tool: unknown }
+        : !answer.ok ? null
+        : hello.method === "initialize" ? { kind: "initialize" }
+        : hello.method === "tools/list" ? { kind: "toolsList", tools: LISTED_TOOLS }
+        : null;
+      if (seen !== null) {
         await run(recordAgentCall({ ...origin, ...seen, startedAt, durationMs: Date.now() - startedAt.getTime(), caller: reporterOf(caller) }));
       }
       return answer;

@@ -63,7 +63,7 @@ export type Feedback = {
 /** Where a call came from, as the surface that received it knows it. */
 export type CallOrigin = {
   readonly surface: AgentSurface;
-  /** `ses_` and 32 hex characters: see {@link sessionIdOf}. */
+  /** `ses_` and 32 hex characters ({@link sessionIdOf}), or `ses_` and a UUID that `ployz mcp` made at connect. */
   readonly session: string;
   /** The MCP client's own name and version, or for the CLI the agent it detected; null for what is not known. */
   readonly client: { readonly name: string | null; readonly version: string | null };
