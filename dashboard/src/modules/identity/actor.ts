@@ -20,7 +20,9 @@ export const TOKEN_KINDS = ["cli", "agent"] as const;
 export type TokenKind = (typeof TOKEN_KINDS)[number];
 
 export type Credential =
-  | { readonly kind: "session" | "oauth"; readonly id: string }
+  | { readonly kind: "session"; readonly id: string }
+  /** `client` is the name the agent's client registered under, which the client chose and nothing checked. */
+  | { readonly kind: "oauth"; readonly id: string; readonly client: string | null }
   | { readonly kind: "token"; readonly id: string; readonly grant: TokenGrant };
 
 /**

@@ -260,7 +260,7 @@ it.live("an agent answers no approval, and what it asked waits on a person in Cl
     };
     const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2", grant: FULL_GRANT } };
     const mcp: Caller = { ...caller, credential: { kind: "token", id: "token-mcp", grant: FULL_GRANT }, via: "agent" };
-    const grant: Caller = { ...caller, credential: { kind: "oauth", id: "grant-1" }, via: "agent" };
+    const grant: Caller = { ...caller, credential: { kind: "oauth", id: "grant-1", client: null }, via: "agent" };
     const sidebar: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "agent" };
     const colleague: Caller = { ...otherToken, userId: "00000000-0000-4000-8000-00000000a5aa", role: "member" };
 

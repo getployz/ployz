@@ -185,7 +185,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       ),
     );
   const rows = yield* database.drizzle
-    .select({ slug: organization.slug, role: member.role })
+    .select({ slug: organization.slug, role: member.role, client: oauthClient.name })
     .from(oauthConsent)
     .innerJoin(oauthClient, eq(oauthClient.clientId, oauthConsent.clientId))
     .innerJoin(organization, eq(organization.id, org))
@@ -206,7 +206,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
   return {
     userId: sub,
     organization: { id: org, slug: row.slug },
-    credential: { kind: "oauth", id: grant },
+    credential: { kind: "oauth", id: grant, client: row.client },
     role: row.role,
     support: null,
     via: "agent",
