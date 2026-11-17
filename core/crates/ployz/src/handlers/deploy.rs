@@ -1045,7 +1045,7 @@ fn plan(
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
     let (ingress, ingress_unchecked, regions) =
-        match ingress_check(matches, !plan.regions.is_empty()) {
+        match ingress_check(matches, plan.regions.values().any(Option::is_some)) {
             Ok((check, regions)) => (Some(check.repairs), check.unchecked, regions),
             Err(Unchecked { cause, silent }) => {
                 if let Some(silent) = silent {
@@ -1065,7 +1065,7 @@ fn plan(
         unplaced: plan
             .regions
             .iter()
-            .filter(|(_, region)| unplaced(region))
+            .filter(|(_, region)| region.as_ref().is_some_and(&unplaced))
             .map(|(service, _)| service)
             .collect(),
         prunes,
@@ -1090,12 +1090,12 @@ fn plan(
             super::review::restarts(change);
         }
         for (service, region) in &plan.regions {
-            if unplaced(region) {
-                crate::ui::stream(format_args!(
+            match region {
+                Some(region) if unplaced(region) => crate::ui::stream(format_args!(
                     "{service} → {region}: won't start (no Server in {region})"
-                ));
-            } else {
-                crate::ui::stream(format_args!("{service} → {region}"));
+                )),
+                Some(region) => crate::ui::stream(format_args!("{service} → {region}")),
+                None => crate::ui::stream(format_args!("{service} → any Server")),
             }
         }
         if prunes {

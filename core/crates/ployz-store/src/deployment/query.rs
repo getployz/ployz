@@ -58,11 +58,12 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub target: Option<Vec<RequestedServiceSpec>>,
-    /// The region each Service this Deploy ships runs in. One that runs on any Server
-    /// is left out, as is every Service of a redeploy.
+    /// The region each Service this Deploy ships runs in next; none for one that leaves
+    /// a region to run on any Server. One that ran on any Server and still does is left
+    /// out, as is every Service of a redeploy.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    #[ts(optional, as = "Option<BTreeMap<ServiceName, Region>>")]
-    pub regions: BTreeMap<ServiceName, Region>,
+    #[ts(optional, as = "Option<BTreeMap<ServiceName, Option<Region>>>")]
+    pub regions: BTreeMap<ServiceName, Option<Region>>,
 }
 
 /// Where an Environment runs on the Servers.
@@ -264,11 +265,12 @@ pub(crate) fn plan(
     if !removed.is_empty() {
         unresolved.push("volume data".to_owned());
     }
+    let landing = deployment::Landing::of(&review.head);
     let frozen = deployment::freeze(
         &environment.summary.id,
         &who.organization,
         &target,
-        &deployment::Landing::of(&review.head),
+        &landing,
         deployment::Scope::of(&query.services, &removed),
         namespace.clone(),
         None,
@@ -284,16 +286,12 @@ pub(crate) fn plan(
         false => None,
     };
     let regions = target
-        .region
+        .services
         .iter()
-        .flat_map(|region| {
-            target
-                .services
-                .iter()
-                .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
-                .filter(|service| frozen.ships(service))
-                .map(move |service| (service, region.clone()))
-        })
+        .filter(|service| target.region.is_some() || !landing.in_region(service, None))
+        .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
+        .filter(|service| frozen.ships(service))
+        .map(|service| (service, target.region.clone()))
         .collect();
     let changes = review
         .view

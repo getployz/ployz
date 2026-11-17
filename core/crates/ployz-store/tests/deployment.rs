@@ -8771,3 +8771,59 @@ fn a_refused_claim_says_why_and_leaves_the_deployment_as_its_refusal_recorded() 
     );
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
 }
+
+#[test]
+fn a_plan_names_the_region_each_service_it_ships_runs_in_next_and_any_server_once_it_leaves_one() {
+    let (store, who) = shop();
+    let stage = |change: Change| {
+        let edit = Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![change],
+        };
+        store.write(&who, &edit).unwrap();
+    };
+    let regions = || {
+        store
+            .read(&who, &PlanQuery::default())
+            .unwrap()
+            .regions
+            .into_iter()
+            .map(|(service, region)| (service.to_string(), region.map(|region| region.to_string())))
+            .collect::<Vec<_>>()
+    };
+    let fsn = || Some("fsn".to_owned());
+
+    stage(Change::Set {
+        path: SettingPath::REGION,
+        value: json!("fsn"),
+    });
+    assert_eq!(
+        regions(),
+        [("api".to_owned(), fsn()), ("web".to_owned(), fsn())]
+    );
+
+    let deploy = |n: u8| {
+        admit(&store, &who, n, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    };
+    deploy(1);
+
+    stage(Change::Unset {
+        path: SettingPath::REGION,
+    });
+    assert_eq!(
+        regions(),
+        [("api".to_owned(), None), ("web".to_owned(), None)]
+    );
+
+    deploy(2);
+    assert_eq!(regions(), []);
+}
