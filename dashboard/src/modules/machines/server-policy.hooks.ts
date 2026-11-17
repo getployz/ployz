@@ -48,6 +48,8 @@ export function useServerPolicy(machine: RuntimeMachineRecord, organizationSlug:
     acceptsBuilds: pending?.acceptsBuilds ?? machine.acceptsBuilds,
     acceptsServices: pending?.acceptsServices ?? machine.acceptsServices,
     concurrency,
+    region: pending?.region !== undefined ? pending.region : machine.region,
+    regionQueued: pending?.region !== undefined,
     // The Server reports what it enforces; while automatic, that is the automatic value.
     automatic: machine.buildConcurrency === null ? machine.effectiveBuildConcurrency : null,
     request,

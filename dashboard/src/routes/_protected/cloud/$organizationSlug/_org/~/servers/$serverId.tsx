@@ -30,6 +30,7 @@ import { DrainDialog } from "./-components/drain-dialog";
 import { RemoveServerHint, RemoveServerSection } from "./-components/remove-server-section";
 import { runsHere } from "./-components/runs-here";
 import { ServerBuildsSection } from "./-components/server-builds-section";
+import { ServerRegionSection } from "./-components/server-region-section";
 import { ServerResources } from "./-components/server-resources";
 import { DrainButton, ServerServicesSection } from "./-components/server-services-section";
 import { ServerSwitcher } from "./-components/server-switcher";
@@ -172,6 +173,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
       />
       <ServerWebTrafficSection view={webTraffic.view} onTurnOn={webTraffic.turnOn} onAskOff={webTraffic.ask} unavailable={webUnavailable} gate={operate} />
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} gate={operate} />
+      <ServerRegionSection machine={machine} machines={servers.map((each) => each.machine)} organizationSlug={organizationSlug} gate={operate} />
       <RemoveServerSection
         machine={machine}
         machines={servers.map((each) => each.machine)}

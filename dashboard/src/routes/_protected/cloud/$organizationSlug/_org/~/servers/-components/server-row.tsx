@@ -5,6 +5,7 @@ import { cn } from "#/lib/utils";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
+import { RegionValue } from "./region-value";
 import { runsHere, serviceNames } from "./runs-here";
 import { ServerMeters } from "./server-meters";
 import type { ActivationState } from "#/modules/server-upgrade/activation";
@@ -58,16 +59,16 @@ const ACTIVATION = {
 /** The list's column template, shared by its rows and its skeleton so both line up. */
 export const SERVER_ROW_GRID = cn(
   "grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-1 px-3 py-2.5 text-sm",
-  "@xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,1.4fr)_7rem_auto]",
-  "@4xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,1.4fr)_19rem_7rem_auto]",
+  "@xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,1.4fr)_5rem_7rem_auto]",
+  "@4xl:grid-cols-[auto_minmax(0,1fr)_minmax(0,1.4fr)_5rem_19rem_7rem_auto]",
 );
 
 /** The bordered list that holds Server rows; its width, not the viewport's, decides each row's layout. */
 export const SERVER_LIST = "@container flex flex-col divide-y overflow-hidden rounded-lg border";
 
 /**
- * One Server as a row that opens its page: dot, name, what runs there, CPU and memory when the row is wide, and a
- * state word. A narrow row puts what runs under the name and drops the meters.
+ * One Server as a row that opens its page: dot, name, what runs there, its region, CPU and memory when the row is
+ * wide, and a state word. A narrow row puts what runs under the name and drops the region and the meters.
  */
 export function ServerRow({ organizationSlug, server, upgrade, stale, activation = null }: {
   organizationSlug: string;
@@ -100,6 +101,9 @@ export function ServerRow({ organizationSlug, server, upgrade, stale, activation
         {STORAGE[server.machine.storage ?? "unknown"]}
         {sealing ? SEALING[sealing.kind] : null}
         {activation === null ? null : ACTIVATION[activation]}
+      </span>
+      <span className="hidden truncate text-muted-foreground @xl:block">
+        {server.machine.region === null ? null : <RegionValue region={server.machine.region} />}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>
