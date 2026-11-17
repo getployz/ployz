@@ -115,10 +115,11 @@ the environment's region, and deploy again.
 - **A branch starts with its parent's region** and follows later changes to it, like the parent's
   other settings.
 - **Syncing two environments doesn't copy the region.** Set it on each.
-- **A replica already in the region keeps running** when the deploy changes only the region and
-  the number of replicas. Setting or clearing a region restarts no replica on a server the new
-  region allows. A replica outside the region is replaced. After you clear a region, replicas
-  spread again: if two shared a server, one is replaced by a new one on another server.
+- **A replica that can stay keeps running** when the deploy changes only the region and the
+  number of replicas. A replica outside the new region is replaced by one inside it. After you
+  clear a region, or change it to one with more servers, replicas spread again: if several share
+  a server, one moves to another server. The new replica starts before the old one stops, so the
+  service keeps answering.
 - **A service restarts every replica** when the same deploy changes anything else about it, such
   as its image, a limit or its pre-deploy command. It also restarts every replica when one of
   them isn't running, when any server running one of them runs an older Ployz, or when it is a
