@@ -723,7 +723,8 @@ Both commands need `ployz login`.
 In the dashboard, click **Rename region** on the **Servers** page. Pick the region, type its new
 name and click **Rename region**. The dialog shows the key the CLI takes, such as
 `--region default`. The Servers list and each server's page show the new name at once. For a
-member who isn't an owner or admin, the button is disabled and says why.
+member who isn't an owner or admin, the button is disabled and says why. The
+[Ployz agent](../account/agent-sidebar.md) can list and rename regions too.
 
 ## Upgrade Ployz on a server
 

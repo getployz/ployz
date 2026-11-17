@@ -74,6 +74,9 @@ one if it joined before regions. Name a different region and the command stops a
 region the server is in. To move a server, see
 [Set a server's region](manage-servers.md#set-a-servers-region).
 
+Ask the [Ployz agent](../account/agent-sidebar.md) to add a server in a region, such as Sydney, and
+it gives you the `ployz server add` line with `--region` for you to run. It adds nothing itself.
+
 Add more servers the same way, even at different providers. Each server after your cluster's
 first waits for a device you approved to sign its join, and you're told the code to approve; see
 [Approve a join](#approve-a-join). Nothing moves onto a new server until
