@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
-import { ERROR_TYPES, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, type WhatHappened } from "#/modules/analytics/agent-calls.server";
+import { ERROR_TYPES, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { Validation } from "#/server/public-error";
 
@@ -67,7 +67,8 @@ export const handleAgentCallReport = Effect.fn("Agent.handleCallReport")(functio
   yield* recordAgentCall({
     ...what,
     surface: report.surface,
-    session: report.session,
+    // The CLI names its session by agent and day alone, so the credential makes it this caller's.
+    session: report.surface === "cli" ? sessionIdOf(`${caller.credential.id}:${report.session}`) : report.session,
     startedAt,
     durationMs: report.durationMs,
     client: report.client,
