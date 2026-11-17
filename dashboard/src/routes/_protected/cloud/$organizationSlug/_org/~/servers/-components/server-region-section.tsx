@@ -3,19 +3,26 @@ import { useEffect, useState } from "react";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "#/components/ui/select";
+import { leavingServer, type Leaving, type Placed } from "#/modules/machines/server-move";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 import { regionLabels, regionName, regionOf } from "#/modules/machines/server-regions";
 import { useNameRegion, useNewRegions } from "#/modules/machines/server-regions.hooks";
 import type { RoleGate } from "#/modules/organization/members.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import { MoveServerDialog } from "./move-server-dialog";
 
 // Menu values outside the label grammar, so no region's key collides with them.
 const NO_REGION = "no region";
 const NEW_REGION = "new region";
 
-export function ServerRegionSection({ machine, machines, regions, organizationSlug, gate }: {
+/** A region change that waits for the Move dialog: the region and its name, the new one it makes, and what leaves. */
+type Move = { readonly region: string | null; readonly name: string | null; readonly created: Region | null; readonly leaving: readonly Leaving[] };
+
+export function ServerRegionSection({ machine, machines, placed, regions, organizationSlug, gate }: {
   machine: RuntimeMachineRecord;
   machines: readonly RuntimeMachineRecord[];
+  /** What runs on the Server (`placedServices`). */
+  placed: readonly Placed[];
   /** The Organization's regions; undefined until their names arrive. */
   regions: readonly Region[] | undefined;
   organizationSlug: string;
@@ -27,17 +34,28 @@ export function ServerRegionSection({ machine, machines, regions, organizationSl
   const [draft, setDraft] = useState("");
   // Enter before the Store has checked the name moves the Server once it has.
   const [confirming, setConfirming] = useState(false);
+  const [moving, setMoving] = useState<Move | null>(null);
   const check = useNewRegions(organizationSlug, naming ? [draft] : [], regionLabels(machines))(draft);
   const choices = regions ?? [];
   const label = policy.region;
 
+  const apply = (region: string | null, created: Region | null) => {
+    policy.request({ region });
+    if (created !== null) void nameRegion(created);
+  };
+  // Straight away when nothing leaves the Server, else once the Move dialog is confirmed.
+  const move = (region: string | null, created: Region | null = null) => {
+    const leaving = leavingServer(machine.id, region, placed, machines);
+    if (leaving.length === 0) apply(region, created);
+    else setMoving({ region, name: created?.name ?? regionName(region, regions), created, leaving });
+  };
   const choose = (value: string | null) => {
     if (value === NEW_REGION) {
       setNaming(true);
       return;
     }
     const region = value === NO_REGION ? null : value;
-    if (region !== label) policy.request({ region });
+    if (region !== label) move(region);
   };
   const stopNaming = () => {
     setNaming(false);
@@ -46,8 +64,7 @@ export function ServerRegionSection({ machine, machines, regions, organizationSl
   };
   const create = check.kind === "new" ? { key: check.key, name: draft.trim() } : null;
   const createIn = (region: Region) => {
-    policy.request({ region: region.key });
-    void nameRegion(region);
+    move(region.key, region);
     stopNaming();
   };
 
@@ -95,6 +112,18 @@ export function ServerRegionSection({ machine, machines, regions, organizationSl
             </SelectContent>
           </Select>
         )}
+      />
+      <MoveServerDialog
+        serverName={machine.name}
+        regionName={moving?.name ?? null}
+        rows={moving?.leaving ?? []}
+        regions={regions}
+        open={moving !== null}
+        onOpenChange={(open) => { if (!open) setMoving(null); }}
+        onConfirm={() => {
+          if (moving !== null) apply(moving.region, moving.created);
+          setMoving(null);
+        }}
       />
     </SettingsSection>
   );

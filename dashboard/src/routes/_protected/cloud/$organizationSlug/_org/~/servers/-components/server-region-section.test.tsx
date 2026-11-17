@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { Region } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as storeFunctions from "#/modules/config-store/store.functions";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
+import type { Placed } from "#/modules/machines/server-move";
 import * as policyFunctions from "#/modules/machines/server-policy.functions";
 import { ServerRegionSection } from "./server-region-section";
 
@@ -53,7 +54,7 @@ async function pick(name: string) {
   fireEvent.click(option);
 }
 
-function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS }: { allowed?: boolean; machines?: RuntimeMachineRecord[]; regions?: Region[] } = {}) {
+function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS, placed = [] }: { allowed?: boolean; machines?: RuntimeMachineRecord[]; regions?: Region[]; placed?: Placed[] } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   render(
@@ -61,6 +62,7 @@ function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet
       <ServerRegionSection
         machine={shown}
         machines={machines}
+        placed={placed}
         regions={regions}
         organizationSlug="acme"
         gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
@@ -136,4 +138,49 @@ it("leaves the field read-only for a member who can't change policy", () => {
   const trigger = screen.getByRole("combobox", { name: "Region" });
   expect(trigger.hasAttribute("disabled") || trigger.getAttribute("aria-disabled") === "true" || trigger.hasAttribute("data-disabled")).toBe(true);
   expect(trigger.getAttribute("title")).toBe("Only an owner or admin can change how a server runs.");
+});
+
+// Environments in regions, as `@environment.region` will give them: what runs on server-3 (in default) and where to.
+const RUNNING: Placed[] = [
+  { key: "shop-production/web", name: "web", volume: null, environment: "shop/production", region: "default" },
+  { key: "shop-production/postgres", name: "postgres", volume: "pg-data", environment: "shop/production", region: "default" },
+  { key: "blog-production/api", name: "api", volume: null, environment: "blog/production", region: "fsn" },
+];
+const vm3 = machine("3", "default");
+const withDefaultPeer = [...fleet, machine("6", "default")];
+
+it("asks before a move that sends Services off the Server, naming each with its Environment and where it goes", async () => {
+  section(vm3, { placed: RUNNING, machines: withDefaultPeer });
+  await pick("Sydney");
+  const dialog = await screen.findByRole("alertdialog");
+  expect(within(dialog).getByRole("heading").textContent).toBe("Move server-3 to Sydney");
+  expect(within(dialog).getByText("These leave server-3 on the next deploy.")).toBeTruthy();
+  expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+    "webshop/production→ server-6",
+    "postgres · pg-datashop/production→ server-6",
+    "apiblog/production→ server-1",
+  ]);
+  expect(requestChange).not.toHaveBeenCalled();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Move server" }));
+  await waitFor(() => expect(requestChange).toHaveBeenCalledWith({
+    data: { organizationSlug: "acme", machineId: "3".repeat(32), change: { region: "syd" } },
+  }));
+});
+
+it("keeps the Server where it was when the move is cancelled", async () => {
+  section(vm3, { placed: RUNNING, machines: withDefaultPeer });
+  await pick("Sydney");
+  fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(requestChange).not.toHaveBeenCalled();
+  expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("Default");
+});
+
+it("says so when no other Server is in a Service's region", async () => {
+  section(vm3, { placed: RUNNING.slice(0, 1) });
+  await pick("Sydney");
+  expect(within(await screen.findByRole("alertdialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+    "webshop/productionNo server in Default",
+  ]);
 });
