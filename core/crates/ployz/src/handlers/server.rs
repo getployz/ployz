@@ -32,6 +32,7 @@ use crate::{
 use super::{Error, leaf_matches, route, string_values, with_client};
 
 mod add;
+mod asked_policy;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
@@ -51,6 +52,7 @@ pub(super) mod upgrade_policy;
 mod waiting;
 
 use add::add;
+pub(super) use asked_policy::AskedPolicy;
 #[cfg(test)]
 pub(crate) use enroll::engine_view;
 pub(super) use enroll::{enroll_token, founding_cluster_name, joined_open, joined_unnamed};
@@ -808,10 +810,8 @@ fn parse_labels(
     Ok(labels)
 }
 
-pub(super) fn enrollment_policy(
-    matches: &ArgMatches,
-) -> Result<ployz_core::InitialMachinePolicy, Error> {
-    initial_policy(
+pub(super) fn enrollment_policy(matches: &ArgMatches) -> Result<AskedPolicy, Error> {
+    AskedPolicy::parse(
         &string_values(matches, "label-add"),
         matches.get_one::<String>("region").map(String::as_str),
         [
@@ -820,43 +820,6 @@ pub(super) fn enrollment_policy(
             matches.get_one::<bool>("accepts-ingress").copied(),
         ],
     )
-}
-
-/// The policy a Server starts with from the labels, `--region` and the `--accepts-builds`,
-/// `--accepts-services` and `--accepts-ingress` values given, each on unless said off.
-fn initial_policy(
-    labels: &[String],
-    region: Option<&str>,
-    accepts: [Option<bool>; 3],
-) -> Result<ployz_core::InitialMachinePolicy, Error> {
-    let mut labels = parse_labels(labels)?;
-    let key: ployz_core::MachineLabelKey = ployz_store::REGION_LABEL.parse()?;
-    let region = joining_region(region, labels.get(&key))?;
-    labels.insert(key, region.as_str().parse()?);
-    Ok(ployz_core::InitialMachinePolicy {
-        labels,
-        accepts_builds: accepts[0].unwrap_or(true),
-        accepts_services: accepts[1].unwrap_or(true),
-        accepts_ingress: accepts[2].unwrap_or(true),
-    })
-}
-
-/// The region a Server joins: `--region`, else its `region` label, else the default one.
-fn joining_region(
-    flag: Option<&str>,
-    label: Option<&ployz_core::MachineLabelValue>,
-) -> Result<ployz_store::RegionKey, Error> {
-    let flag = flag.map(ployz_store::RegionKey::parse).transpose()?;
-    let label = label
-        .map(|label| ployz_store::RegionKey::parse(label.as_str()))
-        .transpose()?;
-    match (flag, label) {
-        (Some(flag), Some(label)) if flag != label => Err(Error::usage(format!(
-            "--region {flag} and --label-add region={label} disagree. Keep --region {flag} and drop the region label."
-        ))),
-        (Some(region), _) | (None, Some(region)) => Ok(region),
-        (None, None) => Ok(ployz_store::RegionKey::default_region()),
-    }
 }
 
 pub(super) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoint>, Error> {

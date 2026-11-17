@@ -66,7 +66,11 @@ ployz server add --command --region fsn
 The printed line keeps `--region`. A region is up to 63 lowercase letters, digits and hyphens, and
 starts with a letter or digit. Capitals are lowered, so `FSN` joins `fsn`. `--label-add
 region=fsn` does the same. Give both with different regions and the command stops before anything
-starts, saying to keep `--region`. To move a server to another region later, see
+starts, saying to keep `--region`.
+
+Run the command again for a server that already joined and it keeps its region, or stays without
+one if it joined before regions. Name a different region and the command stops and says which
+region the server is in. To move a server, see
 [Set a server's region](manage-servers.md#set-a-servers-region).
 
 Add more servers the same way, even at different providers. Each server after your cluster's

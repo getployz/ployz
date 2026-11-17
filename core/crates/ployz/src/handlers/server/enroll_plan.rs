@@ -8,10 +8,7 @@
 use clap::ArgMatches;
 use clap::parser::ValueSource;
 use ipnet::Ipv4Net;
-use ployz_core::{
-    ClusterName, InitialMachinePolicy, InspectRequest, MachineName, MachineRelease,
-    StoragePreparation,
-};
+use ployz_core::{ClusterName, InspectRequest, MachineName, MachineRelease, StoragePreparation};
 
 use crate::handlers::{Error, leaf_matches, string_values};
 use crate::provisioning::RemoteTarget;
@@ -138,8 +135,8 @@ impl Shaping {
             .to_string()
     }
 
-    pub(crate) fn policy(&self) -> Result<InitialMachinePolicy, Error> {
-        super::initial_policy(&self.labels, self.region.as_deref(), self.accepts)
+    pub(crate) fn policy(&self) -> Result<super::AskedPolicy, Error> {
+        super::AskedPolicy::parse(&self.labels, self.region.as_deref(), self.accepts)
     }
 
     pub(crate) fn name(&self) -> Result<Option<MachineName>, Error> {

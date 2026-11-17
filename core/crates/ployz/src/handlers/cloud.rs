@@ -15,7 +15,7 @@ use ployz_core::{
 };
 
 use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
-use super::server::EnrollPlan;
+use super::server::{AskedPolicy, EnrollPlan};
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{
     self, CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, Initialize,
@@ -175,7 +175,7 @@ where
     if dials_this_host(plan) {
         report.read_host();
     }
-    let initial_policy = plan.shaping().policy()?;
+    let asked = plan.shaping().policy()?;
     let url = CloudOrigin::new(cloud_url).enroll_url();
     let requested_name = plan.shaping().name()?;
     let cluster_name = plan.shaping().cluster_name()?;
@@ -202,19 +202,20 @@ where
         client = ensure_uninitialized(plan, plan.shaping().yes(), true, client).await?;
     }
     report.step(Step::Enroll);
-    let (details, machine_token, name, identity, outcome) = enroll_current_identity(
-        command,
-        plan,
-        &mut client,
-        token_request,
-        requested_name,
-        requested_storage.choice(),
-        &initial_policy,
-        &url,
-        token,
-        progress,
-    )
-    .await?;
+    let (details, machine_token, name, initial_policy, identity, outcome) =
+        enroll_current_identity(
+            command,
+            plan,
+            &mut client,
+            token_request,
+            requested_name,
+            requested_storage.choice(),
+            &asked,
+            &url,
+            token,
+            progress,
+        )
+        .await?;
     report.sizes_from(&machine_token);
     report.step(Step::Storage);
     match outcome {
@@ -351,7 +352,7 @@ async fn enroll_current_identity(
     token_request: InspectRequest,
     requested_name: Option<MachineName>,
     requested_storage: StorageChoice,
-    initial_policy: &ployz_core::InitialMachinePolicy,
+    asked: &AskedPolicy,
     url: &str,
     token: &CloudEnrollToken,
     progress: &dyn Fn(EnrollStage),
@@ -360,6 +361,7 @@ async fn enroll_current_identity(
         MachineDetails,
         MachineToken,
         MachineName,
+        ployz_core::InitialMachinePolicy,
         EnrollIdentity,
         Outcome,
     ),
@@ -367,6 +369,7 @@ async fn enroll_current_identity(
 > {
     let (details, machine_token) =
         crate::handlers::server::inspect_token(client, token_request).await?;
+    let initial_policy = asked.settle(existing(&details), plan.reach())?;
     let name = crate::handlers::server::machine_name(requested_name, &machine_token);
     let recovery_supported = cloud_enroll::recovery_compat::supported(client).await?;
     let identity = EnrollIdentity::from_machine_token(
@@ -422,7 +425,25 @@ async fn enroll_current_identity(
         }
         result => result?,
     };
-    Ok((details, machine_token, name, identity, outcome))
+    Ok((
+        details,
+        machine_token,
+        name,
+        initial_policy,
+        identity,
+        outcome,
+    ))
+}
+
+/// The Machine this host already is, which an add run again asks for as it stands. A host
+/// with none, or resetting the one it had, becomes a new Server.
+fn existing(details: &MachineDetails) -> Option<&Machine> {
+    matches!(
+        details.phase,
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+    )
+    .then_some(details.machine.as_ref())
+    .flatten()
 }
 
 /// The pin a join run from this CLI carries: this computer's Device, so the new Server
