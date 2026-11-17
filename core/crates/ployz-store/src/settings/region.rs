@@ -48,7 +48,7 @@ pub(super) fn set(
     Ok(changed)
 }
 
-fn parse(value: &Value) -> Result<Region, RpcError> {
+pub(super) fn parse(value: &Value) -> Result<Region, RpcError> {
     value
         .as_str()
         .and_then(|region| Region::parse(region).ok())

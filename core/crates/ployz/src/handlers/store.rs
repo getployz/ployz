@@ -13,8 +13,8 @@ use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::tools::Confirmation;
 use ployz_store::{
-    Actor, Admit, Ask, Change, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence, Edit,
-    Edited, EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId,
+    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence, Edit, Edited,
+    EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId,
     ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep,
     SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
@@ -252,22 +252,16 @@ impl<'m> Store<'m> {
         self.approved(command, &Trusted::default(), Some(check))
     }
 
-    /// Stage `edit`, refusing a default region no observed Server is in.
     pub(crate) fn try_edit(&self, edit: &Edit) -> Result<Edited, StoreCallError> {
-        let region = edit.changes.iter().find_map(|change| match change {
-            Change::Set { path, value } if path.environment().is_some() => {
-                serde_json::from_value::<Region>(value.clone()).ok()
+        let named = edit.regions();
+        let regions = (!named.is_empty())
+            .then(|| self.observe_regions())
+            .flatten();
+        if let (Backend::Cloud(..), Some(regions)) = (&self.backend, &regions) {
+            for region in &named {
+                ployz_store::refuse_unknown_region(region, regions)
+                    .map_err(StoreCallError::Refused)?;
             }
-            Change::Set { .. }
-            | Change::Unset { .. }
-            | Change::Patch { .. }
-            | Change::Rename { .. } => None,
-        });
-        let regions = region.as_ref().and_then(|_| self.observe_regions());
-        if let (Backend::Cloud(..), Some(region), Some(regions)) =
-            (&self.backend, &region, &regions)
-        {
-            ployz_store::refuse_unknown_region(region, regions).map_err(StoreCallError::Refused)?;
         }
         let trusted = Trusted {
             regions,
@@ -1122,10 +1116,17 @@ pub(crate) fn changed(
         return lines;
     }
     let Some(domains) = ployz_store::DomainChange::of(row) else {
-        let value = |value: &serde_json::Value| match value.as_f64() {
-            Some(gb) if row.path.ends_with(".memLimit") => ployz_core::memory_size::memory_size(gb),
-            Some(1.0) if row.path.ends_with(".cpuLimit") => "1 vCPU".to_owned(),
-            Some(cpus) if row.path.ends_with(".cpuLimit") => format!("{cpus} vCPUs"),
+        let value = |value: &serde_json::Value| match (value.as_f64(), value.as_object()) {
+            (Some(gb), _) if row.path.ends_with(".memLimit") => {
+                ployz_core::memory_size::memory_size(gb)
+            }
+            (Some(1.0), _) if row.path.ends_with(".cpuLimit") => "1 vCPU".to_owned(),
+            (Some(cpus), _) if row.path.ends_with(".cpuLimit") => format!("{cpus} vCPUs"),
+            (_, Some(counts)) if row.path.ends_with(".replicas") => counts
+                .iter()
+                .map(|(region, count)| format!("{} {count}", crate::ui::escaped(region)))
+                .collect::<Vec<_>>()
+                .join(" · "),
             _ => shown(value),
         };
         return vec![format!(
