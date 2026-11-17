@@ -10,7 +10,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
-import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
+import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { approvalBadge } from "#/modules/approvals/approvals";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
@@ -269,6 +269,39 @@ it.live("a denied Service restart names the restart and its Service", () =>
 
     const resumed = yield* resume("resolved");
     expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied", message: "A human denied this restart web: not now" } }]);
+  }));
+
+/** What MCP Analytics is told of each tool call: its name, and how it ended. */
+const toolCallsSeen = () => {
+  const seen: Array<string> = [];
+  const capture = { captureToolCall: (event: { toolName: string; isError: boolean; errorType?: string }) => { seen.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`); } };
+  const sink: PostHogService = {
+    capture: () => Effect.void,
+    identify: () => Effect.void,
+    identifyOrganization: () => Effect.void,
+    mcp: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))),
+  };
+  return { seen, sink };
+};
+
+it.live("a gated call the sidebar refuses to run beside another call, and one whose approval the member cancels, are each recorded once", () =>
+  Effect.gen(function* () {
+    const { seen, sink } = toolCallsSeen();
+    const { say, resume } = yield* sidebar({ removeWeb: false });
+    const model = scriptedAgent();
+    model.setResponses([
+      { toolCalls: [{ name: "service_restart", input: { intent: "Restart web.", service: "web", wait_seconds: 0 } }, { name: "service_inspect", input: { intent: "Look at web.", service: "web" } }] },
+      { text: "Done." },
+    ]);
+    yield* say("restart web and look at it", { page: architecture }, model).pipe(Effect.provideService(PostHog, sink));
+    expect([...seen].sort()).toEqual(["service_inspect ok", "service_restart validation"]);
+
+    seen.length = 0;
+    model.setResponses([{ toolCalls: [{ name: "service_restart", input: { intent: "Restart web.", service: "web", wait_seconds: 0 } }] }, { text: "Not restarting." }]);
+    yield* say("restart web", { page: architecture }, model).pipe(Effect.provideService(PostHog, sink));
+    expect(seen, "an approval that still waits is not a call yet").toEqual([]);
+    yield* resume("cancelled").pipe(Effect.provideService(PostHog, sink));
+    expect(seen).toEqual(["service_restart cancelled"]);
   }));
 
 // Bob is a member and Carol an owner. Carol makes Ada an admin after Ada approved making Bob an owner, so the run refuses.

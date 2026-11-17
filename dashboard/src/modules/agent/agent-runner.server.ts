@@ -35,6 +35,8 @@ export type AgentCall = {
   readonly approvalId: string | null;
   readonly page: PagePlace;
   readonly origin: CallOrigin;
+  /** The surface ended the call itself, before it could run, with this error: it is recorded as the failed call it is, and does not run. */
+  readonly ended?: CallError;
 };
 
 export type Asking = { readonly approvalId: string; readonly refusal: StoreRefusal };
@@ -405,11 +407,18 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
   }
   const { intent, input } = takeIntent(call.input);
+  if (call.ended !== undefined) {
+    yield* record({ kind: "call", tool: call.tool, intent, error: call.ended });
+    return done(call.ended.type === "cancelled" ? { ok: false, cancelled: true } : refused("invalid_argument", call.ended.message));
+  }
   if (intent === null) {
     yield* record({ kind: "call", tool: call.tool, intent: null, error: { type: "validation", message: INTENT_REFUSAL } });
     return done(refused("invalid_argument", INTENT_REFUSAL));
   }
-  const result = yield* runTool(caller, { ...call, input });
+  // A tool that fails as an Effect failure is a call that failed too: record it, with no word of the cause, and fail the same.
+  const result = yield* runTool(caller, { ...call, input }).pipe(
+    Effect.tapCause(() => record({ kind: "call", tool: call.tool, intent, error: { type: "internal", message: "The tool failed." } })),
+  );
   if ("outcome" in result) yield* record({ kind: "call", tool: call.tool, intent, error: failureOf(result.outcome) });
   return result;
 });

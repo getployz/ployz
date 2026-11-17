@@ -240,11 +240,16 @@ const serverFor = (caller: AgentCaller, request: Request, origin: CallOrigin, ru
     }, async (args) => {
       const fields = asRecord(args) ?? {};
       const { approval, ...rest } = fields;
-      if (tool.gated && approval !== undefined && asString(approval) === null) return text({ ok: false, refusal: BAD_APPROVAL }, true);
+      // A call this surface refuses before it can run goes through `runAgentCall` too, which records it as the failed call it is.
+      const reject = async (refusal: JsonObject & { readonly message: string }) => {
+        await run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(fields) ?? null, key: "", approvalId: null, page: { at: "organization" }, origin, ended: { type: "validation", message: refusal.message } }));
+        return text({ ok: false, refusal }, true);
+      };
+      if (tool.gated && approval !== undefined && asString(approval) === null) return reject(BAD_APPROVAL);
       const input = tool.gated ? rest : fields;
       const sentKey = asString(input["request_key"]);
       const given = sentKey === null ? headerKey : requestKeyOf(sentKey);
-      if (!given.ok) return text({ ok: false, refusal: given.refusal }, true);
+      if (!given.ok) return reject(given.refusal);
       const key = given.key ?? randomUUID();
       keys.push(key);
       const sent = tool.keyed ? { ...input, request_key: key } : input;
@@ -270,19 +275,18 @@ const serverFor = (caller: AgentCaller, request: Request, origin: CallOrigin, ru
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (args) => {
     const startedAt = new Date();
-    const feedback = decodeFeedback(args);
+    // It needs no `intent`, and one sent anyway is ignored, as `ployz mcp` ignores it.
+    const { intent: _intent, ...fields } = asRecord(args) ?? {};
+    const feedback = decodeFeedback(fields);
+    const record = (what: WhatHappened) =>
+      run(recordAgentCall({ ...origin, ...what, startedAt, durationMs: Date.now() - startedAt.getTime(), caller: reporterOf(caller) }));
     if (Option.isNone(feedback)) {
-      return text({ ok: false, refusal: { code: "invalid_argument", message: "This input does not fit: send `type` (missing_capability, issue, praise or other), `message` and, if you like, `sentiment` (positive, neutral, negative or mixed)." } }, true);
+      const message = "This input does not fit: send `type` (missing_capability, issue, praise or other), `message` and, if you like, `sentiment` (positive, neutral, negative or mixed).";
+      await record({ kind: "call", tool: FEEDBACK_TOOL, intent: null, error: { type: "validation", message } });
+      return text({ ok: false, refusal: { code: "invalid_argument", message } }, true);
     }
     const { type, message, sentiment } = feedback.value;
-    await run(recordAgentCall({
-      ...origin,
-      kind: "feedback",
-      feedback: { type, message, sentiment: sentiment ?? null },
-      startedAt,
-      durationMs: Date.now() - startedAt.getTime(),
-      caller: reporterOf(caller),
-    }));
+    await record({ kind: "feedback", feedback: { type, message, sentiment: sentiment ?? null } });
     return text({ ok: true, value: { message: "Thanks. The Ployz team reads this." } }, false);
   });
   return server;

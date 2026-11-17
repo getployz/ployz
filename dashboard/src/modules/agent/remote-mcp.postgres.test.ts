@@ -10,6 +10,8 @@ import { afterEach, expect, vi } from "vitest";
 import { disconnectAgent, listConnectedAgents, revokeAccountSession } from "#/modules/account/account.server";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
+import { asTestDouble } from "#/lib/test-double";
+import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -454,6 +456,39 @@ it.live("an approval its schema doesn't take is refused before anything is writt
     }
     expect(writes).not.toHaveBeenCalled();
   }).pipe(Effect.scoped), 30_000);
+
+it.live("a call refused before it runs is recorded once as a failed call, and feedback with an intent is taken", () =>
+  Effect.gen(function* () {
+    const recorded: Array<string> = [];
+    const capture = {
+      captureToolCall: (event: { toolName: string; isError: boolean; errorType?: string }) => { recorded.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`); },
+      captureFeedback: () => { recorded.push("feedback"); },
+    };
+    const sink: PostHogService = {
+      capture: () => Effect.void,
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+      mcp: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))),
+    };
+    const real = yield* hostedShop();
+    const shop: Shop = { ...real, run: (effect) => real.run(effect.pipe(Effect.provideService(PostHog, sink))) };
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const refused: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["deploy", { ...SHOP, approval: 42 }],
+      ["service_add", { ...SHOP, name: "cache", image: "redis:7", request_key: "!!" }],
+      ["send_feedback", { type: "bug", message: "deploy hung" }],
+    ];
+    for (const [tool, args] of refused) {
+      recorded.length = 0;
+      const answer = yield* Effect.promise(() => agent.client.callTool({ name: tool, arguments: { intent: "Test the tool.", ...args } }));
+      expect(answer).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument" } } });
+      expect(recorded, tool).toEqual([`${tool} validation`]);
+    }
+    recorded.length = 0;
+    const thanked = yield* Effect.promise(() => agent.client.callTool({ name: "send_feedback", arguments: { intent: "Test the tool.", type: "issue", message: "deploy hung" } }));
+    expect(thanked).toMatchObject({ isError: false, structuredContent: { ok: true } });
+    expect(recorded).toEqual(["feedback"]);
+  }).pipe(Effect.scoped), 60_000);
 
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
   Effect.gen(function* () {

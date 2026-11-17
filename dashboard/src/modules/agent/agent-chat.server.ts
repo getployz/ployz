@@ -35,6 +35,7 @@ import {
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
 import { latestPageContext, PageContext, type PagePlace, placeOfPage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
+import type { CallError } from "#/modules/analytics/agent-calls.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { findCommand } from "#/modules/commands/commands.server";
@@ -87,6 +88,9 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOri
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
   // The approval a published command refused under, by tool and input: the model repeats the call without it.
   const held = new Map<string, string>();
+  // A call the gate ends itself still is a call the agent made: it is recorded, once, as the failed call it is.
+  const ended = (call: { id: string; function: { name: string; arguments: string } }, turn: string, error: CallError) =>
+    runAgentCall(caller, { tool: call.function.name, input: toolInput(call.function.arguments), key: `${turn}:${call.id}`, approvalId: null, page: here.page, origin, ended: error });
   const decide = (call: { id: string; function: { name: string; arguments: string } }, turn: string) =>
     Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runAgentCall>>, AgentServices> {
       const answer = answers.get(call.id);
@@ -94,6 +98,7 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOri
         if (answer.approvalId !== null) {
           yield* decideApproval({ ...caller, via: "dashboard" }, answer.approvalId, { reject: {} }).pipe(Effect.catchTag("NotFound", () => Effect.void));
         }
+        yield* ended(call, turn, { type: "cancelled", message: "The call was cancelled." });
         return { outcome: { ok: false, cancelled: true } };
       }
       const input = toolInput(call.function.arguments);
@@ -120,13 +125,15 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOri
       // A call staged into a proposal runs nothing, so no one reviews it now: it runs like an ungated tool.
       const staged = calls.filter((call) => stagesInto(toolInput(call.function.arguments)) !== null);
       const gated = calls.filter((call) => GATED.has(call.function.name) && !staged.includes(call));
+      const refuse = async (call: (typeof calls)[number], message: string) => {
+        await run(ended(call, ctx.runId, { type: "validation", message }));
+        outcomes.set(call.id, invalid(message));
+      };
       if (staged.length > 1) {
-        for (const call of staged) outcomes.set(call.id, invalid("Stage one step at a time."));
+        for (const call of staged) await refuse(call, "Stage one step at a time.");
       }
       if (calls.length > 1) {
-        for (const call of gated) {
-          outcomes.set(call.id, invalid(`Call ${call.function.name} alone, in its own turn, so a human can review exactly that plan.`));
-        }
+        for (const call of gated) await refuse(call, `Call ${call.function.name} alone, in its own turn, so a human can review exactly that plan.`);
         return undefined;
       }
       const [only] = gated;
