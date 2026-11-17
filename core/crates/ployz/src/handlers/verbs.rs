@@ -186,7 +186,9 @@ pub(crate) const CLUSTER_NAME: Verb = Verb::cloud(
 )
 .docs("services/private-networking.md");
 pub(crate) const COMPLETION: Verb =
-    Verb::local("completion", Never, crate::cli::completion, completion).refuses_json();
+    Verb::local("completion", Never, crate::cli::completion, completion)
+        .refuses_json()
+        .docs("cli/overview.md");
 pub(crate) const CONFIG_ADD: Verb = Verb::cloud(
     "config add",
     Never,
