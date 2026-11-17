@@ -42,11 +42,11 @@ async function pick(name: string) {
   fireEvent.click(option);
 }
 
-function section(shown: RuntimeMachineRecord, allowed = true) {
+function section(shown: RuntimeMachineRecord, allowed = true, machines = fleet) {
   render(
     <ServerRegionSection
       machine={shown}
-      machines={fleet}
+      machines={machines}
       organizationSlug="acme"
       gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
     />,
@@ -58,6 +58,19 @@ it("shows a pick of the regions the fleet holds, each once, then a way to clear 
   fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
   const options = (await screen.findAllByRole("option")).map((option) => option.textContent);
   expect(options).toEqual(["fsn", "syd", "No region", "New region…"]);
+});
+
+it("offers the lowercase spelling when Servers are labelled with two spellings of one region", async () => {
+  section(bare, true, [machine("5", "FSN"), machine("6", "fsn"), bare]);
+  fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
+  const options = (await screen.findAllByRole("option")).map((option) => option.textContent);
+  expect(options).toEqual(["fsn", "No region", "New region…"]);
+});
+
+it("shows a region named like a menu entry as that region, and does not clear it", () => {
+  section(machine("5", "_none"), true, [machine("5", "_none")]);
+  expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("_none");
+  expect(requestChange).not.toHaveBeenCalled();
 });
 
 it("sends the picked region as a change and shows it queued until the Server reports it", async () => {
@@ -90,7 +103,8 @@ it("types a new region, refuses a bad one inline without sending, and sends a go
   fireEvent.keyDown(input, { key: "Enter" });
   expect(requestChange).not.toHaveBeenCalled();
 
-  fireEvent.change(input, { target: { value: "lhr" } });
+  fireEvent.change(input, { target: { value: "LHR" } });
+  expect((input as HTMLInputElement).value).toBe("lhr");
   fireEvent.keyDown(input, { key: "Enter" });
   expect(requestChange).toHaveBeenCalledWith({
     data: { organizationSlug: "acme", machineId: "4".repeat(32), change: { region: "lhr" } },

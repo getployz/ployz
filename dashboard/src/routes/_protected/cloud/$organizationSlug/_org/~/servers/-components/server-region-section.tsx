@@ -7,10 +7,9 @@ import { isRegion, REGION_RULE } from "#/modules/machines/server-policy";
 import { knownRegions } from "#/modules/machines/server-regions";
 import type { RoleGate } from "#/modules/organization/members.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { RegionValue } from "./region-value";
 
-const NO_REGION = "_none";
-const NEW_REGION = "_new";
+const NO_REGION = "no region";
+const NEW_REGION = "new region";
 
 export function ServerRegionSection({ machine, machines, organizationSlug, gate }: {
   machine: RuntimeMachineRecord;
@@ -43,7 +42,7 @@ export function ServerRegionSection({ machine, machines, organizationSlug, gate 
   };
 
   return (
-    <SettingsSection id="server-region" title="Region">
+    <SettingsSection id="server-region" title="Placement">
       <SettingsRow
         label="Region"
         hint={policy.regionQueued ? "Queued" : undefined}
@@ -55,7 +54,7 @@ export function ServerRegionSection({ machine, machines, organizationSlug, gate 
             autoFocus
             commit="check"
             value={draft}
-            onValueChange={setDraft}
+            onValueChange={(value) => setDraft(value.toLowerCase())}
             isDirty={draft !== ""}
             error={error}
             onConfirm={submit}
@@ -65,12 +64,12 @@ export function ServerRegionSection({ machine, machines, organizationSlug, gate 
         ) : (
           <Select disabled={!gate.allowed} value={policy.region ?? NO_REGION} onValueChange={choose}>
             <SelectTrigger aria-label="Region" title={gate.reason}>
-              <SelectValue>{policy.region === null ? "No region" : <RegionValue region={policy.region} />}</SelectValue>
+              <SelectValue>{policy.region ?? "No region"}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
                 {choices.map((region) => (
-                  <SelectItem key={region} value={region} label={region}><RegionValue region={region} /></SelectItem>
+                  <SelectItem key={region} value={region} label={region}>{region}</SelectItem>
                 ))}
                 {choices.length > 0 ? <SelectSeparator /> : null}
                 <SelectItem value={NO_REGION} label="No region">No region</SelectItem>

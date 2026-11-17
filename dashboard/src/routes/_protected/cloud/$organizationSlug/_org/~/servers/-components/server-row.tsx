@@ -5,7 +5,6 @@ import { cn } from "#/lib/utils";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
-import { RegionValue } from "./region-value";
 import { runsHere, serviceNames } from "./runs-here";
 import { ServerMeters } from "./server-meters";
 import type { ActivationState } from "#/modules/server-upgrade/activation";
@@ -103,7 +102,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale, activation
         {activation === null ? null : ACTIVATION[activation]}
       </span>
       <span className="hidden truncate text-muted-foreground @xl:block">
-        {server.machine.region === null ? null : <RegionValue region={server.machine.region} />}
+        {server.machine.region}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>

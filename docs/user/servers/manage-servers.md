@@ -664,7 +664,7 @@ command renamed it with `--name`, since the name you typed no longer selects it.
 A region is a label on the server named `region`, like `fsn` or `lhr`. The Servers list shows it
 in its own column. Servers with no region leave it blank.
 
-On a server's page, open **Region** and pick one a server in your organization already has, **No
+On a server's page, under **Placement**, open **Region** and pick one a server in your organization already has, **No
 region** to clear it, or **New region…** to type one. A region is up to 63 lowercase letters, digits
 and hyphens, and starts with a letter or digit. Anything else shows the rule under the field and
 sends nothing. Press Enter or click the check to save.
@@ -672,10 +672,15 @@ sends nothing. Press Enter or click the check to save.
 The page shows the region you picked and **Queued** until the server reports it, then the server's
 own value. If the server hasn't reported it after a minute, the page goes back to what the server
 reports and says so. Changing a region only changes the label: nothing restarts and no service
-moves. Only an owner or admin can change it; other members see the field read-only.
+moves until your next deploy. Only an owner or admin can change it; other members see the field read-only.
 
-`ployz server set web-1 --label-add region=fsn` sets the same label, and the list shows it on its
-next refresh. Cloud can't set or clear a label other than `region`, and the
+The CLI sets the same label, and the list shows it on its next refresh:
+
+```sh
+ployz server set web-1 --label-add region=fsn
+```
+
+Cloud can't set or clear a label other than `region`, and the
 [Ployz agent](../account/agent-sidebar.md) can't set a region yet.
 
 ## Upgrade Ployz on a server
