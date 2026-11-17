@@ -22,7 +22,7 @@ const Report = Schema.Struct({
   kind: Schema.Literals(["call", "unknownTool", "initialize", "toolsList", "feedback"]),
   tool: Text(200),
   intent: Schema.NullOr(Text(LONG)),
-  // A hashed id is 32 hex characters; a UUID made at connect keeps its hyphens.
+  // The CLI sends 32 hex characters; `ployz mcp` a UUID, hyphens kept.
   session: Schema.String.check(Schema.isPattern(/^ses_[0-9a-f-]{32,36}$/)),
   startedAt: Text(40),
   durationMs: Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0, maximum: 86_400_000 })),
@@ -67,8 +67,8 @@ export const handleAgentCallReport = Effect.fn("Agent.handleCallReport")(functio
   yield* recordAgentCall({
     ...what,
     surface: report.surface,
-    // The CLI names its session by agent and day alone, so the credential makes it this caller's.
-    session: report.surface === "cli" ? sessionIdOf(`${caller.credential.id}:${report.session}`) : report.session,
+    // Whoever sends a session id can pick it, and the CLI's names only an agent and a day, so the credential makes each one this caller's.
+    session: sessionIdOf(`${caller.credential.id}:${report.session}`),
     startedAt,
     durationMs: report.durationMs,
     client: report.client,
