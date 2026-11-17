@@ -21,7 +21,9 @@ pub fn refuse_unknown(region: &Region, regions: &BTreeSet<Region>) -> Result<(),
     if named.is_empty() {
         return Err(
             error::invalid("No Server has a region yet.", json!({ "region": region })).with_hint(
-                Hint::Next(format!("ployz server set NAME --label-add region={region}")),
+                Hint::Next(format!(
+                    "ployz server set SERVER --label-add region={region}"
+                )),
             ),
         );
     }

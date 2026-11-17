@@ -17,7 +17,8 @@ A server is in a region when its `region` label names it:
 ployz server set web-1 --label-add region=fsn
 ```
 
-Choose any short name. Servers with the same name are in the same region.
+Choose any short name. Servers with the same name are in the same region. Upper and lower case
+are the same, so `FSN` is `fsn`.
 
 ## Set an environment's region
 
@@ -33,7 +34,7 @@ Choose any short name. Servers with the same name are in the same region.
    postgres → fsn
    ```
 
-2. Deploy. Replicas that run outside the region are replaced by new ones inside it.
+2. Deploy. Every service restarts, and its new replicas start on the region's servers.
 
    ```sh
    ployz deploy
@@ -46,7 +47,7 @@ can stage a region too. Its deploy waits for your approval, which shows the regi
 Ployz refuses a region none of your servers is in, and stages nothing:
 
 ```
-No Server is in lhr. Regions: fsn, syd.
+error: No Server is in lhr. Regions: fsn, syd.
 ```
 
 To run on any server again:
@@ -98,5 +99,7 @@ region, and deploy again.
 - **A branch starts with its parent's region** and follows later changes to it, like the parent's
   other settings.
 - **Syncing two environments doesn't copy the region.** Set it on each.
+- **Setting or clearing a region restarts every service**, including one whose replicas already
+  run on the region's servers. A service with a volume is down while it restarts.
 - **Only deploys move replicas.** Changing a server's label or an environment's region changes
   nothing until you deploy.
