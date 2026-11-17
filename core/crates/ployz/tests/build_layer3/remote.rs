@@ -366,6 +366,7 @@ async fn prepared_build_is_delivered_to_its_destination_without_a_registry() {
         (builder, "--accepts-services=false"),
     ] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args([
                 "--connect",
                 &address,

@@ -91,6 +91,7 @@ except (OSError, BrokenPipeError):
         directory
     });
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.arg("--why=test");
     let paths = std::iter::once(directory.path().to_owned())
         .chain(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),

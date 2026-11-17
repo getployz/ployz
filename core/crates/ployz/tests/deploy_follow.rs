@@ -148,7 +148,7 @@ fn serve(
     script: &mut dyn Script,
     pid: u32,
     events: &std::path::Path,
-) -> (Exchange, Option<Instant>) {
+) -> Option<(Exchange, Option<Instant>)> {
     let requested = Instant::now();
     // An accepted socket inherits the listener's nonblocking mode on macOS.
     stream.set_nonblocking(false).unwrap();
@@ -171,6 +171,16 @@ fn serve(
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body).unwrap();
+    if first.split_whitespace().nth(1) == Some("/api/cli/agent/calls") {
+        // Every run reports itself; the script holds only the requests under test.
+        write!(
+            stream,
+            "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        return None;
+    }
     let body: Value = serde_json::from_slice(&body).unwrap();
     let kind = body
         .get("query")
@@ -180,13 +190,13 @@ fn serve(
     assert_eq!(first.split_whitespace().nth(1), Some(reply.path));
     assert_eq!(kind, Some(reply.kind), "{body}");
     if matches!(reply.interrupt, Some(Interrupt::HangUp)) {
-        return (
+        return Some((
             Exchange {
                 requested,
                 responded: Instant::now(),
             },
             None,
-        );
+        ));
     }
     let mut sent = None;
     if matches!(reply.interrupt, Some(Interrupt::DuringRead)) {
@@ -208,13 +218,13 @@ fn serve(
         real_wait(delay);
         sent = Some(interrupt(pid));
     }
-    (
+    Some((
         Exchange {
             requested,
             responded,
         },
         sent,
-    )
+    ))
 }
 
 fn run(replies: Vec<Reply>) -> (Output, Vec<Value>) {
@@ -267,6 +277,7 @@ fn scripted_run(
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let child = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .current_dir(root)
         .env("PLOYZ_CONFIG", root.join("default.yaml"))
         .env_remove("PLOYZ_STORE")
@@ -298,9 +309,11 @@ fn scripted_run(
             );
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let (exchange, sent) = serve(stream, &mut script, pid, &server_events);
-                    exchanges.push(exchange);
-                    signal = signal.or(sent);
+                    if let Some((exchange, sent)) = serve(stream, &mut script, pid, &server_events)
+                    {
+                        exchanges.push(exchange);
+                        signal = signal.or(sent);
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     real_wait(Duration::from_millis(5))

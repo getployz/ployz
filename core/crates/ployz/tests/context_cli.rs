@@ -29,6 +29,7 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
     .unwrap();
 
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--ployz-config",
             path.to_str().unwrap(),
@@ -46,6 +47,7 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
     assert_eq!(Config::load(&path).unwrap().current_context(), Some("dev"));
 
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
         .output()
         .unwrap();
@@ -66,6 +68,7 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
 /// The current context as `ctx ls --json` reports it.
 fn current_context(path: &std::path::Path) -> Option<String> {
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "ctx",
             "ls",
@@ -115,6 +118,7 @@ fn ctx_ls_json_lists_connections_with_the_default_first_without_mutating() {
     before.save().unwrap();
 
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "ctx",
             "ls",
@@ -166,6 +170,7 @@ fn ctx_use_connection_selects_and_persists_across_invocations() {
     .unwrap();
 
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "ctx",
             "use",
@@ -228,6 +233,7 @@ fn ctx_use_rejects_an_unknown_connection_without_mutating() {
         ),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args([
                 "ctx",
                 "use",
@@ -252,6 +258,7 @@ fn ctx_use_rejects_an_unknown_connection_without_mutating() {
 #[test]
 fn ctx_use_help_describes_the_connection_choice() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["ctx", "use", "--help"])
         .output()
         .unwrap();
@@ -293,6 +300,7 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
         .unwrap();
 
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--ployz-config",
             flag_path.to_str().unwrap(),
@@ -319,6 +327,7 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
 
     let before = Config::load(&flag_path).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["ctx", "use"])
         .args(["--ployz-config", flag_path.to_str().unwrap()])
         .output()
@@ -355,6 +364,7 @@ fn a_filename_only_config_override_saves_in_the_current_directory() {
     .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .current_dir(&root)
         .args(["--ployz-config", "config.yaml", "ctx", "use", "dev"])
         .output()
@@ -397,6 +407,7 @@ fn ctx_rm_of_a_non_current_context_persists() {
     .unwrap();
 
     let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "ctx",
             "rm",
@@ -422,6 +433,7 @@ fn ctx_rm_of_a_non_current_context_persists() {
     assert!(config.contexts.contains_key("prod"));
 
     let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
         .output()
         .unwrap();
@@ -464,6 +476,7 @@ fn ctx_rm_of_the_current_context_unsets_current() {
     .unwrap();
 
     let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "ctx",
             "rm",
@@ -495,6 +508,7 @@ fn ctx_rm_of_the_current_context_unsets_current() {
     );
 
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "ctx",
             "use",
@@ -533,6 +547,7 @@ fn ctx_rm_of_the_last_context_leaves_an_empty_file() {
     .unwrap();
 
     let removed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "ctx",
             "rm",
@@ -576,6 +591,7 @@ fn ctx_rm_of_an_unknown_name_fails_without_mutating() {
     for action in ["use", "rm"] {
         for name in ["gone", "gone\n\u{1b}[2J"] {
             let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .arg("--why=test")
                 .args([
                     "ctx",
                     action,
@@ -613,6 +629,7 @@ fn ployz_with(
     move |args| {
         let home = path.parent().unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command
             .args(["--ployz-config", path.to_str().unwrap()])
             .args(args)
@@ -764,6 +781,7 @@ fn every_command_that_finds_no_contexts_prints_a_next_line_that_gets_past_them()
             panic!("{next}");
         };
         let ran = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(args)
             .env("HOME", root.path())
             .env("XDG_CONFIG_HOME", root.path())
@@ -863,6 +881,7 @@ fn ctx_rm_rejects_a_direct_connection() {
     before.save().unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--connect",
             "tcp://127.0.0.1:1",
@@ -887,6 +906,7 @@ fn ctx_rm_rejects_a_direct_connection() {
 #[test]
 fn ctx_rm_help_describes_local_removal() {
     let rm = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["ctx", "rm", "--help"])
         .output()
         .unwrap();
@@ -929,6 +949,7 @@ fn management_context_selection_and_listing_never_print_capabilities() {
         vec!["ctx", "use", "--connection", "management:[redacted]"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .arg("--ployz-config")
             .arg(&path)
             .args(&args)
@@ -996,6 +1017,7 @@ fn management_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_contex
         (ssh.to_string(), vec![ssh, first, second]),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .arg("--ployz-config")
             .arg(&path)
             .args(["ctx", "use", "--connection", &selector])
@@ -1064,6 +1086,7 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
         ("3", "out of range"),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .arg("--ployz-config")
             .arg(&path)
             .args(["ctx", "use", "--connection", selector])
@@ -1074,6 +1097,7 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
         assert_eq!(Config::load(&path).unwrap(), config);
     }
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .arg("--ployz-config")
         .arg(&path)
         .args(["ctx", "use", "--connection", "2"])

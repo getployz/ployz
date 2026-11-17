@@ -79,7 +79,7 @@ smoke_cli() {
     home=$(mktemp -d)
     # $runner is empty or a command prefix such as `qemu-aarch64`.
     # shellcheck disable=SC2086
-    ployz() { env HOME="$home" PLOYZ_CONFIG="$home/config.yaml" $runner "$binary" --json "$@"; }
+    ployz() { env HOME="$home" PLOYZ_CONFIG="$home/config.yaml" $runner "$binary" --json --why "release check" "$@"; }
     export PLOYZ_STORE="sqlite:$home/store.db"
     ployz project new smoke >/dev/null || fail "$archive cannot create a Project in the hidden SQLite Store"
     ployz service add web --image nginx:1 --project smoke >/dev/null || fail "$archive cannot add a Service"

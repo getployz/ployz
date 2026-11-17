@@ -39,6 +39,12 @@ pub(crate) fn compiled() -> Command {
             .value_parser(["auto", "always", "never"])
             .default_value("auto")
             .help("When to color output; overrides NO_COLOR and CLICOLOR"),
+    )
+    .arg(
+        value("why", None)
+            .global(true)
+            .value_name("REASON")
+            .help("Why you are running this: the goal the command serves. Required when a coding agent or a script runs ployz"),
     );
     handlers::verbs::tree(root)
 }

@@ -28,6 +28,7 @@ async fn ployz(store: &Path, address: std::net::SocketAddr, reach: Reach, args: 
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.arg("--why=test");
     command
         .current_dir(home.path())
         .env("HOME", home.path())

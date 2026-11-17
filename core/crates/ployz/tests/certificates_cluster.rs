@@ -747,6 +747,7 @@ fn ingress_role(server: &Machine) -> [&str; 4] {
 
 fn cli(direct: &str, args: &[&str]) {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--connect",
             direct,

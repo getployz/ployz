@@ -46,6 +46,7 @@ fn targets() -> [Target; 2] {
 /// A `ployz` process with its own home, away from any ambient Store or sign-in.
 fn isolated(home: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.arg("--why=test");
     command
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
@@ -740,10 +741,13 @@ impl Approvals {
         let carried = approval
             .map(|id| format!(" approved by {id}"))
             .unwrap_or_default();
-        self.runs
-            .lock()
-            .unwrap()
-            .push(format!("{method} {route}{carried}"));
+        // Every run reports itself; the runs under test are the command's own.
+        if route != "agent/calls" {
+            self.runs
+                .lock()
+                .unwrap()
+                .push(format!("{method} {route}{carried}"));
+        }
         self.ran.notify_all();
         let body: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         self.bodies.lock().unwrap().push(body.clone());
@@ -4638,7 +4642,7 @@ fn redeploying_an_older_deployment_asks_before_it_rolls_back() {
     assert_eq!(asked["details"]["rolls_back"], json!([2]));
     assert_eq!(
         asked["details"]["retry"],
-        json!("ployz --json deployment redeploy 1 --yes")
+        json!("ployz '--why=test' --json deployment redeploy 1 --yes")
     );
 
     let rolled_back = no_server_answers(&store, &["deployment", "redeploy", "1", "--yes"]);
@@ -7390,7 +7394,7 @@ fn as_a_person(command: &mut Command) {
 #[cfg(target_os = "linux")]
 fn at_a_terminal(target: &Target, args: &str, typed: &str) -> (Option<i32>, String) {
     let home = tempfile::tempdir().unwrap();
-    let ployz = format!("{} {args}", env!("CARGO_BIN_EXE_ployz"));
+    let ployz = format!("{} --why=test {args}", env!("CARGO_BIN_EXE_ployz"));
     let mut script = Command::new("script");
     for (key, value) in target.command(home.path()).get_envs() {
         match value {
@@ -8899,7 +8903,8 @@ fn set_refuses_to_seal_a_generator_or_a_reference() {
         );
         assert_eq!(written, 0, "{args:?}");
         assert!(!refused.to_string().contains("secret("), "{refused}");
-        cloud_never_saw(&cloud, "${{");
+        cloud_never_saw(&cloud, "secret(");
+        cloud_never_saw(&cloud, "db.URL");
     }
 }
 

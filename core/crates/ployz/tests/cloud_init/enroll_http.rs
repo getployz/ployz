@@ -196,7 +196,10 @@ impl EnrollListen {
                     let body = enroll_json_body(raw);
                     let reply = {
                         let mut cli = cli_replies.lock().unwrap();
-                        cli.calls.push((path.clone(), bearer, body));
+                        // Every run reports itself; the calls under test are the command's own.
+                        if path != "/api/cli/agent/calls" {
+                            cli.calls.push((path.clone(), bearer, body));
+                        }
                         cli.replies.get_mut(&path).and_then(|queue| {
                             if queue.len() > 1 {
                                 queue.pop_front()
