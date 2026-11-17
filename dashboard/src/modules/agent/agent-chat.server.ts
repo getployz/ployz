@@ -18,7 +18,8 @@ import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } fro
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
+import { type CallOrigin, sessionIdOf } from "#/modules/analytics/agent-calls.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
 import {
@@ -81,7 +82,7 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
   return (messages[turn]?.toolCalls ?? []).filter((call) => !answered.has(call.id));
 };
 
-const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
+const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOrigin) => {
   const outcomes = new Map<string, ToolOutcome>();
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
   // The approval a published command refused under, by tool and input: the model repeats the call without it.
@@ -96,9 +97,10 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
         return { outcome: { ok: false, cancelled: true } };
       }
       const input = toolInput(call.function.arguments);
-      const same = `${call.function.name}:${canonicalJson(input)}`;
+      // Without the reason: the model words it again on a repeat, and the repeat is still the same call.
+      const same = `${call.function.name}:${canonicalJson(takeIntent(input).input)}`;
       const approvalId = answer?.approvalId ?? held.get(same) ?? null;
-      const result = yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId, page: here.page });
+      const result = yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId, page: here.page, origin });
       if (approvalId !== null && findCommand(call.function.name) !== undefined && "outcome" in result && !result.outcome.ok) held.set(same, approvalId);
       return shown(result);
     });
@@ -145,12 +147,12 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
 };
 
 /** Every agent tool. A gated one runs in the approval gate, so its own handler never does. */
-const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here) => AGENT_TOOLS.map((tool) =>
+const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here, origin: CallOrigin) => AGENT_TOOLS.map((tool) =>
   toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
     .server((args, context) => {
       if (GATED.has(tool.name) && stagesInto(projectJsonValue(args) ?? null) === null) throw new Error(`${tool.name} ran outside the approval gate.`);
       const key = `${turn}:${context?.toolCallId ?? randomUUID()}`;
-      return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page }).pipe(Effect.map(outcomeOf)));
+      return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page, origin }).pipe(Effect.map(outcomeOf)));
     }));
 
 const systemPrompt = (caller: AgentCaller, model: string) => `${CATALOG.instructions}
@@ -410,6 +412,8 @@ export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, requ
   const persistence = yield* agentPersistence(scope);
   const { adapter, modelOptions }: AgentModel = model === undefined ? yield* agentModel : { adapter: model };
   const posthog = yield* PostHog;
+  // One thread is one session, whoever sits at it.
+  const origin: CallOrigin = { surface: "sidebar", session: sessionIdOf(request.threadId), client: { name: null, version: null }, serverVersion: null, userAgent: null, protocolVersion: null };
   const { resume } = request;
   // A page the client sent malformed is no page: the turn still answers.
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
@@ -422,9 +426,9 @@ export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, requ
       messages: added(request),
       threadId: request.threadId,
       runId: request.runId,
-      tools: agentTools(caller, run, request.runId, here),
+      tools: agentTools(caller, run, request.runId, here, origin),
       systemPrompts: [systemPrompt(caller, adapter.model)],
-      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run, here), limit.middleware,
+      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run, here, origin), limit.middleware,
         agentTracing, aiObservability(posthog, caller)],
       interrupts: [approvalInterrupt],
       agentLoopStrategy: maxIterations(STEP_LIMIT),

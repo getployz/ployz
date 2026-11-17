@@ -2,9 +2,6 @@ import { type AgentTurn, type Answer, agentResume, agentStart, agentTools, type 
 import { Effect } from "effect";
 import { COMMANDS } from "#/modules/commands/registry.server";
 
-/** The Store source the sidebar's calls are recorded under. */
-export const AGENT = { source: "agent" } as const;
-
 export const CATALOG = agentTools();
 
 // The compiled tools' turn steps, for the runner, which imports only types from the SDK.

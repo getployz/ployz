@@ -33,11 +33,13 @@ export class ScriptedAdapter extends BaseTextAdapter<"scripted", Record<string, 
     }
     for (const [index, call] of turn.calls.entries()) {
       const toolCallId = `call_${crypto.randomUUID()}`;
-      const args = JSON.stringify(call.input);
+      // Every tool asks why it is called; a scripted model always says.
+      const input = { intent: "Follow the script.", ...call.input };
+      const args = JSON.stringify(input);
       const named = { toolCallId, toolCallName: call.tool, toolName: call.tool, model, timestamp };
       yield { type: EventType.TOOL_CALL_START, ...named, index };
       yield { type: EventType.TOOL_CALL_ARGS, toolCallId, model, timestamp, delta: args, args };
-      yield { type: EventType.TOOL_CALL_END, ...named, input: call.input };
+      yield { type: EventType.TOOL_CALL_END, ...named, input };
     }
     yield { type: EventType.RUN_FINISHED, runId, threadId, model, timestamp, finishReason: "tool_calls" };
   }
