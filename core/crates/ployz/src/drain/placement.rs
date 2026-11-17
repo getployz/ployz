@@ -19,8 +19,8 @@ use futures_util::future::{BoxFuture, ready};
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerObservation, ContainerRefusalReason,
     CopyRotation, InspectContainerRequest, Machine, MachineId, MachineName, MachineTarget,
-    Namespace, PullPolicy, QualifiedService, RawVolumeSource, ResolvedServiceSpec, ServiceMode,
-    ServicePlacementEligibility, op,
+    Namespace, PullPolicy, QualifiedService, RawVolumeSource, Region, RequestedServiceSpec,
+    ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -416,11 +416,20 @@ fn refusal(
     if let Some(reason) = stays(spec, &machine_ref(snapshot, &first.machine_id)) {
         return Some(reason);
     }
-    place_one(&spec.to_requested(), &service.namespace, snapshot)
+    let moved = kept_in_region(spec, machine(snapshot, &first.machine_id));
+    place_one(&moved, &service.namespace, snapshot)
         .err()
         .map(|error| StayReason::NoDestination {
             detail: error_chain::row(&error),
         })
+}
+
+fn kept_in_region(spec: &ResolvedServiceSpec, source: &Machine) -> RequestedServiceSpec {
+    let requested = spec.to_requested();
+    match Region::of(source).filter(|region| requested.regions.contains_key(region)) {
+        Some(region) => requested.held_to(&region),
+        None => requested,
+    }
 }
 
 /// The first Server whose Containers the snapshot could not list, if any.
@@ -660,13 +669,15 @@ async fn move_one(
     let source = machine(snapshot, &container.machine_id);
     let from = MachineRef::from(source);
     let spec = &container.resolved_spec;
-    let dest =
-        place_one(&spec.to_requested(), &container.namespace, snapshot).map_err(|error| {
-            MoveFailure::NoDestination {
-                from: from.clone(),
-                detail: error_chain::row(&error),
-            }
-        })?;
+    let dest = place_one(
+        &kept_in_region(spec, source),
+        &container.namespace,
+        snapshot,
+    )
+    .map_err(|error| MoveFailure::NoDestination {
+        from: from.clone(),
+        detail: error_chain::row(&error),
+    })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
     let image_id = image_id(client, &container.container_id, &from, &to).await?;
@@ -974,6 +985,42 @@ mod tests {
             refusal(&serving, &service, &movable(&serving, &service)),
             Some(super::StayReason::MidRollout)
         );
+    }
+
+    #[test]
+    fn a_replica_counted_by_region_moves_only_to_a_server_in_its_region() {
+        let service = QualifiedService::parse("app/api").unwrap();
+        let mut by_region = stateless();
+        by_region.regions = serde_json::from_value(json!({ "fsn": 1, "syd": 1 })).unwrap();
+        let in_region = |hex, accepts_services, region: &str| {
+            let mut server = machine(hex, accepts_services);
+            server
+                .machine
+                .labels
+                .insert("region".parse().unwrap(), region.parse().unwrap());
+            server
+        };
+        let refused = |recorded: &ResolvedServiceSpec, free_server_region| {
+            let snapshot = DeploySnapshot {
+                machines: vec![
+                    in_region('a', false, "syd"),
+                    in_region('b', true, free_server_region),
+                ],
+                containers: vec![container('1', 'a', recorded.clone())],
+                ..DeploySnapshot::default()
+            };
+            refusal(&snapshot, &service, &super::stranded(&snapshot, &service))
+                .map(|reason| reason.to_string())
+        };
+
+        assert_eq!(refused(&by_region, "syd"), None);
+        assert!(
+            refused(&by_region, "fsn")
+                .is_some_and(|reason| reason.starts_with("no eligible Server")),
+            "{:?}",
+            refused(&by_region, "fsn")
+        );
+        assert_eq!(refused(&stateless(), "fsn"), None);
     }
 
     fn rotating(hex: char, rotation: CopyRotation) -> ContainerObservation {
