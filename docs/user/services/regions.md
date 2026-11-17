@@ -75,6 +75,9 @@ ployz deploy
 
 See [Move a volume](move-a-volume.md) for what a move does to the service while it runs.
 
+Moving a volume needs Ployz Cloud. Without it, give the volume's server the region, or change the
+environment's region.
+
 ## When no server is in the region
 
 If the region's last server loses its label or is removed, the next deploy doesn't start the
