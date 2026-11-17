@@ -683,6 +683,36 @@ ployz server set web-1 --label-add region=fsn
 Cloud can't set or clear a label other than `region`, and the
 [Ployz agent](../account/agent-sidebar.md) can't set a region yet.
 
+## List and rename regions
+
+A region has a key and a name. The key is the `region` label its servers carry, such as `default`
+or `fsn`. The name is what Ployz shows: **Default** for `default` and the key for any other, until
+you rename it. List regions with their servers:
+
+```sh
+ployz region ls
+```
+
+```
+REGION        KEY       SERVERS
+Falkenstein   default   web-1, web-2
+syd           syd       syd-1
+```
+
+A server with no region, such as one that joined on an older release, is listed below the table
+with the `ployz server set` command that puts it in one.
+
+Rename a region by its key:
+
+```sh
+ployz region rename default Falkenstein
+```
+
+It prints `Renamed default to Falkenstein. Nothing restarts.` Only the name changes. The key, each
+server's label and every environment stay as they are, so no service moves or restarts. A name is
+1 to 40 characters on one line. Renaming needs `servers:operate`, which owners and admins have.
+Both commands need `ployz login`.
+
 ## Upgrade Ployz on a server
 
 Each server's page shows the Ployz release it runs. When a newer release is out on your

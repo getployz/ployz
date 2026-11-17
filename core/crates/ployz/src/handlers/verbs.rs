@@ -11,7 +11,8 @@ use super::debug;
 use super::{
     Handler, account, build, catalog, cloud, cluster, completion, config, config_item, context,
     deploy, device, docs, domain, env, github, github_preview, github_rule, ingress, link, login,
-    mcp, metrics, operator, private_access, project, recovery, review, server, service, up, volume,
+    mcp, metrics, operator, private_access, project, recovery, region, review, server, service, up,
+    volume,
 };
 use Approval::{Always, Depends, Never};
 
@@ -598,6 +599,16 @@ pub(crate) const RECOVERY_ROTATE: Verb = Verb::cloud(
     recovery::rotate,
 )
 .docs("servers/recovery-code.md");
+pub(crate) const REGION_LS: Verb = Verb::cloud("region ls", Never, region::ls_command, region::ls)
+    .docs("servers/manage-servers.md");
+pub(crate) const REGION_RENAME: Verb = Verb::cloud(
+    "region rename",
+    Never,
+    region::rename_command,
+    region::rename,
+)
+.needs(Permission::ServersOperate)
+.docs("servers/manage-servers.md");
 pub(crate) const SCHEMA: Verb =
     Verb::cloud("schema", Never, catalog::schema_command, catalog::schema).docs("cli/overview.md");
 pub(crate) const SERVER_ADD: Verb = Verb::cloud(
@@ -1000,6 +1011,8 @@ pub(crate) const VERBS: &[Verb] = &[
     PS,
     RECOVER,
     RECOVERY_ROTATE,
+    REGION_LS,
+    REGION_RENAME,
     SCHEMA,
     SERVER_ADD,
     SERVER_BUILD_CACHE_CLEAR,
@@ -1107,6 +1120,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "recovery",
         command: recovery::group,
+    },
+    Group {
+        path: "region",
+        command: region::group,
     },
     Group {
         path: "server",

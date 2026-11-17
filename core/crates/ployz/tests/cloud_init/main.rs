@@ -7,6 +7,7 @@ mod harness;
 mod pin;
 mod policy;
 mod recovery;
+mod region;
 mod setup_report;
 mod signed_in;
 
