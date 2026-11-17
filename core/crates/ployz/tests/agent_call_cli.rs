@@ -1,17 +1,21 @@
-//! A run without a terminal says why it runs, and the report of a run never changes what
-//! the run prints or how it exits.
+//! A coding agent says why it runs a command, a run with no agent behind it is untouched,
+//! and the report of a run never changes what the run prints or how it exits.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const REASON_REQUIRED: &str =
     "Say why you are running this. Add `--why \"<the goal this command serves>\"`.";
 
-fn ployz(home: &std::path::Path, args: &[&str]) -> Output {
+/// `ployz` as `agent` sees it. `AI_AGENT` is always set, so the result never depends on
+/// which markers the test runner's own environment carries: `off` beats them all.
+fn ployz(home: &std::path::Path, agent: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
+        .env("AI_AGENT", agent)
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
         .env("PLOYZ_CONFIG", home.join("config.yaml"))
@@ -30,14 +34,14 @@ fn text(bytes: &[u8]) -> String {
 
 #[test]
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-fn a_run_without_a_terminal_is_refused_until_it_says_why() {
+fn an_agent_is_refused_until_it_says_why() {
     let home = tempfile::tempdir().unwrap();
     for args in [
         ["status"].as_slice(),
         ["status", "--why", ""].as_slice(),
         ["status", "--why", "   "].as_slice(),
     ] {
-        let refused = ployz(home.path(), args);
+        let refused = ployz(home.path(), "some-agent", args);
         assert_eq!(refused.status.code(), Some(2), "{args:?}");
         let stderr = text(&refused.stderr);
         assert!(stderr.contains(REASON_REQUIRED), "{args:?}: {stderr}");
@@ -47,7 +51,7 @@ fn a_run_without_a_terminal_is_refused_until_it_says_why() {
         );
         assert!(refused.stdout.is_empty(), "{args:?}: nothing ran");
     }
-    let json = ployz(home.path(), &["status", "--json"]);
+    let json = ployz(home.path(), "some-agent", &["status", "--json"]);
     assert_eq!(json.status.code(), Some(2));
     let error: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(error["error"]["code"], "invalid_argument", "{error}");
@@ -57,7 +61,11 @@ fn a_run_without_a_terminal_is_refused_until_it_says_why() {
         "{error}"
     );
 
-    let ran = ployz(home.path(), &["status", "--why", "see what is signed in"]);
+    let ran = ployz(
+        home.path(),
+        "some-agent",
+        &["status", "--why", "see what is signed in"],
+    );
     assert!(ran.status.success(), "{}", text(&ran.stderr));
     assert!(
         text(&ran.stdout).contains("signed in as"),
@@ -67,20 +75,20 @@ fn a_run_without_a_terminal_is_refused_until_it_says_why() {
 }
 
 #[test]
-fn version_help_completion_and_internal_verbs_need_no_reason() {
+fn version_help_completion_and_internal_verbs_need_no_reason_from_an_agent() {
     let home = tempfile::tempdir().unwrap();
-    let version = ployz(home.path(), &["--version"]);
+    let version = ployz(home.path(), "some-agent", &["--version"]);
     assert!(version.status.success(), "{}", text(&version.stderr));
     assert_eq!(
         text(&version.stdout),
         format!("{}\n", env!("CARGO_PKG_VERSION"))
     );
 
-    let help = ployz(home.path(), &[]);
+    let help = ployz(home.path(), "some-agent", &[]);
     assert!(help.status.success(), "{}", text(&help.stderr));
     assert!(text(&help.stdout).contains("Usage: ployz"));
 
-    let completion = ployz(home.path(), &["completion", "bash"]);
+    let completion = ployz(home.path(), "some-agent", &["completion", "bash"]);
     assert!(completion.status.success(), "{}", text(&completion.stderr));
     assert!(text(&completion.stdout).contains("_clap_complete_ployz"));
 
@@ -88,6 +96,7 @@ fn version_help_completion_and_internal_verbs_need_no_reason() {
     // arguments, not on a missing reason.
     let build = ployz(
         home.path(),
+        "some-agent",
         &[
             "build",
             "--grant",
@@ -105,10 +114,13 @@ fn version_help_completion_and_internal_verbs_need_no_reason() {
     assert!(!stderr.contains(REASON_REQUIRED), "{stderr}");
 }
 
-/// A Cloud that accepts the connection and answers `status`, or nothing at all.
-fn cloud(status: Option<u16>) -> String {
+/// A Cloud that accepts the connection and answers `status`, or nothing at all. It
+/// records each request it reads, headers and body, as one string.
+fn cloud(status: Option<u16>) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
@@ -117,15 +129,93 @@ fn cloud(status: Option<u16>) -> String {
                 std::thread::sleep(Duration::from_secs(10));
                 continue;
             };
+            let mut request = Vec::new();
             let mut buffer = [0; 4096];
-            let _ = stream.read(&mut buffer);
+            loop {
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                request.extend_from_slice(buffer.get(..read).unwrap_or_default());
+                let sent = text(&request).to_ascii_lowercase();
+                let whole = sent.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                    let length = head
+                        .split("content-length: ")
+                        .nth(1)
+                        .and_then(|rest| rest.split("\r\n").next()?.parse::<usize>().ok());
+                    body.len() >= length.unwrap_or(0)
+                });
+                if read == 0 || whole {
+                    break;
+                }
+            }
+            seen.lock().unwrap().push(text(&request));
             let _ = write!(
                 stream,
                 "HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
             );
         }
     });
-    url
+    (url, requests)
+}
+
+fn ploy_to_cloud(home: &std::path::Path, agent: &str, cloud: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .env("AI_AGENT", agent)
+        .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env("PLOYZ_CONFIG", home.join("config.yaml"))
+        .env("PLOYZ_TOKEN", "ployz_test_token")
+        .env("PLOYZ_CLOUD_URL", cloud)
+        .env("NO_PROXY", "127.0.0.1")
+        .env("no_proxy", "127.0.0.1")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn a_run_with_no_agent_runs_as_it_always_did_and_reports_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let (cloud, requests) = cloud(Some(204));
+    // No terminal and no `--why`: only an agent is asked for a reason.
+    let output = ploy_to_cloud(home.path(), "off", &cloud, &["ctx", "ls"]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert!(
+        text(&output.stdout).contains("NAME\tCURRENT"),
+        "{}",
+        text(&output.stdout)
+    );
+    assert!(!text(&output.stderr).contains(REASON_REQUIRED));
+    let reported = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|request| request.contains("/api/cli/agent/calls"));
+    assert!(!reported, "{:?}", requests.lock().unwrap());
+}
+
+#[test]
+fn an_agent_run_is_reported_with_its_reason_and_name() {
+    let home = tempfile::tempdir().unwrap();
+    let (cloud, requests) = cloud(Some(204));
+    let output = ploy_to_cloud(
+        home.path(),
+        "some-agent",
+        &cloud,
+        &["ctx", "ls", "--why", "list the contexts"],
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let requests = requests.lock().unwrap();
+    let report = requests
+        .iter()
+        .find(|request| request.starts_with("POST /api/cli/agent/calls "))
+        .unwrap_or_else(|| panic!("no report in {requests:?}"));
+    assert!(
+        report.contains("\"intent\":\"list the contexts\""),
+        "{report}"
+    );
+    assert!(report.contains("\"name\":\"some-agent\""), "{report}");
+    assert!(report.contains("\"tool\":\"ctx ls\""), "{report}");
 }
 
 #[test]
@@ -133,24 +223,17 @@ fn a_report_cloud_cannot_take_changes_nothing_the_run_shows() {
     let home = tempfile::tempdir().unwrap();
     // An older Cloud without the route, one that never answers, and no Cloud at all.
     for cloud in [
-        cloud(Some(404)),
-        cloud(None),
+        cloud(Some(404)).0,
+        cloud(None).0,
         "http://127.0.0.1:9".to_owned(),
     ] {
         let started = Instant::now();
-        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-            .args(["ctx", "ls", "--why", "list the contexts"])
-            .env("HOME", home.path())
-            .env_remove("XDG_CONFIG_HOME")
-            .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
-            .env("PLOYZ_TOKEN", "ployz_test_token")
-            .env("PLOYZ_CLOUD_URL", &cloud)
-            .env("NO_PROXY", "127.0.0.1")
-            .env("no_proxy", "127.0.0.1")
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+        let output = ploy_to_cloud(
+            home.path(),
+            "some-agent",
+            &cloud,
+            &["ctx", "ls", "--why", "list the contexts"],
+        );
         assert!(output.status.success(), "{cloud}: {}", text(&output.stderr));
         assert!(
             text(&output.stdout).contains("NAME\tCURRENT"),

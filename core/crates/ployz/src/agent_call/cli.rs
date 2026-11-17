@@ -1,8 +1,7 @@
-//! The CLI's one wrapper: a reason is required when an agent runs a command, and the run
-//! is reported once it ends.
+//! The CLI's one wrapper: a reason is required when a coding agent runs a command, and the
+//! run is reported once it ends. A run with no agent behind it is neither.
 
 use std::ffi::OsString;
-use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::{ArgMatches, Command};
@@ -27,8 +26,8 @@ const PLACEHOLDER: &str = "<the goal this command serves>";
 pub(crate) struct Run {
     tool: String,
     why: Option<String>,
-    /// A reason is required: an agent or a script is running this, and the command is
-    /// not one that needs none.
+    /// A reason is required: a coding agent is running this, and the command is not one
+    /// that needs none.
     required: bool,
     /// Where the report goes once the run ends, when it is reported at all.
     report: Option<Reported>,
@@ -37,7 +36,7 @@ pub(crate) struct Run {
 
 struct Reported {
     config: PathBuf,
-    agent: Option<String>,
+    agent: &'static str,
 }
 
 impl Run {
@@ -51,23 +50,19 @@ impl Run {
             .flatten()
             .map(|why| why.trim().to_owned())
             .filter(|why| !why.is_empty());
-        let agent = agent::detected();
-        let counts = agent.is_some() || !std::io::stdin().is_terminal();
-        let required = counts && !exempt(matches, command, &tool);
+        let agent = agent::name().filter(|_| !exempt(matches, command, &tool));
         let separate = ["connect", "context"]
             .into_iter()
             .any(|flag| matches.try_get_one::<String>(flag).ok().flatten().is_some());
-        let report = (required && !separate)
-            .then(|| crate::handlers::config_path(crate::handlers::leaf_matches(matches)).ok())
-            .flatten()
-            .map(|config| Reported {
-                config,
-                agent: agent.map(|agent| agent.name.clone()),
-            });
+        let report = agent.filter(|_| !separate).and_then(|agent| {
+            let config =
+                crate::handlers::config_path(crate::handlers::leaf_matches(matches)).ok()?;
+            Some(Reported { config, agent })
+        });
         Self {
             tool,
             why,
-            required,
+            required: agent.is_some(),
             report,
             started,
         }
@@ -93,10 +88,15 @@ impl Run {
             intent: self.why,
             error,
             client: Client {
-                name: reported.agent,
+                name: Some(reported.agent.to_owned()),
                 version: None,
             },
-            ..CallReport::new(Surface::Cli, Kind::Call, self.started, agent::cli_session())
+            ..CallReport::new(
+                Surface::Cli,
+                Kind::Call,
+                self.started,
+                agent::cli_session(reported.agent),
+            )
         };
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
