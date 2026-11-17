@@ -279,11 +279,26 @@ it("says who asked, and shows the change their ask saves apart from what else it
   expect(card.getByText(line(/web .*1 → 2/))).toBeTruthy();
 });
 
-it("shows a region change, which no Service's change holds", () => {
-  const diff = asTestDouble<DiffView>()({ ...approval.review.diff, total_count: 1, changes: [], region: { before: null, after: "fsn" } });
+it("shows a region change above the changes it collapses", () => {
+  const diff = asTestDouble<DiffView>()({
+    ...approval.review.diff,
+    region: { before: null, after: "fsn" },
+    changes: [
+      { type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+        { path: "web.replicas", kind: "update", before: 1, after: 2, canRestore: true, row: null },
+      ] },
+    ],
+    draft_changes: [
+      { type: "service", id: "s2", name: "api", lifecycle: "update", comparison: "saved", data: null, settings: [
+        { path: "api.env.LINUS_CHANGE", kind: "add", before: null, after: "requested", canRestore: true, row: null },
+      ] },
+    ],
+  });
   show(asTestDouble<ApprovalView>()({ ...approval, review: { effects: [], diff } }));
   const card = within(screen.getByLabelText("Deploy shop/production needs approval"));
-  expect(card.getByText(line(/production Region any region → fsn/))).toBeTruthy();
+  expect(card.getByText("1 other change").getAttribute("aria-expanded")).toBe("false");
+  const region = card.getByText(line(/production Region any region → fsn/));
+  expect(region.compareDocumentPosition(card.getByText("Saves"))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
 it("lists a Sync's changes without claiming it saves the target's unsaved edit", () => {

@@ -77,7 +77,7 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   // The name Servers know a restarted or stopped Service by, which the approvals this card makes carry.
   const serviceAct = shownServiceAct(approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
-  const { asked, others } = reviewedChanges(approval.command, approval.review);
+  const { region, asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
   const now = useMinute() ?? new Date();
 
@@ -185,12 +185,13 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
               )}
             </ul>
           )}
+          {region.length > 0 && <ChangeLines changes={region} className="text-foreground" />}
           {asked.length > 0 && <ChangeLines label="Saves" changes={asked} className="text-foreground" />}
           {others.length > 0 && (
             <Collapsible defaultOpen={effects.length === 0 && asked.length === 0}>
               <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
                 <ChevronRightIcon aria-hidden className="size-3 transition-transform group-data-panel-open:rotate-90" />
-                {others.length} {effects.length + asked.length > 0 ? "other " : ""}{others.length === 1 ? "change" : "changes"}
+                {others.length} {effects.length + region.length + asked.length > 0 ? "other " : ""}{others.length === 1 ? "change" : "changes"}
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <ChangeLines changes={others} className="pt-1 pl-4 text-muted-foreground" />
