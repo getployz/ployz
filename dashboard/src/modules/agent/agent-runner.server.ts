@@ -131,7 +131,8 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
       gated: tool.gate !== "never",
       readOnly: tool.read_only,
       destructive: tool.destructive,
-      idempotent: tool.idempotent,
+      // Sent again with a proposal, a Service tool stages a second step.
+      idempotent: tool.idempotent && !WITH_PROPOSAL.has(tool.name),
       openWorld: tool.open_world,
       keyed: keyed(schema),
     };
