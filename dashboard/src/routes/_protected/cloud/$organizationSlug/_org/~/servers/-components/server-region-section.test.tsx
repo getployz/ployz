@@ -152,7 +152,7 @@ const withDefaultPeer = [...fleet, machine("6", "default")];
 it("asks before a move that sends Services off the Server, naming each with its Environment and where it goes", async () => {
   section(vm3, { placed: RUNNING, machines: withDefaultPeer });
   await pick("Sydney");
-  const dialog = await screen.findByRole("alertdialog");
+  const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByRole("heading").textContent).toBe("Move server-3 to Sydney");
   expect(within(dialog).getByText("These leave server-3 on the next deploy.")).toBeTruthy();
   expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
@@ -171,8 +171,8 @@ it("asks before a move that sends Services off the Server, naming each with its 
 it("keeps the Server where it was when the move is cancelled", async () => {
   section(vm3, { placed: RUNNING, machines: withDefaultPeer });
   await pick("Sydney");
-  fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(requestChange).not.toHaveBeenCalled();
   expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("Default");
 });
@@ -180,7 +180,7 @@ it("keeps the Server where it was when the move is cancelled", async () => {
 it("says so when no other Server is in a Service's region", async () => {
   section(vm3, { placed: RUNNING.slice(0, 1) });
   await pick("Sydney");
-  expect(within(await screen.findByRole("alertdialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
     "webshop/productionNo server in Default",
   ]);
 });

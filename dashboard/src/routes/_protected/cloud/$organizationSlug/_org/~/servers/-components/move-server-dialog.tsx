@@ -1,5 +1,6 @@
 import type { Region } from "@ployz/sdk";
-import { ConfirmDialog } from "#/components/confirm-dialog";
+import { Button } from "#/components/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { regionName } from "#/modules/machines/server-regions";
 import type { Leaving } from "#/modules/machines/server-move";
@@ -24,28 +25,28 @@ export function MoveServerDialog({ serverName, regionName: to, rows, regions, op
   onConfirm: () => void;
 }) {
   return (
-    <ConfirmDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title={to === null ? `Clear ${serverName}’s region` : `Move ${serverName} to ${to}`}
-      description={
-        <div className="flex flex-col gap-4">
-          <p>These leave {serverName} on the next deploy.</p>
-          <ItemGroup role="list" aria-label={`Leaving ${serverName}`} className="max-h-72 overflow-y-auto text-foreground">
-            {rows.map((row) => (
-              <Item key={row.key} role="listitem" variant="outline" size="xs">
-                <ItemContent className="min-w-0">
-                  <ItemTitle>{row.volume === null ? row.name : `${row.name} · ${row.volume}`}</ItemTitle>
-                  <ItemDescription className="font-mono">{row.environment}</ItemDescription>
-                </ItemContent>
-                <ItemActions><ItemDescription>{destination(row, regions)}</ItemDescription></ItemActions>
-              </Item>
-            ))}
-          </ItemGroup>
-        </div>
-      }
-      actionLabel="Move server"
-      onConfirm={onConfirm}
-    />
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{to === null ? `Clear ${serverName}’s region` : `Move ${serverName} to ${to}`}</DialogTitle>
+          <DialogDescription>These leave {serverName} on the next deploy.</DialogDescription>
+        </DialogHeader>
+        <ItemGroup role="list" aria-label={`Leaving ${serverName}`} className="max-h-72 overflow-y-auto">
+          {rows.map((row) => (
+            <Item key={row.key} role="listitem" variant="outline" size="xs">
+              <ItemContent className="min-w-0">
+                <ItemTitle>{row.volume === null ? row.name : `${row.name} · ${row.volume}`}</ItemTitle>
+                <ItemDescription className="font-mono">{row.environment}</ItemDescription>
+              </ItemContent>
+              <ItemActions><ItemDescription>{destination(row, regions)}</ItemDescription></ItemActions>
+            </Item>
+          ))}
+        </ItemGroup>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+          <Button onClick={onConfirm}>Move server</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
