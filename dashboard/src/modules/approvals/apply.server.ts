@@ -37,7 +37,7 @@ export const askerCaller = (access: Access, credentialId: string): Caller => ({
 const applyStore = Effect.fn("Approvals.applyStore")(function* (organizationId: string, userId: string, asked: ConfigCommand, approval: ApprovalView, reviewed: DiffView) {
   const command = onceFor(asked, approval.id, reviewed);
   const access = yield* requireAccessById({ userId }, organizationId, writePermission(command), "store");
-  const result = yield* callStore(organizationId, access.userId, { operation: "write", command }, { source: "dashboard" }, {
+  const result = yield* callStore(organizationId, access.userId, { operation: "write", command }, {
     approval: { approved: approval.digest },
     permissions: access.permissions,
     environments: access.environments,

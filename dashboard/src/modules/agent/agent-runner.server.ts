@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 import type { Act, Answer, Ask, ConfigCommand, ConfigWritten, DiffView, JsonValue, Place, Write } from "@ployz/sdk";
-import { Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import type { ToolOutcome } from "#/modules/agent/agent";
-import { AGENT, agentResume, agentStart, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
+import { agentResume, agentStart, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
@@ -10,7 +10,7 @@ import { carriedInto, gateOperation, onceFor, redeemApproval, redeeming, request
 import { type Called, type Command, inputSchema } from "#/modules/commands/command.server";
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
-import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
+import { callStore } from "#/modules/config-store/config-store.server";
 import { agentSecretRefusal, holdsSecretText } from "#/modules/agent/agent-secrets";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
@@ -19,17 +19,24 @@ import { type Caller, callerEnvironments, callerPermissions } from "#/modules/id
 import { createProposal, presentProposal, proposalStatus, stageStep } from "#/modules/proposals/proposals.server";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { asRecord, asString, projectJsonValue } from "#/lib/json";
+import { type CallError, type CallOrigin, errorTypeOf, recordAgentCall, reporterOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
 
 /** A Caller acting through an agent: the sidebar, or a remote MCP client. */
 export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
 
-/** One tool call. `key` admits it once; `approvalId` is the approval a retry carries; `page` is where it runs. */
+/**
+ * One tool call. `key` admits it once; `approvalId` is the approval a retry carries; `page` is where it runs; `origin`
+ * is the surface it came through. `input` still holds the `intent` the agent sent; `runAgentCall` takes it out.
+ */
 export type AgentCall = {
   readonly tool: string;
   readonly input: JsonValue;
   readonly key: string;
   readonly approvalId: string | null;
   readonly page: PagePlace;
+  readonly origin: CallOrigin;
+  /** The surface ended the call itself, before it could run, with this error: it is recorded as the failed call it is, and does not run. */
+  readonly ended?: CallError;
 };
 
 export type Asking = { readonly approvalId: string; readonly refusal: StoreRefusal };
@@ -115,6 +122,18 @@ const PROPOSAL_STEPS: ReadonlyArray<AgentTool> = [
   },
 ];
 
+/** What every tool asks of its caller, so each call says what it is for. The same text is on `ployz mcp`'s tools. */
+export const INTENT_DESCRIPTION = "Why are you calling this tool? Describe the goal in general terms, and refer to people by role (\"a customer\") rather than by name. Leave out personal and identifying information.";
+export const INTENT_REFUSAL = "Say why you are calling this tool. Send `intent`, a short sentence on the goal this call serves.";
+
+/** A tool's input with `intent` added and required, as `approval` is added where a client's tool list is built. */
+const withIntent = (tool: AgentTool): AgentTool => {
+  const schema = tool.inputSchema;
+  const properties = asRecord(schema["properties"]) ?? {};
+  const required = Array.isArray(schema["required"]) ? schema["required"] : [];
+  return { ...tool, inputSchema: { ...schema, properties: { ...properties, intent: { type: "string", description: INTENT_DESCRIPTION } }, required: [...required, "intent"] } };
+};
+
 /** Every tool an agent may call: the compiled catalog, then each published command offered to agents, then proposals. */
 export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   ...CATALOG.tools.map((tool) => {
@@ -150,7 +169,9 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
     keyed: false,
   })),
   ...PROPOSAL_STEPS,
-];
+].map(withIntent);
+
+const KNOWN_TOOLS = new Set(AGENT_TOOLS.map((tool) => tool.name));
 
 /** The proposal a call stages into, when its input names one. */
 export const stagesInto = (input: JsonValue): string | null => asString(asRecord(input)?.["proposal"]);
@@ -253,7 +274,7 @@ export const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCall
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
   const call = { operation: "write", command } as const;
-  const stored = yield* callStore(caller.organization.id, caller.userId, call, AGENT, { approval: trusted.approval, asks: approvalAsks(caller.via, asked), permissions: callerPermissions(caller), environments: callerEnvironments(caller) });
+  const stored = yield* callStore(caller.organization.id, caller.userId, call, { approval: trusted.approval, asks: approvalAsks(caller.via, asked), permissions: callerPermissions(caller), environments: callerEnvironments(caller) });
   const landed = stored.ok || reviewed === null ? null : landedPublish(command, reviewed, stored.refusal);
   if (landed !== null) return { result: { ok: true, value: landed }, nothingDestroyed: false } satisfies Gated;
   const result = shownTo(caller, call, stored);
@@ -303,9 +324,9 @@ const placeOf = (caller: AgentCaller, page: PagePlace, tool: string, input: Json
 const answered = (result: StoreResult<unknown>): Answer =>
   result.ok ? { value: projectJsonValue(result.value) ?? null } : { error: result.refusal };
 
-const storeAnswer = <C extends StoreCall>(caller: AgentCaller, call: C, source?: StoreSource) => {
-  const secret = source === AGENT && call.operation === "write" ? agentSecretRefusal(call.command) : null;
-  return secret !== null ? Effect.succeed(answered({ ok: false, refusal: secret })) : callStore(caller.organization.id, caller.userId, call, source, { approval: "not_required", permissions: callerPermissions(caller), environments: callerEnvironments(caller) }).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
+const storeAnswer = <C extends StoreCall>(caller: AgentCaller, call: C) => {
+  const secret = call.operation === "write" ? agentSecretRefusal(call.command) : null;
+  return secret !== null ? Effect.succeed(answered({ ok: false, refusal: secret })) : callStore(caller.organization.id, caller.userId, call, { approval: "not_required", permissions: callerPermissions(caller), environments: callerEnvironments(caller) }).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
 };
 
 const agentRead = (caller: AgentCaller) => (ask: Ask) => Effect.gen(function* () {
@@ -316,7 +337,7 @@ const agentRead = (caller: AgentCaller) => (ask: Ask) => Effect.gen(function* ()
 
 const agentWrite = (caller: AgentCaller) => (write: Write) => Effect.gen(function* () {
   return write.at === "store"
-    ? yield* storeAnswer(caller, { operation: "write", command: write.write }, AGENT)
+    ? yield* storeAnswer(caller, { operation: "write", command: write.write })
     : answered(yield* callCloud(caller, { act: write.write }));
 });
 
@@ -350,12 +371,67 @@ const stageCall = Effect.fn("Agent.stageCall")(function* (caller: AgentCaller, c
   return yield* stageStep(caller, proposal, { environment, service, verb, only });
 });
 
+/** The reason an agent gave for a call, and the input without it; null when it gave none, or only blanks. */
+export const takeIntent = (input: JsonValue) => {
+  const record = asRecord(input);
+  if (record === null) return { intent: null, input };
+  const { intent, ...rest } = record;
+  const said = asString(intent)?.trim();
+  return { intent: said === undefined || said === "" ? null : said, input: rest };
+};
+
+/** How a finished call went, for the record: null when it did what was asked. */
+const failureOf = (outcome: ToolOutcome): CallError | null => {
+  if (outcome.ok) return null;
+  if ("cancelled" in outcome) return { type: "cancelled", message: "The call was cancelled." };
+  return { type: errorTypeOf(outcome.refusal.code), message: outcome.refusal.message };
+};
+
+/**
+ * Runs one agent tool call as `caller`, and records it. Every tool takes an `intent`: the reason for the call, taken out
+ * before the tool sees its input. A call without one is refused. A call that asks for an approval is not recorded; the
+ * retry that carries the approval is, so a gated call counts once.
+ */
+export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentCaller, call: AgentCall) {
+  const startedAt = new Date();
+  const record = (what: WhatHappened) =>
+    recordAgentCall({
+      ...call.origin,
+      ...what,
+      startedAt,
+      durationMs: Date.now() - startedAt.getTime(),
+      caller: reporterOf(caller),
+    });
+  if (!KNOWN_TOOLS.has(call.tool)) {
+    yield* record({ kind: "unknownTool", tool: call.tool });
+    return done(refused("unknown_tool", `No tool is named ${call.tool}.`));
+  }
+  const { intent, input } = takeIntent(call.input);
+  if (call.ended !== undefined) {
+    yield* record({ kind: "call", tool: call.tool, intent, error: call.ended });
+    return done(call.ended.type === "cancelled" ? { ok: false, cancelled: true } : refused("invalid_argument", call.ended.message));
+  }
+  if (intent === null) {
+    yield* record({ kind: "call", tool: call.tool, intent: null, error: { type: "validation", message: INTENT_REFUSAL } });
+    return done(refused("invalid_argument", INTENT_REFUSAL));
+  }
+  // A tool that fails as an Effect failure is a call that failed too: record it, with no word of the cause, and fail the same.
+  // A call that was only interrupted did not fail, so it is not one.
+  const result = yield* runTool(caller, { ...call, input }).pipe(
+    Effect.tapCause((cause) =>
+      Cause.hasInterruptsOnly(cause) ? Effect.void : record({ kind: "call", tool: call.tool, intent, error: { type: "internal", message: "The tool failed." } }),
+    ),
+  );
+  if ("outcome" in result) yield* record({ kind: "call", tool: call.tool, intent, error: failureOf(result.outcome) });
+  return result;
+});
+
 /**
  * Runs one agent tool call as `caller`. An ungated tool runs to its own answer. A gated write that waits on a human
  * answers `asking`; the retry carrying that approval runs it. A gated save and a Cloud act let the compiled tool finish;
  * any other gated Store write's answer is the call's outcome.
  */
-export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentCaller, call: AgentCall) {
+const runTool = Effect.fn("Agent.runTool")(function* (caller: AgentCaller, call: AgentCall) {
   const proposal = stagesInto(call.input);
   if (PROPOSAL_NAMES.has(call.tool)) return done(yield* runProposalTool(caller, call, proposal));
   if (proposal !== null) {
@@ -404,7 +480,7 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
       const refused = yield* carriedInto(caller, call.approvalId, yield* redeeming(caller.organization.id, write.write, call.approvalId));
       if (refused !== null) return done({ ok: false, refusal: refused });
     }
-    const written = yield* storeAnswer(caller, { operation: "write", command }, AGENT);
+    const written = yield* storeAnswer(caller, { operation: "write", command });
     return done(yield* finish(agentResume(state, [written]), read, agentWrite(caller)));
   }
   if (write.at === "store") {

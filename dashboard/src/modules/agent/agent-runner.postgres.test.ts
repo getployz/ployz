@@ -2,7 +2,8 @@ import { it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect } from "effect";
 import { describe, expect } from "vitest";
-import { actDenial, type AgentCaller, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { actDenial, type AgentCaller } from "#/modules/agent/agent-runner.server";
+import { runAsAgent } from "#/test/agent-call";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -202,7 +203,7 @@ const tools = Effect.fn(function* (seed: boolean) {
   const caller: AgentCaller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
   let calls = 0;
   return ({ tool, input, callKey = `call-${++calls}` }: Step) =>
-    runAgentCall(caller, { tool, input, key: `run-1:${callKey}`, approvalId: null, page: { at: "here", project: "shop", environment: "production" } }).pipe(
+    runAsAgent(caller, { tool, input, key: `run-1:${callKey}`, approvalId: null, page: { at: "here", project: "shop", environment: "production" } }).pipe(
       Effect.map((result) => "asking" in result ? result : result.outcome),
       Effect.provide(services),
     );

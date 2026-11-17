@@ -130,6 +130,7 @@ async fn upgrade_cli_case(running: &str, phrase: &str, change: Option<&str>) {
         let (address, rpc) = super::support::serve_discovery(service).await;
         let home = tempfile::tempdir().unwrap();
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command
             .env("HOME", home.path())
             .env_remove("PLOYZ_TOKEN")
@@ -186,6 +187,7 @@ async fn upgrade_cli_reports_a_missing_release_as_not_found() {
     let (address, rpc) = super::support::serve_discovery(service).await;
     let home = tempfile::tempdir().unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env("HOME", home.path())
         .env_remove("PLOYZ_TOKEN")
         .args([

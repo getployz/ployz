@@ -32,6 +32,7 @@ fn ctx_with(
         .unwrap();
     }
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.arg("--why=test");
     command
         .args(["ctx", "--color", "never", "--ployz-config"])
         .arg(home.path().join("config.yaml"))

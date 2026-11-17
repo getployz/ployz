@@ -248,6 +248,14 @@ impl CredentialStore {
         }
     }
 
+    /// The approved sign-in stored here, without asking Cloud about a pending one.
+    pub(crate) fn stored_sign_in(&self) -> Option<SignedIn> {
+        match self.load() {
+            Ok(Some(Stored::SignedIn(signed_in))) => Some(signed_in),
+            _ => None,
+        }
+    }
+
     /// [`Self::load`], reading an unreadable sign-in as none, so a new one replaces it.
     fn replaceable(&self) -> Result<Option<Stored>, LoginError> {
         match self.load() {

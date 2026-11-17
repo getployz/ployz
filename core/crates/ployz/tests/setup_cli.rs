@@ -27,6 +27,7 @@ fn ssh_setup_with_no_install_skips_the_bootstrap() {
     let path = env::join_paths(std::iter::once(bin).chain(env::split_paths(&inherited))).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "server",
             "add",

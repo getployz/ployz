@@ -47,7 +47,7 @@ const sealAfterEnrollment = Effect.gen(function* () {
   }))) ?? (yield* Effect.die("no Server reported the Cluster's Sealing Key within a minute"));
   const written = yield* callStore(owner.organizationId, owner.userId, {
     operation: "write", command: { command: "edit", environment: { project: "shop", environment: "production" }, expect: null, changes },
-  }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
+  }, { approval: "not_required", permissions: permissionsOf("owner") });
   if (!written.ok) return yield* Effect.die(`SECRET_KEY refused: ${written.refusal.code} ${written.refusal.message}`);
 });
 

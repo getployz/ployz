@@ -23,6 +23,7 @@ async fn machine_removal_reports_complete_and_partial_results() {
             std::fs::write(&config, "contexts: [invalid]").unwrap();
         }
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args([
                 "--connect",
                 &format!("tcp://{address}"),
@@ -94,6 +95,7 @@ async fn a_reset_row_warning_reads_as_a_sentence() {
             MachineId::random()
         ));
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args([
                 "--connect",
                 &format!("tcp://{address}"),
@@ -130,6 +132,7 @@ async fn machine_reset_refuses_failed_service_observation_before_mutation() {
     let removals = service.removed_machines.clone();
     let (address, server) = serve_discovery(service).await;
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--connect",
             &format!("tcp://{address}"),
@@ -165,6 +168,7 @@ async fn server_removal_without_the_typed_name_names_what_goes_and_the_retry() {
         let connect = connect.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .arg("--why=test")
                 .args(["--json", "--connect", &connect, "server", "rm", "one"])
                 .args(extra)
                 .output()
@@ -283,6 +287,7 @@ async fn leave_server(
         }
     };
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .envs(env.iter().copied())
@@ -884,6 +889,7 @@ async fn the_entry_server_is_removed_through_another_server() {
     )
     .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .args(["--ployz-config", config.to_str().unwrap(), "--json"])
@@ -949,6 +955,7 @@ async fn stopping_a_followed_cloud_removal_keeps_the_server_in_the_context() {
     )
     .unwrap();
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env("PLOYZ_TOKEN", "ployz_acme")
         .env("PLOYZ_CLOUD_URL", &cloud)
         .args([
@@ -1014,6 +1021,7 @@ async fn at_a_terminal_a_managed_removal_dialled_directly_shows_what_cloud_loses
     let home = tempfile::tempdir().unwrap();
     let command = shell_words::join([
         env!("CARGO_BIN_EXE_ployz").to_owned(),
+        "--why=test".into(),
         "--connect".into(),
         format!("tcp://{address}"),
         "--ployz-config".into(),
@@ -1076,6 +1084,7 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
         let connect = connect.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .arg("--why=test")
                 .env(TARGET_READ_TIMEOUT, "1")
                 .args(["--json", "--connect", &connect, "server", "forget", server])
                 .args(extra)
@@ -1175,6 +1184,7 @@ async fn a_server_the_entry_no_longer_lists_is_already_forgotten() {
     let removals = service.removed_machines.clone();
     let (address, server) = serve_discovery(service).await;
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--json",
             "--connect",
@@ -1229,6 +1239,7 @@ async fn a_server_listed_up_that_never_replies_leaves_without_a_reset_when_dead_
         let connect = connect.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .arg("--why=test")
                 .env(TARGET_READ_TIMEOUT, "1")
                 .args(["--json", "--connect", &connect, "server", "forget", "two"])
                 .args(extra)
@@ -1275,6 +1286,7 @@ async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
     let (address, server) = serve_discovery(service).await;
 
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env(TARGET_READ_TIMEOUT, "1")
         .args(["--json", "--connect", &format!("tcp://{address}")])
         .args(["server", "forget", "two", "--confirm", "two"])

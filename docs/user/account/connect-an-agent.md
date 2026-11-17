@@ -41,6 +41,28 @@ If a reply gets lost, the agent can resend a write without running it twice, as 
 the same `request_key` (or `x-ployz-request-key` header) both times. A call without one is a new
 run each time, and Ployz tells agents this when they connect.
 
+## Why the agent calls a tool
+
+Every tool takes an `intent`: a short sentence on the goal the call serves, such as "Check why the
+web service is down". A call without one is refused with "Say why you are calling this tool.
+Send `intent`, a short sentence on the goal this call serves." The agent sees that and tries again
+with a reason. The tool never sees the `intent`, and it is not part of the call's inputs.
+
+Ployz keeps the reason, the tool's name, how long it took and whether it worked, so the team can
+see what agents are trying to do and where they get stuck. It never keeps what you or the agent
+put in the call, or what came back. Agents are asked to describe people by role and to leave out
+personal details, and Ployz removes email addresses, phone numbers and keys it recognizes from
+the reason before it keeps it.
+
+The [Ployz agent](agent-sidebar.md) in the dashboard works the same way.
+
+## Send feedback
+
+The agent also has a `send_feedback` tool. It takes a `type`, one of `missing_capability` (something
+the work needed that Ployz can't do), `issue`, `praise` or `other`, a `message`, and optionally a
+`sentiment`. It needs no `intent`, answers "Thanks. The Ployz team reads this." and changes nothing
+in your organization.
+
 ## Approve a deploy
 
 Every deploy or redeploy the agent asks for waits for you, even one that destroys nothing. A save waits

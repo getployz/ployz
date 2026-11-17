@@ -18,7 +18,8 @@ import { type AnthropicChatModelProviderOptionsByName, createAnthropicChat } fro
 import { withPersistence } from "@tanstack/ai-persistence";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { approvalInterrupt, type ToolOutcome } from "#/modules/agent/agent";
-import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, type AgentCaller, type AgentResult, runAgentCall, stagesInto, takeIntent } from "#/modules/agent/agent-runner.server";
+import { type CallOrigin, sessionIdOf } from "#/modules/analytics/agent-calls.server";
 import { agentTracing, aiObservability } from "#/modules/agent/agent-telemetry.server";
 import { CATALOG, GATED } from "#/modules/agent/agent-tools";
 import {
@@ -34,6 +35,7 @@ import {
 import { FAILURES, providerFailure } from "#/modules/agent/provider-error";
 import { latestPageContext, PageContext, type PagePlace, placeOfPage, renderPageContext, withPageContext } from "#/modules/agent/page-context";
 import { notSetUpScript, ScriptedAdapter, stubScript } from "#/modules/agent/scripted-adapter.server";
+import type { CallError } from "#/modules/analytics/agent-calls.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { findCommand } from "#/modules/commands/commands.server";
@@ -81,11 +83,14 @@ const pendingCalls = (messages: ReadonlyArray<ModelMessage>) => {
   return (messages[turn]?.toolCalls ?? []).filter((call) => !answered.has(call.id));
 };
 
-const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
+const approvalGate = (caller: AgentCaller, run: Run, here: Here, origin: CallOrigin) => {
   const outcomes = new Map<string, ToolOutcome>();
   const answers = new Map<string, { approvalId: string | null; cancelled: boolean }>();
   // The approval a published command refused under, by tool and input: the model repeats the call without it.
   const held = new Map<string, string>();
+  // A call the gate ends itself still is a call the agent made: it is recorded, once, as the failed call it is.
+  const ended = (call: { id: string; function: { name: string; arguments: string } }, turn: string, error: CallError) =>
+    runAgentCall(caller, { tool: call.function.name, input: toolInput(call.function.arguments), key: `${turn}:${call.id}`, approvalId: null, page: here.page, origin, ended: error });
   const decide = (call: { id: string; function: { name: string; arguments: string } }, turn: string) =>
     Effect.gen(function* (): Effect.fn.Return<Gated, Effect.Error<ReturnType<typeof runAgentCall>>, AgentServices> {
       const answer = answers.get(call.id);
@@ -93,12 +98,14 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
         if (answer.approvalId !== null) {
           yield* decideApproval({ ...caller, via: "dashboard" }, answer.approvalId, { reject: {} }).pipe(Effect.catchTag("NotFound", () => Effect.void));
         }
+        yield* ended(call, turn, { type: "cancelled", message: "The call was cancelled." });
         return { outcome: { ok: false, cancelled: true } };
       }
       const input = toolInput(call.function.arguments);
-      const same = `${call.function.name}:${canonicalJson(input)}`;
+      // Without the reason: the model words it again on a repeat, and the repeat is still the same call.
+      const same = `${call.function.name}:${canonicalJson(takeIntent(input).input)}`;
       const approvalId = answer?.approvalId ?? held.get(same) ?? null;
-      const result = yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId, page: here.page });
+      const result = yield* runAgentCall(caller, { tool: call.function.name, input, key: `${turn}:${call.id}`, approvalId, page: here.page, origin });
       if (approvalId !== null && findCommand(call.function.name) !== undefined && "outcome" in result && !result.outcome.ok) held.set(same, approvalId);
       return shown(result);
     });
@@ -118,13 +125,15 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
       // A call staged into a proposal runs nothing, so no one reviews it now: it runs like an ungated tool.
       const staged = calls.filter((call) => stagesInto(toolInput(call.function.arguments)) !== null);
       const gated = calls.filter((call) => GATED.has(call.function.name) && !staged.includes(call));
+      const refuse = async (call: (typeof calls)[number], message: string) => {
+        await run(ended(call, ctx.runId, { type: "validation", message }));
+        outcomes.set(call.id, invalid(message));
+      };
       if (staged.length > 1) {
-        for (const call of staged) outcomes.set(call.id, invalid("Stage one step at a time."));
+        for (const call of staged) await refuse(call, "Stage one step at a time.");
       }
       if (calls.length > 1) {
-        for (const call of gated) {
-          outcomes.set(call.id, invalid(`Call ${call.function.name} alone, in its own turn, so a human can review exactly that plan.`));
-        }
+        for (const call of gated) await refuse(call, `Call ${call.function.name} alone, in its own turn, so a human can review exactly that plan.`);
         return undefined;
       }
       const [only] = gated;
@@ -145,12 +154,12 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
 };
 
 /** Every agent tool. A gated one runs in the approval gate, so its own handler never does. */
-const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here) => AGENT_TOOLS.map((tool) =>
+const agentTools = (caller: AgentCaller, run: Run, turn: string, here: Here, origin: CallOrigin) => AGENT_TOOLS.map((tool) =>
   toolDefinition({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
     .server((args, context) => {
       if (GATED.has(tool.name) && stagesInto(projectJsonValue(args) ?? null) === null) throw new Error(`${tool.name} ran outside the approval gate.`);
       const key = `${turn}:${context?.toolCallId ?? randomUUID()}`;
-      return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page }).pipe(Effect.map(outcomeOf)));
+      return run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(args) ?? null, key, approvalId: null, page: here.page, origin }).pipe(Effect.map(outcomeOf)));
     }));
 
 const systemPrompt = (caller: AgentCaller, model: string) => `${CATALOG.instructions}
@@ -410,6 +419,8 @@ export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, requ
   const persistence = yield* agentPersistence(scope);
   const { adapter, modelOptions }: AgentModel = model === undefined ? yield* agentModel : { adapter: model };
   const posthog = yield* PostHog;
+  // One thread is one session, whoever sits at it.
+  const origin: CallOrigin = { surface: "sidebar", session: sessionIdOf(request.threadId), client: { name: null, version: null }, serverVersion: null, userAgent: null, protocolVersion: null };
   const { resume } = request;
   // A page the client sent malformed is no page: the turn still answers.
   const page = resume === undefined ? Option.getOrUndefined(Schema.decodeUnknownOption(PageContext)(request.forwardedProps?.["page"])) : undefined;
@@ -422,9 +433,9 @@ export const agentChat = Effect.fn("Agent.chat")(function* (person: Caller, requ
       messages: added(request),
       threadId: request.threadId,
       runId: request.runId,
-      tools: agentTools(caller, run, request.runId, here),
+      tools: agentTools(caller, run, request.runId, here, origin),
       systemPrompts: [systemPrompt(caller, adapter.model)],
-      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run, here), limit.middleware,
+      middleware: [withPersistence(stores), ...(page === undefined ? [] : [pageMarker(page)]), approvalGate(caller, run, here, origin), limit.middleware,
         agentTracing, aiObservability(posthog, caller)],
       interrupts: [approvalInterrupt],
       agentLoopStrategy: maxIterations(STEP_LIMIT),

@@ -29,7 +29,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (request.method !== "POST" || (operation !== "read" && operation !== "write" && operation !== "sealing" && upload === undefined)) {
     return yield* new NotFound({ message: "Not found." });
   }
-  // Telemetry only: the CLI names a detected coding agent; nothing else reads it.
+  // The CLI names a detected coding agent; the span is all that reads it.
   const agent = request.headers.get("x-ployz-agent");
   yield* Effect.annotateCurrentSpan("ployz.agent", agent ?? "none");
   const caller = yield* resolveCaller(request.headers);
@@ -91,7 +91,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     protector: protector(caller), environments: callerEnvironments(caller), from_cli: true,
   } as const;
   const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
-  const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
+  const result = yield* callStore(caller.organization.id, caller.userId, sent, gate);
   if (result.ok) {
     const answer = sealing === undefined ? result.value : { state: "ready", publicKey: sealing.publicKey, targets: result.value };
     return Response.json(answer, { headers: { "cache-control": "no-store" } });

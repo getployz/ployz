@@ -10,6 +10,8 @@ import { afterEach, expect, vi } from "vitest";
 import { disconnectAgent, listConnectedAgents, revokeAccountSession } from "#/modules/account/account.server";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
+import { asTestDouble } from "#/lib/test-double";
+import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -328,8 +330,9 @@ const agentWith = Effect.fn(function* (shop: Shop, token: string, headers: Recor
   });
   const client = new Client({ name: "test-agent", version: "1.0.0" });
   yield* Effect.acquireRelease(Effect.promise(() => client.connect(transport)), () => Effect.promise(() => client.close()));
-  const call = (name: string, args: JsonObject) =>
-    Effect.promise(() => client.callTool({ name, arguments: args })).pipe(
+  // Every tool asks why it is called; `said` is how a test says it.
+  const call = (name: string, args: JsonObject, said: string | null = "Test the tool.") =>
+    Effect.promise(() => client.callTool({ name, arguments: said === null ? args : { intent: said, ...args } })).pipe(
       Effect.map((result) => ({ isError: result.isError === true, body: Schema.decodeUnknownSync(Structured)(result.structuredContent) })),
     );
   return { client, call, keys };
@@ -364,6 +367,9 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     const { tools } = yield* Effect.promise(() => agent.client.listTools());
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["environment_show", "service_add", "deploy"]));
     expect(tools.find((tool) => tool.name === "deploy")?.inputSchema.properties).toHaveProperty("approval");
+    // Every tool asks why it is called, and the feedback tool, which is not a call into Ployz, does not.
+    for (const tool of tools.filter(({ name }) => name !== "send_feedback")) expect(tool.inputSchema, tool.name).toMatchObject({ properties: { intent: { type: "string" } }, required: expect.arrayContaining(["intent"]) });
+    expect(tools.map((tool) => tool.name)).toContain("send_feedback");
     const hints = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
     expect(hints("deploy")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(hints("service_add")).toMatchObject({ readOnlyHint: false, destructiveHint: false });
@@ -384,6 +390,20 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     const refused = yield* agent.call("service_add", { ...SHOP, project: "nope", name: "cache", image: "redis:7" });
     expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { code: "not_found" } } });
     expect(yield* agent.call("environment_show", SHOP)).toMatchObject({ isError: false, body: { ok: true } });
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a call that does not say why it is made is refused, and feedback needs no reason", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    for (const said of [null, "   "]) {
+      expect(yield* agent.call("environment_show", SHOP, said)).toMatchObject({
+        isError: true,
+        body: { ok: false, refusal: { code: "invalid_argument", message: "Say why you are calling this tool. Send `intent`, a short sentence on the goal this call serves." } },
+      });
+    }
+    const thanked = yield* Effect.promise(() => agent.client.callTool({ name: "send_feedback", arguments: { type: "missing_capability", message: "I could not list backups." } }));
+    expect(thanked).toMatchObject({ isError: false, structuredContent: { ok: true, value: { message: "Thanks. The Ployz team reads this." } } });
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a Cloud command refuses a remote agent as a Store tool does: the field, what fits it, that nothing was written and the call to repeat", () =>
@@ -420,7 +440,7 @@ it.live("a call missing an argument is refused in the tools' own shape, not the 
     const shop = yield* hostedShop();
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
     for (const name of ["project_create", "docs"]) {
-      const refused = yield* Effect.promise(() => agent.client.callTool({ name, arguments: {} }));
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name, arguments: { intent: "Test the tool." } }));
       expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
     }
   }).pipe(Effect.scoped), 30_000);
@@ -431,11 +451,44 @@ it.live("an approval its schema doesn't take is refused before anything is writt
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
     const writes = vi.spyOn(shop.store, "write");
     for (const tool of ["discard", "deploy"]) {
-      const refused = yield* Effect.promise(() => agent.client.callTool({ name: tool, arguments: { ...SHOP, approval: 42 } }));
+      const refused = yield* Effect.promise(() => agent.client.callTool({ name: tool, arguments: { intent: "Test the tool.", ...SHOP, approval: 42 } }));
       expect(refused).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument", writes: "none" } } });
     }
     expect(writes).not.toHaveBeenCalled();
   }).pipe(Effect.scoped), 30_000);
+
+it.live("a call refused before it runs is recorded once as a failed call, and feedback with an intent is taken", () =>
+  Effect.gen(function* () {
+    const recorded: Array<string> = [];
+    const capture = {
+      captureToolCall: (event: { toolName: string; isError: boolean; errorType?: string }) => { recorded.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`); },
+      captureFeedback: () => { recorded.push("feedback"); },
+    };
+    const sink: PostHogService = {
+      capture: () => Effect.void,
+      identify: () => Effect.void,
+      identifyOrganization: () => Effect.void,
+      mcp: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))),
+    };
+    const real = yield* hostedShop();
+    const shop: Shop = { ...real, run: (effect) => real.run(effect.pipe(Effect.provideService(PostHog, sink))) };
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    const refused: ReadonlyArray<readonly [string, JsonObject]> = [
+      ["deploy", { ...SHOP, approval: 42 }],
+      ["service_add", { ...SHOP, name: "cache", image: "redis:7", request_key: "!!" }],
+      ["send_feedback", { type: "bug", message: "deploy hung" }],
+    ];
+    for (const [tool, args] of refused) {
+      recorded.length = 0;
+      const answer = yield* Effect.promise(() => agent.client.callTool({ name: tool, arguments: { intent: "Test the tool.", ...args } }));
+      expect(answer).toMatchObject({ isError: true, structuredContent: { ok: false, refusal: { code: "invalid_argument" } } });
+      expect(recorded, tool).toEqual([`${tool} validation`]);
+    }
+    recorded.length = 0;
+    const thanked = yield* Effect.promise(() => agent.client.callTool({ name: "send_feedback", arguments: { intent: "Test the tool.", type: "issue", message: "deploy hung" } }));
+    expect(thanked).toMatchObject({ isError: false, structuredContent: { ok: true } });
+    expect(recorded).toEqual(["feedback"]);
+  }).pipe(Effect.scoped), 60_000);
 
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
   Effect.gen(function* () {

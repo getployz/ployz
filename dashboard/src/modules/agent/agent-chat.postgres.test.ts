@@ -5,13 +5,12 @@ import { type AnyTextAdapter, EventType, type TokenUsage, type ModelMessage, typ
 import { and, eq, sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Exit, Layer, Schema, Tracer } from "effect";
 import { expect, vi } from "vitest";
-import { fakeText } from "@tanstack/ai/testing";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
-import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
+import { type McpCapture, PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { approvalBadge } from "#/modules/approvals/approvals";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
@@ -21,6 +20,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
+import { scriptedAgent } from "#/test/agent-call";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a601";
@@ -164,7 +164,7 @@ it.live("a GitHub read of a repository the Organization can't read reaches the m
 it.live("a store tool the agent mints ids for creates a Service where the member is", () =>
   Effect.gen(function* () {
     const { say, store } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
     const answered = yield* say("add an nginx service called api", { page: architecture }, model);
     expect(answered.results).toMatchObject([{ ok: true }]);
@@ -180,7 +180,7 @@ it.live("a store tool acts in the page's Environment by id after its Project was
     const production = "00000000-0000-4000-8000-00000000a608";
     yield* write({ command: "create_project", id: docs, name: "docs", default_environment: production });
     yield* write({ command: "rename_project", project: "docs", name: "guides" });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
     const page = { page: "architecture", project: "docs", environment: "production", environment_id: production };
     const answered = yield* say("add an nginx service called api", { page }, model);
@@ -193,7 +193,7 @@ it.live("a store tool never acts in a Project that took the page's old name when
   Effect.gen(function* () {
     const { say, store, write } = yield* sidebar({ removeWeb: false });
     yield* write({ command: "create_project", id: "00000000-0000-4000-8000-00000000a609", name: "docs", default_environment: "00000000-0000-4000-8000-00000000a60a" });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
     const page = { page: "architecture", project: "docs", environment: "production", environment_id: "00000000-0000-4000-8000-00000000a60b" };
     const answered = yield* say("add an nginx service called api", { page }, model);
@@ -208,7 +208,7 @@ const goneStaging = { page: "architecture", project: "shop", environment: "stagi
 it.live("a store tool refuses on a page whose Environment is gone instead of defaulting to the only Project's", () =>
   Effect.gen(function* () {
     const { say, store } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
     const answered = yield* say("add an nginx service called api", { page: goneStaging }, model);
     expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
@@ -220,7 +220,7 @@ it.live("a store tool refuses on a page whose Environment is gone instead of def
 it.live("a store tool acts where the model names it, even on a page whose Environment is gone", () =>
   Effect.gen(function* () {
     const { say, store } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([
       { toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx", project: "shop", environment: "production" } }] },
       { text: "Done." },
@@ -252,7 +252,7 @@ it.live("a turn Claude fails tells the member what happened in plain words, neve
 it.live("a Service restart from the sidebar waits on a human before it runs", () =>
   Effect.gen(function* () {
     const { say, pending } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "service_restart", input: { service: "web", wait_seconds: 0 } }] }, { text: "Restarting." }]);
     const asked = yield* say("restart web", { page: architecture }, model);
     expect(asked.results).toEqual([]);
@@ -262,13 +262,46 @@ it.live("a Service restart from the sidebar waits on a human before it runs", ()
 it.live("a denied Service restart names the restart and its Service", () =>
   Effect.gen(function* () {
     const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "service_restart", input: { service: "web", wait_seconds: 0 } }] }, { text: "Restarting." }]);
     const approval = yield* waitingApproval(yield* say("restart web", { page: architecture }, model), pending);
     yield* provided(decideApproval(caller, approval.id, { reject: { reason: "not now" } }));
 
     const resumed = yield* resume("resolved");
     expect(resumed.results).toMatchObject([{ ok: false, refusal: { code: "approval_denied", message: "A human denied this restart web: not now" } }]);
+  }));
+
+/** What MCP Analytics is told of each tool call: its name, and how it ended. */
+const toolCallsSeen = () => {
+  const seen: Array<string> = [];
+  const capture = { captureToolCall: (event: { toolName: string; isError: boolean; errorType?: string }) => { seen.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`); } };
+  const sink: PostHogService = {
+    capture: () => Effect.void,
+    identify: () => Effect.void,
+    identifyOrganization: () => Effect.void,
+    mcp: (send) => Effect.sync(() => send(asTestDouble<McpCapture>()(capture))),
+  };
+  return { seen, sink };
+};
+
+it.live("a gated call the sidebar refuses to run beside another call, and one whose approval the member cancels, are each recorded once", () =>
+  Effect.gen(function* () {
+    const { seen, sink } = toolCallsSeen();
+    const { say, resume } = yield* sidebar({ removeWeb: false });
+    const model = scriptedAgent();
+    model.setResponses([
+      { toolCalls: [{ name: "service_restart", input: { intent: "Restart web.", service: "web", wait_seconds: 0 } }, { name: "service_inspect", input: { intent: "Look at web.", service: "web" } }] },
+      { text: "Done." },
+    ]);
+    yield* say("restart web and look at it", { page: architecture }, model).pipe(Effect.provideService(PostHog, sink));
+    expect([...seen].sort()).toEqual(["service_inspect ok", "service_restart validation"]);
+
+    seen.length = 0;
+    model.setResponses([{ toolCalls: [{ name: "service_restart", input: { intent: "Restart web.", service: "web", wait_seconds: 0 } }] }, { text: "Not restarting." }]);
+    yield* say("restart web", { page: architecture }, model).pipe(Effect.provideService(PostHog, sink));
+    expect(seen, "an approval that still waits is not a call yet").toEqual([]);
+    yield* resume("cancelled").pipe(Effect.provideService(PostHog, sink));
+    expect(seen).toEqual(["service_restart cancelled"]);
   }));
 
 // Bob is a member and Carol an owner. Carol makes Ada an admin after Ada approved making Bob an owner, so the run refuses.
@@ -281,7 +314,7 @@ it.live("the model repeats an approved Cloud command that refused once it ran un
       yield* drizzle.insert(member).values(people.map((person) => ({ userId: person.id, organizationId: ORGANIZATION, role: person.name === "Bob" ? "member" as const : "owner" as const })));
     }));
     const promote = { name: "org_member_role", input: { member: "bob@example.test", role: "owner" } };
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [promote] }, { toolCalls: [promote] }, { text: "Bob stays a member." }]);
     const approval = yield* waitingApproval(yield* say("make Bob an owner", {}, model), pending);
     yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
@@ -386,7 +419,7 @@ const lastGlobalCopy = Effect.provideService(OrganizationRuntime, {
 it.live("the sidebar asks before a Drain that destroys something, even when its request came with a person's dashboard caller", () =>
   Effect.gen(function* () {
     const { provided, caller, pending } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "server_drain", input: { server: "fra-1", wait_seconds: 0 } }] }, { text: "Draining." }]);
     const person: Caller = { ...caller, via: "dashboard" };
     const asked = yield* provided(agentChat(person, { messages: [{ role: "user", content: "drain fra-1" }], threadId: THREAD, runId: "run-drain", forwardedProps: {} }, model)
@@ -1142,7 +1175,7 @@ it.live("a replay carrying a version the human never reviewed keeps the Store's 
     expect((yield* answer(interruptId, "resolved")).results).toMatchObject([{ ok: true, value: { saved: { created: true } } }]);
 
     const unreviewed = beforeResume.map((message) => message.role === "assistant" && message.toolCalls !== undefined
-      ? { ...message, toolCalls: message.toolCalls.map((call) => call.function.name === "deploy" ? { ...call, function: { ...call.function, arguments: '{"skip_deploy":true,"version":""}' } } : call) }
+      ? { ...message, toolCalls: message.toolCalls.map((call) => call.function.name === "deploy" ? { ...call, function: { ...call.function, arguments: '{"skip_deploy":true,"version":"","intent":"Test the tool."}' } } : call) }
       : message);
     yield* rewind(interruptId, unreviewed);
     const writes = watchWrites();
@@ -1182,7 +1215,7 @@ it.live("two steps staged in one turn are both refused, so each lands at its own
   Effect.gen(function* () {
     const { say, watchWrites } = yield* sidebar({ removeWeb: false });
     const writes = watchWrites();
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [
       { name: "service_stop", input: { service: "web", proposal: "00000000-0000-4000-8000-0000000a6201" } },
       { name: "service_start", input: { service: "web", proposal: "00000000-0000-4000-8000-0000000a6201" } },
@@ -1335,7 +1368,7 @@ const githubDeploy = [
 it.live("deploying a GitHub repository one call per turn finishes within the step limit", () =>
   Effect.gen(function* () {
     const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([...githubDeploy.map((call) => ({ toolCalls: [call] })), { text: "api is deploying." }]);
     const approval = yield* waitingApproval(yield* say("deploy acme/api", {}, model), pending);
     expect(model.state.callCount).toBe(githubDeploy.length - 1);
@@ -1348,7 +1381,7 @@ it.live("deploying a GitHub repository one call per turn finishes within the ste
 it.live("a turn that runs out of steps tells the member to say continue, and the thread keeps the note", () =>
   Effect.gen(function* () {
     const { say, persistence } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses(Array.from({ length: STEP_LIMIT + 5 }, () => ({ toolCalls: [{ name: "environment_show", input: {} }] })));
     const stopped = yield* say("tidy up", {}, model);
     expect(model.state.callCount).toBe(STEP_LIMIT);
@@ -1365,7 +1398,7 @@ it.live("a member who stops a reply mid-stream ends the run, and the thread answ
   Effect.gen(function* () {
     const harness = yield* sidebar({ removeWeb: false });
     const { provided, caller, persistence, say } = harness;
-    const model = fakeText({ tokensPerSecond: 200 });
+    const model = scriptedAgent({ tokensPerSecond: 200 });
     model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);
     const abortController = new AbortController();
     const stream = yield* provided(agentChat(caller, { messages: [{ role: "user", content: "explain" }], threadId: THREAD, runId: "run-stopped", abortController }, model));
@@ -1400,9 +1433,9 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      toolCall: () => Effect.void,
+      mcp: () => Effect.void,
     };
-    const model = fakeText({ cache: true });
+    const model = scriptedAgent({ cache: true });
     const reported: TokenUsage[] = [];
     const stream = model.chatStream.bind(model);
     model.chatStream = async function* (options) {
@@ -1457,9 +1490,9 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      toolCall: () => Effect.void,
+      mcp: () => Effect.void,
     };
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "environment_show", input: { environment: "secretname" } }] }, { text: "All quiet." }]);
     yield* say("look around", {}, model).pipe(Effect.provideService(PostHog, sink));
 
@@ -1502,23 +1535,18 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
 
 it.live("a refused tool call shows in PostHog as an error", () =>
   Effect.gen(function* () {
-    const { caller, say } = yield* sidebar({ removeWeb: true });
+    const { say } = yield* sidebar({ removeWeb: true });
     const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
-    const toolCalls: Array<Parameters<PostHogService["toolCall"]>[0]> = [];
     const sink: PostHogService = {
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      toolCall: (call) => Effect.sync(() => void toolCalls.push(call)),
+      mcp: () => Effect.void,
     };
     yield* say("list services and deploy").pipe(Effect.provideService(PostHog, sink));
 
     expect(captured.filter(({ event }) => event === "$ai_span").map(({ properties }) => [properties?.["$ai_span_name"], properties?.["$ai_is_error"]]))
       .toEqual(expect.arrayContaining([["environment_show", false], ["deploy", true]]));
-    expect(toolCalls).toEqual(expect.arrayContaining([
-      { userId: caller.userId, organizationId: ORGANIZATION, threadId: THREAD, tool: "environment_show", durationMs: expect.any(Number), failed: false },
-      { userId: caller.userId, organizationId: ORGANIZATION, threadId: THREAD, tool: "deploy", durationMs: expect.any(Number), failed: true },
-    ]));
     expect(captured.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_is_error: true } });
   }));
 
@@ -1532,7 +1560,7 @@ it.live("an approved call finished by a resumed run hangs under that run's trace
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      toolCall: () => Effect.void,
+      mcp: () => Effect.void,
     };
     yield* resume("resolved").pipe(Effect.provideService(PostHog, sink));
 
@@ -1552,9 +1580,9 @@ it.live("a tool name the catalog does not have reaches PostHog as unknown_tool, 
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      toolCall: () => Effect.void,
+      mcp: () => Effect.void,
     };
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name: "my_password_is_hunter2", input: {} }] }, { text: "Done." }]);
     yield* provided(agentChat(caller, { messages: [{ role: "user", content: "hello" }], threadId: THREAD, runId: "run-unknown" }, model))
       .pipe(Effect.provideService(PostHog, sink), Effect.flatMap((stream) => Effect.promise(async () => { for await (const _ of stream); })));
@@ -1571,9 +1599,9 @@ it.live("a reply stopped mid-stream still closes its trace in PostHog", () =>
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
-      toolCall: () => Effect.void,
+      mcp: () => Effect.void,
     };
-    const model = fakeText({ tokensPerSecond: 200 });
+    const model = scriptedAgent({ tokensPerSecond: 200 });
     model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);
     const abortController = new AbortController();
     const stream = yield* provided(agentChat(caller, { messages: [{ role: "user", content: "explain" }], threadId: THREAD, runId: "run-stopped", abortController }, model))
@@ -1605,7 +1633,7 @@ it.live("Claude thinks as it sees fit and sends a summary of its thinking back",
 it.live("a reply's thinking is kept with the thread and comes back on reload, before its words", () =>
   Effect.gen(function* () {
     const { persistence, say } = yield* sidebar({ removeWeb: false });
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ thinking: "The thread names two services.", text: "Two services." }]);
     yield* say("count services", {}, model);
 

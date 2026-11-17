@@ -149,6 +149,7 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
 
         let server = |args: &[&str]| {
             Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .arg("--why=test")
                 .args(["--connect", &format!("tcp://{address}"), "server", verb])
                 .args(args)
                 .output()
@@ -367,6 +368,7 @@ async fn wait_for_live<T>(
 
 fn ployz<const N: usize>(address: std::net::SocketAddr, args: [&str; N]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["--connect", &format!("tcp://{address}")])
         .args(args)
         .output()

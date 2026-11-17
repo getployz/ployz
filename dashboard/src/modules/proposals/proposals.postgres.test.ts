@@ -5,7 +5,8 @@ import { Effect, Option, Schema } from "effect";
 import { expect } from "vitest";
 import type { JsonObject } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
-import { type AgentCaller, type Asking, runAgentCall } from "#/modules/agent/agent-runner.server";
+import { type AgentCaller, type Asking } from "#/modules/agent/agent-runner.server";
+import { runAsAgent } from "#/test/agent-call";
 import type { ToolOutcome } from "#/modules/agent/agent";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -92,7 +93,7 @@ const shop = Effect.fn(function* () {
     yield* drizzle.update(serviceAct).set({ state, endedAt: new Date() }).where(eq(serviceAct.id, actId));
   }));
   const call = (tool: string, input: JsonObject, key = `call-${Math.random()}`) =>
-    cluster(runAgentCall(agent, { tool, input, key, approvalId: null, page })).pipe(Effect.map((result) => "asking" in result ? result : result.outcome));
+    cluster(runAsAgent(agent, { tool, input, key, approvalId: null, page })).pipe(Effect.map((result) => "asking" in result ? result : result.outcome));
   const staged = Effect.gen(function* () {
     const id = idOf(yield* call("proposal_create", {}));
     expect(yield* call("service_stop", { service: "web", proposal: id })).toMatchObject({ ok: true, value: { step: 1 } });

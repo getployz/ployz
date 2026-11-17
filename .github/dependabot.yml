@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Crates whose value goes stale unseen: agent detection reads its markers from is-ai-agent, and new agents
+  # ship new markers; webpki-roots is the set of roots we trust; rustls is where TLS fixes land.
+  - package-ecosystem: cargo
+    directory: /core
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: is-ai-agent
+      - dependency-name: webpki-roots
+      - dependency-name: rustls

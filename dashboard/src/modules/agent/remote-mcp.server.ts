@@ -10,6 +10,7 @@ import { CATALOG } from "#/modules/agent/agent-tools";
 import { findCommand } from "#/modules/commands/commands.server";
 import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
+import { type CallOrigin, FEEDBACK_TYPES, recordAgentCall, reporterOf, SENTIMENTS, sessionIdOf, type WhatHappened } from "#/modules/analytics/agent-calls.server";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
 import { claimUrlFor } from "#/modules/identity/claim-required.server";
 import { ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
@@ -164,12 +165,65 @@ const withCard = (outcome: ToolOutcome, url: string): ToolOutcome => {
   return { ...outcome, value: { ...value, message, url } };
 };
 
+const SERVER_VERSION = "1.0.0";
+
+const FEEDBACK_TOOL = "send_feedback";
+const FEEDBACK_SCHEMA: JsonObject = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    type: { type: "string", enum: [...FEEDBACK_TYPES], description: "`missing_capability` for something you needed and Ployz does not do. `issue` for something that went wrong. `praise` for something that worked well. `other` for the rest." },
+    message: { type: "string", description: "What you needed, what went wrong or what worked, in a few sentences. Refer to people by role (\"a customer\") rather than by name. Leave out personal and identifying information." },
+    sentiment: { type: "string", enum: [...SENTIMENTS], description: "How the work felt, when you want to say." },
+  },
+  required: ["type", "message"],
+};
+const FeedbackArguments = Schema.Struct({
+  type: Schema.Literals(FEEDBACK_TYPES),
+  message: Schema.String,
+  sentiment: Schema.optional(Schema.Literals(SENTIMENTS)),
+});
+const decodeFeedback = Schema.decodeUnknownOption(FeedbackArguments, { onExcessProperty: "error" });
+
+/** What an MCP request's JSON-RPC body says of the client, which the tool handlers of a stateless server never see. */
+type Hello = { readonly method: string | null; readonly tool: string | null; readonly client: CallOrigin["client"]; readonly protocolVersion: string | null };
+
+const CLIENT_INFO_META = "io.modelcontextprotocol/clientInfo";
+const PROTOCOL_META = "io.modelcontextprotocol/protocolVersion";
+
+const helloOf = async (request: Request): Promise<Hello> => {
+  const body: unknown = await request.clone().json().catch(() => null);
+  const message = asRecord(Array.isArray(body) ? body[0] : body);
+  const params = asRecord(message?.["params"]);
+  const meta = asRecord(params?.["_meta"]);
+  const info = asRecord(params?.["clientInfo"] ?? meta?.[CLIENT_INFO_META]);
+  return {
+    method: asString(message?.["method"]),
+    tool: asString(params?.["name"]),
+    client: { name: asString(info?.["name"]), version: asString(info?.["version"]) },
+    protocolVersion: asString(params?.["protocolVersion"] ?? meta?.[PROTOCOL_META]) ?? request.headers.get("mcp-protocol-version"),
+  };
+};
+
+/**
+ * Where a call came from. A client that keeps an `Mcp-Session-Id` is one session. Otherwise the grant, which names one
+ * connection of one member, and the day make one: a stateless server has nothing finer.
+ */
+const originOf = (caller: AgentCaller, request: Request, hello: Hello): CallOrigin => ({
+  surface: "cloud",
+  session: sessionIdOf(request.headers.get("mcp-session-id") ?? `${caller.credential.id}:${new Date().toISOString().slice(0, 10)}`),
+  client: hello.client,
+  serverVersion: SERVER_VERSION,
+  userAgent: request.headers.get("user-agent"),
+  protocolVersion: hello.protocolVersion,
+});
+
 /** One MCP server for one request, acting as `caller`; every request key it uses lands in `keys`. */
-const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL, keys: Array<string>) => {
+const serverFor = (caller: AgentCaller, request: Request, origin: CallOrigin, run: Run, appUrl: URL, keys: Array<string>) => {
   const server = new McpServer({
     name: "ployz",
     title: CATALOG.title,
-    version: "1.0.0",
+    version: SERVER_VERSION,
     description: CATALOG.description,
     websiteUrl: appUrl.origin,
     icons: [{ src: new URL("/assets/logo-mark.svg", appUrl).href, mimeType: "image/svg+xml", sizes: ["any"] }],
@@ -186,11 +240,16 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
     }, async (args) => {
       const fields = asRecord(args) ?? {};
       const { approval, ...rest } = fields;
-      if (tool.gated && approval !== undefined && asString(approval) === null) return text({ ok: false, refusal: BAD_APPROVAL }, true);
+      // A call this surface refuses before it can run goes through `runAgentCall` too, which records it as the failed call it is.
+      const reject = async (refusal: JsonObject & { readonly message: string }) => {
+        await run(runAgentCall(caller, { tool: tool.name, input: projectJsonValue(fields) ?? null, key: "", approvalId: null, page: { at: "organization" }, origin, ended: { type: "validation", message: refusal.message } }));
+        return text({ ok: false, refusal }, true);
+      };
+      if (tool.gated && approval !== undefined && asString(approval) === null) return reject(BAD_APPROVAL);
       const input = tool.gated ? rest : fields;
       const sentKey = asString(input["request_key"]);
       const given = sentKey === null ? headerKey : requestKeyOf(sentKey);
-      if (!given.ok) return text({ ok: false, refusal: given.refusal }, true);
+      if (!given.ok) return reject(given.refusal);
       const key = given.key ?? randomUUID();
       keys.push(key);
       const sent = tool.keyed ? { ...input, request_key: key } : input;
@@ -201,14 +260,40 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
         key,
         approvalId,
         page: { at: "organization" },
+        origin,
       })));
       const refused = "outcome" in result && "refusal" in result.outcome ? result.outcome.refusal : null;
       const claim = refused?.code === "claim_required" ? { message: refused.message, url: await run(claimUrlFor(caller.organization.id)) } : null;
       return resultOf(tool.name, result, key, link, claim);
     });
   }
+  server.registerTool(FEEDBACK_TOOL, {
+    title: "Send feedback to the Ployz team",
+    description: "Tell the Ployz team what you needed and could not do, what went wrong, or what worked. Use `missing_capability` when no tool does what the work called for. It needs no `intent`.",
+    inputSchema: fromJsonSchema<JsonObject>(FEEDBACK_SCHEMA, toolValidates),
+    outputSchema: fromJsonSchema<JsonObject>(RESULT, toolValidates),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (args) => {
+    const startedAt = new Date();
+    // It needs no `intent`, and one sent anyway is ignored, as `ployz mcp` ignores it.
+    const { intent: _intent, ...fields } = asRecord(args) ?? {};
+    const feedback = decodeFeedback(fields);
+    const record = (what: WhatHappened) =>
+      run(recordAgentCall({ ...origin, ...what, startedAt, durationMs: Date.now() - startedAt.getTime(), caller: reporterOf(caller) }));
+    if (Option.isNone(feedback)) {
+      const message = "This input does not fit: send `type` (missing_capability, issue, praise or other), `message` and, if you like, `sentiment` (positive, neutral, negative or mixed).";
+      await record({ kind: "call", tool: FEEDBACK_TOOL, intent: null, error: { type: "validation", message } });
+      return text({ ok: false, refusal: { code: "invalid_argument", message } }, true);
+    }
+    const { type, message, sentiment } = feedback.value;
+    await record({ kind: "feedback", feedback: { type, message, sentiment: sentiment ?? null } });
+    return text({ ok: true, value: { message: "Thanks. The Ployz team reads this." } }, false);
+  });
   return server;
 };
+
+/** Every tool `/mcp` lists. */
+const LISTED_TOOLS = [...AGENT_TOOLS.map((tool) => tool.name), FEEDBACK_TOOL];
 
 /**
  * `/mcp`, the remote agent endpoint on a hosted Cloud: a stateless streamable HTTP MCP server behind the OAuth grant a
@@ -233,9 +318,24 @@ export const serveRemoteMcp = Effect.fn("RemoteMcp.serve")(function* (request: R
       ? null
       : await run(oauthCaller(grant.value).pipe(Effect.catchTag("Unauthorized", () => Effect.succeed(null))));
     if (caller === null) return challenge(resource, "This connection is no longer authorized. Connect Ployz again.");
-    const handler = createMcpHandler(() => serverFor(caller, verified, run, app.url, keys), { legacy: "stateless", responseMode: "json" });
+    const hello = await helloOf(verified);
+    const origin = originOf(caller, verified, hello);
+    const handler = createMcpHandler(() => serverFor(caller, verified, origin, run, app.url, keys), { legacy: "stateless", responseMode: "json" });
+    const startedAt = new Date();
     try {
-      return await handler.fetch(verified);
+      const answer = await handler.fetch(verified);
+      // A stateless server holds the handshake and the list in no tool, so they are recorded here, from the request.
+      // A call to a tool the server never registered reaches no handler either.
+      const unknown = hello.method === "tools/call" && hello.tool !== null && !LISTED_TOOLS.includes(hello.tool) ? hello.tool : null;
+      const seen: WhatHappened | null = unknown !== null ? { kind: "unknownTool", tool: unknown }
+        : !answer.ok ? null
+        : hello.method === "initialize" ? { kind: "initialize" }
+        : hello.method === "tools/list" ? { kind: "toolsList", tools: LISTED_TOOLS }
+        : null;
+      if (seen !== null) {
+        await run(recordAgentCall({ ...origin, ...seen, startedAt, durationMs: Date.now() - startedAt.getTime(), caller: reporterOf(caller) }));
+      }
+      return answer;
     } finally {
       await handler.close();
     }

@@ -446,7 +446,12 @@ impl Drop for Client {
     }
 }
 
-fn request(id: u64, method: &str, params: Value) -> Value {
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+fn request(id: u64, method: &str, mut params: Value) -> Value {
+    // Every call says why it was made; these tests are about what happens next.
+    if method == "tools/call" && params["arguments"]["intent"].is_null() {
+        params["arguments"]["intent"] = json!("test");
+    }
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
 }
 
@@ -660,7 +665,8 @@ async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
     let listed = client.reply().await;
     let tools = listed["result"]["tools"].as_array().unwrap();
     let catalog = tools::catalog();
-    assert_eq!(tools.len(), catalog.len(), "{listed}");
+    // The catalog, plus `send_feedback`.
+    assert_eq!(tools.len(), catalog.len() + 1, "{listed}");
     for def in &catalog {
         let tool = tools
             .iter()
@@ -2330,7 +2336,7 @@ mod published {
             !agent_facing.is_empty() && agent_facing.len() < entries.len(),
             "the fixture has entries of both kinds"
         );
-        assert_eq!(tools.len(), tools::catalog().len() + agent_facing.len());
+        assert_eq!(tools.len(), tools::catalog().len() + agent_facing.len() + 1);
         for entry in &entries {
             let Some(tool) = named(&tools, name(entry)) else {
                 assert_eq!(entry["agents"], false, "{entry} is listed");
@@ -2354,6 +2360,12 @@ mod published {
                     tool["inputSchema"]["properties"]["approval"].clone();
                 assert_eq!(input["properties"]["approval"]["type"], "string", "{tool}");
             }
+            // Every tool takes `intent`, required.
+            input["properties"]["intent"] = tool["inputSchema"]["properties"]["intent"].clone();
+            assert_eq!(input["properties"]["intent"]["type"], "string", "{tool}");
+            let mut required = input["required"].as_array().cloned().unwrap_or_default();
+            required.push(json!("intent"));
+            input["required"] = json!(required);
             assert_eq!(tool["inputSchema"], input, "{tool}");
             assert_eq!(tool["outputSchema"], entry["output"], "{tool}");
             assert_eq!(
@@ -2953,7 +2965,10 @@ mod published {
         let mut client =
             Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
         let tools = listed(&mut client, 2).await;
-        assert_eq!(tools.len(), tools::catalog().len() + agent_facing().len());
+        assert_eq!(
+            tools.len(),
+            tools::catalog().len() + agent_facing().len() + 1
+        );
     }
 
     #[tokio::test]
@@ -2963,7 +2978,7 @@ mod published {
         let mut client =
             Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
         let tools = listed(&mut client, 2).await;
-        assert_eq!(tools.len(), tools::catalog().len());
+        assert_eq!(tools.len(), tools::catalog().len() + 1);
         assert!(!home.path().join("published").exists());
     }
 }

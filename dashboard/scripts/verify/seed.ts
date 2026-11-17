@@ -142,7 +142,7 @@ const seed = Effect.gen(function* () {
   const writes: Record<string, string> = {};
   const skipped: string[] = [];
   const write = (label: string, command: ConfigCommand) =>
-    callStore(organizationId, ada.id, { operation: "write", command }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }).pipe(
+    callStore(organizationId, ada.id, { operation: "write", command }, { approval: "not_required", permissions: permissionsOf("owner") }).pipe(
       Effect.tap((r) => Effect.sync(() => { writes[label] = r.ok ? "ok" : `refused: ${r.refusal.code} ${r.refusal.message}`; })),
     );
   const at = (environment: string | null) => ({ project: "shop", environment });

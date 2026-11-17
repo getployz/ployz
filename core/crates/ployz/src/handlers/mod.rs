@@ -109,8 +109,14 @@ pub fn run() -> Result<(), Error> {
         .get_one::<String>("color")
         .map_or("", String::as_str);
     crate::ui::init(matches.get_flag("json"), crate::ui::Color::named(color));
-    let result = dispatch(&matches, &mut command);
+    // An agent or a script says why it runs a command, and the run is reported once.
+    let run = crate::agent_call::cli::Run::begin(&matches, &command);
+    let result = match run.refusal(&args) {
+        Some(refusal) => Err(refusal),
+        None => dispatch(&matches, &mut command),
+    };
     follow_cloud_revision();
+    run.finish(&result);
     result
 }
 
@@ -435,7 +441,7 @@ pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn command_path(mut matches: &ArgMatches) -> String {
+pub(crate) fn command_path(mut matches: &ArgMatches) -> String {
     let mut parts = Vec::new();
     while let Some((name, child)) = matches.subcommand() {
         parts.push(name);
@@ -453,7 +459,7 @@ pub(crate) fn joined<T: ToString>(items: &[T]) -> String {
         .join(", ")
 }
 
-fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
+pub(crate) fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
     while let Some((_, child)) = matches.subcommand() {
         matches = child;
     }
@@ -488,7 +494,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, Error> {
         .build()?)
 }
 
-pub(super) fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
+pub(crate) fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Error> {
     matches
         .get_one::<String>("ployz-config")
         .map(Path::new)

@@ -44,7 +44,10 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
             let mut sent = vec![0; length];
             reader.read_exact(&mut sent).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
-            routes.lock().unwrap().push(route.clone());
+            // Every run reports itself; the routes under test are the command's own.
+            if route != "POST /api/cli/agent/calls" {
+                routes.lock().unwrap().push(route.clone());
+            }
             if route == "POST /api/cli/run/org_leave" {
                 let sent: Value = serde_json::from_slice(&sent).unwrap();
                 routes
@@ -161,6 +164,7 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
 
 fn ployz(config: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["--ployz-config", config.to_str().unwrap()])
         .args(args)
         .env_remove("PLOYZ_CLOUD_URL")

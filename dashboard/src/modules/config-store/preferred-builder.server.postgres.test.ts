@@ -3,7 +3,7 @@ import type { ConfigCommand, MachineId } from "@ployz/sdk";
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { Cause, Effect, Exit, Layer } from "effect";
-import { runAgentCall } from "#/modules/agent/agent-runner.server";
+import { runAsAgent } from "#/test/agent-call";
 import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
@@ -167,12 +167,12 @@ it.live(
 
         const agent = { ...alice, via: "agent" as const };
         const page = { at: "here" as const, project: "shop", environment: "production" };
-        const byAgent = yield* runAgentCall(agent, {
+        const byAgent = yield* runAsAgent(agent, {
           tool: "service_update", input: { service: "web", set: { preferredBuilder: "machine-1" } }, key: "named", approvalId: null, page,
         });
         assert.deepInclude(byAgent, { outcome: { ok: true, value: { at: "shop/production", service: "web", changed: ["preferredBuilder"], immediate: ["preferredBuilder"], staged: false } } });
         assert.strictEqual(yield* preferred(), one, "the agent's service_update");
-        const unknown = yield* runAgentCall(agent, {
+        const unknown = yield* runAsAgent(agent, {
           tool: "service_update", input: { service: "web", set: { preferredBuilder: "machine-9" } }, key: "unknown", approvalId: null, page,
         });
         assert.deepNestedInclude(unknown, { "outcome.ok": false, "outcome.refusal.code": "not_found" });
