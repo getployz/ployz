@@ -67,6 +67,37 @@ ployz env region --clear
 ployz deploy
 ```
 
+## Run a service in more than one region
+
+A service usually runs all its replicas in the environment's region. To spread it, give it a count
+for each region:
+
+```sh
+ployz set api.replicas='{"fsn":2,"syd":1}'
+ployz deploy
+```
+
+`api` now runs two replicas on the servers in `fsn` and one on a server in `syd`, under one name in
+`ployz ps`. The counts take the place of the environment's region for that service. The
+environment's other services stay in its region.
+
+Change a count and deploy again. Ployz adds or removes only the difference: going from
+`{"fsn":2,"syd":1}` to `{"fsn":1,"syd":1}` removes one `fsn` replica and leaves the other two
+running.
+
+Ployz refuses a count for a region none of your servers is in, and stages nothing:
+
+```
+error: No Server is in lhr. Regions: fsn, syd.
+```
+
+To put the service back in the environment's region, set one number:
+
+```sh
+ployz set api.replicas=3
+ployz deploy
+```
+
 ## When a volume is outside the region
 
 A service with a [volume](volumes.md) runs on the volume's server. If that server is outside the
@@ -107,11 +138,52 @@ web: not started (fsn-1 is down, and no other Server in fsn is up)
 Replicas that already run keep running. Give a server the region, bring its server back, or change
 the environment's region, and deploy again.
 
+A service with a count for each region isn't started when any of its regions has no server that
+can run it. The deploy names every such region, and the service's replicas in its other regions
+keep running as they were:
+
+```
+api: not started (no Server in syd)
+```
+
 ## Good to know
 
 - **One server in a region holds every replica.** Ployz spreads replicas over the region's
   servers only. With one server there, all of a service's replicas run on it, and they all go
   down with it. Add a second server to the region before you rely on replicas.
+- **A service with a volume runs in one region.** Its replicas all write to the volume, which is
+  on one server. Ployz refuses counts in two regions for it.
+- **A preview environment runs its one replica in the region with the most replicas**: `syd` for
+  `{"fsn":1,"syd":3}`. When regions tie, it is the first by name.
+- **A drain keeps a replica in its region when the service has a count for that region.** The
+  replica moves to another server there, or stays when there is none. If its server's region is
+  no longer one the service has a count for, it moves to a server in any region that is. A
+  service with one number moves within the environment's region, or to any server when the
+  environment has none.
+- **Upgrade every `ployz` before you set a count for each region.** An older `ployz` doesn't
+  know them. [Upgrade the CLI](../cli/overview.md#install-the-cli) on each computer that deploys.
+
+  With Ployz Cloud, an older `ployz` still shows the environment, and its deploys follow your
+  counts. On servers that
+  [enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval),
+  its deploy fails while a service has a count for each region:
+
+  ```
+  error: web: create Container failed.
+    cause: This service's settings differ from what the device approved.
+  ```
+
+  Without Ployz Cloud, an older `ployz` can't read the environment once a count for each region
+  is staged:
+
+  ```
+  error: The Config Store holds an unreadable Working State
+  ```
+
+  After you deploy a count for each region, an older `ployz` can't deploy that environment
+  again. An older `ployz ps` works again once every service has one number, the environment has
+  no region, and you deploy with the new `ployz`. An older `ployz project rm` still fails, and
+  leaves the removal queued. Run `ployz project rm` with the new `ployz` to finish it.
 - **A branch starts with its parent's region** and follows later changes to it, like the parent's
   other settings.
 - **Syncing two environments doesn't copy the region.** Set it on each.
