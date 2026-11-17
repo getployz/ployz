@@ -2,6 +2,7 @@ use std::process::{Command, Output};
 
 fn ployz(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(args)
         .output()
         .unwrap()

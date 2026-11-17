@@ -107,6 +107,7 @@ fn each_short_flag_has_one_meaning_across_the_tree() {
 fn completion_hooks_the_binary_for_every_supported_shell() {
     for shell in ["bash", "elvish", "fish", "powershell", "zsh"] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(["completion", shell])
             .output()
             .unwrap();
@@ -170,6 +171,7 @@ fn run_json_with<V: AsRef<std::ffi::OsStr>>(
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -272,6 +274,7 @@ fn an_unreadable_config_fails_the_same_way_for_every_command() {
     );
     let run = |args: &[&str]| {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(args)
             .args(["--json", "--ployz-config", config.to_str().unwrap()])
             .env("HOME", home.path())
@@ -384,6 +387,7 @@ fn human_output(args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -664,6 +668,7 @@ fn a_group_without_its_subcommand_prints_its_help_like_bare_ployz() {
     for group in ["org", "server", "cloud", "deployment"] {
         let home = tempfile::tempdir().unwrap();
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .arg(group)
             .env("HOME", home.path())
             .env_remove("XDG_CONFIG_HOME")
@@ -1041,7 +1046,10 @@ fn waiting_cloud(
                 true => format!("{route} {}", String::from_utf8_lossy(&sent)),
                 false => route,
             };
-            routes.lock().unwrap().push(recorded);
+            // Every run reports itself; the routes under test are the command's own.
+            if !recorded.starts_with("POST /api/cli/agent/calls ") {
+                routes.lock().unwrap().push(recorded);
+            }
             let body = body.to_string();
             let _ = write!(
                 stream,
@@ -1252,6 +1260,7 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
 fn run_output(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, Option<String>, String) {
     let home = tempfile::tempdir().unwrap();
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(args)
         .env("HOME", home.path())
         .env_remove("XDG_CONFIG_HOME")
@@ -1618,7 +1627,11 @@ fn removing_a_server_when_cloud_does_not_answer_says_to_retry_not_forget() {
         .unwrap()
         .as_str()
         .unwrap();
-    assert!(retry.starts_with("ployz server rm web-1 --json"), "{json}");
+    // The retry keeps the reason this run gave, so an agent can run it as is.
+    assert!(
+        retry.starts_with("ployz '--why=test' server rm web-1 --json"),
+        "{json}"
+    );
 }
 
 #[test]
@@ -2072,6 +2085,7 @@ fn show_web_1_with_config(
     let contexts = serde_json::json!({ "contexts": { "prod": { "connections": connections } } });
     std::fs::write(&config, contexts.to_string()).unwrap();
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["server", "show", "web-1", "--json"])
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -2250,6 +2264,7 @@ fn server_inspect_is_gone_and_show_takes_its_place() {
 #[test]
 fn root_help_ends_with_the_catalog_pointer() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .arg("--help")
         .output()
         .unwrap();
@@ -2379,6 +2394,7 @@ fn a_daemon_that_hangs_up_is_one_json_error_on_piped_stdout() {
     let config = home.path().join("config.yaml");
     let connect = format!("tcp://127.0.0.1:{port}");
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["--json", "server", "ls", "--connect", &connect])
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -2415,6 +2431,7 @@ fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(args)
             .stdout(Stdio::from(writer))
             .stderr(Stdio::piped())
@@ -2447,6 +2464,7 @@ fn a_full_stdout_fails_the_command_in_both_modes() {
             .open("/dev/full")
             .unwrap();
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(args)
             .stdout(Stdio::from(full))
             .stderr(Stdio::piped())
@@ -2709,6 +2727,7 @@ fn results_on_stdout_side_channel_on_stderr() {
     let home = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(args)
             .env("HOME", home.path())
             .env_remove("XDG_CONFIG_HOME")
@@ -2841,6 +2860,7 @@ fn checkin_status_signed_out_says_who_without_a_scope_error() {
 #[test]
 fn ingress_help_names_both_doors_and_the_token_switch() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["ingress", "use", "--help"])
         .output()
         .unwrap();
@@ -2850,6 +2870,7 @@ fn ingress_help_names_both_doors_and_the_token_switch() {
         assert!(stdout.contains(needle), "{needle}: {stdout}");
     }
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["ingress", "--help"])
         .output()
         .unwrap();
@@ -2900,6 +2921,7 @@ fn ingress_use_with_stdin(args: &[&str], stdin: &[u8]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())
@@ -2922,6 +2944,7 @@ fn ingress_use_with_stdin(args: &[&str], stdin: &[u8]) -> std::process::Output {
 fn private_access_help_names_the_key_switch_and_the_tailscale_steps() {
     let help = |args: &[&str]| {
         let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(args)
             .output()
             .unwrap();
@@ -2971,6 +2994,7 @@ fn private_access_on_reads_its_key_from_stdin_and_off_takes_none() {
 #[test]
 fn checkin_help_names_install_and_the_token_file() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["server", "checkin", "--help"])
         .output()
         .unwrap();
@@ -2989,6 +3013,7 @@ fn checkin_help_names_install_and_the_token_file() {
 #[test]
 fn github_rule_approve_defaults_to_the_pinned_builder() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["github", "rule", "approve", "--help"])
         .output()
         .unwrap();
@@ -3081,6 +3106,7 @@ fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) 
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(args)
         .args(["--ployz-config", config.to_str().unwrap()])
         .env("HOME", home.path())

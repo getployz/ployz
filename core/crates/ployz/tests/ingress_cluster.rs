@@ -511,6 +511,7 @@ fn cli(direct: &str, args: &[&str]) -> String {
 
 fn run_cli(direct: &str, args: &[&str]) -> process::Output {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--connect",
             direct,

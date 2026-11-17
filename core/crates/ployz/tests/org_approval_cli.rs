@@ -209,6 +209,7 @@ fn signed_in(cloud: &str, dir: &std::path::Path, args: &[&str]) -> Output {
 
 fn run(config: &std::path::Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.arg("--why=test");
     command
         .args(["--ployz-config", config.to_str().unwrap()])
         .args(args)
@@ -603,6 +604,7 @@ fn context_config_org_removal_hint_ignores_the_context_environment() {
     let cloud = fake_cloud(Arc::default(), true);
     let execute = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(args)
             .env_clear()
             .env("HOME", dir.path())

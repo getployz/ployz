@@ -773,6 +773,7 @@ fn attempt(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> (Optio
 /// Run `ployz --json ARGS` against `store` and the Cluster at `address`.
 fn run(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(args)
         .args(["--json", "--connect", &format!("tcp://{address}")])
         .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))

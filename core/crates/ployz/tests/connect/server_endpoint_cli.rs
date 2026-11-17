@@ -39,6 +39,7 @@ async fn a_new_endpoint_reaches_every_other_server_when_the_target_is_off_the_me
         let config = config.clone();
         async move {
             tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .arg("--why=test")
                 .env_remove("PLOYZ_TOKEN")
                 .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
                 .args(["--ployz-config", config.to_str().unwrap()])
@@ -120,6 +121,7 @@ async fn a_target_that_does_not_answer_is_named_with_an_unknown_outcome() {
     )
     .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .args(["--ployz-config", config.to_str().unwrap(), "--json"])
@@ -161,6 +163,7 @@ async fn a_target_that_refuses_says_nothing_changed() {
     )
     .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .args(["--ployz-config", config.to_str().unwrap(), "--json"])
@@ -209,6 +212,7 @@ async fn an_older_entry_still_updates_the_target_it_could_not_seed() {
     let (address, _older) = serve_discovery(older).await;
     let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .args(["--ployz-config", config.to_str().unwrap()])
@@ -242,6 +246,7 @@ async fn clearing_a_public_ip_says_none_is_looked_up() {
     let (address, _older) = serve_discovery(older).await;
     let config = std::env::temp_dir().join(format!("ployz-endpoint-{}.yaml", MachineId::random()));
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .args(["--ployz-config", config.to_str().unwrap()])
@@ -265,6 +270,7 @@ async fn clearing_a_public_ip_says_none_is_looked_up() {
         "{output:?}"
     );
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .env_remove("PLOYZ_TOKEN")
         .env("PLOYZ_CLOUD_URL", "http://127.0.0.1:9")
         .args(["--ployz-config", config.to_str().unwrap(), "--json"])

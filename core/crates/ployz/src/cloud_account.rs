@@ -11,7 +11,7 @@
 
 mod calls;
 mod credential;
-mod http;
+pub(crate) mod http;
 mod org;
 mod reply;
 mod servers;

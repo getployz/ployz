@@ -412,6 +412,7 @@ fn cli(direct: &str, args: &[&str]) -> String {
 /// Exit code and stdout; stderr goes to the test output.
 fn cli_status(direct: &str, args: &[&str]) -> (Option<i32>, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args([
             "--connect",
             direct,

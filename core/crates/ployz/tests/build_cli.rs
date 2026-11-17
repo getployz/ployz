@@ -51,6 +51,7 @@ fn build_refuses_a_mismatched_fingerprint_or_an_unclean_checkout() {
         ployz_core::BuildGrant::new(ployz_core::ManagementIdentity::from_bytes([1; 32]), [2; 32]);
     let build = || {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(["build", "--deployment"])
             .arg(&deployment)
             .args([

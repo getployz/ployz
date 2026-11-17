@@ -64,7 +64,10 @@ fn fake_cloud(cloud: Arc<Mutex<Cloud>>) -> String {
             reader.read_exact(&mut body).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
             let mut cloud = cloud.lock().unwrap();
-            cloud.routes.push(route.clone());
+            // Every run reports itself; the routes under test are the command's own.
+            if route != "POST /api/cli/agent/calls" {
+                cloud.routes.push(route.clone());
+            }
             let (status, body) = match route.as_str() {
                 "GET /api/cli/manifest" => {
                     let mut manifest: Value = serde_json::from_str(FIXTURE).unwrap();
@@ -135,6 +138,7 @@ impl Fixture {
 
     fn command_in(&self, dir: &Path) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command
             .current_dir(dir)
             .env("HOME", self.home.path())
@@ -151,7 +155,11 @@ impl Fixture {
     /// Run under `script`, so stdin is a terminal, typing `typed`; the exit code and the screen.
     #[cfg(target_os = "linux")]
     fn at_a_terminal(&self, args: &[&str], typed: &str) -> (Option<i32>, String) {
-        let ployz = format!("{} {}", env!("CARGO_BIN_EXE_ployz"), args.join(" "));
+        let ployz = format!(
+            "{} --why=test {}",
+            env!("CARGO_BIN_EXE_ployz"),
+            args.join(" ")
+        );
         let mut child = Command::new("script")
             .args(["--quiet", "--return", "--command", &ployz, "/dev/null"])
             .env("HOME", self.home.path())
@@ -569,6 +577,7 @@ fn a_command_line_that_misses_without_a_cloud_never_touches_the_network() {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(&args)
         .env("HOME", cloud.home.path())
         .env_remove("XDG_CONFIG_HOME")
@@ -599,6 +608,7 @@ fn a_device_signed_in_to_one_cloud_never_reads_commands_from_the_cloud_url_names
     args.push("--json".into());
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(&args)
         .env("HOME", signed_in.home.path())
         .env_remove("XDG_CONFIG_HOME")

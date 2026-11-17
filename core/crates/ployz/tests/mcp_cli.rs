@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 fn mcp(cloud: &str, home: &std::path::Path) -> Child {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .arg("mcp")
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
@@ -170,7 +171,7 @@ fn stuck_call() -> Stuck {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": { "name": "server_show", "arguments": {} },
+            "params": { "name": "server_show", "arguments": { "intent": "test" } },
         }),
     );
     let held = accepted(&cloud);
@@ -210,7 +211,7 @@ fn a_device_key_beside_the_config_is_never_read_and_the_first_line_says_so() {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": { "name": "server_show", "arguments": {} },
+            "params": { "name": "server_show", "arguments": { "intent": "test" } },
         }),
     );
     let mut answer = String::new();
@@ -286,8 +287,54 @@ fn closing_stdout_before_initialize_stops_the_server_quietly() {
 }
 
 /// `ployz` run in `dir` on the in-process Store in `home`, away from any ambient scope.
+#[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+fn a_call_without_intent_is_refused_before_the_tool_runs() {
+    let home = tempfile::tempdir().unwrap();
+    let mut server = mcp("http://127.0.0.1:9", home.path());
+    let mut stdin = server.stdin.take().unwrap();
+    let mut stdout = BufReader::new(server.stdout.take().unwrap());
+    initialize(&mut stdin, &mut stdout);
+    let mut call = |id: u64, name: &str, arguments: Value| {
+        send(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": name, "arguments": arguments },
+            }),
+        );
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["id"], id, "{reply}");
+        reply
+    };
+    let refusal = "Say why you are calling this tool. Send `intent`, a short sentence on the goal this call serves.";
+    let none = call(2, "server_show", json!({}));
+    assert_eq!(none["error"]["message"], refusal, "{none}");
+    let blank = call(3, "server_show", json!({ "intent": " " }));
+    assert_eq!(blank["error"]["message"], refusal, "{blank}");
+    // With an intent the call reaches the tool: it fails on the Cloud it cannot reach.
+    let reached = call(4, "server_show", json!({ "intent": "see the Servers" }));
+    assert_eq!(reached["result"]["isError"], true, "{reached}");
+    assert!(reached["error"].is_null(), "{reached}");
+    // Feedback needs no intent.
+    let thanks = call(
+        5,
+        "send_feedback",
+        json!({ "type": "missing_capability", "message": "no way to tail logs" }),
+    );
+    assert_eq!(
+        thanks["result"]["content"][0]["text"], "Thanks. The Ployz team reads this.",
+        "{thanks}"
+    );
+    drop(stdin);
+    let _ = server.wait();
+}
+
 fn local(home: &std::path::Path, dir: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.arg("--why=test");
     command
         .current_dir(dir)
         .env("HOME", home)
@@ -330,7 +377,7 @@ fn each_call_acts_where_the_directory_is_linked_when_it_starts() {
             &mut stdin,
             &json!({
                 "jsonrpc": "2.0", "id": id, "method": "tools/call",
-                "params": { "name": "environment_show", "arguments": {} },
+                "params": { "name": "environment_show", "arguments": { "intent": "test" } },
             }),
         );
         let mut line = String::new();
@@ -349,6 +396,7 @@ fn each_call_acts_where_the_directory_is_linked_when_it_starts() {
 }
 
 #[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 fn a_renamed_project_keeps_the_directory_linked_to_it() {
     let home = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -369,7 +417,8 @@ fn a_renamed_project_keeps_the_directory_linked_to_it() {
     let mut stdin = server.stdin.take().unwrap();
     let mut stdout = BufReader::new(server.stdout.take().unwrap());
     initialize(&mut stdin, &mut stdout);
-    let mut call = |id: u64, name: &str, arguments: Value| {
+    let mut call = |id: u64, name: &str, mut arguments: Value| {
+        arguments["intent"] = json!("test");
         send(
             &mut stdin,
             &json!({

@@ -19,8 +19,8 @@ use reqwest::Method;
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
     ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, Icon, Implementation,
-    JsonObject, ListToolsResult, PaginatedRequestParams, RequestId, ServerCapabilities,
-    ServerConfig, StringSchema, Tool, ToolAnnotations,
+    InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
+    RequestId, ServerCapabilities, ServerConfig, StringSchema, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
@@ -34,6 +34,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
+use crate::agent_call::{self, Started};
 use crate::approval::{self, Asked, Subject, Verb};
 use crate::cloud_account::{self, CALL_DEADLINE, Credential, StoreCallError, Via};
 use crate::cloud_login::{self, CredentialStore, LoginError};
@@ -109,16 +110,21 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         .is_none()
         .then(|| publishing_setup(&config, cloud.clone(), token.as_deref()));
     let place = located(config.clone());
-    let server = Server::new(
-        Account {
-            config,
-            token,
-            cloud,
-            organization: Acting::default(),
-        },
-        local,
-        place,
-    );
+    let report =
+        agent_call::mcp::Reporter::on(reporting_as(config.clone(), token.clone(), cloud.clone()));
+    let server = Server {
+        report: report.clone(),
+        ..Server::new(
+            Account {
+                config,
+                token,
+                cloud,
+                organization: Acting::default(),
+            },
+            local,
+            place,
+        )
+    };
     let runtime = super::runtime()?;
     let server = match setup {
         Some(setup) => runtime.block_on(server.publishing(setup)),
@@ -150,6 +156,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
             _ = hangup.recv() => {}
             () = closed.cancelled() => {}
         }
+        report.flush().await;
         Ok(())
     });
     // A thread may still be blocked reading stdin; exit without waiting for it.
@@ -386,6 +393,8 @@ struct Server {
     /// Held while the published commands are reread, so calls that see a new revision
     /// together read it once.
     rereading: tokio::sync::Mutex<()>,
+    /// Reports each call to Cloud; off until `serve` turns it on.
+    report: agent_call::mcp::Reporter,
 }
 
 #[derive(Default)]
@@ -459,6 +468,7 @@ impl Server {
             published: Mutex::new(None),
             unread: Mutex::new(BTreeSet::new()),
             rereading: tokio::sync::Mutex::new(()),
+            report: agent_call::mcp::Reporter::off(),
         }
     }
 
@@ -494,6 +504,7 @@ impl Server {
                     .map(published_tool),
             );
         }
+        tools.push(agent_call::mcp::feedback_tool());
         tools
     }
 
@@ -760,6 +771,7 @@ fn call_key(session: &str, id: &RequestId, _tool: &str) -> String {
 fn tool(def: tools::ToolDef) -> Tool {
     let mut input = object(def.input_schema);
     with_approval(&mut input, def.gate != Gate::Never);
+    agent_call::mcp::with_intent(&mut input);
     let mut tool = Tool::new(def.name, def.description, Arc::new(input))
         .with_title(def.title)
         .annotate(
@@ -778,6 +790,7 @@ fn tool(def: tools::ToolDef) -> Tool {
 fn published_tool(command: &PublishedCommand) -> Tool {
     let mut input = object(command.input.clone());
     with_approval(&mut input, command.asks());
+    agent_call::mcp::with_intent(&mut input);
     // Cloud's `about` is the CLI's help; an agent also reads whether the call can wait on a human,
     // in the words the catalog's own gated tools end with.
     let about = if command.asks() {
@@ -822,6 +835,29 @@ fn identity() -> Implementation {
         ])
 }
 
+/// The credential a report goes out with, found afresh each time since `ployz mcp login`
+/// can swap the stored token while the server runs. Never goes to Cloud for it.
+fn reporting_as(
+    config: PathBuf,
+    token: Option<String>,
+    cloud: Option<String>,
+) -> agent_call::mcp::Resolve {
+    Arc::new(move || {
+        let (config, token, cloud) = (config.clone(), token.clone(), cloud.clone());
+        Box::pin(async move {
+            match ActingAs::resolve(&config, token.as_deref()) {
+                Ok(ActingAs::Token) => {
+                    cloud_account::credential(&CredentialStore::beside(&config), token, cloud)
+                        .await
+                        .ok()
+                }
+                Ok(ActingAs::Login(stored)) => Some(stored.credential()),
+                Ok(ActingAs::LoggedOut) | Err(_) => None,
+            }
+        })
+    })
+}
+
 /// The registry's guidance, then how long a call may run. Claude Code cuts a server's
 /// instructions past 2 KB.
 fn instructions(deadline: Duration) -> String {
@@ -844,37 +880,84 @@ impl ServerHandler for Server {
         .with_instructions(instructions(self.deadline))
     }
 
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        let started = Started::now();
+        context.peer.set_peer_info(request.clone());
+        let result = self.negotiate_initialize(&request);
+        self.report.initialized(started, &request.client_info);
+        result
+    }
+
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(self.tools()))
+        let started = Started::now();
+        let tools = self.tools();
+        let names = tools.iter().map(|tool| tool.name.to_string()).collect();
+        self.report
+            .listed(started, names, agent_call::mcp::client_of(&context));
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.tools().into_iter().find(|tool| tool.name == name)
     }
 
+    /// Every call says why it was made, and is reported once it ends.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let tool: &str = &request.name;
-        let Some(gate) = self.gates.get(tool).copied() else {
-            return self.call_published(tool, request.arguments, &context).await;
+        let started = Started::now();
+        let client = agent_call::mcp::client_of(&context);
+        if request.name == agent_call::mcp::FEEDBACK_TOOL {
+            return self.report.feedback(started, request.arguments, client);
+        }
+        let mut request = request;
+        let tool = request.name.to_string();
+        let known = self.gates.contains_key(tool.as_str()) || self.published_named(&tool).is_some();
+        let (intent, arguments) = match agent_call::mcp::take_intent(request.arguments.take()) {
+            Ok(taken) => taken,
+            Err(refusal) => {
+                let result = Err(refusal);
+                self.report
+                    .called(started, &tool, None, known, &result, client);
+                return result;
+            }
         };
-        let result = self.call_compiled(gate, request, &context).await;
-        // A compiled tool that reached Cloud kept the revision Cloud named.
-        let revision =
-            (self.setup.as_ref()).and_then(|setup| cloud_account::revision_seen(&setup.cloud));
-        self.follow(revision, &context).await;
+        request.arguments = arguments;
+        let result = self.call(request, &context).await;
+        self.report
+            .called(started, &tool, Some(intent), known, &result, client);
         result
     }
 }
 
 impl Server {
+    async fn call(
+        &self,
+        request: CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let tool: &str = &request.name;
+        let Some(gate) = self.gates.get(tool).copied() else {
+            return self.call_published(tool, request.arguments, context).await;
+        };
+        let result = self.call_compiled(gate, request, context).await;
+        // A compiled tool that reached Cloud kept the revision Cloud named.
+        let revision =
+            (self.setup.as_ref()).and_then(|setup| cloud_account::revision_seen(&setup.cloud));
+        self.follow(revision, context).await;
+        result
+    }
+
     async fn call_compiled(
         &self,
         gate: Gate,

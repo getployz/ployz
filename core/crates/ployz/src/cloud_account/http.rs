@@ -59,8 +59,8 @@ pub(crate) fn builder(request_timeout: Duration) -> reqwest::ClientBuilder {
 /// and `X-Ployz-Agent` names a detected coding agent, for telemetry only.
 pub(crate) fn client() -> Result<reqwest::Client, LoginError> {
     let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(agent) = agent(|name| std::env::var(name).ok())
-        .and_then(|agent| reqwest::header::HeaderValue::from_str(&agent).ok())
+    if let Some(agent) = crate::agent_call::agent_name()
+        .and_then(|agent| reqwest::header::HeaderValue::from_str(agent).ok())
     {
         headers.insert(AGENT_HEADER, agent);
     }
@@ -68,25 +68,6 @@ pub(crate) fn client() -> Result<reqwest::Client, LoginError> {
         .default_headers(headers)
         .build()
         .map_err(|error| LoginError::Reply(error.to_string()))
-}
-
-/// The coding agent running this CLI, from the markers agent harnesses set. It
-/// never changes output, prompts or consent.
-fn agent(var: impl Fn(&str) -> Option<String>) -> Option<String> {
-    if let Some(agent) = var("AI_AGENT").filter(|agent| !agent.is_empty()) {
-        return Some(agent);
-    }
-    [
-        ("CLAUDECODE", "claude-code"),
-        ("CURSOR_AGENT", "cursor"),
-        ("CODEX_THREAD_ID", "codex"),
-        ("GEMINI_CLI", "gemini-cli"),
-        ("OPENCODE", "opencode"),
-        ("AMP_CURRENT_THREAD_ID", "amp"),
-    ]
-    .into_iter()
-    .find(|(marker, _)| var(marker).is_some_and(|value| !value.is_empty()))
-    .map(|(_, agent)| agent.to_owned())
 }
 
 pub(crate) fn request(
@@ -232,28 +213,6 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::cloud_account::testing::token;
-
-    #[test]
-    fn agent_names_the_harness_from_its_markers() {
-        let only = |pairs: &'static [(&'static str, &'static str)]| {
-            move |name: &str| {
-                pairs
-                    .iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).to_owned())
-            }
-        };
-        assert_eq!(agent(only(&[])), None);
-        assert_eq!(agent(only(&[("CLAUDECODE", "")])), None);
-        assert_eq!(
-            agent(only(&[("CLAUDECODE", "1")])).as_deref(),
-            Some("claude-code")
-        );
-        assert_eq!(
-            agent(only(&[("CODEX_THREAD_ID", "t1"), ("AI_AGENT", "pi")])).as_deref(),
-            Some("pi")
-        );
-    }
 
     #[test]
     fn a_clean_preview_waits_past_the_cluster_time_cloud_may_spend_on_it() {

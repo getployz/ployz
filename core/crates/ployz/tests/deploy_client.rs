@@ -39,7 +39,7 @@ async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
         .push(running_container(&machine, &spec("web")));
     let (address, server) = listening(service).await;
     let command = format!(
-        "{} --connect tcp://{address} exec -T web true",
+        "{} --why=test --connect tcp://{address} exec -T web true",
         env!("CARGO_BIN_EXE_ployz")
     );
     let mut exec = tokio::process::Command::new("script")
@@ -134,6 +134,7 @@ async fn service_lifecycle_commands_change_each_named_service_container() {
         let (address, server) = listening(service).await;
 
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .args(["service", action])
             .args(["--connect", &format!("tcp://{address}"), "web", "api"])
             .output()

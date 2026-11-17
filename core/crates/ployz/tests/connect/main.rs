@@ -63,6 +63,7 @@ async fn cli_exec_reports_incomplete_discovery_as_partial() {
     let (address, server) = serve_discovery(service).await;
     let home = tempfile::tempdir().unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .current_dir(home.path())
         .env("HOME", home.path())
         .env_remove("XDG_CONFIG_HOME")
@@ -129,6 +130,7 @@ async fn cli_exec_requires_exit_status_or_detached_start_confirmation() {
         let (address, server) = serve_discovery(service).await;
         let config = tempfile::NamedTempFile::new().unwrap();
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command.kill_on_drop(true);
         command.args([
             "--connect",
@@ -252,6 +254,7 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
         let (address, server) = serve_discovery(service).await;
         let config = tempfile::NamedTempFile::new().unwrap();
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command.kill_on_drop(true);
         command.args([
             "--connect",
@@ -310,6 +313,7 @@ async fn cli_exec_retry_repeats_the_scope_flags_it_was_given() {
     let ployz = async |args: &[&str]| {
         let home = tempfile::tempdir().unwrap();
         tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
             .current_dir(home.path())
             .env("HOME", home.path())
             .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
@@ -1233,6 +1237,7 @@ async fn a_daemon_that_refuses_is_not_called_unreachable() {
 
 async fn run_ployz(address: std::net::SocketAddr, args: &[&str]) -> std::process::Output {
     tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .arg("--connect")
         .arg(format!("tcp://{address}"))
         .args(args)

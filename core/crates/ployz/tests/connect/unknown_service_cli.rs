@@ -12,6 +12,7 @@ use super::*;
 async fn ployz(store: &Path, address: std::net::SocketAddr, args: &[&str]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .current_dir(home.path())
         .env("HOME", home.path())
         .env_remove("XDG_CONFIG_HOME")

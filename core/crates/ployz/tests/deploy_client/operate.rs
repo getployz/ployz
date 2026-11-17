@@ -17,6 +17,7 @@ async fn run(
 ) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+    command.arg("--why=test");
     command
         .current_dir(home.path())
         .env("HOME", home.path())
@@ -358,6 +359,7 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
     .unwrap();
     let invoke = |args: Vec<&'static str>| {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command
             .current_dir(root.path())
             .env("HOME", root.path())
@@ -738,6 +740,7 @@ async fn ctrl_c_during_cleanup_prints_each_copy_left_running_and_exits_non_zero(
     let connect = format!("tcp://{address}");
     let command = |args: &[&str]| {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command
             .current_dir(root.path())
             .env("HOME", root.path())
@@ -813,6 +816,7 @@ async fn context_config_empty_context_deploy_names_add_servers_before_a_volume_c
     .save()
     .unwrap();
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--why=test")
         .args(["deploy", "--json"])
         .current_dir(home.path())
         .env("HOME", home.path())
