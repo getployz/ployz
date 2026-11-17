@@ -1,7 +1,9 @@
+import type { Region } from "@ployz/sdk";
 import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { cn } from "#/lib/utils";
+import { regionName } from "#/modules/machines/server-regions";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
@@ -66,12 +68,14 @@ export const SERVER_ROW_GRID = cn(
 export const SERVER_LIST = "@container flex flex-col divide-y overflow-hidden rounded-lg border";
 
 /**
- * One Server as a row that opens its page: dot, name, what runs there, its region, CPU and memory when the row is
+ * One Server as a row that opens its page: dot, name, what runs there, its region's name, CPU and memory when the row is
  * wide, and a state word. A narrow row puts what runs under the name and drops the region and the meters.
  */
-export function ServerRow({ organizationSlug, server, upgrade, stale, activation = null }: {
+export function ServerRow({ organizationSlug, server, regions, upgrade, stale, activation = null }: {
   organizationSlug: string;
   server: Server;
+  /** The Organization's regions; undefined until their names arrive. */
+  regions: readonly Region[] | undefined;
   upgrade: ServerUpgradeLine;
   stale: boolean;
   /** Its activation, as it last reported it; null on a Ployz older than 0.4 or before it answered. */
@@ -102,7 +106,7 @@ export function ServerRow({ organizationSlug, server, upgrade, stale, activation
         {activation === null ? null : ACTIVATION[activation]}
       </span>
       <span className="hidden truncate text-muted-foreground @xl:block">
-        {server.machine.region}
+        {regionName(server.machine.region, regions)}
       </span>
       <ServerMeters organizationSlug={organizationSlug} server={server} />
       <span className={cn("col-3 row-[1/span_2] text-right whitespace-nowrap @xl:col-auto @xl:row-auto", stale ? "text-muted-foreground" : tone)}>

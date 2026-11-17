@@ -1,14 +1,24 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { Region } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as scopes from "#/collections/use-collection-scope";
+import * as storeFunctions from "#/modules/config-store/store.functions";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import * as policyFunctions from "#/modules/machines/server-policy.functions";
 import { ServerRegionSection } from "./server-region-section";
 
 let requestChange: ReturnType<typeof vi.spyOn>;
+let write: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
   requestChange = vi.spyOn(policyFunctions, "requestServerPolicyChangeServerFn").mockResolvedValue(undefined);
+  write = vi.spyOn(storeFunctions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "region_named", key: "sydney-2", name: "Sydney 2" } } as never);
+  // The Store's answers to the two names these tests type.
+  vi.spyOn(storeFunctions, "readStoreViewServerFn").mockImplementation(async ({ data }) => (data.query.query === "new_region" && data.query.name === "FSN"
+    ? { ok: false, refusal: { code: "conflict", message: "Region Falkenstein (fsn) already exists.", details: null } }
+    : { ok: true, value: { view: "new_region", key: "sydney-2" } }) as never);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   Element.prototype.scrollIntoView = () => {};
   Element.prototype.hasPointerCapture = () => false;
@@ -31,7 +41,8 @@ function machine(id: string, region: string | null): RuntimeMachineRecord {
 
 const fsn = machine("1", "fsn");
 const bare = machine("4", null);
-const fleet = [fsn, machine("2", "syd"), machine("3", "fsn"), bare];
+const fleet = [fsn, machine("2", "syd"), machine("3", "default"), bare];
+const REGIONS: Region[] = [{ key: "default", name: "Default" }, { key: "fsn", name: "Falkenstein" }, { key: "syd", name: "Sydney" }];
 
 async function pick(name: string) {
   fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
@@ -42,45 +53,49 @@ async function pick(name: string) {
   fireEvent.click(option);
 }
 
-function section(shown: RuntimeMachineRecord, allowed = true, machines = fleet) {
+function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS }: { allowed?: boolean; machines?: RuntimeMachineRecord[]; regions?: Region[] } = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   render(
-    <ServerRegionSection
-      machine={shown}
-      machines={machines}
-      organizationSlug="acme"
-      gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
-    />,
+    <QueryClientProvider client={queryClient}>
+      <ServerRegionSection
+        machine={shown}
+        machines={machines}
+        regions={regions}
+        organizationSlug="acme"
+        gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
+      />
+    </QueryClientProvider>,
   );
 }
 
-it("shows a pick of the regions the fleet holds, each once, then a way to clear or add one", async () => {
-  section(bare);
+it("shows the Server's region by its name, then every region by name, then a way to clear or add one", async () => {
+  section(fsn);
+  expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("Falkenstein");
   fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
   const options = (await screen.findAllByRole("option")).map((option) => option.textContent);
-  expect(options).toEqual(["fsn", "syd", "No region", "New region…"]);
+  expect(options).toEqual(["Default", "Falkenstein", "Sydney", "No region", "New region…"]);
 });
 
-it("offers the lowercase spelling when Servers are labelled with two spellings of one region", async () => {
-  section(bare, true, [machine("5", "FSN"), machine("6", "fsn"), bare]);
-  fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
-  const options = (await screen.findAllByRole("option")).map((option) => option.textContent);
-  expect(options).toEqual(["fsn", "No region", "New region…"]);
+it("shows a Server labelled in capitals as its region", () => {
+  section(machine("5", "SYD"));
+  expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("Sydney");
 });
 
 it("shows a region named like a menu entry as that region, and does not clear it", () => {
-  section(machine("5", "_none"), true, [machine("5", "_none")]);
+  section(machine("5", "_none"), { machines: [machine("5", "_none")], regions: [] });
   expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("_none");
   expect(requestChange).not.toHaveBeenCalled();
 });
 
-it("sends the picked region as a change and shows it queued until the Server reports it", async () => {
+it("sends the picked region's key as a change and shows its name queued until the Server reports it", async () => {
   section(bare);
-  await pick("syd");
+  await pick("Sydney");
   expect(requestChange).toHaveBeenCalledWith({
     data: { organizationSlug: "acme", machineId: "4".repeat(32), change: { region: "syd" } },
   });
   expect(screen.getByText("Queued")).toBeTruthy();
-  expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("syd");
+  expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("Sydney");
 });
 
 it("clears a region with a null", async () => {
@@ -91,28 +106,33 @@ it("clears a region with a null", async () => {
   });
 });
 
-it("types a new region, refuses a bad one inline without sending, and sends a good one", async () => {
+it("makes a new region from a typed name: the Server moves to its key and the region keeps the name", async () => {
   section(bare);
   await pick("New region…");
   const input = await screen.findByRole("textbox", { name: "New region" });
+  fireEvent.change(input, { target: { value: "Sydney 2" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  await waitFor(() => expect(requestChange).toHaveBeenCalledWith({
+    data: { organizationSlug: "acme", machineId: "4".repeat(32), change: { region: "sydney-2" } },
+  }));
+  expect(write).toHaveBeenCalledWith(expect.objectContaining({
+    data: expect.objectContaining({ command: { command: "name_region", key: "sydney-2", name: "Sydney 2" } }),
+  }));
+});
 
-  fireEvent.change(input, { target: { value: "new york" } });
-  expect(screen.getByText("Use up to 63 lowercase letters, digits and hyphens. Start with a letter or digit.")).toBeTruthy();
+it("refuses a new region whose key a region has in any case, naming it, and moves nothing", async () => {
+  section(bare);
+  await pick("New region…");
+  const input = await screen.findByRole("textbox", { name: "New region" });
+  fireEvent.change(input, { target: { value: "FSN" } });
   fireEvent.keyDown(input, { key: "Enter" });
-  fireEvent.change(input, { target: { value: "-lhr" } });
-  fireEvent.keyDown(input, { key: "Enter" });
+  expect(await screen.findByText("Region Falkenstein (fsn) already exists.")).toBeTruthy();
   expect(requestChange).not.toHaveBeenCalled();
-
-  fireEvent.change(input, { target: { value: "LHR" } });
-  expect((input as HTMLInputElement).value).toBe("lhr");
-  fireEvent.keyDown(input, { key: "Enter" });
-  expect(requestChange).toHaveBeenCalledWith({
-    data: { organizationSlug: "acme", machineId: "4".repeat(32), change: { region: "lhr" } },
-  });
+  expect(write).not.toHaveBeenCalled();
 });
 
 it("leaves the field read-only for a member who can't change policy", () => {
-  section(fsn, false);
+  section(fsn, { allowed: false });
   const trigger = screen.getByRole("combobox", { name: "Region" });
   expect(trigger.hasAttribute("disabled") || trigger.getAttribute("aria-disabled") === "true" || trigger.hasAttribute("data-disabled")).toBe(true);
   expect(trigger.getAttribute("title")).toBe("Only an owner or admin can change how a server runs.");

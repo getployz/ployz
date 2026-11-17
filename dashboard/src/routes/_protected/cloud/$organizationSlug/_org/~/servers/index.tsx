@@ -2,6 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Button } from "#/components/ui/button";
+import { regionLabels } from "#/modules/machines/server-regions";
+import { useRegions } from "#/modules/machines/server-regions.hooks";
 import { useServers } from "#/modules/machines/use-servers";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
@@ -43,6 +45,7 @@ function RouteComponent() {
   const { token } = Route.useSearch();
   const { state, servers, older, awaitingKey } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
+  const regions = useRegions(organizationSlug, regionLabels(servers.map(({ machine }) => machine)));
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const page = serversPageState({
@@ -101,6 +104,7 @@ function RouteComponent() {
                 key={server.machine.id}
                 organizationSlug={organizationSlug}
                 server={server}
+                regions={regions}
                 upgrade={upgrade?.rows.get(server.machine.id) ?? null}
                 stale={page.stale}
                 activation={activationOf.get(server.machine.id) ?? null}

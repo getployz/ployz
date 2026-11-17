@@ -1,13 +1,21 @@
-import { isRegion } from "#/modules/machines/server-policy";
+import type { Region } from "@ployz/sdk";
 
-/** Regions compare without case, as placement does. Of spellings that differ only in case, the valid one is kept. */
-export function knownRegions(machines: readonly { readonly region: string | null }[]): string[] {
-  const byLowercase = new Map<string, string>();
-  for (const { region } of machines) {
-    if (region === null) continue;
-    const key = region.toLowerCase();
-    const kept = byLowercase.get(key);
-    if (kept === undefined || (!isRegion(kept) && isRegion(region))) byLowercase.set(key, region);
-  }
-  return [...byLowercase.values()].sort((left, right) => left.localeCompare(right));
+/** Each Server's `region` label once: what the Store's region queries hear the Servers hold. */
+export function regionLabels(machines: readonly { readonly region: string | null }[]): string[] {
+  return [...new Set(machines.flatMap(({ region }) => region === null ? [] : [region]))].sort();
+}
+
+/** The region a Server's label puts it in. Labels compare without case, as placement does. */
+export function regionOf(label: string | null, regions: readonly Region[]): Region | undefined {
+  const key = label?.toLowerCase();
+  return regions.find((region) => region.key === key);
+}
+
+/**
+ * What a Server's region shows as: its region's name, or the label itself when it is no region's. Null when it has no
+ * label, or while the names haven't arrived.
+ */
+export function regionName(label: string | null, regions: readonly Region[] | undefined): string | null {
+  if (label === null || regions === undefined) return null;
+  return regionOf(label, regions)?.name ?? label;
 }
