@@ -1,4 +1,4 @@
-/** The regions the Servers hold, each once, in name order. Regions compare without case, as placement does. */
+/** Regions compare without case, as placement does. */
 export function knownRegions(machines: readonly { readonly region: string | null }[]): string[] {
   const byLowercase = new Map<string, string>();
   for (const { region } of machines) {

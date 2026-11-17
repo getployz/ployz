@@ -12,10 +12,6 @@ import { RegionValue } from "./region-value";
 const NO_REGION = "_none";
 const NEW_REGION = "_new";
 
-/**
- * Where this Server sits. Pick a region some Server already holds, type a new one, or clear it. Like the other policy
- * fields it shows the requested value at once and settles when the Server reports it.
- */
 export function ServerRegionSection({ machine, machines, organizationSlug, gate }: {
   machine: RuntimeMachineRecord;
   machines: readonly RuntimeMachineRecord[];

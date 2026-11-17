@@ -2,10 +2,8 @@ import type { MachineRuntime, RuntimeWatchView, Sealing } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { runtimeContainerStateSchema, runtimeSealingSchema, type RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
 
-/** The Machine Label that places a Server in a region. Label keys match exactly. */
 export const REGION_LABEL = "region";
 
-/** The region a Server's labels place it in, or null when it has none. */
 export const regionOfLabels = (labels: Readonly<Record<string, string>>): string | null => labels[REGION_LABEL] ?? null;
 
 /**
@@ -34,7 +32,6 @@ const runtimeWatchMachineSchema = Schema.Struct({
     accepts_builds: Schema.Boolean,
     accepts_services: Schema.Boolean,
     build_concurrency: Schema.NullOr(Schema.Number),
-    /** The Server's `region` label; the browser needs no other label. */
     region: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
     runtime: Schema.Struct({
       daemon_version: Schema.String,
