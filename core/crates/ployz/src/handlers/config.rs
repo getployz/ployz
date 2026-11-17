@@ -14,15 +14,15 @@ use std::io::{IsTerminal as _, Read};
 
 use ployz_core::{Hint, MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
-    Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
-    NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow, TypedAddresses,
+    Change, DomainRow, DomainsQuery, DomainsView, Edit, Edited, EnvironmentQuery, EnvironmentView,
+    Instead, NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow, TypedAddresses,
 };
 use serde::Serialize;
 use serde_json::Value;
 
 use super::input::{self, InputError, Source};
 use super::shared::staged::{StagedReport, Then};
-use super::store::{environment, next, scoped, store, with_refresh_hint};
+use super::store::{Store, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 
@@ -586,6 +586,16 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
 }
 
 pub(super) fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+    edit_or_discard(root, changes, |_, _| Ok(false))
+}
+
+/// `edit`, which says `Discarded` when `discarded` finds the edit put its paths back
+/// to what is deployed, so nothing waits for a Deploy.
+pub(super) fn edit_or_discard(
+    root: &ArgMatches,
+    changes: Vec<Change>,
+    discarded: impl FnOnce(&Store<'_>, &Edited) -> Result<bool, Error>,
+) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let unchanged = unchanged(&changes);
     let edit = Edit {
@@ -597,12 +607,17 @@ pub(super) fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error>
     let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
     let edit = store.seal_edit(edit, fail)?;
     let edited = store.try_edit(&edit).map_err(fail)?;
+    let (verb, then) = if discarded(&store, &edited)? {
+        ("Discarded", Then::Diff)
+    } else {
+        ("Staged", Then::Deploy)
+    };
     let followed = StagedReport::of(
         matches,
         &edited,
-        format!("Staged {}", super::joined(&edited.staged)),
+        format!("{verb} {}", super::joined(&edited.staged)),
         unchanged,
-        Then::Deploy,
+        then,
     )
     .print(|| {
         if !edited.immediate.is_empty() {

@@ -215,7 +215,7 @@ impl SettingPath {
         }
         if path == "@environment" || path.starts_with("@environment.") {
             return Err(error::invalid(
-                "Name a Setting of the Environment: @environment.region",
+                "The Environment has one Setting: @environment.region.",
                 json!({ "example": "@environment.region" }),
             ));
         }

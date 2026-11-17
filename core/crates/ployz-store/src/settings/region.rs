@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 use ployz_core::{Hint, Region, RpcError};
 use serde_json::{Value, json};
 
-use super::SettingPath;
 use crate::error;
 use crate::scope::Environment;
 
@@ -55,10 +54,7 @@ fn parse(value: &Value) -> Result<Region, RpcError> {
         .and_then(|region| Region::parse(region).ok())
         .ok_or_else(|| {
             error::invalid(
-                format!(
-                    "{}: expected a region, the value of a Server's region label",
-                    SettingPath::REGION
-                ),
+                "A region is the value of a Server's region label: letters, digits, hyphens, underscores and dots, for example fsn.",
                 json!({ "example": "fsn" }),
             )
         })

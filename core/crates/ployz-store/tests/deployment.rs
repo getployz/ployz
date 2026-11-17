@@ -8830,6 +8830,35 @@ fn a_plan_names_the_region_each_service_it_ships_runs_in_next_and_any_server_onc
 }
 
 #[test]
+fn a_deploy_names_every_service_it_left_not_attempted_and_why() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let mut prepared = serde_json::to_value(preview(&[])).unwrap();
+    let blocked = |service: &str, message: &str| json!({"service": service, "error": {"code": "conflict", "message": message, "details": {}}});
+    prepared["blocked"] = json!([
+        blocked("worker", "no Server in fsn"),
+        blocked("api", "pg-data is on syd-1"),
+        blocked("web", "no Server in fsn"),
+    ]);
+    let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
+    store.record(&id(1), &a, prepared).unwrap();
+    store.record(&id(1), &a, succeeded(&[])).unwrap();
+
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
+        panic!("an executed outcome");
+    };
+    assert_eq!(
+        reason.as_deref(),
+        Some("web, worker: no Server in fsn; api: pg-data is on syd-1")
+    );
+}
+
+#[test]
 fn a_region_deploy_that_left_a_service_not_attempted_still_deployed_the_region() {
     let (store, who) = shop();
     let region = || {

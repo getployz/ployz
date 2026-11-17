@@ -446,18 +446,31 @@ fn failure(
     })
 }
 
-/// Why the first Service the planner blocked was never attempted.
+/// Why each Service the planner blocked was never attempted. Services blocked for
+/// the same reason share one clause.
 fn blocked(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Option<Failure> {
-    blocked.first().map(|entry| Failure {
-        reason: format!(
-            "{}: {}",
-            current_name(nodes, &entry.service),
-            entry.error.message
-        )
-        .chars()
-        .take(500)
-        .collect(),
-        cause: entry.error.cause.clone(),
+    let first = blocked.first()?;
+    let mut reasons: Vec<(&str, Vec<&str>)> = Vec::new();
+    for entry in blocked {
+        let name = current_name(nodes, &entry.service);
+        let message = entry.error.message.as_str();
+        match reasons.iter_mut().find(|(other, _)| *other == message) {
+            Some((_, names)) => names.push(name),
+            None => reasons.push((message, vec![name])),
+        }
+    }
+    let reason = reasons
+        .iter()
+        .map(|(message, names)| {
+            let mut names = names.clone();
+            names.sort_unstable();
+            format!("{}: {message}", names.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(Failure {
+        reason: reason.chars().take(500).collect(),
+        cause: first.error.cause.clone(),
         same_again: false,
     })
 }

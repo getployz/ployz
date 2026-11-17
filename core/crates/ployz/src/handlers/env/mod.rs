@@ -13,7 +13,7 @@ pub(super) mod pr;
 use clap::{ArgMatches, Command};
 use ployz_core::{Region, RpcErrorCode};
 use ployz_store::{
-    Change, CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRemoval,
+    Change, CreateEnvironment, DiffQuery, EnvironmentId, EnvironmentName, EnvironmentRemoval,
     EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment,
     SetEnvironmentProtected, SettingPath,
 };
@@ -64,9 +64,13 @@ pub(super) fn protect_command(command: Command) -> Command {
 }
 
 pub(super) fn region_command(command: Command) -> Command {
-    store::scoped(command.about(
-        "Set the region an Environment's Services run in: the value of a Server's region label",
-    ))
+    store::scoped(
+        command
+            .about(
+                "Set the region an Environment's Services run in: the value of a Server's region label",
+            )
+            .override_usage("ployz env region [OPTIONS] <REGION|--clear>"),
+    )
     .arg(
         positional("region", false)
             .required_unless_present("clear")
@@ -432,9 +436,9 @@ pub(super) fn region(root: &ArgMatches) -> Result<(), Error> {
     let change = match matches.get_one::<String>("region") {
         Some(region) => {
             let region = Region::parse(region.as_str()).map_err(|_| {
-                Error::usage(format!(
-                    "{region:?} can't be a region. Use the value of a Server's region label, for example fsn."
-                ))
+                Error::usage(
+                    "A region is the value of a Server's region label: letters, digits, hyphens, underscores and dots, for example fsn.",
+                )
             })?;
             Change::Set {
                 path,
@@ -443,7 +447,15 @@ pub(super) fn region(root: &ArgMatches) -> Result<(), Error> {
         }
         None => Change::Unset { path },
     };
-    super::config::edit(root, vec![change])
+    super::config::edit_or_discard(root, vec![change], |store, edited| {
+        if edited.staged.is_empty() {
+            return Ok(false);
+        }
+        let query = DiffQuery {
+            environment: store::environment(matches)?,
+        };
+        Ok(store.read(&query)?.region.is_none())
+    })
 }
 
 pub(super) fn setup(root: &ArgMatches) -> Result<(), Error> {
