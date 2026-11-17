@@ -213,6 +213,11 @@ queries! {
         => crate::branch::branch_plan(tx, who, q);
     BuildOrder(crate::BuildOrderQuery) -> crate::BuildOrderView
         => crate::builders::build_order(tx, who);
+    /// The Organization's regions and the names they show as.
+    Regions(crate::RegionsQuery) -> crate::RegionsView => crate::region::view(tx, who, q);
+    /// The key a new region with this name takes, or the region that already has it.
+    NewRegion(crate::NewRegionQuery) -> crate::NewRegionView
+        => crate::region::new_view(tx, who, q);
     /// What syncing one Environment's changes into another of its Project would stage.
     Sync(crate::SyncQuery) -> crate::SyncView => crate::branch::sync_view(tx, who, q);
     /// A Project's Environments.

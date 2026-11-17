@@ -169,6 +169,11 @@ fn server(
         // The newest release on a channel is Cloud's to know, not the Server's.
         upgrade: None,
         draining: !machine.accepts_services,
+        region: machine
+            .labels
+            .iter()
+            .find(|(key, _)| key.as_str() == ployz_store::REGION_LABEL)
+            .map(|(_, value)| value.as_str().to_owned()),
         disk: match observed.storage {
             Some(MachineStorageObservation::Pool {
                 size_bytes,

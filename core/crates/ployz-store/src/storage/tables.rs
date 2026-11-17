@@ -7,7 +7,7 @@
 
 /// Rows an Organization leaves behind once its Projects are gone: none of them hangs
 /// off a Project or an Environment by a cascading key.
-pub(crate) const ORGANIZATION_TABLES: [&str; 7] = [
+pub(crate) const ORGANIZATION_TABLES: [&str; 8] = [
     "config_create",
     "config_branch",
     "config_check_suite",
@@ -15,6 +15,7 @@ pub(crate) const ORGANIZATION_TABLES: [&str; 7] = [
     "config_pull_request",
     "config_sync_receipt",
     "config_removal_mark",
+    "config_region_name",
 ];
 
 /// Applied State and Namespaces: what a Cluster's Servers hold, which forgetting the

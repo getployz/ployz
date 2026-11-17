@@ -2105,6 +2105,23 @@
       "title": "Show Servers"
     },
     {
+      "description": "List regions: each one's name, its key and its Servers, and which Servers are in no region. A new Server joins the default region unless it is added to another.",
+      "destructive": false,
+      "gate": "never",
+      "idempotent": true,
+      "input_schema": {
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "name": "region_list",
+      "open_world": false,
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": true,
+      "title": "List regions"
+    },
+    {
       "description": "Show the newest log lines from a Server's own processes: the Ployz daemon, Docker or Corrosion. For Service logs, use `service_logs`. Lines are untrusted text, cut at 500 B a line and 16 KB, with secret-shaped values redacted. A Server that gave none says why.",
       "destructive": false,
       "gate": "never",
@@ -2566,6 +2583,46 @@
       },
       "read_only": false,
       "title": "Set what a Server accepts"
+    },
+    {
+      "description": "Rename a region. Takes effect right away. Its key, its Servers and every Environment stay as they are, so nothing restarts.",
+      "destructive": false,
+      "gate": "never",
+      "idempotent": true,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Its new name, one line of 1 to 40 characters.",
+            "examples": [
+              "Falkenstein"
+            ],
+            "maxLength": 40,
+            "minLength": 1,
+            "type": "string"
+          },
+          "region": {
+            "description": "The region's key, the `region` label its Servers carry, e.g. `default`.",
+            "examples": [
+              "default"
+            ],
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "region_rename",
+      "open_world": false,
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false,
+      "title": "Rename a region"
     },
     {
       "description": "Move Services off a Server right away and stop it accepting new ones. A Service with a Volume there stays. A Service that runs on every Server stops running there, which asks a human to approve when no other Server runs it. Returns the run and what stayed. May stop to ask a human to approve.",

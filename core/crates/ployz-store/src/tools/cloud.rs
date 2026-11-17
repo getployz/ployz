@@ -37,6 +37,10 @@ pub struct ServerReport {
     pub upgrade: Option<String>,
     pub draining: bool,
     pub disk: Option<Disk>,
+    /// Its `region` label's value, as the Server holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<String>,
     /// Every Namespace it runs containers or holds volumes for.
     pub namespaces: Vec<Namespace>,
 }

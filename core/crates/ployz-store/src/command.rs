@@ -245,10 +245,10 @@ macro_rules! commands {
             pub fn claims() -> impl Iterator<Item = (String, Claim)> {
                 #[derive(Serialize)]
                 #[serde(rename_all = "snake_case")]
-                enum Name {
+                enum Sent {
                     $($variant,)*
                 }
-                [$((Name::$variant, claim!($claim $($reason)?)),)*]
+                [$((Sent::$variant, claim!($claim $($reason)?)),)*]
                     .into_iter()
                     .map(|(name, claim)| match serde_json::to_value(name) {
                         Ok(Value::String(name)) => (name, claim),
@@ -555,6 +555,11 @@ commands! {
         needs OrgSettings
         agent none "No tool sets the build order."
         => crate::builders::set_build_order(tx, who, c);
+    /// Give a region a name. Nothing that places reads it, so nothing restarts.
+    NameRegion(crate::NameRegion) -> RegionNamed(crate::Region)
+        needs ServersOperate
+        agent [RegionRename]
+        => crate::region::name(tx, who, c);
     /// Make an Environment its Project's Default Environment.
     SetDefaultEnvironment(crate::SetDefaultEnvironment)
         -> DefaultEnvironment(crate::EnvironmentsView)
@@ -774,6 +779,7 @@ impl Written {
             | Self::Automated(_)
             | Self::Branch(_)
             | Self::BuildOrder(_)
+            | Self::RegionNamed(_)
             | Self::DefaultEnvironment(_)
             | Self::BranchSetup(_)
             | Self::Protected(_)
@@ -841,6 +847,8 @@ pub enum Written {
     Branch(crate::Branched),
     /// The Build Order was set; it applies to the next build.
     BuildOrder(crate::BuildOrderView),
+    /// A region was given a name.
+    RegionNamed(crate::Region),
     /// Changes synced into another Environment.
     Synced(crate::Synced),
     Undone(crate::Undone),
