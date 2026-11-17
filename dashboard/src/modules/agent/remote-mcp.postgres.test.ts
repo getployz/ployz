@@ -9,6 +9,7 @@ import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { disconnectAgent, listConnectedAgents, revokeAccountSession } from "#/modules/account/account.server";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
+import { CATALOG } from "#/modules/agent/agent-tools";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
@@ -353,13 +354,29 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    expect(agent.client.getServerVersion()).toMatchObject({
+      name: "ployz",
+      title: CATALOG.title,
+      description: CATALOG.description,
+      websiteUrl: origin,
+      icons: [{ src: `${origin}/assets/logo-mark.svg`, mimeType: "image/svg+xml", sizes: ["any"] }],
+    });
     const { tools } = yield* Effect.promise(() => agent.client.listTools());
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["environment_show", "service_add", "deploy"]));
     expect(tools.find((tool) => tool.name === "deploy")?.inputSchema.properties).toHaveProperty("approval");
     const hints = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
     expect(hints("deploy")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(hints("service_add")).toMatchObject({ readOnlyHint: false, destructiveHint: false });
-    expect(hints("environment_show")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    expect(hints("environment_show")).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    expect(hints("org_member_role")).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    expect(hints("uptime_check")).toMatchObject({ readOnlyHint: true, idempotentHint: true, openWorldHint: true });
+    // A host shows a title and decides what to confirm from the hints, so no tool leaves one for it to guess.
+    const unlabelled = tools.filter((tool) => {
+      const given = [tool.annotations?.readOnlyHint, tool.annotations?.destructiveHint, tool.annotations?.idempotentHint, tool.annotations?.openWorldHint];
+      return tool.title === undefined || tool.title === "" || given.some((hint) => hint === undefined);
+    });
+    expect(unlabelled.map((tool) => tool.name)).toEqual([]);
+    for (const tool of tools) expect(tool.outputSchema, tool.name).toMatchObject({ type: "object", required: ["ok"] });
 
     const shown = yield* agent.call("environment_show", SHOP);
     expect(shown).toMatchObject({ isError: false, body: { ok: true } });
@@ -468,9 +485,12 @@ it.live("a remote agent reaches a restart through one Approval card or a proposa
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
     const { tools } = yield* Effect.promise(() => agent.client.listTools());
     for (const name of ["service_restart", "service_stop", "service_start"]) {
-      expect(tools.find((tool) => tool.name === name)?.description).toMatch(/a person approves it in the dashboard/i);
       expect(tools.find((tool) => tool.name === name)?.description).toContain("stage them in a proposal");
     }
+    for (const name of ["service_restart", "service_stop"]) {
+      expect(tools.find((tool) => tool.name === name)?.description).toContain("May stop to ask a human to approve.");
+    }
+    expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("a human approves it in the dashboard");
     expect(tools.find((tool) => tool.name === "service_start")?.description).toContain("It runs without approval");
     const answers: Array<unknown> = [];
     const call = (name: string, args: JsonObject) => agent.call(name, args).pipe(Effect.tap((answer) => Effect.sync(() => answers.push(answer))));
@@ -484,7 +504,7 @@ it.live("a remote agent reaches a restart through one Approval card or a proposa
     expect(yield* call("service_stop", { ...SHOP, service: "web", proposal })).toMatchObject({ isError: false, body: { ok: true } });
     const presented = yield* call("proposal_present", { proposal });
     expect(presented).toMatchObject({ isError: false, body: { ok: true, value: { proposal_id: proposal, url: expect.stringMatching(/^http:\/\/localhost:3000\/cloud\/shop\?chat=/) } } });
-    expect(JSON.stringify(presented.body)).toContain("A person must approve it");
+    expect(JSON.stringify(presented.body)).toContain("A human must approve it");
     expect(yield* call("proposal_status", { proposal })).toMatchObject({ isError: false, body: { ok: true, value: { id: proposal, status: "presented" } } });
 
     expect(JSON.stringify(answers)).not.toMatch(SECRET_KEY);

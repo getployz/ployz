@@ -13,18 +13,19 @@ use crate::{CreateProject, EnvironmentId, ProjectId, ProjectName, RenameProject}
 
 tool_input! {
     pub(crate) struct ProjectCreate {
-        /// The new Project's name, unique in the Organization.
+        /// Name for the new Project, unique in the Organization.
         #[schemars(with = "String", pattern(NODE_NAME), example = &"docs")]
         name: ProjectName,
-        @key["Any id you choose. A call that repeats a key gets the Project the first call made, not a second one."],
+        @key["A key you choose. Send it again and you get back the Project it created, not a failure for a taken name."],
     }
 }
 
 impl Tool for ProjectCreate {
     const NAME: &'static str = "project_create";
-    const DESCRIPTION: &'static str =
-        "Create a Project with its Default Environment, production. It starts with no Services.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Create a Project";
+    const DESCRIPTION: &'static str = "Create a Project. It comes with a Default Environment, production, which starts Protected and empty. Fails if the name is taken.";
+    // A repeat with the same key replays the create; one without is refused as a taken name.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "name": "docs", "request_key": "q8Lz3fWn2KcT" })
@@ -53,18 +54,20 @@ impl Tool for ProjectCreate {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectRename {
+    /// The Project's current name.
     #[schemars(with = "String", pattern(NODE_NAME))]
     project: ProjectName,
-    /// New name, unique in the Organization.
+    /// Its new name, unique in the Organization.
     #[schemars(with = "String", pattern(NODE_NAME))]
     to: ProjectName,
 }
 
 impl Tool for ProjectRename {
     const NAME: &'static str = "project_rename";
+    const TITLE: &'static str = "Rename a Project";
     const DESCRIPTION: &'static str =
-        "Rename a Project. Applies at once; its Environments keep running.";
-    const EFFECT: Effect = Effect::Change;
+        "Rename a Project. Takes effect right away, and its Environments keep running.";
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "project": "docs", "to": "handbook" })

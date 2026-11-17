@@ -68,18 +68,18 @@ fn volume(volume: &VolumeSummary) -> Value {
 
 tool_input! {
     pub(crate) struct VolumeAdd {
-        /// New Volume name, unique in the Environment.
+        /// Name for the new Volume, e.g. `data`. Must be unique in the Environment.
         #[schemars(with = "String", pattern(NODE_NAME))]
         name: VolumeName,
-        /// Storage limit. Default: 5GB.
+        /// Storage limit, e.g. `10GB` or `1TiB` (default 5 GB).
         #[serde(default)]
         #[schemars(pattern(SIZE), example = &"10GiB")]
         size: Option<String>,
-        /// Service to mount it into, with path.
+        /// Service to mount the Volume into, e.g. `db`. Needs path.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         service: Option<ServiceName>,
-        /// Absolute path in the Service's containers, with service.
+        /// Where it mounts in that Service's containers, e.g. `/data`. Needs service.
         #[serde(default)]
         #[schemars(pattern("^/"))]
         path: Option<String>,
@@ -91,8 +91,10 @@ tool_input! {
 impl Tool for VolumeAdd {
     const NAME: &'static str = "volume_add";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Create a Volume, persistent storage, and mount it into a Service at a path. Staged until the next Deploy.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Create a Volume";
+    const DESCRIPTION: &'static str = "Create a Volume: persistent storage with a size limit, optionally mounted into one Service at a path. It is staged until the next deploy. Fails if the name is taken.";
+    // The same input again finds the name taken and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "name": "data", "size": "10GiB", "service": "db", "path": "/var/lib/postgresql/data" })
@@ -145,17 +147,18 @@ impl Tool for VolumeAdd {
 
 tool_input! {
     pub(crate) struct VolumeUpdate {
+        /// The Volume's current name, e.g. `data`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         volume: VolumeName,
-        /// New storage limit. Only before its first Deploy; a deployed Volume resizes through a Volume resize on Ployz Cloud.
+        /// New storage limit, e.g. `20GB`. Fails once a Deployment has fixed the Volume's storage.
         #[serde(default)]
         #[schemars(pattern(SIZE), example = &"10GiB")]
         size: Option<String>,
-        /// New name.
+        /// New name, e.g. `pgdata`. Must be unique in the Environment. Its mounts stay.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         to: Option<VolumeName>,
-        /// true lets more than one container write it. Applies at once.
+        /// Set true to let several containers write to the Volume. Applies right away, without a deploy.
         #[serde(default)]
         shared_writes: Option<bool>,
         @revision,
@@ -166,8 +169,11 @@ tool_input! {
 impl Tool for VolumeUpdate {
     const NAME: &'static str = "volume_update";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Change one thing about a Volume per call: its size, its name, or whether several containers may write it.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Change a Volume";
+    const DESCRIPTION: &'static str = "Change one thing about a Volume per call: its size limit, its name, or whether several containers may write to it. A new size or name is staged until the next deploy.";
+    // A size or shared writes set again changes nothing; a rename sent again
+    // finds the new name taken and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "volume": "data", "shared_writes": true })
@@ -222,6 +228,7 @@ impl Tool for VolumeUpdate {
 
 tool_input! {
     pub(crate) struct VolumeRemove {
+        /// The Volume's name, e.g. `data`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         volume: VolumeName,
         @revision,
@@ -232,8 +239,11 @@ tool_input! {
 impl Tool for VolumeRemove {
     const NAME: &'static str = "volume_remove";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next deploy, which asks a human to approve.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Remove a Volume";
+    const DESCRIPTION: &'static str = "Remove a Volume and its mounts in every Service. It is staged, so this call deletes no data. If the Volume is deployed, the next deploy deletes its data and asks a human to approve. Returns whether approval will be asked.";
+    // A Change, not a Remove: the call only stages, and the Deploy that follows
+    // deletes the data. Sent again, it finds no Volume by that name and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "volume": "data" })

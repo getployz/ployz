@@ -18,7 +18,7 @@ use ployz_store::{Actor, ConfigStore, OperationVerb, OrganizationId};
 use reqwest::Method;
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, Implementation,
+    ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, Icon, Implementation,
     JsonObject, ListToolsResult, PaginatedRequestParams, RequestId, ServerCapabilities,
     ServerConfig, StringSchema, Tool, ToolAnnotations,
 };
@@ -760,11 +760,15 @@ fn call_key(session: &str, id: &RequestId, _tool: &str) -> String {
 fn tool(def: tools::ToolDef) -> Tool {
     let mut input = object(def.input_schema);
     with_approval(&mut input, def.gate != Gate::Never);
-    let mut tool = Tool::new(def.name, def.description, Arc::new(input)).annotate(
-        ToolAnnotations::new()
-            .read_only(def.read_only)
-            .destructive(def.destructive),
-    );
+    let mut tool = Tool::new(def.name, def.description, Arc::new(input))
+        .with_title(def.title)
+        .annotate(
+            ToolAnnotations::new()
+                .read_only(def.read_only)
+                .destructive(def.destructive)
+                .idempotent(def.idempotent)
+                .open_world(def.open_world),
+        );
     tool.output_schema = Some(Arc::new(object(def.output_schema)));
     tool
 }
@@ -774,12 +778,25 @@ fn tool(def: tools::ToolDef) -> Tool {
 fn published_tool(command: &PublishedCommand) -> Tool {
     let mut input = object(command.input.clone());
     with_approval(&mut input, command.asks());
-    let mut tool = Tool::new(command.name.clone(), command.about.clone(), Arc::new(input))
-        .annotate(
-            ToolAnnotations::new()
-                .read_only(command.effect == Effect::Read)
-                .destructive(command.removes()),
-        );
+    // Cloud's `about` is the CLI's help; an agent also reads whether the call can wait on a human,
+    // in the words the catalog's own gated tools end with.
+    let about = if command.asks() {
+        format!(
+            "{}. {}",
+            command.about.trim_end_matches('.'),
+            Gate::Cloud.sentence()
+        )
+    } else {
+        command.about.clone()
+    };
+    let mut tool = Tool::new(command.name.clone(), about, Arc::new(input)).annotate(
+        ToolAnnotations::new()
+            .read_only(command.effect == Effect::Read)
+            .destructive(command.removes())
+            .idempotent(command.idempotent)
+            .open_world(command.open_world),
+    );
+    tool.title.clone_from(&command.title);
     tool.output_schema = Some(Arc::new(object(command.output.clone())));
     tool
 }
@@ -792,6 +809,29 @@ fn object(schema: Value) -> JsonObject {
     }
 }
 
+/// The server as a host's server list or a directory names it to people.
+fn identity() -> Implementation {
+    Implementation::new("ployz", env!("CARGO_PKG_VERSION"))
+        .with_title(tools::TITLE)
+        .with_description(tools::DESCRIPTION)
+        .with_website_url("https://ployz.dev")
+        .with_icons(vec![
+            Icon::new("https://ployz.dev/assets/logo-mark.svg")
+                .with_mime_type("image/svg+xml")
+                .with_sizes(vec!["any".to_owned()]),
+        ])
+}
+
+/// The registry's guidance, then how long a call may run. Claude Code cuts a server's
+/// instructions past 2 KB.
+fn instructions(deadline: Duration) -> String {
+    format!(
+        "{INSTRUCTIONS} A call still running after {} is stopped; its error names the tool \
+         that shows what it left running.",
+        span(deadline)
+    )
+}
+
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
@@ -800,12 +840,8 @@ impl ServerHandler for Server {
                 .enable_tool_list_changed()
                 .build(),
         )
-        .with_server_info(Implementation::new("ployz", env!("CARGO_PKG_VERSION")))
-        .with_instructions(format!(
-            "{INSTRUCTIONS} A call still running after {} is stopped; its error names the \
-                 tool that shows what it left running.",
-            span(self.deadline)
-        ))
+        .with_server_info(identity())
+        .with_instructions(instructions(self.deadline))
     }
 
     async fn list_tools(

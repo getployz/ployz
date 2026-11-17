@@ -6,7 +6,7 @@ import type { ApprovalView } from "#/modules/approvals/approvals.server";
 import { defineCommand, type Ran } from "#/modules/commands/command.server";
 import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
 
-const ApprovalId = Schema.String.annotate({ description: "The approval id" });
+const ApprovalId = Schema.String.annotate({ description: "The Approval's ID, from a list of Approvals or from the call that had to ask" });
 
 const Waiting = Schema.Struct({
   id: Schema.String,
@@ -51,10 +51,12 @@ export const orgApprovalLs = defineCommand({
   name: "org_approval_ls",
   requires: "approvals:answer",
   path: ["org", "approval", "ls"],
-  about: "List the Organization's pending approvals",
+  about: "List the Approvals waiting on a human in the Organization. Each shows its ID, what it would do and to what, and when it was asked",
+  title: "List pending approvals",
   examples: ["ployz org approval ls"],
   kind: "read",
   agents: true,
+  openWorld: false,
   typed: null,
   positional: [],
   input: Schema.Struct({}),
@@ -69,10 +71,12 @@ export const orgApprovalShow = defineCommand({
   name: "org_approval_show",
   requires: "approvals:answer",
   path: ["org", "approval", "show"],
-  about: "Show one approval: what the plan destroys and how it was answered",
+  about: "Show one Approval: what it would do and to what, what it destroys, whether it is pending, approved, denied or superseded, and the reason if it was denied",
+  title: "Show an approval",
   examples: ["ployz org approval show 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"],
   kind: "read",
   agents: true,
+  openWorld: false,
   typed: null,
   positional: ["id"],
   input: Schema.Struct({ id: ApprovalId }),
@@ -91,12 +95,16 @@ export const orgApprovalApprove = defineCommand({
   name: "org_approval_approve",
   requires: "approvals:answer",
   path: ["org", "approval", "approve"],
-  about: "Approve a pending approval so the command waiting on it goes ahead",
+  about: "Approve a pending Approval. The command waiting on it then goes ahead",
+  title: "Approve a pending approval",
   examples: ["ployz org approval approve 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"],
   kind: "write",
   removes: false,
+  // Approving again answers the approved row; only the decision that approved it runs what waited.
+  idempotent: true,
   gate: "never",
   agents: false,
+  openWorld: false,
   typed: "organization",
   positional: ["id"],
   input: Schema.Struct({ id: ApprovalId }),
@@ -113,17 +121,21 @@ export const orgApprovalDeny = defineCommand({
   name: "org_approval_deny",
   requires: "approvals:answer",
   path: ["org", "approval", "deny"],
-  about: "Deny a pending approval; the agent or command waiting on it hears the reason",
+  about: "Deny a pending Approval. The agent or command waiting on it is told the reason",
+  title: "Deny a pending approval",
   examples: ["ployz org approval deny 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e --reason \"not during the demo\""],
   kind: "write",
   removes: false,
+  // Denying again answers the denied row and keeps its first reason.
+  idempotent: true,
   gate: "never",
   agents: false,
+  openWorld: false,
   typed: null,
   positional: ["id"],
   input: Schema.Struct({
     id: ApprovalId,
-    reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1024)).annotate({ description: "Why not, passed back to whoever asked" })),
+    reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1024)).annotate({ description: "Why you are denying it, e.g. not during the demo. Whoever asked sees it" })),
   }),
   output: Answered,
   render: "message",

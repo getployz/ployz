@@ -12,9 +12,9 @@ import { readServiceUptime, requestUptimeProbe } from "./uptime-status.server";
 const Name = (description: string) => Schema.NonEmptyString.annotate({ description });
 
 const ServiceScope = {
-  service: Name("The Service, by name"),
-  project: Schema.optionalKey(Name("Its Project, by name. The default Project when left out")),
-  environment: Schema.optionalKey(Name("Its Environment, by name. The Project's default Environment when left out")),
+  service: Name("The Service's name, e.g. web. Fails if it has no public address, since nothing checks it"),
+  project: Schema.optionalKey(Name("The Service's Project, by name, e.g. shop. Leave it out when the Organization has only one Project")),
+  environment: Schema.optionalKey(Name("The Service's Environment, by name, e.g. staging. Defaults to the Project's Default Environment")),
 };
 type ServiceScope = { readonly service: string; readonly project?: string; readonly environment?: string };
 
@@ -127,16 +127,18 @@ export const uptimeShow = defineCommand({
   name: "uptime_show",
   requires: "project:read",
   path: ["uptime", "show"],
-  about: "Show a Service's uptime: whether visitors reach it, what each region's check got back, and its incidents",
+  about: "Show a Service's uptime over a time range: whether visitors reach it now, its uptime percentage, each region's latest result and last error, and its incidents with what each region saw",
+  title: "Show a Service's uptime",
   examples: ["ployz uptime show web", "ployz uptime show web --project shop --env staging --from 6h"],
   kind: "read",
   agents: true,
+  openWorld: false,
   typed: null,
   positional: ["service"],
   input: Schema.Struct({
     ...ServiceScope,
-    from: Edge("Where the range starts: an offset back from now such as 15m, 6h or 7d, or a UTC instant. 1h when left out"),
-    to: Edge("Where the range ends: now, an offset back from now, or a UTC instant. now when left out"),
+    from: Edge("Start of the range: how far back from now, e.g. 15m, 6h or 7d, or a UTC instant, e.g. 2026-10-11T14:00:00.000Z (default 1h)"),
+    to: Edge("End of the range: now, or an offset or UTC instant like from (default now)"),
   }),
   output: Shown,
   render: "record",
@@ -176,10 +178,13 @@ export const uptimeCheck = defineCommand({
   name: "uptime_check",
   requires: "project:read",
   path: ["uptime", "check"],
-  about: "Check a Service's public address now, from every region, and show what each got back. Changes no setting",
+  about: "Check a Service's public address right now from every region. Waits up to about ten seconds, then shows its URL, its status and each region's verdict, HTTP answer and response time. If answered is false, results are still coming in. Changes no setting",
+  title: "Check a Service's uptime now",
   examples: ["ployz uptime check web", "ployz uptime check web --project shop --env staging"],
   kind: "read",
   agents: true,
+  // `requestUptimeProbe` has the uptime checker request the Service's public URL from each region.
+  openWorld: true,
   typed: null,
   positional: ["service"],
   input: Schema.Struct(ServiceScope),

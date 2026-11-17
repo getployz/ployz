@@ -56,7 +56,7 @@ fn the_tool_def_binding_is_what_a_model_client_reads() {
     use ts_rs::TS;
     assert_eq!(
         super::ToolDef::decl(&ts_rs::Config::default()),
-        "type ToolDef = { name: string, description: string, input_schema: JsonValue, output_schema: JsonValue, read_only: boolean, destructive: boolean, gate: Gate, };"
+        "type ToolDef = { name: string, title: string, description: string, input_schema: JsonValue, output_schema: JsonValue, read_only: boolean, destructive: boolean, idempotent: boolean, open_world: boolean, gate: Gate, };"
     );
 }
 

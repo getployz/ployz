@@ -22,6 +22,7 @@ use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 
 tool_input! {
     pub(crate) struct ServiceInspect {
+        /// The Service to show.
         #[schemars(with = "String", pattern(NODE_NAME))]
         service: ServiceName,
         @place(named),
@@ -31,7 +32,8 @@ tool_input! {
 impl Tool for ServiceInspect {
     const NAME: &'static str = "service_inspect";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str = "Everything about one Service: Settings with values and defaults, variables, mounts, Configs, domains with status, and what is Staged.";
+    const TITLE: &'static str = "Show one Service";
+    const DESCRIPTION: &'static str = "Show one Service as saved: its source, Private DNS name, Settings, variables, mounts, public domains with any DNS records still to create, what is staged for the next deploy, and the Environment's revision. Secret values are never shown. To see if it is running, use `service_status`.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -99,18 +101,18 @@ fn own_path(service: &str, path: &str) -> String {
 
 tool_input! {
     pub(crate) struct ServiceAdd {
-        /// New Service name, unique in the Environment.
+        /// Name for the new Service, unique in the Environment. Its Private DNS name starts out the same.
         #[schemars(with = "String", pattern(NODE_NAME), example = &"whoami")]
         name: ServiceName,
-        /// Container image to run. Give image or repository.
+        /// Image to run, e.g. `redis` or `ghcr.io/org/app:latest`. Give this or repository, not both.
         #[serde(default)]
         #[schemars(length(min = 1), example = &"traefik/whoami")]
         image: Option<String>,
-        /// GitHub repository owner/name to build. Give image or repository.
+        /// GitHub repository to build, e.g. `acme/api`. The Organization must be able to read it.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(REPOSITORY), example = &"acme/api")]
         repository: Option<RepositoryName>,
-        /// Branch to build, only with repository. Default: the repository's default branch.
+        /// Branch to build, with repository only (default: the repository's default branch).
         #[serde(default)]
         #[schemars(with = "Option<String>", length(min = 1))]
         branch: Option<BranchName>,
@@ -122,8 +124,13 @@ tool_input! {
 impl Tool for ServiceAdd {
     const NAME: &'static str = "service_add";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str = "Create a Service. Give image to run a container image, or repository to build a GitHub repository. Staged: it runs after the next Deploy.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Create a Service";
+    const DESCRIPTION: &'static str = "Create a Service from a container image or a GitHub repository. Nothing runs yet: it is staged and starts on the next deploy. Fails if the name is taken.";
+    // The same input again finds the name taken and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
+    // On Cloud, a repository is looked up on GitHub, and a branch checked there
+    // (dashboard/src/modules/config-store/git-evidence.server.ts, gatherGitEvidence).
+    const OPEN_WORLD: bool = true;
 
     fn example() -> Value {
         json!({ "name": "whoami", "image": "traefik/whoami" })
@@ -196,6 +203,7 @@ impl Tool for ServiceAdd {
 
 tool_input! {
     pub(crate) struct ServiceUpdate {
+        /// The Service to change.
         #[schemars(with = "String", pattern(NODE_NAME), example = &"web")]
         service: ServiceName,
         #[serde(default)]
@@ -207,7 +215,7 @@ tool_input! {
         #[serde(default)]
         #[schemars(schema_with = "rename_schema")]
         rename_env: Map<String, Value>,
-        /// With rename_env, also switch the variables that reference a renamed one to its new name.
+        /// With rename_env, also updates the variables that reference a renamed one. Without it, renaming a referenced variable fails.
         #[serde(default)]
         update_references: bool,
         #[serde(default)]
@@ -225,13 +233,76 @@ fn set_schema(_: &mut SchemaGenerator) -> Schema {
         object.remove("title");
         object.insert(
             "description".into(),
-            "A Service's Settings, in the shape a Service's inspected values take.".into(),
+            "Settings to change, in the shape they are shown in, e.g. `{\"replicas\": 2}`. Anything left out stays as it is.".into(),
         );
         if let Some(Value::Object(properties)) = object.get_mut("properties") {
             properties.remove("registryCredential");
+            for (setting, texts) in NESTED {
+                if let Some(nested) = properties.get_mut(*setting) {
+                    describe(nested, texts);
+                }
+            }
         }
     }
     Schema::try_from(set).unwrap_or_default()
+}
+
+/// What the fields inside a Setting's value mean, where the settings catalog
+/// describes only the Setting as a whole.
+const NESTED: &[(&str, &[(&str, &str)])] = &[
+    (
+        "env",
+        &[
+            (
+                "secret",
+                "`true` keeps the secret the variable already holds. Fails if it holds none.",
+            ),
+            ("value", "The value. Leave it out to keep the current one."),
+            (
+                "exported",
+                "`true` marks a variable other Services are meant to reference.",
+            ),
+        ],
+    ),
+    (
+        "healthcheck",
+        &[
+            ("path", "HTTP path the check requests, e.g. `/health`."),
+            (
+                "command",
+                "Shell command the check runs, e.g. `pg_isready`.",
+            ),
+            ("timeoutSeconds", "How many seconds the check may take."),
+        ],
+    ),
+    (
+        "template",
+        &[
+            ("id", "The Service Template's ID, e.g. `postgres`."),
+            ("version", "The version of it the Service came from."),
+        ],
+    ),
+];
+
+/// Give each property of `schema` that `texts` names its description, at any
+/// depth, keeping one it already has.
+fn describe(schema: &mut Value, texts: &[(&str, &str)]) {
+    match schema {
+        Value::Object(object) => {
+            if let Some(Value::Object(properties)) = object.get_mut("properties") {
+                for (name, text) in texts {
+                    if let Some(Value::Object(property)) = properties.get_mut(*name) {
+                        property
+                            .entry("description")
+                            .or_insert_with(|| Value::from(*text));
+                    }
+                }
+            }
+            object.values_mut().for_each(|value| describe(value, texts));
+        }
+        Value::Array(items) => items.iter_mut().for_each(|item| describe(item, texts)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
 }
 
 fn unset_schema(_: &mut SchemaGenerator) -> Schema {
@@ -258,7 +329,7 @@ fn unset_schema(_: &mut SchemaGenerator) -> Schema {
     Schema::try_from(json!({
         "type": "array",
         "uniqueItems": true,
-        "description": "Settings to return to default, variables to delete (env.KEY), mounts to remove (mounts.VOLUME, configs.CONFIG).",
+        "description": "Settings to reset to default, variables to delete (`env.KEY`) and mounts to remove (`mounts.VOLUME`, `configs.CONFIG`).",
         "items": { "anyOf": [
             { "type": "string", "enum": settings },
             { "type": "string", "pattern": format!("^env\\.{variable}") },
@@ -273,8 +344,12 @@ fn rename_schema(_: &mut SchemaGenerator) -> Schema {
     Schema::try_from(json!({
         "type": "object",
         "additionalProperties": false,
-        "description": "Variables to rename, old name to new name. The value moves with it; a secret stays sealed.",
-        "patternProperties": { VARIABLE_KEY: { "type": "string", "pattern": VARIABLE_KEY } },
+        "description": "Variables to rename, as old name to new name. The value moves with the name, and a secret stays sealed.",
+        "patternProperties": { VARIABLE_KEY: {
+            "type": "string",
+            "pattern": VARIABLE_KEY,
+            "description": "The variable's new name.",
+        } },
         "examples": [{ "API_URL": "PUBLIC_API_URL" }],
     }))
     .unwrap_or_default()
@@ -284,7 +359,7 @@ fn generate_secret_schema(_: &mut SchemaGenerator) -> Schema {
     let variable = VARIABLE_KEY.trim_start_matches('^');
     Schema::try_from(json!({
         "type": "array",
-        "description": "Variables to give a new random sealed secret, as env.KEY. No one sees its value.",
+        "description": "Variables to fill with a random sealed secret, e.g. `env.SESSION_SECRET`. Nobody sees the value. One that already holds a sealed secret keeps it.",
         "items": { "type": "string", "pattern": format!("^env\\.{variable}") },
     }))
     .unwrap_or_default()
@@ -293,8 +368,14 @@ fn generate_secret_schema(_: &mut SchemaGenerator) -> Schema {
 impl Tool for ServiceUpdate {
     const NAME: &'static str = "service_update";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. A secret's value never passes through here; generate_secret makes a random one.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Change a Service's Settings";
+    const DESCRIPTION: &'static str = "Change a Service's Settings, variables and mounts. One call applies as a whole or not at all. Most changes are staged until the next deploy; template, autoDeploy, waitForCi, watchPaths and preferredBuilder apply right away and come back under `immediate`. A secret's value can't be sent here, but generate_secret makes a random one. For domains, use `domain_add`.";
+    // Values set again change nothing, a generated secret is kept once sealed,
+    // and a variable rename already done is left as it is.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
+    // On Cloud, setting repository or branch looks them up on GitHub
+    // (dashboard/src/modules/config-store/git-evidence.server.ts, gatherGitEvidence).
+    const OPEN_WORLD: bool = true;
 
     fn example() -> Value {
         json!({ "service": "web", "set": { "env": { "LOG_LEVEL": "info" } }, "unset": ["env.OLD_FLAG"] })
@@ -515,9 +596,10 @@ pub(crate) fn drop_nulls(mut value: Value) -> Value {
 
 tool_input! {
     pub(crate) struct ServiceRename {
+        /// The Service's current name.
         #[schemars(with = "String", pattern(NODE_NAME))]
         service: ServiceName,
-        /// New name.
+        /// Its new name, unique in the Environment.
         #[schemars(with = "String", pattern(NODE_NAME))]
         to: ServiceName,
         @revision,
@@ -528,9 +610,10 @@ tool_input! {
 impl Tool for ServiceRename {
     const NAME: &'static str = "service_rename";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str =
-        "Rename a Service. Private DNS names and references to it follow. Staged.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Rename a Service";
+    const DESCRIPTION: &'static str = "Rename a Service, staged until the next deploy. References to it follow the new name, but its Private DNS name stays the same. Fails if the name is taken.";
+    // Once renamed, the same call finds no Service by the old name and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "service": "web", "to": "frontend" })
@@ -555,6 +638,7 @@ impl Tool for ServiceRename {
 
 tool_input! {
     pub(crate) struct ServiceRemove {
+        /// The Service to remove.
         #[schemars(with = "String", pattern(NODE_NAME))]
         service: ServiceName,
         @revision,
@@ -565,8 +649,10 @@ tool_input! {
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str = "Remove a Service, staged until a deploy a human approves. `broken`: references deploys skip.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Remove a Service";
+    const DESCRIPTION: &'static str = "Remove a Service, staged until the next deploy. That deploy asks a human to approve unless the Service has never deployed. Returns whether approval will be asked and the references this breaks; the deploy leaves out the variables that hold them.";
+    // Once removed, the same call finds no Service by that name and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "service": "web" })

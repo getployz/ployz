@@ -11,7 +11,7 @@ const use = OPERATIONS["private_access.use"];
 const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | OrganizationRuntime> => effect;
 
 const To = Schema.Literals(PRIVATE_ACCESS_WANTS).annotate({
-  description: "on or off. On waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud.",
+  description: "on or off. Turning it on waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud.",
 });
 
 /** A running router from a daemon that predates the probe may still be one Tailscale refused, so only the approver's Connect, in Ployz Cloud, says it took. */
@@ -23,15 +23,19 @@ export const privateAccessUse = defineCommand({
   name: "private_access_use",
   requires: use.requires,
   path: ["cluster", "private-access"],
-  about: "Turn Private Access over Tailscale on or off. Never pass an auth key; the approver pastes it.",
+  about: "Turn Private Access over Tailscale on or off. Never pass an auth key: whoever approves pastes it.",
+  title: "Turn Private Access on or off",
   examples: ["ployz cluster private-access on", "ployz cluster private-access off"],
   kind: "write",
   removes: false,
+  // It sets a state: on only reads the routers, off turns off what is already off.
+  idempotent: true,
   gate: {
     gate: "ask",
     asked: (caller, input) => Effect.succeed(privateAccessAsked(caller.organization.id, input.to)),
   },
   agents: true,
+  openWorld: false,
   typed: null,
   positional: ["to"],
   input: Schema.Struct({ to: To }),

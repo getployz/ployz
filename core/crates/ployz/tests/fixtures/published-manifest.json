@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "84b9221c9993",
+  "revision": "9ca37b6905c9",
   "permissions": [
     "org:read",
     "org:settings",
@@ -45,7 +45,8 @@
         "upgrade-policy",
         "show"
       ],
-      "about": "Show the Organization's upgrade policy: its Release Channel and whether Servers upgrade automatically",
+      "about": "Show the Organization's upgrade policy: the Release Channel its Servers follow and whether they upgrade automatically",
+      "title": "Show the upgrade policy",
       "examples": [
         "ployz server upgrade-policy show"
       ],
@@ -53,6 +54,8 @@
       "kind": "read",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -91,7 +94,8 @@
         "upgrade-policy",
         "set"
       ],
-      "about": "Change the Organization's upgrade policy: the Release Channel every upgrade follows, or automatic upgrades on or off",
+      "about": "Change the Organization's upgrade policy: its Release Channel, automatic upgrades on or off, or both. It takes effect at once, and turning automatic on starts a Rollout over the Servers that are behind",
+      "title": "Change the upgrade policy",
       "examples": [
         "ployz server upgrade-policy set --channel beta",
         "ployz server upgrade-policy set --automatic true"
@@ -100,6 +104,8 @@
       "kind": "write",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -112,11 +118,11 @@
               "stable",
               "beta"
             ],
-            "description": "The Release Channel every upgrade follows"
+            "description": "The Release Channel every Upgrade follows from now on: stable or beta. Leave it out to keep the current one"
           },
           "automatic": {
             "type": "boolean",
-            "description": "Whether Servers behind the channel upgrade on their own"
+            "description": "true lets Servers behind the channel upgrade on their own, false stops that. Leave it out to keep it as it is"
           }
         },
         "additionalProperties": false,
@@ -150,7 +156,8 @@
         "cluster",
         "name"
       ],
-      "about": "Rename the Cluster, which changes every Service's long private address, such as db.prod.acme.ployz.internal",
+      "about": "Rename the Cluster. Every Service's long private address changes with it, e.g. db.prod.acme.ployz.internal",
+      "title": "Rename the Cluster",
       "examples": [
         "ployz cluster name acme"
       ],
@@ -158,6 +165,8 @@
       "kind": "write",
       "gate": "ask",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -170,7 +179,7 @@
             "type": "string",
             "maxLength": 63,
             "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$",
-            "description": "The new name, such as acme"
+            "description": "The new name, e.g. acme"
           }
         },
         "required": [
@@ -198,7 +207,8 @@
         "cluster",
         "web-traffic"
       ],
-      "about": "Switch web traffic between public ports and Cloudflare. Moves every generated address.",
+      "about": "Switch web traffic between public ports and Cloudflare. Every generated address moves with it.",
+      "title": "Switch web traffic",
       "examples": [
         "ployz cluster web-traffic cloudflare",
         "ployz cluster web-traffic public"
@@ -207,6 +217,8 @@
       "kind": "write",
       "gate": "ask",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -221,7 +233,7 @@
               "public",
               "cloudflare"
             ],
-            "description": "public or cloudflare. Set up Cloudflare Tunnel in Ployz Cloud first."
+            "description": "Where web traffic goes: public or cloudflare. Cloudflare Tunnel must already be set up in Ployz Cloud."
           }
         },
         "required": [
@@ -238,7 +250,7 @@
               "public",
               "cloudflare"
             ],
-            "description": "public or cloudflare. Set up Cloudflare Tunnel in Ployz Cloud first."
+            "description": "Where web traffic goes: public or cloudflare. Cloudflare Tunnel must already be set up in Ployz Cloud."
           },
           "state": {
             "type": "string"
@@ -258,7 +270,8 @@
         "cluster",
         "private-access"
       ],
-      "about": "Turn Private Access over Tailscale on or off. Never pass an auth key; the approver pastes it.",
+      "about": "Turn Private Access over Tailscale on or off. Never pass an auth key: whoever approves pastes it.",
+      "title": "Turn Private Access on or off",
       "examples": [
         "ployz cluster private-access on",
         "ployz cluster private-access off"
@@ -267,6 +280,8 @@
       "kind": "write",
       "gate": "ask",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -281,7 +296,7 @@
               "on",
               "off"
             ],
-            "description": "on or off. On waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
+            "description": "on or off. Turning it on waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
           }
         },
         "required": [
@@ -298,7 +313,7 @@
               "on",
               "off"
             ],
-            "description": "on or off. On waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
+            "description": "on or off. Turning it on waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
           },
           "routers": {
             "anyOf": [
@@ -331,7 +346,8 @@
         "approval",
         "ls"
       ],
-      "about": "List the Organization's pending approvals",
+      "about": "List the Approvals waiting on a human in the Organization. Each shows its ID, what it would do and to what, and when it was asked",
+      "title": "List pending approvals",
       "examples": [
         "ployz org approval ls"
       ],
@@ -339,6 +355,8 @@
       "kind": "read",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -394,7 +412,8 @@
         "approval",
         "show"
       ],
-      "about": "Show one approval: what the plan destroys and how it was answered",
+      "about": "Show one Approval: what it would do and to what, what it destroys, whether it is pending, approved, denied or superseded, and the reason if it was denied",
+      "title": "Show an approval",
       "examples": [
         "ployz org approval show 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"
       ],
@@ -402,6 +421,8 @@
       "kind": "read",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -412,7 +433,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The approval id"
+            "description": "The Approval's ID, from a list of Approvals or from the call that had to ask"
           }
         },
         "required": [
@@ -484,7 +505,8 @@
         "approval",
         "approve"
       ],
-      "about": "Approve a pending approval so the command waiting on it goes ahead",
+      "about": "Approve a pending Approval. The command waiting on it then goes ahead",
+      "title": "Approve a pending approval",
       "examples": [
         "ployz org approval approve 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"
       ],
@@ -492,6 +514,8 @@
       "kind": "write",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": false,
       "typed": "organization",
       "positional": [
@@ -502,7 +526,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The approval id"
+            "description": "The Approval's ID, from a list of Approvals or from the call that had to ask"
           }
         },
         "required": [
@@ -574,7 +598,8 @@
         "approval",
         "deny"
       ],
-      "about": "Deny a pending approval; the agent or command waiting on it hears the reason",
+      "about": "Deny a pending Approval. The agent or command waiting on it is told the reason",
+      "title": "Deny a pending approval",
       "examples": [
         "ployz org approval deny 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e --reason \"not during the demo\""
       ],
@@ -582,6 +607,8 @@
       "kind": "write",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": false,
       "typed": null,
       "positional": [
@@ -592,12 +619,12 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "The approval id"
+            "description": "The Approval's ID, from a list of Approvals or from the call that had to ask"
           },
           "reason": {
             "type": "string",
             "maxLength": 1024,
-            "description": "Why not, passed back to whoever asked"
+            "description": "Why you are denying it, e.g. not during the demo. Whoever asked sees it"
           }
         },
         "required": [
@@ -669,7 +696,8 @@
         "member",
         "ls"
       ],
-      "about": "List the Organization's members and their roles",
+      "about": "List the Organization's members with each one's name, email, role and join date, and which one is you",
+      "title": "List members",
       "examples": [
         "ployz org member ls"
       ],
@@ -677,6 +705,8 @@
       "kind": "read",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -731,7 +761,8 @@
         "member",
         "invite"
       ],
-      "about": "Make an invite link that adds whoever opens it as a member. It lasts 7 days and works once",
+      "about": "Make an invite link that adds whoever opens it as a member. It works once and lasts 7 days",
+      "title": "Invite a member",
       "examples": [
         "ployz org member invite bob@example.com",
         "ployz org member invite bob@example.com --role admin"
@@ -740,6 +771,8 @@
       "kind": "write",
       "gate": "never",
       "removes": false,
+      "idempotent": false,
+      "open_world": true,
       "agents": false,
       "typed": null,
       "positional": [
@@ -751,7 +784,7 @@
           "email": {
             "type": "string",
             "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
-            "description": "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it"
+            "description": "Who the link is for, e.g. bob@example.com. Cloud emails it there when email is on. The link works for anyone who has it"
           },
           "role": {
             "type": "string",
@@ -759,7 +792,7 @@
               "admin",
               "member"
             ],
-            "description": "The role it grants: admin or member. member when left out"
+            "description": "The role it grants: admin or member (default member)"
           }
         },
         "additionalProperties": false,
@@ -816,7 +849,8 @@
         "member",
         "role"
       ],
-      "about": "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
+      "about": "Change a member's role in the Organization. It takes effect at once. Only an owner can make or remove an owner, and the last owner stays one.",
+      "title": "Change a member's role",
       "examples": [
         "ployz org member role bob@example.com admin",
         "ployz org member role Bob member"
@@ -825,6 +859,8 @@
       "kind": "write",
       "gate": "ask",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -837,7 +873,7 @@
           "member": {
             "type": "string",
             "minLength": 1,
-            "description": "The member, by email or name"
+            "description": "The member's email, e.g. bob@example.com, or their name if no other member shares it"
           },
           "role": {
             "type": "string",
@@ -846,7 +882,7 @@
               "admin",
               "member"
             ],
-            "description": "The new role: owner, admin or member"
+            "description": "The member's new role: owner, admin or member"
           }
         },
         "required": [
@@ -885,7 +921,8 @@
         "member",
         "rm"
       ],
-      "about": "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
+      "about": "Remove a member from the Organization. This permanently deletes their Organization Tokens and agent connections there and ends their devices' access to its Servers.",
+      "title": "Remove a member",
       "examples": [
         "ployz org member rm bob@example.com",
         "ployz org member rm Bob"
@@ -894,6 +931,8 @@
       "kind": "write",
       "gate": "ask",
       "removes": true,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -905,7 +944,7 @@
           "member": {
             "type": "string",
             "minLength": 1,
-            "description": "The member, by email or name"
+            "description": "The member's email, e.g. bob@example.com, or their name if no other member shares it"
           }
         },
         "required": [
@@ -934,7 +973,8 @@
         "invite",
         "ls"
       ],
-      "about": "List the Organization's pending invites",
+      "about": "List the Organization's pending invites with each one's ID, the email it names if any, the role it grants, who made it and when it expires",
+      "title": "List pending invites",
       "examples": [
         "ployz org invite ls"
       ],
@@ -942,6 +982,8 @@
       "kind": "read",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -998,7 +1040,8 @@
         "invite",
         "revoke"
       ],
-      "about": "Revoke a pending invite so its link stops working",
+      "about": "Revoke a pending invite so its link stops working at once. This can't be undone, but inviting again makes a new link.",
+      "title": "Revoke an invite",
       "examples": [
         "ployz org invite revoke bob@example.com"
       ],
@@ -1006,6 +1049,8 @@
       "kind": "write",
       "gate": "ask",
       "removes": true,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -1017,7 +1062,7 @@
           "invite": {
             "type": "string",
             "minLength": 1,
-            "description": "The invite, by id or by the email it names"
+            "description": "The pending invite, by its ID from the list of invites or by the email it names, e.g. bob@example.com"
           }
         },
         "required": [
@@ -1052,7 +1097,8 @@
         "uptime",
         "show"
       ],
-      "about": "Show a Service's uptime: whether visitors reach it, what each region's check got back, and its incidents",
+      "about": "Show a Service's uptime over a time range: whether visitors reach it now, its uptime percentage, each region's latest result and last error, and its incidents with what each region saw",
+      "title": "Show a Service's uptime",
       "examples": [
         "ployz uptime show web",
         "ployz uptime show web --project shop --env staging --from 6h"
@@ -1061,6 +1107,8 @@
       "kind": "read",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -1072,25 +1120,25 @@
           "service": {
             "type": "string",
             "minLength": 1,
-            "description": "The Service, by name"
+            "description": "The Service's name, e.g. web. Fails if it has no public address, since nothing checks it"
           },
           "project": {
             "type": "string",
             "minLength": 1,
-            "description": "Its Project, by name. The default Project when left out"
+            "description": "The Service's Project, by name, e.g. shop. Leave it out when the Organization has only one Project"
           },
           "environment": {
             "type": "string",
             "minLength": 1,
-            "description": "Its Environment, by name. The Project's default Environment when left out"
+            "description": "The Service's Environment, by name, e.g. staging. Defaults to the Project's Default Environment"
           },
           "from": {
             "type": "string",
-            "description": "Where the range starts: an offset back from now such as 15m, 6h or 7d, or a UTC instant. 1h when left out"
+            "description": "Start of the range: how far back from now, e.g. 15m, 6h or 7d, or a UTC instant, e.g. 2026-10-11T14:00:00.000Z (default 1h)"
           },
           "to": {
             "type": "string",
-            "description": "Where the range ends: now, an offset back from now, or a UTC instant. now when left out"
+            "description": "End of the range: now, or an offset or UTC instant like from (default now)"
           }
         },
         "required": [
@@ -1305,7 +1353,8 @@
         "uptime",
         "check"
       ],
-      "about": "Check a Service's public address now, from every region, and show what each got back. Changes no setting",
+      "about": "Check a Service's public address right now from every region. Waits up to about ten seconds, then shows its URL, its status and each region's verdict, HTTP answer and response time. If answered is false, results are still coming in. Changes no setting",
+      "title": "Check a Service's uptime now",
       "examples": [
         "ployz uptime check web",
         "ployz uptime check web --project shop --env staging"
@@ -1314,6 +1363,8 @@
       "kind": "read",
       "gate": "never",
       "removes": false,
+      "idempotent": true,
+      "open_world": true,
       "agents": true,
       "typed": null,
       "positional": [
@@ -1325,17 +1376,17 @@
           "service": {
             "type": "string",
             "minLength": 1,
-            "description": "The Service, by name"
+            "description": "The Service's name, e.g. web. Fails if it has no public address, since nothing checks it"
           },
           "project": {
             "type": "string",
             "minLength": 1,
-            "description": "Its Project, by name. The default Project when left out"
+            "description": "The Service's Project, by name, e.g. shop. Leave it out when the Organization has only one Project"
           },
           "environment": {
             "type": "string",
             "minLength": 1,
-            "description": "Its Environment, by name. The Project's default Environment when left out"
+            "description": "The Service's Environment, by name, e.g. staging. Defaults to the Project's Default Environment"
           }
         },
         "required": [

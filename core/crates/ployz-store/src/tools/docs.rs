@@ -11,14 +11,15 @@ use crate::docs::{self, Lookup};
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Docs {
-    /// A question, or a page path ending in .md.
+    /// A question, e.g. `add a custom domain`, or a page path, e.g. `services/domains.md`.
     query: String,
 }
 
 impl Tool for Docs {
     const NAME: &'static str = "docs";
+    const TITLE: &'static str = "Search the Ployz docs";
     const DESCRIPTION: &'static str = concat!(
-        "Search the Ployz docs, or read a page by path. Pages: ",
+        "Search the Ployz docs, or read one page. A search returns the closest sections, each with path, heading and excerpt. A page returns its Markdown. Pages: ",
         include_str!(concat!(env!("OUT_DIR"), "/docs_contents.txt")),
         "."
     );

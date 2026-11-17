@@ -40,8 +40,16 @@ pub(crate) struct PublishedCommand {
     /// The CLI nouns and verb, `server upgrade-policy show`.
     pub(crate) path: Vec<String>,
     pub(crate) about: String,
+    /// A short label for people, when Cloud gave one.
+    pub(crate) title: Option<String>,
     pub(crate) examples: Vec<String>,
     pub(crate) effect: Effect,
+    /// The same call made again changes nothing more. A Cloud that predates it: only a
+    /// read.
+    pub(crate) idempotent: bool,
+    /// It reaches past Ployz, such as an address on the internet. A Cloud that predates
+    /// it: never.
+    pub(crate) open_world: bool,
     /// The permission Cloud checks before running it, when Cloud said.
     pub(crate) requires: Option<String>,
     /// Whether `ployz mcp` lists it.
@@ -463,21 +471,25 @@ impl PublishedCommand {
             return None;
         }
         let args = args(&entry.input, &entry.positional)?;
+        let effect = match entry.kind {
+            wire::Kind::Read => Effect::Read,
+            wire::Kind::Write => {
+                let ask = entry.gate == wire::Gate::Ask;
+                Effect::Write {
+                    ask,
+                    removes: entry.removes.unwrap_or(ask),
+                }
+            }
+        };
         Some(Self {
             name: entry.name,
             path: entry.path,
             about: entry.about,
+            title: entry.title,
             examples: entry.examples,
-            effect: match entry.kind {
-                wire::Kind::Read => Effect::Read,
-                wire::Kind::Write => {
-                    let ask = entry.gate == wire::Gate::Ask;
-                    Effect::Write {
-                        ask,
-                        removes: entry.removes.unwrap_or(ask),
-                    }
-                }
-            },
+            effect,
+            idempotent: entry.idempotent.unwrap_or(effect == Effect::Read),
+            open_world: entry.open_world.unwrap_or(false),
             requires: entry.requires,
             agents: entry.agents,
             typed: entry.typed.map(|typed| match typed {
@@ -620,6 +632,54 @@ mod tests {
                 "{}",
                 command.name
             );
+        }
+    }
+
+    #[test]
+    fn an_entry_without_a_title_or_hints_takes_its_hints_from_its_kind() {
+        let mut manifest = manifest();
+        for entry in &mut manifest.commands {
+            entry.title = None;
+            entry.idempotent = None;
+            entry.open_world = None;
+        }
+        let published = Published::from_wire(manifest);
+        let read = |command: &PublishedCommand| command.effect == Effect::Read;
+        assert!(published.commands.iter().any(read));
+        assert!(!published.commands.iter().all(read));
+        for command in &published.commands {
+            assert_eq!(command.title, None, "{}", command.name);
+            assert_eq!(command.idempotent, read(command), "{}", command.name);
+            assert!(!command.open_world, "{}", command.name);
+        }
+    }
+
+    #[test]
+    fn an_entry_keeps_the_title_and_hints_cloud_gave() {
+        let manifest = manifest();
+        let given: Vec<_> = manifest
+            .commands
+            .iter()
+            .filter(|entry| entry.title.is_some())
+            .map(|entry| {
+                let hints = (entry.idempotent.unwrap(), entry.open_world.unwrap());
+                (entry.name.clone(), entry.title.clone(), hints)
+            })
+            .collect();
+        assert!(
+            given.iter().any(|(_, _, (_, open_world))| *open_world),
+            "the fixture gives a hint unlike the fallback"
+        );
+        let published = Published::from_wire(manifest);
+        for (name, title, (idempotent, open_world)) in given {
+            let command = published
+                .commands
+                .iter()
+                .find(|command| command.name == name)
+                .unwrap();
+            assert_eq!(command.title, title, "{name}");
+            assert_eq!(command.idempotent, idempotent, "{name}");
+            assert_eq!(command.open_world, open_world, "{name}");
         }
     }
 

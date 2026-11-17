@@ -1,4 +1,4 @@
-use super::super::{INSTRUCTIONS, WAIT_CAP_SECONDS, catalog};
+use super::super::{WAIT_CAP_SECONDS, catalog};
 use super::*;
 
 #[test]
@@ -13,8 +13,6 @@ fn the_limits_read_the_same_in_every_place_that_states_them() {
         refusal.contains(&format!("{min} to {max} letters")),
         "{refusal}"
     );
-    assert!(INSTRUCTIONS.contains(&format!("any {min} to {max} letters")));
-    assert!(INSTRUCTIONS.contains(&format!("(max {WAIT_CAP_SECONDS})")));
 
     let (mut keyed, mut waited) = (0, 0);
     for tool in catalog() {
@@ -95,7 +93,7 @@ fn accepted_loss_needs_volumes_and_the_version() {
 
 #[test]
 fn only_a_gated_tool_says_it_may_ask_a_human() {
-    assert_eq!(Gate::Never.sentence(), "This call asks no human.");
+    assert_eq!(Gate::Never.sentence(), "");
     assert_eq!(
         Gate::Store.sentence(),
         "May stop to ask a human to approve."

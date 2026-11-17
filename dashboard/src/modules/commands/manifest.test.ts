@@ -36,6 +36,17 @@ describe("published command manifest", () => {
     expect(names.filter((name) => compiled.has(name))).toEqual([]);
   });
 
+  it("labels every command for an agent host: a short title, and whether a repeat or the internet is involved", () => {
+    const served = new Map(manifest().commands.map((entry) => [entry["name"], entry]));
+    for (const command of COMMANDS) {
+      expect(command.title, command.name).toMatch(/^[A-Z][^.]{0,38}[^.]$/u);
+      expect(served.get(command.name), command.name).toMatchObject({ title: command.title, idempotent: command.idempotent, open_world: command.openWorld });
+      if (command.kind === "read") expect(command.idempotent, command.name).toBe(true);
+    }
+    expect(COMMANDS.filter((command) => command.openWorld).map((command) => command.name)).toEqual(["org_member_invite", "uptime_check"]);
+    expect(COMMANDS.filter((command) => !command.idempotent).map((command) => command.name)).toEqual(["org_member_invite"]);
+  });
+
   it("gates exactly the commands that ask a human, so a destructive one never runs in the sidebar unreviewed", () => {
     for (const command of COMMANDS) expect(GATED.has(command.name), command.name).toBe(command.gate === "ask");
   });

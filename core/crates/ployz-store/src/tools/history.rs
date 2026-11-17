@@ -11,15 +11,15 @@ use crate::{HistoryAction, HistoryPreviewQuery, Revision, StageHistory};
 
 tool_input! {
     pub(crate) struct History {
-        /// Saved revision number.
+        /// The Saved revision's number, e.g. `12`, as a review or a Deployment shows it.
         revision: u64,
-        /// Reverse only what this revision changed, keeping later ones.
+        /// Set true to reverse only what this revision changed, keeping later changes. By default its whole configuration is restored.
         #[serde(default)]
         undo: bool,
-        /// The Working State version a refusal names; required with accept_overwrite.
+        /// The version the refusal gave. Fails if what it covers changed since.
         #[serde(default)]
         version: Option<String>,
-        /// Replace the Staged changes a refusal named.
+        /// Replace the staged changes a refusal listed, once the member accepts losing them. Needs that refusal's version.
         #[serde(default)]
         accept_overwrite: bool,
         @place(here),
@@ -28,8 +28,10 @@ tool_input! {
 
 impl Tool for History {
     const NAME: &'static str = "history";
-    const DESCRIPTION: &'static str = "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; the next deploy asks a human if it removes something. Sealed values and Volume data are not restored.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Restore or undo a Saved revision";
+    const DESCRIPTION: &'static str = "Stage a past Saved revision back: its whole configuration, or with undo just the reverse of what it changed. Nothing ships until the next deploy. Sealed values and Volume data are not restored. Returns whether anything changed and which sealed variables are left unset.";
+    // Sent again, the draft already holds what the action stages, so nothing changes.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "revision": 1, "undo": true })

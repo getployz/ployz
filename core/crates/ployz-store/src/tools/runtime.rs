@@ -63,7 +63,7 @@ const fn container(report: &ContainerReport) -> Container {
 
 tool_input! {
     pub(crate) struct ServiceState {
-        /// Omit for every Service here.
+        /// Service to show, e.g. `web`. Leave out to show every Service in the Environment.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         service: Option<ServiceName>,
@@ -73,8 +73,9 @@ tool_input! {
 
 impl Tool for ServiceState {
     const NAME: &'static str = "service_status";
+    const TITLE: &'static str = "Show Service status";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str = "A Service's state as the canvas shows it, and its containers per server: health, restarts, image, Deployment, latest restart, start or stop.";
+    const DESCRIPTION: &'static str = "Show how each Service is running, with the status the dashboard shows. Each container is listed by Server with its state, health, exit code, restarts, image and Deployment number. Naming one Service also shows its latest restart, start or stop.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
@@ -219,19 +220,22 @@ impl Tool for ServiceState {
 
 tool_input! {
     pub(crate) struct ServiceLogs {
+        /// Service to read, e.g. `web`, as deployed now or in the Deployment given.
         #[schemars(with = "String", pattern(NODE_NAME))]
         service: ServiceName,
-        /// Deployment number.
+        /// Deployment number, e.g. `12`, to read only the containers that Deployment created. Leave out for every container of the Service.
         #[serde(default)]
         #[schemars(range(min = 1))]
         deployment: Option<u64>,
-        /// Only from this server.
+        /// Server name, to read only its containers. Leave out for every Server.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         server: Option<ServerName>,
+        /// How many of the newest lines to keep from each Server (default 100).
         #[serde(default)]
         #[schemars(with = "u16", range(min = 1, max = 200))]
         lines: LineCap,
+        /// Only lines from the last this many minutes, e.g. `60`. Leave out for no time limit.
         #[serde(default)]
         #[schemars(range(min = 1, max = 10080))]
         since_minutes: Option<u32>,
@@ -241,8 +245,9 @@ tool_input! {
 
 impl Tool for ServiceLogs {
     const NAME: &'static str = "service_logs";
+    const TITLE: &'static str = "Show Service logs";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str = "A Service's recent logs: at most 200 lines, 16 KB and 500 B a line, secrets shown by name. With deployment, that Deployment's containers, or its build log if the build failed.";
+    const DESCRIPTION: &'static str = "Show a Service's recent log lines from each Server, including containers that were removed. Each Server returns its newest lines, up to 16 KB in total and 500 B a line. Secrets are replaced by their names or [redacted].";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::DeploymentShow),
@@ -362,12 +367,21 @@ fn service_act(
 }
 
 macro_rules! service_act_tool {
-    ($tool:ident, $name:literal, $verb:expr, $gate:expr, $description:literal) => {
+    (
+        $tool:ident,
+        $name:literal,
+        $title:literal,
+        $verb:expr,
+        $gate:expr,
+        idempotent = $idempotent:literal,
+        $description:literal
+    ) => {
         tool_input! {
             pub(crate) struct $tool {
+                /// Service to act on, e.g. `web`. It must be deployed in the Environment.
                 #[schemars(with = "String", pattern(NODE_NAME))]
                 service: ServiceName,
-                /// Only on this server.
+                /// Server name, to act only on the containers there. Leave out for every Server.
                 #[serde(default)]
                 #[schemars(with = "Option<String>", pattern(NODE_NAME))]
                 server: Option<ServerName>,
@@ -379,9 +393,12 @@ macro_rules! service_act_tool {
 
         impl Tool for $tool {
             const NAME: &'static str = $name;
+            const TITLE: &'static str = $title;
             const STATUS: ToolId = ToolId::ServiceState;
             const DESCRIPTION: &'static str = $description;
-            const EFFECT: Effect = Effect::Change;
+            const EFFECT: Effect = Effect::Change {
+                idempotent: $idempotent,
+            };
             const GATE: Gate = $gate;
             const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
@@ -407,26 +424,34 @@ macro_rules! service_act_tool {
     };
 }
 
+// Cloud skips a container already where a start or stop puts it, so repeating
+// either changes nothing more; a restart stops and starts each container anew.
 service_act_tool!(
     ServiceRestart,
     "service_restart",
+    "Restart a Service",
     ServiceVerb::Restart,
     Gate::Cloud,
-    "Restart a Service's containers."
+    idempotent = false,
+    "Restart a Service's containers one at a time, so the rest keep serving. If one does not serve again, the rest are left untouched."
 );
 service_act_tool!(
     ServiceStart,
     "service_start",
+    "Start a Service",
     ServiceVerb::Start,
     Gate::Never,
-    "Start a Service's stopped containers."
+    idempotent = true,
+    "Start a Service's stopped containers. Running ones are left as they are."
 );
 service_act_tool!(
     ServiceStop,
     "service_stop",
+    "Stop a Service",
     ServiceVerb::Stop,
     Gate::Cloud,
-    "Stop a Service's containers until started again. Deletes nothing."
+    idempotent = true,
+    "Stop a Service's containers. Nothing is deleted, and they stay stopped until you start them again with `service_start`."
 );
 
 #[cfg(test)]

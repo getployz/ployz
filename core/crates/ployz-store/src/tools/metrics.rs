@@ -77,12 +77,14 @@ fn shown(answer: MetricsAnswer, events: Vec<Map<String, Value>>) -> Map<String, 
 
 tool_input! {
     pub(crate) struct ServiceMetrics {
+        /// Service name, e.g. `web`. It must be deployed, or deployed by the Deployment named.
         #[schemars(with = "String", pattern(NODE_NAME))]
         service: ServiceName,
-        /// Deployment number: from its start, its events only.
+        /// Deployment number from the Deployment list, e.g. `12`. Counts only its OOM kills, exits and restarts, and starts the range when it started.
         #[serde(default)]
         #[schemars(range(min = 1))]
         deployment: Option<u64>,
+        /// How many minutes back the range starts (default 60, or the Deployment's start when one is named).
         #[serde(default)]
         #[schemars(range(min = 1, max = 10080))]
         since_minutes: Option<u32>,
@@ -93,7 +95,8 @@ tool_input! {
 impl Tool for ServiceMetrics {
     const NAME: &'static str = "service_metrics";
     const STATUS: ToolId = ToolId::ServiceState;
-    const DESCRIPTION: &'static str = "A Service's CPU, memory, network and disk (now, avg, peak) and its OOM kills, exits and restarts. Default: the last hour.";
+    const TITLE: &'static str = "Show Service metrics";
+    const DESCRIPTION: &'static str = "Show what a Service used over a time range: CPU, memory, network and disk, each as now, average and peak. Also counts its OOM kills, exits and restarts, and lists the newest with time, Server, exit code and Deployment.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::DeploymentShow),
@@ -196,8 +199,10 @@ impl Tool for ServiceMetrics {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ServerMetrics {
+    /// Server name, e.g. `web-1`.
     #[schemars(with = "String", pattern(NODE_NAME))]
     server: ServerName,
+    /// How many minutes back the range starts (default 60).
     #[serde(default)]
     #[schemars(range(min = 1, max = 10080))]
     since_minutes: Option<u32>,
@@ -206,7 +211,8 @@ pub(crate) struct ServerMetrics {
 impl Tool for ServerMetrics {
     const NAME: &'static str = "server_metrics";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "A server's CPU, memory, network and disk (now, avg, peak) and its containers' OOM kills, exits and restarts. Default: the last hour.";
+    const TITLE: &'static str = "Show Server metrics";
+    const DESCRIPTION: &'static str = "Show what a Server used over a time range: CPU, memory, network and disk, each as now, average and peak. Also counts its containers' OOM kills, exits and restarts, and lists the newest with time, Service, and Environment or leftover.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 

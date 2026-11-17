@@ -16,6 +16,17 @@ pub(super) struct Entry {
     pub(super) name: String,
     pub(super) path: Vec<String>,
     pub(super) about: String,
+    /// A short label for people; absent from a Cloud that predates it.
+    #[serde(default)]
+    pub(super) title: Option<String>,
+    /// Whether the same call made again changes nothing more; absent from a Cloud
+    /// that predates it, so `kind` stands in.
+    #[serde(default)]
+    pub(super) idempotent: Option<bool>,
+    /// Whether it reaches past Ployz, such as an address on the internet; absent from
+    /// a Cloud that predates it.
+    #[serde(default)]
+    pub(super) open_world: Option<bool>,
     #[serde(default)]
     pub(super) examples: Vec<String>,
     pub(super) kind: Kind,

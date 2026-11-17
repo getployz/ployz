@@ -87,17 +87,18 @@ fn domains(
 
 tool_input! {
     pub(crate) struct DomainAdd {
+        /// The Service to give the domain.
         #[schemars(with = "String", pattern(NODE_NAME), example = &"web")]
         service: ServiceName,
-        /// Prefix for a generated domain, PREFIX.cluster-domain; needs Ployz Cloud. Omit both prefix and hostname for a free one.
+        /// Subdomain for a generated domain, e.g. `api`. With no prefix and no hostname, the Service keeps its generated domain or gets one named after it.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         prefix: Option<DomainPrefix>,
-        /// A hostname the member owns, e.g. app.example.com. Not with prefix.
+        /// A hostname the member owns, e.g. `app.example.com`. Give this or prefix, not both.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(HOSTNAME), length(max = 253))]
         hostname: Option<Hostname>,
-        /// Container port it reaches. Default: the container's PORT.
+        /// Container port the domain reaches, e.g. `8080`. Defaults to the container's PORT.
         #[serde(default)]
         #[schemars(range(min = 1, max = 65535))]
         port: Option<u16>,
@@ -108,8 +109,10 @@ tool_input! {
 
 impl Tool for DomainAdd {
     const NAME: &'static str = "domain_add";
-    const DESCRIPTION: &'static str = "Give a Service a public domain: a hostname the member owns, or with Ployz Cloud a generated one under the cluster domain. Staged until the next Deploy. A custom hostname comes back with the DNS records the member must create.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Add a public domain to a Service";
+    const DESCRIPTION: &'static str = "Give a Service a public domain: a hostname the member owns, or on Ployz Cloud a generated one under the Cluster Domain. Staged until the next deploy. A custom hostname also needs DNS records, which the result lists. After the deploy, `domain_check` shows whether it is ready.";
+    // The same input again finds the domain in place and sets the same port.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "service": "web", "hostname": "app.example.com" })
@@ -172,7 +175,7 @@ impl Tool for DomainAdd {
 
 tool_input! {
     pub(crate) struct DomainCheck {
-        /// The domain, by hostname or a generated domain's prefix.
+        /// The domain's hostname, or a generated domain's prefix.
         #[schemars(length(min = 1), example = &"app.example.com")]
         domain: String,
         @place,
@@ -181,9 +184,12 @@ tool_input! {
 
 impl Tool for DomainCheck {
     const NAME: &'static str = "domain_check";
-    const DESCRIPTION: &'static str =
-        "Check a domain now: its status, why, and DNS records still to create.";
+    const TITLE: &'static str = "Check a public domain";
+    const DESCRIPTION: &'static str = "Check one public domain right now: its Service, port and status (ready, setting_up or needs_attention). When it is not ready, it says why and lists any DNS records still to create.";
     const EFFECT: Effect = Effect::Read;
+    // On Cloud, checking a custom hostname looks up its public DNS now
+    // (dashboard/src/modules/config-store/domain-evidence.server.ts, lookUpHostname).
+    const OPEN_WORLD: bool = true;
 
     fn example() -> Value {
         json!({ "domain": "app.example.com" })
@@ -205,14 +211,14 @@ impl Tool for DomainCheck {
 
 tool_input! {
     pub(crate) struct DomainUpdate {
-        /// The domain, by hostname or a generated domain's prefix.
+        /// The domain's hostname, or a generated domain's prefix.
         #[schemars(length(min = 1), example = &"app.example.com")]
         domain: String,
-        /// New prefix for a generated domain.
+        /// New prefix for a generated domain, e.g. `whoami`. Must be unique in the Organization.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         prefix: Option<DomainPrefix>,
-        /// Container port it reaches.
+        /// New container port, e.g. `8080`. Leave out to keep the current port.
         #[serde(default)]
         #[schemars(range(min = 1, max = 65535))]
         port: Option<u16>,
@@ -223,9 +229,11 @@ tool_input! {
 
 impl Tool for DomainUpdate {
     const NAME: &'static str = "domain_update";
-    const DESCRIPTION: &'static str =
-        "Change a generated domain's prefix, or the port any domain reaches. Staged.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Change a public domain";
+    const DESCRIPTION: &'static str = "Change the port a public domain reaches, or a generated domain's prefix, which changes its hostname. Staged until the next deploy.";
+    // A port set again changes nothing; a changed prefix leaves the old name
+    // unknown, so the same call is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "domain": "whoami-2", "prefix": "whoami" })
@@ -284,7 +292,7 @@ impl Tool for DomainUpdate {
 
 tool_input! {
     pub(crate) struct DomainRemove {
-        /// The domain, by hostname or a generated domain's prefix.
+        /// The domain's hostname, or a generated domain's prefix.
         #[schemars(length(min = 1), example = &"app.example.com")]
         domain: String,
         @revision,
@@ -294,8 +302,10 @@ tool_input! {
 
 impl Tool for DomainRemove {
     const NAME: &'static str = "domain_remove";
-    const DESCRIPTION: &'static str = "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next deploy.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Remove a public domain";
+    const DESCRIPTION: &'static str = "Take a public domain off its Service. Staged until the next deploy, which asks a human to approve unless the domain was never deployed. The result says whether approval will be asked.";
+    // Once removed, the same call finds no domain by that name and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "domain": "app.example.com" })
