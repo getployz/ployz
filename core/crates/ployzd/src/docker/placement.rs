@@ -5,7 +5,7 @@ use std::future::Future;
 use ployz_core::labels::ServiceLabels;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerPlacementUpdated, Machine, MachineStorageObservation,
-    PlacementRefusal, ResolvedServiceSpec, SpecChange, compare_specs,
+    PlacementAdmission, PlacementRefusal, ResolvedServiceSpec, admit_placement,
 };
 
 use super::limits::is_running;
@@ -16,9 +16,9 @@ impl ContainerRuntime {
     /// whose placement `machine`, this Machine, still satisfies. Docker is only
     /// read, so the Container keeps running untouched.
     ///
-    /// Only a difference [`compare_specs`] calls `NeedsPlacementUpdate` is
-    /// admitted, and the new spec passes the same placement check a Container
-    /// start does. A spec already stored answers a resent request as recorded.
+    /// Only a spec [`admit_placement`] admits is recorded, and it passes the same
+    /// placement check a Container start does. A spec already stored answers a
+    /// resent request as recorded, whether or not the Container still runs.
     ///
     /// # Errors
     ///
@@ -49,22 +49,19 @@ impl ContainerRuntime {
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
         let refused = |refusal| Error::PlacementRefused {
+            service: stored.name.clone(),
             container_id: *container_id,
             refusal,
         };
-        let resent = match admit(&stored, spec) {
-            Ok(Admitted::Recorded) => true,
-            Ok(Admitted::Change) => false,
-            Err(refusal) => return Err(refused(refusal)),
-        };
-        if !is_running(&inspected) {
-            return Err(refused(PlacementRefusal::NotRunning));
-        }
         let updated = ContainerPlacementUpdated {
             container_id: *container_id,
         };
-        if resent {
-            return Ok(updated);
+        match admit_placement(&stored, spec).map_err(refused)? {
+            PlacementAdmission::Recorded => return Ok(updated),
+            PlacementAdmission::Record => {}
+        }
+        if !is_running(&inspected) {
+            return Err(refused(PlacementRefusal::NotRunning));
         }
         let storage = if spec.volume_graph().has_mounted_provisioned_volume() {
             storage.await
@@ -79,26 +76,6 @@ impl ContainerRuntime {
         config_operation.put(container_id, None, spec).await?;
         config_operation.republish();
         Ok(updated)
-    }
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum Admitted {
-    Change,
-    Recorded,
-}
-
-fn admit(
-    stored: &ResolvedServiceSpec,
-    spec: &ResolvedServiceSpec,
-) -> Result<Admitted, PlacementRefusal> {
-    if stored.service_id != spec.service_id || stored.name != spec.name {
-        return Err(PlacementRefusal::OtherService);
-    }
-    match compare_specs(stored, &spec.to_requested()) {
-        SpecChange::NeedsPlacementUpdate => Ok(Admitted::Change),
-        SpecChange::UpToDate => Ok(Admitted::Recorded),
-        SpecChange::NeedsUpdate | SpecChange::NeedsRecreate => Err(PlacementRefusal::NeedsRecreate),
     }
 }
 
@@ -218,32 +195,90 @@ mod tests {
         assert_eq!(runtime.specs.get(&id).await.unwrap().unwrap(), stored);
     }
 
-    #[test]
-    fn only_a_placement_change_of_the_same_service_is_admitted() {
-        let stored: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
-            "service_id": "a".repeat(32), "name": "api",
-            "mode": {"mode": "replicated", "replicas": 1},
-            "container": {"image": "api:1", "pull_policy": "missing"}
+    #[tokio::test]
+    async fn a_spec_that_changes_anything_beside_the_placement_is_refused_and_the_spec_stays() {
+        let (runtime, _fake, id) = runtime_with_running_container().await;
+        let stored = runtime.specs.get(&id).await.unwrap().unwrap();
+        let mut more_replicas = placed(&stored, "fsn");
+        more_replicas.mode = serde_json::from_value(serde_json::json!({
+            "mode": "replicated", "replicas": 9
         }))
         .unwrap();
+        let mut other_order = placed(&stored, "fsn");
+        other_order.update.order = match stored.update.order {
+            ployz_core::UpdateOrder::StopFirst => ployz_core::UpdateOrder::StartFirst,
+            ployz_core::UpdateOrder::StartFirst | ployz_core::UpdateOrder::Rolling => {
+                ployz_core::UpdateOrder::StopFirst
+            }
+        };
+        let mut other_pull = placed(&stored, "fsn");
+        other_pull.container.pull_policy = ployz_core::PullPolicy::Never;
+
+        for (changed, wanted) in [
+            ("replicas", more_replicas),
+            ("update order", other_order),
+            ("pull policy", other_pull),
+        ] {
+            let error = runtime
+                .update_placement(&machine_in("fsn"), &id, &wanted, std::future::ready(None))
+                .await
+                .unwrap_err();
+
+            assert!(
+                matches!(
+                    error,
+                    Error::PlacementRefused {
+                        refusal: PlacementRefusal::NeedsRecreate,
+                        ..
+                    }
+                ),
+                "{changed}: {error:?}"
+            );
+            assert_eq!(
+                runtime.specs.get(&id).await.unwrap().unwrap(),
+                stored,
+                "{changed}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resent_request_is_answered_as_recorded_after_the_container_stopped() {
+        let (runtime, fake, id) = runtime_with_running_container().await;
+        let stored = runtime.specs.get(&id).await.unwrap().unwrap();
         let wanted = placed(&stored, "fsn");
-        assert_eq!(admit(&stored, &wanted), Ok(Admitted::Change));
-        assert_eq!(admit(&wanted, &wanted), Ok(Admitted::Recorded));
-        assert_eq!(admit(&wanted, &stored), Ok(Admitted::Change));
-        let mut limited = wanted.clone();
-        limited.container.resources = serde_json::from_value(serde_json::json!({
-            "memory_bytes": 64
-        }))
-        .unwrap();
-        assert_eq!(
-            admit(&stored, &limited),
-            Err(PlacementRefusal::NeedsRecreate)
+        runtime
+            .update_placement(&machine_in("fsn"), &id, &wanted, std::future::ready(None))
+            .await
+            .unwrap();
+        fake.existing_container.lock().unwrap().as_mut().unwrap()["State"] =
+            serde_json::json!({"Status": "exited", "Running": false});
+
+        let resent = runtime
+            .update_placement(&machine_in("fsn"), &id, &wanted, std::future::ready(None))
+            .await
+            .unwrap();
+        assert_eq!(resent.container_id, id);
+
+        let error = runtime
+            .update_placement(
+                &machine_in("fsn"),
+                &id,
+                &placed(&stored, "syd"),
+                std::future::ready(None),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::PlacementRefused {
+                    refusal: PlacementRefusal::NotRunning,
+                    ..
+                }
+            ),
+            "{error:?}"
         );
-        let mut renamed = wanted;
-        renamed.name = "worker".parse().unwrap();
-        assert_eq!(
-            admit(&stored, &renamed),
-            Err(PlacementRefusal::OtherService)
-        );
+        assert_eq!(runtime.specs.get(&id).await.unwrap().unwrap(), wanted);
     }
 }

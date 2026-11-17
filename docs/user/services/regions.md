@@ -35,9 +35,9 @@ Upper and lower case are the same, so `FSN` is `fsn`.
    postgres → fsn
    ```
 
-2. Deploy. A service whose replicas all run on the region's servers usually keeps running. Any
-   other service restarts, and its new replicas start on the region's servers.
-   [Good to know](#good-to-know) lists when a service in the region restarts anyway.
+2. Deploy. A replica already on one of the region's servers keeps running. A replica outside the
+   region is replaced by a new one on the region's servers.
+   [Good to know](#good-to-know) lists when a replica in the region restarts anyway.
 
    ```sh
    ployz deploy
@@ -115,11 +115,13 @@ the environment's region, and deploy again.
 - **A branch starts with its parent's region** and follows later changes to it, like the parent's
   other settings.
 - **Syncing two environments doesn't copy the region.** Set it on each.
-- **A service already in the region keeps running.** Setting or clearing a region doesn't
-  restart a service whose replicas all run on servers the region allows. A service restarts all
-  its replicas when one of them has to move: it runs on a server outside the region, or the
-  change lets the replicas spread over more servers, as when you clear a region that kept two
-  replicas on one server. It also restarts when a server running a replica runs an older Ployz,
-  or when it is a global service. A service with a volume is down while it restarts.
+- **A replica already in the region keeps running** when the deploy changes only the region and
+  the number of replicas. Setting or clearing a region restarts no replica on a server the new
+  region allows. A replica outside the region is replaced. After you clear a region, replicas
+  spread again: if two shared a server, one is replaced by a new one on another server.
+- **A service restarts every replica** when the same deploy changes anything else about it, such
+  as its image, a limit or its pre-deploy command. It also restarts every replica when one of
+  them isn't running, when any server running one of them runs an older Ployz, or when it is a
+  global service. A service with a volume is down while it restarts.
 - **Only deploys move replicas.** Changing a server's label or an environment's region changes
   nothing until you deploy.

@@ -167,7 +167,7 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (
         UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
         Bound(
-            "residual: records only a placement this Machine satisfies, and nothing starts, stops or moves",
+            "residual: rewrites a recorded placement to any this Machine satisfies, or clears it, so a later approved Drain may place outside the region; nothing starts or stops at the call",
         ),
     ),
     (INSPECT_STORAGE_CAPABILITY, Read),
@@ -529,7 +529,7 @@ pub const CASES: &[Case] = &[
     case(
         UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
         "any placement",
-        "an UpdateContainerPlacement recording a placement the Machine satisfies",
+        "an UpdateContainerPlacement on a running Container",
         Expected::Served,
     ),
     case(

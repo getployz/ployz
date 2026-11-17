@@ -28,7 +28,7 @@ mod volumes;
 use candidates::{Candidates, Exclusion};
 use placement::{
     CapacityAdmission, GlobalPlacement, Landing, PlacementReservations, PlacementState,
-    ReplicatedPlacement, ReplicatedReservation, plan_global, plan_replicated,
+    ReplicatedPlacement, ReplicatedReservation, TrialStep, plan_global, plan_replicated,
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
@@ -1632,10 +1632,10 @@ fn plan_one_service<'snapshot>(
         None => Landing::decide(
             budget
                 .placement
-                .can_update_in_place(current, requested, options),
+                .can_update_in_place(service_id, current, requested, options),
             budget,
             |budget, landing| place_service(&target, None, budget, options, landing),
-            |operations| operations.iter().any(creates_container),
+            |operations| Landing::stands(operations.iter().filter_map(TrialStep::of)),
         ),
     }
 }

@@ -13,7 +13,7 @@ use ployz_core::{
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
 use super::volumes::VolumePlacement;
 use super::{DeployOperation, PlanError, PlanOptions, ReplacementOperation};
-use ployz_core::{ContainerUpdateOperation, InPlaceChange};
+use ployz_core::{ContainerUpdateOperation, InPlaceChange, PlacementAdmission, admit_placement};
 
 #[derive(Clone)]
 pub(super) struct PlacementState {
@@ -100,15 +100,15 @@ impl PlacementReservations {
 }
 
 impl PlacementState {
-    /// Whether the Service's copies could take the requested change in place:
-    /// at least one would, and each such copy runs on a Machine whose daemon can.
     pub(super) fn can_update_in_place(
         &self,
+        service_id: ServiceId,
         current: &[ServiceContainer],
         requested: &RequestedServiceSpec,
         options: &PlanOptions,
     ) -> bool {
-        self.updaters.can_update(current, requested, options)
+        self.updaters
+            .can_update(service_id, current, requested, options)
     }
 
     /// Whether this Deploy keeps `container` running: as it is, or changed in place.
@@ -496,14 +496,15 @@ pub(super) struct ReplicatedReservation {
 }
 
 impl ReplicatedReservation {
-    /// Whether any choice starts a new Container.
-    fn starts_copy(&self) -> bool {
-        self.choices.iter().any(|choice| {
-            matches!(
-                choice.action,
-                ReplicaAction::Replace { .. } | ReplicaAction::Create
-            )
-        })
+    fn trial_steps(&self) -> impl Iterator<Item = TrialStep> {
+        self.choices
+            .iter()
+            .filter_map(|choice| match choice.action {
+                ReplicaAction::Unchanged(_) => None,
+                ReplicaAction::Update(_, change) => Some(TrialStep::Updates(change)),
+                ReplicaAction::Replace { .. } => Some(TrialStep::Replaces),
+                ReplicaAction::Create => Some(TrialStep::Starts),
+            })
     }
 }
 
@@ -636,14 +637,19 @@ impl ReplicaEmitter<'_> {
         } = self;
         match replica {
             Replica::Update(container, change) => {
-                operations.push(DeployOperation::UpdateContainer(ContainerUpdateOperation {
-                    machine_id,
-                    container_id: container.as_observation().container_id,
-                    spec: resolve(
+                let observation = container.as_observation();
+                let spec = match change {
+                    InPlaceChange::Limits => resolve(
                         requested,
                         **service_id,
                         determine_update_order(Some(container), requested),
                     ),
+                    InPlaceChange::Placement => placed_spec(container, **service_id, requested),
+                };
+                operations.push(DeployOperation::UpdateContainer(ContainerUpdateOperation {
+                    machine_id,
+                    container_id: observation.container_id,
+                    spec,
                     change,
                 }));
             }
@@ -926,9 +932,11 @@ impl InPlaceUpdaters {
 
     /// Whether every copy of the Service that would take the requested change
     /// in place runs on a Machine whose daemon makes that change, and at least
-    /// one would.
+    /// one would. A new placement also has to pass [`admit_placement`] over the
+    /// copy's spec.
     fn can_update(
         &self,
+        service_id: ServiceId,
         current: &[ServiceContainer],
         requested: &RequestedServiceSpec,
         options: &PlanOptions,
@@ -940,16 +948,38 @@ impl InPlaceUpdaters {
             else {
                 continue;
             };
-            let updaters = match change {
-                InPlaceChange::Limits => &self.limits,
-                InPlaceChange::Placement => &self.placement,
+            let observation = container.as_observation();
+            let updates = match change {
+                InPlaceChange::Limits => self.limits.contains(&observation.machine_id),
+                InPlaceChange::Placement => {
+                    self.placement.contains(&observation.machine_id)
+                        && admit_placement(
+                            &observation.resolved_spec,
+                            &placed_spec(container, service_id, requested),
+                        ) == Ok(PlacementAdmission::Record)
+                }
             };
-            if !updaters.contains(&container.as_observation().machine_id) {
+            if !updates {
                 return false;
             }
             any = true;
         }
         any
+    }
+}
+
+/// Changes the request makes outside the serving shape, such as the replica
+/// count, stay off this spec and wait for the copy's replacement, as they do for
+/// a copy left untouched.
+fn placed_spec(
+    container: &ServiceContainer,
+    service_id: ServiceId,
+    requested: &RequestedServiceSpec,
+) -> ResolvedServiceSpec {
+    ResolvedServiceSpec {
+        service_id,
+        placement: requested.placement.clone(),
+        ..container.as_observation().resolved_spec.clone()
     }
 }
 
@@ -963,32 +993,70 @@ pub(super) enum Landing {
     Replace,
 }
 
+/// What one step of an in-place trial does to a copy of the Service.
+pub(super) enum TrialStep {
+    Replaces,
+    Starts,
+    Updates(InPlaceChange),
+}
+
+impl TrialStep {
+    pub(super) fn of(operation: &DeployOperation) -> Option<Self> {
+        match operation {
+            DeployOperation::ReplaceContainer(_) => Some(Self::Replaces),
+            DeployOperation::RunContainer { .. } => Some(Self::Starts),
+            DeployOperation::UpdateContainer(update) => Some(Self::Updates(update.change)),
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        }
+    }
+}
+
 impl Landing {
-    /// Plan one Service in place when that starts no copy of it, else with
+    /// Plan one Service in place when that trial [stands](Self::stands), else with
     /// replacement, on a budget the abandoned trial never touched.
-    ///
-    /// A copy updated in place keeps its gen and reads as the new spec. A Machine
-    /// coming back sets Out a copy a Deploy would make anew, or one its Service has
-    /// more of than it asks for, so a copy whose in-place update missed it keeps
-    /// serving on its old limits or placement until the next Deploy. A Service is updated in
-    /// place only when every copy keeps its id. The boot pass no longer relies on
-    /// that: it sets Out a copy beside newer ones only when a Deploy would recreate
-    /// it or the Service has more copies than replicas, never for its gen alone.
     pub(super) fn decide<Budget: Clone, Planned>(
         worth_trying: bool,
         budget: &mut Budget,
         mut plan: impl FnMut(&mut Budget, Self) -> Result<Planned, PlanError>,
-        starts_copy: impl FnOnce(&Planned) -> bool,
+        stands: impl FnOnce(&Planned) -> bool,
     ) -> Result<Planned, PlanError> {
         if worth_trying {
             let mut trial = budget.clone();
             let planned = plan(&mut trial, Self::InPlace)?;
-            if !starts_copy(&planned) {
+            if stands(&planned) {
                 *budget = trial;
                 return Ok(planned);
             }
         }
         plan(budget, Self::Replace)
+    }
+
+    /// A new placement stands beside copies that start, so a Service that spreads
+    /// or grows keeps the copies it has. New limits do not: a user is told that
+    /// every copy takes them on a new Container when the Deploy also starts one.
+    ///
+    /// A copy updated in place keeps its gen and reads as the new spec, beside
+    /// started copies of a newer gen. A Machine coming back sets Out a copy a Deploy
+    /// would make anew, or one its Service has more of than it asks for, never a
+    /// copy for its gen alone. So a copy whose in-place update missed it keeps
+    /// serving on its old limits or placement until the next Deploy.
+    pub(super) fn stands(steps: impl IntoIterator<Item = TrialStep>) -> bool {
+        let (mut starts, mut new_limits) = (false, false);
+        for step in steps {
+            match step {
+                TrialStep::Replaces => return false,
+                TrialStep::Starts => starts = true,
+                TrialStep::Updates(InPlaceChange::Limits) => new_limits = true,
+                TrialStep::Updates(InPlaceChange::Placement) => {}
+            }
+        }
+        !(starts && new_limits)
     }
 }
 
@@ -1102,10 +1170,12 @@ fn reserve_replicated_service_demand(
         Ok(reservation)
     };
     Landing::decide(
-        updaters.can_update(current, requested, options),
+        observed.is_some_and(|service| {
+            updaters.can_update(service.service_id, current, requested, options)
+        }),
         budget,
         reserve,
-        ReplicatedReservation::starts_copy,
+        |reservation| Landing::stands(reservation.trial_steps()),
     )
 }
 

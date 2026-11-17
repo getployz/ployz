@@ -521,7 +521,7 @@ impl std::fmt::Display for LimitsRefusal {
 
 /// Ask a Machine to record `spec` as the resolved spec of the running Service
 /// Container `container_id`, which keeps running untouched. The Machine refuses
-/// unless `spec` differs from the Container's spec in placement only, and unless
+/// unless [`admit_placement`] admits `spec` over the Container's spec, and unless
 /// the Machine itself satisfies that placement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UpdateContainerPlacementRequest {
@@ -550,6 +550,48 @@ pub enum PlacementRefusal {
 
 impl Evidence for PlacementRefusal {
     const KEY: Option<&'static str> = Some("reason");
+}
+
+/// What a Machine does with a placement request it admits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlacementAdmission {
+    /// The spec is the Container's under another placement, and the Machine records it.
+    Record,
+    /// The Container's spec already carries the placement, as after a resent request.
+    Recorded,
+}
+
+/// Whether `spec` may take the place of `stored`, the spec of a running Service
+/// Container: only when the two are equal apart from a placement a Replicated
+/// Service can change in place.
+///
+/// A Deploy asks this before it plans the request and the Machine asks it again
+/// on receipt, so a Deploy sends only what a Machine records.
+///
+/// # Errors
+///
+/// Refuses a spec of another Service, and one that differs in more than placement.
+pub fn admit_placement(
+    stored: &ResolvedServiceSpec,
+    spec: &ResolvedServiceSpec,
+) -> Result<PlacementAdmission, PlacementRefusal> {
+    if stored.service_id != spec.service_id || stored.name != spec.name {
+        return Err(PlacementRefusal::OtherService);
+    }
+    let placed = ResolvedServiceSpec {
+        placement: spec.placement.clone(),
+        ..stored.clone()
+    };
+    match crate::compare_specs(stored, &spec.to_requested()) {
+        crate::SpecChange::UpToDate if placed == *spec => Ok(PlacementAdmission::Recorded),
+        crate::SpecChange::NeedsPlacementUpdate if placed == *spec => {
+            Ok(PlacementAdmission::Record)
+        }
+        crate::SpecChange::UpToDate
+        | crate::SpecChange::NeedsPlacementUpdate
+        | crate::SpecChange::NeedsUpdate
+        | crate::SpecChange::NeedsRecreate => Err(PlacementRefusal::NeedsRecreate),
+    }
 }
 
 impl std::fmt::Display for PlacementRefusal {

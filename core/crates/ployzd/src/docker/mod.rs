@@ -1418,8 +1418,9 @@ pub enum Error {
         container_id: ContainerId,
         refusal: LimitsRefusal,
     },
-    #[error("container {container_id} cannot take this placement in place: {refusal}")]
+    #[error("{service} cannot take this placement in place: {refusal}")]
     PlacementRefused {
+        service: ployz_core::ServiceName,
         container_id: ContainerId,
         refusal: PlacementRefusal,
     },
@@ -1574,7 +1575,17 @@ impl From<&Error> for RpcError {
             }
             Error::DiskFull { full, .. } => full.to_details(),
             Error::LimitsRefused { refusal, .. } => refusal.to_details(),
-            Error::PlacementRefused { refusal, .. } => refusal.to_details(),
+            Error::PlacementRefused {
+                container_id,
+                refusal,
+                ..
+            } => {
+                let mut details = refusal.to_details();
+                if let Some(details) = details.as_object_mut() {
+                    details.insert("container_id".to_owned(), serde_json::json!(container_id));
+                }
+                details
+            }
             Error::SpecNotFound(_) => {
                 ployz_core::ContainerNotFoundReason::NoResolvedSpec.to_details()
             }

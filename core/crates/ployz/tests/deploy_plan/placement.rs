@@ -1253,8 +1253,29 @@ fn records_placements(mut machine: MachineObservation) -> MachineObservation {
     machine
 }
 
+fn placement_updates(operations: &[DeployOperation]) -> Vec<&ployz_core::ContainerUpdateOperation> {
+    operations
+        .iter()
+        .filter_map(|operation| {
+            if let DeployOperation::UpdateContainer(update) = operation
+                && update.change == ployz_core::InPlaceChange::Placement
+            {
+                Some(update)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn replaces_a_container(operations: &[DeployOperation]) -> bool {
+    operations
+        .iter()
+        .any(|operation| matches!(operation, DeployOperation::ReplaceContainer(_)))
+}
+
 #[test]
-fn a_new_region_keeps_a_service_already_in_it_and_rolls_one_with_a_replica_outside() {
+fn a_new_region_keeps_every_replica_already_in_it_and_moves_only_the_one_outside() {
     let db = replicated("db", 1);
     let web = replicated("web", 2);
     let snapshot = DeploySnapshot {
@@ -1275,29 +1296,25 @@ fn a_new_region_keeps_a_service_already_in_it_and_rolls_one_with_a_replica_outsi
     let preview = plan_deploy([&db, &web], &snapshot, PlanOptions::default()).unwrap();
 
     let operations = operations(&preview);
-    let updates: Vec<_> = operations
-        .iter()
-        .filter_map(|operation| {
-            if let DeployOperation::UpdateContainer(update) = operation {
-                Some(update)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let [update] = updates.as_slice() else {
-        panic!("only db stays under its own id: {operations:?}")
-    };
-    assert_eq!(update.container_id, container_id('a'));
-    assert_eq!(update.change, ployz_core::InPlaceChange::Placement);
-    assert_eq!(update.spec.placement, db.placement);
+    assert_eq!(
+        placement_updates(&operations)
+            .iter()
+            .map(|update| (update.container_id, &update.spec.placement))
+            .collect::<Vec<_>>(),
+        [
+            (container_id('a'), &db.placement),
+            (container_id('b'), &web.placement)
+        ],
+        "{operations:?}"
+    );
+    assert!(!replaces_a_container(&operations), "{operations:?}");
     assert!(
         operations.iter().any(|operation| matches!(
             operation,
-            DeployOperation::ReplaceContainer(ReplacementOperation { old_container_id, .. })
-                if *old_container_id == container_id('b')
+            DeployOperation::RunContainer { machine_id: on, spec, .. }
+                if *on == machine_id('1') && spec.name == web.name
         )),
-        "the web replica in fsn rolls with the one outside it: {operations:?}"
+        "the replica outside fsn starts again inside it: {operations:?}"
     );
     assert!(
         operations.iter().any(|operation| matches!(
@@ -1307,14 +1324,132 @@ fn a_new_region_keeps_a_service_already_in_it_and_rolls_one_with_a_replica_outsi
         )),
         "{operations:?}"
     );
+}
+
+#[test]
+fn clearing_a_region_spreads_stacked_replicas_without_replacing_one() {
+    let web = replicated("web", 2);
+    let stacked = kept_in(web.clone(), "fsn");
+    let plan = plan_deploy(
+        [&web],
+        &DeploySnapshot {
+            machines: vec![
+                records_placements(in_region(machine('1', "first"), "fsn")),
+                records_placements(in_region(machine('2', "second"), "syd")),
+            ],
+            containers: vec![
+                container('b', '1', &stacked, &service_id('b')),
+                container('c', '1', &stacked, &service_id('b')),
+            ],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    let operations = operations(&plan);
+    let updates = placement_updates(&operations);
+    let [kept] = updates.as_slice() else {
+        panic!("one stacked replica stays under its own id: {operations:?}")
+    };
+    assert_eq!(kept.machine_id, machine_id('1'));
+    assert!(!replaces_a_container(&operations), "{operations:?}");
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { machine_id: on, .. } if *on == machine_id('2')
+        )),
+        "{operations:?}"
+    );
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RemoveContainer { container_id: removed, .. }
+                if *removed != kept.container_id
+        )),
+        "{operations:?}"
+    );
+}
+
+#[test]
+fn a_new_region_with_one_more_replica_keeps_the_running_one_and_changes_only_its_placement() {
+    let running = container('b', '1', &replicated("web", 1), &service_id('b'));
+    let web = kept_in(replicated("web", 2), "fsn");
+    let plan = plan_deploy(
+        [&web],
+        &DeploySnapshot {
+            machines: vec![
+                records_placements(in_region(machine('1', "first"), "fsn")),
+                records_placements(in_region(machine('2', "second"), "fsn")),
+            ],
+            containers: vec![running.clone()],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    let operations = operations(&plan);
+    let updates = placement_updates(&operations);
+    let [kept] = updates.as_slice() else {
+        panic!("the running replica stays under its own id: {operations:?}")
+    };
+    assert_eq!(kept.container_id, container_id('b'));
+    let mut recorded = running.resolved_spec.clone();
+    recorded.placement = web.placement.clone();
+    assert_eq!(kept.spec, recorded);
+    assert!(!replaces_a_container(&operations), "{operations:?}");
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { machine_id: on, spec, .. }
+                if *on == machine_id('2') && spec.mode == web.mode
+        )),
+        "{operations:?}"
+    );
+}
+
+#[test]
+fn replicas_recorded_under_two_service_ids_are_replaced_when_the_region_changes() {
+    let web = replicated("web", 2);
+    let plan = plan_deploy(
+        [&kept_in(web.clone(), "fsn")],
+        &DeploySnapshot {
+            machines: vec![
+                records_placements(in_region(machine('1', "first"), "fsn")),
+                records_placements(in_region(machine('2', "second"), "fsn")),
+            ],
+            containers: vec![
+                container('b', '1', &web, &service_id('b')),
+                container('c', '2', &web, &service_id('c')),
+            ],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    let operations = operations(&plan);
+    assert!(
+        placement_updates(&operations).is_empty(),
+        "a Server refuses a placement sent under another Service's id: {operations:?}"
+    );
     assert_eq!(
         operations
             .iter()
-            .filter(|operation| operation.serves_new_spec())
-            .map(DeployOperation::machine_id)
-            .collect::<BTreeSet<_>>(),
-        BTreeSet::from([machine_id('1'), machine_id('2')]),
+            .filter(|operation| matches!(operation, DeployOperation::ReplaceContainer(_)))
+            .count(),
+        2,
         "{operations:?}"
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter_map(|operation| operation.spec().map(|spec| spec.service_id))
+            .collect::<BTreeSet<_>>()
+            .len(),
+        1,
+        "both replicas come back under one Service id: {operations:?}"
     );
 }
 
