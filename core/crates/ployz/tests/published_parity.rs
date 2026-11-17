@@ -46,7 +46,10 @@ fn fake_cloud(cloud: Arc<Mutex<Cloud>>) -> String {
             reader.read_exact(&mut vec![0; length]).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
             let mut cloud = cloud.lock().unwrap();
-            cloud.routes.push(route.clone());
+            // Every run reports itself; the routes under test are the command's own.
+            if route != "POST /api/cli/agent/calls" {
+                cloud.routes.push(route.clone());
+            }
             let (status, body) = match route.as_str() {
                 "GET /api/cli/manifest" => (200, cloud.manifest.clone()),
                 run if run.starts_with("POST /api/cli/run/") => (200, json!({ "output": {} })),
@@ -92,6 +95,7 @@ impl Fixture {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command.arg("--why=test");
         command
             .args(args)
             .env("HOME", self.home.path())
@@ -240,6 +244,25 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// An input schema without `intent`, and without the empty `properties` and `required`
+/// that adding it may have created.
+fn without_intent(schema: &Value) -> Value {
+    let mut schema = schema.clone();
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        properties.remove("intent");
+        if properties.is_empty() {
+            schema.as_object_mut().unwrap().remove("properties");
+        }
+    }
+    if let Some(required) = schema["required"].as_array_mut() {
+        required.retain(|name| name != "intent");
+        if required.is_empty() {
+            schema.as_object_mut().unwrap().remove("required");
+        }
+    }
+    schema
+}
+
 fn named<'a>(tools: &'a [Value], name: &str) -> Option<&'a Value> {
     tools.iter().find(|tool| tool["name"] == name)
 }
@@ -375,8 +398,16 @@ fn mcp_offers_a_published_entry_only_when_marked_for_agents_with_the_entry_s_inp
             }
         } else {
             assert_eq!(tool["description"], about, "{tool}");
-            assert_eq!(tool["inputSchema"], entry["input"], "{tool}");
+            assert_eq!(
+                without_intent(&tool["inputSchema"]),
+                without_intent(&entry["input"]),
+                "{tool}"
+            );
         }
+        assert_eq!(
+            tool["inputSchema"]["properties"]["intent"]["type"],
+            "string"
+        );
         assert_eq!(tool["outputSchema"], entry["output"], "{tool}");
         let read = entry["kind"] == "read";
         assert_eq!(tool["annotations"]["readOnlyHint"], read, "{tool}");
