@@ -1146,7 +1146,6 @@ pub enum MachineAction {
     RemoveVolume,
     /// Change a running Container's CPU and memory limits in place.
     UpdateContainerLimits,
-    /// Record a running Container's new placement in place.
     UpdateContainerPlacement,
     /// Make a Service image present before any Container changes.
     PullImage,

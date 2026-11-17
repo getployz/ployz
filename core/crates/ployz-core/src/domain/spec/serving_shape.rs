@@ -23,8 +23,6 @@ impl ServingShape {
         Self::from_fields(&Self::fields_of_resolved(spec))
     }
 
-    /// The shape `spec` would have under `placement`. Equal to a requested spec's
-    /// shape when the two differ in placement at most.
     pub(super) fn of_resolved_placed(spec: &ResolvedServiceSpec, placement: &Placement) -> Self {
         Self::from_fields(&Self::resolved_fields(
             spec,

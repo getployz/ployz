@@ -526,7 +526,6 @@ impl Failure {
                     cause,
                 )
             }
-            // The Server answered, and this update never asks Docker for anything.
             ExecutionError::Machine {
                 action: MachineAction::UpdateContainerPlacement,
                 error,

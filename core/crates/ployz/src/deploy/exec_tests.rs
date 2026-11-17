@@ -92,7 +92,6 @@ enum Call {
     RemoveVolume(DockerVolumeId),
     /// Limits of a running Container changed in place.
     UpdateLimits(MachineId, ContainerId),
-    /// A running Container's new placement recorded in place.
     UpdatePlacement(MachineId, ContainerId),
 }
 

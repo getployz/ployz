@@ -57,7 +57,6 @@ impl ContainerRuntime {
             Ok(Admitted::Change) => false,
             Err(refusal) => return Err(refused(refusal)),
         };
-        // The Deploy keeps this copy because it serves; a stopped one is replaced instead.
         if !is_running(&inspected) {
             return Err(refused(PlacementRefusal::NotRunning));
         }
@@ -85,9 +84,7 @@ impl ContainerRuntime {
 
 #[derive(Debug, Eq, PartialEq)]
 enum Admitted {
-    /// The spec differs from the stored one in placement only.
     Change,
-    /// The stored spec already serves this shape, as after a request whose answer was lost.
     Recorded,
 }
 

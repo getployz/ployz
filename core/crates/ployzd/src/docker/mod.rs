@@ -1418,7 +1418,6 @@ pub enum Error {
         container_id: ContainerId,
         refusal: LimitsRefusal,
     },
-    /// The requested spec is not a placement-only change of this running Container's spec.
     #[error("container {container_id} cannot take this placement in place: {refusal}")]
     PlacementRefused {
         container_id: ContainerId,

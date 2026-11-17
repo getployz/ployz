@@ -58,8 +58,6 @@ async fn an_update_keeps_the_same_copy_in_and_starts_nothing() {
     client.assert_done();
 }
 
-/// A placement goes to the op that records it, never to the one that asks
-/// Docker for new limits.
 #[tokio::test]
 async fn a_placement_update_records_the_placement_and_keeps_the_copy_in() {
     let machine = machine('1');
