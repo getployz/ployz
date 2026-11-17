@@ -39,6 +39,9 @@ ignoredBuiltDependencies:
 
 overrides:
   nf3: 0.3.17
+  # Below 1.6.11 a request body sent to a server function can stall the server while it is read.
+  'seroval@>=1.6.0 <1.6.11': 1.6.11
+  'seroval-plugins@>=1.6.0 <1.6.11': 1.6.11
 
 patchedDependencies:
   '@better-auth/core@1.7.16': patches/@better-auth__core@1.7.16.patch
