@@ -2694,6 +2694,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-ai-agent"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ce34f96fe3c153249008a32aa047b8ccdfadae74615af6eea7ac877c6b3df05"
+
+[[package]]
 name = "is_executable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4027,6 +4033,7 @@ dependencies = [
  "indicatif",
  "ipnet",
  "iroh",
+ "is-ai-agent",
  "nix 0.29.0",
  "oci-client",
  "ployz-build",

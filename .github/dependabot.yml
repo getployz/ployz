@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Agent detection reads its markers from this crate, and new agents ship new markers.
+  - package-ecosystem: cargo
+    directory: /core
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: is-ai-agent
