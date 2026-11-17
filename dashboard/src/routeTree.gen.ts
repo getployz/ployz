@@ -60,6 +60,7 @@ import { Route as ApiBuildsBuildGrantRouteImport } from './routes/api/builds/$bu
 import { Route as ApiBuildsBuildStepsRouteImport } from './routes/api/builds/$build/steps'
 import { Route as ApiCliAgentActRouteImport } from './routes/api/cli/agent/act'
 import { Route as ApiCliAgentAskRouteImport } from './routes/api/cli/agent/ask'
+import { Route as ApiCliAgentCallsRouteImport } from './routes/api/cli/agent/calls'
 import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/reset'
 import { Route as ApiCliRunNameRouteImport } from './routes/api/cli/run/$name'
 import { Route as ApiCliSealingRecipientRouteImport } from './routes/api/cli/sealing/recipient'
@@ -357,6 +358,11 @@ const ApiCliAgentActRoute = ApiCliAgentActRouteImport.update({
 const ApiCliAgentAskRoute = ApiCliAgentAskRouteImport.update({
   id: '/api/cli/agent/ask',
   path: '/api/cli/agent/ask',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliAgentCallsRoute = ApiCliAgentCallsRouteImport.update({
+  id: '/api/cli/agent/calls',
+  path: '/api/cli/agent/calls',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCliCloudResetRoute = ApiCliCloudResetRouteImport.update({
@@ -663,6 +669,7 @@ export interface FileRoutesByFullPath {
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/agent/act': typeof ApiCliAgentActRoute
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
+  '/api/cli/agent/calls': typeof ApiCliAgentCallsRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
   '/api/cli/sealing/recipient': typeof ApiCliSealingRecipientRouteWithChildren
@@ -746,6 +753,7 @@ export interface FileRoutesByTo {
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/agent/act': typeof ApiCliAgentActRoute
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
+  '/api/cli/agent/calls': typeof ApiCliAgentCallsRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
   '/api/cli/sealing/recipient': typeof ApiCliSealingRecipientRouteWithChildren
@@ -831,6 +839,7 @@ export interface FileRoutesById {
   '/api/builds/$build/steps': typeof ApiBuildsBuildStepsRoute
   '/api/cli/agent/act': typeof ApiCliAgentActRoute
   '/api/cli/agent/ask': typeof ApiCliAgentAskRoute
+  '/api/cli/agent/calls': typeof ApiCliAgentCallsRoute
   '/api/cli/cloud/reset': typeof ApiCliCloudResetRoute
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
   '/api/cli/sealing/recipient': typeof ApiCliSealingRecipientRouteWithChildren
@@ -918,6 +927,7 @@ export interface FileRouteTypes {
     | '/api/builds/$build/steps'
     | '/api/cli/agent/act'
     | '/api/cli/agent/ask'
+    | '/api/cli/agent/calls'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
     | '/api/cli/sealing/recipient'
@@ -1001,6 +1011,7 @@ export interface FileRouteTypes {
     | '/api/builds/$build/steps'
     | '/api/cli/agent/act'
     | '/api/cli/agent/ask'
+    | '/api/cli/agent/calls'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
     | '/api/cli/sealing/recipient'
@@ -1085,6 +1096,7 @@ export interface FileRouteTypes {
     | '/api/builds/$build/steps'
     | '/api/cli/agent/act'
     | '/api/cli/agent/ask'
+    | '/api/cli/agent/calls'
     | '/api/cli/cloud/reset'
     | '/api/cli/run/$name'
     | '/api/cli/sealing/recipient'
@@ -1168,6 +1180,7 @@ export interface RootRouteChildren {
   ApiBuildsBuildStepsRoute: typeof ApiBuildsBuildStepsRoute
   ApiCliAgentActRoute: typeof ApiCliAgentActRoute
   ApiCliAgentAskRoute: typeof ApiCliAgentAskRoute
+  ApiCliAgentCallsRoute: typeof ApiCliAgentCallsRoute
   ApiCliCloudResetRoute: typeof ApiCliCloudResetRoute
   ApiCliRunNameRoute: typeof ApiCliRunNameRoute
   ApiCliSealingRecipientRoute: typeof ApiCliSealingRecipientRouteWithChildren
@@ -1535,6 +1548,13 @@ declare module '@tanstack/react-router' {
       path: '/api/cli/agent/ask'
       fullPath: '/api/cli/agent/ask'
       preLoaderRoute: typeof ApiCliAgentAskRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/agent/calls': {
+      id: '/api/cli/agent/calls'
+      path: '/api/cli/agent/calls'
+      fullPath: '/api/cli/agent/calls'
+      preLoaderRoute: typeof ApiCliAgentCallsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/cli/cloud/reset': {
@@ -2069,6 +2089,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiBuildsBuildStepsRoute: ApiBuildsBuildStepsRoute,
   ApiCliAgentActRoute: ApiCliAgentActRoute,
   ApiCliAgentAskRoute: ApiCliAgentAskRoute,
+  ApiCliAgentCallsRoute: ApiCliAgentCallsRoute,
   ApiCliCloudResetRoute: ApiCliCloudResetRoute,
   ApiCliRunNameRoute: ApiCliRunNameRoute,
   ApiCliSealingRecipientRoute: ApiCliSealingRecipientRouteWithChildren,
