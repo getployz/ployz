@@ -17,8 +17,8 @@ A server is in a region when its `region` label names it:
 ployz server set web-1 --label-add region=fsn
 ```
 
-Choose any short name. Servers with the same name are in the same region. Upper and lower case
-are the same, so `FSN` is `fsn`.
+Choose any short name made of letters, digits, hyphens, underscores and dots. Servers with the
+same name are in the same region. Upper and lower case are the same, so `FSN` is `fsn`.
 
 ## Set an environment's region
 
@@ -50,9 +50,10 @@ Ployz refuses a region none of your servers is in, and stages nothing:
 error: No Server is in lhr. Regions: fsn, syd.
 ```
 
-Ployz checks this when it can read your servers' labels. If no server answers, or the agent runs
-without Ployz Cloud, the region is staged unchecked, and the deploy reports the services it
-couldn't start. See [When no server is in the region](#when-no-server-is-in-the-region).
+If no server answers, `ployz env region` stages the region unchecked, and the deploy reports the
+services it couldn't start. See [When no server is in the region](#when-no-server-is-in-the-region).
+The agent asks you to try again once your servers answer. An agent without Ployz Cloud stages the
+region unchecked.
 
 To run in any region again:
 
