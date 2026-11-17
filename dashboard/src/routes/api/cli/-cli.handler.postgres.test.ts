@@ -1895,7 +1895,7 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `organizations/${slug}`, alice)).status, 422);
 
         // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
-        const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
+        const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command, { approval: "not_required", permissions: permissionsOf("owner") });
         const created = yield* write({ operation: "write", command: {
           command: "create_project", id: "00000000-0000-4000-8000-000000001260", name: "shop",
           default_environment: "00000000-0000-4000-8000-000000001261",
@@ -2717,7 +2717,7 @@ const ownNamespace = Effect.fn(function* (organizationId: string, userId: string
       command: "create_project", id: "00000000-0000-4000-8000-00000000d401", name: "shop",
       default_environment: "00000000-0000-4000-8000-00000000d402",
     },
-  }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
+  }, { approval: "not_required", permissions: permissionsOf("owner") });
   assert.isTrue(created.ok);
   yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id)
     values (${organizationId}, 'shop-production', '00000000-0000-4000-8000-00000000d402')`);

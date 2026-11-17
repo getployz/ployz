@@ -195,7 +195,7 @@ it.live("the Store still judges the raw Publish: a malformed Environment or an u
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
     yield* provided(seedStoreGitService(ORGANIZATION, ids));
-    const publish = (command: JsonObject) => provided(callStore(ORGANIZATION, userId, { operation: "write", command: raw(command) }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }));
+    const publish = (command: JsonObject) => provided(callStore(ORGANIZATION, userId, { operation: "write", command: raw(command) }, { approval: "not_required", permissions: permissionsOf("owner") }));
 
     const refused: JsonObject[] = [
       { command: "publish", environment: 5, version: null, accept_volume_loss: [] },

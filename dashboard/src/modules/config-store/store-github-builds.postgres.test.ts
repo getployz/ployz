@@ -157,7 +157,7 @@ it.live(
       const cancelledBefore = github.cancelsOf(9001);
       const cancelled = yield* provided(callStore(ORGANIZATION, "00000000-0000-4000-8000-00000000b0ff", {
         operation: "write", command: { command: "cancel", deployment: "00000000-0000-4000-8000-00000000b102" },
-      }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }));
+      }, { approval: "not_required", permissions: permissionsOf("owner") }));
       expect(cancelled).toMatchObject({ ok: true });
       expect(github.cancelsOf(9001)).toBeGreaterThan(cancelledBefore);
       expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ held: { status: "failed" } });

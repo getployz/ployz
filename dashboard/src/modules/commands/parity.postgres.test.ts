@@ -1,14 +1,14 @@
 import { it } from "@effect/vitest";
 import type { JsonValue } from "@ployz/sdk";
+import type { JsonObject } from "#/db/tables";
 import { EventType, type StreamChunk } from "@tanstack/ai";
-import { fakeText } from "@tanstack/ai/testing";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Fiber, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
-import { asRecord } from "#/lib/json";
+import { asRecord, projectJsonObject } from "#/lib/json";
 import { asTestDouble } from "#/lib/test-double";
 import { agentChat } from "#/modules/agent/agent-chat.server";
-import { runAgentCall } from "#/modules/agent/agent-runner.server";
+import { runAsAgent, scriptedAgent } from "#/test/agent-call";
 import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { manifest } from "#/modules/commands/commands.server";
@@ -112,7 +112,7 @@ const parity = Effect.fn(function* (billing?: "free" | "production") {
   });
 
   let runs = 0;
-  const converse = (model: ReturnType<typeof fakeText>) => provided(agentChat(caller, {
+  const converse = (model: ReturnType<typeof scriptedAgent>) => provided(agentChat(caller, {
     messages: [{ role: "user", content: "go" }], threadId: `thread-${++runs}`, runId: `run-${runs}`, forwardedProps: {},
   }, model)).pipe(Effect.flatMap((stream) => Effect.promise(async () => {
     const chunks: StreamChunk[] = [];
@@ -121,7 +121,7 @@ const parity = Effect.fn(function* (billing?: "free" | "production") {
   })));
 
   const sidebar = (name: string, input: JsonValue) => Effect.gen(function* () {
-    const model = fakeText();
+    const model = scriptedAgent();
     model.setResponses([{ toolCalls: [{ name, input }] }, { text: "Done." }]);
     const chunks = yield* converse(model);
     const [heard, ...more] = chunks.flatMap((chunk) => chunk.type === EventType.TOOL_CALL_RESULT ? [chunk.content] : []);
@@ -130,7 +130,7 @@ const parity = Effect.fn(function* (billing?: "free" | "production") {
   });
 
   const listed = Effect.gen(function* () {
-    const model = fakeText();
+    const model = scriptedAgent();
     let tools: ReadonlyArray<{ name: string; inputSchema?: unknown }> = [];
     model.setResponses([({ request }) => {
       tools = request.tools ?? [];
@@ -173,6 +173,14 @@ const parity = Effect.fn(function* (billing?: "free" | "production") {
   return { route, sidebar, converse, listed, rows, probesAsked, team, provided, restore, checker, approvals: approvals.map(({ id }) => id), userId };
 });
 
+const withoutIntent = (schema: JsonObject | null): JsonObject | null => {
+  if (schema === null) return null;
+  const { intent: _intent, ...properties } = asRecord(schema["properties"]) ?? {};
+  const rest: JsonObject = { ...schema, properties };
+  if (Array.isArray(schema["required"])) rest["required"] = schema["required"].filter((name) => name !== "intent");
+  return rest;
+};
+
 it.live("lists each agent command in the sidebar with the manifest's input schema, so the agent never calls a command with a different input than ployz", () =>
   Effect.gen(function* () {
     const { listed } = yield* parity();
@@ -180,7 +188,8 @@ it.live("lists each agent command in the sidebar with the manifest's input schem
     const served = new Map(manifest().commands.map((entry) => [entry["name"], entry["input"]]));
     for (const command of COMMANDS) {
       expect(tools.has(command.name), command.name).toBe(command.agents);
-      if (command.agents) expect(tools.get(command.name), command.name).toEqual(served.get(command.name));
+      // The agent's tools add `intent`; everything else is the command's own input.
+      if (command.agents) expect(withoutIntent(projectJsonObject(tools.get(command.name))), command.name).toEqual(served.get(command.name));
     }
   }));
 
@@ -232,7 +241,7 @@ it.live("asks before changing a role, removing a member or revoking an invite th
     for (const [name, input] of writes) {
       const viaRoute = yield* route(name, input);
       expect(asRecord(asRecord(viaRoute.body)?.["error"])?.["code"], name).toBe("approval_required");
-      const model = fakeText();
+      const model = scriptedAgent();
       model.setResponses([{ toolCalls: [{ name, input }] }, { text: "Done." }]);
       const chunks = yield* converse(model);
       const asking = chunks.flatMap((chunk) =>
@@ -301,7 +310,7 @@ it.live("an approved call that refused once it ran hears its retry without the a
     const { provided, userId } = yield* parity();
     const { id, input } = yield* approvedPromotion(provided, userId, "session-1");
     const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
-    const call = (key: string) => provided(runAgentCall(agent, { tool: "org_member_role", input, key, approvalId: id, page: { at: "organization" } }));
+    const call = (key: string) => provided(runAsAgent(agent, { tool: "org_member_role", input, key, approvalId: id, page: { at: "organization" } }));
     const first = yield* call("role-first");
     expect(first).toMatchObject({ outcome: { ok: false, refusal: { message: "Only an owner or admin of this Organization can do this.", writes: "unknown" } } });
     const retry = "outcome" in first && "refusal" in first.outcome && "retry" in first.outcome.refusal ? first.outcome.refusal.retry : undefined;
@@ -323,7 +332,7 @@ it.live("an approved role change runs once: repeating it after the role was rest
     const roleOf = Effect.map(team, ({ members }) => members.find((row) => row.userId === bob)?.role);
     const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
     const input = { member: "bob@example.test", role: "member" };
-    const call = (key: string, approvalId: string | null) => provided(runAgentCall(agent, { tool: "org_member_role", input, key, approvalId, page: { at: "organization" } }));
+    const call = (key: string, approvalId: string | null) => provided(runAsAgent(agent, { tool: "org_member_role", input, key, approvalId, page: { at: "organization" } }));
 
     const asked = yield* call("demote-ask", null);
     const { refusal } = "asking" in asked ? asked.asking : expect.fail("the demotion ran without asking");
@@ -347,7 +356,7 @@ it.live("a command that never asks refuses an approval carried into it, and chan
     const { id } = yield* approvedPromotion(provided, userId, "session-1");
     const before = yield* rows;
     const agent = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" } as const;
-    const ran = yield* provided(runAgentCall(agent, { tool: "server_upgrade_policy_set", input: { channel: "beta" }, key: "carried", approvalId: id, page: { at: "organization" } }));
+    const ran = yield* provided(runAsAgent(agent, { tool: "server_upgrade_policy_set", input: { channel: "beta" }, key: "carried", approvalId: id, page: { at: "organization" } }));
     expect(ran).toMatchObject({ outcome: { ok: false, refusal: { code: "forbidden", details: { approval_id: id } } } });
     expect(yield* rows).toEqual(before);
   }));
