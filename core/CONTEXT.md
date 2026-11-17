@@ -428,6 +428,14 @@ _Avoid_: Every container replacement, implicit Volume deletion
 A human's assent to one exact destructive set, pinned as `version:digest`. The version pins the Working and Saved revisions and the Head reviewed; the digest hashes the Organization, the Environment, and the sorted Destructive Effects. Publish and a manual Deploy that publishes ask; so do removing a Server Cloud manages (always), a Drain that leaves a Global Service running on no other Server, turning web traffic off on the last Server with a public IP that takes it, and a clean of a Namespace that stops a Service or deletes Volume data. Each asks only when Cloud requires it as trusted evidence. Setting edits and Deploys of already-Saved State never ask. A removal not yet deployed asks again on every Publication that still carries it. A stale or different digest refuses with the fresh review. Approval is separate from Data Loss Confirmation, which still names each Volume whose data a Deploy deletes.
 _Avoid_: Confirmation flag, approval token, caller-asserted approval
 
+**Agent call**:
+One thing an AI agent asks of Ployz, through one of four surfaces: hosted `/mcp`, the Agent sidebar, local `ployz mcp` and the CLI. One CLI command is one call, however many requests it makes. `ployz mcp` serving 40 tool calls is 40 calls, and `ployz mcp` itself is none. A call that only waits on an Approval records nothing, and the retry that completes it records one call. Cloud records each call with its Reason; see Call report in `dashboard/CONTEXT.md`.
+_Avoid_: Request (one command makes many), session (a session groups calls)
+
+**Reason**:
+Why an agent made a call: `--why` on the CLI, `intent` on MCP. It is required only when an AI agent is detected. `AI_AGENT` names the agent, else the `is-ai-agent` crate reads the environment, and `AI_AGENT=off` turns detection off. People, scripts and CI with no agent marker are neither asked for a Reason nor recorded. An agent marker set together with `CI` is still an agent, so the Reason is still required. Signed out, or run with `--connect` or `--context`, the Reason is still required and nothing is reported. On MCP every tool takes a required `intent`, and a call without one is refused. `ployz mcp` itself, help, `--version`, `completion`, `server checkin` and Internal verbs need no Reason.
+_Avoid_: Intent and why as separate concepts, justification
+
 **Deploy Progress**:
 Live evidence of one in-flight Deploy: the current operation, the completed prefix, and health/hook waits. It is not Cluster Watch, not a workflow status, and not persisted.
 _Avoid_: Watch frame, durable Deploy status, workflow state

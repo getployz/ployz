@@ -254,6 +254,10 @@ _Avoid_: Batch, plan (as a noun for this), multi-approval, workflow
 The Agent sidebar's view of the Deployment a command started, in the Deployments place's words and statuses.
 _Avoid_: Job card, task card
 
+**Call report**:
+Cloud's record of one Agent call (see the core glossary for what counts as one and when a Reason is required), made as the member and Organization whose credential made it. Hosted `/mcp` and the Agent sidebar record in process, and refuse a call without an `intent` the same way `ployz mcp` does. `ployz mcp` and the CLI post theirs to `/api/cli/agent/calls`, best effort, so a slow or missing Cloud never changes a result. It holds the tool or command name, the Reason, how long the call took, and the kind of failure. Arguments and results are never part of it. Signed out, a run reports nothing, because it has no credential to report as.
+_Avoid_: Audit log, usage event
+
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Deployment and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 
 Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. A Config's references count as references of every Service that mounts it. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering.
