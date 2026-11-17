@@ -108,17 +108,8 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             crate::ui::note(format_args!("No staged changes in {where_}."));
         }
         if let Some(region) = &view.region {
-            let shown = |region: &Option<ployz_core::Region>| {
-                region
-                    .as_ref()
-                    .map_or_else(|| "any Server".to_owned(), ToString::to_string)
-            };
-            crate::ui::stream(format_args!(
-                "{}: {} → {}",
-                SettingPath::REGION,
-                shown(&region.before),
-                shown(&region.after)
-            ));
+            let [before, after] = region.sides();
+            crate::ui::stream(format_args!("{}: {before} → {after}", SettingPath::REGION));
         }
         // Where a staged change came from, when another Environment sent it.
         let from = |row: Option<&ployz_store::RowId>| {

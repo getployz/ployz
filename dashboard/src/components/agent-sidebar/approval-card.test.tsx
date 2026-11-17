@@ -279,6 +279,13 @@ it("says who asked, and shows the change their ask saves apart from what else it
   expect(card.getByText(line(/web .*1 → 2/))).toBeTruthy();
 });
 
+it("shows a region change, which no Service's change holds", () => {
+  const diff = asTestDouble<DiffView>()({ ...approval.review.diff, total_count: 1, changes: [], region: { before: null, after: "fsn" } });
+  show(asTestDouble<ApprovalView>()({ ...approval, review: { effects: [], diff } }));
+  const card = within(screen.getByLabelText("Deploy shop/production needs approval"));
+  expect(card.getByText(line(/production Region any server → fsn/))).toBeTruthy();
+});
+
 it("lists a Sync's changes without claiming it saves the target's unsaved edit", () => {
   const diff = asTestDouble<DiffView>()({
     ...approval.review.diff,

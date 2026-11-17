@@ -682,6 +682,29 @@ fn a_new_volume_on_a_second_replica_is_refused_in_a_whole_sentence() {
 }
 
 #[test]
+fn review_and_environment_show_name_and_count_a_region_change() {
+    let store = shop();
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who(), &edit).unwrap();
+
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    assert_eq!(review["staged"], 1, "{review}");
+    assert_eq!(
+        review["lines"],
+        json!(["@environment.region: any Server -> fsn"])
+    );
+    let shown = call(&store, "environment_show", json!({}), "show-1").ok();
+    assert_eq!(shown["staged"], 1, "{shown}");
+}
+
+#[test]
 fn review_reads_domain_changes_as_domains() {
     let store = shop();
     let service = json!({ "name": "web", "image": "traefik/whoami" });

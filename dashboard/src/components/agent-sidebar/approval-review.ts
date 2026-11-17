@@ -26,6 +26,14 @@ function changeLines(diff: DiffView, changes: DiffView["changes"], effects: Appr
   });
 }
 
+/** The region change, which no node of `changes` holds. */
+function regionLine(diff: DiffView): ChangeLine[] {
+  if (!diff.region) return [];
+  const { before, after } = diff.region;
+  return [{ key: "@environment.region", mark: before === null ? "+" : after === null ? "−" : "~", node: diff.environment.name, name: "Region", variable: false,
+    values: `${before ?? "any server"} → ${after ?? "any server"}` }];
+}
+
 /**
  * What an ask changes besides what it destroys: `asked` is the asker's own unsaved edit, which only a Save or Deploy
  * saves, and `others` everything else it deploys. A Sync or Take leaves the target's unsaved edit alone.
@@ -36,5 +44,5 @@ export function reviewedChanges(command: string, review: ApprovalReview) {
   const saves = command === "publish" || command === "admit";
   const asked = saves ? changeLines(diff, diff.draft_changes ?? [], effects) : [];
   const keys = new Set(asked.map((line) => line.key));
-  return { asked, others: changeLines(diff, diff.changes, effects).filter((line) => !keys.has(line.key)) };
+  return { asked, others: [...regionLine(diff), ...changeLines(diff, diff.changes, effects).filter((line) => !keys.has(line.key))] };
 }

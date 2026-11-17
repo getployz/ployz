@@ -118,6 +118,19 @@ pub struct RegionChange {
     pub after: Option<Region>,
 }
 
+impl RegionChange {
+    /// Where the Services ran and where they run next, as people read it: a region,
+    /// or `any Server`.
+    #[must_use]
+    pub fn sides(&self) -> [String; 2] {
+        [&self.before, &self.after].map(|region| {
+            region
+                .as_ref()
+                .map_or_else(|| "any Server".to_owned(), ToString::to_string)
+        })
+    }
+}
+
 impl DiffView {
     /// Whether nothing is staged: no node, no Setting and no region.
     #[must_use]
@@ -158,7 +171,8 @@ impl DiffView {
         changes
     }
 
-    /// How many changes [`Self::review_changes`] lists, counting each node and each Setting.
+    /// How many changes a review lists: each node and each Setting of
+    /// [`Self::review_changes`], and the region.
     #[must_use]
     pub fn review_count(&self) -> usize {
         self.review_changes()
@@ -166,7 +180,8 @@ impl DiffView {
             .map(|change| {
                 change.settings.len() + usize::from(change.lifecycle != ReviewLifecycleKind::Update)
             })
-            .sum()
+            .sum::<usize>()
+            + usize::from(self.region.is_some())
     }
 
     /// The draft reversals on nodes with no deploy change: saved changes the draft no

@@ -11,7 +11,7 @@ use ployz_core::domain::private_dns;
 use ployz_core::{Hint, RpcError, RpcErrorCode};
 use ployz_store::{
     ApprovalOperation, ApprovalRequired, ApprovalSubject, DestructiveEffect, DestructiveKind,
-    DiffView, OperationVerb,
+    DiffView, OperationVerb, SettingPath,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -292,8 +292,18 @@ impl Asked {
                 ));
             }
         }
+        let region = match &self.required.subject {
+            Subject::Diff(diff) => diff.region.as_ref(),
+            Subject::Operation(_) => None,
+        };
+        if let Some(region) = region {
+            let [before, after] = region.sides();
+            lines.push(format!("  ~ {}: {before} → {after}", SettingPath::REGION));
+        }
         let others = match &self.required.subject {
-            Subject::Diff(diff) => diff.total_count.saturating_sub(self.required.effects.len()),
+            Subject::Diff(diff) => diff
+                .total_count
+                .saturating_sub(self.required.effects.len() + usize::from(region.is_some())),
             Subject::Operation(_) => 0,
         };
         if others > 0 {
@@ -763,6 +773,38 @@ mod tests {
         assert_eq!(
             asked.review(Verb::Deploy),
             ["This deploy:", "  + 2 other changes"]
+        );
+    }
+
+    #[test]
+    fn a_deploy_that_changes_the_region_says_where_the_services_run_next() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [],
+            "diff": {
+                "environment": {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:2:0.1",
+                "saved": 2,
+                "holds_staged": false,
+                "changes": [],
+                "region": { "before": null, "after": "fsn" },
+                "total_count": 2,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            asked.review(Verb::Deploy),
+            [
+                "This deploy:",
+                "  ~ @environment.region: any Server → fsn",
+                "  + 1 other change",
+            ]
         );
     }
 
