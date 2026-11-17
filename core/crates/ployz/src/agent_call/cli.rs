@@ -112,13 +112,15 @@ impl Run {
     }
 }
 
-/// Commands that need no reason: version, help, shell completion, and `ployz mcp`, whose
-/// calls each carry their own. Internal verbs are Ployz running itself.
+/// Commands that need no reason: version, help, shell completion, `ployz mcp`, whose
+/// calls each carry their own, and `server checkin`, which the install script runs.
+/// Internal verbs are Ployz running itself.
 fn exempt(matches: &ArgMatches, command: &Command, path: &str) -> bool {
     if matches.get_flag("version") || matches.subcommand().is_none() {
         return true;
     }
-    if path == "mcp" || path.split(' ').next() == Some("completion") {
+    // `install.sh` runs `server checkin`, where no agent can add a reason.
+    if matches!(path, "mcp" | "server checkin") || path.split(' ').next() == Some("completion") {
         return true;
     }
     if verbs::find(path).is_some_and(|verb| verb.surface == VerbSurface::Internal) {
@@ -130,9 +132,10 @@ fn exempt(matches: &ArgMatches, command: &Command, path: &str) -> bool {
         .is_some_and(Command::has_subcommands)
 }
 
-/// The command line as typed, with `--why` added.
+/// The command line as typed, with `--why` added straight after `ployz`: a command that
+/// takes trailing words, like `exec`, would read it at the end as part of its own command.
 fn with_why(args: &[OsString]) -> String {
-    let mut line = vec!["ployz".to_owned()];
+    let mut line = vec!["ployz".to_owned(), format!("--why \"{PLACEHOLDER}\"")];
     let mut args = args.iter().map(|arg| arg.to_string_lossy().into_owned());
     while let Some(arg) = args.next() {
         if arg == "--why" {
@@ -148,7 +151,6 @@ fn with_why(args: &[OsString]) -> String {
             arg
         });
     }
-    line.push(format!("--why \"{PLACEHOLDER}\""));
     line.join(" ")
 }
 
@@ -173,15 +175,15 @@ mod tests {
         let args = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
         assert_eq!(
             with_why(&args(&["status", "--json"])),
-            "ployz status --json --why \"<the goal this command serves>\""
+            "ployz --why \"<the goal this command serves>\" status --json"
         );
         assert_eq!(
             with_why(&args(&["--why", "", "set", "web.image=x y"])),
-            "ployz set 'web.image=x y' --why \"<the goal this command serves>\""
+            "ployz --why \"<the goal this command serves>\" set 'web.image=x y'"
         );
         assert_eq!(
             with_why(&args(&["--why=", "docs"])),
-            "ployz docs --why \"<the goal this command serves>\""
+            "ployz --why \"<the goal this command serves>\" docs"
         );
     }
 }

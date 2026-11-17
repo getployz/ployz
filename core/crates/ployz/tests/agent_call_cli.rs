@@ -46,7 +46,7 @@ fn an_agent_is_refused_until_it_says_why() {
         let stderr = text(&refused.stderr);
         assert!(stderr.contains(REASON_REQUIRED), "{args:?}: {stderr}");
         assert!(
-            stderr.contains("next: ployz status --why \"<the goal this command serves>\""),
+            stderr.contains("next: ployz --why \"<the goal this command serves>\" status"),
             "{args:?}: {stderr}"
         );
         assert!(refused.stdout.is_empty(), "{args:?}: nothing ran");
@@ -57,7 +57,7 @@ fn an_agent_is_refused_until_it_says_why() {
     assert_eq!(error["error"]["code"], "invalid_argument", "{error}");
     assert_eq!(
         error["error"]["details"]["next"],
-        "ployz status --json --why \"<the goal this command serves>\"",
+        "ployz --why \"<the goal this command serves>\" status --json",
         "{error}"
     );
 
@@ -72,6 +72,42 @@ fn an_agent_is_refused_until_it_says_why() {
         "{}",
         text(&ran.stdout)
     );
+}
+
+#[test]
+fn the_line_a_refusal_prints_runs_as_printed_for_a_command_with_trailing_words() {
+    let home = tempfile::tempdir().unwrap();
+    let refused = ployz(
+        home.path(),
+        "some-agent",
+        &["exec", "web", "--", "echo", "hi"],
+    );
+    let stderr = text(&refused.stderr);
+    let line = stderr
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("next: "))
+        .unwrap_or_else(|| panic!("no next line in {stderr}"));
+    assert_eq!(
+        line,
+        "ployz --why \"<the goal this command serves>\" exec web -- echo hi"
+    );
+
+    let ran = ployz(
+        home.path(),
+        "some-agent",
+        &[
+            "--why",
+            "look at the web container",
+            "exec",
+            "web",
+            "--",
+            "echo",
+            "hi",
+        ],
+    );
+    let stderr = text(&ran.stderr);
+    assert!(!stderr.contains(REASON_REQUIRED), "{stderr}");
+    assert!(!stderr.contains("--why"), "{stderr}");
 }
 
 #[test]
@@ -91,6 +127,14 @@ fn version_help_completion_and_internal_verbs_need_no_reason_from_an_agent() {
     let completion = ployz(home.path(), "some-agent", &["completion", "bash"]);
     assert!(completion.status.success(), "{}", text(&completion.stderr));
     assert!(text(&completion.stdout).contains("_clap_complete_ployz"));
+
+    // `install.sh` runs `server checkin` where no agent can add `--why`.
+    let checkin = ployz(home.path(), "some-agent", &["server", "checkin"]);
+    assert!(
+        !text(&checkin.stderr).contains(REASON_REQUIRED),
+        "{}",
+        text(&checkin.stderr)
+    );
 
     // `ployz build` is Ployz running itself on a build runner: it fails on its own
     // arguments, not on a missing reason.

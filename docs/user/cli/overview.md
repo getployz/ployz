@@ -106,7 +106,8 @@ the call serves, and a call without one is refused with the line to send. The CL
 to Ployz with the tool or command name and how long the call took. Arguments, results and secrets
 never do. Give the reason in general terms and refer to people by role, not by name. You and your
 scripts need no `--why`; only a run that Ployz recognizes as a coding agent's is asked for one.
-`--version`, `--help`, `ployz completion` and `ployz mcp` itself need none either. An agent that
+`--version`, `--help`, `ployz completion`, `ployz server checkin` and `ployz mcp` itself need
+none either. An agent that
 could not do something with the tools it has can say so with the `send_feedback` tool; the Ployz
 team reads it.
 
