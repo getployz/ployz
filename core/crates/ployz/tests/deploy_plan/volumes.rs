@@ -1056,6 +1056,47 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
     }
 }
 
+#[test]
+fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
+    let mut postgres = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    add_named_volume(&mut postgres, "data");
+    let postgres = kept_in(postgres, "fsn");
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "syd"),
+            in_region(machine('2', "second"), "fsn"),
+        ],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+            machine_id('1'),
+            "data",
+        )])
+        .expect("valid Volume Snapshot fixture"),
+        ..Default::default()
+    };
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&postgres],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let rpc = only_blocked(&preview);
+    assert_eq!(rpc.message, "data is on first");
+    assert_eq!(
+        rpc.details.get("reason"),
+        Some(&serde_json::json!("volume_outside_region"))
+    );
+    assert_eq!(rpc.details.get("volume"), Some(&serde_json::json!("data")));
+    assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("second")));
+    assert!(preview.volumes_to_create.is_empty());
+
+    let whole = preview_deploy(&intent, &snapshot).unwrap_err();
+    assert_eq!(whole.to_string(), "data is on first");
+}
+
 /// The one Service `preview` blocked, and why. Fails when it planned work instead.
 fn only_blocked(preview: &DeployPreview) -> RpcError {
     assert!(preview.operations.is_empty(), "{:?}", operations(preview));

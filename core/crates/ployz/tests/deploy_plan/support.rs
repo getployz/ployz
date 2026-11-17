@@ -297,6 +297,21 @@ pub(super) fn container(
     .unwrap()
 }
 
+/// `machine` with a `region` Label.
+pub(super) fn in_region(mut machine: MachineObservation, region: &str) -> MachineObservation {
+    machine
+        .machine
+        .labels
+        .insert("region".parse().unwrap(), region.parse().unwrap());
+    machine
+}
+
+/// `spec` as an Environment whose default region is `region` lowers it.
+pub(super) fn kept_in(mut spec: RequestedServiceSpec, region: &str) -> RequestedServiceSpec {
+    spec.placement.constraints = [ployz_core::Region::parse(region).unwrap().constraint()].into();
+    spec
+}
+
 pub(super) fn label_constraint(value: &str) -> PlacementConstraint {
     PlacementConstraint::parse(format!("node.labels.fixture == {value}")).unwrap()
 }

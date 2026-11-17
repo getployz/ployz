@@ -1833,6 +1833,8 @@ fn plan_refusal_code(error: &crate::deploy::PlanError) -> RpcErrorCode {
         | PlanError::CapacityUnknown
         | PlanError::InsufficientCapacity
         | PlanError::NoEligibleMachines { .. }
+        | PlanError::RegionUnmatched { .. }
+        | PlanError::VolumeOutsideRegion { .. }
         | PlanError::ServiceModeCannotChange
         | PlanError::ConflictingDockerVolumeDefinitions { .. }
         | PlanError::DuplicateTargetService { .. }

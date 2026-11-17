@@ -13,13 +13,13 @@ mod progress;
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress};
 use crate::ui::{self, Cell, Table, Tone};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::{Hint, RpcErrorCode, ServiceName};
+use ployz_core::{Hint, Region, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
     DeploymentSummary, DeploymentView, DeploymentsQuery, EnvironmentRef, EnvironmentSummary,
@@ -1022,6 +1022,9 @@ struct Planned<'p> {
     /// Why ingress, or an ingress Server, went unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     ingress_unchecked: Vec<String>,
+    /// The Services whose region no Server is in: the Deploy won't start them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unplaced: Vec<&'p ServiceName>,
     /// Whether it also removes every other Service running in the Environment,
     /// which only the Servers can name.
     prunes: bool,
@@ -1041,15 +1044,17 @@ fn plan(
         deployment: None,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
-    let (ingress, ingress_unchecked) = match ingress_check(matches) {
-        Ok(check) => (Some(check.repairs), check.unchecked),
-        Err(Unchecked { cause, silent }) => {
-            if let Some(silent) = silent {
-                ui::warn(cant_run(&silent));
+    let (ingress, ingress_unchecked, regions) =
+        match ingress_check(matches, !plan.regions.is_empty()) {
+            Ok((check, regions)) => (Some(check.repairs), check.unchecked, regions),
+            Err(Unchecked { cause, silent }) => {
+                if let Some(silent) = silent {
+                    ui::warn(cant_run(&silent));
+                }
+                (None, vec![cause], None)
             }
-            (None, vec![cause])
-        }
-    };
+        };
+    let unplaced = |region: &Region| regions.as_ref().is_some_and(|seen| !seen.contains(region));
     let shown = Planned {
         domain_changes: super::store::domain_changes(
             plan.changes.iter().flat_map(|change| &change.settings),
@@ -1057,6 +1062,12 @@ fn plan(
         plan: &plan,
         ingress,
         ingress_unchecked,
+        unplaced: plan
+            .regions
+            .iter()
+            .filter(|(_, region)| unplaced(region))
+            .map(|(service, _)| service)
+            .collect(),
         prunes,
     };
     let followed = Next::new(&shown, Some(hint));
@@ -1077,6 +1088,15 @@ fn plan(
                 }
             }
             super::review::restarts(change);
+        }
+        for (service, region) in &plan.regions {
+            if unplaced(region) {
+                crate::ui::stream(format_args!(
+                    "{service} → {region}: won't start (no Server in {region})"
+                ));
+            } else {
+                crate::ui::stream(format_args!("{service} → {region}"));
+            }
         }
         if prunes {
             crate::ui::stream(format_args!(
@@ -1149,7 +1169,12 @@ struct Unchecked {
     silent: Option<super::route::Silent>,
 }
 
-fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, Unchecked> {
+/// What the ingress step would do, read from the Servers; with `regions`, the regions
+/// they are in too, or `None` when they didn't list themselves.
+fn ingress_check(
+    matches: &ArgMatches,
+    regions: bool,
+) -> Result<(crate::ingress::IngressCheck, Option<BTreeSet<Region>>), Unchecked> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
@@ -1169,9 +1194,19 @@ fn ingress_check(matches: &ArgMatches) -> Result<crate::ingress::IngressCheck, U
                     silent: super::route::Silent::of(&error),
                 })?;
             let server = client.server();
-            crate::ingress::planned_slots(&mut client)
+            let check = crate::ingress::planned_slots(&mut client)
                 .await
-                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server, None)))
+                .map_err(|error| unchecked(crate::ingress::unchecked(&error, server, None)))?;
+            let regions = match regions {
+                true => client.machines().await.ok().map(|machines| {
+                    machines
+                        .iter()
+                        .filter_map(|machine| Region::of(&machine.machine))
+                        .collect()
+                }),
+                false => None,
+            };
+            Ok((check, regions))
         })
 }
 

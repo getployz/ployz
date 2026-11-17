@@ -209,7 +209,7 @@ fn got(settings: &[SettingRow], domains: &[DomainRow], every: bool) -> Vec<Strin
             rows.iter()
                 .map(|row| format!("{} = {}", row.path, super::store::valued(row))),
         );
-        if let Some(NodeName::Service(service)) = rows.first().map(|row| row.path.node()) {
+        if let Some(NodeName::Service(service)) = rows.first().and_then(|row| row.path.node()) {
             let listed = super::store::domain_list(domains, service.as_str());
             if every || listed != "-" {
                 lines.push(format!("{service}.domains = {listed}"));
@@ -585,7 +585,7 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
     edit(root, changes)
 }
 
-fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+pub(super) fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let unchanged = unchanged(&changes);
     let edit = Edit {
@@ -596,7 +596,7 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let store = store(root)?;
     let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
     let edit = store.seal_edit(edit, fail)?;
-    let edited = store.try_write(&edit).map_err(fail)?;
+    let edited = store.try_edit(&edit).map_err(fail)?;
     let followed = StagedReport::of(
         matches,
         &edited,
@@ -657,7 +657,9 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
     } else {
         "them"
     };
-    let consumer = path.node();
+    let Some(consumer) = path.node() else {
+        return;
+    };
     ui::warn(format!(
         "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
     ));

@@ -4,7 +4,8 @@
 mod sealing;
 
 use clap::{Arg, ArgMatches};
-use ployz_core::RpcErrorCode;
+use ployz_core::{Region, RpcErrorCode};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -12,8 +13,8 @@ use unicode_width::UnicodeWidthStr as _;
 
 use ployz_store::tools::Confirmation;
 use ployz_store::{
-    Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
-    EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId,
+    Actor, Admit, Ask, Change, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence, Edit,
+    Edited, EnvironmentName, EnvironmentRef, ObservationFailure, OperationVerb, OrganizationId,
     ProjectName, Publish, Published, Removal, RemovalsQuery, Remove, SealingKey, Sweep,
     SystemEvent, Tell, Trusted, View, VolumeObservation, Written,
 };
@@ -45,8 +46,8 @@ impl From<StoreCallError> for Error {
     }
 }
 
-/// How long a domain read waits on the Servers before it reads them as unobserved.
-const OBSERVE_DOMAINS_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a read of the Servers waits on them before it reads them as unobserved.
+const OBSERVE_SERVERS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The Organization of the hidden in-process Store.
 pub(super) const LOCAL_ORGANIZATION: &str = "local";
@@ -249,6 +250,33 @@ impl<'m> Store<'m> {
         check: &[&str],
     ) -> Result<C::Written, StoreCallError> {
         self.approved(command, &Trusted::default(), Some(check))
+    }
+
+    /// Stage `edit`. One that sets the Environment's default region goes with the regions
+    /// this CLI saw on the Servers. The in-process Store refuses a region none of them is
+    /// in; Cloud doesn't read their labels, so for Cloud this refuses it. Servers this
+    /// can't reach refuse none, and the Deploy then refuses each Service it can't place.
+    pub(crate) fn try_edit(&self, edit: &Edit) -> Result<Edited, StoreCallError> {
+        let region = edit.changes.iter().find_map(|change| match change {
+            Change::Set { path, value } if path.environment().is_some() => {
+                serde_json::from_value::<Region>(value.clone()).ok()
+            }
+            Change::Set { .. }
+            | Change::Unset { .. }
+            | Change::Patch { .. }
+            | Change::Rename { .. } => None,
+        });
+        let regions = region.as_ref().and_then(|_| self.observe_regions());
+        if let (Backend::Cloud(..), Some(region), Some(regions)) =
+            (&self.backend, &region, &regions)
+        {
+            ployz_store::refuse_unknown_region(region, regions).map_err(StoreCallError::Refused)?;
+        }
+        let trusted = Trusted {
+            regions,
+            ..Trusted::default()
+        };
+        self.approved(edit, &trusted, Some(&["diff"]))
     }
 
     /// Apply `command`, asking for approval when Cloud does. A write Cloud took but
@@ -460,6 +488,31 @@ impl<'m> Store<'m> {
         })
     }
 
+    /// The regions the Cluster's Servers are in, by their `region` label, from one Runtime
+    /// Watch frame: the in-process Store's Cluster through `--connect` or the context, Cloud's
+    /// through this credential's Server Access. None when a Server went unobserved.
+    fn observe_regions(&self) -> Option<BTreeSet<Region>> {
+        let runtime = runtime().ok()?;
+        let context = self.context();
+        let observe = async {
+            let client = match &self.backend {
+                Backend::Local(..) => super::connect_context(self.matches, context).await,
+                Backend::Cloud(..) => super::route::connect(self.matches, context).await,
+            };
+            client.ok()?.runtime_frame().await.ok()
+        };
+        let frame = runtime
+            .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await })
+            .ok()??;
+        frame.incomplete_ids.machines.is_empty().then(|| {
+            frame
+                .machines
+                .iter()
+                .filter_map(|observed| Region::of(&observed.machine))
+                .collect()
+        })
+    }
+
     /// The Servers' certificates, ingress Servers and their addresses, through `--connect` or the
     /// context: never Cloud's Server Access, whose Cluster isn't this Store's. Servers
     /// this can't reach leave the certificates unobserved. DNS failures reach a status
@@ -479,7 +532,7 @@ impl<'m> Store<'m> {
                 .ok()
         };
         let frame = runtime
-            .block_on(async { tokio::time::timeout(OBSERVE_DOMAINS_TIMEOUT, observe).await });
+            .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await });
         if let Ok(Some(frame)) = frame {
             let ingress = frame
                 .machines

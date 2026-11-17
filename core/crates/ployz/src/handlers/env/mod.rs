@@ -11,10 +11,11 @@ pub(super) mod branch;
 pub(super) mod pr;
 
 use clap::{ArgMatches, Command};
-use ployz_core::RpcErrorCode;
+use ployz_core::{Region, RpcErrorCode};
 use ployz_store::{
-    CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRemoval, EnvironmentSummary,
-    EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment, SetEnvironmentProtected,
+    Change, CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRemoval,
+    EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment,
+    SetEnvironmentProtected, SettingPath,
 };
 use serde_json::json;
 
@@ -60,6 +61,23 @@ pub(super) fn protect_command(command: Command) -> Command {
         .arg(positional("name", true).help("The Environment to protect"))
         .arg(switch("off", None).help("Unprotect it, so it can be removed and anyone who can stage can change its repository or deploy branch"))
         .arg(project_arg())
+}
+
+pub(super) fn region_command(command: Command) -> Command {
+    store::scoped(command.about(
+        "Set the region an Environment's Services run in: the value of a Server's region label",
+    ))
+    .arg(
+        positional("region", false)
+            .required_unless_present("clear")
+            .help("Run its Services on the Servers in this region, for example fsn"),
+    )
+    .arg(
+        switch("clear", None)
+            .conflicts_with("region")
+            .help("Run its Services on any Server"),
+    )
+    .arg(expect())
 }
 
 pub(super) fn setup_command(command: Command) -> Command {
@@ -406,6 +424,19 @@ pub(super) fn protect(root: &ArgMatches) -> Result<(), Error> {
     };
     crate::ui::done(&listed, sentence)?;
     Ok(())
+}
+
+pub(super) fn region(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let path = SettingPath::REGION;
+    let change = match matches.get_one::<String>("region") {
+        Some(region) => Change::Set {
+            path,
+            value: json!(Region::parse(region.as_str())?),
+        },
+        None => Change::Unset { path },
+    };
+    super::config::edit(root, vec![change])
 }
 
 pub(super) fn setup(root: &ArgMatches) -> Result<(), Error> {

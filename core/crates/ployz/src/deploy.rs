@@ -8,8 +8,8 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName, ServiceObservation,
-    VolumeInventory, VolumeObservationFailure, derive_services,
+    ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, ServiceName,
+    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -780,6 +780,19 @@ pub enum PlanError {
         /// The Machine holding the Volume's writer.
         machine: MachineName,
     },
+    /// No Server carries the region the Service is kept in.
+    #[error("no Server in {region}")]
+    RegionUnmatched { region: Region },
+    /// The Service is kept in a region, and its Volume is on a Server outside it.
+    #[error("{volume} is on {machine}")]
+    VolumeOutsideRegion {
+        /// The Volume, as its owner named it.
+        volume: String,
+        /// The Server holding the Volume.
+        machine: MachineName,
+        /// A Server in the region the Service can run on.
+        to: MachineName,
+    },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
         "{machine} did not answer, so Volume {name}'s copies are unknown. Bring {machine} back, or deploy the other services by name"
@@ -981,6 +994,8 @@ impl PlanError {
             | Self::ServiceModeCannotChange
             | Self::NoWriter { .. }
             | Self::VolumeServerTakesNoServices { .. }
+            | Self::RegionUnmatched { .. }
+            | Self::VolumeOutsideRegion { .. }
             | Self::CopiesUnknown { .. }
             | Self::VolumeHolderUnknown { .. }
             | Self::ProvisionedVolumeStorageRequired { .. }
@@ -1022,6 +1037,18 @@ impl PlanError {
                 error.to_string(),
             )
             .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
+            error @ Self::RegionUnmatched { .. } => RpcError::conflict(error.to_string())
+                .with_details(serde_json::json!({ "reason": "region_unmatched" })),
+            Self::VolumeOutsideRegion {
+                ref volume,
+                ref machine,
+                ref to,
+            } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                "reason": "volume_outside_region",
+                "volume": volume,
+                "server": machine,
+                "to": to,
+            })),
             error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
                 RpcError::unavailable(error.to_string())
             }

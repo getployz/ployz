@@ -2,7 +2,7 @@
 //! snapshot.
 
 use ployz_core::{
-    MachineObservation, MembershipObservation, Namespace, RequestedServiceSpec,
+    MachineObservation, MembershipObservation, Namespace, Region, RequestedServiceSpec,
     ServicePlacementEligibility, ServicePlacementIneligibleReason,
 };
 
@@ -107,6 +107,13 @@ impl<'snapshot> Candidates<'snapshot> {
         self.0
             .iter()
             .all(|(_, candidacy)| *candidacy == Candidacy::Excluded(Exclusion::PlacementMismatch))
+    }
+
+    /// Whether no Machine of the snapshot is in `region`.
+    pub(super) fn none_in(&self, region: &Region) -> bool {
+        self.0
+            .iter()
+            .all(|(machine, _)| Region::of(&machine.machine).as_ref() != Some(region))
     }
 
     /// Whether the snapshot read no Machine.

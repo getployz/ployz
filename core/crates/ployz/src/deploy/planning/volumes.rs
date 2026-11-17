@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::{
     BlockedService, CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
     KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
-    PreservedVolume, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
+    PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
     ServicePlacementEligibility, ServicePlacementIneligibleReason, ServiceStorageSpec,
     ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
 };
@@ -828,6 +828,8 @@ fn unmountable(
         PlanError::NoWriter { .. }
             | PlanError::CopiesUnknown { .. }
             | PlanError::VolumeHolderUnknown { .. }
+            | PlanError::RegionUnmatched { .. }
+            | PlanError::VolumeOutsideRegion { .. }
     ) || requested
         .iter()
         .find(|spec| spec.name.as_str() == service)
@@ -1053,7 +1055,9 @@ fn volume_constraints<'spec>(
             match plan.locality(volume)? {
                 VolumeLocality::Located { first, others } => {
                     let located = |id: MachineId| id == first || others.contains(&id);
-                    if let Some(error) = refused_location(spec, snapshot, plan, volume, located) {
+                    if let Some(error) = refused_location(spec, snapshot, plan, volume, located)
+                        .or_else(|| outside_region(spec, snapshot, plan, volume, located, machines))
+                    {
                         return Err(error);
                     }
                     machines.retain(|machine| located(machine.machine.id));
@@ -1143,6 +1147,33 @@ fn refused_location(
             volume: plan.authored(name).to_owned(),
             machine: first,
         })
+}
+
+/// The refusal for a Volume none of whose Servers is in the region `spec` is kept in,
+/// while a Server in the region could run it. Nothing moves the Volume for it yet.
+fn outside_region(
+    spec: &RequestedServiceSpec,
+    snapshot: &DeploySnapshot,
+    plan: &VolumePlan<'_>,
+    volume: &ServiceVolume,
+    located: impl Fn(MachineId) -> bool,
+    candidates: &[&MachineObservation],
+) -> Option<PlanError> {
+    let region = super::region(spec)?;
+    let mut holders = snapshot
+        .machines
+        .iter()
+        .filter(|machine| located(machine.machine.id))
+        .peekable();
+    let holder = holders.peek()?.machine.name.clone();
+    if holders.any(|machine| Region::of(&machine.machine).as_ref() == Some(&region)) {
+        return None;
+    }
+    Some(PlanError::VolumeOutsideRegion {
+        volume: plan.authored(managed_volume_name(volume)?).to_owned(),
+        machine: holder,
+        to: candidates.first()?.machine.name.clone(),
+    })
 }
 
 fn no_eligible_shared(
