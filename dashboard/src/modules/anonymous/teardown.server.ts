@@ -199,7 +199,7 @@ const deletingSandbox = (organizationId: string) => (drop: Effect.Effect<void, n
 const removeProject = Effect.fn("AnonymousTeardown.removeProject")(function* (organizationId: string, project: string) {
   const run = Effect.runPromiseWith(yield* Effect.context<Effect.Services<ReturnType<typeof callStore>>>());
   const commit = async (command: ConfigCommand) => {
-    const answer = await run(callStore(organizationId, null, { operation: "write", command }, { source: "dashboard" }, { approval: "not_required" }));
+    const answer = await run(callStore(organizationId, null, { operation: "write", command }, { approval: "not_required" }));
     if (answer.ok) return answer.value;
     throw new StoreRefused(answer.refusal);
   };

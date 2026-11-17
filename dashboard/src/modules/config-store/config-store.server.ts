@@ -30,7 +30,6 @@ import {
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unavailable, Validation } from "#/server/public-error";
-import { PostHog } from "#/modules/analytics/posthog.server";
 import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
@@ -345,12 +344,6 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   yield* requestChecks(organizationId, written.checks);
 });
 
-/** Where a member's Store write came from, for product analytics: the dashboard, the CLI and the coding agent it detected, or the dashboard's own agent. */
-export type StoreSource =
-  | { readonly source: "dashboard" }
-  | { readonly source: "cli"; readonly agent: string | null }
-  | { readonly source: "agent" };
-
 /**
  * One Store read or write by user `userId` (null: Cloud itself) as `organizationId`: the answer, or the Store's refusal verbatim. It first
  * gathers the trusted evidence the call needs (`gatherTrusted`), and a Deploy meets the Volume copies it takes
@@ -362,7 +355,6 @@ export const callStore = <C extends StoreCall>(
   organizationId: string,
   userId: string | null,
   asked: C,
-  source: StoreSource = { source: "dashboard" },
   gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions" | "protector" | "environments" | "from_cli"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
@@ -386,15 +378,6 @@ export const callStore = <C extends StoreCall>(
     yield* afterWrite(organizationId, call.command, written).pipe(
       Effect.catchCause((cause) => Effect.logWarning("Cloud's follow-up to a committed Store write failed.", cause)),
     );
-    // One event for every command, so dashboards follow the domain, not the UI. Cloud's own writes aren't a user's.
-    if (userId !== null) {
-      yield* (yield* PostHog).capture({
-        userId,
-        organizationId,
-        event: "config_command",
-        properties: { command: call.command.command, ...source },
-      });
-    }
     return { ok: true, value: written };
   }).pipe(
     // SAFETY: a read answers its query's view, a write what it wrote.
@@ -421,13 +404,13 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) =>
-  Effect.map(callStore(access.organization.id, actor.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: access.permissions, environments: access.environments }), (result) =>
+  Effect.map(callStore(access.organization.id, actor.userId, call, { approval: "not_required", permissions: access.permissions, environments: access.environments }), (result) =>
     access.kind === "support" ? answerForSupport(call, result, access.shows) : result);
 
 /** One Store call in `organizationId` by the user `by` admits, with what they hold, or by Cloud itself (null). */
 export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Access | null, call: C) => by === null
   ? callStore(organizationId, null, call)
-  : callStore(organizationId, by.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: by.permissions, environments: by.environments });
+  : callStore(organizationId, by.userId, call, { approval: "not_required", permissions: by.permissions, environments: by.environments });
 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or
