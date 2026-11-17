@@ -5242,6 +5242,111 @@
     ]
   },
   {
+    "tool": "environment_region",
+    "input": {
+      "environment": "production",
+      "region": "fsn"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-environment_region",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "environment_region",
+                "input": {
+                  "environment": "production",
+                  "region": "fsn"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "environment_region",
+    "input": {
+      "environment": "production",
+      "region": "fsn"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-environment_region",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "environment_region",
+                "input": {
+                  "environment": "production",
+                  "region": "fsn"
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "environment_setup",
     "input": {
       "environment": "staging"

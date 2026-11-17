@@ -447,7 +447,7 @@ commands! {
     /// Set and unset Settings in one Environment.
     Edit(Edit) -> Edited(Edited)
         needs ChangesStage
-        agent [ServiceUpdate]
+        agent [ServiceUpdate, EnvironmentRegion]
         => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)

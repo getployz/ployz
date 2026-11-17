@@ -1120,6 +1120,7 @@ pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
         services: Vec::new(),
         volumes: Vec::new(),
         configs: Vec::new(),
+        region: None,
     }
 }
 

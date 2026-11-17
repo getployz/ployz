@@ -955,6 +955,7 @@ pub(crate) fn approve_retry(
     let mut diff = review.view.clone();
     diff.effects.clear();
     diff.changes.clear();
+    diff.region = None;
     diff.total_count = 0;
     let undoes = crate::deployment::numbered(&rollback.rolls_back);
     let held: Vec<&str> = rollback

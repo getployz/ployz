@@ -6,6 +6,7 @@
 pub(crate) mod edit;
 mod path;
 pub(crate) mod query;
+mod region;
 mod secret;
 
 pub use secret::{SecretCell, SecretInput};
@@ -13,7 +14,8 @@ pub use secret::{SecretCell, SecretInput};
 pub(crate) use path::{
     ConfigField, NodeField, Target, config_name, domains_are_read_only, name_a_setting,
 };
-pub use path::{NodeName, SettingPath};
+pub use path::{EnvironmentSetting, NodeName, SettingPath};
+pub use region::refuse_unknown as refuse_unknown_region;
 
 pub(crate) mod size;
 

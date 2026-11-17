@@ -265,6 +265,7 @@ fn the_catalog_has_the_agreed_tools() {
             "deployment_cancel",
             "environment_pr",
             "environment_protect",
+            "environment_region",
             "environment_setup",
             "github_ls",
             "github_connect",

@@ -18,7 +18,8 @@ use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 use crate::variables::{self, VariableKey};
 
-/// Read an Environment's Working State, narrowed to `SERVICE` or `SERVICE.SETTING`.
+/// Read an Environment's Working State, narrowed to `SERVICE`, `SERVICE.SETTING` or
+/// `@environment.region`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentQuery {
@@ -77,11 +78,13 @@ pub(crate) fn environment(
 ) -> Result<EnvironmentView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let path = query.path.as_ref();
+    let region = path.is_some_and(|path| path.environment().is_some());
     let only = path.and_then(SettingPath::target);
     if only == Some(&Target::Setup) {
         crate::branch::refuse_service_named_setup(&environment)?;
     }
     let services = match path {
+        Some(_) if region => Vec::new(),
         Some(path) => vec![environment.service(path.settings_of()?)?],
         None => {
             let mut services = environment.working.services.iter().collect::<Vec<_>>();
@@ -100,6 +103,16 @@ pub(crate) fn environment(
         _ => crate::branch::Own::of(tx, &environment)?,
     };
     let mut settings = Vec::new();
+    if region || (path.is_none() && !(whole && environment.working.region.is_none())) {
+        settings.push(SettingRow {
+            path: SettingPath::REGION,
+            value: json!(environment.working.region),
+            default: Value::Null,
+            apply: Apply::Staged,
+            row: None,
+            note: None,
+        });
+    }
     for service in services {
         let name = ServiceName::parse(service.slug.as_str())
             .map_err(|_| crate::error::corrupt("Service name"))?;

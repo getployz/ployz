@@ -610,13 +610,19 @@ fn advance(
                 deployed.insert(lineage.to_owned());
             }
             match applied {
-                Some(applied) => applied::confirm(
-                    tx,
-                    stored.summary.id.as_str(),
-                    node.id(),
-                    applied.document().as_str(),
-                    name_of(applied.node_type()).as_str(),
-                )?,
+                Some(applied) => {
+                    let service = applied.node_type() == EnvironmentNodeType::Service;
+                    applied::confirm(
+                        tx,
+                        stored.summary.id.as_str(),
+                        node.id(),
+                        (
+                            applied.document().as_str(),
+                            name_of(applied.node_type()).as_str(),
+                        ),
+                        saved.region.as_ref().filter(|_| service),
+                    )?;
+                }
                 None => applied::remove_node(tx, &stored.summary.environment_id, node.id())?,
             }
         }

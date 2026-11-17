@@ -2782,3 +2782,34 @@ fn copying_a_node_waits_for_a_settled_branch() {
         "ployz deployment ls --project shop --env fix-web"
     );
 }
+
+#[test]
+fn a_new_branch_carries_its_parents_default_region() {
+    let (store, who) = shop();
+    let region = Edit {
+        environment: at("production"),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &region).unwrap();
+
+    store
+        .write(&who, &branch("fix-web", "production", &["web"]))
+        .unwrap();
+
+    let diff = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        diff.region.and_then(|region| region.after),
+        Some(ployz_core::Region::parse("fsn").unwrap())
+    );
+}

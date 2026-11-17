@@ -48,12 +48,32 @@ pub(crate) fn deployed_volumes(
         .collect())
 }
 
+/// The region `services` run in, as the one value `working`'s default region is
+/// compared with: `working`'s where each of them it keeps runs there, else that of
+/// the first that doesn't. None where it keeps none of them.
+fn region_run(
+    services: &[SavedServiceIntent],
+    regions: &BTreeMap<String, Option<Region>>,
+    working: &SavedEnvironmentIntent,
+) -> Option<Region> {
+    let mut kept = services
+        .iter()
+        .filter(|service| working.services.iter().any(|kept| kept.id == service.id))
+        .map(|service| regions.get(&service.id).cloned().flatten())
+        .peekable();
+    kept.peek()?;
+    kept.find(|region| *region != working.region)
+        .unwrap_or_else(|| working.region.clone())
+}
+
 /// What reviews compare Working State against: Applied State, overlaid with the
 /// target nodes of the newest Deployment in flight, if any. Its token changes
 /// whenever a Deployment is admitted or ends.
 pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, RpcError> {
     let id = &environment.summary.id;
-    let applied = applied_state(tx, id, &environment.working)?;
+    let regions = applied::regions(tx, id)?;
+    let mut applied = applied_state(tx, id, &environment.working)?;
+    applied.region = region_run(&applied.services, &regions, &environment.working);
     let in_flight = in_flight_sql();
     let ended = tx
         .query(
@@ -79,6 +99,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         token: format!("0.{ended}"),
         intent: applied.clone(),
         applied,
+        regions,
         in_flight: Vec::new(),
         may_run: may_run(tx, id)?,
     };
@@ -87,6 +108,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
         let mut target = InFlight {
             cluster_domain: row.parse_optional(3, "Cluster Domain")?,
+            region: saved.region.clone(),
             services: nodes
                 .iter()
                 .filter_map(|node| match node {
@@ -162,6 +184,11 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
             intent.configs.extend(target.configs.iter().cloned());
             intent.services.extend(target.services.iter().cloned());
             intent.volumes.extend(target.volumes.iter().cloned());
+            let mut regions = head.regions.clone();
+            for service in &target.services {
+                regions.insert(service.id.clone(), target.region.clone());
+            }
+            intent.region = region_run(&intent.services, &regions, &environment.working);
         }
         head.in_flight.push(target);
     }

@@ -119,12 +119,15 @@ pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{
     ApprovalOperation, ApprovalRedeploy, ApprovalRequired, ApprovalSubject, DataEffect,
     DestructiveEffect, DestructiveKind, DiffView, LostAfter, MalformedReviewVersion, NodeChange,
-    OperationVerb, ReviewVersion, introduced_source,
+    OperationVerb, RegionChange, ReviewVersion, introduced_source,
 };
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
-pub use settings::{Apply, NodeName, SecretCell, SecretInput, SettingPath};
+pub use settings::{
+    Apply, EnvironmentSetting, NodeName, SecretCell, SecretInput, SettingPath,
+    refuse_unknown_region,
+};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView,

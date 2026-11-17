@@ -2,9 +2,10 @@
 //! Deployments, and one Deployment with its Node Outcomes.
 
 use ployz_core::config::{SavedEnvironmentIntent, canonicalize_environment_intent};
-use ployz_core::{RequestedServiceSpec, RpcError, ServiceName};
+use ployz_core::{Region, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use ts_rs::TS;
 
 use crate::Actor;
@@ -57,6 +58,11 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub target: Option<Vec<RequestedServiceSpec>>,
+    /// The region each Service this Deploy ships runs in. One that runs on any Server
+    /// is left out, as is every Service of a redeploy.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional, as = "Option<BTreeMap<ServiceName, Region>>")]
+    pub regions: BTreeMap<ServiceName, Region>,
 }
 
 /// Where an Environment runs on the Servers.
@@ -277,6 +283,18 @@ pub(crate) fn plan(
         )?),
         false => None,
     };
+    let regions = target
+        .region
+        .iter()
+        .flat_map(|region| {
+            target
+                .services
+                .iter()
+                .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
+                .filter(|service| frozen.ships(service))
+                .map(move |service| (service, region.clone()))
+        })
+        .collect();
     let changes = review
         .view
         .changes
@@ -293,6 +311,7 @@ pub(crate) fn plan(
         changes,
         unresolved,
         target: lowered,
+        regions,
     })
 }
 
@@ -342,6 +361,7 @@ fn redeploy_plan(
         changes: Vec::new(),
         unresolved: vec!["operations".to_owned()],
         target,
+        regions: BTreeMap::new(),
     })
 }
 

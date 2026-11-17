@@ -8,15 +8,16 @@ use super::ToolId;
 use super::cloud::{GithubAnswer, ServersAnswer};
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Reach, Stop, Tool, store};
-use super::refusal::{Call, Refusal};
+use super::refusal::{Call, Refusal, Writes, from_store};
 use super::schema::REPOSITORY;
 use super::service::source;
 use super::step::{Ask, CloudQuery, DashboardPage, Gate};
 use crate::{
-    ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery, PrPlansQuery,
-    ProjectsQuery, RepositoryName, ServicesQuery, SetEnvironmentProtected, SetPrPlan, SourceKind,
-    VolumesQuery,
+    Change, ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery, Edit,
+    PrPlansQuery, ProjectsQuery, RepositoryName, ServicesQuery, SetEnvironmentProtected, SetPrPlan,
+    SettingPath, SourceKind, VolumesQuery,
 };
+use ployz_core::Region;
 
 tool_input! {
     pub(crate) struct EnvironmentShow {
@@ -253,6 +254,69 @@ impl Tool for EnvironmentProtect {
         Ok(json!({
             "at": listing.map(|listing| format!("{}/{}", written.view.project.name, listing.name)),
             "protected": listing.is_some_and(|listing| listing.protected),
+        }))
+    }
+}
+
+tool_input! {
+    pub(crate) struct EnvironmentRegion {
+        /// The region to run its Services in, as the Servers' `region` label names it, e.g. `fsn`.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", example = &"fsn")]
+        region: Option<Region>,
+        /// `true` to clear the region, so its Services run on any Server.
+        #[serde(default)]
+        clear: bool,
+        @place(named),
+    }
+}
+
+impl Tool for EnvironmentRegion {
+    const NAME: &'static str = "environment_region";
+    const TITLE: &'static str = "Set an Environment's region";
+    const DESCRIPTION: &'static str = "Set the region an Environment's Services run in, or clear it so they run on any Server. A region is the value of a Server's `region` label. Staged until the next deploy, which moves each Service to a Server in the region. A Service whose Volume is on a Server outside the region is not started until the Volume is moved.";
+    const EFFECT: Effect = Effect::Change { idempotent: true };
+
+    fn example() -> Value {
+        json!({ "environment": "production", "region": "fsn" })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let environment = cx.scope(&self);
+        let path = SettingPath::REGION;
+        let change = match (&self.region, self.clear) {
+            (Some(region), false) => {
+                let answer = cx
+                    .read(vec![Ask::Cloud(CloudQuery::Servers { only: None })])?
+                    .into_iter()
+                    .next();
+                if let Some(regions) = cx.cloud::<ServersAnswer>(answer)?.regions {
+                    crate::refuse_unknown_region(region, &regions)
+                        .map_err(|error| from_store(error, cx.call(), Writes::None))?;
+                }
+                Change::Set {
+                    path,
+                    value: json!(region),
+                }
+            }
+            (None, true) => Change::Unset { path },
+            (None, false) | (Some(_), true) => {
+                return Err(Refusal::invalid(
+                    "Name a region, or set clear to run on any Server",
+                    "region",
+                )
+                .into());
+            }
+        };
+        let edited = cx.write(&Edit {
+            environment,
+            expect: None,
+            changes: vec![change],
+        })?;
+        Ok(json!({
+            "at": edited.environment.to_string(),
+            "region": self.region,
+            "staged": !edited.staged.is_empty(),
         }))
     }
 }

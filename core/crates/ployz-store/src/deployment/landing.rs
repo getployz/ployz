@@ -9,6 +9,8 @@ use crate::review::{Head, InFlight};
 /// drops each node any of them may leave running.
 pub(crate) struct Landing<'a> {
     applied: &'a SavedEnvironmentIntent,
+    /// The region each applied node was deployed in; none when nothing asks.
+    regions: Option<&'a BTreeMap<String, Option<Region>>>,
     in_flight: &'a [InFlight],
 }
 
@@ -17,16 +19,32 @@ impl<'a> Landing<'a> {
     pub(crate) fn of(head: &'a Head) -> Self {
         Self {
             applied: &head.applied,
+            regions: Some(&head.regions),
             in_flight: &head.in_flight,
         }
     }
 
-    /// Applied State alone, for a Deployment that doesn't look past it.
+    /// Applied State alone, for a Deployment that ships every Service whatever
+    /// region each runs in.
     pub(crate) fn applied(applied: &'a SavedEnvironmentIntent) -> Self {
         Self {
             applied,
+            regions: None,
             in_flight: &[],
         }
+    }
+
+    /// Whether `service` runs in `region` however the Deployments in flight end.
+    pub(crate) fn in_region(&self, service: &SavedServiceIntent, region: Option<&Region>) -> bool {
+        self.regions.is_none_or(|regions| {
+            regions
+                .get(&service.id)
+                .is_none_or(|ran| ran.as_ref() == region)
+        }) && self
+            .in_flight
+            .iter()
+            .filter(|target| target.services.iter().any(|other| other.id == service.id))
+            .all(|target| target.region.as_ref() == region)
     }
 
     /// Every version of a Service that may run.
@@ -123,6 +141,7 @@ impl<'a> Landing<'a> {
             services: gone(self.services(), &saved.services, |service| &service.id),
             volumes: gone(self.volumes(), &saved.volumes, |volume| &volume.resource_id),
             configs: gone(self.configs(), &saved.configs, |config| &config.resource_id),
+            region: None,
         }
     }
 }
