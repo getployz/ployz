@@ -44,7 +44,7 @@ pub(crate) fn compiled() -> Command {
         value("why", None)
             .global(true)
             .value_name("REASON")
-            .help("Why you are running this: the goal the command serves. Required when a coding agent or a script runs ployz"),
+            .help("Why you are running this: the goal the command serves. Required when a coding agent runs ployz"),
     );
     handlers::verbs::tree(root)
 }

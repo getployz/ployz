@@ -102,12 +102,17 @@ yourself. Run step 2 again to update the skill.
 
 Every call an agent makes says why. Each MCP tool takes `intent`, a short sentence on the goal
 the call serves, and a call without one is refused with the line to send. The CLI takes
-`--why "<goal>"`: a coding agent, or any run without a terminal, is refused with exit code 2 until
-it gives one. The reason goes to Ployz with the tool or command name and how long the call took.
-Arguments, results and secrets never do. Give the reason in general terms and refer to people by
-role, not by name. A person at a terminal needs no `--why`. `--version`, `--help`,
-`ployz completion` and `ployz mcp` itself need none either. An agent that could not do something
-with the tools it has can say so with the `send_feedback` tool; the Ployz team reads it.
+`--why "<goal>"`: a coding agent is refused with exit code 2 until it gives one. The reason goes
+to Ployz with the tool or command name and how long the call took. Arguments, results and secrets
+never do. Give the reason in general terms and refer to people by role, not by name. You and your
+scripts need no `--why`; only a run that Ployz recognizes as a coding agent's is asked for one.
+`--version`, `--help`, `ployz completion` and `ployz mcp` itself need none either. An agent that
+could not do something with the tools it has can say so with the `send_feedback` tool; the Ployz
+team reads it.
+
+Ployz recognizes an agent by the variable its harness sets, such as `CLAUDECODE` or
+`CODEX_THREAD_ID`, or by `AI_AGENT=<name>`. If one of them leaks into your own shell, set
+`AI_AGENT=off` there to turn detection off.
 
 ### Give the agent Ployz tools
 
@@ -156,9 +161,7 @@ Some things are not tools. Run these yourself in a terminal:
   refused and nothing is kept. Pipe in a value of several lines, such as a PEM key. A run that
   can't prompt (`--json`, `CI`, `TERM=dumb`, or stderr not a terminal) refuses with exit code 2
   rather than show what you type, and prints the command that pipes the value in:
-  `printf %s "$VALUE" | ployz set web.env.KEY --secret`. A run without a terminal also says why it
-  runs, as `ployz set web.env.KEY --secret --why "Rotate the API key"`; without `--why` it is
-  refused with exit code 2 and the line to run. A new secret needs a Server first, so run `ployz server add` if you have none. An
+  `printf %s "$VALUE" | ployz set web.env.KEY --secret`. A new secret needs a Server first, so run `ployz server add` if you have none. An
   older `ployz` can't set a secret and tells you to update. A secret never goes on the command
   line: `ployz set 'web.env.KEY={"secret":"…"}'` is refused and points at `--secret`, as an
   inline `--patch` with a new secret is. A new branch's secrets start Not
@@ -342,12 +345,10 @@ CI jobs and scripts sign in with a token instead of a browser. Set it as `PLOYZ_
 ployz token new ci --preset deploy --env staging
 
 # In CI, with the token stored as the secret PLOYZ_TOKEN
-ployz up --project my-app --env staging --why "Deploy the build CI just tested"
+ployz up --project my-app --env staging
 ```
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
-A run without a terminal, as in CI, also says why it runs with `--why`; without it the command is
-refused with exit code 2 and prints the line to run.
 `ployz up` ships the directory to each of the project's services that build from an upload or
 have no source yet. If there's none, it adds one named after the directory and builds it, as it
 does in a new project. In that case it stops and says why, adding no service and linking

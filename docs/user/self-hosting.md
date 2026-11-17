@@ -219,7 +219,7 @@ The CLI signs in to ployz.dev unless you point it at yours:
 ployz login --cloud-url https://cloud.example.com
 ```
 
-In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`, and give each command a `--why`; see
+In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 [Make an organization token](cli/overview.md#make-an-organization-token).
 
 ## Upgrade
