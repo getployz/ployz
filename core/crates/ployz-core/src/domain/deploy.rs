@@ -482,7 +482,7 @@ pub struct ServiceOutcome {
 pub enum ServiceResult {
     New,
     Old,
-    /// Its copies kept serving and took the new limits in place.
+    /// Its copies kept serving and took the change in place.
     Updated,
     NotStarted,
     Unconfirmed,
@@ -638,13 +638,29 @@ pub struct ReplacementOperation {
     pub skip_health_monitor: bool,
 }
 
-/// Change a running Container's CPU and memory limits to its new spec's, in place.
+/// What a running Container takes from its new spec without a restart.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum InPlaceChange {
+    /// CPU and memory limits, which Docker applies to the running Container.
+    #[default]
+    Limits,
+    /// A placement its Machine still satisfies. Only the recorded spec changes.
+    Placement,
+}
+
+/// Change a running Container to its new spec, in place.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct LimitsUpdateOperation {
+pub struct ContainerUpdateOperation {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
-    /// The spec the Container serves once its limits match.
+    /// The spec the Container serves once the change is made.
     pub spec: ResolvedServiceSpec,
+    /// Absent in a plan made before placement changed in place, which changed limits.
+    #[serde(default)]
+    pub change: InPlaceChange,
 }
 
 /// Why a Deploy stops a Container.
@@ -708,9 +724,9 @@ pub enum DeployOperation {
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
-    /// Apply the spec's CPU and memory limits to `container_id` in place. The
-    /// Container keeps its id whether the Machine applies the limits or not.
-    UpdateContainer(LimitsUpdateOperation),
+    /// Apply the spec's CPU and memory limits, or its placement, to `container_id`
+    /// in place. The Container keeps its id whether the Machine applies them or not.
+    UpdateContainer(ContainerUpdateOperation),
     /// Stop a pre-deploy hook container that is still running, before [`Self::RunHook`]
     /// starts the next one.
     StopHook {
@@ -1130,6 +1146,8 @@ pub enum MachineAction {
     RemoveVolume,
     /// Change a running Container's CPU and memory limits in place.
     UpdateContainerLimits,
+    /// Record a running Container's new placement in place.
+    UpdateContainerPlacement,
     /// Make a Service image present before any Container changes.
     PullImage,
     ListContainers,
@@ -1147,6 +1165,7 @@ impl Display for MachineAction {
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
             Self::UpdateContainerLimits => "update Container limits",
+            Self::UpdateContainerPlacement => "update Container placement",
             Self::PullImage => "pull image",
             Self::ListContainers => "list Containers",
             Self::ReadRoutes => "read routes",

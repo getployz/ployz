@@ -1,7 +1,9 @@
 //! Direct execution evidence, grouped by the same RowTracker the Store uses.
 
 use crate::ui::progress::{GraphService, Row, State, Subject, Timing, Work};
-use ployz_core::{DeployOperation, MachineId, OperationRow, QualifiedService, ServiceName};
+use ployz_core::{
+    DeployOperation, InPlaceChange, MachineId, OperationRow, QualifiedService, ServiceName,
+};
 use ployz_store::{RowPhase, RowState, StoppedBy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -51,8 +53,8 @@ pub(crate) struct Replica<'a> {
     pub machine: MachineId,
     pub state: &'a RowState,
     pub starts: bool,
-    /// The copy keeps serving under its own id and takes new limits in place.
-    pub updates: bool,
+    /// What the copy takes in place, when it keeps serving under its own id.
+    pub updates: Option<InPlaceChange>,
     pub timing: Timing,
 }
 
@@ -72,12 +74,17 @@ pub(crate) fn updates(
     operations: &[OperationRow],
     service: &ServiceName,
     machine: MachineId,
-) -> bool {
-    operations.iter().any(|row| {
-        row.machine_id == machine
-            && row.service_name() == Some(service)
-            && matches!(row.operation, DeployOperation::UpdateContainer(_))
-    })
+) -> Option<InPlaceChange> {
+    operations
+        .iter()
+        .filter(|row| row.machine_id == machine && row.service_name() == Some(service))
+        .find_map(|row| {
+            if let DeployOperation::UpdateContainer(update) = &row.operation {
+                Some(update.change)
+            } else {
+                None
+            }
+        })
 }
 
 const fn stops_or_removes(phase: RowPhase) -> bool {
@@ -149,11 +156,19 @@ pub(crate) fn service_row<'a>(
         | RowState::Unknown => false,
     };
     let ready = counted.iter().filter(|replica| is_ready(replica)).count();
-    let in_place = counted.iter().filter(|replica| replica.updates).count();
+    let in_place = counted
+        .iter()
+        .filter(|replica| replica.updates.is_some())
+        .count();
     let in_place_ready = counted
         .iter()
-        .filter(|replica| replica.updates && is_ready(replica))
+        .filter(|replica| replica.updates.is_some() && is_ready(replica))
         .count();
+    let in_place_change = counted
+        .iter()
+        .filter_map(|replica| replica.updates)
+        .min()
+        .unwrap_or_default();
     let switching = failed == 0 && ready == counted.len();
     let work = |replica: &Replica<'_>| match replica.state {
         RowState::Running { phase, serving } => Some((
@@ -281,6 +296,7 @@ pub(crate) fn service_row<'a>(
             total: counted.len(),
             in_place,
             in_place_ready,
+            in_place_change,
             draining,
             work: if removal {
                 Work::Remove

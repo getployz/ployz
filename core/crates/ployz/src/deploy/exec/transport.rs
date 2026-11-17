@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use ployz_core::{
     ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerNow, ContainerObservation,
-    ContainerWant, DockerVolumeId, EnsuredContainer, HealthVerdict, ImagePulled, IngressDoorsSet,
-    MachineId, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, Retry, RoutesRead,
-    RpcError, RpcErrorCode, SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey,
+    ContainerPlacementUpdated, ContainerWant, DockerVolumeId, EnsuredContainer, HealthVerdict,
+    ImagePulled, IngressDoorsSet, MachineId, PrivateAccessSet, QualifiedService,
+    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, SetIngressDoorsRequest,
+    SetPrivateAccessRequest, SlotKey,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -108,6 +109,7 @@ restart_policy! {
         wait fn prepare_volumes(&self, machine_id: &MachineId, specs: &[ployz_core::ServiceStorageSpec]) -> Result<ployz_core::PreparedVolumes, RpcError>;
         wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
         wait fn update_container_limits(&self, machine_id: &MachineId, container_id: &ContainerId, spec: &ResolvedServiceSpec) -> Result<ContainerLimitsUpdated, RpcError>;
+        wait fn update_container_placement(&self, machine_id: &MachineId, container_id: &ContainerId, spec: &ResolvedServiceSpec) -> Result<ContainerPlacementUpdated, RpcError>;
         wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
         wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
     }

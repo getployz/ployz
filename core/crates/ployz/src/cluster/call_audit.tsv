@@ -56,6 +56,7 @@ src/deploy/exec/machine_ops.rs::remove_volume	op::RemoveVolume	invoke	single	tar
 src/deploy/exec/machine_ops.rs::target_copies	op::ListContainers	read	unary	budget(target_read_timeout)	redial	read
 src/deploy/exec/machine_ops.rs::retained_global_key	op::ListContainers	try_read	unary	budget(target_read_timeout)	redial	read
 src/deploy/exec/machine_ops.rs::update_container_limits	op::UpdateContainerLimits	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
+src/deploy/exec/machine_ops.rs::update_container_placement	op::UpdateContainerPlacement	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/deploy/exec_cluster_tests.rs::ensure	op::EnsureContainer	call	unary	-	redial	keyed
 src/deploy/exec_cluster_tests.rs::inspect_container	op::InspectContainer	call	unary	-	redial	read
 src/deploy/pipeline.rs::gather_deploy_snapshot	ployz_core::op::InspectStorage	read	unary	budget(target_read_timeout)	redial	read

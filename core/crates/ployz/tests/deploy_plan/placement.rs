@@ -1244,6 +1244,142 @@ fn a_region_whose_servers_cannot_run_services_stops_only_the_services_kept_in_it
     );
 }
 
+fn records_placements(mut machine: MachineObservation) -> MachineObservation {
+    machine
+        .machine
+        .runtime
+        .capabilities
+        .insert(ployz_core::UPDATE_CONTAINER_PLACEMENT_CAPABILITY.to_owned());
+    machine
+}
+
+#[test]
+fn a_new_region_keeps_a_service_already_in_it_and_rolls_one_with_a_replica_outside() {
+    let db = replicated("db", 1);
+    let web = replicated("web", 2);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            records_placements(in_region(machine('1', "first"), "fsn")),
+            records_placements(in_region(machine('2', "second"), "fsn")),
+            records_placements(in_region(machine('3', "third"), "syd")),
+        ],
+        containers: vec![
+            container('a', '1', &db, &service_id('a')),
+            container('b', '2', &web, &service_id('b')),
+            container('c', '3', &web, &service_id('b')),
+        ],
+        ..Default::default()
+    };
+    let (db, web) = (kept_in(db, "fsn"), kept_in(web, "fsn"));
+
+    let preview = plan_deploy([&db, &web], &snapshot, PlanOptions::default()).unwrap();
+
+    let operations = operations(&preview);
+    let updates: Vec<_> = operations
+        .iter()
+        .filter_map(|operation| {
+            if let DeployOperation::UpdateContainer(update) = operation {
+                Some(update)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let [update] = updates.as_slice() else {
+        panic!("only db stays under its own id: {operations:?}")
+    };
+    assert_eq!(update.container_id, container_id('a'));
+    assert_eq!(update.change, ployz_core::InPlaceChange::Placement);
+    assert_eq!(update.spec.placement, db.placement);
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::ReplaceContainer(ReplacementOperation { old_container_id, .. })
+                if *old_container_id == container_id('b')
+        )),
+        "the web replica in fsn rolls with the one outside it: {operations:?}"
+    );
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RemoveContainer { container_id: removed, .. }
+                if *removed == container_id('c')
+        )),
+        "{operations:?}"
+    );
+    assert_eq!(
+        operations
+            .iter()
+            .filter(|operation| operation.serves_new_spec())
+            .map(DeployOperation::machine_id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([machine_id('1'), machine_id('2')]),
+        "{operations:?}"
+    );
+}
+
+#[test]
+fn clearing_a_region_keeps_the_running_container() {
+    let db = replicated("db", 1);
+    let plan = plan_deploy(
+        [&db],
+        &DeploySnapshot {
+            machines: vec![records_placements(in_region(machine('1', "first"), "fsn"))],
+            containers: vec![container(
+                'a',
+                '1',
+                &kept_in(db.clone(), "fsn"),
+                &service_id('a'),
+            )],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(
+            operations(&plan).as_slice(),
+            [DeployOperation::UpdateContainer(update)]
+                if update.container_id == container_id('a')
+                    && update.change == ployz_core::InPlaceChange::Placement
+        ),
+        "{:?}",
+        operations(&plan)
+    );
+}
+
+#[test]
+fn a_server_that_cannot_record_a_placement_replaces_the_container_inside_the_region() {
+    let db = replicated("db", 1);
+    let mut limits_only = in_region(machine('1', "first"), "fsn");
+    limits_only
+        .machine
+        .runtime
+        .capabilities
+        .insert(ployz_core::UPDATE_CONTAINER_LIMITS_CAPABILITY.to_owned());
+    let plan = plan_deploy(
+        [&kept_in(db.clone(), "fsn")],
+        &DeploySnapshot {
+            machines: vec![limits_only, in_region(machine('2', "second"), "syd")],
+            containers: vec![container('a', '1', &db, &service_id('a'))],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    assert!(
+        matches!(
+            operations(&plan).as_slice(),
+            [DeployOperation::ReplaceContainer(ReplacementOperation { machine_id: on, old_container_id, .. })]
+                if *on == machine_id('1') && *old_container_id == container_id('a')
+        ),
+        "{:?}",
+        operations(&plan)
+    );
+}
+
 fn replicated(name: &str, replicas: u32) -> RequestedServiceSpec {
     let mut spec = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(replicas).unwrap(),

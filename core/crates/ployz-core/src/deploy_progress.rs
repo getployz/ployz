@@ -137,6 +137,7 @@ impl FailedAt {
                 MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
                 | MachineAction::UpdateContainerLimits
+                | MachineAction::UpdateContainerPlacement
                 | MachineAction::ListContainers
                 | MachineAction::ReadRoutes => from_phase(),
             },
@@ -525,6 +526,21 @@ impl Failure {
                     cause,
                 )
             }
+            // The Server answered, and this update never asks Docker for anything.
+            ExecutionError::Machine {
+                action: MachineAction::UpdateContainerPlacement,
+                error,
+            } if !error.reply_lost() => {
+                let mut cause = vec![error.message.clone()];
+                cause.extend(crate::error_chain::causes(error));
+                (
+                    format!(
+                        "{} did not apply the new placement. The Container keeps its previous placement",
+                        server_named(error, operations).unwrap_or_else(|| "The Server".to_owned())
+                    ),
+                    cause,
+                )
+            }
             // The Server may have done the work: only its answer was lost.
             ExecutionError::Machine { action, error } if error.reply_lost() => {
                 let mut cause = vec![error.message.clone()];
@@ -780,7 +796,8 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             ExecutionError::Machine { action, .. } => match action {
                 MachineAction::StopContainer
                 | MachineAction::RemoveContainer
-                | MachineAction::UpdateContainerLimits => row.operation.container_id(),
+                | MachineAction::UpdateContainerLimits
+                | MachineAction::UpdateContainerPlacement => row.operation.container_id(),
                 MachineAction::InspectContainer => last,
                 MachineAction::CreateContainer
                 | MachineAction::StartContainer

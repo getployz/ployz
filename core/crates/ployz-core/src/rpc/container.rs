@@ -519,6 +519,49 @@ impl std::fmt::Display for LimitsRefusal {
     }
 }
 
+/// Ask a Machine to record `spec` as the resolved spec of the running Service
+/// Container `container_id`, which keeps running untouched. The Machine refuses
+/// unless `spec` differs from the Container's spec in placement only, and unless
+/// the Machine itself satisfies that placement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateContainerPlacementRequest {
+    pub container_id: ContainerId,
+    pub spec: ResolvedServiceSpec,
+}
+
+/// The Container whose recorded spec now carries the requested placement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerPlacementUpdated {
+    pub container_id: ContainerId,
+}
+
+/// Why a Machine refused to record a Container's new placement in place.
+/// Carried in `RpcError.details.reason`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementRefusal {
+    /// The spec names another Service than the Container runs.
+    OtherService,
+    /// The spec differs from the Container's in more than placement.
+    NeedsRecreate,
+    /// The Container is not running, so there is nothing serving to keep.
+    NotRunning,
+}
+
+impl Evidence for PlacementRefusal {
+    const KEY: Option<&'static str> = Some("reason");
+}
+
+impl std::fmt::Display for PlacementRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::OtherService => "the spec names another Service",
+            Self::NeedsRecreate => "the change needs a new Container",
+            Self::NotRunning => "the Container is not running",
+        })
+    }
+}
+
 /// What a Machine saw when it answered `NotFound` for a Container.
 /// Carried in `RpcError.details.reason`; an answer without it claims nothing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

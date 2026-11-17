@@ -29,7 +29,7 @@ pub(super) struct EndpointDemand {
 #[derive(Clone, Copy)]
 pub(super) enum EndpointOperation {
     Unchanged,
-    /// The running Container stays and takes new limits in place.
+    /// The running Container stays and takes the change in place.
     Update,
     Create,
     Replace,

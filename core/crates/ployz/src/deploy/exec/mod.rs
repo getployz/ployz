@@ -10,12 +10,12 @@ use futures_util::{
 };
 use ployz_core::{
     AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerObservation, ContainerRefusal, ContainerWant, CopyRotation, CreationKey,
-    DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError,
-    ExposedPort, FailedOperation, Gen, HealthFailure, HealthVerdict, MachineAction, MachineId,
-    MachineName, Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService,
-    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
-    ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    ContainerObservation, ContainerRefusal, ContainerUpdateOperation, ContainerWant, CopyRotation,
+    CreationKey, DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, Drain,
+    ExecutionError, ExposedPort, FailedOperation, Gen, HealthFailure, HealthVerdict, InPlaceChange,
+    MachineAction, MachineId, MachineName, Namespace, OperationPhase, PortPublication, PullPolicy,
+    QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode,
+    ServiceId, ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -1743,17 +1743,33 @@ async fn execute_operation<C: MachineOperations>(
                 .map_err(Into::into)
         }
         // The copy stays In under its own id whether the update succeeds or fails.
-        DeployOperation::UpdateContainer(update) => client
-            .update_container_limits(&update.machine_id, &update.container_id, &update.spec)
-            .await
-            .map(|_| Ran::default())
-            .map_err(|error| {
-                machine_error(
+        DeployOperation::UpdateContainer(update) => {
+            let ContainerUpdateOperation {
+                machine_id,
+                container_id,
+                spec,
+                change,
+            } = update;
+            let (updated, action) = match change {
+                InPlaceChange::Limits => (
+                    client
+                        .update_container_limits(machine_id, container_id, spec)
+                        .await
+                        .map(drop),
                     MachineAction::UpdateContainerLimits,
-                    naming_machine(error, &update.machine_id),
-                )
-                .into()
-            }),
+                ),
+                InPlaceChange::Placement => (
+                    client
+                        .update_container_placement(machine_id, container_id, spec)
+                        .await
+                        .map(drop),
+                    MachineAction::UpdateContainerPlacement,
+                ),
+            };
+            updated
+                .map(|()| Ran::default())
+                .map_err(|error| machine_error(action, naming_machine(error, machine_id)).into())
+        }
         DeployOperation::StopHook {
             machine_id,
             container_id,

@@ -23,13 +23,28 @@ impl ServingShape {
         Self::from_fields(&Self::fields_of_resolved(spec))
     }
 
+    /// The shape `spec` would have under `placement`. Equal to a requested spec's
+    /// shape when the two differ in placement at most.
+    pub(super) fn of_resolved_placed(spec: &ResolvedServiceSpec, placement: &Placement) -> Self {
+        Self::from_fields(&Self::resolved_fields(
+            spec,
+            placement,
+            sorted_json(spec.mount_graph.config_graph().configs()),
+        ))
+    }
+
     /// Canonical observed fields shared by serving identity and setting comparison.
     pub(super) fn fields_of_resolved(spec: &ResolvedServiceSpec) -> serde_json::Value {
-        Self::resolved_fields(spec, sorted_json(spec.mount_graph.config_graph().configs()))
+        Self::resolved_fields(
+            spec,
+            &spec.placement,
+            sorted_json(spec.mount_graph.config_graph().configs()),
+        )
     }
 
     fn resolved_fields(
         spec: &ResolvedServiceSpec,
+        placement: &Placement,
         config_fields: Vec<serde_json::Value>,
     ) -> serde_json::Value {
         let ResolvedServiceSpec {
@@ -37,7 +52,7 @@ impl ServingShape {
             name,
             mode,
             container,
-            placement,
+            placement: _,
             ports,
             mount_graph,
             pre_deploy: _,

@@ -27,7 +27,7 @@ mod volumes;
 
 use candidates::{Candidates, Exclusion};
 use placement::{
-    CapacityAdmission, GlobalPlacement, LimitsChange, PlacementReservations, PlacementState,
+    CapacityAdmission, GlobalPlacement, Landing, PlacementReservations, PlacementState,
     ReplicatedPlacement, ReplicatedReservation, plan_global, plan_replicated,
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
@@ -1627,26 +1627,26 @@ fn plan_one_service<'snapshot>(
             Some(reservation),
             budget,
             options,
-            LimitsChange::Replace,
+            Landing::Replace,
         ),
-        None => LimitsChange::decide(
+        None => Landing::decide(
             budget
                 .placement
                 .can_update_in_place(current, requested, options),
             budget,
-            |budget, limits| place_service(&target, None, budget, options, limits),
+            |budget, landing| place_service(&target, None, budget, options, landing),
             |operations| operations.iter().any(creates_container),
         ),
     }
 }
 
-/// Place one Service under one way of landing its limits change.
+/// Place one Service under one way of landing a change its copies can take in place.
 fn place_service<'snapshot>(
     target: &ServiceTarget<'_, 'snapshot>,
     reservation: Option<ReplicatedReservation>,
     budget: &mut ServiceBudget<'snapshot>,
     options: &PlanOptions,
-    limits: LimitsChange,
+    landing: Landing,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let ServiceTarget {
         requested,
@@ -1670,7 +1670,7 @@ fn place_service<'snapshot>(
                 machines
                     .iter()
                     .any(|machine| machine.machine.id == container.as_observation().machine_id)
-                    && PlacementState::keeps_container(container, requested, options, limits)
+                    && PlacementState::keeps_container(container, requested, options, landing)
             })
             .count();
         if requested.pre_deploy.is_some() && up_to_date < replicas.get() as usize {
@@ -1684,7 +1684,7 @@ fn place_service<'snapshot>(
         machines.retain(|machine| {
             current.iter().any(|container| {
                 container.as_observation().machine_id == machine.machine.id
-                    && PlacementState::keeps_container(container, requested, options, limits)
+                    && PlacementState::keeps_container(container, requested, options, landing)
             }) || placement.capacity_fits(&machine.machine.id, 1)
         });
         if machines.is_empty() {
@@ -1702,7 +1702,7 @@ fn place_service<'snapshot>(
                     Some(reservation) => CapacityAdmission::Reserved { reservation },
                     None => CapacityAdmission::Pending {
                         error: capacity_error.expect("unreserved capacity has relevant Machines"),
-                        limits,
+                        landing,
                     },
                 },
             },
@@ -1715,7 +1715,7 @@ fn place_service<'snapshot>(
                 current,
                 hooks,
                 volumes,
-                limits,
+                landing,
             },
             placement,
             options,

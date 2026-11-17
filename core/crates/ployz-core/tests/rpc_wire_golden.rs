@@ -11,7 +11,7 @@ use ployz_core::{
     InspectStorageRequest, JoinApproved, LeaveRequest, Left, LimitsRefusal, ListContainersRequest,
     ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveLogTarget, LocalMachineRemoved,
     LogDirection, LogHistoryRequest, LogsOptions, MachineImages, MachineList, PeerImagePull,
-    PendingJoins, PendingJoinsRequest, PrepareVolumesRequest, PreparedVolumes,
+    PendingJoins, PendingJoinsRequest, PlacementRefusal, PrepareVolumesRequest, PreparedVolumes,
     PrivateAccessProblem, PrivateAccessSet, PruneImagesRequest, PublishCertificateMaterialRequest,
     PullImageRequest, PushTargetSet, ReadClusterNameRequest, ReadRoutedAddressesRequest,
     RemoveTrustedKeyRequest, RemoveVolumeRequest, RetainedEnvReply, RetainedEnvRequest,
@@ -109,6 +109,7 @@ fn container_and_log_dtos_keep_their_wire_text() {
         ContainerRefusal => json!({ "reason": "last_in", "message": "m" });
         ContainerRefusalReason => json!("held_by_other_run");
         LimitsRefusal => json!("needs_recreate");
+        PlacementRefusal => json!("needs_recreate");
         ContainerNotFoundReason => json!("no_resolved_spec");
         LogsOptions => json!({
             "follow": true,

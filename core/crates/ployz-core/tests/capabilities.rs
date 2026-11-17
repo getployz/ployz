@@ -24,10 +24,11 @@ use ployz_core::{
     SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
     SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_RECIPIENT_KEY_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_CHANNEL_CAPABILITY, UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_HANDOFF_CAPABILITY, VOLUME_PASSKEY_CAPABILITY,
-    VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_CHANNEL_CAPABILITY,
+    UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
+    VOLUME_HANDOFF_CAPABILITY, VOLUME_PASSKEY_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -124,6 +125,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (
             UPDATE_CONTAINER_LIMITS_CAPABILITY,
             "ployz.container.limits.update.v1",
+        ),
+        (
+            UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
+            "ployz.container.placement.update.v1",
         ),
         (
             INSPECT_VOLUME_COPY_CAPABILITY,
@@ -261,6 +266,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.inspect.v1",
             "ployz.container.ensure.v1",
             "ployz.container.limits.update.v1",
+            "ployz.container.placement.update.v1",
             "ployz.storage.inspect.v1",
             "ployz.storage.prepare.v1",
             "ployz.volume.list.v1",
@@ -526,6 +532,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.container.limits.update.v1",
         "gated: the planner updates in place only on a Machine advertising it, and replaces the Container on any other",
+    ),
+    (
+        "ployz.container.placement.update.v1",
+        "gated: the planner keeps a Container under a new placement only on a Machine advertising it, and replaces the Container on any other",
     ),
     (
         "ployz.logs.retained-env.v1",

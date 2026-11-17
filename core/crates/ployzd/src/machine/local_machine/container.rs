@@ -11,13 +11,13 @@ use std::time::Duration;
 
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLimitsUpdated, ContainerLocator,
-    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason,
-    ContainerRuntimeObservation, ContainerWant, CopyRotation, DockerVolumeName, Drain,
-    EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled, ImagesRemoved,
-    LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer, PruneImagesRequest,
-    PullImageFromMachineRequest, PullImageRequest, QualifiedService, ReservedKind,
-    ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation, RunTarget,
-    Start, StopOptions, VolumeGen, VolumeRemoved,
+    ContainerNow, ContainerObservation, ContainerPlacementUpdated, ContainerRefusal,
+    ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
+    DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
+    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
+    PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest, QualifiedService,
+    ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation,
+    RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
@@ -766,6 +766,33 @@ impl LocalMachine {
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, move |local| async move {
             Ok(local.docker()?.update_limits(&container_id, &spec).await?)
+        })
+        .await
+    }
+
+    /// Record `spec` as Container `container_id`'s resolved spec under shared
+    /// admission, when it differs in placement only and this Machine satisfies it.
+    ///
+    /// # Errors
+    ///
+    /// Returns when this Machine is not in a Cluster, Docker is unavailable,
+    /// admission is busy, or the Machine refuses or fails the update.
+    pub(crate) async fn update_container_placement(
+        &self,
+        container_id: ContainerId,
+        spec: ResolvedServiceSpec,
+    ) -> Result<ContainerPlacementUpdated, Error> {
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, move |local| async move {
+            let record = local.record();
+            if !record.has_cluster_identity() {
+                return Err(Error::NotParticipating);
+            }
+            let machine = record.machine().ok_or(Error::NotParticipating)?;
+            Ok(local
+                .docker()?
+                .update_placement(machine, &container_id, &spec, local.observe_storage())
+                .await?)
         })
         .await
     }

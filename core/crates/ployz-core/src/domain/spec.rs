@@ -464,6 +464,9 @@ impl UpdateOrder {
 pub enum SpecChange {
     UpToDate,
     NeedsUpdate,
+    /// Only the placement differs, on a Replicated Service. The Container can keep
+    /// running wherever the new placement still allows its Machine.
+    NeedsPlacementUpdate,
     NeedsRecreate,
 }
 

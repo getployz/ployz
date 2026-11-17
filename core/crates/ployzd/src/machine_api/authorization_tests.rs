@@ -479,6 +479,12 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
                 json!({"container_id": id, "spec": spec("api", "nginx:1.29-alpine")}),
             )
         }
+        (ployz_core::UPDATE_CONTAINER_PLACEMENT_CAPABILITY, _) => {
+            let id = running_container(machine).await;
+            unary::<op::UpdateContainerPlacement>(
+                json!({"container_id": id, "spec": spec("api", "nginx:1.29-alpine")}),
+            )
+        }
         (ployz_core::PREPARE_VOLUMES_CAPABILITY, _) => {
             unary::<op::PrepareVolumes>(json!({"specs": []}))
         }

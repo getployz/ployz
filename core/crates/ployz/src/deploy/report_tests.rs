@@ -120,7 +120,7 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
                         state,
                         timing: Timing::Unavailable,
                         starts: true,
-                        updates: false,
+                        updates: None,
                     }),
                 )
             })

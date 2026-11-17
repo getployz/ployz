@@ -431,6 +431,7 @@ define_responses! {
     VolumeInventory(VolumeInventory) => "volume_inventory";
     VolumeRemoved(VolumeRemoved) => "volume_removed";
     ContainerLimitsUpdated(ContainerLimitsUpdated) => "container_limits_updated";
+    ContainerPlacementUpdated(ContainerPlacementUpdated) => "container_placement_updated";
     VolumeCopyView(crate::VolumeCopyView) => "volume_copy_view";
     MachineImages(MachineImages) => "machine_images";
     ImageIngestOpened(ImageIngestOpened) => "image_ingest_opened";

@@ -3,7 +3,7 @@
 
 use super::support::*;
 use ployz_core::{
-    ByteQuantity, CpuNanos, LimitsUpdateOperation, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    ByteQuantity, ContainerUpdateOperation, CpuNanos, UPDATE_CONTAINER_LIMITS_CAPABILITY,
 };
 
 fn capable(hex: char, name: &str) -> MachineObservation {
@@ -169,7 +169,7 @@ fn an_update_needs_no_spare_endpoint_and_runs_no_pre_deploy_hook() {
         assert!(
             matches!(
                 single_operation(&plan),
-                DeployOperation::UpdateContainer(LimitsUpdateOperation { container_id: id, .. })
+                DeployOperation::UpdateContainer(ContainerUpdateOperation { container_id: id, .. })
                     if id == container_id('b')
             ),
             "{:?}",
