@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::{ConfigFileName, ConfigName, ContainerPath};
+use crate::{ConfigFileName, ConfigName, ContainerPath, Region};
 
 use super::{
     AWAITING_FINGERPRINT, AuthoredServiceConfig, ConfigError, EnvironmentNodeType, Generator,
@@ -28,6 +28,11 @@ pub struct SavedEnvironmentIntent {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<SavedConfigIntent>>")]
     pub configs: Vec<SavedConfigIntent>,
+    /// The region every Service runs in. Written only when set, so documents from
+    /// before regions keep their bytes and fingerprints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<Region>,
 }
 
 impl SavedEnvironmentIntent {

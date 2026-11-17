@@ -135,6 +135,28 @@ fn a_document_from_before_configs_writes_the_same_bytes_as_one_with_empty_config
     assert_eq!(written, canonical);
 }
 
+#[test]
+fn an_environment_with_no_region_writes_the_bytes_it_did_before_regions() {
+    let canonical = serde_json::to_vec(&parse_environment_intent(intent()).unwrap()).unwrap();
+    let text = String::from_utf8(canonical.clone()).unwrap();
+    assert!(!text.contains("region"), "{text}");
+
+    let mut unset = intent();
+    unset
+        .as_object_mut()
+        .unwrap()
+        .insert("region".into(), json!(null));
+    let written = serde_json::to_vec(&parse_environment_intent(unset).unwrap()).unwrap();
+    assert_eq!(written, canonical);
+
+    let mut set = intent();
+    set.as_object_mut()
+        .unwrap()
+        .insert("region".into(), json!("FSN"));
+    let written = serde_json::to_value(parse_environment_intent(set).unwrap()).unwrap();
+    assert_eq!(written.get("region"), Some(&json!("fsn")));
+}
+
 fn with_config(files: serde_json::Value, mounts: serde_json::Value) -> serde_json::Value {
     let mut value = intent();
     value.as_object_mut().unwrap().insert(

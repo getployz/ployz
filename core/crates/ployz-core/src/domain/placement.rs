@@ -116,3 +116,73 @@ pub struct Placement {
     #[serde(default)]
     pub constraints: std::collections::BTreeSet<PlacementConstraint>,
 }
+
+/// Where a Server is, as its `region` Label says: `fsn`, `syd`. Lowercase, as a
+/// placement constraint compares it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+pub struct Region(String);
+
+impl Region {
+    /// The Machine Label a region is read from.
+    pub const LABEL: &'static str = "region";
+
+    /// # Errors
+    /// Rejects text that is not a Machine Label value.
+    pub fn parse(value: impl Into<String>) -> Result<Self, crate::ValueError> {
+        let value = crate::MachineLabelValue::parse(value)?;
+        Ok(Self(value.as_str().to_ascii_lowercase()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The region `machine` is in, when its Labels name one.
+    #[must_use]
+    pub fn of(machine: &crate::Machine) -> Option<Self> {
+        let value = machine.labels.get(Self::LABEL)?;
+        Some(Self(value.as_str().to_ascii_lowercase()))
+    }
+
+    /// The constraint only Servers in this region meet.
+    #[must_use]
+    pub fn constraint(&self) -> PlacementConstraint {
+        PlacementConstraint(format!("node.labels.{}=={}", Self::LABEL, self.0))
+    }
+
+    /// The region `constraint` keeps a Service in, when that is what it says.
+    #[must_use]
+    pub fn required_by(constraint: &PlacementConstraint) -> Option<Self> {
+        let value = constraint
+            .as_str()
+            .strip_prefix("node.labels.")?
+            .strip_prefix(Self::LABEL)?
+            .strip_prefix("==")?;
+        Some(Self(value.to_owned()))
+    }
+}
+
+impl TryFrom<String> for Region {
+    type Error = crate::ValueError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+impl From<Region> for String {
+    fn from(value: Region) -> Self {
+        value.0
+    }
+}
+impl std::str::FromStr for Region {
+    type Err = crate::ValueError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+impl std::fmt::Display for Region {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
