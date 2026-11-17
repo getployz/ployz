@@ -723,6 +723,40 @@ impl fmt::Display for EliminatingConstraints {
     }
 }
 
+/// Why a Server in a Service's region can't run the Service now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServerAway {
+    Down,
+    /// It did not answer this Deploy's Container listing.
+    Silent,
+    TakesNoServices,
+    /// Its membership is neither up nor down. A refusal doesn't name it.
+    Unreached,
+}
+
+fn region_unmatched(region: &Region, servers: &[(MachineName, ServerAway)]) -> String {
+    if servers.is_empty() {
+        return format!("no Server in {region}");
+    }
+    let mut clauses = servers
+        .iter()
+        .filter_map(|(name, away)| {
+            let why = match away {
+                ServerAway::Down => "is down",
+                ServerAway::Silent => "did not answer",
+                ServerAway::TakesNoServices => "doesn't run services",
+                ServerAway::Unreached => return None,
+            };
+            Some(format!("{name} {why}"))
+        })
+        .collect::<Vec<_>>();
+    if clauses.is_empty() {
+        return format!("no Server in {region} is up");
+    }
+    clauses.push(format!("and no other Server in {region} is up"));
+    clauses.join(", ")
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
     /// Complete provisioned storage demand cannot be admitted on this Machine.
@@ -780,9 +814,13 @@ pub enum PlanError {
         /// The Machine holding the Volume's writer.
         machine: MachineName,
     },
-    /// No Server carries the region the Service is kept in.
-    #[error("no Server in {region}")]
-    RegionUnmatched { region: Region },
+    /// No Server in the region the Service is kept in can run it.
+    #[error("{}", region_unmatched(region, servers))]
+    RegionUnmatched {
+        region: Region,
+        /// The Servers in the region, each with why it can't run the Service.
+        servers: Vec<(MachineName, ServerAway)>,
+    },
     /// The Service is kept in a region, and its Volume is on a Server outside it.
     #[error("{volume} is on {machine}")]
     VolumeOutsideRegion {

@@ -92,8 +92,14 @@ environment's services and reports each one:
 web: not started (no Server in fsn)
 ```
 
-Replicas that already run keep running. Give a server the region, or change the environment's
-region, and deploy again.
+If the region has servers but none can run services, the line names them:
+
+```
+web: not started (fsn-1 is down, and no other Server in fsn is up)
+```
+
+Replicas that already run keep running. Give a server the region, bring its server back, or change
+the environment's region, and deploy again.
 
 ## Good to know
 

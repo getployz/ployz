@@ -2,11 +2,11 @@
 //! snapshot.
 
 use ployz_core::{
-    MachineObservation, MembershipObservation, Namespace, Region, RequestedServiceSpec,
-    ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    MachineName, MachineObservation, MembershipObservation, Namespace, Region,
+    RequestedServiceSpec, ServicePlacementEligibility, ServicePlacementIneligibleReason,
 };
 
-use crate::deploy::DeploySnapshot;
+use crate::deploy::{DeploySnapshot, ServerAway};
 
 /// Why a Machine cannot take a Service's Containers in this Deploy. A Machine marked
 /// leaving is no exclusion: it is no placement rule.
@@ -109,10 +109,25 @@ impl<'snapshot> Candidates<'snapshot> {
             .all(|(_, candidacy)| *candidacy == Candidacy::Excluded(Exclusion::PlacementMismatch))
     }
 
-    pub(super) fn none_in(&self, region: &Region) -> bool {
+    /// The Machines in `region`, each with why it can't take the Service. `None` when
+    /// one of them can, or is left out by another placement constraint.
+    pub(super) fn away_in(&self, region: &Region) -> Option<Vec<(MachineName, ServerAway)>> {
         self.0
             .iter()
-            .all(|(machine, _)| Region::of(&machine.machine).as_ref() != Some(region))
+            .filter(|(machine, _)| Region::of(&machine.machine).as_ref() == Some(region))
+            .map(|(machine, candidacy)| {
+                let away = match candidacy {
+                    Candidacy::Excluded(Exclusion::Down) => ServerAway::Down,
+                    Candidacy::Excluded(Exclusion::Silent) => ServerAway::Silent,
+                    Candidacy::Excluded(Exclusion::WorkNotAccepted) => ServerAway::TakesNoServices,
+                    Candidacy::Excluded(Exclusion::Unreached) => ServerAway::Unreached,
+                    Candidacy::Excluded(Exclusion::PlacementMismatch) | Candidacy::Candidate(_) => {
+                        return None;
+                    }
+                };
+                Some((machine.machine.name.clone(), away))
+            })
+            .collect()
     }
 
     /// Whether the snapshot read no Machine.

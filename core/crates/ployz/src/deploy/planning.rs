@@ -1876,9 +1876,9 @@ fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> 
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
     }
     if let Some(region) = region(spec)
-        && candidates.none_in(&region)
+        && let Some(servers) = candidates.away_in(&region)
     {
-        return PlanError::RegionUnmatched { region };
+        return PlanError::RegionUnmatched { region, servers };
     }
     if candidates.matches_none() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::UnknownPlacement {
