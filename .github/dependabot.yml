@@ -10,3 +10,11 @@ updates:
       - dependency-name: is-ai-agent
       - dependency-name: webpki-roots
       - dependency-name: rustls
+  # The uptime checker keeps its own lockfile, which the entry above does not reach.
+  - package-ecosystem: cargo
+    directory: /dashboard/uptime
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: rustls
+      - dependency-name: webpki-roots
