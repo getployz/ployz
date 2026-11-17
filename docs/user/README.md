@@ -45,6 +45,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 - [Cloudflare Tunnel](services/cloudflare-tunnel.md): serve your apps through a tunnel instead of open ports
 - [Private networking](services/private-networking.md): how services reach each other
 - [Scaling and multiple servers](services/scaling.md): replicas, more servers, when a server goes down
+- [Regions](services/regions.md): keep an environment's services on the servers in one region
 
 ## Environments
 
