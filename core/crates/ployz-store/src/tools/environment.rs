@@ -286,13 +286,15 @@ impl Tool for EnvironmentRegion {
         let path = SettingPath::REGION;
         let change = match (&self.region, self.clear) {
             (Some(region), false) => {
-                let answer = cx
-                    .read(vec![Ask::Cloud(CloudQuery::Servers { only: None })])?
-                    .into_iter()
-                    .next();
-                if let Some(regions) = cx.cloud::<ServersAnswer>(answer)?.regions {
-                    crate::refuse_unknown_region(region, &regions)
-                        .map_err(|error| from_store(error, cx.call(), Writes::None))?;
+                if !cx.is_local() {
+                    let answer = cx
+                        .read(vec![Ask::Cloud(CloudQuery::Servers { only: None })])?
+                        .into_iter()
+                        .next();
+                    if let Some(regions) = cx.cloud::<ServersAnswer>(answer)?.regions {
+                        crate::refuse_unknown_region(region, &regions)
+                            .map_err(|error| from_store(error, cx.call(), Writes::None))?;
+                    }
                 }
                 Change::Set {
                     path,

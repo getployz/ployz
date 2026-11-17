@@ -20,13 +20,13 @@ pub fn refuse_unknown(region: &Region, regions: &BTreeSet<Region>) -> Result<(),
     let named = regions.iter().map(Region::as_str).collect::<Vec<_>>();
     if named.is_empty() {
         return Err(
-            error::invalid("No Server has a region yet", json!({ "region": region })).with_hint(
+            error::invalid("No Server has a region yet.", json!({ "region": region })).with_hint(
                 Hint::Next(format!("ployz server set NAME --label-add region={region}")),
             ),
         );
     }
     Err(error::invalid(
-        format!("No Server is in {region}. Regions: {}", named.join(", ")),
+        format!("No Server is in {region}. Regions: {}.", named.join(", ")),
         json!({ "region": region, "regions": named }),
     ))
 }

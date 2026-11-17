@@ -103,7 +103,7 @@ pub(crate) fn environment(
         _ => crate::branch::Own::of(tx, &environment)?,
     };
     let mut settings = Vec::new();
-    if region || (path.is_none() && !(whole && environment.working.region.is_none())) {
+    if region || (path.is_none() && environment.working.region.is_some()) {
         settings.push(SettingRow {
             path: SettingPath::REGION,
             value: json!(environment.working.region),

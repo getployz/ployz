@@ -5320,26 +5320,54 @@
     "turns": [
       {
         "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "edit",
+              "environment": {
+                "project": "shop",
+                "environment": "production"
+              },
+              "expect": null,
+              "changes": [
+                {
+                  "op": "set",
+                  "path": "@environment.region",
+                  "value": "fsn"
+                }
+              ]
+            }
+          }
+        },
+        "answers": [
+          {
+            "value": {
+              "environment": {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "production",
+                "project": "shop",
+                "revision": 2
+              },
+              "immediate": [],
+              "staged": [
+                "@environment.region"
+              ],
+              "typed_addresses": [],
+              "written": "edited"
+            }
+          }
+        ]
+      },
+      {
+        "step": {
           "step": "done",
           "result": {
-            "ok": false,
-            "refusal": {
-              "code": "not_here",
-              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
-              "retry": {
-                "tool": "environment_region",
-                "input": {
-                  "environment": "production",
-                  "region": "fsn"
-                }
-              },
-              "writes": "none",
-              "next": [],
-              "details": {
-                "fix": {
-                  "fix": "use_cloud"
-                }
-              }
+            "ok": true,
+            "value": {
+              "at": "shop/production",
+              "region": "fsn",
+              "staged": true
             }
           }
         }
