@@ -54,7 +54,7 @@ describe("uniqueName", () => {
 
 describe("catalog fields", () => {
   it("checks text against the catalog's bounds and turns it into the Store's change", () => {
-    const replicas = serviceSetting("replicas");
+    const replicas = scalarSetting("replicas");
     expect(settingError(replicas, "3")).toBeNull();
     expect(settingError(replicas, "1.5")).toBe("Enter a whole number from 1 to 50.");
     expect(settingError(replicas, "0")).toBe("Enter a whole number from 1 to 50.");
