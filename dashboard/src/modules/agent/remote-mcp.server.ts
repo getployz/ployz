@@ -207,12 +207,13 @@ const helloOf = async (request: Request): Promise<Hello> => {
 
 /**
  * Where a call came from. A client that keeps an `Mcp-Session-Id` is one session. Otherwise the grant, which names one
- * connection of one member, and the day make one: a stateless server has nothing finer.
+ * connection of one member, and the day make one: a stateless server has nothing finer. Only `initialize` carries the
+ * client's own name, so every request is named by what the client registered as, and by its own name without one.
  */
 const originOf = (caller: AgentCaller, request: Request, hello: Hello): CallOrigin => ({
   surface: "cloud",
   session: sessionIdOf(request.headers.get("mcp-session-id") ?? `${caller.credential.id}:${new Date().toISOString().slice(0, 10)}`),
-  client: hello.client,
+  client: { name: (caller.credential.kind === "oauth" ? caller.credential.client : null) ?? hello.client.name, version: hello.client.version },
   serverVersion: SERVER_VERSION,
   userAgent: request.headers.get("user-agent"),
   protocolVersion: hello.protocolVersion,

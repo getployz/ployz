@@ -457,12 +457,17 @@ it.live("an approval its schema doesn't take is refused before anything is writt
     expect(writes).not.toHaveBeenCalled();
   }).pipe(Effect.scoped), 30_000);
 
-it.live("a call refused before it runs is recorded once as a failed call, and feedback with an intent is taken", () =>
+it.live("a call refused before it runs is recorded once as a failed call under the name its client registered, and feedback with an intent is taken", () =>
   Effect.gen(function* () {
     const recorded: Array<string> = [];
+    const clients: Array<string | undefined> = [];
+    type Named = { properties?: Record<string, string> };
     const capture = {
-      captureToolCall: (event: { toolName: string; isError: boolean; errorType?: string }) => { recorded.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`); },
-      captureFeedback: () => { recorded.push("feedback"); },
+      captureToolCall: (event: Named & { toolName: string; isError: boolean; errorType?: string }) => {
+        recorded.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`);
+        clients.push(event.properties?.["$mcp_client_name"]);
+      },
+      captureFeedback: (event: Named) => { recorded.push("feedback"); clients.push(event.properties?.["$mcp_client_name"]); },
     };
     const sink: PostHogService = {
       capture: () => Effect.void,
@@ -488,6 +493,8 @@ it.live("a call refused before it runs is recorded once as a failed call, and fe
     const thanked = yield* Effect.promise(() => agent.client.callTool({ name: "send_feedback", arguments: { intent: "Test the tool.", type: "issue", message: "deploy hung" } }));
     expect(thanked).toMatchObject({ isError: false, structuredContent: { ok: true } });
     expect(recorded).toEqual(["feedback"]);
+    // A tool call carries no client name of its own, so each is named by the registration.
+    expect(clients).toEqual(["test agent", "test agent", "test agent", "test agent"]);
   }).pipe(Effect.scoped), 60_000);
 
 it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>

@@ -129,7 +129,7 @@ it.live("an agent stages steps without running any, presents them, and the perso
       { verb: "start", service: "web", only: null },
     ] });
     // Someone else's draft can't be added to.
-    const other = yield* provided(createProposal({ ...agent, credential: { kind: "oauth", id: "cli-oauth" } }, production));
+    const other = yield* provided(createProposal({ ...agent, credential: { kind: "oauth", id: "cli-oauth", client: null } }, production));
     const otherId = other.ok && "value" in other ? other.value.proposal_id : expect.fail("no proposal");
     expect(yield* provided(stageStep(agent, otherId, { environment: ENVIRONMENT, service: "web", verb: "stop", only: null }))).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
     expect(yield* provided(presentProposal(agent, otherId))).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
