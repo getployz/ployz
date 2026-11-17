@@ -2290,7 +2290,9 @@ pub(super) fn prepare_history(
         plan.reverse_into(&mut target, &selection)?;
         target
     } else {
-        selected.clone()
+        let mut target = selected.clone();
+        target.region.clone_from(&environment.working.region);
+        target
     };
     let not_set = keep_sealed(environment, ledger, &mut target)?;
     let mut prepared = Prepared::from_target(

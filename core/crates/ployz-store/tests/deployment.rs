@@ -8925,3 +8925,60 @@ fn a_region_deploy_that_left_a_service_not_attempted_still_deployed_the_region()
     assert_eq!(region(), None);
     assert_eq!(moves(), [("api".to_owned(), Some("fsn".to_owned()))]);
 }
+
+#[test]
+fn a_roll_back_to_a_version_saved_in_another_region_leaves_the_region_as_it_is() {
+    let (store, who) = shop();
+    let region = |region: &str| {
+        let edit = Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![Change::Set {
+                path: SettingPath::REGION,
+                value: json!(region),
+            }],
+        };
+        store.write(&who, &edit).unwrap();
+    };
+    region("syd");
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    region("fsn");
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+
+    let revision = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment
+        .saved;
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+
+    let staged = diff(&store, &who);
+    assert_eq!(staged.region, None);
+    assert_eq!(changed(&store, &who), ["web"]);
+}
