@@ -1124,26 +1124,28 @@ fn plan(
                 cause.trim_end_matches('.')
             ));
         }
-        if let Some(undecided) = undecided(&plan.unresolved) {
+        if let Some(undecided) = undecided(&plan.unresolved, !plan.regions.is_empty()) {
             ui::stream(format_args!("{undecided}"));
         }
         followed.say();
     })
 }
 
-/// The plan's line for what only the Servers decide, as people read it.
-fn undecided(unresolved: &[String]) -> Option<String> {
-    if unresolved.is_empty() {
-        return None;
-    }
+/// The plan's line for what only the Servers decide, as people read it. A plan
+/// that is `placed` already says where each Service runs.
+fn undecided(unresolved: &[String], placed: bool) -> Option<String> {
     let unresolved: Vec<_> = unresolved
         .iter()
+        .filter(|item| !(placed && item.as_str() == "operations"))
         .map(|item| match item.as_str() {
             "operations" => "which containers start and stop",
             "volume data" => "which volume data is deleted",
             other => other,
         })
         .collect();
+    if unresolved.is_empty() {
+        return None;
+    }
     Some(format!(
         "Decided by the Servers when it runs: {}.",
         unresolved.join(", ")
@@ -1806,9 +1808,15 @@ mod tests {
 
     #[test]
     fn the_plan_says_what_the_servers_decide_in_plain_words() {
-        assert_eq!(undecided(&[]), None);
+        let both = ["operations".to_owned(), "volume data".to_owned()];
+        assert_eq!(undecided(&[], false), None);
+        assert_eq!(undecided(&both[..1], true), None);
         assert_eq!(
-            undecided(&["operations".to_owned(), "volume data".to_owned()]).as_deref(),
+            undecided(&both, true).as_deref(),
+            Some("Decided by the Servers when it runs: which volume data is deleted.")
+        );
+        assert_eq!(
+            undecided(&both, false).as_deref(),
             Some(
                 "Decided by the Servers when it runs: which containers start and stop, \
                  which volume data is deleted."

@@ -61,6 +61,23 @@ pub(crate) fn regions(
     .collect()
 }
 
+/// The default region `environment`'s newest Deployment to confirm a Service
+/// deployed it in. None when that Deployment had none, or none confirmed a Service.
+pub(crate) fn region(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<Region>, RpcError> {
+    tx.query(
+        "SELECT applied.region FROM config_applied applied \
+         JOIN config_deployment deployment ON deployment.id = applied.deployment_id \
+         WHERE applied.environment_id = ?1 AND applied.node_type = 'service' \
+         ORDER BY deployment.number DESC LIMIT 1",
+        &[environment.as_str().into()],
+    )?
+    .first()
+    .map_or(Ok(None), |row| row.parse_optional(0, "region"))
+}
+
 /// Deployment `deployment` confirmed node `node_id` as `document`, a Service in
 /// `region`.
 pub(crate) fn confirm(

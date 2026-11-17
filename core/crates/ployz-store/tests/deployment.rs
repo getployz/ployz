@@ -8815,6 +8815,7 @@ fn a_plan_names_the_region_each_service_it_ships_runs_in_next_and_any_server_onc
             .unwrap();
     };
     deploy(1);
+    assert_eq!(regions(), []);
 
     stage(Change::Unset {
         path: SettingPath::REGION,
@@ -8826,4 +8827,72 @@ fn a_plan_names_the_region_each_service_it_ships_runs_in_next_and_any_server_onc
 
     deploy(2);
     assert_eq!(regions(), []);
+}
+
+#[test]
+fn a_region_deploy_that_left_a_service_not_attempted_still_deployed_the_region() {
+    let (store, who) = shop();
+    let region = || {
+        diff(&store, &who)
+            .region
+            .map(|change| (change.before, change.after))
+    };
+    let moves = || {
+        store
+            .read(&who, &PlanQuery::default())
+            .unwrap()
+            .regions
+            .into_iter()
+            .map(|(service, region)| (service.to_string(), region.map(|region| region.to_string())))
+            .collect::<Vec<_>>()
+    };
+    let deploy = |n: u8, ran: &[&str], blocked: &[&str]| {
+        admit(&store, &who, n, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(n), &a).unwrap();
+        let mut prepared = serde_json::to_value(preview(ran)).unwrap();
+        prepared["blocked"] = blocked
+            .iter()
+            .map(|service| {
+                json!({
+                    "service": service,
+                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": {
+                        "reason": "volume_outside_region", "volume": "pg-data",
+                        "server": "syd-1", "to": "fsn-1"
+                    }}
+                })
+            })
+            .collect();
+        let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
+        store.record(&id(n), &a, prepared).unwrap();
+        store.record(&id(n), &a, succeeded(ran)).unwrap();
+    };
+    let discard = || {
+        let discard = Discard {
+            environment: EnvironmentRef::default(),
+            target: None,
+            path: Some(SettingPath::REGION),
+            version: None,
+        };
+        store.write(&who, &discard).unwrap();
+    };
+    deploy(1, &["web", "api"], &[]);
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &edit).unwrap();
+
+    // web moves into fsn. api's Volume is outside it, so api is Not attempted.
+    deploy(2, &["web"], &["api"]);
+    assert_eq!(region(), None);
+    assert_eq!(moves(), [("api".to_owned(), Some("fsn".to_owned()))]);
+
+    discard();
+    assert_eq!(region(), None);
+    assert_eq!(moves(), [("api".to_owned(), Some("fsn".to_owned()))]);
 }

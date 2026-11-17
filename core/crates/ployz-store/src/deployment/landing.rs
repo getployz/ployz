@@ -47,6 +47,27 @@ impl<'a> Landing<'a> {
             .all(|target| target.region.as_ref() == region)
     }
 
+    /// Whether a Deploy of `service` in `region` changes the region it runs in. One
+    /// that never ran changes it by entering a region.
+    pub(crate) fn changes_region(
+        &self,
+        service: &SavedServiceIntent,
+        region: Option<&Region>,
+    ) -> bool {
+        let ran = self
+            .regions
+            .is_some_and(|regions| regions.contains_key(&service.id))
+            || self
+                .in_flight
+                .iter()
+                .any(|target| target.services.iter().any(|other| other.id == service.id));
+        if ran {
+            !self.in_region(service, region)
+        } else {
+            region.is_some()
+        }
+    }
+
     /// Every version of a Service that may run.
     pub(crate) fn services(&self) -> impl Iterator<Item = &'a SavedServiceIntent> {
         self.applied
