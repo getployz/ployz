@@ -177,7 +177,7 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
     value: {
       proposal_id: row.id,
       steps: row.steps.length,
-      message: "Presented. Waiting on a person. Call proposal_status to follow it.",
+      message: "Presented. Waiting on a human. Call proposal_status to follow it.",
     },
   };
 });

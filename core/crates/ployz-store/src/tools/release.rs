@@ -29,7 +29,8 @@ tool_input! {
 
 impl Tool for Review {
     const NAME: &'static str = "review";
-    const DESCRIPTION: &'static str = "What the next deploy applies, in plain lines: the version deploy takes, what a human must approve, and broken references.";
+    const TITLE: &'static str = "Review staged changes";
+    const DESCRIPTION: &'static str = "Show what the next deploy would apply: each staged change as a plain line, what it destroys, broken references and the latest Saved revision. Also reports whether a deploy here can stop to ask a human, and the version that pins a deploy to this review.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -127,15 +128,15 @@ fn shown(value: &Value) -> String {
 
 tool_input! {
     pub(crate) struct DiscardInput {
-        /// Only this Service. Omit service, volume and config for everything.
+        /// Discard only this Service's changes, e.g. `web`. Give at most one of service, volume and config. With none, everything staged is discarded.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         service: Option<ServiceName>,
-        /// Only this Volume.
+        /// Discard only this Volume's changes, e.g. `data`.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         volume: Option<VolumeName>,
-        /// Only this Config.
+        /// Discard only this Config's changes.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         config: Option<ConfigName>,
@@ -146,8 +147,11 @@ tool_input! {
 
 impl Tool for DiscardInput {
     const NAME: &'static str = "discard";
-    const DESCRIPTION: &'static str = "Return all Staged changes, or one Service, Volume or Config, to deployed. A named one differing only from saved returns to saved.";
-    const EFFECT: Effect = Effect::Remove;
+    const TITLE: &'static str = "Discard staged changes";
+    const DESCRIPTION: &'static str = "Discard all staged changes, or only one Service's, Volume's or Config's, putting it back to what is deployed. A named one that differs only from Saved State goes back to Saved. Unsaved changes are lost.";
+    // Sent again for one name, it can go a step further: the first puts a removed Service back to
+    // Saved, the second takes that Saved Service away because it never deployed.
+    const EFFECT: Effect = Effect::Remove { idempotent: false };
 
     fn example() -> Value {
         json!({ "service": "web" })
@@ -211,7 +215,7 @@ impl Tool for DiscardInput {
 
 tool_input! {
     pub(crate) struct DeployInput {
-        /// Deploy only these Services. Omit to deploy every Service.
+        /// Deploy only these Services, e.g. `["web"]`. Leave out to deploy every Service.
         #[serde(default)]
         #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
         services: Vec<ServiceName>,
@@ -219,18 +223,19 @@ tool_input! {
         #[serde(default)]
         #[schemars(length(max = 200))]
         message: Option<String>,
-        /// The reviewed version; refused if what is staged changed since. Required with accept_volume_loss.
+        // Not the @loss wording: a review hands this version out too, not only a refusal.
+        /// The version a review or a refusal gave. Fails if what is staged changed since. Leave out to ship whatever is staged now. Required with accept_volume_loss.
         #[serde(default)]
         version: Option<String>,
-        /// Volumes whose data this may delete.
+        /// Volumes whose data the member agreed to lose, named as the refusal listed them.
         #[serde(default)]
         #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
         accept_volume_loss: Vec<VolumeName>,
-        @key["Any id you choose. A call that repeats a key gets the first call's result, not a second deploy."],
-        /// Save everything staged for the next deploy instead of deploying it.
+        @key,
+        /// Save everything staged as a Saved revision for a later deploy, without starting a Deployment. Fails if services is given.
         #[serde(default)]
         skip_deploy: bool,
-        /// Keep running Services the Environment doesn't hold.
+        /// When every Service deploys, keep running Services that are not in the Environment.
         #[serde(default)]
         no_prune: bool,
         @place(named),
@@ -239,9 +244,14 @@ tool_input! {
 
 impl Tool for DeployInput {
     const NAME: &'static str = "deploy";
-    const DESCRIPTION: &'static str = "Deploys everything staged. Deploying every Service removes other Services running in the Environment, unless no_prune. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain.";
+    const TITLE: &'static str = "Deploy an Environment";
+    const DESCRIPTION: &'static str = "Deploy an Environment: save everything staged and queue a Deployment of every Service, or only the ones named. Returns once the Deployment is queued, so check progress with `deployment_show`. Deploying every Service removes running Services that are not in the Environment, unless no_prune. With skip_deploy it only saves. Where approval is asked, every deploy waits for it; a save alone waits only if deploying it would destroy something.";
     const GATE: Gate = Gate::Store;
-    const EFFECT: Effect = Effect::Remove;
+    // Without a request_key, each call queues a new Deployment.
+    const EFFECT: Effect = Effect::Remove { idempotent: false };
+    // The Deployment it queues builds on GitHub Actions and pulls images from
+    // public registries.
+    const OPEN_WORLD: bool = true;
 
     fn verb(input: &Value) -> DiffVerb {
         match input.get("skip_deploy").and_then(Value::as_bool) {

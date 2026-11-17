@@ -59,7 +59,7 @@ fn on_volume(
 
 tool_input! {
     pub(crate) struct VolumeShow {
-        /// Omit for every Volume here.
+        /// The Volume's name, e.g. `pgdata`. Omit for every Volume in the Environment.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         volume: Option<VolumeName>,
@@ -70,7 +70,8 @@ tool_input! {
 impl Tool for VolumeShow {
     const NAME: &'static str = "volume_show";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Where a Volume's data is: its writable copy, its mirror and last sync, and recent runs with how each ended.";
+    const TITLE: &'static str = "Show where a Volume's data is";
+    const DESCRIPTION: &'static str = "Show where each Volume's data lives: which Server has the writable copy, which has a read-only one (a Mirror or a move's old copy), and whether it is deployed. When exactly one Volume is shown, it lists recent runs and how each ended.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
@@ -169,11 +170,14 @@ fn copies_of<'a>(
 
 tool_input! {
     pub(crate) struct VolumeMirror {
+        /// The Volume's name, e.g. `pgdata`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         volume: VolumeName,
+        /// Server to hold the Mirror, e.g. `db-2`, not the one with the writable copy. Omit to sync the existing Mirror.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         server: Option<ServerName>,
+        /// Set true to recopy the whole Volume to a Mirror that diverged, as a run, instead of sending what changed.
         #[serde(default)]
         full: bool,
         @wait,
@@ -185,9 +189,11 @@ tool_input! {
 impl Tool for VolumeMirror {
     const NAME: &'static str = "volume_mirror";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run.";
+    const TITLE: &'static str = "Mirror or sync a Volume";
+    const DESCRIPTION: &'static str = "Give a Volume its one Mirror on another Server, or bring that Mirror up to date. A new Mirror is copied as a run. An existing one is sent what changed since its last sync, and the call returns before the download ends. Check the run with `volume_show`.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // Every call sends the Mirror a fresh sync, or starts a new run.
+    const EFFECT: Effect = Effect::Remove { idempotent: false };
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
     };
@@ -266,6 +272,7 @@ impl Tool for VolumeMirror {
 
 tool_input! {
     pub(crate) struct VolumeMirrorRemove {
+        /// The Volume's name, e.g. `pgdata`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         volume: VolumeName,
         @loss,
@@ -277,10 +284,11 @@ tool_input! {
 impl Tool for VolumeMirrorRemove {
     const NAME: &'static str = "volume_mirror_remove";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str =
-        "Delete a Volume's mirror; if it is the last copy, its data goes too.";
+    const TITLE: &'static str = "Remove a Volume's read-only copies";
+    const DESCRIPTION: &'static str = "Delete every read-only copy of a Volume: its Mirror and any old copy a move left, on every Server that holds one, right away. This cannot be undone. If no Server has a writable copy, the Volume's data goes with them. Returns the run.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // Once removed, the Volume has no read-only copy and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
     };
@@ -305,8 +313,10 @@ impl Tool for VolumeMirrorRemove {
 
 tool_input! {
     pub(crate) struct VolumeMove {
+        /// The Volume's name, e.g. `pgdata`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         volume: VolumeName,
+        /// Server to move the writable copy and its Service to, e.g. `db-2`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         to: ServerName,
         @wait,
@@ -318,9 +328,12 @@ tool_input! {
 impl Tool for VolumeMove {
     const NAME: &'static str = "volume_move";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Put a Volume and the Service using it on server to. The Service is down only for the final copy; the old server keeps a mirror. If a move stopped, the same call continues it.";
+    const TITLE: &'static str = "Move a Volume to another Server";
+    const DESCRIPTION: &'static str = "Move a Volume and the Service using it to another Server, right away. The Service is down only for the final copy. The old Server keeps a read-only old copy that never refreshes, which `volume_mirror_remove` deletes. Make the same call again to continue a move that stopped. Returns the run.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // The same call continues a move that stopped, and is refused once the
+    // writable copy is on that Server.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
     };
@@ -346,6 +359,7 @@ impl Tool for VolumeMove {
 
 tool_input! {
     pub(crate) struct VolumeRelease {
+        /// The Volume's name, e.g. `pgdata`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         volume: VolumeName,
         @loss,
@@ -358,9 +372,11 @@ tool_input! {
 impl Tool for VolumeRelease {
     const NAME: &'static str = "volume_release";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead.";
+    const TITLE: &'static str = "Release a Volume from its run";
+    const DESCRIPTION: &'static str = "Stop the run under way on a Volume and start its Service again on the old Server with its data, right away. A move already past its handover finishes on the new Server instead: continue it with `volume_move`. Returns the run.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // Each call is a new release run, even with nothing left to stop.
+    const EFFECT: Effect = Effect::Remove { idempotent: false };
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
     };
@@ -388,8 +404,10 @@ impl Tool for VolumeRelease {
 
 tool_input! {
     pub(crate) struct VolumeRestore {
+        /// The Volume's name, e.g. `pgdata`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         volume: VolumeName,
+        /// Server whose copy becomes the writable copy, e.g. `db-2`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         from: ServerName,
         @wait,
@@ -401,9 +419,12 @@ tool_input! {
 impl Tool for VolumeRestore {
     const NAME: &'static str = "volume_restore";
     const STATUS: ToolId = ToolId::VolumeShow;
-    const DESCRIPTION: &'static str = "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down until the next deploy.";
+    const TITLE: &'static str = "Restore a Volume from a Server's copy";
+    const DESCRIPTION: &'static str = "Make one Server's copy the Volume's writable copy when no Server has one, right away. It must be the only copy left, and a Mirror's copy lacks anything written after its last sync. The Service stays down until the next deploy. Returns the run.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // Once restored, that Server has the writable copy and the same call is
+    // refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),
     };

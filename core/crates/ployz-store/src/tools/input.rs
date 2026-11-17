@@ -24,8 +24,9 @@ pub(crate) trait HasPlace {
 /// - `@loss`: `accept_volume_loss` as qualified names and the `version` that goes
 ///   with them, for the tools that turn them into an `AcceptedLoss`
 ///
-/// `@place(named)` and `@place(here)` give the two fields the documentation the
-/// catalog shows for them, `@wait["..."]` and `@key["..."]` their one-off text.
+/// Every group documents its fields, so a model reads the same sentence wherever
+/// one appears. `@place["..." "..."]`, `@wait["..."]` and `@key["..."]` give a tool
+/// whose field means something else its own text.
 macro_rules! tool_input {
     ($vis:vis struct $name:ident { $($body:tt)* }) => {
         tool_input!(@fields {$vis $name} [] [] $($body)*);
@@ -38,24 +39,30 @@ macro_rules! tool_input {
     };
     (@fields $head:tt $out:tt $impls:tt @place(named), $($rest:tt)*) => {
         tool_input!(@fields $head $out $impls
-            @place["Project name." "Environment name, e.g. staging."], $($rest)*);
+            @place[
+                "Project name. Defaults to the one you are in."
+                "Environment name, e.g. `staging`. Defaults to the one you are in."
+            ], $($rest)*);
     };
     (@fields $head:tt $out:tt $impls:tt @place(here), $($rest:tt)*) => {
         tool_input!(@fields $head $out $impls @place[
-            "Project name. Omit for the one you are in."
-            "Environment name, e.g. staging. Omit for the one you are in."
+            "Project name. Defaults to the one you are in."
+            "Environment name, e.g. `staging`. Defaults to the one you are in."
         ], $($rest)*);
+    };
+    (@fields $head:tt $out:tt $impls:tt @place, $($rest:tt)*) => {
+        tool_input!(@fields $head $out $impls @place(here), $($rest)*);
     };
     (
         @fields {$vis:vis $name:ident} [$($out:tt)*] [$($impls:tt)*]
-        @place $([$project:literal $environment:literal])?, $($rest:tt)*
+        @place [$project:literal $environment:literal], $($rest:tt)*
     ) => {
         tool_input!(@fields {$vis $name} [$($out)*
-            $(#[doc = $project])?
+            #[doc = $project]
             #[serde(default)]
             #[schemars(with = "Option<String>", pattern($crate::catalog::NODE_NAME))]
             project: Option<$crate::ProjectName>,
-            $(#[doc = $environment])?
+            #[doc = $environment]
             #[serde(default)]
             #[schemars(with = "Option<String>", pattern($crate::catalog::NODE_NAME))]
             environment: Option<$crate::EnvironmentName>,
@@ -72,36 +79,48 @@ macro_rules! tool_input {
     };
     (@fields $head:tt [$($out:tt)*] $impls:tt @revision, $($rest:tt)*) => {
         tool_input!(@fields $head [$($out)*
-            /// Writes only if the place is still at this revision.
+            /// The revision from your last read. Fails if the Environment changed since.
             #[serde(default)]
             expect_revision: Option<u64>,
         ] $impls $($rest)*);
     };
     (@fields $head:tt [$($out:tt)*] $impls:tt @loss, $($rest:tt)*) => {
         tool_input!(@fields $head [$($out)*
+            /// Volumes whose data the member agreed to lose, named as the refusal listed them.
             #[serde(default)]
             accept_volume_loss: Vec<String>,
+            /// The version the refusal gave. Fails if what it covers changed since.
             #[serde(default)]
             version: Option<String>,
         ] $impls $($rest)*);
     };
+    (@fields $head:tt $out:tt $impls:tt @wait, $($rest:tt)*) => {
+        tool_input!(@fields $head $out $impls @wait[
+            "Seconds to wait for the outcome. Default 0: returns as soon as it is accepted."
+        ], $($rest)*);
+    };
     (
         @fields $head:tt [$($out:tt)*] $impls:tt
-        @wait $([$doc:literal])?, $($rest:tt)*
+        @wait [$doc:literal], $($rest:tt)*
     ) => {
         tool_input!(@fields $head [$($out)*
-            $(#[doc = $doc])?
+            #[doc = $doc]
             #[serde(default)]
             #[schemars(range(min = 0, max = $crate::tools::WAIT_CAP_SECONDS))]
             wait_seconds: u32,
         ] $impls $($rest)*);
     };
+    (@fields $head:tt $out:tt $impls:tt @key, $($rest:tt)*) => {
+        tool_input!(@fields $head $out $impls @key[
+            "Any key you pick for this run. Reuse it to get that run back instead of starting another."
+        ], $($rest)*);
+    };
     (
         @fields $head:tt [$($out:tt)*] $impls:tt
-        @key $([$doc:literal])?, $($rest:tt)*
+        @key [$doc:literal], $($rest:tt)*
     ) => {
         tool_input!(@fields $head [$($out)*
-            $(#[doc = $doc])?
+            #[doc = $doc]
             #[serde(default)]
             #[schemars(
                 with = "Option<String>",

@@ -3,17 +3,19 @@
 use std::path::PathBuf;
 
 use ployz_store::OrganizationId;
-use ployz_store::tools::{INSTRUCTIONS, Place, Step, StoreAt, ToolResult, catalog, start};
+use ployz_store::tools::{
+    DESCRIPTION, INSTRUCTIONS, Place, Step, StoreAt, TITLE, ToolResult, catalog, start,
+};
 use serde_json::{Value, json};
 
-const CAP_BYTES: usize = 58_300;
+const CAP_BYTES: usize = 77_000;
 
 fn snapshot_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/agent_tools.json")
 }
 
 fn compact() -> Value {
-    json!({ "instructions": INSTRUCTIONS, "tools": catalog() })
+    json!({ "title": TITLE, "description": DESCRIPTION, "instructions": INSTRUCTIONS, "tools": catalog() })
 }
 
 #[test]
@@ -32,12 +34,16 @@ fn the_catalog_matches_its_snapshot() {
     );
 }
 
-// The cap counts what a model reads every turn, so output schemas are left out.
+// The cap counts what a model reads every turn. Hosts show titles and hints to
+// people and check output against its schema; none of them reaches the model.
 #[test]
 fn the_catalog_fits_the_cap() {
     let mut tools = serde_json::to_value(catalog()).unwrap();
     for tool in tools.as_array_mut().unwrap() {
-        tool.as_object_mut().unwrap().remove("output_schema");
+        let tool = tool.as_object_mut().unwrap();
+        for unread in ["output_schema", "title", "idempotent", "open_world"] {
+            tool.remove(unread);
+        }
     }
     let sent = json!({ "instructions": INSTRUCTIONS, "tools": tools });
     let bytes = serde_json::to_vec(&sent).unwrap().len();
@@ -89,9 +95,11 @@ fn names_whole_word(text: &str, name: &str) -> bool {
     })
 }
 
+// A description may name one other tool, to say what to use instead or what
+// comes next; a field never does. Workflow belongs in INSTRUCTIONS.
 // Single-word names (docs, review, discard, history, deploy) are the domain's own nouns, as in "the next deploy".
 #[test]
-fn descriptions_say_what_a_tool_does_and_never_route_to_another() {
+fn descriptions_say_what_a_tool_does_and_name_at_most_one_other() {
     let tools = catalog();
     let names: Vec<&str> = tools
         .iter()
@@ -100,7 +108,21 @@ fn descriptions_say_what_a_tool_does_and_never_route_to_another() {
         .collect();
     let mut offences = Vec::new();
     for tool in &tools {
-        let mut texts = vec![tool.description.as_str()];
+        let routed: Vec<&&str> = names
+            .iter()
+            .filter(|name| **name != tool.name && names_whole_word(&tool.description, name))
+            .collect();
+        if routed.len() > 1 {
+            offences.push(format!("{}: names {routed:?}", tool.name));
+        }
+        let lower = tool.description.to_lowercase();
+        for phrase in IMPERATIVES
+            .iter()
+            .filter(|phrase| names_whole_word(&lower, phrase))
+        {
+            offences.push(format!("{}: says {phrase:?}", tool.name));
+        }
+        let mut texts = Vec::new();
         descriptions(&tool.input_schema, &mut texts);
         descriptions(&tool.output_schema, &mut texts);
         for text in texts {
@@ -161,4 +183,74 @@ fn every_tool_refuses_an_unknown_field_and_names_the_fields_it_has() {
         );
         assert_eq!(named, declared, "{}: {}", tool.name, refusal.message);
     }
+}
+
+// Claude Code cuts server instructions past 2 KB; `ployz mcp` adds a sentence.
+#[test]
+fn the_instructions_fit_what_hosts_keep() {
+    let bytes = INSTRUCTIONS.len();
+    assert!(
+        bytes <= 1_900,
+        "the instructions are {bytes} B, over 1900 B"
+    );
+}
+
+#[test]
+fn every_tool_has_a_short_title() {
+    let offences: Vec<String> = catalog()
+        .iter()
+        .filter(|tool| {
+            let title = tool.title;
+            title.is_empty()
+                || title.len() > 40
+                || title.ends_with('.')
+                || !title.starts_with(|c: char| c.is_ascii_uppercase())
+        })
+        .map(|tool| format!("{}: {:?}", tool.name, tool.title))
+        .collect();
+    assert!(offences.is_empty(), "{}", offences.join("\n"));
+}
+
+fn undescribed(schema: &Value, path: &str, found: &mut Vec<String>) {
+    let Value::Object(fields) = schema else {
+        return;
+    };
+    for list in ["properties", "patternProperties"] {
+        for (name, property) in fields
+            .get(list)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            let here = format!("{path}/{name}");
+            if property.get("description").is_none() {
+                found.push(here.clone());
+            }
+            undescribed(property, &here, found);
+        }
+    }
+    if let Some(items) = fields.get("items") {
+        undescribed(items, path, found);
+    }
+    for option in fields
+        .get("anyOf")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        undescribed(option, path, found);
+    }
+}
+
+#[test]
+fn every_input_field_says_what_it_means() {
+    let mut found = Vec::new();
+    for tool in catalog() {
+        undescribed(&tool.input_schema, tool.name, &mut found);
+    }
+    assert!(
+        found.is_empty(),
+        "fields without a description:\n{}",
+        found.join("\n")
+    );
 }

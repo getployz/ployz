@@ -22,26 +22,29 @@ use crate::github::{
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GithubLs {
-    /// GitHub repository owner/name.
+    /// GitHub repository, e.g. `acme/api`.
     #[schemars(with = "String", pattern(REPOSITORY))]
     repository: RepositoryName,
-    /// A directory to list, or a file to read. Omit for the top.
+    /// Directory to list or file to read, e.g. `src` or `Dockerfile`. Omit for the repository's root.
     #[serde(default)]
     path: Option<String>,
-    /// Branch, tag or commit. Default: the repository's default branch.
+    /// Branch, tag or commit, e.g. `main`. Omit for the repository's default branch.
     #[serde(default, rename = "ref")]
     git_ref: Option<String>,
-    /// Only paths matching this glob, like *.rs or src/**.
+    /// Glob, e.g. `*.rs` or `src/**`. Lists every matching file under path and reads none.
     #[serde(default, rename = "match")]
     glob: Option<String>,
 }
 
 impl Tool for GithubLs {
     const NAME: &'static str = "github_ls";
-    const DESCRIPTION: &'static str =
-        "List a connected GitHub repository's files at a path, or read one file (at most 64 KB).";
+    const TITLE: &'static str = "List or read GitHub repository files";
+    const DESCRIPTION: &'static str = "List the files and directories at a path in a GitHub repository Ployz can read, or read one text file up to 64 KB. A larger or binary file returns a note instead, and a long listing is cut short and says so. A Dockerfile also returns its exposed ports and its ENV and ARG names.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
+    // Cloud answers from GitHub's API (dashboard/src/modules/github/github-cli.server.ts,
+    // repositoryTree and repositoryFile).
+    const OPEN_WORLD: bool = true;
 
     fn example() -> Value {
         json!({ "repository": "acme/api", "path": "src" })
@@ -175,7 +178,8 @@ pub(crate) struct GithubConnect {}
 
 impl Tool for GithubConnect {
     const NAME: &'static str = "github_connect";
-    const DESCRIPTION: &'static str = "Whether GitHub is connected, which repositories Ployz can read, and the page that connects more.";
+    const TITLE: &'static str = "Show the GitHub connection";
+    const DESCRIPTION: &'static str = "Show whether GitHub is connected, the repositories Ployz can read, and the page where a member connects more.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 

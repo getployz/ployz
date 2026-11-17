@@ -666,11 +666,23 @@ async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
             .iter()
             .find(|tool| tool["name"] == def.name)
             .unwrap_or_else(|| panic!("{} is listed", def.name));
+        assert_eq!(tool["title"], def.title, "{tool}");
         assert_eq!(tool["annotations"]["readOnlyHint"], def.read_only, "{tool}");
         assert_eq!(
             tool["annotations"]["destructiveHint"], def.destructive,
             "{tool}"
         );
+        assert_eq!(
+            tool["annotations"]["idempotentHint"], def.idempotent,
+            "{tool}"
+        );
+        assert_eq!(
+            tool["annotations"]["openWorldHint"], def.open_world,
+            "{tool}"
+        );
+        if def.read_only {
+            assert_eq!(tool["annotations"]["idempotentHint"], true, "{tool}");
+        }
         assert_eq!(tool["outputSchema"], def.output_schema, "{tool}");
         assert_eq!(
             tool["inputSchema"]["properties"]["approval"]["type"] == "string",
@@ -690,8 +702,9 @@ async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
     assert_eq!(hints("service_stop")["destructiveHint"], false);
 }
 
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
-async fn the_instructions_are_the_registry_s() {
+async fn the_instructions_are_the_registry_s_and_the_server_names_itself() {
     let place = transcript("deploy", in_org()).place;
     let mut client = Client::connect(on_local(place));
     client
@@ -712,6 +725,33 @@ async fn the_instructions_are_the_registry_s() {
         .unwrap();
     assert!(instructions.starts_with(INSTRUCTIONS), "{instructions}");
     assert!(instructions.contains("30 minutes"), "{instructions}");
+    let server = &initialized["result"]["serverInfo"];
+    assert_eq!(server["name"], "ployz", "{server}");
+    assert_eq!(server["version"], env!("CARGO_PKG_VERSION"), "{server}");
+    assert_eq!(server["title"], tools::TITLE, "{server}");
+    assert_eq!(server["description"], tools::DESCRIPTION, "{server}");
+    assert_eq!(server["websiteUrl"], "https://ployz.dev", "{server}");
+    assert_eq!(
+        server["icons"],
+        json!([{
+            "src": "https://ployz.dev/assets/logo-mark.svg",
+            "mimeType": "image/svg+xml",
+            "sizes": ["any"],
+        }]),
+        "{server}"
+    );
+}
+
+/// Claude Code cuts a server's instructions past 2 KB. Only tests shorten a server's
+/// deadline, so the one `Server::new` sets is the longest the sentence can name.
+#[test]
+fn the_instructions_fit_in_what_claude_code_keeps() {
+    let sent = instructions(CALL_DEADLINE);
+    assert!(
+        sent.len() <= 2048,
+        "the instructions are {} B: {sent}",
+        sent.len()
+    );
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -2297,7 +2337,17 @@ mod published {
                 continue;
             };
             assert_eq!(entry["agents"], true, "{tool} is not for agents");
-            assert_eq!(tool["description"], entry["about"]);
+            let about = entry["about"].as_str().unwrap_or_default();
+            let said = if entry["gate"] == "ask" {
+                format!(
+                    "{}. {}",
+                    about.trim_end_matches('.'),
+                    Gate::Cloud.sentence()
+                )
+            } else {
+                about.to_owned()
+            };
+            assert_eq!(tool["description"], said.as_str());
             let mut input = entry["input"].clone();
             if entry["gate"] == "ask" {
                 input["properties"]["approval"] =
@@ -2316,6 +2366,15 @@ mod published {
                 entry["removes"] == true,
                 "{tool}"
             );
+            // A Cloud that predates a title and these hints leaves them out.
+            assert_eq!(tool.get("title"), entry.get("title"), "{tool}");
+            let idempotent = entry
+                .get("idempotent")
+                .cloned()
+                .unwrap_or_else(|| json!(entry["kind"] == "read"));
+            assert_eq!(tool["annotations"]["idempotentHint"], idempotent, "{tool}");
+            let open_world = entry.get("open_world").cloned().unwrap_or(json!(false));
+            assert_eq!(tool["annotations"]["openWorldHint"], open_world, "{tool}");
         }
         assert_eq!(cached_names(home.path()).len(), entries.len());
     }

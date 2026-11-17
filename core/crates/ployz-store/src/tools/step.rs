@@ -331,11 +331,11 @@ pub enum Gate {
 }
 
 impl Gate {
-    /// The sentence every tool description ends with.
+    /// What a tool that may ask a human ends its description with; the rest say nothing.
     #[must_use]
     pub const fn sentence(self) -> &'static str {
         match self {
-            Self::Never => "This call asks no human.",
+            Self::Never => "",
             Self::Store | Self::Cloud => "May stop to ask a human to approve.",
         }
     }

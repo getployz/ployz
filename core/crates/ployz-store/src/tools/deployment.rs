@@ -210,9 +210,11 @@ pub(crate) fn follow_call(mut place: Map<String, Value>, number: Option<u64>) ->
 
 tool_input! {
     pub(crate) struct DeploymentList {
+        /// How many to return (default 20).
         #[serde(default)]
         #[schemars(range(min = 1, max = 100))]
         limit: Option<usize>,
+        /// The `next_cursor` from the previous page, to read the next one.
         #[serde(default)]
         cursor: Option<String>,
         @place(here),
@@ -221,8 +223,8 @@ tool_input! {
 
 impl Tool for DeploymentList {
     const NAME: &'static str = "deployment_list";
-    const DESCRIPTION: &'static str =
-        "An Environment's Deployments, newest first, with each one's status.";
+    const TITLE: &'static str = "List Deployments";
+    const DESCRIPTION: &'static str = "List an Environment's Deployments, newest to oldest. Each shows its number, status, whether it is still in flight, why it ended, its message, Saved revision, and start and end times.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -258,18 +260,19 @@ impl Tool for DeploymentList {
 
 tool_input! {
     pub(crate) struct DeploymentShow {
-        /// The Deployment's number. Omit for the latest.
+        /// Deployment number, e.g. `12`. Leave out for the latest numbered one.
         #[serde(default)]
         #[schemars(range(min = 1))]
         deployment: Option<u64>,
-        @wait["Wait up to this long for the outcome."],
+        @wait["Seconds to wait for a Deployment still in flight to end, e.g. `120`. By default it answers at once."],
         @place(named),
     }
 }
 
 impl Tool for DeploymentShow {
     const NAME: &'static str = "deployment_show";
-    const DESCRIPTION: &'static str = "One Deployment, the latest unless you name its number: status, each Service's outcome, variables left out or Config-breaking, server warnings, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end.";
+    const TITLE: &'static str = "Show a Deployment";
+    const DESCRIPTION: &'static str = "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -310,7 +313,7 @@ impl Tool for DeploymentShow {
 
 tool_input! {
     pub(crate) struct DeploymentCancel {
-        /// The Deployment's number. Omit for the latest.
+        /// Deployment number, e.g. `12`. Leave out for the latest numbered one.
         #[serde(default)]
         #[schemars(range(min = 1))]
         deployment: Option<u64>,
@@ -320,9 +323,13 @@ tool_input! {
 
 impl Tool for DeploymentCancel {
     const NAME: &'static str = "deployment_cancel";
-    const DESCRIPTION: &'static str =
-        "Cancel a queued or running Deployment. What already changed on servers stays.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Cancel a Deployment";
+    const DESCRIPTION: &'static str = "Cancel a queued or running Deployment, the latest unless you give a number. A queued one never runs. A running one stops, but what it already changed on Servers stays. Fails if it already ended.";
+    // Sent again, one still stopping comes back unchanged and one that ended is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
+    // On Cloud, a committed cancel also cancels the GitHub Actions runs the
+    // Deployment's builds were dispatched to, through GitHub's API.
+    const OPEN_WORLD: bool = true;
 
     fn example() -> Value {
         json!({ "deployment": 12 })
@@ -347,13 +354,15 @@ impl Tool for DeploymentCancel {
 
 tool_input! {
     pub(crate) struct DeploymentRetry {
-        /// The Deployment's number. Omit for the latest.
+        /// Deployment number, e.g. `12`. Leave out for the latest numbered one.
         #[serde(default)]
         #[schemars(range(min = 1))]
         deployment: Option<u64>,
         @key,
+        /// The version the refusal gave. Fails if what it covers changed since.
         #[serde(default)]
         version: Option<String>,
+        /// Volumes whose data the member agreed to lose, named as the refusal listed them.
         #[serde(default)]
         #[schemars(with = "Vec<String>")]
         accept_volume_loss: Vec<VolumeName>,
@@ -363,9 +372,14 @@ tool_input! {
 
 impl Tool for DeploymentRetry {
     const NAME: &'static str = "deployment_retry";
-    const DESCRIPTION: &'static str = "Ship an ended Deployment's commit and settings again; an older one rolls back newer ones. A human approves every redeploy.";
+    const TITLE: &'static str = "Redeploy an ended Deployment";
+    const DESCRIPTION: &'static str = "Redeploy an ended Deployment. A new Deployment ships its Saved revision and pinned commits again, whatever was saved since. Redeploying an older one rolls back the newer ones, and fails until you accept the loss of any Volume data it would delete. Check progress with `deployment_show`.";
     const GATE: Gate = Gate::Store;
-    const EFFECT: Effect = Effect::Remove;
+    // Without a request_key every call queues another Deployment.
+    const EFFECT: Effect = Effect::Remove { idempotent: false };
+    // The Deployment it queues builds on GitHub Actions and pulls images from
+    // public registries.
+    const OPEN_WORLD: bool = true;
 
     fn verb(_input: &Value) -> DiffVerb {
         DiffVerb::Retry
@@ -463,7 +477,7 @@ fn retried(
 
 tool_input! {
     pub(crate) struct DeploymentStart {
-        /// The Deployment's number. Omit for the latest.
+        /// Deployment number, e.g. `12`. Leave out for the latest numbered one.
         #[serde(default)]
         #[schemars(range(min = 1))]
         deployment: Option<u64>,
@@ -473,8 +487,14 @@ tool_input! {
 
 impl Tool for DeploymentStart {
     const NAME: &'static str = "deployment_start";
-    const DESCRIPTION: &'static str = "Hand a queued Deployment to a runner now.";
-    const EFFECT: Effect = Effect::Remove;
+    const TITLE: &'static str = "Start a queued Deployment";
+    const DESCRIPTION: &'static str = "Hand a queued Deployment to a runner now, the latest unless you give a number. Nothing stored changes. Fails if it is already running or has ended.";
+    // Start stores nothing: sent again it hands over the same queued Deployment,
+    // or is refused once that runs.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
+    // The Deployment it queues builds on GitHub Actions and pulls images from
+    // public registries.
+    const OPEN_WORLD: bool = true;
 
     fn example() -> Value {
         json!({ "deployment": 12 })

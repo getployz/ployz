@@ -39,12 +39,18 @@ export type AgentResult = { readonly outcome: ToolOutcome } | { readonly asking:
 
 export type AgentTool = {
   readonly name: string;
+  /** A short label a host shows people; the model reads `description`. */
+  readonly title: string;
   readonly description: string;
   readonly inputSchema: JsonObject;
   readonly gated: boolean;
   readonly readOnly: boolean;
   /** It removes or deletes something when it runs; a staged removal is not destructive. */
   readonly destructive: boolean;
+  /** The same call made again, with the same input, changes nothing more. */
+  readonly idempotent: boolean;
+  /** It reaches past Ployz when it runs, such as an address on the internet. */
+  readonly openWorld: boolean;
   /** The input takes a `request_key`, so a client's key is the one the Store admits. */
   readonly keyed: boolean;
 };
@@ -55,44 +61,56 @@ const NAME = { type: "string", pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" }
 const PROPOSAL_ID = { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" };
 const PROPOSAL = {
   ...PROPOSAL_ID,
-  description: "Stage this call as the next step of a proposal instead of running it: nothing runs until a person approves the whole proposal.",
+  description: "Stage this call as the next step of a proposal instead of running it: nothing runs until a human approves the whole proposal.",
 };
 
 /** The Service tools a proposal may hold a step of: the ones a Server checks against the approval a person signed. */
 export const PROPOSAL_TOOLS = new Set(["service_restart", "service_stop", "service_start"]);
 const WITH_PROPOSAL = new Set(PROPOSAL_TOOLS);
 const STAGE_SEVERAL = "For several steps under one approval, stage them in a proposal.";
-/** What a person approves: a gated call each time, an ungated one only as a step of a proposal. */
-const personApproves = (gated: boolean): string =>
-  gated ? `A person approves it in the dashboard. ${STAGE_SEVERAL}` : `It runs without approval; as a step of a proposal, a person approves it in the dashboard. ${STAGE_SEVERAL}`;
+/** What the catalog's gated tools end with, said of a published command that asks too: its `about` is the CLI's help. */
+const ASKS = "May stop to ask a human to approve.";
+/** A proposal's place in a Service tool: a gated call already says it asks, an ungated one asks only as a step. */
+const inProposal = (gated: boolean): string =>
+  gated ? STAGE_SEVERAL : `It runs without approval; as a step of a proposal, a human approves it in the dashboard. ${STAGE_SEVERAL}`;
 
-/** Tools that build a proposal: several Service restarts, stops and starts a person approves together, in order. */
+/** Tools that build a proposal: several Service restarts, stops and starts a human approves together, in order. */
 const PROPOSAL_STEPS: ReadonlyArray<AgentTool> = [
   {
     name: "proposal_create",
-    description: "Open an empty proposal in an environment: a plan of several service restarts, stops and starts a person approves at once. Stage each step by calling its service tool with proposal set to this id, in the order to run, then present the proposal. Steps run in order, and a step that fails stops the ones after it.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { project: NAME, environment: NAME } },
+    title: "Open a proposal",
+    description: "Open an empty proposal in an Environment: a plan of several Service restarts, stops and starts that a human approves together. Stage each step by calling its Service tool with proposal set to the ID this returns, in the order to run, then hand it over with `proposal_present`. If a step fails, the ones after it never run.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { project: { ...NAME, description: "The Environment's Project, by name, e.g. `shop`." }, environment: { ...NAME, description: "The Environment to open it in, by name, e.g. `staging`." } } },
     gated: false,
     readOnly: false,
     destructive: false,
+    idempotent: false,
+    openWorld: false,
     keyed: false,
   },
   {
     name: "proposal_present",
-    description: "Hand a proposal to the people who can approve it. Nothing more can be staged into it afterwards.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { proposal: PROPOSAL_ID }, required: ["proposal"] },
+    title: "Present a proposal for approval",
+    description: "Hand a proposal to the people who can approve it. It needs at least one step, and nothing more can be staged into it afterwards. Check progress with `proposal_status`.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { proposal: { ...PROPOSAL_ID, description: "The proposal's ID, from the call that opened it." } }, required: ["proposal"] },
     gated: false,
     readOnly: false,
     destructive: false,
+    // A repeat is refused: the proposal was already presented.
+    idempotent: true,
+    openWorld: false,
     keyed: false,
   },
   {
     name: "proposal_status",
-    description: "Where a proposal stands: waiting on a person, denied with their reason, or how far its steps got.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { proposal: PROPOSAL_ID }, required: ["proposal"] },
+    title: "Show a proposal's status",
+    description: "Show where a proposal stands: waiting on a human, denied with their reason, or how far each step got.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { proposal: { ...PROPOSAL_ID, description: "The proposal's ID, from the call that opened it." } }, required: ["proposal"] },
     gated: false,
     readOnly: true,
     destructive: false,
+    idempotent: true,
+    openWorld: false,
     keyed: false,
   },
 ];
@@ -104,16 +122,31 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
     const schema = tool.input_schema as JsonObject;
     const properties = asRecord(schema["properties"]) ?? {};
     const inputSchema = WITH_PROPOSAL.has(tool.name) ? { ...schema, properties: { ...properties, proposal: PROPOSAL } } : schema;
-    const description = WITH_PROPOSAL.has(tool.name) ? `${tool.description} ${personApproves(tool.gate !== "never")}` : tool.description;
-    return { name: tool.name, description, inputSchema, gated: tool.gate !== "never", readOnly: tool.read_only, destructive: tool.destructive, keyed: keyed(schema) };
+    const description = WITH_PROPOSAL.has(tool.name) ? `${tool.description} ${inProposal(tool.gate !== "never")}` : tool.description;
+    return {
+      name: tool.name,
+      title: tool.title,
+      description,
+      inputSchema,
+      gated: tool.gate !== "never",
+      readOnly: tool.read_only,
+      destructive: tool.destructive,
+      // Sent again with a proposal, a Service tool stages a second step.
+      idempotent: tool.idempotent && !WITH_PROPOSAL.has(tool.name),
+      openWorld: tool.open_world,
+      keyed: keyed(schema),
+    };
   }),
   ...COMMANDS.filter((command) => command.agents && command.typed === null).map((command) => ({
     name: command.name,
-    description: command.about,
+    title: command.title,
+    description: command.gate === "never" ? command.about : `${command.about.replace(/\.$/, "")}. ${ASKS}`,
     inputSchema: inputSchema(command.input),
     gated: command.gate !== "never",
     readOnly: command.kind === "read",
     destructive: command.removes,
+    idempotent: command.idempotent,
+    openWorld: command.openWorld,
     keyed: false,
   })),
   ...PROPOSAL_STEPS,

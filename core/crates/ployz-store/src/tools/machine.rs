@@ -112,13 +112,27 @@ impl From<Refusal> for Stop {
     }
 }
 
-/// What a tool does to what it names.
+/// What a tool does to what it names. `idempotent`: the same call made again,
+/// with the same input, changes nothing more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Effect {
     Read,
-    Change,
+    Change {
+        idempotent: bool,
+    },
     /// Removes or deletes something when it runs; a staged removal is a Change.
-    Remove,
+    Remove {
+        idempotent: bool,
+    },
+}
+
+impl Effect {
+    const fn idempotent(self) -> bool {
+        match self {
+            Self::Read => true,
+            Self::Change { idempotent } | Self::Remove { idempotent } => idempotent,
+        }
+    }
 }
 
 /// Where a tool can run.
@@ -145,6 +159,8 @@ impl Reach {
 /// One tool: its input type, how it describes itself, and its plan.
 pub(crate) trait Tool: DeserializeOwned + JsonSchema {
     const NAME: &'static str;
+    /// A short label for people, in sentence case: `Show Service logs`.
+    const TITLE: &'static str;
     const DESCRIPTION: &'static str;
     const GATE: Gate = Gate::Never;
     const EFFECT: Effect;
@@ -154,6 +170,10 @@ pub(crate) trait Tool: DeserializeOwned + JsonSchema {
     /// The read that shows what a call to this tool started or changed; a call that
     /// outlasts its deadline points to it.
     const STATUS: ToolId = ToolId::DeploymentShow;
+
+    /// It reaches past Ployz and the member's servers: GitHub, public DNS, or
+    /// an address on the internet.
+    const OPEN_WORLD: bool = false;
 
     /// A complete input that decodes.
     fn example() -> Value;
@@ -218,11 +238,14 @@ const fn facts<T: Tool>() -> ToolFacts {
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 pub struct ToolDef {
     pub name: &'static str,
+    pub title: &'static str,
     pub description: String,
     pub input_schema: Value,
     pub output_schema: Value,
     pub read_only: bool,
     pub destructive: bool,
+    pub idempotent: bool,
+    pub open_world: bool,
     pub gate: Gate,
     #[serde(skip)]
     #[ts(skip)]
@@ -689,11 +712,16 @@ pub(crate) const fn entry<T: Tool>() -> Entry {
 fn def<T: Tool>() -> ToolDef {
     ToolDef {
         name: T::NAME,
-        description: format!("{} {}", T::DESCRIPTION, T::GATE.sentence()),
+        title: T::TITLE,
+        description: format!("{} {}", T::DESCRIPTION, T::GATE.sentence())
+            .trim_end()
+            .to_owned(),
         input_schema: schema::input::<T>(),
         output_schema: json!({ "type": "object" }),
         read_only: T::EFFECT == Effect::Read,
-        destructive: T::EFFECT == Effect::Remove,
+        destructive: matches!(T::EFFECT, Effect::Remove { .. }),
+        idempotent: T::EFFECT.idempotent(),
+        open_world: T::OPEN_WORLD,
         gate: T::GATE,
         facts: facts::<T>(),
     }

@@ -17,25 +17,27 @@ use crate::{
 
 tool_input! {
     pub(crate) struct ConfigWrite {
-        /// Config name. Created when it does not exist.
+        /// Config name, e.g. `nginx`. Created if the Environment has none by that name.
         #[schemars(with = "String", pattern(NODE_NAME))]
         config: ConfigName,
-        /// File name to contents.
+        /// Relative file paths (1 to 4 segments) mapped to their full text, e.g. `nginx.conf`. Each file is at most 256 KB.
         #[schemars(length(min = 1))]
         files: BTreeMap<String, String>,
-        /// Octal, e.g. 0440. Omit to keep.
+        /// Octal mode for every file written, e.g. `0440`. By default a file keeps its mode and a new one gets 0444.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern("^0?[0-7]{1,3}$"))]
         mode: Option<FileMode>,
+        /// Owner user ID for every file written. By default a file keeps its own and a new one gets 0.
         #[serde(default)]
         uid: Option<u32>,
+        /// Owner group ID for every file written. By default a file keeps its own and a new one gets 0.
         #[serde(default)]
         gid: Option<u32>,
-        /// Service to mount it into, with path.
+        /// Service to mount the Config into, e.g. `web`. Needs path.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         service: Option<ServiceName>,
-        /// Absolute directory in the Service's containers, with service.
+        /// Directory in the Service's containers where the files appear, e.g. `/etc/nginx`. Needs service.
         #[serde(default)]
         #[schemars(pattern("^/"))]
         path: Option<String>,
@@ -46,8 +48,10 @@ tool_input! {
 
 impl Tool for ConfigWrite {
     const NAME: &'static str = "config_write";
-    const DESCRIPTION: &'static str = "Write files into a Config, creating it if needed, and optionally mount it into a Service at a directory. A file's text may read a Service variable as ${{ SERVICE.KEY }}. Staged.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Write files into a Config";
+    const DESCRIPTION: &'static str = "Write text files into a Config, creating the Config if it is new. Files you leave out stay as they are. Pass service and path to also mount it into a Service. A file can read a Service variable as ${{ SERVICE.KEY }}. Staged until the next deploy.";
+    // The same input again finds the same files and mount in place.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({
@@ -145,9 +149,10 @@ impl Tool for ConfigWrite {
 
 tool_input! {
     pub(crate) struct ConfigRename {
+        /// The Config's current name.
         #[schemars(with = "String", pattern(NODE_NAME))]
         config: ConfigName,
-        /// New name.
+        /// New name, e.g. `proxy`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         to: ConfigName,
         @revision,
@@ -157,8 +162,10 @@ tool_input! {
 
 impl Tool for ConfigRename {
     const NAME: &'static str = "config_rename";
-    const DESCRIPTION: &'static str = "Rename a Config. Its files and mounts stay. Staged.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Rename a Config";
+    const DESCRIPTION: &'static str = "Rename a Config. Its files and mounts stay as they are. Staged until the next deploy. Fails if the new name is taken.";
+    // Sent again, it finds the new name taken and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "config": "nginx", "to": "proxy" })
@@ -190,9 +197,10 @@ impl Tool for ConfigRename {
 
 tool_input! {
     pub(crate) struct ConfigRemove {
+        /// The Config's name.
         #[schemars(with = "String", pattern(NODE_NAME))]
         config: ConfigName,
-        /// One file to remove. Omit to remove the whole Config and unmount it everywhere.
+        /// One file to remove, by its path in the Config, e.g. `nginx.conf`. Leave out to remove the whole Config.
         #[serde(default)]
         #[schemars(with = "Option<String>", length(min = 1))]
         file: Option<ConfigFileName>,
@@ -203,9 +211,10 @@ tool_input! {
 
 impl Tool for ConfigRemove {
     const NAME: &'static str = "config_remove";
-    const DESCRIPTION: &'static str =
-        "Remove one file from a Config, or the whole Config and its mounts. Staged.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Remove a Config or one file";
+    const DESCRIPTION: &'static str = "Remove one file from a Config, or the whole Config, which also unmounts it from every Service. Staged until the next deploy.";
+    // Sent again, it finds no such file or Config and is refused.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "config": "nginx", "file": "nginx.conf" })

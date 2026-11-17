@@ -26,7 +26,8 @@ tool_input! {
 
 impl Tool for EnvironmentShow {
     const NAME: &'static str = "environment_show";
-    const DESCRIPTION: &'static str = "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, the Staged count, broken references, and the latest Deployment.";
+    const TITLE: &'static str = "Show an Environment";
+    const DESCRIPTION: &'static str = "Show an Environment: its Services with source and domains, Volumes, Configs, how many changes are staged, broken references, latest Deployment and revision. Also lists every Project with its Environments.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -134,9 +135,9 @@ pub(crate) fn domain_label(name: &DomainName) -> String {
 
 tool_input! {
     pub(crate) struct EnvironmentPr {
-        /// true to build an Environment for each pull request, false to stop.
+        /// `true` to give each pull request its own Environment, `false` to stop.
         enabled: bool,
-        /// GitHub repository owner/name whose pull requests get Environments. Omit when the Project has one.
+        /// GitHub repository whose pull requests get Environments, e.g. `acme/api`. Optional when the Project's Services deploy from only one.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(REPOSITORY))]
         repository: Option<RepositoryName>,
@@ -147,9 +148,9 @@ tool_input! {
 
 impl Tool for EnvironmentPr {
     const NAME: &'static str = "environment_pr";
-    const DESCRIPTION: &'static str =
-        "Turn on or off an Environment per GitHub pull request, built from this Environment.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Turn PR Environments on or off";
+    const DESCRIPTION: &'static str = "Turn PR Environments on or off. When on, each pull request to a GitHub repository gets its own Branch of this Environment. Takes effect right away.";
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "enabled": true, "repository": "acme/api" })
@@ -219,18 +220,19 @@ impl Tool for EnvironmentPr {
 
 tool_input! {
     pub(crate) struct EnvironmentProtect {
-        /// true to refuse removing this Environment until it is unprotected, false to allow it.
+        /// `true` to block removing this Environment, `false` to allow it again.
         protected: bool,
-        @place["Project name." "Environment name, e.g. production."],
+        @place(named),
     }
 }
 
 impl Tool for EnvironmentProtect {
     const NAME: &'static str = "environment_protect";
-    const DESCRIPTION: &'static str = "Protect a Project's own Environment so it cannot be removed, or unprotect it. Branches and PR Environments cannot be Protected.";
+    const TITLE: &'static str = "Protect or unprotect an Environment";
+    const DESCRIPTION: &'static str = "Protect an Environment so it can't be removed, or unprotect it. Takes effect right away. Unprotecting asks a human to approve, and Branches and PR Environments can't be Protected.";
     /// Cloud asks a human before an agent unprotects one.
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Change;
+    const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
         json!({ "environment": "production", "protected": true })
@@ -273,7 +275,8 @@ struct SetupServers {
 
 impl Tool for EnvironmentSetup {
     const NAME: &'static str = "environment_setup";
-    const DESCRIPTION: &'static str = "What this Environment still needs before it can deploy: servers, a GitHub connection, a cluster domain.";
+    const TITLE: &'static str = "Check what an Environment needs";
+    const DESCRIPTION: &'static str = "Check what an Environment still needs before it can deploy: Servers, a Cluster Domain, and a GitHub connection if a Service builds from a repository. Returns whether it is ready and the dashboard page for each thing missing.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly {
         local_next: Some(ToolId::EnvironmentShow),

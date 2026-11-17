@@ -284,17 +284,22 @@ fn project(cx: &Cx<'_>, named: Option<&ProjectName>) -> Result<ProjectName, Stop
 
 tool_input! {
     pub(crate) struct EnvironmentRemove {
+        /// The Environment to remove, e.g. `preview`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         environment: EnvironmentName,
+        /// Project name. Defaults to the one you are in.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(NODE_NAME))]
         project: Option<ProjectName>,
+        /// Volumes whose data the member agreed to lose, named as the refusal listed them.
         #[serde(default)]
         #[schemars(with = "Vec<String>")]
         accept_volume_loss: Vec<VolumeName>,
+        /// Volumes the member agreed to delete every copy of, Mirrors included, exactly as a refusal offered them.
         #[serde(default)]
         #[schemars(with = "Vec<String>")]
         every_copy: Vec<VolumeName>,
+        /// The version the refusal gave. Fails if what it covers changed since.
         #[serde(default)]
         version: Option<String>,
         @wait,
@@ -303,9 +308,12 @@ tool_input! {
 
 impl Tool for EnvironmentRemove {
     const NAME: &'static str = "environment_remove";
-    const DESCRIPTION: &'static str = "Delete an Environment, its Volumes and their data, once no server runs it. A server that does not answer holds its part until it answers or is removed. The result says removed or removing.";
+    const TITLE: &'static str = "Remove an Environment";
+    const DESCRIPTION: &'static str = "Remove an Environment right away. Its Services come off the Servers, then it is deleted with its Volumes and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on.";
     const GATE: Gate = Gate::Store;
-    const EFFECT: Effect = Effect::Remove;
+    // A second call goes on with the removal under way; once it is gone, no
+    // Environment has the name and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
 
     fn verb(_input: &Value) -> DiffVerb {
         DiffVerb::Remove
@@ -347,12 +355,16 @@ impl Tool for EnvironmentRemove {
 
 tool_input! {
     pub(crate) struct ProjectRemove {
+        /// The Project to remove, e.g. `trial`.
         #[schemars(with = "String", pattern(NODE_NAME))]
         project: ProjectName,
+        /// Volumes whose data the member agreed to lose, as `environment/volume`, as a refusal listed them.
         #[serde(default)]
         accept_volume_loss: Vec<String>,
+        /// Volumes the member agreed to delete every copy of, Mirrors included, as `environment/volume`, as a refusal offered them.
         #[serde(default)]
         every_copy: Vec<String>,
+        /// The version the refusal gave. Fails if what it covers changed since.
         #[serde(default)]
         version: Option<String>,
         @wait,
@@ -361,9 +373,12 @@ tool_input! {
 
 impl Tool for ProjectRemove {
     const NAME: &'static str = "project_remove";
-    const DESCRIPTION: &'static str = "Delete a Project, every Environment and Volume and their data, the Default last. A server that does not answer holds its part until it answers or is removed. The result says removed or removing.";
+    const TITLE: &'static str = "Remove a Project";
+    const DESCRIPTION: &'static str = "Remove a Project right away. Its Services come off the Servers, then it is deleted with every Environment, Volume and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on.";
     const GATE: Gate = Gate::Store;
-    const EFFECT: Effect = Effect::Remove;
+    // A second call goes on with the removal under way; once it is gone, no
+    // Project has the name and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
 
     fn verb(_input: &Value) -> DiffVerb {
         DiffVerb::Remove

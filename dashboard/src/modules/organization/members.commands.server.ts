@@ -13,7 +13,7 @@ import { listMembers, OWN, OWNERLESS, removeMembership, setMemberRole } from "#/
 import { AppConfig } from "#/server/config.server";
 import { type Conflict, NotFound } from "#/server/public-error";
 
-const MemberSelector = Schema.NonEmptyString.annotate({ description: "The member, by email or name" });
+const MemberSelector = Schema.NonEmptyString.annotate({ description: "The member's email, e.g. bob@example.com, or their name if no other member shares it" });
 const MemberRole = Schema.Literals(["owner", "admin", "member"]);
 const InviteRole = Schema.Literals(["admin", "member"]);
 
@@ -89,10 +89,12 @@ export const orgMemberLs = defineCommand({
   name: "org_member_ls",
   requires: "members:read",
   path: ["org", "member", "ls"],
-  about: "List the Organization's members and their roles",
+  about: "List the Organization's members with each one's name, email, role and join date, and which one is you",
+  title: "List members",
   examples: ["ployz org member ls"],
   kind: "read",
   agents: true,
+  openWorld: false,
   typed: null,
   positional: [],
   input: Schema.Struct({}),
@@ -114,17 +116,22 @@ export const orgMemberInvite = defineCommand({
   name: "org_member_invite",
   requires: "members:manage",
   path: ["org", "member", "invite"],
-  about: `Make an invite link that adds whoever opens it as a member. It lasts ${INVITE_DAYS} days and works once`,
+  about: `Make an invite link that adds whoever opens it as a member. It works once and lasts ${INVITE_DAYS} days`,
+  title: "Invite a member",
   examples: ["ployz org member invite bob@example.com", "ployz org member invite bob@example.com --role admin"],
   kind: "write",
   removes: false,
+  // Each call without an email makes another link; one for an email with a pending invite is refused.
+  idempotent: false,
   gate: "never",
   agents: false,
+  // `emailInvite` queues mail to the address the caller gave.
+  openWorld: true,
   typed: null,
   positional: ["email"],
   input: Schema.Struct({
-    email: Schema.optionalKey(InviteEmail.annotate({ description: "Who the link is for. Cloud emails it there when email is on. Anyone with the link can use it" })),
-    role: Schema.optionalKey(InviteRole.annotate({ description: "The role it grants: admin or member. member when left out" })),
+    email: Schema.optionalKey(InviteEmail.annotate({ description: "Who the link is for, e.g. bob@example.com. Cloud emails it there when email is on. The link works for anyone who has it" })),
+    role: Schema.optionalKey(InviteRole.annotate({ description: "The role it grants: admin or member (default member)" })),
   }),
   output: Invited,
   render: "message",
@@ -144,7 +151,7 @@ export const orgMemberInvite = defineCommand({
   }).pipe(Effect.catchTag("Conflict", conflictRefused)),
 });
 
-const RoleInput = Schema.Struct({ member: MemberSelector, role: MemberRole.annotate({ description: "The new role: owner, admin or member" }) });
+const RoleInput = Schema.Struct({ member: MemberSelector, role: MemberRole.annotate({ description: "The member's new role: owner, admin or member" }) });
 
 // Refused before the gate, so demoting the last owner never asks for an approval it can't use.
 const roleTarget = (caller: Caller, input: typeof RoleInput.Type) =>
@@ -156,10 +163,13 @@ export const orgMemberRole = defineCommand({
   name: "org_member_role",
   requires: "members:manage",
   path: ["org", "member", "role"],
-  about: "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
+  about: "Change a member's role in the Organization. It takes effect at once. Only an owner can make or remove an owner, and the last owner stays one.",
+  title: "Change a member's role",
   examples: ["ployz org member role bob@example.com admin", "ployz org member role Bob member"],
   kind: "write",
   removes: false,
+  // Setting the role a member already holds writes the same row.
+  idempotent: true,
   gate: {
     gate: "ask",
     asked: (caller, input) => roleTarget(caller, input).pipe(Effect.map((target) => ({
@@ -171,6 +181,7 @@ export const orgMemberRole = defineCommand({
     }))),
   },
   agents: true,
+  openWorld: false,
   typed: null,
   positional: ["member", "role"],
   input: RoleInput,
@@ -192,10 +203,13 @@ export const orgMemberRm = defineCommand({
   name: "org_member_rm",
   requires: "members:manage",
   path: ["org", "member", "rm"],
-  about: "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
+  about: "Remove a member from the Organization. This permanently deletes their Organization Tokens and agent connections there and ends their devices' access to its Servers.",
+  title: "Remove a member",
   examples: ["ployz org member rm bob@example.com", "ployz org member rm Bob"],
   kind: "write",
   removes: true,
+  // Once removed, the same call finds no such member and is refused.
+  idempotent: true,
   gate: {
     gate: "ask",
     asked: (caller, input) => rmTarget(caller, input.member).pipe(Effect.map((target) => ({
@@ -207,6 +221,7 @@ export const orgMemberRm = defineCommand({
     }))),
   },
   agents: true,
+  openWorld: false,
   typed: null,
   positional: ["member"],
   input: Schema.Struct({ member: MemberSelector }),
@@ -223,10 +238,12 @@ export const orgInviteLs = defineCommand({
   name: "org_invite_ls",
   requires: "members:manage",
   path: ["org", "invite", "ls"],
-  about: "List the Organization's pending invites",
+  about: "List the Organization's pending invites with each one's ID, the email it names if any, the role it grants, who made it and when it expires",
+  title: "List pending invites",
   examples: ["ployz org invite ls"],
   kind: "read",
   agents: true,
+  openWorld: false,
   typed: null,
   positional: [],
   input: Schema.Struct({}),
@@ -248,10 +265,13 @@ export const orgInviteRevoke = defineCommand({
   name: "org_invite_revoke",
   requires: "members:manage",
   path: ["org", "invite", "revoke"],
-  about: "Revoke a pending invite so its link stops working",
+  about: "Revoke a pending invite so its link stops working at once. This can't be undone, but inviting again makes a new link.",
+  title: "Revoke an invite",
   examples: ["ployz org invite revoke bob@example.com"],
   kind: "write",
   removes: true,
+  // Once revoked, the same call finds no pending invite and is refused.
+  idempotent: true,
   gate: {
     gate: "ask",
     asked: (caller, input) => pendingInvite(caller, input.invite).pipe(Effect.map((invite) => {
@@ -266,9 +286,10 @@ export const orgInviteRevoke = defineCommand({
     })),
   },
   agents: true,
+  openWorld: false,
   typed: null,
   positional: ["invite"],
-  input: Schema.Struct({ invite: Schema.NonEmptyString.annotate({ description: "The invite, by id or by the email it names" }) }),
+  input: Schema.Struct({ invite: Schema.NonEmptyString.annotate({ description: "The pending invite, by its ID from the list of invites or by the email it names, e.g. bob@example.com" }) }),
   output: Revoked,
   render: "message",
   run: (caller, input) => Effect.gen(function* () {
@@ -282,15 +303,19 @@ export const orgLeave = defineCommand({
   name: "org_leave",
   requires: "org:read",
   path: ["org", "leave"],
-  about: "Leave the Organization. Its last owner cannot leave",
+  about: "Leave the Organization. Fails if you are its last owner",
+  title: "Leave the Organization",
   examples: ["ployz org leave"],
   kind: "write",
   removes: true,
+  // Once left, the same call finds no membership and is refused.
+  idempotent: true,
   gate: "never",
   agents: false,
+  openWorld: false,
   typed: null,
   positional: [],
-  input: Schema.Struct({ organization: Schema.NonEmptyString.annotate({ description: "The Organization to leave, by id" }) }),
+  input: Schema.Struct({ organization: Schema.NonEmptyString.annotate({ description: "The Organization to leave, by ID" }) }),
   output: Left,
   render: "message",
   // Leaves the Organization the input names, never the session's active one: a browser moves every session of the

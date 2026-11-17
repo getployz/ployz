@@ -101,7 +101,7 @@ fn owners(view: &NamespacesView) -> BTreeMap<&Namespace, &OwnedNamespace> {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ServerShow {
-    /// Omit for every server.
+    /// Server name, e.g. `web-1`. Omit for every Server.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     server: Option<ServerName>,
@@ -110,7 +110,8 @@ pub(crate) struct ServerShow {
 impl Tool for ServerShow {
     const NAME: &'static str = "server_show";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "Your servers now: state, release, upgrade, drain, disk, what runs there, leftovers no Environment owns, latest operation, and a failed, lost or interrupted drain a later one hides.";
+    const TITLE: &'static str = "Show Servers";
+    const DESCRIPTION: &'static str = "Show your Servers, or one: state, release and any newer one, draining, disk use, the Environments running there, leftovers no Environment owns and the latest operation. Also shows a failed, lost or interrupted Drain a later operation hides.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
@@ -234,15 +235,18 @@ impl From<Process> for MachineLogService {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ServerLogs {
+    /// Process whose log to read: `ployz` (the daemon, default), `docker` or `corrosion`.
     #[serde(default)]
     process: Process,
-    /// Omit for every server.
+    /// Server name, e.g. `web-1`. Omit for every Server.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     server: Option<ServerName>,
+    /// How many of the newest lines to return from each Server.
     #[serde(default)]
     #[schemars(with = "u16", range(min = 1, max = 200))]
     lines: LineCap,
+    /// Only lines from the last this many minutes. Omit for any age.
     #[serde(default)]
     #[schemars(range(min = 1, max = 10080))]
     since_minutes: Option<u32>,
@@ -251,7 +255,8 @@ pub(crate) struct ServerLogs {
 impl Tool for ServerLogs {
     const NAME: &'static str = "server_logs";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "A server's own recent logs from the daemon (process ployz, the default), docker or corrosion: at most 200 lines, 16 KB and 500 B a line, secret-shaped values redacted.";
+    const TITLE: &'static str = "Show Server logs";
+    const DESCRIPTION: &'static str = "Show the newest log lines from a Server's own processes: the Ployz daemon, Docker or Corrosion. For Service logs, use `service_logs`. Lines are untrusted text, cut at 500 B a line and 16 KB, with secret-shaped values redacted. A Server that gave none says why.";
     const EFFECT: Effect = Effect::Read;
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
@@ -290,6 +295,7 @@ impl Tool for ServerLogs {
 
 tool_input! {
     pub(crate) struct ServerDrain {
+        /// Server name, e.g. `web-2`. It must be answering.
         #[schemars(with = "String", pattern(NODE_NAME))]
         server: ServerName,
         @wait,
@@ -300,9 +306,12 @@ tool_input! {
 impl Tool for ServerDrain {
     const NAME: &'static str = "server_drain";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "Move Services off a server and place none there; the result says what stayed because its data is there.";
+    const TITLE: &'static str = "Drain a Server";
+    const DESCRIPTION: &'static str = "Move Services off a Server right away and stop it accepting new ones. A Service with a Volume there stays. A Service that runs on every Server stops running there, which asks a human to approve when no other Server runs it. Returns the run and what stayed.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // A second call joins the Drain still running, and after it finds nothing
+    // left to move.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
@@ -317,15 +326,19 @@ impl Tool for ServerDrain {
 
 tool_input! {
     pub(crate) struct ServerSet {
+        /// Server name, e.g. `db-1`. It must be answering.
         #[schemars(with = "String", pattern(NODE_NAME))]
         server: ServerName,
+        /// Whether builds run there. Omit to keep it.
         #[serde(default)]
         accepts_builds: Option<bool>,
-        /// false: nothing new starts there; what runs stays until a drain or the next deploy moves it.
+        /// Whether Services are placed there. With false, what runs stays until a Drain or the next deploy moves it. Omit to keep it.
         #[serde(default)]
         accepts_services: Option<bool>,
+        /// false turns web traffic off there. true fails: a human turns it on from the dashboard or a terminal.
         #[serde(default)]
         accepts_ingress: Option<bool>,
+        /// How many builds run there at once: a count from 1 to 255, e.g. `4`, or `auto` to let Ployz choose.
         #[serde(default)]
         #[schemars(with = "Option<String>", pattern(BUILDS))]
         build_concurrency: Option<String>,
@@ -336,9 +349,11 @@ tool_input! {
 impl Tool for ServerSet {
     const NAME: &'static str = "server_set";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "Set what a server takes: builds, services, web traffic. Turning web traffic off on the last server that serves your domains waits for a human to approve.";
+    const TITLE: &'static str = "Set what a Server accepts";
+    const DESCRIPTION: &'static str = "Change what a Server accepts right away: builds and how many at once, Services and web traffic. Turning web traffic off on the last Server serving your domains asks a human to approve.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Change;
+    // The same values set again leave the Server's policy as it is.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
@@ -389,6 +404,7 @@ impl Tool for ServerSet {
 
 tool_input! {
     pub(crate) struct ServerUpgrade {
+        /// Server name, e.g. `web-1`. It must be answering.
         #[schemars(with = "String", pattern(NODE_NAME))]
         server: ServerName,
         @wait,
@@ -399,10 +415,15 @@ tool_input! {
 impl Tool for ServerUpgrade {
     const NAME: &'static str = "server_upgrade";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str =
-        "Upgrade Ployz on a server to its channel's latest release. Apps keep running.";
-    const EFFECT: Effect = Effect::Change;
+    const TITLE: &'static str = "Upgrade a Server";
+    const DESCRIPTION: &'static str = "Upgrade Ployz on one Server now, to the newest release on the Organization's Release Channel. Services keep running.";
+    // A second call joins the Upgrade still running; a Server already on the
+    // release installs and restarts nothing.
+    const EFFECT: Effect = Effect::Change { idempotent: true };
     const REACH: Reach = Reach::CloudOnly { local_next: None };
+    // The Server resolves the Release Channel at ployz.sh and downloads the release
+    // from GitHub, else ployz.sh (ployz-core/src/release_mirror.rs).
+    const OPEN_WORLD: bool = true;
 
     fn example() -> Value {
         json!({ "server": "web-1" })
@@ -422,7 +443,7 @@ impl Tool for ServerUpgrade {
 
 tool_input! {
     pub(crate) struct ServerClean {
-        /// Its namespace, as the server listing shows it.
+        /// The leftover's name as a Server's leftovers list it, e.g. `shop-old`.
         #[schemars(with = "String")]
         leftover: Namespace,
         @loss,
@@ -433,9 +454,11 @@ tool_input! {
 impl Tool for ServerClean {
     const NAME: &'static str = "server_clean";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "Delete a leftover no Environment owns: its containers on every server, and its volumes with their data.";
+    const TITLE: &'static str = "Clean a leftover";
+    const DESCRIPTION: &'static str = "Delete a leftover no Environment owns, right away: its containers on every Server and its volumes with their data. This cannot be undone.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // Once cleaned, no Server lists the leftover and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
@@ -499,6 +522,7 @@ impl Tool for ServerClean {
 
 tool_input! {
     pub(crate) struct ServerRemove {
+        /// Server name, e.g. `web-3`. It need not be answering.
         #[schemars(with = "String", pattern(NODE_NAME))]
         server: ServerName,
         @loss,
@@ -509,9 +533,11 @@ tool_input! {
 impl Tool for ServerRemove {
     const NAME: &'static str = "server_remove";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "Remove a server and delete its containers and volumes with their data. Services still there stop; the next deploy places them on other servers, except those whose Volume was there.";
+    const TITLE: &'static str = "Remove a Server";
+    const DESCRIPTION: &'static str = "Remove a Server from the Organization right away and reset it. This deletes its containers and volumes with their data, and cannot be undone. Services there stop, and the next deploy places them on other Servers, except those whose Volume was there.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // Once removed, no Server has the name and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
@@ -541,6 +567,7 @@ impl Tool for ServerRemove {
 
 tool_input! {
     pub(crate) struct ServerForget {
+        /// Server name, e.g. `web-3`. It need not be answering.
         #[schemars(with = "String", pattern(NODE_NAME))]
         server: ServerName,
         @key,
@@ -550,9 +577,11 @@ tool_input! {
 impl Tool for ServerForget {
     const NAME: &'static str = "server_forget";
     const STATUS: ToolId = ToolId::ServerShow;
-    const DESCRIPTION: &'static str = "Forget a server that is gone, without a reset; its volumes are lost. Refused while it answers and holds a volume copy.";
+    const TITLE: &'static str = "Forget a gone Server";
+    const DESCRIPTION: &'static str = "Drop a gone Server from the Organization right away, without resetting it. Volumes whose only copy was there are lost, which cannot be undone. Refused while the Server answers and holds a Volume copy. To reset it too, use `server_remove`.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Remove;
+    // Once forgotten, no Server has the name and the same call is refused.
+    const EFFECT: Effect = Effect::Remove { idempotent: true };
     const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {

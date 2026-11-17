@@ -9,13 +9,17 @@ use serde::{Deserialize, Serialize};
 use crate::Client;
 use crate::boundary::{from_js, invalid_argument, rpc_to_napi, to_json, whole_numbers};
 
-/// What a model is told: `{ instructions, tools }`.
+/// What a model and its host are told: `{ title, description, instructions, tools }`.
 ///
 /// # Errors
 /// Returns an error when the catalog fails to encode.
-#[napi(ts_return_type = "{ instructions: string; tools: ToolDef[] }")]
+#[napi(
+    ts_return_type = "{ title: string; description: string; instructions: string; tools: ToolDef[] }"
+)]
 pub fn agent_tools() -> Result<serde_json::Value> {
     to_json(&serde_json::json!({
+        "title": tools::TITLE,
+        "description": tools::DESCRIPTION,
         "instructions": tools::INSTRUCTIONS,
         "tools": tools::catalog(),
     }))

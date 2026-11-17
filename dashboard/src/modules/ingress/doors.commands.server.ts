@@ -13,17 +13,20 @@ const use = OPERATIONS["ingress.use"];
 const withRuntime = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | OrganizationRuntime | CloudStore> => effect;
 
 const Where = Schema.Literals(["public", "cloudflare"]).annotate({
-  description: "public or cloudflare. Set up Cloudflare Tunnel in Ployz Cloud first.",
+  description: "Where web traffic goes: public or cloudflare. Cloudflare Tunnel must already be set up in Ployz Cloud.",
 });
 
 export const webTrafficUse = defineCommand({
   name: "web_traffic_use",
   requires: use.requires,
   path: ["cluster", "web-traffic"],
-  about: "Switch web traffic between public ports and Cloudflare. Moves every generated address.",
+  about: "Switch web traffic between public ports and Cloudflare. Every generated address moves with it.",
+  title: "Switch web traffic",
   examples: ["ployz cluster web-traffic cloudflare", "ployz cluster web-traffic public"],
   kind: "write",
   removes: false,
+  // A second call joins the switch already running.
+  idempotent: true,
   gate: {
     gate: "ask",
     // A Store Cloud can't open is Cloud's own failure, not a refusal the caller can act on.
@@ -32,6 +35,7 @@ export const webTrafficUse = defineCommand({
     ),
   },
   agents: true,
+  openWorld: false,
   typed: null,
   positional: ["to"],
   input: Schema.Struct({ to: Where }),

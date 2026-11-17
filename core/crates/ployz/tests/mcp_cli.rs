@@ -47,7 +47,30 @@ fn initialize(stdin: &mut ChildStdin, stdout: &mut BufReader<ChildStdout>) {
     );
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
-    assert!(line.contains("\"serverInfo\""), "{line}");
+    let reply: Value = serde_json::from_str(&line).unwrap();
+    let result = reply.get("result").unwrap_or_else(|| panic!("{reply}"));
+    assert_eq!(
+        result.get("serverInfo"),
+        Some(&json!({
+            "name": "ployz",
+            "title": ployz_store::tools::TITLE,
+            "version": env!("CARGO_PKG_VERSION"),
+            "description": ployz_store::tools::DESCRIPTION,
+            "icons": [{
+                "src": "https://ployz.dev/assets/logo-mark.svg",
+                "mimeType": "image/svg+xml",
+                "sizes": ["any"],
+            }],
+            "websiteUrl": "https://ployz.dev",
+        })),
+        "{reply}"
+    );
+    // Claude Code cuts a server's instructions past 2 KB.
+    let instructions = result.get("instructions").and_then(Value::as_str);
+    assert!(
+        instructions.is_some_and(|text| text.len() <= 2048),
+        "{reply}"
+    );
     send(
         stdin,
         &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),

@@ -197,7 +197,8 @@ impl Mcp {
             },
         }));
         let reply = self.reply(1);
-        assert!(reply["result"]["serverInfo"].is_object(), "{reply}");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "ployz", "{reply}");
+        assert_eq!(reply["result"]["serverInfo"]["title"], "Ployz", "{reply}");
         self.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
     }
 
@@ -361,18 +362,30 @@ fn mcp_offers_a_published_entry_only_when_marked_for_agents_with_the_entry_s_inp
             continue;
         }
         let tool = tool.unwrap_or_else(|| panic!("mcp lists {}", name(entry)));
-        assert_eq!(tool["description"], entry["about"], "{tool}");
+        let about = entry["about"].as_str().unwrap();
         if entry["gate"] == "ask" {
+            let said = format!(
+                "{}. May stop to ask a human to approve.",
+                about.trim_end_matches('.')
+            );
+            assert_eq!(tool["description"], said.as_str(), "{tool}");
             assert!(tool["inputSchema"]["properties"]["approval"].is_object());
             for (property, schema) in entry["input"]["properties"].as_object().unwrap() {
                 assert_eq!(&tool["inputSchema"]["properties"][property], schema);
             }
         } else {
+            assert_eq!(tool["description"], about, "{tool}");
             assert_eq!(tool["inputSchema"], entry["input"], "{tool}");
         }
         assert_eq!(tool["outputSchema"], entry["output"], "{tool}");
         let read = entry["kind"] == "read";
         assert_eq!(tool["annotations"]["readOnlyHint"], read, "{tool}");
+        // A Cloud that predates a title and these hints leaves them out.
+        assert_eq!(tool.get("title"), entry.get("title"), "{tool}");
+        let idempotent = entry.get("idempotent").cloned().unwrap_or(json!(read));
+        assert_eq!(tool["annotations"]["idempotentHint"], idempotent, "{tool}");
+        let open_world = entry.get("open_world").cloned().unwrap_or(json!(false));
+        assert_eq!(tool["annotations"]["openWorldHint"], open_world, "{tool}");
     }
     assert_eq!(
         fixture.routes(),

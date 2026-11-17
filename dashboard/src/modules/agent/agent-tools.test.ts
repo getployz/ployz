@@ -19,6 +19,11 @@ describe("agent tools", () => {
     expect(GATED).not.toContain("environment_show");
   });
 
+  it("ends the description of every tool that may ask with the same sentence, and of no other", () => {
+    const asks = AGENT_TOOLS.filter((tool) => tool.description.includes("May stop to ask a human to approve.")).map((tool) => tool.name);
+    expect(asks.sort()).toEqual([...GATED].sort());
+  });
+
   it("marks destructive exactly the tools that delete something when they run, and never a read", () => {
     expect(AGENT_TOOLS.filter((tool) => tool.destructive).map((tool) => tool.name).sort()).toEqual([
       "deploy",
@@ -42,11 +47,12 @@ describe("agent tools", () => {
     expect(AGENT_TOOLS.filter((tool) => tool.readOnly && tool.destructive)).toEqual([]);
   });
 
-  it("never names another tool in a description", () => {
+  it("names at most one other tool in a description: what to use instead, or what comes next", () => {
     const names = AGENT_TOOLS.map((tool) => tool.name).filter((name) => name.includes("_"));
-    const offences = AGENT_TOOLS.flatMap((tool) =>
-      names.filter((name) => name !== tool.name && new RegExp(`\\b${name}\\b`).test(tool.description)).map((name) => `${tool.name} names ${name}`),
-    );
+    const offences = AGENT_TOOLS.flatMap((tool) => {
+      const named = names.filter((name) => name !== tool.name && new RegExp(`\\b${name}\\b`).test(tool.description));
+      return named.length > 1 ? [`${tool.name} names ${named.join(", ")}`] : [];
+    });
     expect(offences).toEqual([]);
   });
 

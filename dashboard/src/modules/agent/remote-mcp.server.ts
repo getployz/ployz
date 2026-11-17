@@ -50,7 +50,7 @@ const challenge = (resource: string, message: string) => {
 
 const APPROVAL = {
   type: "string",
-  description: "The ID of an approval a person granted. Send it when calling this tool again after it answered approval_required.",
+  description: "The ID of an approval a human granted. Send it when calling this tool again after it answered approval_required.",
 };
 
 const BAD_APPROVAL = { code: "invalid_argument", message: "This input does not fit: approval is an approval's ID, a string.", field: "approval", expected: APPROVAL, writes: "none" };
@@ -75,6 +75,48 @@ type RemoteServices =
   | Effect.Services<ReturnType<typeof oauthCaller>>
   | Effect.Services<ReturnType<typeof claimUrlFor>>;
 
+/**
+ * What every result's `structuredContent` holds, as `text` and `resultOf` write it; an answer's own fields stay open.
+ * Hosts read it. Nothing here checks a result against it: `toolValidates` passes every one.
+ */
+const RESULT: JsonObject = {
+  type: "object",
+  properties: {
+    ok: { type: "boolean", description: "Whether the call did what it was asked." },
+    value: { description: "What a call that succeeded answers." },
+    request_key: { type: "string", description: "The request key the call ran under: the one sent, or one made for it." },
+    refusal: {
+      type: "object",
+      description: "Why the call was refused, with what to change or call next when the tool knows.",
+      properties: {
+        code: { type: "string", description: "The kind of refusal, such as not_found or invalid_argument." },
+        message: { type: "string", description: "The refusal in words." },
+      },
+      required: ["code", "message"],
+    },
+    approval_required: {
+      type: "object",
+      description: "A human must approve the call before it runs.",
+      properties: {
+        approval_id: { type: "string", description: "The approval to send as approval once a person approved it." },
+        message: { type: "string", description: "What waits for approval." },
+        url: { type: "string", description: "Where a human approves it." },
+      },
+      required: ["approval_id", "message", "url"],
+    },
+    claim_required: {
+      type: "object",
+      description: "A human must claim the Organization before the call can run.",
+      properties: {
+        message: { type: "string", description: "Why the call needs a claimed Organization." },
+        url: { type: "string", description: "Where a person claims it." },
+      },
+      required: ["message", "url"],
+    },
+  },
+  required: ["ok"],
+};
+
 const text = (body: JsonObject, isError: boolean): CallToolResult =>
   ({ isError, content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body });
 
@@ -97,7 +139,7 @@ const resultOf = (tool: string, result: AgentResult, key: string, link: () => st
       isError: true,
       content: [{
         type: "text",
-        text: `${refusal.message} A person must approve it: open ${url}, approve ${approvalId} under Waiting on you, then call this tool again with approval set to ${approvalId}.`,
+        text: `${refusal.message} A human must approve it: open ${url}, approve ${approvalId} under Waiting on you, then call this tool again with approval set to ${approvalId}.`,
       }],
       structuredContent: { ok: false, approval_required: { approval_id: approvalId, message: refusal.message, url }, request_key: key },
     };
@@ -106,7 +148,7 @@ const resultOf = (tool: string, result: AgentResult, key: string, link: () => st
   if (claim !== null) {
     return {
       isError: true,
-      content: [{ type: "text", text: `${claim.message} A person must claim it first: open ${claim.url} and sign in with GitHub, then call this tool again.` }],
+      content: [{ type: "text", text: `${claim.message} A human must claim it first: open ${claim.url} and sign in with GitHub, then call this tool again.` }],
       structuredContent: { ok: false, claim_required: claim, request_key: key },
     };
   }
@@ -118,20 +160,29 @@ const resultOf = (tool: string, result: AgentResult, key: string, link: () => st
 const withCard = (outcome: ToolOutcome, url: string): ToolOutcome => {
   const value = asRecord(outcome.ok ? outcome.value : null);
   if (!outcome.ok || value === null) return outcome;
-  const message = `${asString(value["message"]) ?? "Presented."} A person must approve it: open ${url} and approve it under Waiting on you.`;
+  const message = `${asString(value["message"]) ?? "Presented."} A human must approve it: open ${url} and approve it under Waiting on you.`;
   return { ...outcome, value: { ...value, message, url } };
 };
 
 /** One MCP server for one request, acting as `caller`; every request key it uses lands in `keys`. */
 const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL, keys: Array<string>) => {
-  const server = new McpServer({ name: "ployz", version: "1.0.0" }, { instructions: CATALOG.instructions });
+  const server = new McpServer({
+    name: "ployz",
+    title: CATALOG.title,
+    version: "1.0.0",
+    description: CATALOG.description,
+    websiteUrl: appUrl.origin,
+    icons: [{ src: new URL("/assets/logo-mark.svg", appUrl).href, mimeType: "image/svg+xml", sizes: ["any"] }],
+  }, { instructions: CATALOG.instructions });
   const headerKey = requestKeyOf(request.headers.get(REQUEST_KEY_HEADER));
   const link = () => `${new URL(`/cloud/${caller.organization.slug}`, appUrl).href}?chat=${randomUUID()}`;
   for (const tool of AGENT_TOOLS) {
     server.registerTool(tool.name, {
+      title: tool.title,
       description: tool.description,
       inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool), toolValidates),
-      annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.destructive },
+      outputSchema: fromJsonSchema<JsonObject>(RESULT, toolValidates),
+      annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.destructive, idempotentHint: tool.idempotent, openWorldHint: tool.openWorld },
     }, async (args) => {
       const fields = asRecord(args) ?? {};
       const { approval, ...rest } = fields;

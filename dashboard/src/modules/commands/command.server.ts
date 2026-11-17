@@ -35,16 +35,23 @@ type Gate<F extends Fields, E, R> =
   | { readonly gate: "ask"; readonly asked: (caller: Caller, input: InputOf<F>) => Effectful<OperationAsked, E, R> };
 
 type Kind<F extends Fields, E, R> =
-  | { readonly kind: "read"; readonly gate?: never; readonly removes?: never }
-  /** `removes`: it removes or revokes something, so agent hosts mark it destructive. */
-  | { readonly kind: "write"; readonly gate: Gate<F, E, R>; readonly removes: boolean };
+  | { readonly kind: "read"; readonly gate?: never; readonly removes?: never; readonly idempotent?: never }
+  /**
+   * `removes`: it removes or revokes something, so agent hosts mark it destructive. `idempotent`: the same call made
+   * again, with the same input, changes nothing more; a read always is.
+   */
+  | { readonly kind: "write"; readonly gate: Gate<F, E, R>; readonly removes: boolean; readonly idempotent: boolean };
 
 type Shown = {
   readonly path: readonly string[];
   readonly about: string;
+  /** A short label hosts show people: sentence case, verb first, at most 40 characters, no period. */
+  readonly title: string;
   readonly examples: readonly string[];
   readonly requires: Permission;
   readonly agents: boolean;
+  /** Its `run` reaches past Ployz, such as an address on the internet. */
+  readonly openWorld: boolean;
   readonly typed: "organization" | null;
   readonly render: "table" | "record" | "message";
 };
@@ -63,6 +70,7 @@ export type Command<N extends string = string, O extends Schema.Top = Schema.Top
   readonly kind: "read" | "write";
   readonly gate: "never" | "ask";
   readonly removes: boolean;
+  readonly idempotent: boolean;
   readonly positional: readonly string[];
   readonly input: Schema.Struct<Fields>;
   readonly output: O;
@@ -159,5 +167,5 @@ export function defineCommand<const N extends string, F extends Fields, O extend
     ) as Effect.Effect<Called<O["Type"]>, Exclude<E, Refusable>, R | Database>;
   };
   const { run: _run, ...shown } = def;
-  return { ...shown, kind, gate: gate === "never" ? "never" : "ask", removes: def.kind === "write" && def.removes, invoke };
+  return { ...shown, kind, gate: gate === "never" ? "never" : "ask", removes: def.kind === "write" && def.removes, idempotent: def.kind === "read" || def.idempotent, invoke };
 }
