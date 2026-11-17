@@ -31,7 +31,7 @@ function regionLine(diff: DiffView): ChangeLine[] {
   if (!diff.region) return [];
   const { before, after } = diff.region;
   return [{ key: "@environment.region", mark: before === null ? "+" : after === null ? "−" : "~", node: diff.environment.name, name: "Region", variable: false,
-    values: `${before ?? "any server"} → ${after ?? "any server"}` }];
+    values: `${before ?? "any region"} → ${after ?? "any region"}` }];
 }
 
 /**

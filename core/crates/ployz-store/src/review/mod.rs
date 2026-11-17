@@ -120,13 +120,13 @@ pub struct RegionChange {
 
 impl RegionChange {
     /// Where the Services ran and where they run next, as people read it: a region,
-    /// or `any Server`.
+    /// or `any region`.
     #[must_use]
     pub fn sides(&self) -> [String; 2] {
         [&self.before, &self.after].map(|region| {
             region
                 .as_ref()
-                .map_or_else(|| "any Server".to_owned(), ToString::to_string)
+                .map_or_else(|| "any region".to_owned(), ToString::to_string)
         })
     }
 }

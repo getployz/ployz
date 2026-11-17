@@ -137,9 +137,17 @@ fn a_document_from_before_configs_writes_the_same_bytes_as_one_with_empty_config
 
 #[test]
 fn an_environment_with_no_region_writes_the_bytes_it_did_before_regions() {
+    use sha2::Digest as _;
     let canonical = serde_json::to_vec(&parse_environment_intent(intent()).unwrap()).unwrap();
-    let text = String::from_utf8(canonical.clone()).unwrap();
-    assert!(!text.contains("region"), "{text}");
+    // What the commit before regions (58aabf9f17) wrote for this document.
+    let hash: String = sha2::Sha256::digest(&canonical)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        hash,
+        "e3ca60a65290d5072d80eb1f643aab4ccb66a0b680e2a3f6a52c4bbf1c07614f"
+    );
 
     let mut unset = intent();
     unset

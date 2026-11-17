@@ -50,6 +50,10 @@ Ployz refuses a region none of your servers is in, and stages nothing:
 error: No Server is in lhr. Regions: fsn, syd.
 ```
 
+Ployz checks this when it can read your servers' labels. If no server answers, or the agent runs
+without Ployz Cloud, the region is staged unchecked, and the deploy reports the services it
+couldn't start. See [When no server is in the region](#when-no-server-is-in-the-region).
+
 To run on any server again:
 
 ```sh

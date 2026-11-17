@@ -802,7 +802,7 @@ mod tests {
             asked.review(Verb::Deploy),
             [
                 "This deploy:",
-                "  ~ @environment.region: any Server → fsn",
+                "  ~ @environment.region: any region → fsn",
                 "  + 1 other change",
             ]
         );

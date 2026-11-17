@@ -1095,7 +1095,7 @@ fn plan(
                     "{service} → {region}: won't start (no Server in {region})"
                 )),
                 Some(region) => crate::ui::stream(format_args!("{service} → {region}")),
-                None => crate::ui::stream(format_args!("{service} → any Server")),
+                None => crate::ui::stream(format_args!("{service} → any region")),
             }
         }
         if prunes {

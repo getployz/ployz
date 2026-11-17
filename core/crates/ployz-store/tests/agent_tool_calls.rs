@@ -698,7 +698,7 @@ fn review_and_environment_show_name_and_count_a_region_change() {
     assert_eq!(review["staged"], 1, "{review}");
     assert_eq!(
         review["lines"],
-        json!(["@environment.region: any Server -> fsn"])
+        json!(["@environment.region: any region -> fsn"])
     );
     let shown = call(&store, "environment_show", json!({}), "show-1").ok();
     assert_eq!(shown["staged"], 1, "{shown}");
