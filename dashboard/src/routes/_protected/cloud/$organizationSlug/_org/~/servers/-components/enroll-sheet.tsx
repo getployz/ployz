@@ -5,20 +5,30 @@ import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
-import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Skeleton } from "#/components/ui/skeleton";
 import { toErrorMessage } from "#/lib/error-message";
+import { DEFAULT_REGION } from "#/modules/machines/server-regions";
+import { useNameRegion, useNewRegions, useRegions } from "#/modules/machines/server-regions.hooks";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { startServerEnrollmentServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { enrollmentPlanQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
-export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
+// Outside the region key grammar, so no region's key collides with it.
+const NEW_REGION = "new region";
+
+/** A Server's region, and the name of the new region it starts. */
+type Join = { readonly id: string; readonly key: string; readonly name?: string };
+
+export function EnrollSheet({ organizationSlug, servers, labels, hasFirst, onClose }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
+  /** The Servers' region labels, from `regionLabels`. */
+  labels: readonly string[];
   hasFirst: boolean;
   onClose: () => void;
 }) {
@@ -34,6 +44,23 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
     return () => clearTimeout(timer);
   }, [pattern]);
   const [runs, setRuns] = useState({ services: true, ingress: true, builds: true });
+  // Each Server's region key, or NEW_REGION with the name typed for it, by id. One left out joins the default region.
+  const [picks, setPicks] = useState<Readonly<Record<string, string>>>({});
+  const [typed, setTyped] = useState<Readonly<Record<string, string>>>({});
+  const regions = useRegions(organizationSlug, labels);
+  const nameRegion = useNameRegion(organizationSlug);
+  const pickOf = (id: string) => picks[id] ?? DEFAULT_REGION;
+  const naming = servers.filter((row) => pickOf(row.id) === NEW_REGION);
+  const checkName = useNewRegions(organizationSlug, naming.map((row) => typed[row.id] ?? ""), labels);
+  const newRegion = (id: string) => checkName(typed[id] ?? "");
+  // Short of a Server while the name typed for its new region is checked, or refused.
+  const joins = servers.flatMap((row): Join[] => {
+    const pick = pickOf(row.id);
+    if (pick !== NEW_REGION) return [{ id: row.id, key: pick }];
+    const check = newRegion(row.id);
+    return check.kind === "new" ? [{ id: row.id, key: check.key, name: (typed[row.id] ?? "").trim() }] : [];
+  });
+  const joinsKnown = regions !== undefined && joins.length === servers.length;
   const choices = {
     ids: servers.map((row) => row.id),
     storage: storage === "none" ? { kind: "none" } : { kind: "zfs", useSpareDisk: false, fallbackToDocker: fallback },
@@ -44,8 +71,14 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
   const plan = useQuery(enrollmentPlanQueryOptions(organizationSlug, input));
   const queryClient = useQueryClient();
   const start = useMutation({
-    mutationFn: () => startServerEnrollmentServerFn({ data: { organizationSlug, ...input } }),
-    onSuccess: (result) => {
+    mutationFn: (joining: readonly Join[]) => startServerEnrollmentServerFn({
+      data: { organizationSlug, ...input, regions: Object.fromEntries(joining.map(({ id, key }) => [id, key])) },
+    }),
+    onSuccess: (result, joining) => {
+      // A new region is named once a Server is enrolled in it.
+      const enrolled = new Set(result.attempts.map(({ waitingServerId }) => waitingServerId));
+      const created = new Map(joining.flatMap(({ id, key, name }) => name !== undefined && enrolled.has(id) ? [[key, { key, name }] as const] : []));
+      for (const region of created.values()) void nameRegion(region);
       toast.success(`Enrolling ${result.attempts.length} ${result.attempts.length === 1 ? "server" : "servers"}${result.skipped.length ? ` · ${result.skipped.length} skipped` : ""}`);
       onClose();
     },
@@ -75,6 +108,22 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
             <AlertTitle>{preview.spread.networks} networks, {preview.spread.providers} providers</AlertTitle>
             <AlertDescription>Make sure they’re all yours.<details><summary>Show sources</summary>{servers.map((row) => <p key={row.id}>{row.report.hostname} · {row.observedIp} · {row.report.provider ?? "Unknown"}</p>)}</details></AlertDescription>
           </Alert> : null}
+          <FieldSet>
+            <FieldLegend>Region</FieldLegend>
+            {servers.map((row) => {
+              const check = pickOf(row.id) === NEW_REGION ? newRegion(row.id) : null;
+              const refused = check?.kind === "refused" ? check.message : null;
+              return <Field key={row.id} data-invalid={refused !== null || undefined}>
+                <FieldLabel htmlFor={`enroll-region-${row.id}`}>{row.report.hostname} · {row.observedIp}</FieldLabel>
+                {regions === undefined ? <Skeleton className="h-8" /> : <NativeSelect id={`enroll-region-${row.id}`} value={pickOf(row.id)} onChange={(event) => setPicks({ ...picks, [row.id]: event.target.value })}>
+                  {regions.map((region) => <NativeSelectOption key={region.key} value={region.key}>{region.name}</NativeSelectOption>)}
+                  <NativeSelectOption value={NEW_REGION}>New region…</NativeSelectOption>
+                </NativeSelect>}
+                {check === null ? null : <Input aria-label={`New region for ${row.report.hostname}`} placeholder="Sydney" autoFocus value={typed[row.id] ?? ""} onChange={(event) => setTyped({ ...typed, [row.id]: event.target.value })} />}
+                {refused === null ? null : <FieldError>{refused}</FieldError>}
+              </Field>;
+            })}
+          </FieldSet>
           {!hasFirst && servers.length > 1 ? <Field>
             <FieldLabel htmlFor="enroll-first">First server</FieldLabel>
             <NativeSelect id="enroll-first" value={first} onChange={(event) => setFirst(event.target.value)}>
@@ -114,7 +163,7 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
       </div>
       <SheetFooter>
         <p className="text-xs text-muted-foreground">{hasFirst ? "Joins 8 at a time." : "First one, then 8 at a time."}</p>
-        <Button disabled={start.isPending || plan.isPending || plan.isPlaceholderData || plan.isError || (names === "pattern" && pattern !== settledPattern) || count === 0} onClick={() => start.mutate()}>Enroll {count}</Button>
+        <Button disabled={start.isPending || plan.isPending || plan.isPlaceholderData || plan.isError || (names === "pattern" && pattern !== settledPattern) || !joinsKnown || count === 0} onClick={() => start.mutate(joins)}>Enroll {count}</Button>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
       </SheetFooter>
     </SheetContent>

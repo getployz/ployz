@@ -23,6 +23,7 @@ import {
   isReadyFor,
 } from "#/modules/machines/waiting/server-enrollment";
 import { serversOffline } from "#/modules/machines/waiting/servers-offline";
+import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
 import { fleetToken, fleetTokenAttempt, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
@@ -144,11 +145,15 @@ export function planServerEnrollment(
   if (names.kind === "pattern" && !names.pattern.includes("{n}") && ordered.length > 1) {
     return { kind: "refused", message: "A name pattern needs {n} to name more than one server." };
   }
-  const policy = {
-    labels: {},
-    acceptsBuilds: input.runs.builds,
-    acceptsServices: input.runs.services,
-    acceptsIngress: input.runs.ingress,
+  const policyFor = (row: EnrollCandidate) => {
+    const region = input.regions?.[row.id];
+    const labels: Record<string, string> = region === undefined ? {} : { [REGION_LABEL]: region };
+    return {
+      labels,
+      acceptsBuilds: input.runs.builds,
+      acceptsServices: input.runs.services,
+      acceptsIngress: input.runs.ingress,
+    };
   };
   // A name another Server holds, or an earlier row takes, is numbered on, as `ployz server add` refuses it. A host keeps
   // a name its own Machine already holds, from an attempt that published it and then failed.
@@ -170,7 +175,7 @@ export function planServerEnrollment(
   };
   const { clusterName } = organization;
   const instructionFor = (row: EnrollCandidate, storage: EnrollStorage): EnrollInstruction => {
-    const instruction = { name: nameFor(row), storage, policy } satisfies EnrollInstruction;
+    const instruction = { name: nameFor(row), storage, policy: policyFor(row) } satisfies EnrollInstruction;
     if (row.id !== founder) return instruction;
     const named = clusterName === undefined ? instruction : { ...instruction, clusterName };
     return row.foundsClosed === true ? { ...named, ingressClosed: true } : named;

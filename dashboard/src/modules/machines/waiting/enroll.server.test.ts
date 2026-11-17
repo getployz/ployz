@@ -249,6 +249,17 @@ it("counts distinct providers and /16 networks", () => {
   expect(plan.spread).toEqual({ providers: 2, networks: 2 });
 });
 
+describe("regions", () => {
+  it("puts each Server in the region picked for it, as its region label, and leaves the rest to join default", () => {
+    const plan = planned(planServerEnrollment(input({ ids: ["a", "b", "c"], regions: { a: "sydney", b: "default" } }), [row("a"), row("b"), row("c")], founded));
+    expect(plan.rows.map((r) => [r.waitingServerId, r.instruction.policy.labels])).toEqual([
+      ["a", { region: "sydney" }],
+      ["b", { region: "default" }],
+      ["c", {}],
+    ]);
+  });
+});
+
 describe("readiness", () => {
   const none: EnrollStorage = { kind: "none" };
   const zfs: EnrollStorage = { kind: "zfs" };

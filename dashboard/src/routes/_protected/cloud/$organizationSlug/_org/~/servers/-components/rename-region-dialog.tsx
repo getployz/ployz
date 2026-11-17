@@ -5,6 +5,7 @@ import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogT
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
+import { DEFAULT_REGION } from "#/modules/machines/server-regions";
 import { useNameRegion } from "#/modules/machines/server-regions.hooks";
 import type { RoleGate } from "#/modules/organization/members.queries";
 
@@ -33,7 +34,7 @@ export function RenameRegionDialog({ organizationSlug, regions, gate }: {
   return (
     <>
       <Button variant="ghost" disabled={!gate.allowed} title={gate.reason} onClick={() => {
-        pick(regions.find((each) => each.key === "default") ?? regions[0]);
+        pick(regions.find((each) => each.key === DEFAULT_REGION) ?? regions[0]);
         setOpen(true);
       }}>
         Rename region

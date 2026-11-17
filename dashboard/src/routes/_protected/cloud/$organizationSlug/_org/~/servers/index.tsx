@@ -49,7 +49,8 @@ function RouteComponent() {
   const { token } = Route.useSearch();
   const { state, servers, older, awaitingKey } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
-  const regions = useRegions(organizationSlug, regionLabels(servers.map(({ machine }) => machine)));
+  const labels = regionLabels(servers.map(({ machine }) => machine));
+  const regions = useRegions(organizationSlug, labels);
   const operate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
@@ -89,7 +90,7 @@ function RouteComponent() {
         </p>
       ) : null}
       {/* Above the list: the skeleton below is a guess at the list's height, and the tray must not jump when it settles. */}
-      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} /> : null}
+      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} labels={labels} /> : null}
       {page.kind === "fleet" ? <FirstTunnelStatus organizationSlug={organizationSlug} /> : null}
       {page.kind === "loading" ? (
         <ServersSkeleton />
