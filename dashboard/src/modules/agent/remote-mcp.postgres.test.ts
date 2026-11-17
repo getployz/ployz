@@ -460,8 +460,8 @@ it.live("an approval its schema doesn't take is refused before anything is writt
 it.live("a call refused before it runs is recorded once as a failed call under the name its client registered, and feedback with an intent is taken", () =>
   Effect.gen(function* () {
     const recorded: Array<string> = [];
-    const clients: Array<unknown> = [];
-    type Named = { properties?: Record<string, unknown> };
+    const clients: Array<string | undefined> = [];
+    type Named = { properties?: Record<string, string> };
     const capture = {
       captureToolCall: (event: Named & { toolName: string; isError: boolean; errorType?: string }) => {
         recorded.push(`${event.toolName} ${event.isError ? event.errorType : "ok"}`);
