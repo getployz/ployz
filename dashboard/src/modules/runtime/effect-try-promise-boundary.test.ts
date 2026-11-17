@@ -34,6 +34,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "routes/api/checkin/-handler.ts",
   "routes/api/cli/-cli.handler.ts",
   "routes/api/cli/agent/-agent.handler.ts",
+  "routes/api/cli/agent/-calls.handler.ts",
   "routes/api/cli/-handlers.ts",
   "routes/api/config/-config.handler.ts",
   "routes/api/enroll/-handlers.ts",
