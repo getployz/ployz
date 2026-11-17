@@ -128,10 +128,17 @@ impl Region {
     pub const LABEL: &'static str = "region";
 
     /// # Errors
-    /// Rejects text that is not a Machine Label value.
+    /// Rejects text that is not letters, digits, hyphens, underscores and dots.
     pub fn parse(value: impl Into<String>) -> Result<Self, crate::ValueError> {
-        let value = crate::MachineLabelValue::parse(value)?;
-        Ok(Self(value.as_str().to_ascii_lowercase()))
+        let value = value.into();
+        if value.is_empty() || !value.bytes().all(crate::value::is_swarm_key_byte) {
+            return Err(crate::ValueError::new(
+                "region",
+                value,
+                "letters, digits, hyphens, underscores and dots",
+            ));
+        }
+        Ok(Self(value.to_ascii_lowercase()))
     }
 
     #[must_use]
@@ -142,8 +149,7 @@ impl Region {
     /// The region `machine` is in, when its Labels name one.
     #[must_use]
     pub fn of(machine: &crate::Machine) -> Option<Self> {
-        let value = machine.labels.get(Self::LABEL)?;
-        Some(Self(value.as_str().to_ascii_lowercase()))
+        Self::parse(machine.labels.get(Self::LABEL)?.as_str()).ok()
     }
 
     /// The constraint only Servers in this region meet.

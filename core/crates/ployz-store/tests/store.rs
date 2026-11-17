@@ -327,6 +327,32 @@ fn settings_refuse_a_region_no_server_is_in_and_stage_nothing() {
 }
 
 #[test]
+fn a_region_no_label_could_spell_is_refused_before_a_label_command_is_suggested() {
+    let store = open();
+    let who = actor(&uuid("org-region-grammar"));
+    store.write(&who, &create_project("shop")).unwrap();
+    let unlabelled = Trusted {
+        regions: Some([].into()),
+        ..Trusted::default()
+    };
+
+    let refused = store
+        .write_trusted(
+            &who,
+            &edit(None, vec![set("@environment.region", json!("not valid"))]),
+            &unlabelled,
+        )
+        .unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        !refused.details.to_string().contains("not valid"),
+        "{}",
+        refused.details
+    );
+}
+
+#[test]
 fn a_patch_keeps_omitted_settings_and_never_clears() {
     let (store, who) = shop();
     store
