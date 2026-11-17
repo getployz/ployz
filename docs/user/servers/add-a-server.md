@@ -55,6 +55,20 @@ which usually takes under a minute. If it is still catching up after a minute, t
 and names UDP 51820, which your servers use to reach each other. The wait gives up after 5
 minutes.
 
+### Put the server in a region
+
+A server joins the `default` region unless you name another one with `--region`:
+
+```sh
+ployz server add --command --region fsn
+```
+
+The printed line keeps `--region`. A region is up to 63 lowercase letters, digits and hyphens, and
+starts with a letter or digit. Capitals are lowered, so `FSN` joins `fsn`. `--label-add
+region=fsn` does the same. Give both with different regions and the command stops before anything
+starts, saying to keep `--region`. To move a server to another region later, see
+[Set a server's region](manage-servers.md#set-a-servers-region).
+
 Add more servers the same way, even at different providers. Each server after your cluster's
 first waits for a device you approved to sign its join, and you're told the code to approve; see
 [Approve a join](#approve-a-join). Nothing moves onto a new server until

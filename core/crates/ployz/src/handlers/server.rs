@@ -813,6 +813,7 @@ pub(super) fn enrollment_policy(
 ) -> Result<ployz_core::InitialMachinePolicy, Error> {
     initial_policy(
         &string_values(matches, "label-add"),
+        matches.get_one::<String>("region").map(String::as_str),
         [
             matches.get_one::<bool>("accepts-builds").copied(),
             matches.get_one::<bool>("accepts-services").copied(),
@@ -821,18 +822,41 @@ pub(super) fn enrollment_policy(
     )
 }
 
-/// The policy a Server starts with from the labels and the `--accepts-builds`,
+/// The policy a Server starts with from the labels, `--region` and the `--accepts-builds`,
 /// `--accepts-services` and `--accepts-ingress` values given, each on unless said off.
 fn initial_policy(
     labels: &[String],
+    region: Option<&str>,
     accepts: [Option<bool>; 3],
 ) -> Result<ployz_core::InitialMachinePolicy, Error> {
+    let mut labels = parse_labels(labels)?;
+    let key: ployz_core::MachineLabelKey = ployz_store::REGION_LABEL.parse()?;
+    let region = joining_region(region, labels.get(&key))?;
+    labels.insert(key, region.as_str().parse()?);
     Ok(ployz_core::InitialMachinePolicy {
-        labels: parse_labels(labels)?,
+        labels,
         accepts_builds: accepts[0].unwrap_or(true),
         accepts_services: accepts[1].unwrap_or(true),
         accepts_ingress: accepts[2].unwrap_or(true),
     })
+}
+
+/// The region a Server joins: `--region`, else its `region` label, else the default one.
+fn joining_region(
+    flag: Option<&str>,
+    label: Option<&ployz_core::MachineLabelValue>,
+) -> Result<ployz_store::RegionKey, Error> {
+    let flag = flag.map(ployz_store::RegionKey::parse).transpose()?;
+    let label = label
+        .map(|label| ployz_store::RegionKey::parse(label.as_str()))
+        .transpose()?;
+    match (flag, label) {
+        (Some(flag), Some(label)) if flag != label => Err(Error::usage(format!(
+            "--region {flag} and --label-add region={label} disagree. Keep --region {flag} and drop the region label."
+        ))),
+        (Some(region), _) | (None, Some(region)) => Ok(region),
+        (None, None) => Ok(ployz_store::RegionKey::default_region()),
+    }
 }
 
 pub(super) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoint>, Error> {
@@ -949,6 +973,11 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("name", None)
                 .help("Name the Server; it takes its hostname when omitted"),
+        )
+        .arg(
+            value("region", None)
+                .value_name("KEY")
+                .help("Put the Server in region KEY; it starts in default when omitted"),
         )
         .arg(switch("no-install", None).help("Skip installing Ployz; the Server runs it already"))
         .arg(

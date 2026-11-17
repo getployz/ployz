@@ -827,6 +827,11 @@ fn the_engine_reads_an_instruction_as_it_read_the_arguments_built_from_it() {
             with(&|i| i.founding_ingress_closed = true),
             true,
         ),
+        (
+            "region",
+            with(&|i| i.policy.labels = labelled(&[("region", "fsn")])),
+            true,
+        ),
     ];
     let views: String = cases
         .iter()
