@@ -59,8 +59,8 @@ to it. Doing that from your CI after it pushes the image is CLI-only:
 
 ```sh
 # In CI, signed in with an organization token in PLOYZ_TOKEN
-ployz set 'web.image=ghcr.io/acme/web:1.5.0'
-ployz deploy web
+ployz set 'web.image=ghcr.io/acme/web:1.5.0' --why "Roll out the image CI pushed"
+ployz deploy web --why "Roll out the image CI pushed"
 ```
 
 With more than one project, or to deploy to an environment other than the default, add
