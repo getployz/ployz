@@ -264,7 +264,7 @@ tool_input! {
         #[serde(default)]
         #[schemars(with = "Option<String>", example = &"fsn")]
         region: Option<Region>,
-        /// `true` to clear the region, so its Services run on any Server.
+        /// `true` to clear the region, so its Services run in any region.
         #[serde(default)]
         clear: bool,
         @place(named),
@@ -274,7 +274,7 @@ tool_input! {
 impl Tool for EnvironmentRegion {
     const NAME: &'static str = "environment_region";
     const TITLE: &'static str = "Set an Environment's region";
-    const DESCRIPTION: &'static str = "Set the region an Environment's Services run in, or clear it so they run on any Server. A region is the value of a Server's `region` label. Staged until the next deploy, which moves each Service to a Server in the region. A Service whose Volume is on a Server outside the region is not started until the Volume is moved.";
+    const DESCRIPTION: &'static str = "Set the region an Environment's Services run in, or clear it so they run in any region. A region is the value of a Server's `region` label. Staged until the next deploy, which moves each Service to a Server in the region. A Service whose Volume is on a Server outside the region is not started until the Volume is moved.";
     const EFFECT: Effect = Effect::Change { idempotent: true };
 
     fn example() -> Value {
@@ -304,7 +304,7 @@ impl Tool for EnvironmentRegion {
             (None, true) => Change::Unset { path },
             (None, false) | (Some(_), true) => {
                 return Err(Refusal::invalid(
-                    "Name a region, or set clear to run on any Server",
+                    "Name a region, or set clear to run in any region",
                     "region",
                 )
                 .into());

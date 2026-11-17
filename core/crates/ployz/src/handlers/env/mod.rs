@@ -79,7 +79,7 @@ pub(super) fn region_command(command: Command) -> Command {
     .arg(
         switch("clear", None)
             .conflicts_with("region")
-            .help("Run its Services on any Server"),
+            .help("Run its Services in any region"),
     )
     .arg(expect())
 }

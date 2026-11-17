@@ -54,7 +54,7 @@ Ployz checks this when it can read your servers' labels. If no server answers, o
 without Ployz Cloud, the region is staged unchecked, and the deploy reports the services it
 couldn't start. See [When no server is in the region](#when-no-server-is-in-the-region).
 
-To run on any server again:
+To run in any region again:
 
 ```sh
 ployz env region --clear
