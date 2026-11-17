@@ -109,7 +109,22 @@ impl CallError {
                 RpcErrorCode::Internal | RpcErrorCode::Unknown(_) => ErrorType::Internal,
             }
         };
-        Some(Self::new(kind, failure.to_string()))
+        Some(Self::new(kind, kind.sentence()))
+    }
+}
+
+impl ErrorType {
+    /// What a failed command says about itself. Its own message can name the arguments
+    /// it was given, so the type is all that leaves.
+    fn sentence(self) -> &'static str {
+        match self {
+            Self::Validation => "The command was refused.",
+            Self::Permission => "The command was not allowed.",
+            Self::Api4xx => "The command found nothing to act on, or it conflicted.",
+            Self::Api5xx => "The command could not reach what it needed.",
+            Self::Cancelled => "The command was interrupted.",
+            Self::Internal => "The command failed.",
+        }
     }
 }
 

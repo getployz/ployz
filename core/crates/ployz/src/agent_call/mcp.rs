@@ -21,6 +21,7 @@ pub(crate) const INTENT: &str = "intent";
 pub(crate) const FEEDBACK_TOOL: &str = "send_feedback";
 const INTENT_DESCRIPTION: &str = "Why are you calling this tool? Describe the goal in general terms, and refer to people by role (\"a customer\") rather than by name. Leave out personal and identifying information.";
 const INTENT_REQUIRED: &str = "Say why you are calling this tool. Send `intent`, a short sentence on the goal this call serves.";
+const REFUSED: &str = "The tool refused this call.";
 const THANKS: &str = "Thanks. The Ployz team reads this.";
 const FEEDBACK_SHAPE: &str = "send_feedback takes `type` (missing_capability, issue, praise or other), `message`, and an optional `sentiment` (positive, neutral, negative or mixed).";
 
@@ -283,16 +284,25 @@ fn outcome(result: &Result<CallToolResponse, McpError>) -> Outcome {
             {
                 return Outcome::Asking;
             }
-            let text = answer
-                .content
-                .iter()
-                .find_map(|block| block.as_text().map(|text| text.text.clone()))
-                .unwrap_or_default();
-            Outcome::Ended(Some(CallError::new(ErrorType::Validation, text)))
+            Outcome::Ended(Some(CallError::new(
+                ErrorType::Validation,
+                refusal_message(answer),
+            )))
         }
         // A completed answer, or a task the host polls for one.
         Ok(_) => Outcome::Ended(None),
     }
+}
+
+/// What a refusal says about itself. Its text also carries the call to retry, with every
+/// argument the agent sent, so only its own `message` leaves; an answer that is not a
+/// refusal with one gets a fixed sentence.
+fn refusal_message(answer: &CallToolResult) -> String {
+    let parsed = answer.content.iter().find_map(|block| {
+        let refusal: Value = serde_json::from_str(&block.as_text()?.text).ok()?;
+        refusal.get("message")?.as_str().map(str::to_owned)
+    });
+    parsed.unwrap_or_else(|| REFUSED.to_owned())
 }
 
 #[cfg(test)]
@@ -323,6 +333,29 @@ mod tests {
         let refused = take_intent(Some(blank)).unwrap_err();
         assert_eq!(refused.message, INTENT_REQUIRED);
         assert_eq!(take_intent(None).unwrap_err().message, INTENT_REQUIRED);
+    }
+
+    #[test]
+    fn a_refused_call_reports_the_refusal_message_and_no_argument() {
+        let refusal = json!({
+            "code": "invalid_argument",
+            "message": "This input does not fit: unknown field",
+            "retry": { "tool": "service_add", "input": { "env": { "DB_PASSWORD": "hunter2-plain" } } },
+        });
+        for text in [refusal.to_string(), "hunter2-plain is not valid".to_owned()] {
+            let answer = CallToolResult::error(vec![ContentBlock::text(text)]);
+            let Outcome::Ended(Some(error)) = outcome(&Ok(answer.into())) else {
+                panic!("a refusal ends the call with an error");
+            };
+            let sent = serde_json::to_string(&error).unwrap();
+            assert!(!sent.contains("hunter2"), "{sent}");
+            assert!(sent.contains("validation"), "{sent}");
+        }
+        let answer = CallToolResult::error(vec![ContentBlock::text(refusal.to_string())]);
+        let Outcome::Ended(Some(error)) = outcome(&Ok(answer.into())) else {
+            panic!("a refusal ends the call with an error");
+        };
+        assert_eq!(error.message, "This input does not fit: unknown field");
     }
 
     #[test]
