@@ -36,7 +36,7 @@ describe("Server Policy", () => {
   });
 
   it("settles a requested change only once observation shows all of it", () => {
-    const observed = { acceptsBuilds: true, acceptsServices: true, acceptsIngress: true, buildConcurrency: null };
+    const observed = { acceptsBuilds: true, acceptsServices: true, acceptsIngress: true, buildConcurrency: null, region: null };
     expect(policyChangeObserved(observed, { buildConcurrency: "automatic" })).toBe(true);
     expect(policyChangeObserved(observed, { buildConcurrency: 2 })).toBe(false);
     expect(
@@ -48,9 +48,32 @@ describe("Server Policy", () => {
     expect(policyChangeObserved({ ...observed, acceptsIngress: false }, { acceptsIngress: false })).toBe(true);
     expect(
       policyChangeObserved(
-        { acceptsBuilds: false, acceptsServices: false, acceptsIngress: true, buildConcurrency: 2 },
+        { acceptsBuilds: false, acceptsServices: false, acceptsIngress: true, buildConcurrency: 2, region: null },
         { acceptsBuilds: false, acceptsServices: false, buildConcurrency: 2 },
       ),
     ).toBe(true);
+  });
+
+  it("sends a region as a label change and clears it with a null", () => {
+    expect(machineUpdateForPolicyChange({ region: "fsn" })).toEqual({ label_changes: { region: "fsn" } });
+    expect(machineUpdateForPolicyChange({ region: null })).toEqual({ label_changes: { region: null } });
+    expect(isEmptyPolicyChange({ region: null })).toBe(false);
+  });
+
+  it("settles a region change only once observation carries the label, or lacks it for a clear", () => {
+    const observed = { acceptsBuilds: true, acceptsServices: true, acceptsIngress: true, buildConcurrency: null };
+    expect(policyChangeObserved({ ...observed, region: null }, { region: "fsn" })).toBe(false);
+    expect(policyChangeObserved({ ...observed, region: "syd" }, { region: "fsn" })).toBe(false);
+    expect(policyChangeObserved({ ...observed, region: "fsn" }, { region: "fsn" })).toBe(true);
+    expect(policyChangeObserved({ ...observed, region: "fsn" }, { region: null })).toBe(false);
+    expect(policyChangeObserved({ ...observed, region: null }, { region: null })).toBe(true);
+  });
+
+  it("refuses a region with a space, a capital, a leading dash or more than 63 characters", () => {
+    const decode = (region: string) => Schema.decodeUnknownOption(ServerPolicyChangeSchema)({ region })._tag;
+    expect(decode("fsn")).toBe("Some");
+    expect(decode("eu-west-2")).toBe("Some");
+    expect(decode("a".repeat(63))).toBe("Some");
+    for (const bad of ["new york", "-fsn", "FSN", "", "a".repeat(64)]) expect(decode(bad)).toBe("None");
   });
 });

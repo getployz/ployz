@@ -140,6 +140,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           acceptsServices: false,
           storage: "pool",
           buildConcurrency: 2,
+          region: null,
           effectiveBuildConcurrency: 2,
           runningBuilds: 1,
           capabilities: ["ployz.logs.tail.v1"],
@@ -295,6 +296,24 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     });
     if (Option.isNone(older)) throw new Error("Expected Runtime Watch frame.");
     expect(runtimeSnapshotFromWatchFrame(older.value).machines[0]?.poolCommittableBytes).toBeNull();
+  });
+
+  it("reads a Server's region from its region label, ignores its other labels, and reads none from a transport from before", () => {
+    const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
+      machines: [
+        runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-a", "edge-a", { labels: { region: "fsn", pool: "build" } }) }),
+        runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture("machine-b", "edge-b", { labels: { Region: "syd" } }) }),
+      ],
+    }));
+    expect(runtimeSnapshotFromWatchFrame(frame).machines.map((machine) => machine.region)).toEqual(["fsn", null]);
+    expect(frame.machines[0]?.machine).not.toHaveProperty("labels");
+
+    const [first] = frame.machines;
+    if (!first) throw new Error("Expected a machine.");
+    const { region: _, ...olderMachine } = first.machine;
+    const older = Schema.decodeUnknownOption(runtimeWatchFrameSchema)({ ...frame, machines: [{ ...first, machine: olderMachine }] });
+    if (Option.isNone(older)) throw new Error("Expected Runtime Watch frame.");
+    expect(runtimeSnapshotFromWatchFrame(older.value).machines[0]?.region).toBeNull();
   });
 
   it("reads whether a Server holds its Cluster's Sealing Key or awaits its recovery, and as unknown from a daemon that doesn't report it", () => {

@@ -9,11 +9,12 @@ import {
   runtimeWatchMachineObservationFixture,
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
-const machine = (id: string, name: string, membership: string, daemonVersion: string, capabilities: string[]) =>
+const machine = (id: string, name: string, membership: string, daemonVersion: string, capabilities: string[], region?: string) =>
   runtimeWatchMachineObservationFixture({
     membership,
     storage: { state: "pool", size_bytes: 400e9, used_bytes: 120e9, free_bytes: 280e9 },
     machine: runtimeWatchMachineFixture(id, name, {
+      labels: region === undefined ? {} : { region },
       runtime: { ...runtimeWatchMachineFixture(id, name).runtime, daemon_version: daemonVersion, capabilities },
     }),
   });
@@ -40,9 +41,9 @@ export const verifyRuntimeFrame = (): RuntimeWatchView => {
   ];
   return runtimeWatchFrameFixture({
     machines: [
-      machine(NORMAL, "fra-1", "up", "0.3.0", [requirements.metrics.capability]),
-      machine(ONES, "fra-2", "down", "0.3.0", [requirements.metrics.capability]),
-      machine(TWOS, "syd-1", "up", "0.2.4", [requirements.liveLogs.capability]),
+      machine(NORMAL, "fra-1", "up", "0.3.0", [requirements.metrics.capability], "fra"),
+      machine(ONES, "fra-2", "down", "0.3.0", [requirements.metrics.capability], "fra"),
+      machine(TWOS, "syd-1", "up", "0.2.4", [requirements.liveLogs.capability], "syd"),
       machine(FOURS, "ams-1", "up", "0.3.0", [requirements.metrics.capability]),
     ],
     services,

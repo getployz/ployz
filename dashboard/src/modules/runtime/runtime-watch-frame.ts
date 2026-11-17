@@ -2,6 +2,12 @@ import type { MachineRuntime, RuntimeWatchView, Sealing } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { runtimeContainerStateSchema, runtimeSealingSchema, type RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
 
+/** The Machine Label that places a Server in a region. Label keys match exactly. */
+export const REGION_LABEL = "region";
+
+/** The region a Server's labels place it in, or null when it has none. */
+export const regionOfLabels = (labels: Readonly<Record<string, string>>): string | null => labels[REGION_LABEL] ?? null;
+
 /**
  * The browser needs only enough of the Engine's additive SDK payload to retain
  * useful observation evidence. Extra Engine fields are intentionally ignored
@@ -28,6 +34,8 @@ const runtimeWatchMachineSchema = Schema.Struct({
     accepts_builds: Schema.Boolean,
     accepts_services: Schema.Boolean,
     build_concurrency: Schema.NullOr(Schema.Number),
+    /** The Server's `region` label; the browser needs no other label. */
+    region: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
     runtime: Schema.Struct({
       daemon_version: Schema.String,
       running_builds: Schema.Number,
@@ -144,6 +152,7 @@ export function runtimeWatchFrameForTransport(
         accepts_builds: machine.machine.accepts_builds,
         accepts_services: machine.machine.accepts_services,
         build_concurrency: machine.machine.build_concurrency,
+        region: regionOfLabels(machine.machine.labels),
         runtime: {
           daemon_version: machine.machine.runtime.daemon_version,
           running_builds: machine.machine.runtime.running_builds,
@@ -237,6 +246,7 @@ export function runtimeSnapshotFromWatchFrame(
       acceptsServices: machine.machine.accepts_services,
       storage: machine.storage?.state ?? null,
       buildConcurrency: machine.machine.build_concurrency,
+      region: machine.machine.region,
       effectiveBuildConcurrency: frame.effective_build_concurrency[machine.machine.id] ?? 1,
       runningBuilds: machine.machine.runtime.running_builds,
       daemonVersion: machine.machine.runtime.daemon_version,
