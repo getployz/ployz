@@ -117,7 +117,9 @@ const unrecognized = (name: string) => (PLAUSIBLE_TOOL_NAME.test(name) ? name : 
 /**
  * MCP Analytics redacts emails, addresses, phone and card numbers and its own keys from what it is given, but not other
  * services' tokens, which an agent may paste into the reason it gives. These are the ones it leaves: a bearer header,
- * the well-known prefixes, a signed JWT, and any long opaque run with both letters and digits.
+ * the well-known prefixes, a signed JWT, a long standard-base64 run (an AWS secret key, a PEM line) with upper and lower
+ * case letters and digits, and any long opaque run with both letters and digits. A path or a URL has no digits and
+ * capitals together in a run that long, so neither is blanked.
  */
 const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
@@ -125,6 +127,7 @@ const SECRET_PATTERNS: ReadonlyArray<RegExp> = [
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g,
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}/g,
+  /(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*\d)(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/])/g,
   /\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{32,}\b/g,
 ];
 /** Past this the text is cut before it is read, so that a very long one costs no more to redact than a long one. The SDK cuts at 2,048 after. */

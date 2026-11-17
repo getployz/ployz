@@ -89,6 +89,17 @@ it("an email and a token in the reason never reach PostHog, and neither do tool 
   expect(Object.keys(event?.properties ?? {})).not.toEqual(expect.arrayContaining(["$mcp_response"]));
 });
 
+it.each([
+  "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzEXAMPLEKEY",
+  "q3N8vT+2xLm/9KfPz0aRbE7wYc1HdUj4sGiOk6lMnV8=",
+  "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7+aB/x",
+])("the secret %s in a reason is redacted whole, and a path or URL beside it is kept", async (secret) => {
+  const intent = `Rotate ${secret} for /home/user/projects/my-app/src/index.ts, see https://example.com/docs/getting-started/install.`;
+  await withPostHog(recordAgentCall(callReport("cli", { intent })));
+  const [event] = await flushed();
+  expect(event?.properties["$mcp_intent"]).toBe("Rotate [redacted] for /home/user/projects/my-app/src/index.ts, see https://example.com/docs/getting-started/install.");
+});
+
 it("a call refused for lacking a reason is a failed call of type validation, with no intent", async () => {
   const caller = asTestDouble<AgentCaller>()({ userId: "user-1", organization: { id: "org-1", slug: "shop" } });
   const origin = { surface: "cloud", session: sessionIdOf("x"), client: { name: null, version: null }, serverVersion: null, userAgent: null, protocolVersion: null } as const;
