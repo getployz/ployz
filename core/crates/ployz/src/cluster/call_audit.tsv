@@ -176,6 +176,7 @@ tests/cloud_init/main.rs::reset_enroll_does_not_occupy_the_name_with_the_pre_res
 tests/cloud_init/main.rs::reset_enroll_posts_the_rotated_public_key	op::Enroll	call	unary	-	redial	keyed
 tests/cloud_init/policy.rs::cloud_resume_refuses_policy_mismatch_without_editing_the_machine	op::Enroll	call	unary	-	redial	keyed
 tests/cloud_init/policy.rs::cloud_resume_refuses_policy_mismatch_without_editing_the_machine	op::Inspect	call	unary	-	redial	read
+tests/cloud_init/policy.rs::labels_of	op::Inspect	call	unary	-	redial	read
 tests/cloud_init/policy.rs::machine_init_and_add_send_policy_in_creation_without_an_update	op::Inspect	call	unary	-	redial	read
 tests/connect/main.rs::lazy_first_connection_falls_through_to_a_healthy_machine	op::DescribeContract	call	unary	-	redial	read
 tests/connect/main.rs::machine_discovery_uses_the_same_rpc_over_tcp_and_unix	op::DescribeContract	call	unary	-	redial	read
