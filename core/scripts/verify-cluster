@@ -249,13 +249,16 @@ def device_config(run):
     return Path(run["manifest"]).parent / "private" / "device" / "config.yaml"
 
 
-def cli_environment(run, *, device=False):
+def cli_environment(run, *, device=False, as_caller=False):
     """The CLI that drives the run: on a --cloud run it holds the Organization Token, or with `device` the seeded
-    owner's signed-in, approved device, which exec and port-forward need."""
+    owner's signed-in, approved device, which exec and port-forward need. Its own commands run with agent detection
+    off, since no agent chose them and the CLI would demand a `--why` for each; `as_caller` keeps the caller's
+    environment for the commands the caller types."""
     directory = Path(run["manifest"]).parent
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PLOYZ_")}
-    # A disposable Cluster's calls are the harness's, not an agent's, so the CLI asks no --why and reports none.
-    environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"), AI_AGENT="off",
+    if not as_caller:
+        environment["AI_AGENT"] = "off"
+    environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"),
                        PATH=str(directory / "private" / "bin") + os.pathsep + os.environ["PATH"])
     if device and "cloud" not in run:
         raise RuntimeError("--device needs a --cloud run; a standalone run's CLI already reaches every Machine")
@@ -269,8 +272,8 @@ def cli_environment(run, *, device=False):
     return str(ployz), environment, directory / "workspace"
 
 
-def cli(run, commands, args, *, device=False, **kwargs):
-    ployz, environment, workspace = cli_environment(run, device=device)
+def cli(run, commands, args, *, device=False, as_caller=False, **kwargs):
+    ployz, environment, workspace = cli_environment(run, device=device, as_caller=as_caller)
     return commands([ployz, *args], cwd=workspace, env=environment, **kwargs)
 
 
@@ -303,8 +306,11 @@ def approve_device(run, commands):
     cli(run, commands, ["login", "--wait"], device=True, timeout=120)
     code = json.loads(cli(run, commands, ["--json", "device", "request"], device=True).stdout)["code"]
     # A device is approved from an approved device or over SSH on a Server; this one is the first.
-    for machine in [machine for machine in run["machines"] if "machine_id" in machine]:
+    members = [machine for machine in run["machines"] if "machine_id" in machine]
+    for machine in members:
         cli(run, commands, ["device", "approve", code, "--yes", "--connect", "ssh://" + machine["ssh"]], device=True, timeout=120)
+    # A join relayed through Cloud is signed only for a Cluster this device pinned, read from a Server over SSH.
+    cli(run, commands, ["device", "pin", "--connect", "ssh://" + members[0]["ssh"]], device=True, timeout=120)
     run["device"] = code
     save(run)
 
@@ -1201,7 +1207,7 @@ def main():
             raise RuntimeError("Supply a command after --")
         # The passthroughs forward the caller's stdin, as the commands they wrap do.
         if args.action == "cli":
-            result = cli(run, commands, command, device=args.device, check=False, timeout=args.timeout, stdin=None)
+            result = cli(run, commands, command, device=args.device, as_caller=True, check=False, timeout=args.timeout, stdin=None)
         else:
             result = backend.exec(machine, command, check=False, timeout=args.timeout, stdin=None)
         sys.stdout.buffer.write(result.stdout)

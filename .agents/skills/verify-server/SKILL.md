@@ -56,6 +56,8 @@ The new Machine runs machine-1's daemon from the run's artifacts, so `add` build
 
 ## Drive the feature
 
+`cli` runs the command as you, so from an agent session the CLI asks for `--why "<goal>"` before the subcommand, as on any machine. `up`, `add` and the harness's own enrollment, device approval and pinning run with agent detection off and need none.
+
 ```bash
 scripts/verify-cluster cli "$run" -- --json server ls
 scripts/verify-cluster cli "$run" -- project new verify
