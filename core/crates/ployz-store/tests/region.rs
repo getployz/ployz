@@ -242,7 +242,10 @@ fn a_new_region_takes_a_key_from_its_name_unless_a_region_has_it_in_any_case() {
         new_region(&store, &who, "LHR", &[]),
         Err("Region London (lhr) already exists.".into())
     );
-    assert_eq!(new_region(&store, &who, "London", &[]), Ok("london".into()));
+    assert_eq!(
+        new_region(&store, &who, "london", &[]),
+        Err("Region London (lhr) already exists.".into())
+    );
     assert_eq!(
         new_region(&store, &who, "東京", &[]),
         Err("Use at least one letter a-z or digit.".into())

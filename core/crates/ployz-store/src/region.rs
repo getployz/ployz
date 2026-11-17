@@ -243,14 +243,19 @@ pub fn region_servers<'a>(
 }
 
 /// The key a new region named `name` takes among the `known` regions, refused when one of
-/// them has it already.
+/// them has that key or shows that name, in any case.
 ///
 /// # Errors
 /// Returns `invalid_argument` when `name` makes no key, or `conflict` naming the region
-/// that has the key.
+/// that has the key or the name.
 pub(crate) fn new_region(name: &RegionName, known: &[Region]) -> Result<RegionKey, RpcError> {
     let key = RegionKey::from_name(name)?;
-    match known.iter().find(|region| region.key == key) {
+    let named = || {
+        known
+            .iter()
+            .find(|region| region.name.to_lowercase() == name.as_str().to_lowercase())
+    };
+    match known.iter().find(|region| region.key == key).or_else(named) {
         Some(region) => {
             let existing = if region.name == region.key.as_str() {
                 region.name.clone()
@@ -488,10 +493,6 @@ mod tests {
             new_region(&name("FSN"), &named).unwrap_err().message,
             "Region Falkenstein (fsn) already exists."
         );
-        assert_eq!(
-            new_region(&name("Falkenstein"), &named).unwrap(),
-            key("falkenstein")
-        );
         assert_eq!(new_region(&name("Sydney"), &named).unwrap(), key("sydney"));
     }
 
@@ -508,6 +509,26 @@ mod tests {
         assert_eq!(
             new_region(&name("Default"), &known).unwrap_err().message,
             "Region Default (default) already exists."
+        );
+    }
+
+    #[test]
+    fn a_new_region_named_like_one_that_shows_that_name_is_refused_in_any_case() {
+        let known = regions(
+            ["syd", "default"],
+            &BTreeMap::from([(key("syd"), name("Sydney"))]),
+        );
+        assert_eq!(
+            new_region(&name("sydney"), &known).unwrap_err().message,
+            "Region Sydney (syd) already exists."
+        );
+        assert_eq!(
+            new_region(&name("DEFAULT"), &known).unwrap_err().message,
+            "Region Default (default) already exists."
+        );
+        assert_eq!(
+            new_region(&name("Sydney 2"), &known).unwrap(),
+            key("sydney-2")
         );
     }
 }
