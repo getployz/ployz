@@ -13,7 +13,9 @@ use crate::boundary::{from_js, invalid_argument, rpc_to_napi, to_json, whole_num
 ///
 /// # Errors
 /// Returns an error when the catalog fails to encode.
-#[napi(ts_return_type = "{ title: string; description: string; instructions: string; tools: ToolDef[] }")]
+#[napi(
+    ts_return_type = "{ title: string; description: string; instructions: string; tools: ToolDef[] }"
+)]
 pub fn agent_tools() -> Result<serde_json::Value> {
     to_json(&serde_json::json!({
         "title": tools::TITLE,

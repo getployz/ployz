@@ -578,7 +578,7 @@ impl Tool for ServerForget {
     const NAME: &'static str = "server_forget";
     const STATUS: ToolId = ToolId::ServerShow;
     const TITLE: &'static str = "Forget a gone Server";
-    const DESCRIPTION: &'static str = "Drop a gone Server from the Organization right away, without resetting it. Volumes whose only copy was there are lost, which cannot be undone. To reset it too, use `server_remove`.";
+    const DESCRIPTION: &'static str = "Drop a gone Server from the Organization right away, without resetting it. Volumes whose only copy was there are lost, which cannot be undone. Refused while the Server answers and holds a Volume copy. To reset it too, use `server_remove`.";
     const GATE: Gate = Gate::Cloud;
     // Once forgotten, no Server has the name and the same call is refused.
     const EFFECT: Effect = Effect::Remove { idempotent: true };

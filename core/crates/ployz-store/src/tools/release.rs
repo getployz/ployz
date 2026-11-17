@@ -149,8 +149,9 @@ impl Tool for DiscardInput {
     const NAME: &'static str = "discard";
     const TITLE: &'static str = "Discard staged changes";
     const DESCRIPTION: &'static str = "Discard all staged changes, or only one Service's, Volume's or Config's, putting it back to what is deployed. A named one that differs only from Saved State goes back to Saved. Unsaved changes are lost.";
-    // Sent again, nothing it names is Staged any more, so nothing changes.
-    const EFFECT: Effect = Effect::Remove { idempotent: true };
+    // Sent again for one name, it can go a step further: the first puts a removed Service back to
+    // Saved, the second takes that Saved Service away because it never deployed.
+    const EFFECT: Effect = Effect::Remove { idempotent: false };
 
     fn example() -> Value {
         json!({ "service": "web" })

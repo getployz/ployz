@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 
 use ployz_store::OrganizationId;
-use ployz_store::tools::{INSTRUCTIONS, Place, Step, StoreAt, ToolResult, catalog, start};
+use ployz_store::tools::{
+    DESCRIPTION, INSTRUCTIONS, Place, Step, StoreAt, TITLE, ToolResult, catalog, start,
+};
 use serde_json::{Value, json};
 
 const CAP_BYTES: usize = 77_000;
@@ -13,7 +15,7 @@ fn snapshot_path() -> PathBuf {
 }
 
 fn compact() -> Value {
-    json!({ "instructions": INSTRUCTIONS, "tools": catalog() })
+    json!({ "title": TITLE, "description": DESCRIPTION, "instructions": INSTRUCTIONS, "tools": catalog() })
 }
 
 #[test]
