@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Button } from "#/components/ui/button";
+import { OPERATE_REFUSED } from "#/modules/machines/server-policy.hooks";
 import { regionLabels } from "#/modules/machines/server-regions";
 import { useRegions } from "#/modules/machines/server-regions.hooks";
 import { useServers } from "#/modules/machines/use-servers";
@@ -22,6 +23,8 @@ import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgr
 import { ActivationCard } from "./-components/activation-card";
 import { FirstKeyAlert } from "./-components/first-key-alert";
 import { useActivation } from "#/modules/server-upgrade/activation.queries";
+import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
+import { RenameRegionDialog } from "./-components/rename-region-dialog";
 import { useEnrollmentStatus, useWaitingServers } from "./-components/use-waiting";
 import { IntakeTray } from "./-components/waiting-list";
 
@@ -36,6 +39,7 @@ export const Route = createFileRoute(
     channelReleaseQueryOptions(NEWEST_RELEASE),
     waitingServersQueryOptions(params.organizationSlug),
     serverEnrollmentsQueryOptions(params.organizationSlug),
+    organizationMembersQueryOptions(params.organizationSlug),
   ),
   component: RouteComponent,
 });
@@ -46,6 +50,7 @@ function RouteComponent() {
   const { state, servers, older, awaitingKey } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
   const regions = useRegions(organizationSlug, regionLabels(servers.map(({ machine }) => machine)));
+  const operate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const page = serversPageState({
@@ -67,6 +72,9 @@ function RouteComponent() {
       <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
         Tokens
       </Button>
+      {page.kind === "fleet" && regions !== undefined && regions.length > 0
+        ? <RenameRegionDialog organizationSlug={organizationSlug} regions={regions} gate={operate} />
+        : null}
       {canAdd ? (
         <AddServersDialog
           organizationSlug={organizationSlug}
