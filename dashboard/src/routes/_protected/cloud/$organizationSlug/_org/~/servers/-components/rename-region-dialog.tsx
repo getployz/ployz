@@ -1,4 +1,5 @@
 import type { Region } from "@ployz/sdk";
+import { MapPinPenIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
@@ -33,11 +34,13 @@ export function RenameRegionDialog({ organizationSlug, regions, gate }: {
 
   return (
     <>
-      <Button variant="ghost" disabled={!gate.allowed} title={gate.reason} onClick={() => {
+      {/* An icon alone on a phone, so the page's actions fit on one line. */}
+      <Button variant="ghost" disabled={!gate.allowed} title={gate.reason ?? "Rename region"} onClick={() => {
         pick(regions.find((each) => each.key === DEFAULT_REGION) ?? regions[0]);
         setOpen(true);
       }}>
-        Rename region
+        <MapPinPenIcon data-icon="inline-start" className="sm:hidden" />
+        <span className="max-sm:sr-only">Rename region</span>
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
