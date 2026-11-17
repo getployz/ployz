@@ -5,7 +5,6 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { regionName } from "#/modules/machines/server-regions";
 import type { Leaving } from "#/modules/machines/server-move";
 
-/** Where a row goes: the one Server in its region, how many there are, or that there's none. */
 function destination(row: Leaving, regions: readonly Region[] | undefined) {
   const region = regionName(row.region, regions);
   const [only, ...more] = row.to;
@@ -13,7 +12,6 @@ function destination(row: Leaving, regions: readonly Region[] | undefined) {
   return more.length === 0 ? `→ ${only}` : `→ ${row.to.length} servers in ${region}`;
 }
 
-/** Asks before a Server changes region when Services leave it for the region their Environment names. */
 export function MoveServerDialog({ serverName, regionName: to, rows, regions, open, onOpenChange, onConfirm }: {
   serverName: string;
   /** The region's name, or null when the Server leaves every region. */

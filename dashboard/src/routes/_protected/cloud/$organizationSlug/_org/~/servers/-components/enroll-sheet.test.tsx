@@ -24,7 +24,6 @@ beforeEach(() => {
     skipped: [], spread: { providers: 1, networks: 1 },
   }));
   write = vi.spyOn(storeFunctions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "region_named", key: "sydney", name: "Sydney" } } as never);
-  // The Store's regions for the Servers' labels, and its answer to each name typed for a new one.
   vi.spyOn(storeFunctions, "readStoreViewServerFn").mockImplementation(async ({ data }) => {
     const { query } = data;
     if (query.query === "regions") return { ok: true, value: { view: "regions", regions: [{ key: "default", name: "Default" }, { key: "fsn", name: "Falkenstein" }] } } as never;
@@ -59,7 +58,7 @@ function sheet() {
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   render(
     <QueryClientProvider client={queryClient}>
-      <EnrollSheet organizationSlug="ada" servers={[host("syd-1"), host("syd-2")]} labels={["default", "fsn"]} hasFirst onClose={vi.fn()} />
+      <EnrollSheet organizationSlug="ada" servers={[host("syd-1"), host("syd-2")]} regionLabels={["default", "fsn"]} hasFirst onClose={vi.fn()} />
     </QueryClientProvider>,
   );
 }

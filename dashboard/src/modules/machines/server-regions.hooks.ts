@@ -7,21 +7,20 @@ import { queryOf, storeViewOptions, storeViewPrefix } from "#/modules/config-sto
 import { useStoreWriter } from "#/modules/config-store/store-write";
 
 /**
- * The Organization's regions, each with its name: those the Servers' `labels` hold and those given a name. Undefined
- * until the Store first answers. After a refusal or a failed read there are none, so each Server shows its label.
+ * The Organization's regions with their names: those the Servers' `labels` hold and those given a name. Undefined
+ * until the Store first answers; empty after a refusal or a failed read.
  */
 export function useRegions(organizationSlug: string, labels: readonly string[]): readonly Region[] | undefined {
   const scope = useCollectionScope();
   const [read] = useQueries({ queries: [{
     ...storeViewOptions(organizationSlug, scope, { query: "regions", labels: [...labels] }),
-    // A Server moving region changes the labels; the names it had keep showing while the Store answers.
+    // The labels are in the query key; keep the names shown while the new key loads.
     placeholderData: keepPreviousData,
   }] });
   if (read.data?.ok) return read.data.value.regions;
   return read.data !== undefined || read.isError ? [] : undefined;
 }
 
-/** What the Store says of a name typed for a new region. */
 export type NewRegion =
   | { readonly kind: "checking" }
   | { readonly kind: "new"; readonly key: string }
@@ -32,8 +31,7 @@ const SETTLE_MS = 300;
 const CHECK_FAILED = "Couldn't check this name. Try again.";
 
 /**
- * Asks the Store, once typing pauses, what each of `names` makes as a new region: its key, or why it can't be one,
- * such as a region that has that key in any case.
+ * Asks the Store, once typing pauses, what each of `names` makes as a new region: its key, or why it can't be one.
  */
 export function useNewRegions(organizationSlug: string, names: readonly string[], labels: readonly string[]): (name: string) => NewRegion {
   const scope = useCollectionScope();
@@ -55,8 +53,7 @@ export function useNewRegions(organizationSlug: string, names: readonly string[]
 }
 
 /**
- * Gives a region a name. Every list of regions this tab shows takes it at once; the Store's refusal rereads them.
- * Nothing restarts: placement reads the Servers' labels, which keep the region's key.
+ * Gives a region a name in every cached list of regions at once; the Store's refusal rereads them.
  */
 export function useNameRegion(organizationSlug: string) {
   const { queryClient } = useCollectionScope();

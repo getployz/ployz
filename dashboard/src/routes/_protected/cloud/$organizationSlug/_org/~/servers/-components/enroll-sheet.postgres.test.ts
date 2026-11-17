@@ -125,7 +125,7 @@ async function openEnroll() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createRouter({
     routeTree: createRootRoute({
-      component: () => createElement(QueryClientProvider, { client }, createElement(IntakeTray, { organizationSlug: "ada", token: undefined, firstRun: false, labels: ["default"] })),
+      component: () => createElement(QueryClientProvider, { client }, createElement(IntakeTray, { organizationSlug: "ada", token: undefined, firstRun: false, regionLabels: ["default"] })),
     }),
     history: createMemoryHistory(),
   });

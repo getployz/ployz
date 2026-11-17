@@ -69,7 +69,7 @@ export const EnrollInput = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("pattern"), pattern: Schema.String }),
   ]),
   runs: Schema.Struct({ services: Schema.Boolean, ingress: Schema.Boolean, builds: Schema.Boolean }),
-  /** The region key each waiting server joins, by its id. One left out joins the default region. */
+  /** Region key by waiting server id; one left out joins the default region. */
   regions: Schema.optionalKey(Schema.Record(Schema.String, RegionSchema)),
 });
 export type EnrollInput = typeof EnrollInput.Type;

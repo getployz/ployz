@@ -18,17 +18,14 @@ import type { WaitingServerView } from "#/modules/machines/waiting/waiting-serve
 import { startServerEnrollmentServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { enrollmentPlanQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
-// Outside the region key grammar, so no region's key collides with it.
 const NEW_REGION = "new region";
 
-/** A Server's region, and the name of the new region it starts. */
 type Join = { readonly id: string; readonly key: string; readonly name?: string };
 
-export function EnrollSheet({ organizationSlug, servers, labels, hasFirst, onClose }: {
+export function EnrollSheet({ organizationSlug, servers, regionLabels, hasFirst, onClose }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
-  /** The Servers' region labels, from `regionLabels`. */
-  labels: readonly string[];
+  regionLabels: readonly string[];
   hasFirst: boolean;
   onClose: () => void;
 }) {
@@ -44,16 +41,14 @@ export function EnrollSheet({ organizationSlug, servers, labels, hasFirst, onClo
     return () => clearTimeout(timer);
   }, [pattern]);
   const [runs, setRuns] = useState({ services: true, ingress: true, builds: true });
-  // Each Server's region key, or NEW_REGION with the name typed for it, by id. One left out joins the default region.
   const [picks, setPicks] = useState<Readonly<Record<string, string>>>({});
   const [typed, setTyped] = useState<Readonly<Record<string, string>>>({});
-  const regions = useRegions(organizationSlug, labels);
+  const regions = useRegions(organizationSlug, regionLabels);
   const nameRegion = useNameRegion(organizationSlug);
   const pickOf = (id: string) => picks[id] ?? DEFAULT_REGION;
   const naming = servers.filter((row) => pickOf(row.id) === NEW_REGION);
-  const checkName = useNewRegions(organizationSlug, naming.map((row) => typed[row.id] ?? ""), labels);
+  const checkName = useNewRegions(organizationSlug, naming.map((row) => typed[row.id] ?? ""), regionLabels);
   const newRegion = (id: string) => checkName(typed[id] ?? "");
-  // Short of a Server while the name typed for its new region is checked, or refused.
   const joins = servers.flatMap((row): Join[] => {
     const pick = pickOf(row.id);
     if (pick !== NEW_REGION) return [{ id: row.id, key: pick }];
@@ -75,7 +70,6 @@ export function EnrollSheet({ organizationSlug, servers, labels, hasFirst, onClo
       data: { organizationSlug, ...input, regions: Object.fromEntries(joining.map(({ id, key }) => [id, key])) },
     }),
     onSuccess: (result, joining) => {
-      // A new region is named once a Server is enrolled in it.
       const enrolled = new Set(result.attempts.map(({ waitingServerId }) => waitingServerId));
       const created = new Map(joining.flatMap(({ id, key, name }) => name !== undefined && enrolled.has(id) ? [[key, { key, name }] as const] : []));
       for (const region of created.values()) void nameRegion(region);

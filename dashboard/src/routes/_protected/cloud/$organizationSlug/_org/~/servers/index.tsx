@@ -90,7 +90,7 @@ function RouteComponent() {
         </p>
       ) : null}
       {/* Above the list: the skeleton below is a guess at the list's height, and the tray must not jump when it settles. */}
-      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} labels={labels} /> : null}
+      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} regionLabels={labels} /> : null}
       {page.kind === "fleet" ? <FirstTunnelStatus organizationSlug={organizationSlug} /> : null}
       {page.kind === "loading" ? (
         <ServersSkeleton />

@@ -11,19 +11,16 @@ import type { RoleGate } from "#/modules/organization/members.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { MoveServerDialog } from "./move-server-dialog";
 
-// Menu values outside the label grammar, so no region's key collides with them.
 const NO_REGION = "no region";
 const NEW_REGION = "new region";
 
-/** A region change that waits for the Move dialog: the region and its name, the new one it makes, and what leaves. */
 type Move = { readonly region: string | null; readonly name: string | null; readonly created: Region | null; readonly leaving: readonly Leaving[] };
 
 export function ServerRegionSection({ machine, machines, placed, regions, organizationSlug, gate }: {
   machine: RuntimeMachineRecord;
   machines: readonly RuntimeMachineRecord[];
-  /** What runs on the Server (`placedServices`). */
   placed: readonly Placed[];
-  /** The Organization's regions; undefined until their names arrive. */
+  /** Undefined until the region names arrive. */
   regions: readonly Region[] | undefined;
   organizationSlug: string;
   gate: RoleGate;
@@ -32,7 +29,6 @@ export function ServerRegionSection({ machine, machines, placed, regions, organi
   const nameRegion = useNameRegion(organizationSlug);
   const [naming, setNaming] = useState(false);
   const [draft, setDraft] = useState("");
-  // Enter before the Store has checked the name moves the Server once it has.
   const [confirming, setConfirming] = useState(false);
   const [moving, setMoving] = useState<Move | null>(null);
   const check = useNewRegions(organizationSlug, naming ? [draft] : [], regionLabels(machines))(draft);
@@ -43,7 +39,6 @@ export function ServerRegionSection({ machine, machines, placed, regions, organi
     policy.request({ region });
     if (created !== null) void nameRegion(created);
   };
-  // Straight away when nothing leaves the Server, else once the Move dialog is confirmed.
   const move = (region: string | null, created: Region | null = null) => {
     const leaving = leavingServer(machine.id, region, placed, machines);
     if (leaving.length === 0) apply(region, created);

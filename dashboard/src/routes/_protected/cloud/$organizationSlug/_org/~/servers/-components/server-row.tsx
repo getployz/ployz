@@ -74,7 +74,7 @@ export const SERVER_LIST = "@container flex flex-col divide-y overflow-hidden ro
 export function ServerRow({ organizationSlug, server, regions, upgrade, stale, activation = null }: {
   organizationSlug: string;
   server: Server;
-  /** The Organization's regions; undefined until their names arrive. */
+  /** Undefined until the region names arrive. */
   regions: readonly Region[] | undefined;
   upgrade: ServerUpgradeLine;
   stale: boolean;

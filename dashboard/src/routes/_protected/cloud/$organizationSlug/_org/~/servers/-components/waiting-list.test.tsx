@@ -73,7 +73,7 @@ function renderList(servers: readonly WaitingServerView[], token?: string) {
   const queryClient = seedRole(new QueryClient(), "ada", "owner");
   const ui = (rows: readonly WaitingServerView[]) => (
     <QueryClientProvider client={queryClient}>
-      <WaitingList organizationSlug="ada" labels={["default"]} servers={rows} now={NOW} token={token} />
+      <WaitingList organizationSlug="ada" regionLabels={["default"]} servers={rows} now={NOW} token={token} />
     </QueryClientProvider>
   );
   const view = render(ui(servers));
@@ -295,7 +295,7 @@ const notifyWithinAct = () => notifyManager.setScheduler(queueMicrotask);
 const flowClient = () => seedRole(new QueryClient({ defaultOptions: { queries: { retry: false } } }), "ada", "owner");
 function flow(servers: readonly WaitingServerView[], hasFirst: boolean) {
   const client = flowClient();
-  const ui = (rows: readonly WaitingServerView[], founded: boolean) => <QueryClientProvider client={client}><WaitingList organizationSlug="ada" labels={["default"]} servers={rows} now={NOW} hasFirst={founded} /></QueryClientProvider>;
+  const ui = (rows: readonly WaitingServerView[], founded: boolean) => <QueryClientProvider client={client}><WaitingList organizationSlug="ada" regionLabels={["default"]} servers={rows} now={NOW} hasFirst={founded} /></QueryClientProvider>;
   const view = render(ui(servers, hasFirst));
   return { client, rerender: (rows = servers, founded = hasFirst) => view.rerender(ui(rows, founded)) };
 }
@@ -313,7 +313,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const statusKey = serverEnrollmentsQueryOptions("ada").queryKey;
   client.setQueryData(waitingKey, [second]);
   client.setQueryData(statusKey, { attempts: [attempt], founded: true, hasFirst: true, joining: 0 });
-  render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} labels={["default"]} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} regionLabels={["default"]} /></QueryClientProvider>);
   expect(rowNames()).toEqual(["second"]);
   const waiting = deferred<WaitingServerView[]>();
   const status = deferred<Awaited<ReturnType<typeof waitingFunctions.serverEnrollmentStatusServerFn>>>();
@@ -412,7 +412,7 @@ it("keeps preview data while editing, debounces names, and permits a background 
   notifyWithinAct();
   const preview = previewStub();
   const client = flowClient();
-  render(<QueryClientProvider client={client}><EnrollSheet organizationSlug="ada" servers={[host("one")]} labels={["default"]} hasFirst onClose={vi.fn()} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><EnrollSheet organizationSlug="ada" servers={[host("one")]} regionLabels={["default"]} hasFirst onClose={vi.fn()} /></QueryClientProvider>);
   await vi.waitFor(() => expect(screen.getByText("ZFS on main disk")).toBeTruthy());
   const pendingPlan = deferred<ReturnType<typeof planFor>>();
   preview.mockReturnValueOnce(pendingPlan.promise);
@@ -450,7 +450,7 @@ it("heads the tray with the readiness mix, hiding empty parts, and shows CPU, RA
 
 it("names the first arrival on first run and enrolls it from the heading", async () => {
   vi.spyOn(waitingFunctions, "planServerEnrollmentServerFn").mockImplementation(async ({ data }) => planFor(data.ids));
-  render(<QueryClientProvider client={flowClient()}><WaitingList organizationSlug="ada" labels={["default"]} servers={[host("web")]} now={NOW} firstRun /></QueryClientProvider>);
+  render(<QueryClientProvider client={flowClient()}><WaitingList organizationSlug="ada" regionLabels={["default"]} servers={[host("web")]} now={NOW} firstRun /></QueryClientProvider>);
   expect(screen.getByRole("heading", { name: "web is ready to enroll" })).toBeTruthy();
   expect(screen.queryByRole("heading", { name: "Waiting to join" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
@@ -470,7 +470,7 @@ it("enrolls the server its detail sheet shows", async () => {
 
 async function listAs(state: (typeof ROLE_STATES)[number], servers: readonly WaitingServerView[], firstRun = false) {
   const client = await clientWithRole("ada", state);
-  render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" labels={["default"]} servers={servers} now={NOW} firstRun={firstRun} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" regionLabels={["default"]} servers={servers} now={NOW} firstRun={firstRun} /></QueryClientProvider>);
 }
 
 it.each(ROLE_STATES)("lets only a role that may add servers enroll or reject the first arrival (%s)", async (state) => {
@@ -514,7 +514,7 @@ it.each(ROLE_STATES)("probes a picked or opened row only for a role that may add
 it("probes a picked row only once a role still loading turns out to be allowed", async () => {
   vi.useFakeTimers();
   const client = await clientWithRole("ada", "loading");
-  render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" labels={["default"]} servers={[host("one")]} now={NOW} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" regionLabels={["default"]} servers={[host("one")]} now={NOW} /></QueryClientProvider>);
 
   fireEvent.click(pick("one"));
   await settle(PROBE_SETTLE_MS);
@@ -539,8 +539,8 @@ it.each([["failed", "Failed at Setting up storage"], ["cancelled", "Cancelled"]]
 it("says nothing joins on its own until the first server is enrolled by hand", () => {
   const hint = "No cluster yet. Enroll one server to start it.";
   const client = new QueryClient();
-  const { rerender } = render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" labels={["default"]} servers={[host("one"), host("two")]} now={NOW} hasFirst={false} /></QueryClientProvider>);
+  const { rerender } = render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" regionLabels={["default"]} servers={[host("one"), host("two")]} now={NOW} hasFirst={false} /></QueryClientProvider>);
   expect(screen.getByText(hint)).toBeTruthy();
-  rerender(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" labels={["default"]} servers={[host("one"), host("two")]} now={NOW} hasFirst /></QueryClientProvider>);
+  rerender(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" regionLabels={["default"]} servers={[host("one"), host("two")]} now={NOW} hasFirst /></QueryClientProvider>);
   expect(screen.queryByText(hint)).toBeNull();
 });

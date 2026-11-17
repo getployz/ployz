@@ -16,7 +16,6 @@ let write: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   requestChange = vi.spyOn(policyFunctions, "requestServerPolicyChangeServerFn").mockResolvedValue(undefined);
   write = vi.spyOn(storeFunctions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "region_named", key: "sydney-2", name: "Sydney 2" } } as never);
-  // The Store's answers to the two names these tests type.
   vi.spyOn(storeFunctions, "readStoreViewServerFn").mockImplementation(async ({ data }) => (data.query.query === "new_region" && data.query.name === "FSN"
     ? { ok: false, refusal: { code: "conflict", message: "Region Falkenstein (fsn) already exists.", details: null } }
     : { ok: true, value: { view: "new_region", key: "sydney-2" } }) as never);
@@ -140,7 +139,6 @@ it("leaves the field read-only for a member who can't change policy", () => {
   expect(trigger.getAttribute("title")).toBe("Only an owner or admin can change how a server runs.");
 });
 
-// Environments in regions, as `@environment.region` will give them: what runs on server-3 (in default) and where to.
 const RUNNING: Placed[] = [
   { key: "shop-production/web", name: "web", volume: null, environment: "shop/production", region: "default" },
   { key: "shop-production/postgres", name: "postgres", volume: "pg-data", environment: "shop/production", region: "default" },

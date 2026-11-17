@@ -10,7 +10,7 @@ import { DEFAULT_REGION } from "#/modules/machines/server-regions";
 import { useNameRegion } from "#/modules/machines/server-regions.hooks";
 import type { RoleGate } from "#/modules/organization/members.queries";
 
-/** Renames one of `regions`. Only its name changes: its key stays on every Server, so nothing restarts. */
+/** Only the name changes; the key stays on every Server, so nothing restarts. */
 export function RenameRegionDialog({ organizationSlug, regions, gate }: {
   organizationSlug: string;
   regions: readonly Region[];
@@ -34,7 +34,6 @@ export function RenameRegionDialog({ organizationSlug, regions, gate }: {
 
   return (
     <>
-      {/* An icon alone on a phone, so the page's actions fit on one line. */}
       <Button variant="ghost" disabled={!gate.allowed} title={gate.reason ?? "Rename region"} onClick={() => {
         pick(regions.find((each) => each.key === DEFAULT_REGION) ?? regions[0]);
         setOpen(true);
