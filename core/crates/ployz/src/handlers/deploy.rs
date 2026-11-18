@@ -1772,7 +1772,11 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let hint = progress::shown_next(&view, store.local().is_none(), |args| {
         super::rerun(matches, args)
     });
-    finish_view(&view, hint)
+    let shown = Next::new(&view, hint);
+    crate::ui::finish(&shown, || {
+        say_view(&view);
+        shown.say();
+    })
 }
 
 pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error> {
