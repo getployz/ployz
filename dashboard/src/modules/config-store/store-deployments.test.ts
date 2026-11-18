@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   buildInterrupted, showCancelling,
-  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
+  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason, waitingServices,
   deploymentLabel, freshRollback, nodeLight, nodeStatusLabels, reviewGroups, rollbackConfirm, shippedService, shownNodeStatus, shownValue,
   uploadLabel, warnedService, deployWarningNotices,
 } from "./store-deployments";
@@ -230,7 +230,7 @@ it("reads a running Deployment as preparing until its runner records a Deploy Pr
 
 const node = (name: string, outcome: DeploymentView["nodes"][number]["outcome"]) => ({ type: "service" as const, id: `id-${name}`, name, outcome, rows: [] });
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
-  status: "failed", nodes: [], builds: [], upload: null, admitted_by: null, started_at: 100, outcome: { type: "executed", summary: null, reason: "x" },
+  status: "failed", nodes: [], builds: [], runtime_names: {}, upload: null, admitted_by: null, started_at: 100, outcome: { type: "executed", summary: null, reason: "x" },
   ...fields,
 });
 
@@ -252,6 +252,26 @@ it("offers a fix only for what ran and failed", () => {
   // With no Server the way on is adding one; with nothing run, giving it a source.
   expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"), true)).toBe(false);
   expect(canFixOnBranch(deployment({ outcome: { type: "not_executed", reason: "x", cause: [], needs_upload: [] } }), node("api", "pending"), false)).toBe(false);
+});
+
+it("offers no fix for a Service the planner held back over where its Volume is", () => {
+  const nodes = [node("api", "failed"), node("worker", "not_attempted")];
+  const preview = { blocked: [{ service: "private-worker", error: { message: "wcache is a Docker volume and can't move" } }] } as DeploymentView["preview"];
+  const failed = deployment({ nodes, preview, runtime_names: { worker: "private-worker" } });
+  expect(canFixOnBranch(failed, node("worker", "not_attempted"), false)).toBe(false);
+  expect(canFixOnBranch(failed, node("api", "failed"), false)).toBe(true);
+});
+
+it("reads a Deployment that only left Services waiting as deployed with the count waiting, and one that failed as Failed", () => {
+  const executed = { type: "executed" as const, summary: null, reason: null, cause: [], services: [], waiting: ["private-worker"] };
+  expect(deploymentStatusLabel({ status: "applied", remove: false, outcome: executed })).toBe("Deployed, 1 waiting");
+  expect(deploymentStatusLabel({ status: "applied", remove: false, outcome: { ...executed, waiting: ["a", "b"] } })).toBe("Deployed, 2 waiting");
+  expect(deploymentStatusLabel({ status: "failed", remove: false, outcome: { ...executed, reason: "api: failed", waiting: undefined } })).toBe("Failed");
+  const waiting = waitingServices(deployment({
+    status: "applied", outcome: executed, runtime_names: { worker: "private-worker" },
+    preview: { blocked: [{ service: "private-worker", error: { message: "wcache is a Docker volume and can't move" } }] } as DeploymentView["preview"],
+  }));
+  expect(waiting).toEqual([{ name: "worker", why: "wcache is a Docker volume and can't move" }]);
 });
 
 it("says why a Service has no deploy logs: the Deployment never ran, or its turn never came", () => {

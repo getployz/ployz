@@ -565,7 +565,7 @@ pub(super) fn execute(
         ui::warn(warning);
     }
     for line in progress::waiting(&followed.view) {
-        ui::warn(format!("Waiting, not started: {line}"));
+        ui::warn(format!("Waiting: {line}"));
     }
     let Followed {
         view, successor, ..
@@ -1624,7 +1624,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         }
     }
     for line in progress::waiting(view) {
-        crate::ui::stream(format_args!("  waiting: {line}"));
+        crate::ui::stream(format_args!("  Waiting: {line}"));
     }
     if let Some(ployz_store::Outcome::Executed { services, .. }) = &view.deployment.outcome {
         for line in service_outcome_lines(services) {

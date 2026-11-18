@@ -314,7 +314,21 @@ export function deploymentStatusLabel(
   if (remove && status === "running") return "Coming off the servers";
   if (remove && status === "applied") return "Off the servers";
   if (preparing && status === "running") return "Preparing";
+  const waiting = status === "applied" && outcome?.type === "executed" ? outcome.waiting?.length ?? 0 : 0;
+  if (waiting) return `Deployed, ${waiting} waiting`;
   return deploymentStatusLabels[status];
+}
+
+/**
+ * The Services a Deployment that otherwise finished left waiting, each with why the planner held it back. The Store
+ * names them on the outcome, so a Deployment that failed has none: its reason says what stopped it.
+ */
+export function waitingServices(deployment: Pick<DeploymentView, "outcome" | "preview" | "runtime_names">) {
+  const waiting = deployment.outcome?.type === "executed" ? deployment.outcome.waiting ?? [] : [];
+  return waiting.map((runtime) => ({
+    name: Object.entries(deployment.runtime_names).find(([, shown]) => shown === runtime)?.[0] ?? runtime,
+    why: deployment.preview?.blocked?.find((entry) => entry.service === runtime)?.error.message ?? null,
+  }));
 }
 
 /**
@@ -380,10 +394,12 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
 
 /**
  * Whether a failed Deployment's `node` can be fixed on a Branch: the Deployment ran and `node` didn't apply. With no
- * Server the failure is having none, and adding one is the way on.
+ * Server the failure is having none, and adding one is the way on. A Service the planner held back over where its
+ * Volume or Servers are isn't a code failure: a Branch changes neither.
  */
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
-  !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
+  !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome)
+  && !deployment.preview?.blocked?.some((entry) => entry.service === (deployment.runtime_names[node.name] ?? node.name));
 
 /**
  * What a Deployment shipped despite, in words: "TOKEN not set", with the variable without a value it reads, a broken
