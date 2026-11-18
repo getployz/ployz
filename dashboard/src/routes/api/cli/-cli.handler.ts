@@ -163,6 +163,9 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 const NewTokenName = Schema.Struct({ name: NewToken.fields.name });
 
+/** The Deploy a CLI lists the Volume moves of: its Environment, and the Services it ships, none for all of them. */
+const VolumeMovesQuery = Schema.Struct({ project: Schema.String, environment: Schema.String, services: Schema.Array(Schema.NonEmptyString) });
+
 /** What a Device signed for the Volume moves its Deploy makes: each Move, with the spec its target starts. */
 const VolumeMoveApprovals = Schema.Struct({
   environment: Schema.Struct({ project: Schema.String, environment: Schema.String }),
@@ -520,8 +523,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const query = new URL(request.url).searchParams;
       const unread = unpermitted(caller, "volumes:read");
       if (unread !== null) return refusal(unread.refusal);
-      const environment = { project: query.get("project"), environment: query.get("environment") };
-      const moves = yield* regionMoves(caller.organization.id, environment, query.getAll("service"));
+      const { services, ...environment } = yield* Schema.decodeUnknownEffect(VolumeMovesQuery)({
+        project: query.get("project"), environment: query.get("environment"), services: query.getAll("service"),
+      }).pipe(Effect.mapError(() => new Validation({ message: "Listing a deploy's volume moves takes its project and environment.", userFacing: true })));
+      const moves = (yield* regionMoves(caller.organization.id, environment, services)) ?? [];
       return { moves: moves.map(({ volume, from, to, clears }) => ({ volume, from, to, clears })) };
     }
     case "POST volume-moves": {
