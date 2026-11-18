@@ -617,6 +617,29 @@
     "turns": [
       {
         "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
           "step": "write",
           "write": {
             "at": "store",
