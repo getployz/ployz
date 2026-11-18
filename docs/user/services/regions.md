@@ -231,8 +231,8 @@ to `lhr`. The deploy moves the volume only when you accept that delete:
 - **From the dashboard**, Details lists the delete and the deploy asks you to confirm it. On
   servers that enforce device approval, it asks for your passkey for both.
 - **From `ployz deploy`, a push or the agent**, the deploy leaves the volume where it is and
-  doesn't start that service. The rest of the deploy goes ahead, and the deployment reads
-  **Failed**. `ployz deploy --plan` prints the command that deletes the copy, and the deploy ends
+  doesn't start that service. The rest of the deploy goes ahead and the service waits, as when a
+  move fails. `ployz deploy --plan` prints the command that deletes the copy, and the deploy ends
   with it as its `next:` line:
 
   ```

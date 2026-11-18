@@ -1180,7 +1180,8 @@ fn refused_location(
 /// where it can, so this is what is left: no Cloud, a move that failed, or a Volume
 /// that can't move. The Server it names to move to is the one Cloud picks: the one that
 /// holds the Volume's mirror, then the one that holds its old copy, then the first by
-/// name. A copy on any other Server stops that move until it is deleted, so it is named.
+/// name. A copy on any other Server stops that move until it is deleted, so it is named,
+/// a mirror before an old copy.
 fn outside_region(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
@@ -1224,10 +1225,12 @@ fn outside_region(
             machine: holder,
         });
     }
-    let copy = snapshot.machines.iter().find_map(|machine| {
-        let role = slot(machine)?;
-        (machine.machine.name != to).then(|| (machine.machine.name.clone(), role))
-    });
+    let copy = snapshot
+        .machines
+        .iter()
+        .filter(|machine| machine.machine.name != to)
+        .filter_map(|machine| Some((machine.machine.name.clone(), slot(machine)?)))
+        .min_by_key(|(_, role)| *role != SlotRole::Mirror);
     Some(PlanError::VolumeOutsideRegion {
         volume: volume_name,
         machine: holder,

@@ -1195,12 +1195,21 @@ fn a_volume_outside_the_region_moves_to_the_server_there_that_holds_its_copy() {
     }
 }
 
-/// No Deploy makes the move until the copy is deleted, so the Service is refused.
+/// A mirror elsewhere stops every Deploy's move, so the Service is refused. An old copy
+/// stops only a Deploy that doesn't accept its loss, so the Service waits for one that does.
 #[test]
 fn a_volume_outside_the_region_names_the_copy_elsewhere_that_stops_its_move() {
-    for (slot, role) in [
-        (ployz_core::SlotRole::Mirror, "mirror"),
-        (ployz_core::SlotRole::OldCopy, "old_copy"),
+    for (slot, role, kind) in [
+        (
+            ployz_core::SlotRole::Mirror,
+            "mirror",
+            ployz_core::BlockedKind::Refusal,
+        ),
+        (
+            ployz_core::SlotRole::OldCopy,
+            "old_copy",
+            ployz_core::BlockedKind::Wait,
+        ),
     ] {
         let blocked = outside_region_beside_a_copy('4', slot);
 
@@ -1210,7 +1219,7 @@ fn a_volume_outside_the_region_names_the_copy_elsewhere_that_stops_its_move() {
             rpc.details.get("copy"),
             Some(&serde_json::json!({ "server": "fourth", "role": role }))
         );
-        assert_eq!(blocked.kind, ployz_core::BlockedKind::Refusal, "{role}");
+        assert_eq!(blocked.kind, kind, "{role}");
     }
 }
 

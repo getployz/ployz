@@ -866,8 +866,8 @@ pub enum PlanError {
         machine: MachineName,
         /// A Server in the region the Service can run on, which the Volume can move to.
         to: MachineName,
-        /// The Volume's mirror or old copy on a Server other than `to`: a move onto `to`
-        /// is refused until that copy is deleted.
+        /// The Volume's mirror or old copy on a Server other than `to`, a mirror first: a
+        /// move onto `to` is refused until that copy is deleted.
         copy: Option<(MachineName, SlotRole)>,
     },
     /// The Service is kept in a region, and its Docker volume, which nothing moves, is
@@ -1053,13 +1053,14 @@ impl PlanError {
 
     /// Whether a Service this stops waits or is refused. It waits when a later Deploy
     /// of the same config starts it: a Server comes back, or that Deploy makes the move
-    /// this one couldn't. It is refused when none does: its Volume can't move, a copy
-    /// stops the move until it is deleted, no Ployz Cloud is there to move it, or its
-    /// counts put a Volume in two regions.
+    /// this one couldn't, such as one that accepts the loss of an old copy in the way. It
+    /// is refused when none does: its Volume can't move, a mirror stops the move until it
+    /// is deleted, no Ployz Cloud is there to move it, or its counts put a Volume in two
+    /// regions.
     #[must_use]
     pub fn blocked_kind(&self, operator: ployz_core::Operator) -> ployz_core::BlockedKind {
         let refused = if let Self::VolumeOutsideRegion { copy, .. } = self {
-            copy.is_some() || !operator.is_cloud()
+            !operator.is_cloud() || matches!(copy, Some((_, SlotRole::Mirror)))
         } else {
             matches!(
                 self,
