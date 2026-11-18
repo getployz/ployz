@@ -564,6 +564,9 @@ pub(super) fn execute(
     {
         ui::warn(warning);
     }
+    for line in progress::waiting(&followed.view) {
+        ui::warn(format!("Waiting, not started: {line}"));
+    }
     let Followed {
         view, successor, ..
     } = followed;
@@ -1329,6 +1332,12 @@ fn status_word(deployment: &DeploymentSummary) -> String {
         (DeploymentStatus::WaitingForCi, Some(CiVerdict::Failed)) => "CI failed".to_owned(),
         (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
         (DeploymentStatus::Running, _) if deployment.preparing => "preparing".to_owned(),
+        (DeploymentStatus::Applied, _) => match &deployment.outcome {
+            Some(ployz_store::Outcome::Executed { waiting, .. }) if !waiting.is_empty() => {
+                format!("applied, {} waiting", waiting.len())
+            }
+            _ => super::store::word(&deployment.status),
+        },
         (status, _) => super::store::word(&status),
     }
 }
@@ -1613,6 +1622,9 @@ pub(super) fn say_view(view: &DeploymentView) {
         if let Some(cause) = cause.last() {
             crate::ui::stream(format_args!("    cause: {cause}"));
         }
+    }
+    for line in progress::waiting(view) {
+        crate::ui::stream(format_args!("  waiting: {line}"));
     }
     if let Some(ployz_store::Outcome::Executed { services, .. }) = &view.deployment.outcome {
         for line in service_outcome_lines(services) {

@@ -234,11 +234,32 @@ pub(crate) fn record(
                                         && !saved.services.iter().any(|kept| kept.id == *id))
                         }))
             };
-            // A blocked Service was never attempted, whatever the rest did (bet 8).
-            let status = if success && preview.blocked.is_empty() && !nodes.iter().any(unfinished) {
+            // A Deploy that did all it planned and left only blocked Services is
+            // Applied with those waiting: nothing failed, and each still reads Not
+            // attempted (bet 8). Anything that failed or was left unfinished fails it.
+            let status = if success && !nodes.iter().any(unfinished) {
                 End::Applied
             } else {
                 End::Failed
+            };
+            let waiting: Vec<ServiceName> = if matches!(status, End::Applied) {
+                let mut waiting: Vec<ServiceName> = preview
+                    .blocked
+                    .iter()
+                    .map(|entry| entry.service.clone())
+                    .collect();
+                waiting.sort();
+                waiting.dedup();
+                waiting
+            } else {
+                Vec::new()
+            };
+            // Waiting Services are no failure, so the first one's refusal is no reason.
+            let reason = reason.filter(|_| waiting.is_empty());
+            let cause = if waiting.is_empty() {
+                cause
+            } else {
+                Vec::new()
             };
             let outcome = Outcome::Executed {
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
@@ -255,6 +276,7 @@ pub(crate) fn record(
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
                 cancelled: stopped_by_cancel && failed.is_empty(),
+                waiting,
             };
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;

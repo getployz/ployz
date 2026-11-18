@@ -512,6 +512,13 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(as = "Option<bool>", optional)]
         cancelled: bool,
+        /// The Services the planner left waiting, by runtime name, on a Deployment
+        /// that otherwise finished: it ends Applied and each reads Not attempted.
+        /// Empty on a Deployment that failed, which reads its blocked Services
+        /// through `reason`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<ServiceName>>", optional)]
+        waiting: Vec<ServiceName>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.

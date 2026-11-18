@@ -342,6 +342,35 @@ pub(super) fn builders(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
+/// The Services a Deployment that otherwise finished left waiting, each with the planner's
+/// refusal, by the name its Environment gives it.
+pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
+    let Some(ployz_store::Outcome::Executed { waiting, .. }) = &view.deployment.outcome else {
+        return Vec::new();
+    };
+    waiting
+        .iter()
+        .map(|runtime| {
+            let name = view
+                .runtime_names
+                .iter()
+                .find(|(_, shown)| *shown == runtime)
+                .map_or(runtime, |(name, _)| name);
+            let why = view
+                .preview
+                .as_ref()
+                .and_then(|preview| {
+                    preview
+                        .blocked
+                        .iter()
+                        .find(|entry| entry.service == *runtime)
+                })
+                .map(|entry| crate::ui::escaped(&entry.error.message));
+            why.map_or_else(|| name.to_string(), |why| format!("{name}: {why}"))
+        })
+        .collect()
+}
+
 /// What the Deployment left out of a Service's variables or a Config's files.
 pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
     view.deployment
@@ -450,6 +479,7 @@ pub(super) fn completion(
         .preview
         .as_ref()
         .is_some_and(|preview| preview.has_observation_gaps())
+        || !waiting(view).is_empty()
         || left_a_gap(view)
         || left_a_copy_running(view)
         || ingress_unchecked(view).next().is_some()
@@ -1414,6 +1444,7 @@ mod tests {
                 services: Vec::new(),
                 compensation: Vec::new(),
                 cancelled: false,
+                waiting: Vec::new(),
             });
             let rows = &mut view.nodes.first_mut().unwrap().rows;
             rows.truncate(1);
@@ -1891,6 +1922,39 @@ mod tests {
             },
         ];
         let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
+    fn an_applied_deploy_that_left_a_service_waiting_names_it_and_is_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = Some(ployz_store::Outcome::Executed {
+            summary: Default::default(),
+            reason: None,
+            cause: Vec::new(),
+            services: Vec::new(),
+            compensation: Vec::new(),
+            cancelled: false,
+            waiting: vec!["private-web".parse().unwrap()],
+        });
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "operations": [], "warnings": [],
+                "would_remove": [], "preserved_volumes": [],
+                "blocked": [{
+                    "service": "private-web",
+                    "error": {"code": "conflict", "message": "wcache is a Docker volume and can't move", "details": {}}
+                }]
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            waiting(&view),
+            ["web: wcache is a Docker volume and can't move"]
+        );
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert!(!failure.is_outcome());
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 

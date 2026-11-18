@@ -1724,12 +1724,11 @@ fn a_new_unmounted_volume_is_not_deployed_by_a_deploy_that_succeeded() {
     );
 }
 
-#[test]
-fn a_deploy_with_a_blocked_service_fails_and_leaves_its_applied_state_alone() {
-    let (store, who) = shop();
+/// Claim Deployment 1 with `api` planned and `web` blocked for want of a writer.
+fn claim_with_web_blocked(store: &ConfigStore, who: &Actor) -> RunnerId {
     store
         .write(
-            &who,
+            who,
             &CreateService {
                 id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 environment: EnvironmentRef::default(),
@@ -1739,7 +1738,7 @@ fn a_deploy_with_a_blocked_service_fails_and_leaves_its_applied_state_alone() {
             },
         )
         .unwrap();
-    admit(&store, &who, 1, &[], None).unwrap();
+    admit(store, who, 1, &[], None).unwrap();
     let runner = RunnerId::parse("runner").unwrap();
     store.claim(&id(1), &runner).unwrap();
     // The planner found data without a writer: it planned api and blocked web.
@@ -1763,15 +1762,22 @@ fn a_deploy_with_a_blocked_service_fails_and_leaves_its_applied_state_alone() {
     store
         .record(&id(1), &runner, RunEvidence::Prepared(preview))
         .unwrap();
+    runner
+}
+
+#[test]
+fn a_deploy_that_leaves_a_blocked_service_waiting_is_applied_with_it_waiting() {
+    let (store, who) = shop();
+    claim_with_web_blocked(&store, &who);
     execute(&store, 1, Vec::new());
 
     let view = store.read(&who, &DeploymentQuery { id: id(1) }).unwrap();
-    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+    assert_eq!(view.deployment.status, DeploymentStatus::Applied);
     assert!(
         matches!(
             &view.deployment.outcome,
-            Some(Outcome::Executed { reason: Some(reason), .. })
-                if reason == "web: Volume data has no writer; fsn-2 holds its only copy"
+            Some(Outcome::Executed { reason: None, waiting, .. })
+                if waiting == &[ServiceName::parse("web").unwrap()]
         ),
         "{:?}",
         view.deployment.outcome
@@ -1793,6 +1799,40 @@ fn a_deploy_with_a_blocked_service_fails_and_leaves_its_applied_state_alone() {
     assert!(pending.contains(&"web".to_owned()), "{pending:?}");
     assert!(pending.contains(&"data".to_owned()), "{pending:?}");
     assert!(!pending.contains(&"api".to_owned()), "{pending:?}");
+}
+
+#[test]
+fn a_blocked_service_beside_a_real_failure_still_fails_the_deploy() {
+    let (store, who) = shop();
+    let runner = claim_with_web_blocked(&store, &who);
+    let outcome: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
+        "type": "failed", "completed": [],
+        "failed": {"type": "operation", "operation": remove_web(), "error": {"type": "cancelled"}},
+        "unexecuted": []
+    }))
+    .unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let view = store.read(&who, &DeploymentQuery { id: id(1) }).unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+    assert!(
+        matches!(
+            &view.deployment.outcome,
+            Some(Outcome::Executed { waiting, .. }) if waiting.is_empty()
+        ),
+        "{:?}",
+        view.deployment.outcome
+    );
 }
 
 #[test]
