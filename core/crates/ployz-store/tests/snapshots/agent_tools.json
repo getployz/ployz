@@ -59,7 +59,7 @@
       "title": "Show an Environment"
     },
     {
-      "description": "Create a Project. It comes with a Default Environment, production, which starts Protected and empty. Fails if the name is taken.",
+      "description": "Create a Project. It comes with a Default Environment, production, which starts Protected and empty, in the region of the Cluster's first Server. Fails if the name is taken.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,

@@ -22,9 +22,9 @@ use ployz_store::tools::{
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject,
     CreateService, CreateVolume, Deploy, DeploymentId, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentsQuery, NamespacesQuery, OrganizationId, ProjectId, ProjectName,
-    RowTracker, RunEvidence, RunnerId, SealingRecipient, ServiceLineageId, SettingPath, Trusted,
-    VolumeId, VolumeName,
+    EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespacesQuery, OrganizationId,
+    ProjectId, ProjectName, RowTracker, RunEvidence, RunnerId, SealingRecipient, ServiceLineageId,
+    SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -1274,10 +1274,10 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
 fn project_create_makes_a_project_once_per_key() {
     let store = shop();
     let input = json!({ "name": "docs", "request_key": "project-docs-0001" });
-    let created = call(&store, "project_create", input.clone(), "create-1").ok();
+    let created = create_project(&store, input.clone(), "create-1").ok();
     assert_eq!(created["at"], "docs/production");
     assert_eq!(created["next"]["tool"], "environment_show");
-    let again = call(&store, "project_create", input, "create-2").ok();
+    let again = create_project(&store, input, "create-2").ok();
     assert_eq!(again, created, "the same key replays the same Project");
     let shown = call(
         &store,
@@ -1288,15 +1288,81 @@ fn project_create_makes_a_project_once_per_key() {
     .ok();
     assert_eq!(shown["at"], "docs/production", "{shown}");
 
-    let refusal = call(
+    let refusal = create_project(
         &store,
-        "project_create",
         json!({ "name": "docs", "request_key": "project-docs-0002" }),
         "create-3",
     )
     .refused();
     assert_eq!(refusal.code, RpcErrorCode::Conflict);
     assert_eq!(refusal.writes, Writes::None);
+}
+
+/// `project_create` against a Cluster whose Servers pin no region.
+fn create_project(store: &ConfigStore, input: Value, call_key: &str) -> Run {
+    drive(
+        store,
+        in_org(),
+        "project_create",
+        input,
+        call_key,
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+            Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+        },
+    )
+}
+
+fn production_region_of(store: &ConfigStore, project: &str) -> Option<String> {
+    store
+        .read(
+            &who(),
+            &EnvironmentQuery {
+                environment: EnvironmentRef {
+                    project: Some(ProjectName::parse(project).unwrap()),
+                    environment: None,
+                },
+                path: None,
+                all: false,
+            },
+        )
+        .unwrap()
+        .region
+        .map(|region| region.to_string())
+}
+
+fn create_docs_where_the_servers_say(first_region: Option<&str>) -> Option<String> {
+    let store = shop();
+    let mut answer = servers(&[("web-1", 'a')]);
+    if let Some(region) = first_region {
+        answer["new_environment_region"] = json!(region);
+    }
+    drive(
+        &store,
+        in_org(),
+        "project_create",
+        json!({ "name": "docs", "request_key": "project-docs-0001" }),
+        "create-1",
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(answer.clone()),
+            Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+        },
+    )
+    .ok();
+    production_region_of(&store, "docs")
+}
+
+#[test]
+fn a_project_the_agent_creates_runs_production_where_the_first_server_is() {
+    assert_eq!(
+        create_docs_where_the_servers_say(Some("default")),
+        Some("default".to_owned())
+    );
+}
+
+#[test]
+fn a_project_the_agent_creates_runs_in_any_region_when_no_region_is_pinned() {
+    assert_eq!(create_docs_where_the_servers_say(None), None);
 }
 
 #[test]
@@ -1325,9 +1391,8 @@ fn project_rename_applies_at_once_and_repeats_harmlessly() {
     .ok();
     assert_eq!(again["project"], "store");
 
-    call(
+    create_project(
         &store,
-        "project_create",
         json!({ "name": "docs", "request_key": "project-docs-0001" }),
         "create-1",
     )
@@ -1392,7 +1457,10 @@ fn two_organizations_create_with_the_same_key() {
             "project_create",
             input.clone(),
             call_key,
-            &mut no_cloud,
+            &mut |cloud| match cloud {
+                Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+                Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+            },
         )
         .ok()
     };

@@ -141,10 +141,21 @@ async fn servers(
                     .filter_map(|machine| Region::of(&machine.machine))
                     .collect()
             });
+            let new_environment_region = only
+                .is_none()
+                .then(|| {
+                    Region::of_first_server(
+                        machines
+                            .iter()
+                            .map(|observed| ployz_core::JoinedServer::of(&observed.machine)),
+                    )
+                })
+                .flatten();
             Ok(ServersAnswer {
                 servers,
                 seen: seen(&machines, &unanswered),
                 regions,
+                new_environment_region,
             })
         })
         .await

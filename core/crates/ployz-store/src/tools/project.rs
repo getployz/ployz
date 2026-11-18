@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ToolId;
+use super::act::new_environment_region;
 use super::input::tool_input;
 use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::Call;
@@ -23,7 +24,7 @@ tool_input! {
 impl Tool for ProjectCreate {
     const NAME: &'static str = "project_create";
     const TITLE: &'static str = "Create a Project";
-    const DESCRIPTION: &'static str = "Create a Project. It comes with a Default Environment, production, which starts Protected and empty. Fails if the name is taken.";
+    const DESCRIPTION: &'static str = "Create a Project. It comes with a Default Environment, production, which starts Protected and empty, in the region of the Cluster's first Server. Fails if the name is taken.";
     // A repeat with the same key replays the create; one without is refused as a taken name.
     const EFFECT: Effect = Effect::Change { idempotent: true };
 
@@ -37,11 +38,12 @@ impl Tool for ProjectCreate {
         let id: ProjectId = cx.mint_as(Self::NAME, &key)?;
         let default_environment: EnvironmentId =
             cx.mint_as(&format!("{}-environment", Self::NAME), &key)?;
+        let region = new_environment_region(cx)?;
         let created = cx.write(&CreateProject {
             id,
             name: self.name,
             default_environment,
-            region: None,
+            region,
         })?;
         Ok(json!({
             "at": created.environment.to_string(),

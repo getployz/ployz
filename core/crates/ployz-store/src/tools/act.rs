@@ -18,6 +18,20 @@ pub(crate) const fn servers() -> Ask {
     Ask::Cloud(CloudQuery::Servers { only: None })
 }
 
+/// The region a new Environment starts in, as Ployz Cloud's Servers answer says it: the Engine's
+/// one rule for the Cluster's first Server. A local Store has no Servers to ask, and an answer
+/// Cloud can't give pins nothing, as the CLI's does when a Server goes unobserved.
+pub(crate) fn new_environment_region(cx: &mut Cx<'_>) -> Result<Option<ployz_core::Region>, Stop> {
+    if cx.is_local() {
+        return Ok(None);
+    }
+    let answer = cx.read(vec![servers()])?.into_iter().next();
+    Ok(answer
+        .and_then(Result::ok)
+        .and_then(|value| serde_json::from_value::<ServersAnswer>(value).ok())
+        .and_then(|answer| answer.new_environment_region))
+}
+
 /// `server_show` for one Server, or every one.
 pub(crate) fn server_show(server: Option<&ServerName>) -> Call {
     let input = match server {
