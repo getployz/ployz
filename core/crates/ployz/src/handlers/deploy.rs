@@ -573,8 +573,10 @@ pub(super) fn execute(
     }
     // A Deploy that failed carries these on its failure instead.
     if followed.view.deployment.status == DeploymentStatus::Applied {
-        for hint in progress::moves(&followed.view, |args| super::rerun(matches, args)) {
-            ui::hint(&hint);
+        for moved in progress::region_moves(&followed.view, store.local().is_none(), |args| {
+            super::rerun(matches, args)
+        }) {
+            ui::hint(&Hint::Next(moved));
         }
     }
     let Followed {
@@ -593,9 +595,13 @@ pub(super) fn execute(
             .flatten()
             .map(String::as_str)
             .collect();
-        progress::completion(&view, successor.as_ref(), &named, |args| {
-            super::rerun(matches, args)
-        })
+        progress::completion(
+            &view,
+            successor.as_ref(),
+            &named,
+            store.local().is_none(),
+            |args| super::rerun(matches, args),
+        )
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
@@ -1038,9 +1044,17 @@ struct Planned<'p> {
     /// The Services whose region no Server is in: the Deploy won't start them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unplaced: Vec<&'p ServiceName>,
+    /// The Services a Docker volume keeps out of their region: nothing moves one, and
+    /// no Server in the region holds it, so the Deploy won't start them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cant_move: Vec<&'p DockerMount>,
     /// The Volumes Cloud moves into their Service's region before the Deploy starts it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     volume_moves: Vec<volume_moves::VolumeMove>,
+    /// The Servers make those moves only for a Deploy an approved Device signed, and
+    /// this CLI holds no Device key.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    moves_need_device: bool,
     /// Whether it also removes every other Service running in the Environment,
     /// which only the Servers can name.
     prunes: bool,
@@ -1060,17 +1074,43 @@ fn plan(
         deployment: None,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
-    let (ingress, ingress_unchecked, regions) =
-        match ingress_check(matches, plan.regions.values().any(Option::is_some)) {
-            Ok((check, regions)) => (Some(check.repairs), check.unchecked, regions),
-            Err(Unchecked { cause, silent }) => {
-                if let Some(silent) = silent {
-                    ui::warn(cant_run(&silent));
-                }
-                (None, vec![cause], None)
+    let volume_moves = volume_moves::listed(store, &plan.environment, &services);
+    let docker = docker_mounts(store, &plan);
+    let placed = plan.regions.values().any(Option::is_some);
+    let sought = (placed || !volume_moves.is_empty())
+        .then(|| docker.iter().map(|mount| mount.docker.clone()).collect());
+    let (ingress, ingress_unchecked, servers) = match ingress_check(matches, sought) {
+        Ok((check, servers)) => (Some(check.repairs), check.unchecked, servers),
+        Err(Unchecked { cause, silent }) => {
+            if let Some(silent) = silent {
+                ui::warn(cant_run(&silent));
             }
-        };
+            (None, vec![cause], None)
+        }
+    };
+    let regions: Option<BTreeSet<Region>> = servers.as_ref().map(|servers| {
+        servers
+            .machines
+            .iter()
+            .filter_map(|server| Region::of(&server.machine))
+            .collect()
+    });
     let unplaced = |region: &Region| regions.as_ref().is_some_and(|seen| !seen.contains(region));
+    let cant_move: Vec<&DockerMount> = docker
+        .iter()
+        .filter(|mount| {
+            let Some(Some(region)) = plan.regions.get(&mount.service) else {
+                return false;
+            };
+            !unplaced(region)
+                && servers
+                    .as_ref()
+                    .is_some_and(|servers| servers.holds_outside(&mount.docker, region))
+        })
+        .collect();
+    let moves_need_device = volume_moves.iter().any(|moved| moved.clears.is_empty())
+        && servers.as_ref().is_some_and(Servers::enforce)
+        && !approve::holds_key(matches);
     let shown = Planned {
         domain_changes: super::store::domain_changes(
             plan.changes.iter().flat_map(|change| &change.settings),
@@ -1084,7 +1124,9 @@ fn plan(
             .filter(|(_, region)| region.as_ref().is_some_and(&unplaced))
             .map(|(service, _)| service)
             .collect(),
-        volume_moves: volume_moves::listed(store, &plan.environment, &services),
+        cant_move,
+        volume_moves,
+        moves_need_device,
         prunes,
     };
     let followed = Next::new(&shown, Some(hint));
@@ -1111,6 +1153,17 @@ fn plan(
                 Some(region) if unplaced(region) => crate::ui::stream(format_args!(
                     "{service} → {region}: won't start (no Server in {region})"
                 )),
+                Some(region)
+                    if let Some(mount) = shown
+                        .cant_move
+                        .iter()
+                        .find(|mount| mount.service == *service) =>
+                {
+                    crate::ui::stream(format_args!(
+                        "{service} → {region}: won't start ({} is a Docker volume and can't move)",
+                        mount.volume
+                    ));
+                }
                 Some(region) => crate::ui::stream(format_args!("{service} → {region}")),
                 None => crate::ui::stream(format_args!("{service} → any region")),
             }
@@ -1120,6 +1173,9 @@ fn plan(
                 volume, from, to, ..
             } = moved;
             match moved.held(matches).as_slice() {
+                [] if shown.moves_need_device => crate::ui::stream(format_args!(
+                    "{volume} stays on {from}: your servers move it only for a deploy an approved device signed"
+                )),
                 [] => crate::ui::stream(format_args!("{volume} moves {from} → {to}")),
                 held => held
                     .iter()
@@ -1199,12 +1255,96 @@ struct Unchecked {
     silent: Option<super::route::Silent>,
 }
 
-/// What the ingress step would do, read from the Servers; with `regions`, the regions
-/// they are in too, or `None` when they didn't list themselves.
+/// A Docker volume a Service the plan places in a region mounts.
+#[derive(serde::Serialize)]
+struct DockerMount {
+    service: ServiceName,
+    volume: ployz_store::VolumeName,
+    #[serde(skip)]
+    docker: ployz_core::DockerVolumeName,
+}
+
+/// The deployed Docker volumes of the Services `plan` moves into a region. None when
+/// it moves no Service, or the Store doesn't list the Volumes.
+fn docker_mounts(store: &Store, plan: &ployz_store::PlanView) -> Vec<DockerMount> {
+    if !plan.regions.values().any(Option::is_some) {
+        return Vec::new();
+    }
+    let environment = ployz_store::EnvironmentRef {
+        project: Some(plan.environment.project.clone()),
+        environment: Some(plan.environment.name.clone()),
+    };
+    let Ok(listed) = store.try_read(&ployz_store::VolumesQuery { environment }) else {
+        return Vec::new();
+    };
+    listed
+        .volumes
+        .into_iter()
+        .filter(|listing| {
+            listing.deployed
+                && matches!(
+                    listing.volume.storage,
+                    ployz_core::config::VolumeKind::Docker {}
+                )
+        })
+        .flat_map(|listing| {
+            let docker =
+                ployz_store::docker_volume(&plan.namespace, listing.volume.id.as_str()).ok();
+            let name = listing.volume.name;
+            listing
+                .mounts
+                .into_iter()
+                .filter(|mount| matches!(plan.regions.get(&mount.service), Some(Some(_))))
+                .filter_map(move |mount| {
+                    Some(DockerMount {
+                        service: mount.service,
+                        volume: name.clone(),
+                        docker: docker.clone()?,
+                    })
+                })
+        })
+        .collect()
+}
+
+/// What a plan reads from the Servers about where its Services and Volumes can go.
+struct Servers {
+    machines: Vec<ployz_core::MachineObservation>,
+    /// Each Docker volume it asked about, on the Server that holds it.
+    held: Vec<ployz_core::DockerVolumeId>,
+}
+
+impl Servers {
+    /// Whether a Server holds `volume` and none of its holders is in `region`.
+    fn holds_outside(&self, volume: &ployz_core::DockerVolumeName, region: &Region) -> bool {
+        let mut holders = self
+            .held
+            .iter()
+            .filter(|held| held.name == *volume)
+            .filter_map(|held| {
+                self.machines
+                    .iter()
+                    .find(|server| server.machine.id == held.machine_id)
+            })
+            .peekable();
+        holders.peek().is_some()
+            && !holders.any(|server| Region::of(&server.machine).as_ref() == Some(region))
+    }
+
+    /// Whether any Server runs only what an approved Device signed.
+    fn enforce(&self) -> bool {
+        self.machines
+            .iter()
+            .any(|server| server.machine.runtime.device_enforcement == Some(true))
+    }
+}
+
+/// What the ingress step would do, read from the Servers; with `sought`, the Servers
+/// too and which of them hold those Docker volumes, or `None` when they didn't list
+/// themselves.
 fn ingress_check(
     matches: &ArgMatches,
-    regions: bool,
-) -> Result<(crate::ingress::IngressCheck, Option<BTreeSet<Region>>), Unchecked> {
+    sought: Option<Vec<ployz_core::DockerVolumeName>>,
+) -> Result<(crate::ingress::IngressCheck, Option<Servers>), Unchecked> {
     let context = matches
         .try_get_one::<String>("context")
         .ok()
@@ -1227,16 +1367,21 @@ fn ingress_check(
             let check = crate::ingress::planned_slots(&mut client)
                 .await
                 .map_err(|error| unchecked(crate::ingress::unchecked(&error, server, None)))?;
-            let regions = match regions {
-                true => client.machines().await.ok().map(|machines| {
-                    machines
-                        .iter()
-                        .filter_map(|machine| Region::of(&machine.machine))
-                        .collect()
-                }),
-                false => None,
+            let Some(sought) = sought else {
+                return Ok((check, None));
             };
-            Ok((check, regions))
+            let Ok(machines) = client.machines().await else {
+                return Ok((check, None));
+            };
+            let held = match sought.is_empty() {
+                true => Vec::new(),
+                false => client
+                    .observe_volumes(sought)
+                    .await
+                    .map(|observed| observed.held)
+                    .unwrap_or_default(),
+            };
+            Ok((check, Some(Servers { machines, held })))
         })
 }
 
@@ -1610,7 +1755,16 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
     let view = store.read(&ployz_store::DeploymentQuery { id })?;
-    finish_view(&view, None)
+    // A failed Deploy that left a Volume outside its Service's region names the same
+    // step its own output did.
+    let hint = (view.deployment.status == DeploymentStatus::Failed)
+        .then(|| {
+            progress::region_moves(&view, store.local().is_none(), |args| {
+                super::rerun(matches, args)
+            })
+        })
+        .and_then(|moves| moves.into_iter().next());
+    finish_view(&view, hint)
 }
 
 pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error> {

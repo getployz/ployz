@@ -359,38 +359,6 @@ pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
-/// The command that moves each Volume a Service waits on into the region the
-/// Service is kept in.
-pub(super) fn moves(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Vec<Hint> {
-    let scope = [
-        "--project",
-        view.environment.project.as_str(),
-        "--env",
-        view.environment.name.as_str(),
-    ];
-    view.preview
-        .iter()
-        .flat_map(|preview| &preview.blocked)
-        .filter_map(|entry| {
-            let detail = |key| {
-                entry
-                    .error
-                    .details
-                    .get(key)
-                    .and_then(|value| value.as_str())
-            };
-            let (Some("volume_outside_region"), Some(volume), Some(to)) =
-                (detail("reason"), detail("volume"), detail("to"))
-            else {
-                return None;
-            };
-            Some(Hint::Next(command(
-                &[&["volume", "move", volume, "--to", to][..], &scope].concat(),
-            )))
-        })
-        .collect()
-}
-
 /// What the Deployment left out of a Service's variables or a Config's files.
 pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
     view.deployment
@@ -482,18 +450,20 @@ pub(super) fn ingress_warnings(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
-/// `named` are the Services the command line named, which its retry repeats.
+/// `named` are the Services the command line named, which its retry repeats. `cloud`:
+/// the Store is Ployz Cloud's, so a Volume can move.
 pub(super) fn completion(
     view: &DeploymentView,
     successor: Option<&DeploymentSummary>,
     named: &[&str],
+    cloud: bool,
     command: impl Fn(&[&str]) -> String,
 ) -> Result<(), Failure> {
     if view.deployment.status == DeploymentStatus::Superseded {
         return Err(superseded(view, successor, command));
     }
     if view.deployment.status != DeploymentStatus::Applied {
-        return Err(failure(view, named, command));
+        return Err(failure(view, named, cloud, command));
     }
     if view
         .preview
@@ -645,7 +615,60 @@ pub(super) fn replaced(
     ])))
 }
 
-fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> String) -> Failure {
+/// The command that brings each Volume `view` left outside its Service's region into
+/// it: the move onto the Server the plan named, or, when a copy on another Server
+/// stops that move, the delete of that copy. None without Ployz Cloud, which makes
+/// every Volume run, and none for a Docker volume, which nothing moves.
+pub(super) fn region_moves(
+    view: &DeploymentView,
+    cloud: bool,
+    command: impl Fn(&[&str]) -> String,
+) -> Vec<String> {
+    if !cloud {
+        return Vec::new();
+    }
+    let scope = [
+        "--project",
+        view.environment.project.as_str(),
+        "--env",
+        view.environment.name.as_str(),
+    ];
+    view.preview
+        .iter()
+        .flat_map(|preview| &preview.blocked)
+        .filter_map(|entry| {
+            let details = &entry.error.details;
+            let detail = |key| details.get(key).and_then(|value| value.as_str());
+            let (Some("volume_outside_region"), Some(volume), Some(to)) =
+                (detail("reason"), detail("volume"), detail("to"))
+            else {
+                return None;
+            };
+            let copy = details.get("copy");
+            let held = |key| copy?.get(key)?.as_str();
+            let Some(server) = held("server") else {
+                return Some(command(
+                    &[&["volume", "move", volume, "--to", to][..], &scope].concat(),
+                ));
+            };
+            let slot = format!("{volume}-{server}");
+            let old = (held("role") == Some("old_copy")).then_some("--if-old-copy");
+            let words: Vec<&str> = ["volume", "mirror", "rm", slot.as_str()]
+                .into_iter()
+                .chain(old)
+                .chain(scope)
+                .collect();
+            Some(command(&words))
+        })
+        .collect()
+}
+
+fn failure(
+    view: &DeploymentView,
+    named: &[&str],
+    cloud: bool,
+    command: impl Fn(&[&str]) -> String,
+) -> Failure {
     let (reason, cause) = match &view.deployment.outcome {
         Some(
             ployz_store::Outcome::Executed {
@@ -815,7 +838,11 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // failure the inspect hint above reads.
         bad_image |= pulled && !build_failed && built.is_none();
     }
-    hints.extend(moves(view, &command));
+    hints.extend(
+        region_moves(view, cloud, &command)
+            .into_iter()
+            .map(Hint::Next),
+    );
     let mut failure = Failure::from(
         RpcError::new(
             if lost_to_newer {
@@ -1021,7 +1048,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("2 not attempted"), "{text}");
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 1);
         assert!(failure.to_string().contains(reason), "{failure}");
         assert!(
@@ -1053,18 +1080,23 @@ mod tests {
             {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "db", "outcome": "not_attempted", "rows": []}
         ]))
         .unwrap();
-        view.preview = Some(
+        let outside = |copy: Option<&str>| {
+            let mut details = json!({
+                "reason": "volume_outside_region", "volume": "pg-data", "server": "syd-1", "to": "fsn-1"
+            });
+            if let (Some(role), Some(details)) = (copy, details.as_object_mut()) {
+                details.insert("copy".to_owned(), json!({"server": "lhr-1", "role": role}));
+            }
             serde_json::from_value(json!({
                 "namespace": "shop-production", "warnings": [], "operations": [],
                 "blocked": [{
                     "service": "db",
-                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": {
-                        "reason": "volume_outside_region", "volume": "pg-data", "server": "syd-1", "to": "fsn-1"
-                    }}
+                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": details}
                 }]
             }))
-            .unwrap(),
-        );
+            .unwrap()
+        };
+        view.preview = Some(outside(None));
         let moved = [Hint::Next(
             "ployz volume move pg-data --to fsn-1 --project shop --env production".to_owned(),
         )];
@@ -1075,10 +1107,25 @@ mod tests {
             "{text}"
         );
         assert_eq!(waiting(&view), ["db is waiting: pg-data is on syd-1"]);
-        assert_eq!(moves(&view, command), moved);
-        let partial = completion(&view, None, &[], command).unwrap_err();
+        let partial = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&partial), 3);
+        assert!(region_moves(&view, false, command).is_empty());
 
+        for (role, delete) in [
+            ("mirror", "ployz volume mirror rm pg-data-lhr-1"),
+            (
+                "old_copy",
+                "ployz volume mirror rm pg-data-lhr-1 --if-old-copy",
+            ),
+        ] {
+            view.preview = Some(outside(Some(role)));
+            assert_eq!(
+                region_moves(&view, true, command),
+                [format!("{delete} --project shop --env production")]
+            );
+        }
+
+        view.preview = Some(outside(None));
         view.deployment.status = DeploymentStatus::Failed;
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
@@ -1087,7 +1134,7 @@ mod tests {
             }))
             .unwrap(),
         );
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(failure.hints(), moved);
         assert_eq!(crate::ui::after_result(&failure), 1);
     }
@@ -1193,7 +1240,7 @@ mod tests {
             !lines.iter().any(|line| line.contains("private-web")),
             "{lines:?}"
         );
-        let failure = failure(&view(), &[], command);
+        let failure = failure(&view(), &[], true, command);
         let text = crate::ui::plain(&failure);
         assert!(
             text.contains("web on edge: CreateContainer failed"),
@@ -1254,7 +1301,7 @@ mod tests {
             ]
         }))
         .unwrap()];
-        let failure = failure(&view, &[], command);
+        let failure = failure(&view, &[], true, command);
         assert_eq!(
             crate::ui::plain(&failure),
             format!(
@@ -1284,7 +1331,7 @@ mod tests {
             }))
             .unwrap(),
         );
-        let text = crate::ui::plain(&failure(&view, &[], command));
+        let text = crate::ui::plain(&failure(&view, &[], true, command));
         assert!(
             text.contains(
                 "  Stopped the new Container.\n  Restored the old Container; it serves again."
@@ -1296,7 +1343,7 @@ mod tests {
     #[test]
     fn duplicate_outcome_is_printed_once_and_identical_failure_on_another_server_survives() {
         let view = view();
-        let failure = failure(&view, &[], command);
+        let failure = failure(&view, &[], true, command);
         let text = crate::ui::plain(&failure);
         assert_eq!(text.matches("cause: denied").count(), 2, "{text}");
         assert!(text.contains("startup failed"));
@@ -1363,7 +1410,7 @@ mod tests {
             *row = Some(FailedAt::Pull);
         }
         assert_eq!(
-            inspects(&failure(&view, &[], command)),
+            inspects(&failure(&view, &[], true, command)),
             ["ployz get web.image --project shop --env production"]
         );
 
@@ -1371,7 +1418,7 @@ mod tests {
             *row = Some(FailedAt::Start);
         }
         assert_eq!(
-            inspects(&failure(&view, &[], command)),
+            inspects(&failure(&view, &[], true, command)),
             ["ployz logs web --project shop --env production"]
         );
     }
@@ -1390,7 +1437,7 @@ mod tests {
                 }
             }
         }
-        let failure = failure(&view, &[], command);
+        let failure = failure(&view, &[], true, command);
         assert!(inspects(&failure).is_empty(), "{:?}", inspects(&failure));
         assert!(
             !failure
@@ -1413,7 +1460,7 @@ mod tests {
                 }
             }
         }
-        let failed = failure(&view, &[], command);
+        let failed = failure(&view, &[], true, command);
         assert!(inspects(&failed).is_empty());
         assert!(
             failed
@@ -1425,7 +1472,7 @@ mod tests {
         for row in failed_rows(&mut view) {
             *row = None;
         }
-        assert!(inspects(&failure(&view, &[], command)).is_empty());
+        assert!(inspects(&failure(&view, &[], true, command)).is_empty());
     }
 
     #[test]
@@ -1471,7 +1518,7 @@ mod tests {
             let rows = &mut view.nodes.first_mut().unwrap().rows;
             rows.truncate(1);
             rows.first_mut().unwrap().state = state;
-            failure(&view, &[], command)
+            failure(&view, &[], true, command)
         };
         let next = |failure: &Failure| {
             failure
@@ -1627,7 +1674,7 @@ mod tests {
         for row in failed_rows(&mut view) {
             *row = None;
         }
-        let failed = failure(&view, &[], command);
+        let failed = failure(&view, &[], true, command);
         assert_eq!(failed.report().code, RpcErrorCode::Conflict);
         assert!(failed.is_outcome());
         assert_eq!(crate::ui::exit_code(&failed.report().code), 1);
@@ -1653,7 +1700,7 @@ mod tests {
             {"service": "web", "commit": null, "status": "built", "message": null}
         ]))
         .unwrap();
-        assert!(inspects(&failure(&view, &[], command)).is_empty());
+        assert!(inspects(&failure(&view, &[], true, command)).is_empty());
     }
 
     #[test]
@@ -1663,7 +1710,7 @@ mod tests {
             .map(|name| ServiceName::parse(name).unwrap())
             .into();
         assert!(
-            hints(&failure(&view, &["web"], command))
+            hints(&failure(&view, &["web"], true, command))
                 .contains(&"retry: ployz deploy web --project shop --env production".to_owned())
         );
     }
@@ -1698,7 +1745,7 @@ mod tests {
         let mut view = view();
         failed_build(&mut view);
         assert_eq!(
-            hints(&failure(&view, &[], command)),
+            hints(&failure(&view, &[], true, command)),
             ["inspect: ployz logs --deployment 7 --build web --project shop --env production"]
         );
     }
@@ -1719,7 +1766,7 @@ mod tests {
     fn a_refusal_that_fails_the_same_way_again_never_says_to_deploy_again() {
         let mut view = view();
         refused(&mut view, true);
-        assert_eq!(hints(&failure(&view, &["web"], command)), [""; 0]);
+        assert_eq!(hints(&failure(&view, &["web"], true, command)), [""; 0]);
     }
 
     #[test]
@@ -1727,7 +1774,7 @@ mod tests {
         let mut view = view();
         refused(&mut view, false);
         assert_eq!(
-            hints(&failure(&view, &["web"], command)),
+            hints(&failure(&view, &["web"], true, command)),
             ["retry: ployz deploy web --project shop --env production"]
         );
     }
@@ -1738,7 +1785,7 @@ mod tests {
         view.deployment.upload =
             Some(serde_json::from_value(json!({"digest": "a".repeat(64)})).unwrap());
         refused(&mut view, true);
-        assert_eq!(hints(&failure(&view, &[], command)), [""; 0]);
+        assert_eq!(hints(&failure(&view, &[], true, command)), [""; 0]);
     }
 
     #[test]
@@ -1748,7 +1795,7 @@ mod tests {
             Some(serde_json::from_value(json!({"digest": "a".repeat(64)})).unwrap());
         failed_build(&mut view);
         assert_eq!(
-            hints(&failure(&view, &[], command)),
+            hints(&failure(&view, &[], true, command)),
             [
                 "inspect: ployz logs --deployment 7 --build web --project shop --env production",
                 "retry: ployz up --project shop --env production",
@@ -1765,7 +1812,7 @@ mod tests {
             }
         }
         assert_eq!(
-            hints(&failure(&view, &[], command)),
+            hints(&failure(&view, &[], true, command)),
             [
                 "inspect: ployz get web.image --project shop --env production",
                 "undo: ployz history undo 1 --project shop --env production",
@@ -1783,7 +1830,7 @@ mod tests {
             *row = Some(FailedAt::Start);
         }
         assert_eq!(
-            hints(&failure(&view, &[], command)),
+            hints(&failure(&view, &[], true, command)),
             [
                 "inspect: ployz logs web --project shop --env production",
                 "undo: ployz history undo 1 --project shop --env production",
@@ -1804,7 +1851,7 @@ mod tests {
             }))
             .unwrap(),
         );
-        let failure = completion(&view, Some(&newer), &[], command).unwrap_err();
+        let failure = completion(&view, Some(&newer), &[], true, command).unwrap_err();
         let text = crate::ui::plain(&failure);
         assert!(
             text.contains("Deployment #7 was superseded by #8 (push bbe4f9e)."),
@@ -1814,7 +1861,7 @@ mod tests {
             hints(&failure),
             ["inspect: ployz deployment show 8 --project shop --env production"]
         );
-        let alone = completion(&view, None, &[], command).unwrap_err();
+        let alone = completion(&view, None, &[], true, command).unwrap_err();
         assert!(crate::ui::plain(&alone).contains("Deployment #7 was superseded."));
         assert_eq!(
             hints(&alone),
@@ -1894,7 +1941,7 @@ mod tests {
     #[test]
     fn a_failed_removal_never_says_to_retry_with_deploy() {
         let retries = |view: &DeploymentView| {
-            failure(view, &[], command)
+            failure(view, &[], true, command)
                 .hints()
                 .iter()
                 .filter(|hint| matches!(hint, Hint::Retry(_)))
@@ -1910,13 +1957,13 @@ mod tests {
     fn a_failed_deploy_is_its_result_and_a_failed_removal_stays_partial() {
         let mut view = view();
         assert!(
-            completion(&view, None, &[], command)
+            completion(&view, None, &[], true, command)
                 .unwrap_err()
                 .is_outcome()
         );
         view.deployment.remove = true;
         assert!(
-            !completion(&view, None, &[], command)
+            !completion(&view, None, &[], true, command)
                 .unwrap_err()
                 .is_outcome()
         );
@@ -1927,7 +1974,7 @@ mod tests {
         let mut view = view();
         view.deployment.status = DeploymentStatus::Applied;
         view.deployment.outcome = None;
-        assert!(completion(&view, None, &[], command).is_ok());
+        assert!(completion(&view, None, &[], true, command).is_ok());
         view.deployment.warnings = vec![
             DeploymentWarning::Deploy {
                 warning: ployz_core::DeployWarning::LeftRunning {
@@ -1943,7 +1990,7 @@ mod tests {
                 },
             },
         ];
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
@@ -1967,7 +2014,7 @@ mod tests {
             waiting(&view),
             ["web is waiting: Volume data has no writer; fsn-2 holds its only copy"]
         );
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert!(!failure.is_outcome());
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
@@ -2038,7 +2085,7 @@ mod tests {
             text.contains("1 copy left running · 1 removed · across 2 servers"),
             "{text}"
         );
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
@@ -2081,7 +2128,7 @@ mod tests {
             ),
             "{text}"
         );
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
@@ -2091,7 +2138,7 @@ mod tests {
         let mut view = view();
         view.deployment.status = DeploymentStatus::Applied;
         view.deployment.outcome = None;
-        assert!(completion(&view, None, &[], command).is_ok());
+        assert!(completion(&view, None, &[], true, command).is_ok());
         view.deployment.warnings = vec![DeploymentWarning::Deploy {
             warning: ployz_core::DeployWarning::ObservationFailed {
                 gap: Some(ObservationGap {
@@ -2104,7 +2151,7 @@ mod tests {
                 message: "Machine one did not answer: deadline has elapsed".into(),
             },
         }];
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
@@ -2116,7 +2163,7 @@ mod tests {
         view.deployment.warnings = vec![DeploymentWarning::IngressUnchecked {
             cause: "Server lab-1 isn't answering".into(),
         }];
-        let failure = completion(&view, None, &[], command).unwrap_err();
+        let failure = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 
@@ -2130,7 +2177,7 @@ mod tests {
             (DeploymentStatus::Unknown, 3),
         ] {
             view.deployment.status = status;
-            let failure = completion(&view, None, &[], command).unwrap_err();
+            let failure = completion(&view, None, &[], true, command).unwrap_err();
             assert_eq!(crate::ui::after_result(&failure), code, "{status:?}");
         }
     }
@@ -2167,7 +2214,7 @@ mod tests {
     fn every_retry_hint_is_a_command_the_cli_accepts() {
         let mut removal = view();
         removal.deployment.remove = true;
-        let hints = failure(&view(), &[], command)
+        let hints = failure(&view(), &[], true, command)
             .hints()
             .iter()
             .cloned()
@@ -2205,7 +2252,7 @@ mod tests {
             Vec::new(),
             view.namespace.clone(),
         ));
-        assert!(completion(&view, None, &[], command).is_ok());
+        assert!(completion(&view, None, &[], true, command).is_ok());
         assert!(noop(&view));
         assert_eq!(
             up_to_date(&view),
@@ -2217,7 +2264,7 @@ mod tests {
             gap: None,
         };
         view.preview.as_mut().unwrap().warnings.push(warning);
-        assert!(completion(&view, None, &[], command).is_ok());
+        assert!(completion(&view, None, &[], true, command).is_ok());
         let DeployWarning::ObservationOmitted { gap, .. } =
             view.preview.as_mut().unwrap().warnings.first_mut().unwrap()
         else {
@@ -2228,7 +2275,7 @@ mod tests {
             reason: ObservationGapReason::Down,
         });
         assert_eq!(
-            completion(&view, None, &[], command)
+            completion(&view, None, &[], true, command)
                 .unwrap_err()
                 .printed_exit(),
             Some(3)
@@ -2276,7 +2323,7 @@ mod tests {
             },
         ];
         assert!(!noop(&view) && visible(&view));
-        assert!(completion(&view, None, &[], command).is_ok());
+        assert!(completion(&view, None, &[], true, command).is_ok());
         let rows: Vec<_> = frame(&view)
             .rows
             .into_iter()
@@ -2360,7 +2407,7 @@ mod tests {
             },
         ];
         assert!(!noop(&view) && visible(&view));
-        let partial = completion(&view, None, &[], command).unwrap_err();
+        let partial = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&partial), 3);
         assert!(frame(&view).rows.iter().any(|row| {
             row.subject == Subject::Unlocated(QualifiedService::system_ingress())
@@ -2631,7 +2678,7 @@ mod tests {
         let mut view = view();
         interrupted_build(&mut view);
         assert_eq!(
-            hints(&failure(&view, &[], command)),
+            hints(&failure(&view, &[], true, command)),
             ["retry: ployz deploy --project shop --env production"]
         );
     }

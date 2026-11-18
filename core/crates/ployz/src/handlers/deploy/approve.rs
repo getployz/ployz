@@ -47,6 +47,14 @@ pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) commit_approval: bool,
 }
 
+/// Whether this CLI holds a Device key to sign a Deploy with.
+pub(in crate::handlers) fn holds_key(matches: &ArgMatches) -> bool {
+    super::super::config_path(matches)
+        .ok()
+        .map(|config| super::super::device::key::path(&config))
+        .is_some_and(|key| matches!(DeviceSigning::load(&key), Ok(Some(_))))
+}
+
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
