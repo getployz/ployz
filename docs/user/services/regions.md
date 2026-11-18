@@ -113,7 +113,9 @@ The volume goes to a server in the region that accepts services. The one that ho
 [mirror](mirror-a-volume.md) comes first. With no mirror there, it goes back to one that holds its
 [old copy](move-a-volume.md#the-old-copy-a-move-leaves) and sends only what changed since. With
 neither, it goes to the first by name with managed volumes and room for it. To choose the server
-yourself, stage the move with **Make primary** before you deploy. See
+yourself, stage the move with **Make primary** before you deploy. Pick a server in the region. On
+one outside it the deploy fails before it moves or stops anything, with "The Deploy doesn't run
+postgres on web-2". See
 [Move a volume](move-a-volume.md) for what a move does to the service while it runs.
 
 If the move fails, the deploy doesn't start that service and the rest of the deploy goes ahead.
@@ -133,11 +135,18 @@ A waiting service doesn't fail the deploy. When nothing else failed, the deploym
 
 Before the move copies anything, and again before it stops the service, Ployz checks that the
 deploy still runs the service on the move's server. If that server left the region meanwhile, for
-example because its region label changed, nothing moves and the service keeps running:
+example because its region label changed, nothing moves. The service keeps running and waits:
 
 ```
-! pg-data didn't move to web-1: The Deploy doesn't run postgres on web-1, so this move would stop postgres and start it nowhere. Nothing moved. Deploy again
 ! postgres is waiting: pg-data is on db-1
+
+next: ployz deploy --project shop --env production
+```
+
+`ployz volume runs pg-data` says why:
+
+```
+The Deploy doesn't run postgres on web-1, so this move would stop postgres and start it nowhere. Nothing moved. Deploy again
 ```
 
 A move that fails before it stops the service leaves the volume where it was, with the service

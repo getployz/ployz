@@ -107,9 +107,11 @@ error: web's last Deploy doesn't run it on web-2, so this move would stop web an
 retry: ployz volume move data --to web-2 --leave-stopped
 ```
 
-Ployz checks again while the move runs, before it stops your service. If `web-2` left the
-service's placement after the move started, for example because its region label changed, the
-move fails with the same message and your service keeps running on `web-1`.
+Ployz checks again before the move copies anything, and once more before it stops your service.
+If `web-2` left the service's placement by then, for example because its region label changed,
+the move fails with the same message and your service keeps running on `web-1`. If `web-2` leaves
+after that last check, the move finishes and your service stays stopped on `web-2`. The move's
+last line says what starts it, as it does for `--leave-stopped` below.
 
 To move the volume now and start your service later, add `--leave-stopped`:
 
