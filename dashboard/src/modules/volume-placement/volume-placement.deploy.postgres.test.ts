@@ -774,7 +774,6 @@ describe("deploying a Volume placement", () => {
   });
 
   describe("a Volume outside its Service's region", () => {
-    /** Each Server is in the region its name starts with. */
     const regions = (...servers: string[]) => () => Effect.succeed(servers.map((server) => ({
       id: web(server), region: server.split("-")[0] ?? "", acceptsServices: true, committableBytes: null,
     })));
@@ -793,7 +792,6 @@ describe("deploying a Volume placement", () => {
       const staged = { volumeId, environmentId: "env-1", mirrors: [web("fsn-2")], staged: { primary: web("fsn-2"), mirrors: [], deletes: [] }, unreached: false, region: true };
       expect(await run(listPlacements(organizationId))).toEqual([{ ...staged, deploymentId: "dep-2" }]);
 
-      // The Deploy that supersedes it makes the same move on the same row.
       statuses.set("dep-2", "superseded");
       await deploy("dep-3");
       expect(await run(listPlacements(organizationId))).toEqual([{ ...staged, deploymentId: "dep-3" }]);

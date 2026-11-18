@@ -15,7 +15,7 @@ import { failedRestore, volumePlacement } from "#/modules/volume-placement/table
 import { keptFor, type PlacementApproval } from "#/modules/volume-placement/placement-approvals";
 import {
   appliedMirrors, lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow,
-  regionPlacement, regionVolumes, type Seed, type SettingRegions, type StoredPlacement,
+  regionPlacement, regionVolumes, type Seed, type SettingRegions, type StoredPlacement, userStaged,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -294,7 +294,6 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
   return { ok: true, placement: view(row) } satisfies PlacementDiscard;
 });
 
-/** A Server in a region: its `region` label, and what it says it takes. */
 type LabelledServer = { readonly id: MachineId; readonly region: string; readonly acceptsServices: boolean; readonly committableBytes: number | null };
 
 /** The Organization's Servers that are in a region. */
@@ -345,15 +344,14 @@ const findRegionMoves = Effect.fn("VolumePlacement.regionMoves")(function* (
     listed === null ? readVolumes(organizationId, environment) : Effect.succeed(listed),
   ], { concurrency: "unbounded" });
   const kept = regionVolumes(listing.volumes, settingRegions(settings), services);
-  // No Service is kept in a region: the Cluster is never asked.
   if (kept.length === 0) return [];
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.organizationId, organizationId), inArray(volumePlacement.volumeId, kept.map(({ volume }) => volume.id))));
   const open = kept.flatMap(({ volume, region }) => {
-    const row = rows.find((entry) => entry.volumeId === volume.id);
-    // What the user staged is their choice.
-    return row?.staged != null && row.staged.region !== true ? [] : [{ volume, region, row: row === undefined ? null : view(row) }];
+    const found = rows.find((entry) => entry.volumeId === volume.id);
+    const row = found === undefined ? null : view(found);
+    return row !== null && userStaged(row) ? [] : [{ volume, region, row }];
   });
   if (open.length === 0) return [];
   const servers = yield* read(organizationId);
@@ -417,6 +415,27 @@ export const stageRegionMoves = Effect.fn("VolumePlacement.stageRegionMoves")(fu
       ),
     });
   }
+});
+
+/**
+ * `free` with each region move an earlier Deploy left staged replaced by the one in `moves`, or dropped when `moves`
+ * has none for its Volume. A row a person staged, or one that already holds the same move, stays as it is.
+ */
+const withCurrentRegionMoves = Effect.fn("VolumePlacement.withCurrentRegionMoves")(function* (free: readonly Row[], moves: readonly RegionMove[]) {
+  const { drizzle } = yield* Database;
+  const rows: Row[] = [];
+  for (const row of free) {
+    const move = moves.find((each) => each.row.volumeId === row.volumeId);
+    if (row.staged?.region !== true || (move !== undefined && isDeepStrictEqual(view(row).staged, move.row.staged))) {
+      rows.push(row);
+      continue;
+    }
+    const staged = move === undefined ? null : regionStaged(move);
+    yield* drizzle.update(volumePlacement).set({ staged, updatedAt: new Date(), ...(staged === null && { deploymentId: null }) })
+      .where(eq(volumePlacement.volumeId, row.volumeId));
+    if (staged !== null) rows.push({ ...row, staged });
+  }
+  return rows;
 });
 
 /** The Deploy button's half: stage the region moves so the passkey answers the Deploy carries have rows to keep them. */
@@ -490,19 +509,7 @@ export const writeAdmitted = <R>(
     const ended = holders.filter((_, index) => states[index] === "ended");
     const queued = holders.filter((_, index) => states[index] === "queued");
     const free = locked.filter((row) => row.deploymentId === null || ended.includes(row.deploymentId) || queued.includes(row.deploymentId));
-    // A region move an earlier Deploy left on a row gives way to the one this Deploy makes, or goes when it makes none.
-    const rows: Row[] = [];
-    for (const row of free) {
-      const move = moves.find((each) => each.row.volumeId === row.volumeId);
-      if (row.staged?.region !== true || (move !== undefined && isDeepStrictEqual(view(row).staged, move.row.staged))) {
-        rows.push(row);
-        continue;
-      }
-      const staged = move === undefined ? null : regionStaged(move);
-      yield* drizzle.update(volumePlacement).set({ staged, updatedAt: new Date(), ...(staged === null && { deploymentId: null }) })
-        .where(eq(volumePlacement.volumeId, row.volumeId));
-      if (staged !== null) rows.push({ ...row, staged });
-    }
+    const rows = yield* withCurrentRegionMoves(free, moves);
     // Read under the lock: a restore staged before it has landed or never will, so a seeded Volume missing is gone.
     const { volumes } = rows.length === 0 ? { volumes: [] } : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
     const listed = rows.flatMap((row) => {

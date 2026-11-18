@@ -1042,7 +1042,6 @@ struct Planned<'p> {
     prunes: bool,
 }
 
-/// A Volume on a Server outside its Service's region, and the Server in the region it moves to.
 #[derive(serde::Deserialize, serde::Serialize)]
 struct VolumeMove {
     volume: String,
@@ -1050,8 +1049,6 @@ struct VolumeMove {
     to: String,
 }
 
-/// The Volumes Cloud would move for a Deploy of `services` in `environment`. None with no
-/// Cloud, which moves nothing, or when Cloud doesn't say.
 fn volume_moves(
     store: &Store,
     environment: &EnvironmentSummary,

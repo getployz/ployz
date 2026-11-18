@@ -84,6 +84,9 @@ export type PlacementRow = {
   readonly region?: true;
 };
 
+/** Whether `row` holds a placement a person staged. Cloud's move into a region never replaces or lists over one. */
+export const userStaged = (row: Pick<PlacementRow, "staged" | "region">): boolean => row.staged !== null && row.region !== true;
+
 export type MoveHow = "promote" | "copy" | "restore";
 
 /** One row of the review. A move is one change, whatever it does to Mirrors. */
