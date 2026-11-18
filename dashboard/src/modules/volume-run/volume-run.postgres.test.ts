@@ -240,8 +240,9 @@ describe("volume runs", () => {
   let regions: Record<string, number> | undefined;
   /** The Environment's region in the Store, which the next Deploy places by. */
   let storeRegion: string | null;
-  /** Deployment `dep-1` as the Store has it: whether it still runs, and the region it runs `web` in. */
-  let deploying: { inFlight: boolean; region: string };
+  /** Deployment `dep-1` as the Store has it: its status, and the region it runs `web` in. */
+  let deployStatus: "running" | "cancelled";
+  let deployRegion: string;
   /**
    * Fails a runtime frame read, counted from 1 in `frames`: true as a Server that never answers its first frame, an RPC
    * error as the Cluster answering with it.
@@ -653,12 +654,12 @@ describe("volume runs", () => {
             if (query.query === "environments") return { environments: [{ id: "env-1", name: "production", protected: storeProtected }] };
             if (query.query === "deployment") {
               return {
-                id: query.id, status: "running", in_flight: deploying.inFlight, namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" },
+                id: query.id, status: deployStatus, in_flight: deployStatus === "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" },
                 nodes: deployNodes,
               };
             }
             if (query.query === "plan") {
-              return { namespace: "shop-production", target: [{ name: "web", placement: { constraints: [`node.labels.region==${deploying.region}`] }, regions: {} }] };
+              return { namespace: "shop-production", target: [{ name: "web", placement: { constraints: [`node.labels.region==${deployRegion}`] }, regions: {} }] };
             }
             if (query.environment !== undefined && query.environment.project !== storeProject) {
               throw new RpcError({ code: "not_found", message: `No Project named ${query.environment.project}`, details: null });
@@ -794,7 +795,8 @@ describe("volume runs", () => {
     beforeStart = null;
     regions = undefined;
     storeRegion = null;
-    deploying = { inFlight: true, region: "syd" };
+    deployStatus = "running";
+    deployRegion = "syd";
     frameFault = null;
     frames = 0;
     openFault = null;
@@ -3314,20 +3316,6 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^web was stopped \d+s$/) }]);
     });
 
-    it("a Deploy's move into the region makes a Server the Service's regions leave out the writer, and the Service stays stopped for that Deploy to start", async () => {
-      regions = { fsn: 1 };
-      storeRegion = "syd";
-      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
-      const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1"), region: true } });
-
-      await execute(run.id);
-
-      expect(verbs.filter((verb) => verb.startsWith("writer@"))).toEqual(["writer@syd-1(none)"]);
-      expect(named("syd-1").copy).toMatchObject({ kind: "root", readonly: false });
-      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
-      expect(await rows()).toMatchObject([{ state: "done", message: "web was not started; a Deploy starts it on syd-1" }]);
-    });
-
     describe("a move a Deploy asked for, into the region that Deploy runs the Service in", () => {
       const untouched = async (message: string) => {
         expect(verbs).toEqual([]);
@@ -3352,7 +3340,7 @@ describe("volume runs", () => {
 
       it("stops nothing once that Deploy ended, since no Deploy is left to start the Service", async () => {
         const run = await asked({ region: true });
-        deploying = { ...deploying, inFlight: false };
+        deployStatus = "cancelled";
 
         await execute(run.id);
 
@@ -3364,6 +3352,7 @@ describe("volume runs", () => {
 
         await execute(run.id);
 
+        expect(verbs.filter((verb) => verb.startsWith("writer@"))).toEqual(["writer@syd-1(none)"]);
         expect(named("syd-1").copy).toMatchObject({ kind: "root", readonly: false });
         expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
         expect(await rows()).toMatchObject([{ state: "done", message: "web was not started; a Deploy starts it on syd-1" }]);
