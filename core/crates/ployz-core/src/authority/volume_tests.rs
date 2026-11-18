@@ -612,6 +612,10 @@ fn a_move_approval_shows_both_servers_the_service_it_starts_and_the_mirrors_that
         ]
     );
     assert_eq!(
+        change.leaving_stopped().line(),
+        "Approved: move data from web-1 to web-2. db stops on web-1 for the last copy and stays stopped. The Mirror on web-3 keeps syncing."
+    );
+    assert_eq!(
         ApprovedVolumeChange::moving(&approval(moving()), "data", name, service("e")),
         None,
         "a payload the approval does not name"

@@ -199,6 +199,15 @@ pub(in crate::handlers) fn draft_move(
 }
 
 impl MoveDraft {
+    /// This draft for a person who asked to leave the Service stopped: its lines say the
+    /// Service stays stopped, where they would say it starts on the target.
+    pub(in crate::handlers) fn leaving_stopped(self) -> Self {
+        Self {
+            change: self.change.leaving_stopped(),
+            ..self
+        }
+    }
+
     /// Sign the Move of `volume`, after showing the change and asking.
     ///
     /// # Errors

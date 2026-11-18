@@ -316,12 +316,16 @@ pub enum ApprovedVolumeChange {
     },
     /// `volume` moves from `from` to `to`. Its Service stops on `from` for the last copy and
     /// starts on `to` as `service` shows, and the Mirrors on `mirrors` keep following it.
+    /// With `stopped` the person asked for the Move knowing `to` doesn't run the Service,
+    /// which stays stopped.
     Move {
         volume: String,
         from: String,
         to: String,
         service: ApprovedChange,
         mirrors: Vec<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        stopped: bool,
     },
     /// `server` makes its copy of `volume` the Writer at snapshot `at`, starting nothing.
     /// Writes after `lost_after`, the time the client read the approval's `loses_after` as,
@@ -456,7 +460,18 @@ impl ApprovedVolumeChange {
             to: name(to),
             service,
             mirrors: mirrors.iter().map(&name).collect(),
+            stopped: false,
         })
+    }
+
+    /// This change as the person reads it when they asked to leave the Service stopped. A
+    /// change other than a Move is unchanged.
+    #[must_use]
+    pub fn leaving_stopped(mut self) -> Self {
+        if let Self::Move { stopped, .. } = &mut self {
+            *stopped = true;
+        }
+        self
     }
 
     /// The lines a person reads: [`Self::line`], then for a Move the Service it starts and
@@ -534,6 +549,7 @@ impl ApprovedVolumeChange {
                 to,
                 service,
                 mirrors,
+                stopped,
             } => {
                 let line = Shown::words("Approved: move ")
                     .and_text(volume)
@@ -544,10 +560,14 @@ impl ApprovedVolumeChange {
                     .and_words(". ")
                     .and_text(service.service.as_str())
                     .and_words(" stops on ")
-                    .and_text(from)
-                    .and_words(" for the last copy, then starts on ")
-                    .and_text(to)
-                    .and_words(".");
+                    .and_text(from);
+                let line = if *stopped {
+                    line.and_words(" for the last copy and stays stopped.")
+                } else {
+                    line.and_words(" for the last copy, then starts on ")
+                        .and_text(to)
+                        .and_words(".")
+                };
                 match mirrors.as_slice() {
                     [] => line,
                     [mirror] => line

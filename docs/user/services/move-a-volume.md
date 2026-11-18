@@ -179,6 +179,15 @@ Below the first line is `web` as it starts on `web-2`, with each setting, as a
 `web-1`, so read these lines before you answer: a setting you didn't make shows here even if
 Cloud put it there. Answer no and nothing is signed or moved.
 
+With `--leave-stopped` onto a server that doesn't run your service, the first line says it stays
+stopped:
+
+```
+Approved: move data from web-1 to web-2. web stops on web-1 for the last copy and stays stopped.
+```
+
+The lines below it are the same, and you sign them too.
+
 A script has no terminal to ask in, so the move is refused before it signs and tells you to add
 `--yes`. With `--yes`, or `PLOYZ_AUTO_CONFIRM=1`, it prints the same lines and signs without
 asking. Use `--yes` only where you trust what Ployz Cloud relays.

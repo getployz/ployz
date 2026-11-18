@@ -756,21 +756,23 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
         &to,
         view.volume.recorded_storage,
     )?;
-    if let Some(draft) = &draft
-        && !draft.starts
-    {
-        let service = &draft.service.name;
-        if !leave_stopped {
-            let deploys =
-                super::super::deploy::volume_moves::listed(&store, &found.environment, &[])
-                    .iter()
-                    .any(|moved| moved.volume == volume.as_str());
-            return Err(leaves_stopped(matches, (&volume, service, &to), deploys));
+    let draft = match draft {
+        Some(draft) if !draft.starts => {
+            let service = &draft.service.name;
+            if !leave_stopped {
+                let deploys =
+                    super::super::deploy::volume_moves::listed(&store, &found.environment, &[])
+                        .iter()
+                        .any(|moved| moved.volume == volume.as_str());
+                return Err(leaves_stopped(matches, (&volume, service, &to), deploys));
+            }
+            crate::ui::warn(format!(
+                "{service} stays stopped after this move, and {volume} can't move again, until a Deploy runs {service} on {to}."
+            ));
+            Some(draft.leaving_stopped())
         }
-        crate::ui::warn(format!(
-            "{service} stays stopped after this move, and {volume} can't move again, until a Deploy runs {service} on {to}."
-        ));
-    }
+        draft => draft,
+    };
     let approval = draft
         .map(|draft| draft.sign(matches, &volume))
         .transpose()?;
