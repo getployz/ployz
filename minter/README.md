@@ -2,7 +2,7 @@
 
 The minter holds the Ployz GitHub App's private key and client secret, so that hosted Cloud does not. Cloud asks it for installation tokens and gets only `contents`, `metadata`, `pull_requests` and `checks` at `read`. Everything else Cloud does in GitHub is a narrow operation on the build workflow or the Ployz check. No route returns a write token, takes a GitHub path from the caller, or returns Actions jobs, logs or artifacts.
 
-The minter authenticates Cloud but does not trust it. Every response is one a compromised Cloud may hold. The design and its check against the Cloud security bar are in `docs/agents/plans/security-0.4/m-plan.md`.
+The minter authenticates Cloud but does not trust it. Every response is one a compromised Cloud may hold.
 
 ## Routes
 

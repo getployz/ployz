@@ -23,7 +23,7 @@ old=$(sed -n 's/^pub const BUILDER_SHA: &str = "\([0-9a-f]\{40\}\)";$/\1/p' core
 
 rule=core/crates/ployz-core/src/authority/rule.rs
 sed -i "s/^pub const BUILDER_SHA: &str = \"$old\";\$/pub const BUILDER_SHA: \&str = \"$new\";/" "$rule"
-git grep -lz "$old" -- . ':!docs/agents/plans' ":!$rule" ':!core/crates/ployz-core/src/authority/rule_tests.rs' |
+git grep -lz "$old" -- . ":!$rule" ':!core/crates/ployz-core/src/authority/rule_tests.rs' |
     xargs -0 -r sed -i "s/$old/$new/g"
 grep -qF "\"$old\"," "$rule" || {
     echo "add $old to RETIRED_BUILDERS in $rule if its workflow installs no Ployz release" >&2
@@ -38,5 +38,5 @@ canonical.digests = [GITHUB_WORKFLOW_TEMPLATES.build, GITHUB_WORKFLOW_TEMPLATES.
   .map((workflow) => createHash("sha256").update(workflow.replaceAll("\r\n", "\n"), "utf8").digest("hex"));
 writeFileSync(path, `${JSON.stringify(canonical, null, 2)}\n`);
 JS
-git grep -n "$new" -- . ':!docs/agents/plans'
+git grep -n "$new" -- .
 bash core/scripts/check-builder-pin.sh

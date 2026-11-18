@@ -357,9 +357,9 @@ impl AutoDeployRule {
         self.services.iter().find(|service| service.name == *name)
     }
 
-    /// Check a verified GitHub token's claims against this rule, in the order
-    /// `d-build-proof.md` lists them. The audience is the caller's: it depends on the
-    /// holder, recipient or image in hand.
+    /// Check a verified GitHub token's claims against this rule, in the order the body
+    /// runs them. The audience is the caller's: it depends on the holder, recipient or
+    /// image in hand.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
