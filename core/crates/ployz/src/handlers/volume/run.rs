@@ -1111,23 +1111,22 @@ fn refused(
     let confirm = matches!(&error, StoreCallError::Refused(refusal) if refusal.code == RpcErrorCode::ConfirmationRequired);
     // Cloud refused a Move that would stop the Service and start it nowhere: the Deploy that
     // moves the Volume itself comes next, or the same Move asked to leave it stopped.
-    let stops = match &error {
-        StoreCallError::Refused(refusal)
-            if refusal
+    let stops = if let StoreCallError::Refused(refusal) = &error
+        && refusal
+            .details
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            == Some("leaves_service_stopped")
+    {
+        Some(
+            refusal
                 .details
-                .get("reason")
-                .and_then(|reason| reason.as_str())
-                == Some("leaves_service_stopped") =>
-        {
-            Some(
-                refusal
-                    .details
-                    .get("deploys")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true),
-            )
-        }
-        _ => None,
+                .get("deploys")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true),
+        )
+    } else {
+        None
     };
     let failure = store.fail(error);
     match stops {
