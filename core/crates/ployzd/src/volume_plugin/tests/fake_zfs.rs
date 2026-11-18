@@ -521,5 +521,17 @@ esac
     let zfs = directory.join("zfs");
     std::os::unix::fs::symlink(&script, &zpool).unwrap();
     std::os::unix::fs::symlink(&script, &zfs).unwrap();
+    // `umount -l` detaches the mount whatever still reads it.
+    let umount = directory.join("fake-umount");
+    fs::write(
+        &umount,
+        format!(
+            "#!/bin/sh\nprintf 'umount %s\\n' \"$*\" >> '{}'\nrm -f '{}'\n",
+            commands.display(),
+            mounted.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&umount, fs::Permissions::from_mode(0o755)).unwrap();
     (zpool, zfs)
 }

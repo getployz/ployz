@@ -303,7 +303,7 @@ impl VolumeStorage {
             }),
         );
         if mounted {
-            self.z(&["unmount", &root_name]).await?;
+            self.unmount_cut_root(root).await.map_err(internal)?;
         }
         self.park_root_in_slot(&scope.pool, &scope.datasets, name, root)
             .await

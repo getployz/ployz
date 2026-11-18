@@ -29,6 +29,7 @@ use super::{
 pub(super) struct VolumeStorage {
     pub(super) pool: PoolStorage,
     pub(super) zfs: PathBuf,
+    pub(super) umount: PathBuf,
     pub(super) mutation: MutationLock,
     pub(super) installation: ployzd::mutation::MutationGate,
     pub(super) receives: super::transfer::Receives,
@@ -109,6 +110,7 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new("zpool"),
             zfs: "zfs".into(),
+            umount: "umount".into(),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(run_dir, data_dir),
             receives: super::transfer::Receives::default(),
@@ -129,6 +131,7 @@ impl VolumeStorage {
         Self {
             pool: PoolStorage::new(zpool).with_backing(backing),
             zfs: zfs.into(),
+            umount: fixture.join("fake-umount"),
             mutation: MutationLock::default(),
             installation: ployzd::mutation::MutationGate::new(
                 fixture.join("admission-run"),

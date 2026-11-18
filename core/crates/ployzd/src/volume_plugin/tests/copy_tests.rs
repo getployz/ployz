@@ -95,6 +95,7 @@ fn state(test: &TestDir) -> Vec<(String, String)> {
                     name.as_str(),
                     "commands"
                         | "fake-zfs"
+                        | "fake-umount"
                         | "zfs"
                         | "zpool"
                         | "receive-pid"
@@ -185,6 +186,30 @@ async fn the_cut_parks_the_root_in_the_slot_at_the_target() {
     let before = commands(&test);
     assert_eq!(post(&socket, "/Volume.Copy.Cut", request).await, reply);
     assert!(effects(&commands(&test)[before.len()..]).is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn the_cut_detaches_a_root_something_outside_docker_still_reads() {
+    let test = TestDir::new();
+    let (socket, server) = writer(&test, &[("w-1-1", 11)]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/busy-mount"), "").unwrap();
+
+    let reply = post(
+        &socket,
+        "/Volume.Copy.Cut",
+        json!({"name": "data", "target": "f-1"}),
+    )
+    .await;
+
+    assert_eq!(reply.pointer("/Ok/kind"), Some(&json!("slot")), "{reply}");
+    let log = commands(&test);
+    assert!(
+        log.contains("umount -l /var/lib/ployz-volumes/data\n"),
+        "{log}"
+    );
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["f-1", "w-1-1"]);
     server.abort();
 }
 

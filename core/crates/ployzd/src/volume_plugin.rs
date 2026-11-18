@@ -25,6 +25,7 @@ use tower_service::Service;
 mod capacity;
 mod copy;
 mod departure;
+mod detach;
 mod error;
 mod inspect;
 mod marks;
