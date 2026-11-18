@@ -358,7 +358,7 @@ commands! {
         keyed [c.id.as_str()] if crate::replay::project
         needs EnvironmentCreate
         agent none "No tool creates an Environment."
-        => crate::project::create_environment(tx, who, c);
+        => crate::project::create_environment(tx, who, c, trusted);
     /// Create an image Service, or an empty one.
     CreateService(CreateService) -> Service(ServiceStaged)
         keyed [c.id.as_str()] if crate::replay::same_environment

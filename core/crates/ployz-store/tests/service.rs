@@ -454,6 +454,7 @@ fn a_replayed_create_refuses_once_the_default_environment_moved() {
                 id: EnvironmentId::parse(uuid(9)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

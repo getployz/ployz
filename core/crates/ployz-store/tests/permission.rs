@@ -434,6 +434,7 @@ fn with_staging() -> (ConfigStore, Actor) {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

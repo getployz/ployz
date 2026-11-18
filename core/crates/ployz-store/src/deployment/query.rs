@@ -133,6 +133,11 @@ pub struct OwnedNamespace {
     pub namespace: ployz_core::Namespace,
     pub project: crate::ProjectName,
     pub environment: crate::EnvironmentName,
+    /// The region its Services run in as Working State has it, for the next Deploy; none
+    /// when it runs in any region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<ployz_core::Region>,
 }
 
 /// One page of an Environment's Deployments, newest first.
@@ -457,7 +462,7 @@ fn saved_target_setup(
 /// Every Namespace `who`'s Environments own.
 pub(crate) fn namespaces(tx: &mut dyn Tx, who: &Actor) -> Result<NamespacesView, RpcError> {
     let rows = tx.query(
-        "SELECT n.namespace, p.name, e.name FROM config_namespace n \
+        "SELECT n.namespace, p.name, e.name, e.working FROM config_namespace n \
          JOIN config_environment e ON e.id = n.environment_id \
          JOIN config_project p ON p.id = e.project_id \
          WHERE n.organization_id = ?1 ORDER BY n.namespace",
@@ -470,6 +475,7 @@ pub(crate) fn namespaces(tx: &mut dyn Tx, who: &Actor) -> Result<NamespacesView,
                 namespace: row.parse(0, "Namespace")?,
                 project: row.parse(1, "Project name")?,
                 environment: row.parse(2, "Environment name")?,
+                region: row.intent(3, "Working State")?.region,
             })
         })
         .collect::<Result<_, RpcError>>()?;

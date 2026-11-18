@@ -2446,6 +2446,7 @@ fn history_refuses_a_hostname_another_environment_took_since() {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000030").unwrap(),
                 project: None,
                 name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -2524,6 +2525,7 @@ fn discard_refuses_a_hostname_another_environment_took_since() {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000030").unwrap(),
                 project: None,
                 name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

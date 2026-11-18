@@ -198,7 +198,7 @@ pub(crate) fn create_branch(
         None => applied.base,
     };
 
-    let summary = insert_environment(tx, who, &project, &create.id, create.name.clone())?;
+    let summary = insert_environment(tx, who, &project, &create.id, create.name.clone(), None)?;
     let mut branch = Environment {
         summary,
         working: into,

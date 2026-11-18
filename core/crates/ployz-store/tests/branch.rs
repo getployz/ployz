@@ -1076,6 +1076,7 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
                 id: EnvironmentId::parse(uuid(20)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

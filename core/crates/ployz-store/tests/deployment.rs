@@ -4751,6 +4751,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000099").unwrap(),
                 project: None,
                 name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

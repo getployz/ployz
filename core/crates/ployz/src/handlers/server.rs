@@ -19,6 +19,7 @@ use ployz_core::{
     UpdateMachineRequest, op,
 };
 
+use ployz_store::{REGION_LABEL, RegionKey};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -755,10 +756,15 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
 }
 
 pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
-    let mut label_changes = parse_label_add(matches)?
-        .into_iter()
-        .map(|(key, value)| (key, Some(value)))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut label_changes = std::collections::BTreeMap::new();
+    for (key, value) in parse_label_add(matches)? {
+        let value = if key.as_str() == REGION_LABEL {
+            RegionKey::parse(value.as_str())?.as_str().parse()?
+        } else {
+            value
+        };
+        label_changes.insert(key, Some(value));
+    }
     for key in string_values(matches, "label-rm") {
         let key = ployz_core::MachineLabelKey::parse(key)?;
         match label_changes.entry(key) {
@@ -1655,6 +1661,24 @@ mod tests {
         ] {
             assert!(parse(&flags).is_err(), "{flags:?}");
         }
+        for value in ["eu/west", "a:b", "*"] {
+            let refused = parse(&["--label-add", &format!("region={value}")])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("A region is the value of a Server's region label"),
+                "{value}: {refused}"
+            );
+        }
+        let patch = parse(&["--label-add", "region=Fsn"]).unwrap();
+        assert_eq!(
+            patch
+                .label_changes
+                .get("region")
+                .and_then(Option::as_ref)
+                .map(ployz_core::MachineLabelValue::as_str),
+            Some("fsn")
+        );
     }
 
     #[test]

@@ -1166,6 +1166,7 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
                 id: EnvironmentId::parse(uuid(20)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1628,6 +1629,7 @@ fn roots_sync_into_a_branch_they_didnt_make_and_into_each_other() {
                 id: EnvironmentId::parse(uuid(20)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

@@ -40,6 +40,7 @@ fn create_environment(id: &str, project: Option<&str>, name: &str) -> CreateEnvi
         id: EnvironmentId::parse(uuid(id)).unwrap(),
         project: project.map(|project| ProjectName::parse(project).unwrap()),
         name: EnvironmentName::parse(name).unwrap(),
+        region: None,
     }
 }
 

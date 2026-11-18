@@ -84,6 +84,7 @@ fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: EnvironmentId::parse(uuid(6)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -746,6 +747,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
                 id: EnvironmentId::parse(uuid(8)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("production").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1158,6 +1160,37 @@ fn shutting_down_what_never_ran_applies_at_once() {
         &Trusted::default(),
     );
     assert_eq!(refusal(again).code, RpcErrorCode::Conflict);
+}
+
+#[test]
+fn a_namespace_names_the_region_its_environment_runs_in() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web"]);
+    let regions = || {
+        store
+            .read(&who, &ployz_store::NamespacesQuery {})
+            .unwrap()
+            .namespaces
+            .into_iter()
+            .map(|owned| owned.region.map(|region| region.to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(regions(), [None]);
+
+    store
+        .write(
+            &who,
+            &ployz_store::Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![ployz_store::Change::Set {
+                    path: ployz_store::SettingPath::REGION,
+                    value: json!("fsn"),
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(regions(), [Some("fsn".to_owned())]);
 }
 
 #[test]
@@ -2150,6 +2183,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
             id: EnvironmentId::parse(uuid(9)).unwrap(),
             project: None,
             name: EnvironmentName::parse("qa").unwrap(),
+            region: None,
         })),
         None,
     );

@@ -1645,6 +1645,7 @@ fn an_undeployed_environment_is_removed_from_a_local_store() {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
                 project: None,
                 name: EnvironmentName::parse("preview").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -3048,6 +3049,7 @@ fn a_keyed_retry_of_the_latest_replays_after_it_becomes_the_latest() {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
                 project: None,
                 name: EnvironmentName::parse("preview").unwrap(),
+                region: None,
             },
         )
         .unwrap();

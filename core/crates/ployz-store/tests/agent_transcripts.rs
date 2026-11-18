@@ -283,6 +283,7 @@ fn a_replayed_save_refuses_once_the_default_environment_moved() {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

@@ -5,9 +5,10 @@ use std::collections::BTreeSet;
 
 use ployz_core::ServiceName;
 use ployz_store::{
-    Actor, ConfigStore, CreateProject, CreateService, DiffQuery, EnvironmentId, EnvironmentQuery,
-    EnvironmentRef, NameRegion, NewRegionQuery, OrganizationId, Permission, PlanQuery, ProjectId,
-    ProjectName, Publish, Region, RegionKey, RegionName, RegionsQuery, ServiceLineageId, Trusted,
+    Actor, ConfigStore, CreateEnvironment, CreateProject, CreateService, DiffQuery, EnvironmentId,
+    EnvironmentName, EnvironmentQuery, EnvironmentRef, NameRegion, NewRegionQuery, OrganizationId,
+    Permission, PlanQuery, ProjectId, ProjectName, Publish, Region, RegionKey, RegionName,
+    RegionsQuery, ServiceLineageId, Trusted,
 };
 
 mod backend;
@@ -147,9 +148,10 @@ fn naming_a_region_again_converges_on_the_last_name() {
 fn a_region_with_no_name_shows_its_built_in_one() {
     let (store, who) = shop();
     assert_eq!(
-        shown(&store, &who, &["default", "FSN", "eu_west"]),
+        shown(&store, &who, &["default", "FSN", "eu_west", "not a region"]),
         [
             ("default".into(), "Default".into()),
+            ("eu_west".into(), "eu_west".into()),
             ("fsn".into(), "fsn".into())
         ]
     );
@@ -250,4 +252,61 @@ fn a_new_region_takes_a_key_from_its_name_unless_a_region_has_it_in_any_case() {
         new_region(&store, &who, "東京", &[]),
         Err("Use at least one letter a-z or digit.".into())
     );
+}
+
+const KEY_RULE: &str = "A region is the value of a Server's region label: letters, digits, hyphens, underscores and dots, for example fsn.";
+
+#[test]
+fn a_key_is_what_placement_reads_in_a_region_label() {
+    for key in ["fsn", "us-east-1", "eu_west.1", "FSN_1"] {
+        assert_eq!(
+            RegionKey::parse(key).unwrap().as_str(),
+            key.to_ascii_lowercase()
+        );
+    }
+    for key in ["", "a b", "fsn/1", "é", "🦀"] {
+        assert_eq!(RegionKey::parse(key).unwrap_err().message, KEY_RULE);
+    }
+}
+
+#[test]
+fn a_new_environment_runs_where_it_was_created_and_an_older_one_in_any_region() {
+    let (store, who) = shop();
+    let create = |n: u8, name: &str, region: Option<&str>| {
+        store
+            .write(
+                &who,
+                &CreateEnvironment {
+                    id: EnvironmentId::parse(format!("00000000-0000-4000-8000-0000000000{n:02}"))
+                        .unwrap(),
+                    project: None,
+                    name: EnvironmentName::parse(name).unwrap(),
+                    region: region.map(|region| ployz_core::Region::parse(region).unwrap()),
+                },
+            )
+            .unwrap();
+    };
+    let region_of = |name: &str| {
+        store
+            .read(
+                &who,
+                &EnvironmentQuery {
+                    environment: EnvironmentRef {
+                        project: None,
+                        environment: Some(EnvironmentName::parse(name).unwrap()),
+                    },
+                    path: None,
+                    all: false,
+                },
+            )
+            .unwrap()
+            .region
+            .map(|region| region.to_string())
+    };
+    create(10, "staging", Some("Default"));
+    create(11, "qa", None);
+
+    assert_eq!(region_of("staging"), Some("default".to_owned()));
+    assert_eq!(region_of("qa"), None);
+    assert_eq!(region_of("production"), None);
 }

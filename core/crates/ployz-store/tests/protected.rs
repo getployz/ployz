@@ -98,6 +98,7 @@ fn shop() -> (ConfigStore, Actor) {
                 id: EnvironmentId::parse(uuid(4)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

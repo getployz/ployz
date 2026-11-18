@@ -17,12 +17,12 @@ use crate::storage::Tx;
 /// The Machine Label that holds a Server's region.
 pub const REGION_LABEL: &str = "region";
 
-const KEY_RULE: &str =
-    "Use up to 63 lowercase letters, digits and hyphens. Start with a letter or digit.";
+const KEY_RULE: &str = "A region is the value of a Server's region label: letters, digits, hyphens, underscores and dots, for example fsn.";
 const NAME_RULE: &str = "A region's name is 1 to 40 characters on one line.";
 const DERIVED_RULE: &str = "Use at least one letter a-z or digit.";
 
 /// A region's key: a Server's `region` label value in lowercase, as placement compares it.
+/// Its grammar is [`ployz_core::Region`]'s, the one placement reads.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
@@ -34,18 +34,9 @@ impl RegionKey {
     /// # Errors
     /// Returns `invalid_argument` saying what a key is.
     pub fn parse(value: impl Into<String>) -> Result<Self, RpcError> {
-        let value = value.into().to_ascii_lowercase();
-        let mut bytes = value.bytes();
-        let valid = value.len() <= 63
-            && bytes
-                .next()
-                .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
-            && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-        if valid {
-            Ok(Self(value))
-        } else {
-            Err(error::invalid(KEY_RULE, Value::Null))
-        }
+        ployz_core::Region::parse(value.into())
+            .map(|region| Self(region.as_str().to_owned()))
+            .map_err(|_| error::invalid(KEY_RULE, Value::Null))
     }
 
     /// Where a Server starts when it joins with no region.
@@ -376,8 +367,8 @@ mod tests {
     fn a_region_key_is_lowercase_and_fits_the_label_grammar() {
         assert_eq!(key("FSN").as_str(), "fsn");
         assert_eq!(key("eu-west-1").as_str(), "eu-west-1");
-        assert_eq!(key(&"a".repeat(63)).as_str().len(), 63);
-        for refused in ["", "-fsn", "eu_west", "eu west", "zürich", &"a".repeat(64)] {
+        assert_eq!(key("eu_west.1").as_str(), "eu_west.1");
+        for refused in ["", "eu west", "zürich", "fsn/1", "a:b"] {
             assert_eq!(
                 RegionKey::parse(refused).unwrap_err().message,
                 KEY_RULE,
@@ -433,7 +424,7 @@ mod tests {
             (key("lhr"), name("London")),
         ]);
         assert_eq!(
-            regions(["SYD", "default", "syd", "eu_west"], &given),
+            regions(["SYD", "default", "syd", "eu west"], &given),
             [
                 Region {
                     key: RegionKey::default_region(),
@@ -458,7 +449,7 @@ mod tests {
             ("web-2", Some("default")),
             ("db-1", Some("syd")),
             ("old-1", None),
-            ("odd-1", Some("eu_west")),
+            ("odd-1", Some("eu west")),
         ];
         let listed = region_servers(
             regions(
