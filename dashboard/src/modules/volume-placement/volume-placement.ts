@@ -87,6 +87,16 @@ export type PlacementRow = {
 /** Whether `row` holds a placement a person staged. Cloud's move into a region never replaces or lists over one. */
 export const userStaged = (row: Pick<PlacementRow, "staged" | "region">): boolean => row.staged !== null && row.region !== true;
 
+/**
+ * `row` as the Volume drawer reads it. The move Cloud staged into the Volume's region is the next Deploy's and no edit
+ * of the person's, so the drawer lists nothing for it and builds their edit on what is applied.
+ */
+export const ownPlacement = (row: PlacementRow | null): PlacementRow | null => {
+  if (row?.region !== true) return row;
+  const { region: _cloud, ...own } = row;
+  return { ...own, staged: null };
+};
+
 export type MoveHow = "promote" | "copy" | "restore";
 
 /** One row of the review. A move is one change, whatever it does to Mirrors. */

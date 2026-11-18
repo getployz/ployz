@@ -26,7 +26,7 @@ import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.place
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/volume-copies.refresh";
 import { moveServers, placementBlockers, placementServers, restoreOpen } from "#/modules/volume-placement/daemon-release";
 import {
-  appliedMirrors, editPlacement, lossMoment, lossTime, observePlacement, type Placement, type PlacementEdit, type PlacementRow,
+  appliedMirrors, editPlacement, lossMoment, lossTime, observePlacement, ownPlacement, type Placement, type PlacementEdit, type PlacementRow,
   placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
@@ -58,7 +58,7 @@ export function useVolumeCopies(organizationSlug: string, environment: Environme
   const deleteCopy = useDeleteCopy(organizationSlug, environment, volume);
   const inFlight = useInFlightDeployments(organizationSlug, environment);
   const mirror = useRefreshMirror(organizationSlug, environment, volume.id);
-  const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
+  const row = ownPlacement(rows.find((entry) => entry.volumeId === volume.id) ?? null);
   const copies = members === undefined ? null
     : copiesFromPlacement({ volume, members, row, active: running, statuses: mirror.statuses });
   const accepting = placementServers(lens.machines);
@@ -129,7 +129,7 @@ export function VolumeCopiesPanel(props: CopiesPanelProps) {
   const { volume, members, rows, copies, accepting, owed, floorless, open, onOpen } = props;
   const now = useMinute() ?? new Date();
   if (members === undefined) return <Empty variant="placeholder"><EmptyDescription>Waiting for your servers.</EmptyDescription></Empty>;
-  const row = rows.find((entry) => entry.volumeId === volume.id) ?? null;
+  const row = ownPlacement(rows.find((entry) => entry.volumeId === volume.id) ?? null);
   const recovered = recovery(volume, members, row, accepting, owed, floorless);
   const progress = props.running === null ? null
     : approvalProgress(props.running, now.getTime(), (id) => members.find((member) => member.machine.id === id)?.machine.name);

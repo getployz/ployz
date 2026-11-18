@@ -428,6 +428,13 @@ describe("mirror detail", () => {
     expect(onOpen).toHaveBeenCalledWith(null);
   });
 
+  it("builds an edit on what is applied, not on the move Cloud staged into the Environment's region", () => {
+    const region: PlacementRow = { ...row(["web-2"], { primary: "web-3", mirrors: ["web-2"] }), region: true };
+    const { stage } = panel([...fresh(), pooled("web-3")], region, { open: "web-2" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove mirror" }));
+    expect(stage).toHaveBeenLastCalledWith({ primary: id("web-1"), mirrors: [], deletes: [] }, [id("web-2")]);
+  });
+
   it("keeps a mirror known only from its silent Server's last report qualified when opened, with no age and no edit", () => {
     const cliMirror: Member = { machine: { id: id("web-2"), name: "web-2" }, answered: false, lastMirror: true };
     const { stage } = panel([member("web-1", "writer"), cliMirror], null, { open: "web-2", matchedAt: new Date(NOW.getTime() - 135 * 60_000).toISOString() });
