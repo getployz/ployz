@@ -28,6 +28,7 @@ import type { OperationVerb } from "#/modules/approvals/approvals";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import { labelledRegion, serviceRegion, settingRegions } from "#/modules/volume-placement/volume-placement";
 import type { JsonObject, JsonValue } from "#/db/tables";
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import { createVolumeRunRequestedEvent, createVolumeRunTakenEvent } from "#/modules/inngest/events";
@@ -1441,6 +1442,12 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
   }).pipe(Effect.scoped);
 };
 
+/**
+ * A Service a Move left stopped on its new writer. `region` is the one the next Deploy runs it in, as the Store has it
+ * now, and `here` whether the writer is in it. No `region` when the Service runs in any region, or the Store didn't say.
+ */
+export type Unstarted = { readonly service: string; readonly region?: string; readonly here?: boolean };
+
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
   | {
@@ -1449,6 +1456,8 @@ export type CopyAnswer =
     readonly receipt?: MachineSigned;
     /** The Machine became the writer and was not asked to start the Service, whose placement leaves it out. */
     readonly unstarted?: true;
+    /** With `unstarted`: the Service left stopped, and whether the next Deploy runs it on that Machine. */
+    readonly stopped?: Unstarted;
   }
   | {
     readonly ok: false;
@@ -1776,8 +1785,22 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
       }
       : null,
   }, approved?.approval, start.receipt ?? undefined);
-  return answer.ok && !placed ? { ...answer, unstarted: true as const } : answer;
+  if (!answer.ok || placed) return answer;
+  const region = yield* nextRegion(ctx.organizationId, holder.namespace, spec.name);
+  const left: Unstarted = region === null ? { service: spec.name } : { service: spec.name, region, here: labelledRegion(target.labels) === region };
+  return { ...answer, unstarted: true as const, stopped: left };
 }, Effect.scoped);
+
+/** The one region the next Deploy runs `service` of `namespace` in, as the Store has it now. Null for any region, and when the Store doesn't say. */
+const nextRegion = (organizationId: string, namespace: string, service: string) => Effect.gen(function* () {
+  const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
+  const owned = namespaces.find((entry) => entry.namespace === namespace);
+  if (owned === undefined) return null;
+  const answer = yield* readStore(organizationId, { query: "environment", environment: { project: owned.project, environment: owned.environment }, path: null, all: false });
+  return serviceRegion(settingRegions(answer), service);
+}).pipe(
+  Effect.catch((error) => Effect.logWarning("Couldn't read the region a moved Service runs in.", { organizationId, error }).pipe(Effect.as(null))),
+);
 
 /**
  * The stopped Container's spec as B starts it, from the image already copied there. The spec was resolved at the

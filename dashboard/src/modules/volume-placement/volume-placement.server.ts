@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId, ResolvedServiceSpec, Signed } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
-import { Data, Effect, Option, Schema, Semaphore } from "effect";
+import { Data, Effect, Option, Semaphore } from "effect";
 import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
@@ -15,7 +15,7 @@ import { failedRestore, volumePlacement } from "#/modules/volume-placement/table
 import { keptFor, type PlacementApproval } from "#/modules/volume-placement/placement-approvals";
 import {
   appliedMirrors, lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow,
-  regionPlacement, regionVolumes, type Seed, type SettingRegions, type StoredPlacement, userStaged,
+  labelledRegion, regionPlacement, regionVolumes, type Seed, settingRegions, type StoredPlacement, userStaged,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -299,14 +299,11 @@ type LabelledServer = { readonly id: MachineId; readonly region: string; readonl
 /** The Organization's Servers that are in a region. */
 export type RegionReader = (organizationId: string) => Effect.Effect<readonly LabelledServer[], unknown, OrganizationRuntime>;
 
-// The Engine's own test of a region label, which reads it lowercased.
-const REGION = /^[a-z0-9_.-]+$/i;
-
 export const readRegionServers: RegionReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
   Effect.map((frame) => (frame?.machines ?? []).flatMap(({ machine }): LabelledServer[] => {
-    const region = machine.labels["region"];
-    return region === undefined || !REGION.test(region) ? [] : [{
-      id: machine.id, region: region.toLowerCase(), acceptsServices: machine.accepts_services, committableBytes: machine.runtime.pool_committable_bytes ?? null,
+    const region = labelledRegion(machine.labels);
+    return region === null ? [] : [{
+      id: machine.id, region, acceptsServices: machine.accepts_services, committableBytes: machine.runtime.pool_committable_bytes ?? null,
     }];
   })),
 );
@@ -322,18 +319,6 @@ export type RegionMove = {
   readonly to: string;
   readonly clears: readonly string[];
 };
-
-const decodeCounts = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Number));
-const REPLICAS = ".replicas";
-
-/** The regions in the Store's answer for an Environment: its own, and those its listed Settings count replicas by. The answer lists only the Settings that differ from their default. */
-const settingRegions = (answer: { readonly region?: string | null; readonly settings: readonly { readonly path: string; readonly value: unknown }[] }): SettingRegions => ({
-  environment: answer.region ?? null,
-  counted: new Map(answer.settings.flatMap(({ path, value }) => !path.endsWith(REPLICAS) ? [] : Option.match(decodeCounts(value), {
-    onNone: () => [],
-    onSome: (counts) => [[path.slice(0, -REPLICAS.length), Object.keys(counts)] as const],
-  }))),
-});
 
 const readVolumes = (organizationId: string, environment: EnvironmentRef) => readStore(organizationId, { query: "volumes", environment });
 type VolumesListing = Effect.Success<ReturnType<typeof readVolumes>>;

@@ -552,20 +552,43 @@ export type RegionVolume = PlacementVolume & {
 /** The regions an Environment's Settings name: its own, and those each Service counts its replicas by. */
 export type SettingRegions = { readonly environment: string | null; readonly counted: ReadonlyMap<string, readonly string[]> };
 
+const decodeCounts = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Number));
+const REPLICAS = ".replicas";
+
+/** The regions in the Store's answer for an Environment: its own, and those its listed Settings count replicas by. The answer lists only the Settings that differ from their default. */
+export const settingRegions = (answer: { readonly region?: string | null; readonly settings: readonly { readonly path: string; readonly value: unknown }[] }): SettingRegions => ({
+  environment: answer.region ?? null,
+  counted: new Map(answer.settings.flatMap(({ path, value }) => !path.endsWith(REPLICAS) ? [] : Option.match(decodeCounts(value), {
+    onNone: () => [],
+    onSome: (counts) => [[path.slice(0, -REPLICAS.length), Object.keys(counts)] as const],
+  }))),
+});
+
+// The Engine's own test of a region label, which reads it lowercased.
+const REGION = /^[a-z0-9_.-]+$/i;
+
+/** The region a Server's labels put it in, or null for none. */
+export function labelledRegion(labels: { readonly [label: string]: string | undefined }): string | null {
+  const region = labels["region"];
+  return region === undefined || !REGION.test(region) ? null : region.toLowerCase();
+}
+
+/** The one region `service` runs in: the one its replicas are counted by, else the Environment's, as the Engine lowers them. Null for any region, or several. */
+export function serviceRegion(regions: SettingRegions, service: string): string | null {
+  const counted = regions.counted.get(service);
+  if (counted === undefined) return regions.environment;
+  return counted.length === 1 ? counted[0] ?? null : null;
+}
+
 /**
- * The Volumes a Deploy of `services` (none: every Service) keeps in one region, each with that region. A Service's
- * region is the one its replicas are counted by, else the Environment's, as the Engine lowers them. Left out: a Docker
+ * The Volumes a Deploy of `services` (none: every Service) keeps in one region, each with that region. Left out: a Docker
  * volume, which can't move, a Volume no Server holds yet or the Deploy deletes, and one whose Services run in any
  * region or in different ones.
  */
 export function regionVolumes<Volume extends RegionVolume>(
   volumes: readonly Volume[], regions: SettingRegions, services: readonly string[],
 ): { readonly volume: Volume; readonly region: string }[] {
-  const regionOf = (service: string) => {
-    const counted = regions.counted.get(service);
-    if (counted === undefined) return regions.environment;
-    return counted.length === 1 ? counted[0] ?? null : null;
-  };
+  const regionOf = (service: string) => serviceRegion(regions, service);
   return volumes.flatMap((volume) => {
     if (volume.storage.kind !== "provisioned" || !volume.deployed || volume.change === "delete") return [];
     const mounting = volume.mounts.map((mount) => mount.service);

@@ -53,6 +53,7 @@ import {
   setVolumeCopy,
   SwitchAttemptError,
   takeEpoch,
+  type Unstarted,
 } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 import { formatDuration } from "#/utils/relative-time";
@@ -212,8 +213,17 @@ const doneMessage = (...parts: ReadonlyArray<string | readonly string[] | null>)
   return kept.length === 0 ? null : kept.join("; ");
 };
 
-/** What a run says when its target became the writer and was not asked to start the Service, whose placement leaves it out. */
-const unstartedMessage = (service: string, on: string) => `${service} was not started; a Deploy starts it on ${on}`;
+/**
+ * What a run says when its target became the writer and was not asked to start the Service, whose placement leaves it
+ * out. It names the target as where a Deploy starts the Service only when the region that Deploy places by holds it.
+ */
+const unstartedMessage = (volume: string, on: string, stopped: Unstarted | undefined) => {
+  const service = stopped?.service ?? `${volume}'s Service`;
+  if (stopped?.region === undefined) return `${service} was not started: its last deploy doesn't run it on ${on}. Deploy to start it`;
+  if (stopped.here === true) return `${service} was not started; a Deploy starts it on ${on}`;
+  const { region } = stopped;
+  return `${service} was not started: ${on} is outside ${region}. A Deploy moves ${volume} back into ${region} and starts ${service} there. To run ${service} on ${on}, change the region first`;
+};
 
 /**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
@@ -770,7 +780,7 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
         receipt,
       }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
       if (!started.ok) throw new NonRetriableError(started.message);
-      unstarted = started.unstarted === true ? unstartedMessage(`${run.volumeName}'s Service`, target.machine.name) : null;
+      unstarted = started.unstarted === true ? unstartedMessage(run.volumeName, target.machine.name, started.stopped) : null;
       stays = unstarted === null ? await step.run(id("04-remove"), () => runEffect(removeKept(run, runId, forward.removeOn))) : null;
     } catch (error) {
       return stopped(steps, id("05-failed"), error instanceof Error ? error : new Error(String(error)));
@@ -877,7 +887,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     // only an estimate either way. Times stamped by different workers can disagree; a negative one says nothing.
     const startedAt = started.at ?? started.lateAt;
     const stopped = stoppedAt === null || startedAt === undefined || startedAt < stoppedAt ? null : formatDuration((startedAt - stoppedAt) / 1000);
-    if (started.unstarted === true) downtime = unstartedMessage(service, B.name);
+    if (started.unstarted === true) downtime = unstartedMessage(name, B.name, started.stopped);
     else if (stopped !== null) downtime = started.at === undefined ? `${service} was stopped about ${stopped} (its start was retried)` : `${service} was stopped ${stopped}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));

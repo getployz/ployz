@@ -238,6 +238,8 @@ describe("volume runs", () => {
   let beforeStart: (() => Promise<void>) | null;
   /** The regions the deployed Service's spec names. */
   let regions: Record<string, number> | undefined;
+  /** The Environment's region in the Store, which the next Deploy places by. */
+  let storeRegion: string | null;
   /**
    * Fails a runtime frame read, counted from 1 in `frames`: true as a Server that never answers its first frame, an RPC
    * error as the Cluster answering with it.
@@ -653,7 +655,7 @@ describe("volume runs", () => {
             if (query.environment !== undefined && query.environment.project !== storeProject) {
               throw new RpcError({ code: "not_found", message: `No Project named ${query.environment.project}`, details: null });
             }
-            return { environment: { id: "env-1", project: storeProject, name: "production", revision: 1 }, volumes: storeVolumes };
+            return { environment: { id: "env-1", project: storeProject, name: "production", revision: 1 }, volumes: storeVolumes, region: storeRegion, settings: [] };
           },
         })),
       }),
@@ -783,6 +785,7 @@ describe("volume runs", () => {
     beforeSet = new Map();
     beforeStart = null;
     regions = undefined;
+    storeRegion = null;
     frameFault = null;
     frames = 0;
     openFault = null;
@@ -3283,6 +3286,7 @@ describe("volume runs", () => {
 
     it("a Server the Service's regions leave out becomes the writer, and the Service stays stopped for the Deploy that places it there", async () => {
       regions = { fsn: 1 };
+      storeRegion = "syd";
       machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
       const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1") } });
 
@@ -3292,6 +3296,20 @@ describe("volume runs", () => {
       expect(named("syd-1").copy).toMatchObject({ kind: "root", readonly: false });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
       expect(await rows()).toMatchObject([{ state: "done", message: "web was not started; a Deploy starts it on syd-1" }]);
+    });
+
+    it("a move onto a Server outside the Environment's region says the next Deploy moves the Volume back", async () => {
+      regions = { fsn: 1 };
+      storeRegion = "fsn";
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
+      const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1") } });
+
+      await execute(run.id);
+
+      expect(await rows()).toMatchObject([{
+        state: "done",
+        message: "web was not started: syd-1 is outside fsn. A Deploy moves data back into fsn and starts web there. To run web on syd-1, change the region first",
+      }]);
     });
 
     it("says the Service stopped only once a cut answered busy stops it, and times the stop from that answer to B's", async () => {
