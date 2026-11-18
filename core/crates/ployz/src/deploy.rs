@@ -1130,15 +1130,15 @@ impl PlanError {
                 ref machine,
                 ref to,
             } => {
-                let mut details = serde_json::json!({
-                    "reason": "volume_outside_region",
-                    "volume": volume,
-                    "server": machine,
-                });
+                let mut details = serde_json::Map::from_iter([
+                    ("reason".into(), serde_json::json!("volume_outside_region")),
+                    ("volume".into(), serde_json::json!(volume)),
+                    ("server".into(), serde_json::json!(machine)),
+                ]);
                 if let Some(to) = to {
-                    details["to"] = serde_json::json!(to);
+                    details.insert("to".into(), serde_json::json!(to));
                 }
-                RpcError::conflict(self.to_string()).with_details(details)
+                RpcError::conflict(self.to_string()).with_details(details.into())
             }
             error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
                 RpcError::unavailable(error.to_string())
