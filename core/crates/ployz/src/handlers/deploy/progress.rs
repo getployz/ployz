@@ -616,9 +616,11 @@ pub(super) fn replaced(
 }
 
 /// The command that brings each Volume `view` left outside its Service's region into
-/// it: the move onto the Server the plan named, or, when a copy on another Server
-/// stops that move, the delete of that copy. None without Ployz Cloud, which makes
-/// every Volume run, and none for a Docker volume, which nothing moves.
+/// it: the Deploy again, which moves the Volume and starts the Service with it, or, when
+/// a copy on another Server stops that move, the delete of that copy. Never the move by
+/// hand: the Service still runs the spec of its last Deploy, which the plan's Server
+/// can't start. None without Ployz Cloud, which makes every Volume run, and none for a
+/// Docker volume, which nothing moves.
 pub(super) fn region_moves(
     view: &DeploymentView,
     cloud: bool,
@@ -633,13 +635,14 @@ pub(super) fn region_moves(
         "--env",
         view.environment.name.as_str(),
     ];
-    view.preview
+    let mut commands: Vec<String> = view
+        .preview
         .iter()
         .flat_map(|preview| &preview.blocked)
         .filter_map(|entry| {
             let details = &entry.error.details;
             let detail = |key| details.get(key).and_then(|value| value.as_str());
-            let (Some("volume_outside_region"), Some(volume), Some(to)) =
+            let (Some("volume_outside_region"), Some(volume), Some(_)) =
                 (detail("reason"), detail("volume"), detail("to"))
             else {
                 return None;
@@ -647,9 +650,7 @@ pub(super) fn region_moves(
             let copy = details.get("copy");
             let held = |key| copy?.get(key)?.as_str();
             let Some(server) = held("server") else {
-                return Some(command(
-                    &[&["volume", "move", volume, "--to", to][..], &scope].concat(),
-                ));
+                return Some(command(&[&["deploy"][..], &scope].concat()));
             };
             let slot = format!("{volume}-{server}");
             let old = (held("role") == Some("old_copy")).then_some("--if-old-copy");
@@ -660,7 +661,9 @@ pub(super) fn region_moves(
                 .collect();
             Some(command(&words))
         })
-        .collect()
+        .collect();
+    commands.dedup();
+    commands
 }
 
 fn failure(
@@ -1098,7 +1101,7 @@ mod tests {
         };
         view.preview = Some(outside(None));
         let moved = [Hint::Next(
-            "ployz volume move pg-data --to fsn-1 --project shop --env production".to_owned(),
+            "ployz deploy --project shop --env production".to_owned(),
         )];
 
         let text = crate::ui::progress::settled_text(&frame(&view));

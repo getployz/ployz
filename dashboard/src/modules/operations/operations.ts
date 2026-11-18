@@ -312,7 +312,7 @@ export const OPERATIONS = {
     },
   }),
   "volume.move": operation({
-    options: Schema.Struct({ volume: Name, environment: Name, to: Name, wait: Seconds }),
+    options: Schema.Struct({ volume: Name, environment: Name, to: Name, leaveStopped: Schema.Boolean, wait: Seconds }),
     requires: "services:control",
     gate: "approval",
     idempotency: "volume_move",
@@ -320,11 +320,16 @@ export const OPERATIONS = {
       cli: {
         route: VOLUME_RUNS,
         body: VOLUME_RUN_BODIES.move,
-        options: { volume: { via: ":id" }, environment: { via: "environment" }, to: { via: "to" }, wait: CLI_FOLLOWS },
+        options: {
+          volume: { via: ":id" }, environment: { via: "environment" }, to: { via: "to" }, leaveStopped: { via: "leave_stopped" }, wait: CLI_FOLLOWS,
+        },
       },
       agent: {
         tool: "volume_move",
-        options: { volume: { via: "volume" }, environment: AGENT_ENVIRONMENT, to: { via: "to" }, wait: { via: "wait_seconds" } },
+        options: {
+          volume: { via: "volume" }, environment: AGENT_ENVIRONMENT, to: { via: "to" }, wait: { via: "wait_seconds" },
+          leaveStopped: { omitted: "An agent moves a Volume only to a Server that starts its Service again; a move that leaves the Service stopped is a person's CLI call." },
+        },
       },
       ui: STAGED,
     },

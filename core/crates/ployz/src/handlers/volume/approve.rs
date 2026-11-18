@@ -18,7 +18,8 @@ use ployz_core::authority::{
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName, Hint,
     InspectContainerRequest, Machine, MachineName, MachineTarget, Namespace, OperationId,
-    ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode, SlotRole, VolumeCopy, op,
+    ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode, ServicePlacementEligibility,
+    SlotRole, VolumeCopy, op,
 };
 use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
 use serde_json::json;
@@ -104,6 +105,9 @@ pub(in crate::handlers) struct MoveDraft {
     pub(in crate::handlers) target: Machine,
     /// The spec the target starts.
     pub(in crate::handlers) service: ResolvedServiceSpec,
+    /// Whether the target's placement takes that spec. A target it leaves out becomes the
+    /// Writer and starts nothing, so the Service stays stopped until a Deploy runs it there.
+    pub(in crate::handlers) starts: bool,
     body: VolumeApproval,
     change: ApprovedVolumeChange,
 }
@@ -152,6 +156,10 @@ pub(in crate::handlers) fn draft_move(
         Ok::<_, Error>((seen, machines, service))
     })?;
     let service = starting(service, &docker, recorded)?;
+    let starts = !matches!(
+        service.placement_eligibility_in_namespace(&namespace, &target, None),
+        ServicePlacementEligibility::Ineligible(_)
+    );
     // The approval names its Mirrors sorted by ID, as every Server reads them.
     let mirrors: Vec<_> = seen
         .iter()
@@ -184,6 +192,7 @@ pub(in crate::handlers) fn draft_move(
         writer,
         target,
         service,
+        starts,
         body,
         change,
     }))
@@ -219,24 +228,6 @@ impl MoveDraft {
             service: self.service,
         })
     }
-}
-
-/// Sign the Move of `volume` onto `to` that [`draft_move`] drafts, after showing the change
-/// and asking. None when there is nothing to sign.
-///
-/// # Errors
-/// Refuses as [`draft_move`] and [`MoveDraft::sign`] do.
-pub(super) fn sign_move(
-    root: &ArgMatches,
-    store: &store::Store<'_>,
-    volume: (&VolumeName, &VolumeId, &EnvironmentSummary),
-    to: &MachineName,
-    recorded: Option<ProvisionedVolumeMaximumBytes>,
-) -> Result<Option<MoveApproval>, Error> {
-    let matches = leaf_matches(root);
-    draft_move(matches, store, volume, to, recorded)?
-        .map(|draft| draft.sign(matches, volume.0))
-        .transpose()
 }
 
 /// What a person says to signing the Move of `volume`, asked after its lines show: Cloud

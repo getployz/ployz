@@ -84,6 +84,7 @@ export const VOLUME_RUN_BODIES = {
     to: Destination,
     approval: Schema.optional(VolumeApproval),
     service: Schema.optional(MoveService),
+    leave_stopped: Schema.optional(Schema.Literal(true)),
   }),
   release: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
   restore: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Destination, approval: Schema.optional(VolumeApproval) }),
@@ -117,6 +118,7 @@ export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
           to: body.to,
           ...(body.approval && { approval: body.approval }),
           ...(body.service && { service: body.service }),
+          ...(body.leave_stopped && { leave_stopped: body.leave_stopped }),
         },
       };
     case "release":

@@ -776,6 +776,11 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const deployments = input.kind === "resize" ? Option.getOrUndefined(yield* answered(deploymentsSeen(organizationId, input.environment))) : undefined;
   const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
+  if (input.kind === "move" && input.args.leave_stopped !== true) {
+    const stops = yield* answered(leavesStopped(organizationId, volume, input.args));
+    if (Option.isNone(stops)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
+    if (stops.value !== null) return { ok: false, refusal: stops.value } satisfies ClusterPlan;
+  }
   if (pending !== null && input.kind === "release" && !sourceDecides(pending)) return yield* planForward(volume, input, pending, members.value);
   const resolved = input.kind === "delete_mirror"
     ? { ...input, args: withSlotMachine(input.args, members.value.map((member) => member.machine)) }
@@ -1764,11 +1769,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   const { approved } = start;
   const spec = approved?.service ?? startingSpec(ctx, container.resolved_spec);
   const target = frame.machines.find(({ machine }) => machine.id === to.id)?.machine;
-  // A spec or record the SDK can't read is left to B, which checks the placement itself.
-  const placed = target === undefined || (yield* Effect.try(() => satisfiesPlacement(spec, holder.namespace, target)).pipe(
-    Effect.tapError((error) => Effect.logWarning("Could not check a Move target's placement; the Server decides.", { machineId: to.id, error })),
-    Effect.orElseSucceed(() => true),
-  ));
+  const placed = target === undefined || (yield* runsOn(spec, holder.namespace, target));
   if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
   const answer = yield* askCopy(ctx, to, start.expect, {
     kind: "writer",
@@ -1789,6 +1790,38 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   const region = yield* nextRegion(ctx.organizationId, holder.namespace, spec.name);
   const left: Unstarted = region === null ? { service: spec.name } : { service: spec.name, region, here: labelledRegion(target.labels) === region };
   return { ...answer, unstarted: true as const, stopped: left };
+}, Effect.scoped);
+
+/** Whether `spec`'s placement takes `target`. A spec or record the SDK can't read is left to the Server, which checks the placement itself. */
+const runsOn = (spec: ResolvedServiceSpec, namespace: string, target: Parameters<typeof satisfiesPlacement>[2]) => Effect.try(() => satisfiesPlacement(spec, namespace, target)).pipe(
+  Effect.tapError((error) => Effect.logWarning("Could not check a Move target's placement; the Server decides.", { machineId: target.id, error })),
+  Effect.orElseSucceed(() => true),
+);
+
+/**
+ * Why a Move a person asked for is refused before anything stops: the Service runs on the Volume's Server, and the spec
+ * the Move would start it with doesn't run on the target, so the Move would stop it and start nothing. Null for a Move
+ * that starts its Service, or stops none. A Deploy's own Move into a region is not asked this way: that Deploy starts
+ * the Service once the Volume is there.
+ */
+const leavesStopped = Effect.fn("VolumeRun.leavesStopped")(function* (organizationId: string, volume: ResolvedVolume, args: VolumeRunArgs["move"]) {
+  const session = yield* openSession(organizationId);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
+  const target = frame.machines.find(({ machine }) => args.machine === undefined ? machine.name === args.to : machine.id === args.machine)?.machine;
+  const [holder, ...others] = mounting(frame, volume.dockerVolume).filter((container) => container.runtime.state === "running");
+  if (target === undefined || holder === undefined || others.length > 0 || holder.machine_id === target.id) return null;
+  const service = holder.resolved_spec.name;
+  if (yield* runsOn(args.service ?? holder.resolved_spec, holder.namespace, target)) return null;
+  const region = yield* nextRegion(organizationId, holder.namespace, service);
+  const deploys = region !== null && labelledRegion(target.labels) === region;
+  const stops = `${service}'s last deploy doesn't run it on ${target.name}, so this move would stop ${service} and not start it again. Nothing moved`;
+  const instead = deploys
+    ? `Deploy instead: the deploy moves ${volume.volumeName} to ${target.name} and starts ${service} there`
+    : `Change where ${service} runs and deploy, or move ${volume.volumeName} now and leave ${service} stopped`;
+  return {
+    code: "conflict", message: `${stops}. ${instead}`,
+    details: { reason: "leaves_service_stopped", service, server: target.name, deploys },
+  } satisfies StoreRefusal;
 }, Effect.scoped);
 
 /** The one region the next Deploy runs `service` of `namespace` in, as the Store has it now. Null for any region, and when the Store doesn't say. */

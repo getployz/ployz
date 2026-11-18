@@ -9,7 +9,7 @@ import {
   advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
 import {
-  keepPlacementApprovals, keepRegionMoveApprovals, listPlacements, regionMoves, stagePlacement, stampPlacements, writeAdmitted,
+  keepPlacementApprovals, keepRegionMoveApprovals, listPlacements, type RegionReader, regionMoves, stagePlacement, stampPlacements, writeAdmitted,
 } from "#/modules/volume-placement/volume-placement.server";
 import { placementChanges, placementLoss, placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
@@ -776,7 +776,7 @@ describe("deploying a Volume placement", () => {
   });
 
   describe("a Volume outside its Service's region", () => {
-    const regions = (...servers: string[]) => () => Effect.succeed(servers.map((server) => ({
+    const regions = (...servers: string[]): RegionReader => () => Effect.succeed(servers.map((server) => ({
       id: web(server), region: server.split("-")[0] ?? "", acceptsServices: true, committableBytes: null,
     })));
     const admitted = (id: string) => asTestDouble<ConfigCommitted>()({ written: "deployment", id, environment_id: "env-1", status: "admitted", checks: [] });
@@ -928,7 +928,7 @@ describe("deploying a Volume placement", () => {
     it("keeps a staged move and its approval for the next Deploy when a Deploy can't work the moves out", async () => {
       members = [member("syd-1", "writer"), member("fsn-1", "old")];
       const read = regions("syd-1", "fsn-1");
-      const unread = () => Effect.fail(new Error("no frame"));
+      const unread: RegionReader = () => Effect.fail(new Error("no frame"));
       const service = { name: "db", container: { image: `postgres@sha256:${"a".repeat(64)}` } } as ResolvedServiceSpec;
       const workflow = { kind: "move", from: web("syd-1"), to: web("fsn-1"), service: { name: "db", digest: "d".repeat(64) }, mirrors: [] };
       const approval = { body: JSON.stringify({ volume: "shop-production_vol-vol1", workflow }), signatures: [] };

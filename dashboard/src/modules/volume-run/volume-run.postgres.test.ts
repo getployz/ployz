@@ -993,6 +993,27 @@ describe("volume runs", () => {
       });
     });
 
+    it("a move that would stop the Service and start it nowhere is refused before anything stops, unless asked to leave it stopped", async () => {
+      regions = { fsn: 1 };
+      storeRegion = "syd";
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
+      const plan = (asked: { leave_stopped?: true }) => runEffect(planVolumeRun(organizationId, {
+        volumeId, environment, kind: "move", args: { to: "syd-1", service: deployed("fsn-1"), ...asked },
+      }));
+
+      expect(await plan({})).toEqual({
+        ok: false,
+        refusal: {
+          code: "conflict",
+          message: "web's last deploy doesn't run it on syd-1, so this move would stop web and not start it again. Nothing moved. Deploy instead: the deploy moves data to syd-1 and starts web there",
+          details: { reason: "leaves_service_stopped", service: "web", server: "syd-1", deploys: true },
+        },
+      });
+      expect(verbs).toEqual([]);
+      // Asked to leave it stopped, the move is planned as any other: these Servers want a Device's approval of it.
+      expect(await plan({ leave_stopped: true })).toMatchObject({ ok: false, refusal: { details: { reason: "enforced" } } });
+    });
+
     it("a Volume renamed during a run is refused by its new name, so the hints run as printed", async () => {
       const first = await requested({ kind: "mirror", args: { to: "fsn-2" } });
       storeVolumes = storeVolumes.map((volume) => volume.id === volumeId ? { ...volume, name: "files" } : volume);

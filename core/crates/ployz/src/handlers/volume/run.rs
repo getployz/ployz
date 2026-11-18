@@ -10,6 +10,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::authority::{ApprovedVolumeChange, Signed, VolumeApproval};
 use ployz_core::{
     Hint, MachineName, ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode,
+    ServiceName,
 };
 use ployz_store::{
     EnvironmentId, EnvironmentName, EnvironmentSummary, OperationVerb, ProjectName, VolumeId,
@@ -210,12 +211,16 @@ pub(crate) enum RunAsk {
     },
     /// `approval`: this Device's, when a Server enforces Device approval, with `service`,
     /// the spec it approved the Service starting with on `to`.
+    /// `leave_stopped`: move although the Service's last Deploy doesn't run it on `to`, which
+    /// Cloud otherwise refuses before anything stops.
     Move {
         to: MachineName,
         #[serde(skip_serializing_if = "Option::is_none")]
         approval: Option<Signed<VolumeApproval>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         service: Option<Box<ResolvedServiceSpec>>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        leave_stopped: bool,
     },
     Release,
     /// `approval`: this Device's, when a Server enforces Device approval.
@@ -554,6 +559,9 @@ pub(crate) fn move_command(command: Command) -> Command {
             .help("The Server the Volume moves to; a Move that stopped continues when asked again"),
     )
     .arg(crate::cli::yes("Sign the Move without asking, when your Servers enforce device approval"))
+    .arg(switch("leave-stopped", None).help(
+        "Move even when the Service's last deploy doesn't run it on SERVER; the Service stays stopped until a deploy starts it there",
+    ))
     .arg(approval_arg())
     .arg(wait_flag())
 }
@@ -740,13 +748,28 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
         volume_id: view.volume.volume.id,
         environment: view.environment,
     };
-    let approval = super::approve::sign_move(
-        root,
+    let leave_stopped = matches.get_flag("leave-stopped");
+    let draft = super::approve::draft_move(
+        matches,
         &store,
         (&volume, &found.volume_id, &found.environment),
         &to,
         view.volume.recorded_storage,
     )?;
+    if let Some(draft) = &draft
+        && !draft.starts
+    {
+        let service = &draft.service.name;
+        if !leave_stopped {
+            return Err(leaves_stopped(&volume, service, &to));
+        }
+        crate::ui::warn(format!(
+            "{service} stays stopped after this move: its last deploy doesn't run it on {to}. Deploy to start it."
+        ));
+    }
+    let approval = draft
+        .map(|draft| draft.sign(matches, &volume))
+        .transpose()?;
     let (signed, service, change) = approval.map_or((None, None, None), |approval| {
         (
             Some(approval.signed),
@@ -758,8 +781,24 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
         to,
         approval: signed,
         service,
+        leave_stopped,
     };
     request(root, &store, &volume, found, change.as_ref(), ask)
+}
+
+/// The refusal of a Move that would stop `service` and start it nowhere, before this Device
+/// signs it: the spec `service` runs with doesn't run on `to`.
+fn leaves_stopped(volume: &VolumeName, service: &ServiceName, to: &MachineName) -> Error {
+    Error::detailed(
+        RpcErrorCode::Conflict,
+        format!(
+            "{service}'s last deploy doesn't run it on {to}, so this move would stop {service} \
+             and not start it again. Nothing moved. To run {service} on {to}, change where it \
+             runs and deploy. To move {volume} now and leave {service} stopped, add \
+             --leave-stopped."
+        ),
+        serde_json::json!({ "reason": "leaves_service_stopped", "service": service, "server": to }),
+    )
 }
 
 pub(crate) fn release(root: &ArgMatches) -> Result<(), Error> {
@@ -1047,7 +1086,34 @@ fn refused(
     volume: &VolumeName,
 ) -> Error {
     let confirm = matches!(&error, StoreCallError::Refused(refusal) if refusal.code == RpcErrorCode::ConfirmationRequired);
+    // Cloud refused a Move that would stop the Service and start it nowhere: the Deploy that
+    // moves the Volume itself comes next, or the same Move asked to leave it stopped.
+    let stops = match &error {
+        StoreCallError::Refused(refusal)
+            if refusal
+                .details
+                .get("reason")
+                .and_then(|reason| reason.as_str())
+                == Some("leaves_service_stopped") =>
+        {
+            Some(
+                refusal
+                    .details
+                    .get("deploys")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true),
+            )
+        }
+        _ => None,
+    };
     let failure = store.fail(error);
+    match stops {
+        Some(true) => return failure.hint(Hint::Next(store::next(matches, &["deploy"]))),
+        Some(false) => {
+            return failure.hint(Hint::Retry(super::super::typed_with(&["--leave-stopped"])));
+        }
+        None => {}
+    }
     if let Some((slot, None, if_old_copy)) = ask.removal()
         && confirm
     {

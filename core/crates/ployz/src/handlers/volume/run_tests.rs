@@ -231,6 +231,7 @@ fn each_ask_names_its_run_and_its_retry_command() {
                 to: web("web-2"),
                 approval: None,
                 service: None,
+                leave_stopped: false,
             },
             "Move of Volume data onto web-2",
             OperationVerb::Move,
@@ -423,9 +424,23 @@ async fn each_kind_posts_only_its_own_fields() {
                     to: MachineName::parse("web-2").unwrap(),
                     approval: None,
                     service: None,
+                    leave_stopped: false,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2" }),
+            json!({ "to": "web-2" }),
+        ),
+        (
+            RunRequest {
+                environment: named(),
+                ask: RunAsk::Move {
+                    to: MachineName::parse("web-2").unwrap(),
+                    approval: None,
+                    service: None,
+                    leave_stopped: true,
+                },
+            },
+            json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2", "leave_stopped": true }),
             json!({ "to": "web-2" }),
         ),
         (
