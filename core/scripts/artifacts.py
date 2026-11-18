@@ -44,6 +44,7 @@ class Kind:
     surface: tuple = ()  # what callers see: while these match main's, `fetch --stale-ok` takes main's build
     embeds: tuple = ()  # kinds built into this one, which must match main's exactly for `fetch --stale-ok`
     wire: tuple = ()  # the build generates types from its crates' files that use one of these words, so they are surface too
+    machine: bool = False  # runs on a Machine, so it builds for Linux whatever this host is
 
 
 SDK = "crates/ployz-sdk"
@@ -64,12 +65,25 @@ KINDS = {
     # Part of the SDK, cached on its own so the addon can rebuild without it. CI never uploads it alone.
     "config-wasm": Kind("config-wasm", ("ployz-config-wasm",), ("generated/config-wasm.mjs",), "wasm-v1",
                         ("scripts/build-config-wasm.sh",)),
-    "ployzd": Kind("ployzd", ("ployzd",), ("ployzd",), "dev-debug0-strip-v1"),
+    "ployzd": Kind("ployzd", ("ployzd",), ("ployzd",), "dev-debug0-strip-v1", machine=True),
     "ployz": Kind("ployz", ("ployz",), ("ployz",), "dev-debug0-strip-v1"),
 }
 WORKSPACE = ("Cargo.toml", "Cargo.lock", ".cargo", "rust-toolchain.toml")
 # Files outside core/ a crate's build script embeds, keyed by crate.
 EMBEDDED = {"ployz-store": ("../docs/user",)}
+# A Linux host's Incus VMs share its arch; every Boat sandbox is x86_64.
+MACHINE_ARCH = platform.machine() if platform.system() == "Linux" else "x86_64"
+
+
+def runs_on(kind):
+    """The system and arch kind's artifact runs on, named as platform names this host."""
+    return ("Linux", MACHINE_ARCH) if KINDS[kind].machine else (platform.system(), platform.machine())
+
+
+def cross_target(kind):
+    """The Rust target to cross-build kind for, or None when it runs on this host."""
+    system, arch = runs_on(kind)
+    return None if (system, arch) == (platform.system(), platform.machine()) else f"{arch}-unknown-linux-gnu"
 
 
 @dataclass(frozen=True)
@@ -169,7 +183,7 @@ def key(kind, extra="", rev=None):
                               if path.startswith(directory + "/") and counts(path, directory)})
                 for name, directory in crates.items()}
     shared = {path: blob for path, blob in files.items() if not path.startswith("crates/")}
-    recipe = [spec.recipe, kind, f"{platform.system()}-{platform.machine()}", extra, digest(shared),
+    recipe = [spec.recipe, kind, "-".join(runs_on(kind)), extra, digest(shared),
               *(f"{name} {by_crate[name]}" for name in sorted(by_crate))]
     return Key(kind, hashlib.sha256("\n".join(recipe).encode()).hexdigest()[:32], by_crate, extra)
 
@@ -193,7 +207,7 @@ def run(args, **kwargs):
 
 # Harness builds strip their binaries, so DWARF is wasted work: a third of an edit rebuild. kache
 # strips incremental flags unless told to keep them, which makes a one-line edit recompile whole crates.
-HARNESS_ENV = {"CARGO_PROFILE_DEV_DEBUG": "0", "KACHE_PRESERVE_INCREMENTAL": "1"}
+HARNESS_ENV = {"CARGO_PROFILE_DEV_DEBUG": "0", "CARGO_PROFILE_DEV_STRIP": "debuginfo", "KACHE_PRESERVE_INCREMENTAL": "1"}
 BUILD_SLOTS = 2  # concurrent harness builds per machine; worktrees beyond that wait rather than thrash the cores
 
 
@@ -242,21 +256,42 @@ def harness_build(args, commands=run, **kwargs):
         return commands(["nice", "-n", "10", *args], env={**os.environ, **HARNESS_ENV}, **kwargs)
 
 
+def for_packages(cargo_args, packages):
+    """cargo_args with each `--features` list cut to the features of packages, since cargo refuses `other/feature`
+    for a package it isn't building."""
+    kept, args = [], iter(cargo_args)
+    for arg in args:
+        flag, _, inline = arg.partition("=")
+        if flag not in ("--features", "-F"):
+            kept.append(arg)
+            continue
+        features = [feature for feature in (inline or next(args, "")).replace(",", " ").split()
+                    if "/" not in feature or feature.split("/")[0] in packages]
+        if features:
+            kept += ["--features", ",".join(features)]
+    return kept
+
+
 def binaries(destination, names, cargo_args=(), commands=run):
-    """Put the named stripped dev binaries into destination: from the cache, or from one cargo build of the misses."""
+    """Put the named stripped dev binaries into destination: from the cache, or from one cargo build per target of the misses."""
     extra = shlex.join(cargo_args)
     wanted = {name: key(name, extra) for name in names}
     destination.mkdir(parents=True, exist_ok=True)
     missing = [name for name, found in wanted.items() if not fetch(found, destination)]
     if not missing:
         return
-    harness_build(["cargo", "build", "--locked", *(arg for name in missing for arg in ["-p", name]), *cargo_args],
-                  commands, cwd=CORE, timeout=1800)
     metadata = commands(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=CORE)
-    target = Path(json.loads(metadata.stdout)["target_directory"]) / "debug"
+    target = Path(json.loads(metadata.stdout)["target_directory"])
+    builds = {}
     for name in missing:
-        shutil.copy2(target / name, destination / name)
-        commands(["strip", "--strip-debug", destination / name])
+        builds.setdefault(cross_target(name), []).append(name)
+    for triple, group in builds.items():
+        cargo = ["cargo", "zigbuild", "--target", triple] if triple else ["cargo", "build"]
+        harness_build([*cargo, "--locked", *(arg for name in group for arg in ["-p", name]), *for_packages(cargo_args, group)],
+                      commands, cwd=CORE, timeout=1800)
+        for name in group:
+            shutil.copy2(target / (triple or "") / "debug" / name, destination / name)
+    for name in missing:
         # An edit made while cargo ran may or may not be in the binary, so it gets no key.
         if key(name, extra) == wanted[name]:
             store(wanted[name], destination, revision=revision())

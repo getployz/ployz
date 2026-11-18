@@ -254,7 +254,8 @@ def cli_environment(run, *, device=False):
     owner's signed-in, approved device, which exec and port-forward need."""
     directory = Path(run["manifest"]).parent
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PLOYZ_")}
-    environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"),
+    # A disposable Cluster's calls are the harness's, not an agent's, so the CLI asks no --why and reports none.
+    environment.update(PLOYZ_CONFIG=str(directory / "private" / "config.yaml"), AI_AGENT="off",
                        PATH=str(directory / "private" / "bin") + os.pathsep + os.environ["PATH"])
     if device and "cloud" not in run:
         raise RuntimeError("--device needs a --cloud run; a standalone run's CLI already reaches every Machine")
@@ -821,7 +822,7 @@ def launch(args, run, private, total_started):
             commands(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", private / "id_ed25519"])
             ssh = shutil.which("ssh")
             wrapper = private / "bin" / "ssh"
-            wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(ssh) + " -o BatchMode=yes -o " +
+            wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(ssh) + " -o BatchMode=yes -o IdentitiesOnly=yes -o " +
                                shlex.quote("UserKnownHostsFile=" + str(private / "known_hosts")) +
                                " -i " + shlex.quote(str(private / "id_ed25519")) +
                                ' -o GlobalKnownHostsFile=/dev/null "$@"\n')

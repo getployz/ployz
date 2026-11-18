@@ -608,7 +608,8 @@ def boat_json(*args):
 def end_tunnel(pid):
     try:
         # The pid may have been reused since the tunnel exited.
-        if pid and b"ExitOnForwardFailure" in Path(f"/proc/{pid}/cmdline").read_bytes():
+        command = pid and subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True).stdout
+        if command and b"ExitOnForwardFailure" in command:
             os.kill(pid, signal.SIGTERM)
     except OSError:
         pass
@@ -932,7 +933,7 @@ systemctl start docker ployz.service $observe
     def options(self, control=True):
         if not control:
             return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+                    "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "IdentitiesOnly=yes",
                     "-i", str(self.private / "id_ed25519"), "-o", "ControlMaster=no", "-o", "ControlPath=none"]
         self.control.mkdir(parents=True, exist_ok=True, mode=0o700)
         # /tmp is shared; a directory someone else planted could hand our ssh to their fake control master.
@@ -941,7 +942,7 @@ systemctl start docker ployz.service $observe
             raise RuntimeError(f"{self.control} must be a directory only you can open; remove it")
         # The endpoint comes from the authenticated Boat API, and up regenerates host keys after the first connection.
         return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+                "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "IdentitiesOnly=yes",
                 "-i", str(self.private / "id_ed25519"), "-i", str(BOOTSTRAP / "id_ed25519"), "-o", "ControlMaster=auto", "-o", "ControlPersist=300",
                 "-o", "ControlPath=" + self.control_path()]
 
