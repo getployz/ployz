@@ -903,6 +903,51 @@ describe("deploying a Volume placement", () => {
       expect(rows).toEqual([{ kind: "move", args: { to: "fsn-1", approval, service } }]);
     });
 
+    it("leaves a queued Deploy the move it took when that Deploy starts before a later one's write", async () => {
+      members = [member("syd-1", "writer"), member("fsn-1", "empty")];
+      await deploy("dep-2");
+      region = null;
+      await deploy("dep-3", undefined, () => Effect.sync(() => {
+        statuses.set("dep-2", "running");
+        return admitted("dep-3");
+      }));
+      expect(await placement()).toMatchObject({ staged: { primary: web("fsn-1") }, region: true, deploymentId: "dep-2" });
+    });
+
+    it("drops the move a queued Deploy took once a later one supersedes it and the Environment has no region", async () => {
+      members = [member("syd-1", "writer"), member("fsn-1", "empty")];
+      await deploy("dep-2");
+      region = null;
+      await deploy("dep-3", undefined, () => Effect.sync(() => {
+        statuses.set("dep-2", "superseded");
+        return admitted("dep-3");
+      }));
+      expect(await placement()).toMatchObject({ staged: null, deploymentId: null });
+    });
+
+    it("keeps a staged move and its approval for the next Deploy when a Deploy can't work the moves out", async () => {
+      members = [member("syd-1", "writer"), member("fsn-1", "old")];
+      const read = regions("syd-1", "fsn-1");
+      const unread = () => Effect.fail(new Error("no frame"));
+      const service = { name: "db", container: { image: `postgres@sha256:${"a".repeat(64)}` } } as ResolvedServiceSpec;
+      const workflow = { kind: "move", from: web("syd-1"), to: web("fsn-1"), service: { name: "db", digest: "d".repeat(64) }, mirrors: [] };
+      const approval = { body: JSON.stringify({ volume: "shop-production_vol-vol1", workflow }), signatures: [] };
+      const approvals = [{ volume: "data", to: "fsn-1", approval, service }];
+      expect(await run(keepRegionMoveApprovals(organizationId, environment, approvals, inspect, read))).toEqual({ ok: true });
+      expect(await run(keepRegionMoveApprovals(organizationId, environment, approvals, inspect, unread))).toMatchObject({ ok: false, refusal: { code: "unavailable" } });
+
+      await deploy("dep-2", unread);
+      expect(await placement()).toMatchObject({ staged: { primary: web("fsn-1") }, region: true, deploymentId: null });
+      expect(await run(advancePlacement(organizationId, "dep-2", null, inspect, answered))).toEqual({ kind: "done" });
+
+      statuses.set("dep-2", "applied");
+      await deploy("dep-3", read);
+      const started = await run(advancePlacement(organizationId, "dep-3", null, inspect, answered));
+      if (started.kind !== "wait") throw new Error("expected a run");
+      const { rows } = await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId]);
+      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-1", approval, service } }]);
+    });
+
     it("drops the move a cancelled Deploy left staged once the Environment has no region", async () => {
       members = [member("syd-1", "writer"), member("fsn-1", "empty")];
       await deploy("dep-2");

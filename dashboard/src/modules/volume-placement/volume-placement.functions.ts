@@ -47,7 +47,7 @@ export const regionMovesServerFn = createServerFn({ method: "GET" })
   .validator(strictValidator(EnvironmentInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
     Effect.flatMap(({ organization }) => regionMoves(organization.id, data.environment)),
-    Effect.map((moves) => moves.map((move) => move.row)),
+    Effect.map((moves) => (moves ?? []).map((move) => move.row)),
   )));
 
 /** Stages those moves just before a Deploy asks for its passkey answers, which their rows then keep. */

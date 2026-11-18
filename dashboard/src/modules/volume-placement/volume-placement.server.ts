@@ -144,6 +144,7 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
 });
 
 const UNSTAGED: StoreRefusal = { code: "conflict", message: "These volume changes changed since you approved them. Deploy again.", details: null };
+const MOVES_UNKNOWN: StoreRefusal = { code: "unavailable", message: "Cloud couldn't check which volumes this deploy moves. Try again.", details: null };
 const FOR_ANOTHER_CHANGE: StoreRefusal = { code: "invalid", message: "An approval doesn't match the staged change. Deploy again to approve it.", details: null };
 
 /**
@@ -369,15 +370,15 @@ const findRegionMoves = Effect.fn("VolumePlacement.regionMoves")(function* (
 
 /**
  * The moves that bring each Volume of `environment` into the region of the Service that mounts it, for a Deploy of
- * `services` (none: every Service). A Volume the user staged a placement for keeps theirs. None when nothing can be
- * asked: the Engine then leaves the Service not started and says why. `listed` is the Environment's Volumes when the
- * caller has just read them.
+ * `services` (none: every Service). A Volume the user staged a placement for keeps theirs. Null when they can't be worked
+ * out, which is not "no moves": the moves already staged stay as they are, and the Engine leaves the Service not started
+ * and says why. `listed` is the Environment's Volumes when the caller has just read them.
  */
 export const regionMoves = (
   organizationId: string, environment: EnvironmentRef, services: readonly string[] = [],
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies, read: RegionReader = readRegionServers, listed: VolumesListing | null = null,
 ) => findRegionMoves(organizationId, environment, services, inspect, read, listed).pipe(
-  Effect.catch((error) => Effect.logWarning("Couldn't work out the Volume moves into a region.", { organizationId, error }).pipe(Effect.as<RegionMove[]>([]))),
+  Effect.catch((error) => Effect.logWarning("Couldn't work out the Volume moves into a region. The staged ones stay as they are.", { organizationId, error }).pipe(Effect.as<RegionMove[] | null>(null))),
 );
 
 const regionStaged = (move: RegionMove): StoredPlacement => ({ ...move.row.staged, region: true });
@@ -403,13 +404,17 @@ export const stageRegionMoves = Effect.fn("VolumePlacement.stageRegionMoves")(fu
   }
 });
 
+/** A region move's row as an admission changes it: `staged` replaces what `holder` left on it, and none drops it. */
+type Restaged = { readonly volumeId: string; readonly holder: string | null; readonly staged: StoredPlacement | null };
+
 /**
  * `free` with each region move an earlier Deploy left staged replaced by the one in `moves`, or dropped when `moves`
- * has none for its Volume. A row a person staged, or one that already holds the same move, stays as it is.
+ * has none for its Volume, and the change that makes each row so. A row a person staged, or one that already holds the
+ * same move, stays as it is.
  */
-const withCurrentRegionMoves = Effect.fn("VolumePlacement.withCurrentRegionMoves")(function* (free: readonly Row[], moves: readonly RegionMove[]) {
-  const { drizzle } = yield* Database;
+const withCurrentRegionMoves = (free: readonly Row[], moves: readonly RegionMove[]) => {
   const rows: Row[] = [];
+  const changes: Restaged[] = [];
   for (const row of free) {
     const move = moves.find((each) => each.row.volumeId === row.volumeId);
     if (row.staged?.region !== true || (move !== undefined && isDeepStrictEqual(view(row).staged, move.row.staged))) {
@@ -417,16 +422,24 @@ const withCurrentRegionMoves = Effect.fn("VolumePlacement.withCurrentRegionMoves
       continue;
     }
     const staged = move === undefined ? null : regionStaged(move);
-    yield* drizzle.update(volumePlacement).set({ staged, updatedAt: new Date(), ...(staged === null && { deploymentId: null }) })
-      .where(eq(volumePlacement.volumeId, row.volumeId));
+    changes.push({ volumeId: row.volumeId, holder: row.deploymentId, staged });
     if (staged !== null) rows.push({ ...row, staged });
   }
-  return rows;
+  return { rows, changes };
+};
+
+/** Write `changes` to the rows their holders still hold. */
+const restage = Effect.fn("VolumePlacement.restage")(function* (changes: readonly Restaged[]) {
+  const { drizzle } = yield* Database;
+  for (const { volumeId, holder, staged } of changes) {
+    yield* drizzle.update(volumePlacement).set({ staged, updatedAt: new Date(), ...(staged === null && { deploymentId: null }) })
+      .where(and(eq(volumePlacement.volumeId, volumeId), holder === null ? isNull(volumePlacement.deploymentId) : eq(volumePlacement.deploymentId, holder)));
+  }
 });
 
 /** The Deploy button's half: stage the region moves so the passkey answers the Deploy carries have rows to keep them. */
 export const prepareRegionMoves = Effect.fn("VolumePlacement.prepareRegionMoves")(function* (organizationId: string, environment: EnvironmentRef) {
-  yield* stageRegionMoves(organizationId, yield* regionMoves(organizationId, environment));
+  yield* stageRegionMoves(organizationId, (yield* regionMoves(organizationId, environment)) ?? []);
 });
 
 /** A Device's approval of one region move, as the CLI names it, with the spec its target starts. */
@@ -441,6 +454,7 @@ export const keepRegionMoveApprovals = Effect.fn("VolumePlacement.keepRegionMove
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies, read: RegionReader = readRegionServers,
 ) {
   const moves = yield* regionMoves(organizationId, environment, [], inspect, read);
+  if (moves === null) return { ok: false, refusal: MOVES_UNKNOWN } as const;
   const kept: (PlacementApproval & { readonly volumeId: string })[] = [];
   for (const { volume, to, approval, service } of approvals) {
     const move = moves.find((listed) => listed.volume === volume && listed.to === to);
@@ -505,7 +519,7 @@ export const writeAdmitted = <R>(
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(environment.id)})`);
-    yield* stageRegionMoves(organizationId, moves);
+    if (moves !== null) yield* stageRegionMoves(organizationId, moves);
     const locked = yield* drizzle.select().from(volumePlacement)
       .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged)))
       .orderBy(volumePlacement.volumeId)
@@ -518,7 +532,13 @@ export const writeAdmitted = <R>(
     const ended = holders.filter((_, index) => states[index] === "ended");
     const queued = holders.filter((_, index) => states[index] === "queued");
     const free = locked.filter((row) => row.deploymentId === null || ended.includes(row.deploymentId) || queued.includes(row.deploymentId));
-    const rows = yield* withCurrentRegionMoves(free, moves);
+    // A region move is worked out again by each Deploy that takes it, so one this Deploy couldn't work out waits, staged.
+    const { rows, changes } = moves === null
+      ? { rows: free.filter((row) => row.staged?.region !== true), changes: [] }
+      : withCurrentRegionMoves(free, moves);
+    // A queued Deploy may still start and run the move it took, so its row changes only once the write shows it ended.
+    const late = changes.filter(({ holder }) => holder !== null && queued.includes(holder));
+    yield* restage(changes.filter((change) => !late.includes(change)));
     // Read under the lock: a restore staged before it has landed or never will, so a seeded Volume missing is gone.
     const { volumes } = rows.length === 0 ? { volumes: [] } : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
     const listed = rows.flatMap((row) => {
@@ -557,7 +577,9 @@ export const writeAdmitted = <R>(
     written = yield* write({ ...command, version: store, accept_volume_loss: accepted.filter((name) => !names.includes(name)) });
     if (written.written === "deployment" && written.status !== "applied") {
       const after = yield* Effect.forEach(queued, (id) => holderState(organizationId, id));
-      yield* stampPlacements(organizationId, taken, written.id, [...ended, ...queued.filter((_, index) => after[index] === "ended")]);
+      const superseded = queued.filter((_, index) => after[index] === "ended");
+      yield* restage(late.filter(({ holder }) => holder !== null && superseded.includes(holder)));
+      yield* stampPlacements(organizationId, taken, written.id, [...ended, ...superseded]);
     }
     return written;
   })).pipe(
