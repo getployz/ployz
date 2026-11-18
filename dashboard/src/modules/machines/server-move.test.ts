@@ -45,16 +45,16 @@ it("moves nothing off a Server while no Environment names a region", () => {
 it("lists what runs in another region than the Server's new one, with the Servers in that region that take Services", () => {
   const placed = [service("web", "default"), service("postgres", "DEFAULT"), service("api", "fsn"), service("cron", "syd"), service("docs")];
   expect(leavingServer("2", "syd", placed, servers)).toEqual([
-    { ...service("web", "default"), to: ["np1-vm-1"] },
-    { ...service("postgres", "DEFAULT"), to: ["np1-vm-1"] },
-    { ...service("api", "fsn"), to: ["fsn-1", "fsn-2"] },
+    { ...service("web", "default"), to: ["np1-vm-1"], searched: ["default"] },
+    { ...service("postgres", "DEFAULT"), to: ["np1-vm-1"], searched: ["DEFAULT"] },
+    { ...service("api", "fsn"), to: ["fsn-1", "fsn-2"], searched: ["fsn"] },
   ]);
 });
 
 it("lists everything with a region when the Server leaves every region, and says when no other Server is in one", () => {
   expect(leavingServer("2", null, [service("web", "default"), service("cron", "syd")], servers)).toEqual([
-    { ...service("web", "default"), to: ["np1-vm-1"] },
-    { ...service("cron", "syd"), to: [] },
+    { ...service("web", "default"), to: ["np1-vm-1"], searched: ["default"] },
+    { ...service("cron", "syd"), to: [], searched: ["syd"] },
   ]);
 });
 
@@ -86,6 +86,9 @@ it("lists a Service that counts replicas in both the region a Server leaves and 
   expect(counted.map(({ regions, perRegion }) => [regions, perRegion])).toEqual([[["default", "syd"], true]]);
   // Server 2 holds web's default replica; in syd it no longer does, though syd also has a count.
   expect(leavingServer("2", "syd", counted, servers).map(({ name, to }) => [name, to])).toEqual([["web", ["np1-vm-1"]]]);
+  // It must keep running in the region the Server leaves, not in both of its regions.
+  expect(leavingServer("2", "syd", counted, servers).map(({ searched }) => searched)).toEqual([["default"]]);
+  expect(leavingServer("1", "syd", counted, [server("1", "np1-vm-1", "default"), server("9", "syd-1", "syd")]).map(({ to, searched }) => [to, searched])).toEqual([[[], ["default"]]]);
   expect(leavingServer("2", "SYD", counted, servers).map(({ name }) => name)).toEqual(["web"]);
   // Staying where it is changes nothing, and a Server in neither counted region holds none of its replicas.
   expect(leavingServer("2", "default", counted, servers)).toEqual([]);
@@ -95,8 +98,8 @@ it("lists a Service that counts replicas in both the region a Server leaves and 
 
 it("leaves out an offline Server as a place a Service can go", () => {
   const down = [server("1", "np1-vm-1", "default", { offline: true }), server("2", "np1-vm-2", "default"), server("6", "np1-vm-3", "default")];
-  expect(leavingServer("2", "syd", [service("web", "default")], down)).toEqual([{ ...service("web", "default"), to: ["np1-vm-3"] }]);
-  expect(leavingServer("2", "syd", [service("web", "default")], down.slice(0, 2))).toEqual([{ ...service("web", "default"), to: [] }]);
+  expect(leavingServer("2", "syd", [service("web", "default")], down)).toEqual([{ ...service("web", "default"), to: ["np1-vm-3"], searched: ["default"] }]);
+  expect(leavingServer("2", "syd", [service("web", "default")], down.slice(0, 2))).toEqual([{ ...service("web", "default"), to: [], searched: ["default"] }]);
 });
 
 it("names the Environments whose Working State couldn't be read, which leave nothing to compute", () => {

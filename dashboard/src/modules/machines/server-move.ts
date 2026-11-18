@@ -13,8 +13,11 @@ export type Placed = {
   readonly unread: boolean;
 };
 
-/** A Placed that leaves on the next Deploy; `to` names the Servers in its regions it can run on. */
-export type Leaving = Placed & { readonly to: readonly string[] };
+/**
+ * A Placed that leaves on the next Deploy. `to` names the Servers it can run on, which are in `searched`: the regions it
+ * must keep running in, the one a Server leaves when it counts replicas by region, else all its `regions`.
+ */
+export type Leaving = Placed & { readonly to: readonly string[]; readonly searched: readonly string[] };
 
 /** An Environment's Namespace as the Store names it, with where its Services run. */
 type OwnedNamespace = {
@@ -80,9 +83,10 @@ export function leavingServer(
     if (regions.length === 0) return [];
     const heldRegion = item.perRegion && from !== undefined && regions.includes(from) && from !== here ? from : null;
     if (heldRegion === null && here !== undefined && regions.includes(here)) return [];
-    const wanted = heldRegion === null ? regions : [heldRegion];
+    const searched = heldRegion === null ? item.regions : item.regions.filter((region) => region.toLowerCase() === heldRegion);
+    const wanted = searched.map((region) => region.toLowerCase());
     const there = servers.filter((other) =>
       other.id !== serverId && other.acceptsServices && !other.offline && wanted.includes(other.region?.toLowerCase() ?? ""));
-    return [{ ...item, to: there.map(({ name }) => name).sort() }];
+    return [{ ...item, to: there.map(({ name }) => name).sort(), searched }];
   });
 }

@@ -207,6 +207,13 @@ it("asks before a move that takes a Server out of one of the regions a Service c
   expect(requestChange).not.toHaveBeenCalled();
 });
 
+it("names only the region a Server leaves when no other Server is in it, though the Service counts the new region too", async () => {
+  const counted: OwnedNamespaces = { kind: "read", namespaces: [{ ...SHOP, replica_regions: { web: ["default", "syd"] } }] };
+  section(vm3, { services: RUNNING.slice(0, 1), owned: counted });
+  await pick("Sydney");
+  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/productionNo server in Default"]);
+});
+
 it("leaves out an offline Server as a place a Service can go", async () => {
   const down = { ...machine("6", "default"), membership: "down", unanswered: true } as const;
   section(vm3, { services: RUNNING.slice(0, 1), owned: READ, machines: [...fleet, down] });

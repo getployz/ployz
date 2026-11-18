@@ -6,10 +6,10 @@ import { regionName } from "#/modules/machines/server-regions";
 import type { Leaving } from "#/modules/machines/server-move";
 
 function destination(row: Leaving, regions: readonly NamedRegion[] | undefined) {
-  const region = row.regions.map((each) => regionName(each, regions)).join(", ");
+  const searched = row.searched.map((each) => regionName(each, regions)).join(", ");
   const [only, ...more] = row.to;
-  if (only === undefined) return `No server in ${region}`;
-  return more.length === 0 ? `→ ${only}` : `→ ${row.to.length} servers in ${region}`;
+  if (only === undefined) return `No server in ${searched}`;
+  return more.length === 0 ? `→ ${only}` : `→ ${row.to.length} servers in ${searched}`;
 }
 
 export function MoveServerDialog({ serverName, regionName: to, rows, unread, regions, open, onOpenChange, onConfirm }: {
