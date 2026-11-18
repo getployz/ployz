@@ -8,7 +8,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { type MailContent, renderMail } from "#/modules/mail/layout";
 import { makePostShibaMailer } from "#/modules/mail/mailer.server";
 import { sampleMail } from "#/modules/mail/sample";
-import { deployFailedMail } from "#/modules/mail/templates/deploys/deploy-failed";
+import { deployFailedMail, deployWaitingMail } from "#/modules/mail/templates/deploys/deploy-failed";
 import { inviteSamples } from "#/modules/mail/templates/organizations/invite";
 import { crashSamples } from "#/modules/mail/templates/servers/crash";
 import { upgradeFailedSamples } from "#/modules/mail/templates/servers/upgrade-failed";
@@ -35,6 +35,27 @@ const deployFailedSample = (origin: string): MailContent => ({
   unsubscribe: { label: NOTIFICATION_TYPES["deploy-failed"].unsubscribe, url: `${origin}/api/mail/unsubscribe?token=sample` },
 });
 
+const deployWaitingSample = (origin: string): MailContent => ({
+  ...deployWaitingMail({
+    origin,
+    organization: { name: "Acme", slug: "acme" },
+    deployment: asTestDouble<DeploymentView>()({
+      id: "0e5b2c1a-7f3d-4a8e-9b61-2d4c8f0a1e37",
+      environment: { id: "env", project: "shop", name: "production" },
+      status: "applied",
+      outcome: {
+        type: "executed", summary: null, reason: null, cause: [], services: [],
+        waiting: [{
+          service: "db",
+          reason: "Volume data is on fsn-1, which doesn't run services. Turn them back on with ployz server set fsn-1 --accepts-services=true",
+        }],
+      },
+    }),
+    sources: [asTestDouble<GitSource>()({ service: "api", repository: "acme/shop", branch: "main", commit: "8a7ed6e9f0c1d2b3a4f5" })],
+  }),
+  unsubscribe: { label: NOTIFICATION_TYPES["deploy-failed"].unsubscribe, url: `${origin}/api/mail/unsubscribe?token=sample` },
+});
+
 const required = (name: string) => {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is not set.`);
@@ -48,6 +69,7 @@ export async function run() {
     sample: sampleMail(origin),
     ...Object.fromEntries(Object.entries(uptimeAlertSamples(origin)).map(([name, content]) => [name, { ...content, unsubscribe }])),
     "deploy-failed": deployFailedSample(origin),
+    "deploy-waiting": deployWaitingSample(origin),
     ...inviteSamples(origin),
     ...Object.fromEntries(
       Object.entries(upgradeFailedSamples(origin)).map(([name, content]) => [

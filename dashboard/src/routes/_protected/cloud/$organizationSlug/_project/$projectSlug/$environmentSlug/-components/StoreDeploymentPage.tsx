@@ -142,9 +142,9 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
           ) : null}
         </div>
       ) : null}
-      {waiting.map(({ name, why }) => (
-        <p key={name} role="status" className="text-sm text-muted-foreground">
-          <span className="font-medium text-foreground">{name}</span> is waiting{why ? `: ${why}` : null}
+      {waiting.map(({ service, reason }) => (
+        <p key={service} role="status" className="break-words text-sm text-muted-foreground">
+          <span className="font-medium text-foreground">{service}</span> is waiting: {reason}
         </p>
       ))}
       {storage ? <p role="status" className="text-sm">{storage}</p> : null}

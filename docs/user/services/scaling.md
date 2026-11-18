@@ -61,7 +61,7 @@ move on your next deploy, or right away when you click **Drain** on the server's
 use it can only run there. While its services are off, a deploy doesn't attempt those services,
 for example "db: Volume data is on db-1, which doesn't run services. Turn them back on with
 ployz server set db-1 --accepts-services=true". The rest of the deploy still goes
-ahead, and the deployment reads Deployed with that service waiting. While a drain runs, wait for it to end before you turn
+ahead, and the deployment reads **Deployed, 1 waiting**, counting each service it left. While a drain runs, wait for it to end before you turn
 services back on.
 
 Turning **Takes web traffic** off drops the server from your generated addresses and stops its web
@@ -94,7 +94,7 @@ To bring services back:
 1. Deploy. Services that don't use a volume on the offline server start on your other servers.
    A service whose volume is on the offline server isn't started: the deploy reports it, and
    every service that depends on it, as **Not attempted**, naming the server, and the deployment
-   reads **Deployed, 1 waiting**. This works from **Deploy** in the dashboard or `ployz deploy`. To deploy only
+   reads **Deployed** with the number left waiting, as in **Deployed, 2 waiting**. This works from **Deploy** in the dashboard or `ployz deploy`. To deploy only
    some services, name them:
 
    ```sh

@@ -6,7 +6,7 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { LatestButton, LogEmpty } from "#/components/log-scroll";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
-import { buildInterrupted, missingDeployLogs, nodeStatusLabels, outcomeReason, shownNodeStatus } from "#/modules/config-store/store-deployments";
+import { buildInterrupted, missingDeployLogs, nodeStatusLabels, outcomeReason, shownNodeStatus, waitingServices } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import type { DeploymentCleanupView } from "#/modules/config-store/tables";
@@ -101,6 +101,7 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
 function OutcomeDetail({ deployment, node }: { deployment: DeploymentView; node: OutcomeRunNode }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const missing = missingDeployLogs(deployment, node.node);
+  const waiting = node.type === "service" ? waitingServices(deployment).find((entry) => entry.service === node.name) : undefined;
   return (
     <>
       {node.node.rows.length ? <Rows rows={node.node.rows} className={node.type === "service" ? "max-h-48 shrink-0" : "min-h-0"} />
@@ -110,7 +111,8 @@ function OutcomeDetail({ deployment, node }: { deployment: DeploymentView; node:
       {node.type === "service" ? (
         // Stacked, the logs get a fixed height so they scroll and follow new lines themselves.
         <div className="flex min-h-0 flex-1 flex-col p-4 @max-5xl:h-96 @max-5xl:flex-none">
-          {missing ? <LogEmpty title={missing} />
+          {waiting ? <LogEmpty title="Waiting">{waiting.reason}</LogEmpty>
+            : missing ? <LogEmpty title={missing} />
             : <ContainerLogs selection={{ organizationSlug, deploymentId: deployment.id, serviceId: node.id }} />}
         </div>
       ) : null}

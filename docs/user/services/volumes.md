@@ -237,7 +237,8 @@ Each volume has one writer, the server that mounts it. A server you remove or re
 every volume it held into a copy, so the volume keeps its data but has no writer. A deploy does
 not start a service that mounts such a volume. It deploys the other services, reports that
 service and every service that depends on it as **Not attempted**, and the deployment reads
-**Deployed, 1 waiting** with the reason, which names where the data is. `ployz deploy` exits 3:
+**Deployed** with the number left waiting, as in **Deployed, 2 waiting**, and the reason, which
+names where the data is. `ployz deploy` exits 3:
 
 ```
 Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz volume restore data --from web-2

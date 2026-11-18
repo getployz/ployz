@@ -310,8 +310,12 @@ The immutable complete runtime target frozen when a Deployment starts. One compi
 _Avoid_: Saved state, deploy preview, mutable queued request
 
 **Node Outcome**:
-One Environment Node's result within a Deployment: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
+One Environment Node's result within a Deployment: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it, or the Service is Waiting), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
 _Avoid_: Applied, Skipped, Succeeded, Live (the Environment as it is now is not an outcome)
+
+**Waiting**:
+A Service a Deploy left as it was because it can't start until something outside its configuration changes: its Volume has no writer, sits on a Server that takes no services or can't be reached, or a Service it depends on is itself Waiting. Its Node Outcome is Not attempted, the Deployment lists it with its reason however the Deployment ended, and waiting alone never fails it: the Deployment ends Applied and the Deploy exits 3. The CLI reads `applied, N waiting` and the dashboard **Deployed, N waiting**; when every Service waited they read `nothing applied, N waiting` and **Nothing deployed, N waiting**, and the Deployment is not what runs. A Service the planner refuses over its own configuration is not Waiting and fails the Deployment.
+_Avoid_: Blocked, Held, Skipped, Pending
 
 **Applied State**:
 The per-Environment-Node projection of the latest confirmed runtime outcomes. Successful or removed nodes advance independently; failed or skipped nodes retain their previous Applied State.

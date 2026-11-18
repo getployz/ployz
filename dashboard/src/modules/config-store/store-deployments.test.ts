@@ -254,24 +254,34 @@ it("offers a fix only for what ran and failed", () => {
   expect(canFixOnBranch(deployment({ outcome: { type: "not_executed", reason: "x", cause: [], needs_upload: [] } }), node("api", "pending"), false)).toBe(false);
 });
 
-it("offers no fix for a Service the planner held back over where its Volume is", () => {
-  const nodes = [node("api", "failed"), node("worker", "not_attempted")];
-  const preview = { blocked: [{ service: "private-worker", error: { message: "wcache is a Docker volume and can't move" } }] } as DeploymentView["preview"];
-  const failed = deployment({ nodes, preview, runtime_names: { worker: "private-worker" } });
+const NO_WRITER = "Volume data has no writer; fsn-2 holds its only copy. Make it the writer: ployz volume restore data --from fsn-2";
+const executed = { type: "executed" as const, summary: null, reason: null, cause: [], services: [] };
+
+it("offers a fix for a Service the planner refused, and none for one left waiting", () => {
+  const nodes = [node("api", "failed"), node("worker", "not_attempted"), node("cron", "not_attempted")];
+  const preview = { blocked: [
+    { service: "private-worker", error: { message: NO_WRITER }, kind: "wait" },
+    { service: "cron", error: { message: "cron's region has no Server" }, kind: "refusal" },
+  ] } as DeploymentView["preview"];
+  const failed = deployment({
+    nodes, preview, runtime_names: { worker: "private-worker" },
+    outcome: { ...executed, reason: "api: failed", waiting: [{ service: "worker", reason: NO_WRITER }] },
+  });
   expect(canFixOnBranch(failed, node("worker", "not_attempted"), false)).toBe(false);
+  expect(canFixOnBranch(failed, node("cron", "not_attempted"), false)).toBe(true);
   expect(canFixOnBranch(failed, node("api", "failed"), false)).toBe(true);
+  expect(waitingServices(failed)).toEqual([{ service: "worker", reason: NO_WRITER }]);
 });
 
-it("reads a Deployment that only left Services waiting as deployed with the count waiting, and one that failed as Failed", () => {
-  const executed = { type: "executed" as const, summary: null, reason: null, cause: [], services: [], waiting: ["private-worker"] };
-  expect(deploymentStatusLabel({ status: "applied", remove: false, outcome: executed })).toBe("Deployed, 1 waiting");
-  expect(deploymentStatusLabel({ status: "applied", remove: false, outcome: { ...executed, waiting: ["a", "b"] } })).toBe("Deployed, 2 waiting");
-  expect(deploymentStatusLabel({ status: "failed", remove: false, outcome: { ...executed, reason: "api: failed", waiting: undefined } })).toBe("Failed");
-  const waiting = waitingServices(deployment({
-    status: "applied", outcome: executed, runtime_names: { worker: "private-worker" },
-    preview: { blocked: [{ service: "private-worker", error: { message: "wcache is a Docker volume and can't move" } }] } as DeploymentView["preview"],
-  }));
-  expect(waiting).toEqual([{ name: "worker", why: "wcache is a Docker volume and can't move" }]);
+it("never reads a Deployment that left every Service waiting as deployed", () => {
+  const outcome: Outcome = { ...executed, waiting: [{ service: "worker", reason: NO_WRITER }] };
+  const some = { status: "applied" as const, remove: false, outcome };
+  const every = { ...some, all_waiting: true };
+  expect(deploymentLight(some)).toBe("deployed");
+  expect(deploymentStatusLabel(some)).toBe("Deployed, 1 waiting");
+  expect(deploymentLight(every)).not.toBe("deployed");
+  expect(deploymentStatusLabel(every)).toBe("Nothing deployed, 1 waiting");
+  expect(deploymentStatusLabel({ status: "failed", remove: false, outcome: { ...outcome, reason: "api: failed" } })).toBe("Failed");
 });
 
 it("says why a Service has no deploy logs: the Deployment never ran, or its turn never came", () => {

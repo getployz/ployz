@@ -2,7 +2,8 @@ import {
   cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
   stopStoreDeploymentRun, storeDeploymentAwaitsApproval, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
-import { mailFailedGithubDeploy } from "#/modules/config-store/deploy-failed-mail.server";
+import { mailGithubDeployTrouble } from "#/modules/config-store/deploy-failed-mail.server";
+import { waitingServices } from "#/modules/config-store/store-deployments";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
@@ -45,7 +46,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
         const { organizationId, deploymentId } = event.data.event.data;
         await runEffect(finishDeployVolumes(event.data.run_id, "failed"));
         const stopped = await runEffect(stopStoreDeploymentRun(organizationId, deploymentId, event.data.run_id));
-        await runEffect(mailFailedGithubDeploy(event.data.event.data));
+        await runEffect(mailGithubDeployTrouble(event.data.event.data));
         return stopped;
       },
     },
@@ -55,7 +56,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       if (lacking.length > 0) {
         const failure = `Deploys need a newer Ployz on ${lacking.join(", ")}`;
         const failed = await step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
-        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+        await step.run("mail-failure", () => runEffect(mailGithubDeployTrouble(event.data)));
         return failed;
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
@@ -71,7 +72,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
         const failed = await step.run("storage-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, storage.message, storage.restore)));
-        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+        await step.run("mail-failure", () => runEffect(mailGithubDeployTrouble(event.data)));
         return failed;
       }
       if (storage.kind === "done") {
@@ -106,8 +107,8 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       if (applied) {
         await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphans(event.data.organizationId)));
       }
-      if ("ran" in ran && (ran.ran.status === "failed" || ran.ran.status === "unknown")) {
-        await step.run("mail-failure", () => runEffect(mailFailedGithubDeploy(event.data)));
+      if ("ran" in ran && (ran.ran.status === "failed" || ran.ran.status === "unknown" || waitingServices(ran.ran).length > 0)) {
+        await step.run("mail-failure", () => runEffect(mailGithubDeployTrouble(event.data)));
       }
       return ran;
     },

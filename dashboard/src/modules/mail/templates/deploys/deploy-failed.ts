@@ -1,5 +1,5 @@
 import type { DeploymentView, GitSource } from "@ployz/sdk";
-import { buildInterrupted, buildNodeId, outcomeReason } from "#/modules/config-store/store-deployments";
+import { buildInterrupted, buildNodeId, outcomeReason, waitingServices } from "#/modules/config-store/store-deployments";
 import type { MailContent, MailFact } from "#/modules/mail/layout";
 
 export type DeployFailedMail = {
@@ -44,6 +44,38 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
     title: named ? `${named} failed to deploy to ${environment}` : `A deploy to ${environment} failed`,
     paragraphs: [source?.branch ? `GitHub started this deploy from ${source.branch}. The logs show what went wrong.` : "GitHub started this deploy. The logs show what went wrong."],
     action: { label: "View logs", url },
+    facts,
+    reason: `You're getting this as a member of ${organization.name} on Ployz.`,
+  };
+}
+
+/**
+ * The mail for a Deploy GitHub started that left Services waiting on something outside their config: nobody watched it
+ * end, and the waiting Services still run what they ran before.
+ */
+export function deployWaitingMail({ origin, organization, deployment, sources }: DeployFailedMail): Omit<MailContent, "unsubscribe"> {
+  const { project, name: environment } = deployment.environment;
+  const place = `${project} / ${environment}`;
+  const waiting = waitingServices(deployment);
+  const named = waiting.length === 1 ? `${waiting[0]?.service} is` : `${waiting.length} services are`;
+  const source = sources.length === 1 ? sources[0] : undefined;
+  const commit = source?.commit?.slice(0, 7);
+  const segment = (value: string) => encodeURIComponent(value);
+  const facts: MailFact[] = [];
+  if (source) facts.push({ label: "Repository", value: source.repository, mono: true });
+  if (source?.branch) facts.push({ label: "Branch", value: source.branch, mono: true });
+  if (commit) facts.push({ label: "Commit", value: commit, mono: true });
+  facts.push({ label: "Environment", value: place }, ...waiting.map(({ service, reason }) => ({ label: service, value: reason })));
+  const rest = deployment.all_waiting ? "Nothing was deployed." : "Everything else was deployed.";
+  return {
+    subject: `${named} waiting to deploy to ${place}`,
+    preview: rest,
+    title: `${named} waiting to deploy to ${environment}`,
+    paragraphs: [`${source?.branch ? `GitHub started this deploy from ${source.branch}.` : "GitHub started this deploy."} ${rest} Deploy again once what they wait on is fixed.`],
+    action: {
+      label: "View deployment",
+      url: `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}`,
+    },
     facts,
     reason: `You're getting this as a member of ${organization.name} on Ployz.`,
   };
