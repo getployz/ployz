@@ -608,7 +608,7 @@ def boat_json(*args):
 def end_tunnel(pid):
     try:
         # The pid may have been reused since the tunnel exited.
-        command = pid and subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True).stdout
+        command = pid and subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True).stdout
         if command and b"ExitOnForwardFailure" in command:
             os.kill(pid, signal.SIGTERM)
     except OSError:
