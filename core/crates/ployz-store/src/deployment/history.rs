@@ -181,27 +181,83 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
 /// cancelled whose work started and didn't finish, or whose outcome its runner was
 /// lost before recording. The runner names only the first failure it saw, so a
 /// Service it reports as never attempted may still have a row that started: a
-/// Container it created beside the one it names. Only an applied Deployment of
-/// every Service settles them; one of some Services leaves the rest in doubt. A
-/// Service comes once for each such Deployment, as each may have put
-/// its own routes and mounts in place.
+/// Container it created beside the one it names. A Service stays in doubt until a
+/// later Deployment of every Service applies and reaches it: one of some Services
+/// leaves the rest in doubt, and so does one that left the Service waiting, since
+/// it changed nothing of it. A Service comes once for each such Deployment, as
+/// each may have put its own routes and mounts in place.
 fn may_run(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Vec<SavedServiceIntent>, RpcError> {
+    let mut services = Vec::new();
+    // The Services every full Deployment that applied, read so far, left waiting:
+    // none read yet leaves every Service in doubt.
+    let mut unsettled: Option<BTreeSet<String>> = None;
+    let mut before = i64::MAX;
+    loop {
+        let settler = tx.query(
+            &format!(
+                "SELECT number, run FROM config_deployment \
+                 WHERE environment_id = ?1 AND status = 'applied' AND {full} \
+                 AND number < ?2 ORDER BY number DESC LIMIT 1",
+                full = scope_sql::FULL
+            ),
+            &[environment.as_str().into(), before.into()],
+        )?;
+        let settler = settler
+            .first()
+            .map(|row| Ok::<_, RpcError>((row.int(0)?, row.json::<Run>(1, "Deployment run")?)))
+            .transpose()?;
+        let after = settler.as_ref().map_or(0, |(number, _)| *number);
+        in_doubt(
+            tx,
+            environment,
+            (after, before),
+            unsettled.as_ref(),
+            &mut services,
+        )?;
+        let Some((_, run)) = settler else {
+            break;
+        };
+        let waiting: BTreeSet<String> = run
+            .unreached()
+            .filter(|id| {
+                unsettled
+                    .as_ref()
+                    .is_none_or(|unsettled| unsettled.contains(*id))
+            })
+            .cloned()
+            .collect();
+        if waiting.is_empty() {
+            break;
+        }
+        unsettled = Some(waiting);
+        before = after;
+    }
+    Ok(services)
+}
+
+/// Add to `services` each Service that `environment`'s Deployments numbered after
+/// `after` and before `before` may have left running, by [`may_run`]: of those in
+/// `unsettled`, or of every one when it is None.
+fn in_doubt(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    (after, before): (i64, i64),
+    unsettled: Option<&BTreeSet<String>>,
+    services: &mut Vec<SavedServiceIntent>,
+) -> Result<(), RpcError> {
     let rows = tx.query(
         &format!(
             "SELECT saved_revision, nodes, status, run, id FROM config_deployment \
              WHERE environment_id = ?1 AND {NUMBERED} AND started IS NOT NULL \
              AND (status IN ('unknown', 'failed', 'cancelled') OR {lapsed}) \
-             AND number > COALESCE((SELECT MAX(number) FROM config_deployment \
-              WHERE environment_id = ?1 AND status = 'applied' AND {full}), 0)",
+             AND number > ?2 AND number < ?3",
             lapsed = lapsed_sql(),
-            full = scope_sql::FULL
         ),
-        &[environment.as_str().into()],
+        &[environment.as_str().into(), after.into(), before.into()],
     )?;
-    let mut services: Vec<SavedServiceIntent> = Vec::new();
     for row in &rows {
         let saved = saved_at(tx, environment, row.number(0, "revision")?)?;
         let nodes: Vec<TargetNode> = row.json(1, "Deployment")?;
@@ -216,7 +272,9 @@ fn may_run(
             BTreeSet::new()
         };
         for node in &nodes {
-            if node.service().is_none() {
+            if node.service().is_none()
+                || unsettled.is_some_and(|unsettled| !unsettled.contains(node.id()))
+            {
                 continue;
             }
             let doubtful = match run.nodes.get(node.id()) {
@@ -239,7 +297,7 @@ fn may_run(
             }
         }
     }
-    Ok(services)
+    Ok(())
 }
 
 /// The runtime Services Deployment `id`'s runner began work on, on any Server. A

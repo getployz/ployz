@@ -7977,6 +7977,66 @@ fn a_deploy_of_some_services_leaves_a_lost_deployments_service_in_doubt() {
     assert_eq!(removes, ["cron"]);
 }
 
+/// [`preview`] of `planned`, where the planner left `waiting` blocked for want of a
+/// writer.
+fn preview_with_waiting(planned: &[&str], waiting: &str) -> DeployPreview {
+    let mut preview = preview(planned);
+    preview.blocked = serde_json::from_value(json!([{
+        "service": waiting,
+        "error": {
+            "code": "conflict", "message": "Volume data has no writer",
+            "details": {"reason": "no_writer"}
+        }
+    }]))
+    .unwrap();
+    preview
+}
+
+/// Run full Deployment `n` to its end: `planned` deploy and `waiting` is left waiting.
+fn apply_with_waiting(store: &ConfigStore, n: u8, planned: &[&str], waiting: &str) {
+    let b = runner("runner-b");
+    store.claim(&id(n), &b).unwrap();
+    store
+        .record(
+            &id(n),
+            &b,
+            RunEvidence::Prepared(preview_with_waiting(planned, waiting)),
+        )
+        .unwrap();
+    store.record(&id(n), &b, succeeded(planned)).unwrap();
+}
+
+#[test]
+fn a_full_deploy_that_leaves_a_lost_deployments_service_waiting_leaves_it_in_doubt() {
+    let (store, who) = cron_lost();
+    // #3 deploys every Service and leaves cron waiting: it never reached cron, so
+    // what #2 may have started of it may still run.
+    admit(&store, &who, 3, &[], None).unwrap();
+    apply_with_waiting(&store, 3, &["web", "api"], "cron");
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+
+    let refused = rollback_to(&store, &who, (4, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
+fn a_full_deploy_that_leaves_a_service_waiting_keeps_the_domain_an_unknown_deployment_may_hold() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    add_web_domain(&store, &who, "app.example.com");
+    lose_track(&store, &who, 2);
+    remove_domain(&store, &who, "app.example.com");
+    // #3 ships the removal, deploys api and leaves web waiting: #2 may still have put
+    // the domain on web, and nothing took it off.
+    deploy_as(&store, &who, 3, Approval::NotRequired).unwrap();
+    apply_with_waiting(&store, 3, &["api"], "web");
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+
+    let refused = retry_as(&store, &who, (4, 3), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
 #[test]
 fn rolling_back_to_a_deploy_of_some_services_leaves_the_others_running_unasked() {
     let (store, who) = shop();

@@ -1025,6 +1025,15 @@ struct Run {
 }
 
 impl Run {
+    /// The nodes its Deployment, once Applied, never reached: the planner left
+    /// their Services waiting, so each runs whatever it ran before.
+    fn unreached(&self) -> impl Iterator<Item = &String> {
+        self.nodes
+            .iter()
+            .filter(|(_, status)| **status == NodeStatus::NotAttempted)
+            .map(|(id, _)| id)
+    }
+
     fn summary_warnings(&self) -> Vec<DeploymentWarning> {
         let failed = self.ingress.iter().filter_map(|repair| {
             let ingress = repair.failure.clone()?;

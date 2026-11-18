@@ -481,23 +481,67 @@ fn a_full_deploy_replaces_a_dropped_service_whose_name_a_new_one_took() {
     );
 }
 
-#[test]
-fn a_full_deploy_tears_down_the_runtime_a_renamed_service_ran_as() {
-    let (store, who) = retiring_api();
+fn rename_web(store: &ConfigStore, who: &Actor, runtime: &str) {
     store
         .write(
-            &who,
+            who,
             &Edit {
                 environment: EnvironmentRef::default(),
                 expect: None,
                 changes: vec![Change::Set {
                     path: SettingPath::parse("web.privateDns").unwrap(),
-                    value: json!("front"),
+                    value: json!(runtime),
                 }],
             },
         )
         .unwrap();
-    publish(&store, &who);
+    publish(store, who);
+}
+
+#[test]
+fn a_full_deploy_that_leaves_a_renamed_service_waiting_still_owes_what_it_may_run_as() {
+    let (store, who) = retiring_api();
+    rename_web(&store, &who, "mid");
+    let lost = deploy(&store, &who, 3, &[]).unwrap();
+    store.claim(&lost.id, &runner()).unwrap();
+    store
+        .record(
+            &lost.id,
+            &runner(),
+            RunEvidence::Prepared(preview(&["mid"], true)),
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .record(&lost.id, &runner(), failed_at(&[], "mid"))
+            .unwrap()
+            .status,
+        DeploymentStatus::Failed
+    );
+    rename_web(&store, &who, "front");
+    let admitted = deploy(&store, &who, 4, &[]).unwrap();
+    let mut waiting = preview(&["api"], true);
+    waiting.blocked = serde_json::from_value(json!([{
+        "service": "front",
+        "error": {"code": "conflict", "message": "Volume data has no writer", "details": {}}
+    }]))
+    .unwrap();
+    assert_eq!(
+        run(&store, &admitted.id, waiting, &["api"]),
+        DeploymentStatus::Applied
+    );
+    let again = deploy(&store, &who, 5, &[]).unwrap();
+    let claimed = store.claim(&again.id, &runner()).unwrap();
+    assert_eq!(
+        claimed.intent.options.removals,
+        ployz_core::ServiceRemovals::from_names([name("web"), name("mid")])
+    );
+}
+
+#[test]
+fn a_full_deploy_tears_down_the_runtime_a_renamed_service_ran_as() {
+    let (store, who) = retiring_api();
+    rename_web(&store, &who, "front");
     let admitted = deploy(&store, &who, 3, &[]).unwrap();
     let web = ServiceLineageId::parse(uuid(3)).unwrap();
     let web_node = nodes(&store, &admitted.id)

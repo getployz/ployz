@@ -103,8 +103,8 @@ pub(crate) fn retirements(
 
 /// The name of Service lineage `id` and every runtime Service it may run as: by
 /// `applied`, and by each started or queued Deployment since the last one that
-/// removed it, less each runtime an Applied Deployment whose snapshot was complete
-/// since tore down beside it.
+/// removed it, less each runtime an Applied Deployment that reached it since tore
+/// down beside it.
 fn ran_as(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -147,8 +147,9 @@ fn ran_as(
         // Deployment tore down what it shipped beside on every Machine it reached.
         // A copy on a Machine it could not check is the next full Deploy's prune,
         // not a removal to name again. What any other Deployment shipped or tried
-        // to tear down may run still.
-        let torn = row.text(2)? == "applied";
+        // to tear down may run still, and so may what an Applied one left waiting:
+        // it planned nothing for that Service.
+        let torn = row.text(2)? == "applied" && run.unreached().all(|left| left != id.as_str());
         for node in nodes.iter().filter(|node| node.id() == id.as_str()) {
             if let TargetNode::Service {
                 name: then,
