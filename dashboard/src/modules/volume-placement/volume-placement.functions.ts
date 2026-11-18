@@ -4,7 +4,8 @@ import { refusedPublicly } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
 import { deleteCopy, placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
+import { discardPlacement, listPlacements, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
+import { SEED_OFF } from "#/modules/volume-run/plan";
 import { DeleteCopyInput, StageRestoreInput, VolumeInput } from "#/modules/volume-placement/volume-placement";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
@@ -48,7 +49,7 @@ export const stageRestoreServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(StageRestoreInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
-    Effect.flatMap((access) => unlessPlacementRefused(access.organization.id, stageRestore(access.organization.id, access, data))),
+    Effect.flatMap(() => Effect.fail(new Conflict({ userFacing: true, message: SEED_OFF }))),
     refusedPublicly,
   )));
 

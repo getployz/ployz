@@ -564,9 +564,10 @@ describe("seedOffer", () => {
     seedOffer(volume, members, (options.restorable ?? members.map((each) => each.machine.name)).map(id), (options.floorless ?? []).map(id));
   const fresh = () => [member("web-1", "writer"), mirrorAsOf("web-2", at)];
 
-  it("offers a point the Deploy's seed run would restore", () => {
-    expect(offer(fresh())).toEqual({ offered: true, refused: null });
-    expect(offer([...fresh(), pooled("web-3")], { floorless: ["web-3"] })).toEqual({ offered: true, refused: null });
+  it("offers no point while a restore into a new volume is turned off, and says so", () => {
+    const refused = "Restoring a point into a new volume is turned off in this version of Ployz.";
+    expect(offer(fresh())).toEqual({ offered: false, refused });
+    expect(offer([...fresh(), pooled("web-3")], { floorless: ["web-3"] })).toEqual({ offered: false, refused });
   });
 
   it("says why the seed run would refuse: a Server without the generation floor that holds a copy, or no primary", () => {

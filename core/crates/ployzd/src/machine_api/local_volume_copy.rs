@@ -235,6 +235,7 @@ impl MachineService {
                     ..
                 },
             ) => {
+                self.local.admit_pull_source(&from).await?;
                 self.plugin_copy(
                     PULL_ROUTE,
                     &PullRequest {

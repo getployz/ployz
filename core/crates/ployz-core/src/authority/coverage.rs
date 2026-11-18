@@ -162,7 +162,9 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (INSPECT_VOLUME_COPY_CAPABILITY, Read),
     (
         SEED_VOLUME_CAPABILITY,
-        Bound("copies only between this Cluster's Machines; checked at mount by C"),
+        Bound(
+            "refused from an Operator: no statement approves one Volume's data under another name",
+        ),
     ),
     (
         SET_VOLUME_COPY_CAPABILITY,
@@ -495,7 +497,7 @@ pub const CASES: &[Case] = &[
         SEED_VOLUME_CAPABILITY,
         "any copy",
         "a SeedVolume from another Machine's copy",
-        Expected::Served,
+        Expected::Refused(&[DEPLOY_APPROVAL_CAPABILITY]),
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,

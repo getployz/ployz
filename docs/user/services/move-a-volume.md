@@ -26,8 +26,8 @@ The old server keeps a read-only copy, like `data-web-1`, under **Elsewhere**. I
 and never refreshes.
 
 - Its × deletes it right away, after you click **Delete**. This can't be undone.
-- Its **Restore** stages a restore from its last point. See [Restore a volume](restore-a-volume.md).
-  While a staged restore reads the copy, × says "A restore reads this copy."
+- Restoring its last point into a new volume is turned off in this version. See
+  [Restore a volume](restore-a-volume.md).
 
 A new mirror deletes old copies on other servers first, and Details says so.
 

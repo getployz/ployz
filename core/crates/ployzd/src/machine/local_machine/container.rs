@@ -607,6 +607,35 @@ impl LocalMachine {
             .map_or(Sends::Refused, |machine| Sends::Member(machine.id)))
     }
 
+    /// Refuse a pull whose source is not the management address of a Machine this one
+    /// accepts, so a Mirror holds only data another Machine of this Cluster sent.
+    ///
+    /// # Errors
+    /// Returns [`Error::DeployRefused`] for any other address, and a store error when the
+    /// Machines cannot be read.
+    pub(crate) async fn admit_pull_source(
+        &self,
+        from: &ployz_core::ManagementAddress,
+    ) -> Result<(), Error> {
+        let machines = self.replicated()?.machines().await?;
+        if machines
+            .observations
+            .iter()
+            .any(|machine| machine.management_address() == *from)
+        {
+            return Ok(());
+        }
+        tracing::warn!(
+            "Volume pull refused: {} is no Machine of this Cluster",
+            from.0
+        );
+        Err(Error::DeployRefused(
+            ployz_core::authority::AuthorityRefusal::Mismatch {
+                field: "the source Server",
+            },
+        ))
+    }
+
     /// Whether Docker runs any Container that mounts the Volume `name`. A holder gone
     /// between the list and its inspect does not run.
     pub(crate) async fn volume_holder_running(

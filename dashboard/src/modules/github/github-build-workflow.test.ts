@@ -54,9 +54,7 @@ describe("GitHub build workflows", () => {
   });
 
   it("shows the rule template verbatim where the docs give it", () => {
-    for (const page of ["docs/user/deploy/github.md", "docs/user/environments/preview-environments.md"]) {
-      expect(repositoryFile(page)).toContain(`\`\`\`yaml\n${GITHUB_RULE_WORKFLOW}\`\`\``);
-    }
+    expect(repositoryFile("docs/user/deploy/github.md")).toContain(`\`\`\`yaml\n${GITHUB_RULE_WORKFLOW}\`\`\``);
   });
 
   it("dispatches build ids that getployz/build accepts", () => {

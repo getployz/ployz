@@ -3,7 +3,7 @@ import { Option, Schema } from "effect";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { STALE_AFTER_MS } from "#/modules/volume-copies/volume-copies";
-import { epochOf, planFromCopies, planSeed } from "#/modules/volume-run/plan";
+import { epochOf, planFromCopies, planSeed, SEED_OFF } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/volume-copies";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -452,7 +452,8 @@ export function seedOffer(
       : member);
   const planned = planSeed({ ...run, volumeName: volume.name, orphan: false }, observed);
   if (!planned.ok) return { offered: false, refused: planned.refusal.message };
-  return { offered: restorable.includes(planned.source.machine.id), refused: null };
+  if (!restorable.includes(planned.source.machine.id)) return { offered: false, refused: null };
+  return { offered: false, refused: SEED_OFF };
 }
 
 export type PlacementTargets = { readonly move: readonly MachineRef[]; readonly mirror: readonly MachineRef[] };

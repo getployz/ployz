@@ -123,6 +123,12 @@ export function planFromCopies(input: PlanInput, observed: readonly Member[]): P
   return refuse("server_lacks", moveOffMessage(input.volumeName, planned.phase.target.machine.name));
 }
 
+/**
+ * Why nobody stages a restore into a new Volume: a Server puts no Volume's data under another name for Ployz Cloud, so
+ * the Deploy's seed run would fail.
+ */
+export const SEED_OFF = "Restoring a point into a new volume is turned off in this version of Ployz.";
+
 /** Why no run moves `name` onto `server`. */
 export const moveOffMessage = (name: string, server: string) =>
   `Moving a volume to another server is turned off in this version of Ployz, so ${name} can't move to ${server}.`;
