@@ -178,8 +178,10 @@ The deploy also leaves the volume where it is when:
   ```
 
   Below that line is `postgres` as it starts on `web-1`, as
-  [a move's approval](move-a-volume.md#servers-that-enforce-device-approval) lists it. Answer no
-  and nothing is deployed. `--yes` signs without asking, as it does for the deploy.
+  [a move's approval](move-a-volume.md#servers-that-enforce-device-approval) lists it. Its
+  placement there is the last deploy's, so it can name the old region. The deploy's own lines
+  above it name the new one. Answer no and nothing is deployed. `--yes` signs without asking, as
+  it does for the deploy.
 - **Your servers enforce device approval, the deploy came from `ployz`, and the service has a
   [count for each region](#run-a-service-in-more-than-one-region).** `ployz deploy` signs a move
   only into the environment's region, and says so:
