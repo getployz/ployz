@@ -11,8 +11,8 @@ use ployz_core::{
     IngressDoorsFailure, IngressDoorsSet, IngressStage, Machine, MachineFailure, MachineId,
     MachineName, MachineObservation, MachineTarget, PartialResult, PlatformPurpose,
     QualifiedService, RpcError, RpcErrorCode, SET_CLUSTER_DOORS_CAPABILITY,
-    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, Sealing, SealingPublicKey,
-    ServiceId, ServiceObservation, SetClusterDoorsRequest, cluster_sealing_key, op, seal_platform,
+    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SealingPublicKey, ServiceId,
+    ServiceObservation, SetClusterDoorsRequest, cluster_sealing_key, op, seal_platform,
 };
 use ployz_store::{IngressAction, IngressFailure, IngressRepair};
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ use crate::{
     connect::{Client, ConnectError},
     deploy::{ProxyPlacement, RestartTolerant, SlotAction, set_each},
     failure::Failure,
-    sealing_pin::{SealFor, SealTo},
+    sealing_pin::SealTo,
     ui::progress::{Detail, Diagnostic, StartFailure},
 };
 
@@ -179,17 +179,12 @@ pub(crate) struct Doors {
     /// The Cluster's Sealing Key as the first Server's row claims it. Cloud can write
     /// that row, so the CLI seals only to a key [`SealTo`] checks.
     pub(crate) sealing: Option<SealingPublicKey>,
-    /// The key new values seal to once the Cluster activated, as the entry reports it for
-    /// that Sealing Key. Only Cloud's own SDK seals to it; the CLI seals to the recipient its
-    /// pin names.
-    pub(crate) recipient: Option<SealingPublicKey>,
 }
 
 /// A Cloudflare tunnel token to seal, with the Cluster's keys to seal it to.
 pub(crate) struct NewToken<'token> {
-    /// Keys the caller trusts for the Cluster, never ones a row merely claims: its identity,
-    /// and the recipient key new values seal to once it activated.
-    pub(crate) seal_for: SealFor,
+    /// The Sealing Key the caller trusts for the Cluster, never one a row merely claims.
+    pub(crate) seal_for: SealingPublicKey,
     pub(crate) token: &'token str,
 }
 
@@ -212,19 +207,17 @@ pub(crate) fn cluster_doors_for(
         });
     }
     let sealed_token = match token {
-        Some(NewToken { seal_for, token }) => seal_platform(
-            &seal_for.cluster,
-            &seal_for.recipient,
-            PlatformPurpose::IngressTunnel,
-            token.as_bytes(),
-        )
-        .map_err(|error| {
-            Failure::caused(
-                RpcErrorCode::Internal,
-                "Could not seal the tunnel token for this Cluster",
-                error,
-            )
-        })?,
+        Some(NewToken { seal_for, token }) => {
+            { seal_platform(&seal_for, PlatformPurpose::IngressTunnel, token.as_bytes()) }.map_err(
+                |error| {
+                    Failure::caused(
+                        RpcErrorCode::Internal,
+                        "Could not seal the tunnel token for this Cluster",
+                        error,
+                    )
+                },
+            )?
+        }
         None => observed.cluster.sealed_token.clone().ok_or_else(|| {
             Failure::usage(
                 "The Tunnel Door needs the tunnel's Cloudflare token. Pipe it with --token-stdin.",
@@ -302,15 +295,6 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         ));
     }
     let sealing = cluster_sealing_key(machines.iter().map(|machine| &machine.machine));
-    let recipient = match sealing {
-        Some(identity) => client
-            .call::<op::Inspect>(ployz_core::InspectRequest::default(), Call::read())
-            .await
-            .ok()
-            .filter(|details| details.sealing.and_then(Sealing::held_key) == Some(identity))
-            .and_then(|details| details.sealing_recipient),
-        None => None,
-    };
     Ok(Doors {
         machines: door_machines(&machines),
         proxy: proxy_service(&services),
@@ -320,7 +304,6 @@ pub(crate) async fn observe_doors(client: &mut Client) -> Result<Doors, Failure>
         open: machine_doors(&services),
         listed: live.containers,
         sealing,
-        recipient,
     })
 }
 

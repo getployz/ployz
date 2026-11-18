@@ -1,7 +1,6 @@
 //! Claiming a queued Deployment: a runner takes it and receives its frozen Deploy Intent.
 
 use super::*;
-use ployz_core::authority::TeardownApproval;
 
 /// A queued Deployment of `who`'s Organization, checked that a runner may still
 /// claim it and a Server could run it. Nothing changes: the caller hands it to a runner.
@@ -152,14 +151,6 @@ fn take(
             true
         }
     };
-    if starting && awaits(tx, &id)? {
-        let refused = error::conflict(
-            "Nobody approved this redeploy after its builds, so it didn't run. Run ployz \
-             deployment redeploy again.",
-            json!({ "deployment": id }),
-        );
-        return refuse(tx, stored, Refusal::Fails(refused));
-    }
     let saved = held_revision(tx, &stored)?;
     // An earlier run may have fixed a Volume's storage since this one was admitted.
     if let Err(refused) = crate::volume::check_admitted(tx, &stored.summary.environment_id, &saved)
@@ -239,46 +230,22 @@ fn take(
     let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
     let ended_runs = ended_runs(tx, &stored.summary)?;
     let approval = device_approval(tx, &id)?;
-    let preview = crate::preview_rule::of_deployment(tx, &stored)?;
-    // A preview's removal comes off under the rule that made it, when no person signed one.
-    let teardown = match teardown(tx, &id)? {
-        Some(teardown) => Some(teardown),
-        None if stored.summary.remove => preview.clone().map(TeardownApproval::PreviewRule),
-        None => None,
-    };
-    let review = match preview {
-        Some(_) => preview_review(tx, &id)?,
-        None => None,
-    };
-    // A person's approval of a commit stands in for the push automation answers to.
-    let approvals = match preview {
-        Some(_) => BTreeMap::new(),
-        None => build::commit_approvals(tx, &id)?,
-    };
-    let rule = match (&stored.summary.admitted_by, &preview) {
-        (None, None) => crate::auto_rule::stored(tx, &stored.summary.environment_id)?,
-        (Some(_), None) if !approvals.is_empty() => {
-            crate::auto_rule::stored(tx, &stored.summary.environment_id)?
-        }
-        (Some(_), _) | (None, Some(_)) => None,
-    };
-    let generation = match (&rule, &preview) {
-        (Some(rule), _) => rule.open().ok().map(|rule| rule.generation),
-        (None, Some(preview)) => preview.open().ok().map(|preview| preview.generation),
-        (None, None) => None,
-    };
+    // Whoever admitted the Deployment: a redeploy a person asked for reuses a rule-built
+    // image, and each Server checks the rule, the token and the branch head itself.
+    let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
+    let generation = rule
+        .as_ref()
+        .and_then(|rule| rule.open().ok())
+        .map(|rule| rule.generation);
     let image_tokens = match generation {
         None => BTreeMap::new(),
         // A build that ended before the Store kept its token's terms was built under
-        // the rule as it stands, for the push or the review.
+        // the rule as it stands, for the push.
         Some(generation) => build::image_tokens(tx, &id, |token| build::ImageToken {
             token,
             image: String::new(),
             generation,
-            authority: match &review {
-                Some(review) => ployz_core::authority::CommitAuthority::Review(review.digest()),
-                None => ployz_core::authority::CommitAuthority::Head,
-            },
+            authority: ployz_core::authority::CommitAuthority::Head,
         })?,
     };
     Ok(Taken::Claimed(Box::new(Claimed {
@@ -294,11 +261,7 @@ fn take(
         ended_runs,
         approval,
         rule,
-        preview,
-        review,
         image_tokens,
-        approvals,
-        teardown,
     })))
 }
 

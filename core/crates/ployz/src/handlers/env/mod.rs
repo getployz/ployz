@@ -549,18 +549,19 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let store = store.args(["--confirm", typed.as_str()]);
     let environment = inventory.environment.clone();
     let target = (&environment.project, Some(&name));
-    let signing = teardown::drafted(matches, &store, target)?;
     let mut shown = None;
-    let confirming = (typed.as_str(), signing.as_ref());
-    confirm(matches, confirming, "Environment", store.again(&[]), || {
-        shown = Some(teardown::Shown::of([&inventory]));
-        Ok(unconfirmed(inventory, &store.again(&[])))
-    })?;
-    let signed = signing.map(teardown::Drafted::sign).transpose()?;
+    confirm(
+        matches,
+        typed.as_str(),
+        "Environment",
+        store.again(&[]),
+        || {
+            shown = Some(teardown::Shown::of([&inventory]));
+            Ok(unconfirmed(inventory, &store.again(&[])))
+        },
+    )?;
     let events = deploy::open_events(matches)?;
-    let Some(removed) =
-        teardown::remove(matches, &store, target, (shown.as_ref(), signed), events)?
-    else {
+    let Some(removed) = teardown::remove(matches, &store, target, shown.as_ref(), events)? else {
         return Ok(());
     };
     crate::ui::finish(

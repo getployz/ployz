@@ -649,7 +649,6 @@ fn deploy_by_hand(
         .write_trusted(
             who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: at("production"),
                 services: services
@@ -1207,14 +1206,11 @@ fn retry(
     store.write_trusted(
         who,
         &ployz_store::Admit::Retry(ployz_store::Retry {
-            teardown: None,
             id: id.clone(),
             deployment: source.clone(),
             rolls_back: None,
             version: None,
             accept_volume_loss: Vec::new(),
-            approvals: Vec::new(),
-            awaits_approval: false,
             approval: None,
         }),
         &Trusted::default(),

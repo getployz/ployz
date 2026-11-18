@@ -28,15 +28,8 @@ pub const SEALING_KEY_SHARE: &[u8] = b"ployz-sealing-key-share-v1";
 /// HKDF label of the Cluster's build attest key, derived from its Sealing Key.
 pub const BUILD_SECRETS_ATTEST: &[u8] = b"ployz build-secrets attest v1";
 
-/// HKDF label of the Cluster's Volume handoff receipt key, derived from its Sealing Key.
-pub const VOLUME_HANDOFF: &[u8] = b"ployz volume handoff v1";
-
 /// HKDF label of the key a Sealing secret's recovery backup is wrapped under.
 pub const SEALING_KEY_BACKUP: &[u8] = b"ployz-sealing-key-backup-v1";
-
-/// HPKE `info` for a recipient key's private half sealed to one Machine's WireGuard key. The
-/// start of that seal's associated data too.
-pub const RECIPIENT_KEY: &[u8] = b"ployz-recipient-key-v1";
 
 /// HKDF label of the key a joiner's confirmation is a MAC under.
 pub const JOIN_CONFIRMATION: &[u8] = b"ployz-join-confirmation-v1";
@@ -66,23 +59,18 @@ pub const MANAGEMENT_PROOF: &[u8] = b"ployz management client proof v1";
 /// Signature prefix of a statement a Device or passkey signs.
 pub const AUTHORITY_SIGNING: &[u8] = b"ployz-authority/v1\n";
 
-/// Signature prefix of a statement a Machine signs with the Cluster key.
-pub const MACHINE_SIGNING: &[u8] = b"ployz-machine/v1\n";
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ALL: [(&str, &[u8]); 19] = [
+    const ALL: [(&str, &[u8]); 16] = [
         ("SEALED_VALUE", SEALED_VALUE),
         ("PLATFORM_SEALED", PLATFORM_SEALED),
         ("BUILD_SECRETS", BUILD_SECRETS),
         ("SEALING_KEY", SEALING_KEY),
         ("SEALING_KEY_SHARE", SEALING_KEY_SHARE),
         ("BUILD_SECRETS_ATTEST", BUILD_SECRETS_ATTEST),
-        ("VOLUME_HANDOFF", VOLUME_HANDOFF),
         ("SEALING_KEY_BACKUP", SEALING_KEY_BACKUP),
-        ("RECIPIENT_KEY", RECIPIENT_KEY),
         ("JOIN_CONFIRMATION", JOIN_CONFIRMATION),
         ("JOIN_CODE", JOIN_CODE),
         ("FOUNDING_CLAIM", FOUNDING_CLAIM),
@@ -92,7 +80,6 @@ mod tests {
         ("BUILD_CACHE", BUILD_CACHE),
         ("MANAGEMENT_PROOF", MANAGEMENT_PROOF),
         ("AUTHORITY_SIGNING", AUTHORITY_SIGNING),
-        ("MACHINE_SIGNING", MACHINE_SIGNING),
     ];
 
     #[test]
@@ -109,16 +96,14 @@ mod tests {
 
     #[test]
     fn each_string_is_the_bytes_old_machines_and_stored_rows_know() {
-        let expected: [&[u8]; 19] = [
+        let expected: [&[u8]; 16] = [
             b"ployz-sealed-v1",
             b"ployz-platform-sealed-v1",
             b"ployz build secrets v1",
             b"ployz-sealing-key-v1",
             b"ployz-sealing-key-share-v1",
             b"ployz build-secrets attest v1",
-            b"ployz volume handoff v1",
             b"ployz-sealing-key-backup-v1",
-            b"ployz-recipient-key-v1",
             b"ployz-join-confirmation-v1",
             b"ployz-join-v1\n",
             b"ployz founding claim v1\0",
@@ -128,7 +113,6 @@ mod tests {
             b"ployz build cache v1\0",
             b"ployz management client proof v1",
             b"ployz-authority/v1\n",
-            b"ployz-machine/v1\n",
         ];
         for ((name, string), expected) in ALL.iter().zip(expected) {
             assert_eq!(*string, expected, "{name}");

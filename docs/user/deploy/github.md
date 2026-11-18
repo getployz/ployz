@@ -99,12 +99,12 @@ A volume deletion you confirmed when you saved goes out with the push without as
 the data changed since, the push keeps it and your next deploy asks; see
 [Confirm a deploy that deletes data](deployments.md#confirm-a-deploy-that-deletes-data).
 
-### Deploy on push to servers that enforce device approval
+### Approve a rule for deploys on push
 
-Servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on deploy a push only under an automatic deploy rule you approve with your passkey or an approved
-device. A browser session can't approve one: the rule stands for every future push, so each
-approval is its own passkey prompt.
+Your servers deploy a push only under an automatic deploy rule you approve from an
+[approved device](../servers/manage-servers.md#what-needs-an-approved-device), or with a
+[passkey](../servers/manage-servers.md#add-a-passkey) your servers trust. The rule stands for
+every future push, so each approval is its own prompt.
 
 In the dashboard, open the environment's **Settings** and turn on **Deploy every push** under
 **Automatic deploys**. The dialog shows the repository and branch, the builder, the servers and
@@ -143,9 +143,7 @@ Actions builds it with Ployz's pinned builder, and each server checks that the i
 built for the branch's current head, under these settings. The repository needs Ployz's rule
 workflow as `.github/workflows/ployz-build.yml` on the rule's branch. **Organization → Builds**
 offers it for each repository a rule builds from: **Add workflow** and **Update workflow** show
-the file and open GitHub to commit it. It builds on every push to a branch, and on a dispatch with
-a `commit` for a
-[rollback that builds again](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
+the file and open GitHub to commit it. It builds on every push to a branch.
 Commit it exactly as Ployz gives it:
 
 ```yaml
@@ -174,7 +172,6 @@ dispatches a rebuild only with this exact file, and **Builds** reads any other a
 workflow**. Each server checks that a push was to the rule's branch. To skip pushes to other
 branches, set the repository variable `PLOYZ_BRANCH` to the rule's branch, such as `main`, as the
 dialog names it, in the repository's **Settings → Secrets and variables → Actions → Variables**.
-Leave it unset if the repository also has a [preview rule](../environments/preview-environments.md).
 A self-hosted Ployz Cloud sets `PLOYZ_CLOUD` there to its own address, such as
 `https://ployz.example.com`. A repository with this file builds on GitHub only under its rules: a
 deploy of another environment from it builds on your servers.
@@ -190,11 +187,9 @@ deploy of another environment from it builds on your servers.
   after you [add a server](../servers/add-a-server.md).
 - **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
   longer deploy on those servers.
-- **Roll back from your device.** A rule deploys only the branch's head. To ship an older
-  commit, redeploy it with `ployz deployment redeploy`; see
-  [Roll back on servers that enforce device approval](history-and-rollback.md#roll-back-on-servers-that-enforce-device-approval).
-  A rule approved before Ployz 0.4 runs only on push. Approve it again before a rollback that
-  needs a rebuild.
+- **A rule deploys only the branch's head.** This version of Ployz can't redeploy or roll back
+  a service a rule built to an older commit. Push a revert to the branch instead; see
+  [Roll back a service a rule built](history-and-rollback.md#roll-back-a-service-a-rule-built).
 - **Someone who can push to the branch can deploy.** Ployz Cloud can't swap the commit, the
   image or the settings, but its GitHub App can push a commit to the branch itself. Add a branch
   ruleset on GitHub that blocks direct pushes to the branch.
@@ -313,9 +308,9 @@ instead of printing it. Pass `--ref` to read a branch, tag or commit other than 
 
 - **Every deploy ships the newest commit.** Clicking **Deploy** to apply a setting also picks up
   whatever is on the service's Git branch now.
-- **Servers that enforce device approval deploy a push only under a rule.** Without one, the
+- **Your servers deploy a push only under a rule.** Without one, the
   deployment fails at its build and nothing changes. See
-  [Deploy on push to servers that enforce device approval](#deploy-on-push-to-servers-that-enforce-device-approval).
+  [Approve a rule for deploys on push](#approve-a-rule-for-deploys-on-push).
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own
   [preview environments](../environments/preview-environments.md) instead.

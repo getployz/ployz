@@ -10,12 +10,8 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
     CheckCode, DeviceCode, DeviceKey, DeviceSet, InspectRequest, MachineId, MachineName,
     MachineTarget, REMOVE_TRUSTED_KEY_CAPABILITY, RemoveTrustedKeyRequest, Rpc, RpcError,
-    RpcErrorCode, SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY, SetDeviceRequest,
-    SetPasskeyRequest, TrustedKeyRemoved,
-    authority::{
-        Passkey, PasskeyAccount, PasskeyApprover, PasskeyPublicKey,
-        trusted_key::{CredentialId, RelyingParty},
-    },
+    RpcErrorCode, SET_DEVICE_CAPABILITY, SetDeviceRequest, TrustedKeyRemoved,
+    authority::{PasskeyAccount, PasskeyApprover},
     op,
 };
 use reqwest::Method;
@@ -30,11 +26,8 @@ use crate::connect::Client;
 use crate::ui::{self, Cell, Gaps, Table, Tone};
 use ployz_core::Hint;
 
-mod enforce;
-mod known;
 mod pin;
 mod signing;
-pub(crate) use enforce::{enforce, enforce_command};
 pub(super) use pin::seal_to;
 pub(crate) use pin::{pin, pin_command};
 pub(super) use signing::DeviceSigning;
@@ -50,21 +43,20 @@ pub(crate) fn request_command(command: Command) -> Command {
 }
 
 pub(crate) fn approve_command(command: Command) -> Command {
-    base(command, "Approve a device or a passkey on every server")
+    base(command, "Approve a device on every server")
         .after_help(concat!(
             "Examples:\n",
             "  ployz device approve mmg42-klgyq-p3w7d-xa5re\n",
-            "  ployz device approve --this-device --connect ssh://root@HOST\n",
-            "  sudo ployz device approve --passkey hq3vbn5x2c"
+            "  ployz device approve --this-device --connect ssh://root@HOST"
         ))
         .arg(positional("code", false).required_unless_present("this-device").help(
-            "The code the requesting device or server printed, or the passkey's code from Ployz Cloud",
+            "The code the requesting device or server printed",
         ))
         .arg(
             Arg::new("this-device")
                 .long("this-device")
                 .action(ArgAction::SetTrue)
-                .conflicts_with_all(["code", "join", "passkey"])
+                .conflicts_with_all(["code", "join"])
                 .help("Approve this computer's own device, made now if it has none. Run it from your computer with --connect ssh://root@HOST"),
         )
         .arg(
@@ -72,13 +64,6 @@ pub(crate) fn approve_command(command: Command) -> Command {
                 .long("join")
                 .action(ArgAction::SetTrue)
                 .help("Approve a waiting Server join with this device's key"),
-        )
-        .arg(
-            Arg::new("passkey")
-                .long("passkey")
-                .action(ArgAction::SetTrue)
-                .conflicts_with("join")
-                .help("Approve a passkey added in Ployz Cloud, which may approve workflows, automatic deploy rules, volume changes and Release Channels, and nothing else"),
         )
         .arg(yes("Approve without asking"))
 }
@@ -166,9 +151,6 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         return runtime()?.block_on(approve_waiting_join(leaf, &code));
     }
     let store = CredentialStore::beside(&config_path(leaf)?);
-    if leaf.get_flag("passkey") {
-        return runtime()?.block_on(approve_passkey(leaf, &store, typed_code(leaf)?));
-    }
     let code = CheckCode::parse(typed(leaf))?;
     runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
@@ -265,86 +247,6 @@ fn confirm_device(leaf: &ArgMatches, code: CheckCode) -> Result<(), Error> {
     )
 }
 
-/// Show the passkey waiting at `code`, ask, then add it to every Server.
-async fn approve_passkey(
-    leaf: &ArgMatches,
-    store: &CredentialStore,
-    code: DeviceCode,
-) -> Result<(), Error> {
-    let credential = cloud_account::from_env(store).await?;
-    let passkey = pending_passkey(&credential, code).await?;
-    ui::note(format!(
-        "Passkey {code} for {}. It can approve workflows, automatic deploy rules, volume changes and Release Channels on these servers, and nothing else.",
-        passkey.account
-    ));
-    ui::note(
-        "The dashboard named this key, so the server trusts the dashboard here. To trust only your computer, run this there instead:\n  ployz device approve --this-device --connect ssh://root@HOST",
-    );
-    if !leaf.get_flag("yes") {
-        ui::confirm(
-            &format!("Approve passkey {code} for {}?", passkey.account),
-            || {
-                Error::coded(
-                    RpcErrorCode::ConfirmationRequired,
-                    format!("Approving passkey {code} needs confirmation. Nothing changed."),
-                )
-                .hint(Hint::Retry(super::typed_with(&["--yes"])))
-            },
-            "Nothing approved.",
-        )?;
-    }
-    let mut client = route::connect_full(leaf, context(leaf)).await?;
-    let request = SetPasskeyRequest::Approve {
-        passkey: Box::new(passkey),
-    };
-    set_everywhere(&mut client, |client, machine_id| {
-        set_on::<op::SetPasskey>(client, machine_id, SET_PASSKEY_CAPABILITY, request.clone())
-    })
-    .await?
-    .finish()
-}
-
-/// The passkey waiting in Cloud at `code`, refused unless its key hashes to `code`. Its
-/// relying party comes from this CLI's own Cloud URL, so Cloud can't point a Server at
-/// another site.
-async fn pending_passkey(credential: &Credential, code: DeviceCode) -> Result<Passkey, Error> {
-    let path = format!("passkey-requests/{code}");
-    let pending = match cloud_account::call::<PendingPasskey>(credential, Method::GET, &path, None)
-        .await
-    {
-        Err(LoginError::Status { body, .. })
-            if cloud_account::refusal(body.as_bytes())
-                .is_some_and(|refused| refused.code == RpcErrorCode::NotFound) =>
-        {
-            return Err(Error::not_found(format!(
-                "No passkey waits for {code}. Add one again in your Ployz Cloud account; it waits 24h."
-            )));
-        }
-        reply => reply?,
-    };
-    let cloud = url::Url::parse(credential.cloud()).map_err(Error::command)?;
-    let passkey = Passkey {
-        credential_id: pending.credential_id,
-        public_key: pending.public_key,
-        account: pending.account,
-        relying_party: RelyingParty::of(&cloud)?,
-    };
-    if passkey.code() != code {
-        return Err(Error::conflict(format!(
-            "The passkey Ployz Cloud returned doesn't match {code}. Nothing changed."
-        )));
-    }
-    Ok(passkey)
-}
-
-/// A passkey waiting in Cloud. Only its key's code makes it trustworthy.
-#[derive(Deserialize)]
-struct PendingPasskey {
-    credential_id: CredentialId,
-    public_key: PasskeyPublicKey,
-    account: PasskeyAccount,
-}
-
 async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error> {
     let mut client = route::connect(leaf, context(leaf)).await?;
     let reach = Reach::of(&mut client).await?;
@@ -394,8 +296,6 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
         )
         .await
         .map_err(crate::connect::rpc_error)?;
-    known::KnownMachines::beside(&config_path(leaf)?)
-        .record(ployz_core::authority::Member::from(&body.machine))?;
     ui::finish(&json!({ "approved_join": body.machine.id }), || {
         ui::stream(
             "Approved the Server join. Enroll it again from the dashboard, or rerun its join command.",
@@ -503,8 +403,6 @@ pub(super) async fn sign_waiting_join(
     client
         .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
         .await?;
-    known::KnownMachines::beside(config)
-        .record(ployz_core::authority::Member::from(&body.machine))?;
     Ok(true)
 }
 

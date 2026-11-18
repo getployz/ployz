@@ -1239,7 +1239,6 @@ fn a_branch_a_sync_closed_lists_its_removal_before_and_after_the_sweep_starts_it
         .write_trusted(
             &who,
             &Admit::Remove(AdmitRemoval {
-                teardown: None,
                 id: id.clone(),
                 environment: at("fix-web"),
             }),
@@ -1296,7 +1295,6 @@ fn admit_removal(
     let admitted = store.write_trusted(
         who,
         &Admit::Remove(AdmitRemoval {
-            teardown: None,
             id: id.clone(),
             environment: at("fix-web"),
         }),
@@ -1441,7 +1439,6 @@ fn removing_a_branch_whose_close_waits_for_the_sweep_needs_no_new_confirmation()
     assert!(store.write(&who, &closing).unwrap().closing);
 
     let again = Remove {
-        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: Some(EnvironmentName::parse("fix-web").unwrap()),
         version: None,

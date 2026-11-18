@@ -189,9 +189,8 @@ deploy, then add it to the other service and deploy again. The domain is down be
 ## Move a domain to another environment
 
 Remove the domain from the environment that has it and deploy. Then add it in the other
-environment and deploy. Ployz refuses a domain another environment still serves. On servers with
-device enforcement, the servers also refuse it from a dashboard deploy. The domain is down between
-the two deploys.
+environment and deploy. Ployz refuses a domain another environment still serves. The domain is
+down between the two deploys.
 
 ## Good to know
 

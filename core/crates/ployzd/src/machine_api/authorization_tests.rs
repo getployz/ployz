@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use ployz_core::authority::coverage::{CASES, Case, Expected};
 use ployz_core::authority::{Signed, Signer};
 use ployz_core::{
-    DeviceKey, Machine, MachineId, MachineRpc, MachineRpcClient, OPERATOR_SCOPE_HEADER,
-    OpaquePayload, Rpc, RpcRequest, RpcResponse, RpcResponseBody, op, rpc::status_details,
+    DeviceKey, Machine, MachineId, MachineRpcClient, OpaquePayload, Rpc, RpcRequest, RpcResponse,
+    RpcResponseBody, op, rpc::status_details,
 };
 use serde_json::{Value, json};
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{Code, Request, Status, transport::Server};
+use tonic::{Request, Status, transport::Server};
 
 use super::MachineService;
 use crate::corrosion::ReplicatedStore;
@@ -24,8 +24,19 @@ use crate::machine::{LocalMachineStore, RecordOwner};
 use crate::sealing_key::SealingKey;
 
 /// Cases this harness can't reach over TCP, with the unit test that proves each. Cloud's
-/// own connection is an iroh connection, and a rule grant needs GitHub's signed token.
+/// own connection is an iroh connection, a rule grant needs GitHub's signed token, and an
+/// upgrade resolves releases only on an installed Machine.
 const UNIT_ONLY: &[(&str, &str, &str)] = &[
+    (
+        ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,
+        "an exact version no channel resolves to",
+        "installer::upgrade::tests::an_operator_names_only_a_release_a_channel_resolves_to",
+    ),
+    (
+        ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,
+        "a downgrade",
+        "installer::upgrade::tests::only_a_direct_connection_downgrades",
+    ),
     (
         ployz_core::SET_INGRESS_DOORS_CAPABILITY,
         "tunnel door",
@@ -40,26 +51,6 @@ const UNIT_ONLY: &[(&str, &str, &str)] = &[
         ployz_core::MINT_BUILD_GRANT_CAPABILITY,
         "with a rule and its proof",
         "rule_grant_tests::a_valid_token_mints_and_its_secrets_open_only_for_the_build",
-    ),
-    (
-        ployz_core::SET_VOLUME_COPY_CAPABILITY,
-        "a pull",
-        "volume_approval_tests::a_pull_needs_an_approval_that_names_this_machine_and_its_source",
-    ),
-    (
-        ployz_core::SET_VOLUME_COPY_CAPABILITY,
-        "a cut",
-        "volume_approval_tests::a_cut_a_promote_and_a_forget_of_a_copy_need_an_approval",
-    ),
-    (
-        ployz_core::SET_VOLUME_COPY_CAPABILITY,
-        "a promote with no receipt",
-        "volume_approval_tests::a_promote_without_a_receipt_runs_only_under_a_restore_of_this_copy_at_its_snapshot",
-    ),
-    (
-        ployz_core::SET_VOLUME_COPY_CAPABILITY,
-        "a forget of a copy",
-        "volume_approval_tests::a_forget_of_a_copy_needs_a_removal_of_its_role",
     ),
 ];
 
@@ -122,9 +113,7 @@ impl Enforcing {
         let starting = vec![ployz_core::authority::Member::from(&peer)];
         store
             .mutate(move |store| {
-                store
-                    .approve_device(device, Some(crate::machine::Evidence::LocalSocket))
-                    .unwrap();
+                store.approve_device(device).unwrap();
                 store.trust_members(starting).unwrap();
             })
             .await
@@ -391,9 +380,6 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::SET_PUSH_TARGET_CAPABILITY, _) => {
             unary::<op::SetPushTarget>(json!({"url": "https://observe.invalid/push"}))
         }
-        (ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY, _) => {
-            unary::<op::SetDeviceEnforcement>(json!({"enforced": false}))
-        }
         (ployz_core::SET_PASSKEY_CAPABILITY, _) => {
             unary::<op::SetPasskey>(json!({"kind": "approve", "passkey": passkey()}))
         }
@@ -504,15 +490,23 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
                         "creation_key": "attacker-0001", "gen": 1, "rotation": "pending",
                     },
                 }),
-                "a handoff" => json!({
-                    "kind": "handoff", "to": "b".repeat(32), "at": "7", "epoch": 2,
-                }),
-                "a forget of nothing" => json!({"kind": "forget"}),
+                "a pull" | "a cut" => {
+                    json!({"kind": "mirror", "from": null, "target": "f-1", "drain": 0})
+                }
+                "a promote" => json!({"kind": "writer", "at": "7", "epoch": 2}),
+                "a forget of a copy" | "a forget of nothing" => json!({"kind": "forget"}),
                 "floor, snapshot" => json!({"kind": "floor"}),
                 other => panic!("SetVolumeCopy has no sample for {other:?}"),
             };
+            let expect = match branch {
+                "a cut" => json!({"kind": "writer", "epoch": 1}),
+                "a promote" | "a forget of a copy" => {
+                    json!({"kind": "mirror", "newest": "7", "slot": "1"})
+                }
+                _ => json!({"kind": "none"}),
+            };
             unary::<op::SetVolumeCopy>(json!({
-                "name": "app_data", "expect": {"kind": "none"}, "want": want, "gen": 1,
+                "name": "app_data", "expect": expect, "want": want, "gen": 1,
             }))
         }
         (ployz_core::SET_VOLUME_SIZE_CAPABILITY, _) => unary::<op::SetVolumeSize>(json!({
@@ -554,87 +548,10 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::SET_CLUSTER_DOORS_CAPABILITY, _) => {
             unary::<op::SetClusterDoors>(json!({"doors": ["public"]}))
         }
-        (ployz_core::ACTIVATE_ENFORCEMENT_CAPABILITY, branch) => {
-            let (seed, members) = match branch {
-                "a legacy Member" => (7, vec![(&machine.machine).into(), (&machine.peer).into()]),
-                _ => (9, vec![(&machine.machine).into()]),
-            };
-            let signer = Signer::from_seed(&[seed; 32]);
-            let issued_at = ployz_core::authority::Timestamp::now();
-            let set = ployz_core::authority::StartingSet {
-                operation: ployz_core::OperationId::random(),
-                members,
-                issued_at,
-                expires_at: issued_at.plus(60_000),
-                signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
-                kept_keys: Vec::new(),
-            };
-            unary::<op::ActivateEnforcement>(json!({
-                "starting_set": ployz_core::authority::Signed::sign(&set, &signer).unwrap(),
-            }))
-        }
-        (ployz_core::SET_RECIPIENT_KEY_CAPABILITY, branch) => {
-            let operation = activated(machine).await;
-            match branch {
-                "generate" => unary::<op::SetRecipientKey>(json!({
-                    "step": "generate", "operation": operation,
-                })),
-                "install" => unary::<op::SetRecipientKey>(json!({
-                    "step": "install", "rotation": stranger_rotation(machine, operation),
-                })),
-                _ => unary::<op::SetRecipientKey>(json!({
-                    "step": "share", "rotation": stranger_rotation(machine, operation), "to": peer,
-                })),
-            }
-        }
-        (ployz_core::RESEAL_VALUES_CAPABILITY, _) => {
-            activated(machine).await;
-            SealingKey::set_recipient(&machine.data_dir, &SealingKey::generate()).unwrap();
-            unary::<op::ResealValues>(json!({"values": []}))
-        }
         (ployz_core::EXEC_CONTAINER_CAPABILITY, _) => Sample::Exec,
         (ployz_core::BUILD_CAPABILITY, _) => Sample::Build,
         (capability, branch) => panic!("{capability} has no sample for branch {branch:?}"),
     }
-}
-
-/// Commit an activation of this Machine alone, signed at its console by the approved
-/// Device, as the next boot does.
-async fn activated(machine: &Enforcing) -> ployz_core::OperationId {
-    use crate::machine::{Evidence, local_machine::PendingActivation};
-    let operation = ployz_core::OperationId::random();
-    let pending = PendingActivation {
-        operation,
-        members: vec![(&machine.machine).into()],
-        signer: DeviceKey::from(Signer::from_seed(&[7; 32]).public()).code(),
-        signer_evidence: Evidence::LocalSocket,
-        kept_keys: Vec::new(),
-    };
-    machine
-        .store
-        .mutate(move |store| {
-            pending.write(store.data_dir()).unwrap();
-            crate::activation::commit_pending(store, &crate::activation::NoPlugin).unwrap();
-        })
-        .await
-        .unwrap();
-    operation
-}
-
-/// A recipient rotation for `operation` a key this Machine never trusted signed.
-fn stranger_rotation(machine: &Enforcing, operation: ployz_core::OperationId) -> Value {
-    let signer = Signer::from_seed(&[9; 32]);
-    let rotation = ployz_core::authority::SealingRotation {
-        cluster: SealingKey::load(&machine.data_dir)
-            .unwrap()
-            .unwrap()
-            .public_key(),
-        operation,
-        recipient: SealingKey::generate().public_key(),
-        members: vec![(&machine.machine).into()],
-        signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
-    };
-    serde_json::to_value(ployz_core::authority::Signed::sign(&rotation, &signer).unwrap()).unwrap()
 }
 
 fn recovery_code() -> String {
@@ -812,30 +729,6 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
                 "{case:?}: the doors ran images other than the pins: {created:?}"
             );
         }
-        "the key is held unused until a verified rotation names it" => {
-            assert!(
-                SealingKey::load_recipient(&machine.data_dir)
-                    .unwrap()
-                    .is_none(),
-                "{case:?}: a generated key was installed"
-            );
-            assert!(
-                SealingKey::load_generated(&machine.data_dir)
-                    .unwrap()
-                    .is_some(),
-                "{case:?}: no key was generated"
-            );
-        }
-        "the result opens only under this Machine's recipient key" => {
-            let keys = crate::sealing_key::ClusterKeys::load(&machine.data_dir)
-                .unwrap()
-                .unwrap();
-            assert_ne!(
-                keys.sealing_to().public_key(),
-                keys.identity().public_key(),
-                "{case:?}"
-            );
-        }
         "Device slots are untouched" => {
             assert_eq!(
                 machine.store.record().devices().count(),
@@ -920,165 +813,6 @@ async fn answer(case: &'static Case, machine: &Enforcing) -> Outcome {
 #[path = "admission_golden_tests.rs"]
 mod admission_golden;
 
-mod departure {
-    //! `Leave` and `Forget` under Device enforcement: an Operator is refused before any
-    //! Container stops, and a Full caller, or any caller with enforcement off, is not.
-
-    use super::*;
-
-    fn operator<T>(mut request: Request<T>) -> Request<T> {
-        request
-            .metadata_mut()
-            .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
-        request
-    }
-
-    fn leave() -> Request<OpaquePayload> {
-        Request::new(
-            op::Leave::into_request(ployz_core::LeaveRequest { teardown: None })
-                .encode()
-                .unwrap(),
-        )
-    }
-
-    fn forget(machine: MachineId) -> Request<OpaquePayload> {
-        Request::new(
-            op::Forget::into_request(ployz_core::ForgetRequest {
-                teardown: None,
-                machine_id: machine,
-            })
-            .encode()
-            .unwrap(),
-        )
-    }
-
-    fn refused_naming(result: Result<tonic::Response<OpaquePayload>, Status>, capability: &str) {
-        let status = result.expect_err("an Operator's departure must be refused");
-        assert_eq!(
-            status.code(),
-            Code::PermissionDenied,
-            "{}",
-            status.message()
-        );
-        let details = status_details(status.details()).unwrap();
-        assert_eq!(
-            details.get("capability"),
-            Some(&json!(capability)),
-            "{details}"
-        );
-    }
-
-    /// Past the gate. Leave goes on to demote real storage, which a test Machine can't.
-    #[track_caller]
-    fn admitted(result: Result<tonic::Response<OpaquePayload>, Status>) {
-        let answer =
-            Answer::of(result.map(|response| response.into_inner().decode_response().unwrap()));
-        assert!(!answer.for_authority(), "refused at the gate: {answer:?}");
-    }
-
-    async fn rows(machine: &Enforcing) -> BTreeSet<MachineId> {
-        machine
-            .replicated
-            .machines()
-            .await
-            .unwrap()
-            .observations
-            .iter()
-            .map(|row| row.id)
-            .collect()
-    }
-
-    #[tokio::test]
-    async fn an_operator_leave_under_enforcement_is_refused_before_any_container_stops() {
-        let machine = Enforcing::new().await;
-        let container = running_container(&machine).await;
-        let before = machine.snapshot().await;
-
-        refused_naming(
-            machine.service.leave(operator(leave())).await,
-            ployz_core::LEAVE_MACHINE_CAPABILITY,
-        );
-
-        assert_eq!(machine.snapshot().await, before, "nothing changed");
-        assert_eq!(
-            machine.store.record().phase(),
-            ployz_core::LocalMachinePhase::Participating
-        );
-        let named = format!(
-            "{:?}",
-            machine
-                .fake
-                .named_containers
-                .as_ref()
-                .unwrap()
-                .lock()
-                .unwrap()
-        );
-        assert!(
-            named.contains(container.as_str()),
-            "the Container is still there"
-        );
-        machine.remove();
-    }
-
-    #[tokio::test]
-    async fn an_operator_forget_under_enforcement_is_refused_and_the_row_stays() {
-        let machine = Enforcing::new().await;
-        let before = machine.snapshot().await;
-
-        refused_naming(
-            machine
-                .service
-                .forget(operator(forget(machine.peer.id)))
-                .await,
-            ployz_core::FORGET_MACHINE_CAPABILITY,
-        );
-
-        assert_eq!(machine.snapshot().await, before, "nothing changed");
-        assert!(rows(&machine).await.contains(&machine.peer.id));
-        machine.remove();
-    }
-
-    #[tokio::test]
-    async fn a_full_caller_departs_under_enforcement() {
-        let machine = Enforcing::new().await;
-        machine
-            .service
-            .forget(forget(machine.peer.id))
-            .await
-            .unwrap();
-        assert!(
-            !rows(&machine).await.contains(&machine.peer.id),
-            "the row is gone"
-        );
-        admitted(machine.service.leave(leave()).await);
-        machine.remove();
-    }
-
-    /// A restarted daemon reads its trusted Devices from the record on disk, so it refuses
-    /// the same Leave.
-    #[tokio::test]
-    async fn a_restarted_daemon_still_refuses_an_operator_leave() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = founder(dir.path(), "local");
-        store
-            .approve_device(DeviceKey::from(Signer::from_seed(&[7; 32]).public()), None)
-            .unwrap();
-        drop(store);
-
-        let reopened = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
-        let (replicated, _cluster) = crate::corrosion::fake_cluster::store().await;
-        let restarted = MachineService::with_cluster(
-            reopened,
-            Some((replicated, crate::corrosion::AdminClient::new("/no/admin"))),
-        );
-        refused_naming(
-            restarted.leave(operator(leave())).await,
-            ployz_core::LEAVE_MACHINE_CAPABILITY,
-        );
-    }
-}
-
 mod private_access {
     //! `SetPrivateAccess` under Device enforcement: an Operator turns Private Access on only
     //! with an approval of the sealed key it sends, and turns it off with none.
@@ -1099,13 +833,7 @@ mod private_access {
             .unwrap()
             .unwrap()
             .public_key();
-        seal_platform(
-            &cluster,
-            &cluster,
-            PlatformPurpose::PrivateAccess,
-            key.as_bytes(),
-        )
-        .unwrap()
+        seal_platform(&cluster, PlatformPurpose::PrivateAccess, key.as_bytes()).unwrap()
     }
 
     fn approval(machine: &Enforcing, signer: &Signer, sealed: &Ciphertext) -> KeyApproval {
@@ -1200,346 +928,6 @@ mod private_access {
         )
         .await;
         assert!(!off.for_authority(), "{off:?}");
-        machine.remove();
-    }
-}
-
-mod teardown {
-    //! A teardown under Device enforcement: an Operator's takedown, Volume removal, `Leave`
-    //! or `Forget` runs only when a person's teardown names this Server and what goes.
-
-    use ployz_core::authority::{
-        SignerKey, Teardown, TeardownApproval, TeardownScope, TeardownTerms, Timestamp,
-    };
-    use ployz_core::{
-        DockerVolumeName, EnsureContainerRequest, ForgetRequest, LeaveRequest, Namespace,
-        RemoveVolumeRequest,
-    };
-
-    use super::*;
-
-    fn approval(machine: &Enforcing, signer: &Signer, scope: TeardownScope) -> TeardownApproval {
-        let cluster = SealingKey::load(&machine.data_dir)
-            .unwrap()
-            .unwrap()
-            .public_key();
-        TeardownApproval::Signed(
-            Signed::sign(
-                &Teardown::drafted(TeardownTerms {
-                    cluster,
-                    scope,
-                    issued_at: Timestamp::now(),
-                    signer: SignerKey::Device(signer.public().into()),
-                }),
-                signer,
-            )
-            .unwrap(),
-        )
-    }
-
-    fn device() -> Signer {
-        Signer::from_seed(&[7; 32])
-    }
-
-    fn namespace(
-        name: &str,
-        machines: Vec<MachineId>,
-        volumes: Vec<DockerVolumeName>,
-    ) -> TeardownScope {
-        TeardownScope::Namespace {
-            namespaces: vec![Namespace::parse(name).unwrap()],
-            machines,
-            volumes,
-        }
-    }
-
-    fn data() -> DockerVolumeName {
-        DockerVolumeName::parse("app_data").unwrap()
-    }
-
-    async fn remove_volume(machine: &Enforcing, teardown: Option<TeardownApproval>) -> Answer {
-        let request = RemoveVolumeRequest {
-            name: DockerVolumeName::parse("app_data").unwrap(),
-            force: false,
-            teardown: teardown.map(Box::new),
-        };
-        machine
-            .unary(
-                op::RemoveVolume::PATH,
-                &op::RemoveVolume::into_request(request),
-            )
-            .await
-    }
-
-    async fn take_down(machine: &Enforcing, state: &str, teardown: TeardownApproval) -> Answer {
-        let id = running_container(machine).await;
-        let want = match state {
-            "start" => {
-                json!({"state":"running", "rotation":"pending", "container":{"existing":{"id":id}}})
-            }
-            "remove" => json!({"state":"gone", "container":{"id":id}, "drain":0}),
-            other => panic!("no takedown sample for {other:?}"),
-        };
-        let mut request: EnsureContainerRequest =
-            serde_json::from_value(json!({"want": want})).unwrap();
-        request.teardown = Some(Box::new(teardown));
-        machine
-            .unary(
-                op::EnsureContainer::PATH,
-                &op::EnsureContainer::into_request(request),
-            )
-            .await
-    }
-
-    #[track_caller]
-    fn refused(answer: &Answer, capability: &str) {
-        assert!(
-            matches!(answer, Answer::Refused { capability: Some(name), .. } if name == capability),
-            "{answer:?}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_teardown_removes_only_the_containers_it_names_and_starts_nothing() {
-        let machine = Enforcing::new().await;
-        let here = machine.machine.id;
-        let other_namespace = approval(&machine, &device(), namespace("shop", vec![here], vec![]));
-        refused(
-            &take_down(&machine, "remove", other_namespace).await,
-            ployz_core::TEARDOWN_CAPABILITY,
-        );
-        let elsewhere = approval(
-            &machine,
-            &device(),
-            namespace("app", vec![machine.peer.id], vec![]),
-        );
-        refused(
-            &take_down(&machine, "remove", elsewhere).await,
-            ployz_core::TEARDOWN_CAPABILITY,
-        );
-        let stranger = approval(
-            &machine,
-            &Signer::from_seed(&[8; 32]),
-            namespace("app", vec![here], vec![]),
-        );
-        refused(
-            &take_down(&machine, "remove", stranger).await,
-            ployz_core::TEARDOWN_CAPABILITY,
-        );
-        let app = approval(&machine, &device(), namespace("app", vec![here], vec![]));
-        refused(
-            &take_down(&machine, "start", app.clone()).await,
-            ployz_core::TEARDOWN_CAPABILITY,
-        );
-        let removed = take_down(&machine, "remove", app).await;
-        assert!(!removed.for_authority(), "{removed:?}");
-        machine.remove();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_volume_goes_only_under_a_teardown_that_names_it_here() {
-        let machine = Enforcing::new().await;
-        let before = machine.snapshot().await;
-        refused(
-            &remove_volume(&machine, None).await,
-            ployz_core::TEARDOWN_CAPABILITY,
-        );
-        let containers_only = approval(
-            &machine,
-            &device(),
-            namespace("app", vec![machine.machine.id], vec![]),
-        );
-        refused(
-            &remove_volume(&machine, Some(containers_only)).await,
-            ployz_core::TEARDOWN_CAPABILITY,
-        );
-        let on_the_peer = approval(
-            &machine,
-            &device(),
-            namespace("app", vec![machine.peer.id], vec![data()]),
-        );
-        refused(
-            &remove_volume(&machine, Some(on_the_peer)).await,
-            ployz_core::TEARDOWN_CAPABILITY,
-        );
-        assert_eq!(
-            machine.snapshot().await,
-            before,
-            "a refusal changed nothing"
-        );
-        let named = approval(
-            &machine,
-            &device(),
-            TeardownScope::Volumes {
-                machines: vec![machine.machine.id],
-                volumes: vec![data()],
-            },
-        );
-        let answer = remove_volume(&machine, Some(named)).await;
-        assert!(!answer.for_authority(), "{answer:?}");
-        machine.remove();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_departure_runs_only_under_a_server_teardown_naming_this_server() {
-        let machine = Enforcing::new().await;
-        let here = machine.machine.id;
-        let peer = machine.peer.id;
-        let server = |leaving, forgetting| TeardownScope::Server {
-            leaving,
-            forgetting,
-            volumes: vec![],
-        };
-        let forget = |teardown: TeardownApproval| {
-            op::Forget::into_request(ForgetRequest {
-                machine_id: peer,
-                teardown: Some(Box::new(teardown)),
-            })
-        };
-        let before = machine.snapshot().await;
-        let not_this_one = approval(&machine, &device(), server(peer, vec![]));
-        refused(
-            &machine
-                .unary(
-                    op::Leave::PATH,
-                    &op::Leave::into_request(LeaveRequest {
-                        teardown: Some(Box::new(not_this_one)),
-                    }),
-                )
-                .await,
-            ployz_core::LEAVE_MACHINE_CAPABILITY,
-        );
-        let others_forget = approval(&machine, &device(), server(peer, vec![]));
-        refused(
-            &machine
-                .unary(op::Forget::PATH, &forget(others_forget))
-                .await,
-            ployz_core::FORGET_MACHINE_CAPABILITY,
-        );
-        let namespace_teardown =
-            approval(&machine, &device(), namespace("app", vec![here], vec![]));
-        refused(
-            &machine
-                .unary(op::Forget::PATH, &forget(namespace_teardown))
-                .await,
-            ployz_core::FORGET_MACHINE_CAPABILITY,
-        );
-        assert_eq!(
-            machine.snapshot().await,
-            before,
-            "a refusal changed nothing"
-        );
-        let forgets = approval(&machine, &device(), server(peer, vec![here]));
-        let answer = machine.unary(op::Forget::PATH, &forget(forgets)).await;
-        assert!(!answer.for_authority(), "{answer:?}");
-        let leaves = approval(&machine, &device(), server(here, vec![]));
-        let answer = machine
-            .unary(
-                op::Leave::PATH,
-                &op::Leave::into_request(LeaveRequest {
-                    teardown: Some(Box::new(leaves)),
-                }),
-            )
-            .await;
-        assert!(!answer.for_authority(), "{answer:?}");
-        machine.remove();
-    }
-
-    /// Send each request with this Machine's admission turn held, and return once each has
-    /// passed admission and waits for the turn, with the turn to release.
-    async fn queued(
-        machine: &Enforcing,
-        requests: Vec<(&'static str, RpcRequest)>,
-    ) -> (
-        tokio::sync::OwnedRwLockWriteGuard<()>,
-        Vec<tokio::task::JoinHandle<Answer>>,
-    ) {
-        let lock = machine.store.admission_lock();
-        let turn = std::sync::Arc::clone(&lock).write_owned().await;
-        let idle = std::sync::Arc::strong_count(&lock);
-        let waiting: Vec<_> = requests
-            .into_iter()
-            .map(|(path, request)| {
-                let address = machine.address.clone();
-                tokio::spawn(async move { unary_at(address, path, &request, true).await })
-            })
-            .collect();
-        // A request waiting for its turn holds the lock it waits on, and reaches it only
-        // once its own admission has passed.
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while std::sync::Arc::strong_count(&lock) < idle + waiting.len() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("each request reached its turn");
-        for call in &waiting {
-            assert!(
-                !call.is_finished(),
-                "a request was answered before its turn"
-            );
-        }
-        (turn, waiting)
-    }
-
-    /// No Docker request since the `before`th stopped or deleted anything.
-    fn assert_took_nothing_off(machine: &Enforcing, before: usize) {
-        let requests = machine.fake.requests.lock().unwrap();
-        let effects: Vec<_> = requests
-            .iter()
-            .skip(before)
-            .filter(|(method, path)| *method == http::Method::DELETE || path.contains("/stop"))
-            .collect();
-        assert!(effects.is_empty(), "{effects:?}");
-    }
-
-    fn removal(id: ployz_core::ContainerId, teardown: Option<TeardownApproval>) -> RpcRequest {
-        let mut request: EnsureContainerRequest = serde_json::from_value(
-            json!({"want": {"state":"gone", "container":{"id":id}, "drain":0}}),
-        )
-        .unwrap();
-        request.teardown = teardown.map(Box::new);
-        op::EnsureContainer::into_request(request)
-    }
-
-    fn volume_removal(teardown: Option<TeardownApproval>) -> RpcRequest {
-        op::RemoveVolume::into_request(RemoveVolumeRequest {
-            name: data(),
-            force: false,
-            teardown: teardown.map(Box::new),
-        })
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_teardown_whose_device_is_removed_while_it_waits_takes_nothing_off() {
-        let machine = Enforcing::new().await;
-        let here = machine.machine.id;
-        let id = running_container(&machine).await;
-        let app = approval(
-            &machine,
-            &device(),
-            namespace("app", vec![here], vec![data()]),
-        );
-        let (turn, waiting) = queued(
-            &machine,
-            vec![
-                (op::EnsureContainer::PATH, removal(id, Some(app.clone()))),
-                (op::RemoveVolume::PATH, volume_removal(Some(app))),
-            ],
-        )
-        .await;
-        let before = machine.fake.requests.lock().unwrap().len();
-        let code = DeviceKey::from(device().public()).code();
-        machine
-            .store
-            .mutate(move |store| assert!(store.remove_device(code).unwrap()))
-            .await
-            .unwrap();
-        drop(turn);
-        for call in waiting {
-            refused(&call.await.unwrap(), ployz_core::TEARDOWN_CAPABILITY);
-        }
-        assert_took_nothing_off(&machine, before);
         machine.remove();
     }
 }

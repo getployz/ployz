@@ -14,7 +14,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex, PoisonError,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -61,7 +61,7 @@ pub struct RecordOwner {
 
 /// Values fixed for the lifetime of the store, readable without a mutation.
 struct Shared {
-    approvals: Arc<super::local_machine::restart_approval::ConsumptionLog>,
+    approvals: Arc<super::local_machine::ConsumptionLog>,
     data_dir: std::path::PathBuf,
     run_dir: std::path::PathBuf,
     admission_lock: Arc<tokio::sync::RwLock<()>>,
@@ -69,15 +69,10 @@ struct Shared {
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     /// Live handles. Counted explicitly so exactly one drop observes being last.
     handles: AtomicUsize,
-    /// Set once an activation is admitted. This process then takes no new management work
-    /// before it exits, and the next one commits the activation.
-    activating: AtomicBool,
 }
 
 impl RecordOwner {
-    pub(super) fn restart_approvals(
-        &self,
-    ) -> Arc<super::local_machine::restart_approval::ConsumptionLog> {
+    pub(super) fn restart_approvals(&self) -> Arc<super::local_machine::ConsumptionLog> {
         Arc::clone(&self.shared.approvals)
     }
     /// Take ownership of an opened store on a dedicated thread.
@@ -127,14 +122,13 @@ impl RecordOwner {
             sealing,
             restart,
             shared: Arc::new(Shared {
-                approvals: super::local_machine::restart_approval::ConsumptionLog::new(&data_dir),
+                approvals: super::local_machine::ConsumptionLog::new(&data_dir),
                 data_dir,
                 run_dir,
                 admission_lock,
                 mutation_gate,
                 thread: Mutex::new(Some(thread)),
                 handles: AtomicUsize::new(1),
-                activating: AtomicBool::new(false),
             }),
         })
     }
@@ -238,23 +232,6 @@ impl RecordOwner {
             })))
             .map_err(|_| RecordOwnerStopped)?;
         Ok(receiver)
-    }
-
-    /// Stop taking new management work: an activation is pending its commit.
-    pub(crate) fn begin_activating(&self) {
-        self.shared.activating.store(true, Ordering::SeqCst);
-    }
-
-    /// Forget an admitted activation, as a restart into the committed record does.
-    #[cfg(test)]
-    pub(crate) fn end_activating(&self) {
-        self.shared.activating.store(false, Ordering::SeqCst);
-    }
-
-    /// Whether an activation was admitted in this process.
-    #[must_use]
-    pub(crate) fn activating(&self) -> bool {
-        self.shared.activating.load(Ordering::SeqCst)
     }
 
     /// Ask the daemon to restart so the persisted phase takes effect.

@@ -31,12 +31,8 @@ pub(super) struct LocalMachineRecordWire {
     push_target: Option<Url>,
     #[serde(default)]
     device_slots_vetted: bool,
-    /// Read once, to keep an awaiting record's peer filter. It no longer decides whether
-    /// this Machine enforces: every Machine does.
     #[serde(default)]
     device_enforcement: bool,
-    #[serde(default)]
-    born_enforcing: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
     /// Read one by one in [`readable_passkeys`], so an entry a newer daemon wrote never
@@ -47,12 +43,6 @@ pub(super) struct LocalMachineRecordWire {
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
     enrollment: Option<ployz_core::EnrollRequest>,
-    #[serde(default)]
-    trusted_snapshot: Option<super::TrustedSnapshot>,
-    #[serde(default)]
-    activation: Option<ployz_core::OperationId>,
-    #[serde(default)]
-    activated_at: Option<ployz_core::authority::Timestamp>,
 }
 
 impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
@@ -70,17 +60,10 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.push_target = wire.push_target;
         record.device_slots_vetted = wire.device_slots_vetted;
         record.filters_peers = wire.device_enforcement;
-        record.born_enforcing = wire.born_enforcing;
         record.trusted_machines = wire.trusted_machines;
         record.passkeys = readable_passkeys(wire.passkeys);
         record.membership_cluster = wire.membership_cluster;
         record.enrollment = wire.enrollment;
-        record.trusted_snapshot = wire.trusted_snapshot;
-        record.activation = wire.activation;
-        record.activated_at = wire.activated_at;
-        if record.activation.is_some() {
-            record.filters_peers = true;
-        }
         Ok(record)
     }
 }

@@ -718,7 +718,6 @@ fn a_full_manual_deploy_takes_what_landed_from_the_next_push() {
         .write_trusted(
             &who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: ployz_store::DeploymentId::parse(::uuid::Uuid::new_v4().to_string()).unwrap(),
                 environment: at("production"),
                 services: Vec::new(),
@@ -813,7 +812,6 @@ fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
         .write_trusted(
             &who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: built.clone(),
                 environment: at("production"),
                 services: Vec::new(),
@@ -885,7 +883,6 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
         .write_trusted(
             &who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: built.clone(),
                 environment: at("production"),
                 services: Vec::new(),

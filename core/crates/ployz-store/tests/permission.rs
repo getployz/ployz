@@ -77,7 +77,6 @@ fn set_replicas(count: u8) -> Edit {
 
 fn deploy_production(n: u8) -> Admit {
     Admit::Deploy(Deploy {
-        teardown: None,
         id: DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap(),
         environment: EnvironmentRef {
             project: None,
@@ -96,7 +95,6 @@ fn deploy_production(n: u8) -> Admit {
 
 fn remove(environment: Option<&str>) -> Remove {
     Remove {
-        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: environment.map(|name| EnvironmentName::parse(name).unwrap()),
         version: None,
@@ -214,7 +212,6 @@ fn the_system_actor_with_no_permission_set_is_unchecked() {
 fn a_deploy_without_changes_deploy_is_refused_before_it_looks_anything_up() {
     let (store, who) = shop();
     let nowhere = Admit::Deploy(Deploy {
-        teardown: None,
         id: DeploymentId::parse("00000000-0000-4000-8000-000000000999").unwrap(),
         environment: EnvironmentRef {
             project: None,

@@ -116,9 +116,8 @@ join stops and says the join approval carries no signature. Nothing changes on t
 you can run the join again.
 
 The new server takes its devices, the passkeys your admitting server trusts and its starting
-peers only from the approval. A passkey you approve on your cluster after that isn't added to a
-server that already joined; approve it there too. A server you add with `ployz server add` takes
-no passkeys from the approval, so approve each passkey there too. When you run
+peers only from the approval. A server you add with `ployz server add` takes
+no passkeys from the approval. When you run
 `ployz server add` over SSH, the CLI also tells the new server which devices may sign that
 approval: your own, and with `--standalone`, those of the server it joins through. The new
 server refuses an approval signed by any other key, and trusts only the devices on that list that
@@ -139,8 +138,7 @@ Run `ployz device pin --connect ssh://USER@SERVER` against one of your servers, 
 server again.
 
 Each server checks new servers against its own devices before it accepts them as members or
-WireGuard peers. The servers in the starting set you signed with `ployz device enforce` are
-trusted without a join approval.
+WireGuard peers.
 
 The admitting server doesn't publish the new server as a member until the new server proves it
 opened its capsule. Opening the capsule gives the new server the cluster's key for sealed values,
@@ -196,25 +194,20 @@ ployz device approve --this-device --connect ssh://root@HOST
 
 ## Your first server's first key
 
-A new cluster's first server trusts no device or passkey, and Ployz Cloud can't give it one.
-Until you approve one on the server itself, it refuses deploys, restarts and other changes that
-need an approval. Approve one over SSH on that server:
+A new cluster's first server trusts no device, and Ployz Cloud can't give it one.
+Until you approve one on the server itself, it refuses deploys and the other changes that
+[need an approved device](manage-servers.md#what-needs-an-approved-device). Approve one over SSH on that server:
 
 - **From your computer, over SSH.** Run
   `ployz device approve --this-device --connect ssh://root@HOST`, as in
   [Approve a device](manage-servers.md#approve-a-device).
-- **From the dashboard only.** Add a passkey under **Account**, then on the server run
-  `sudo ployz login` and `sudo ployz device approve --passkey CODE`, as in
-  [Add a passkey](manage-servers.md#add-a-passkey). The server then trusts whichever key the
-  dashboard named, wherever you installed it. Only the first way, with `--connect`, doesn't trust
-  Ployz Cloud.
 - **With a device request.** Run `ployz device request` on your computer, then on the server run
   `sudo ployz login` and `sudo ployz device approve CODE`.
 
 `ployz server add --standalone root@HOST` approves this computer's device on the new server for
 you. Servers you add later get your devices from the join approval. A server you add from the
 dashboard also gets the passkeys your first server trusts. One you add with `ployz server add`
-doesn't, so approve your passkey there too.
+doesn't.
 
 ## Add servers from the dashboard
 
@@ -229,7 +222,7 @@ CLI, approve your device on your first server as in
 [Your first server's first key](#your-first-servers-first-key). When you install the second
 server, its row under **Waiting** shows **Last enroll** with a code. Approve it with
 `ployz device approve --join CODE`, then choose **Enroll** for the server again. It trusts the
-passkeys your first server trusts, so your dashboard approvals work on it without another step.
+passkeys your first server trusts.
 
 Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
 say so instead.

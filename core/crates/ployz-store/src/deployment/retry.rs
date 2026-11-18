@@ -266,10 +266,10 @@ pub(crate) fn retry(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed, service_uploads, preview_review, awaits_approval) \
+              message, listed, service_uploads) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10, preview_review, ?11 \
+              ?10 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -289,7 +289,6 @@ pub(crate) fn retry(
                 json_text(&nodes).as_str().into(),
                 listed.into(),
                 retried_uploads.as_deref().into(),
-                i64::from(retry.awaits_approval).into(),
             ],
         )?;
         // A retry builds the commits its source pinned, and may reuse the image its
@@ -303,9 +302,6 @@ pub(crate) fn retry(
              FROM config_build WHERE deployment_id = ?2",
             &[id.as_str().into(), source.as_str().into()],
         )?;
-        for approval in &retry.approvals {
-            build::approve_commit(tx, id, approval)?;
-        }
         Ok(())
     })?;
     Ok((load(tx, id)?.summary, rollback))

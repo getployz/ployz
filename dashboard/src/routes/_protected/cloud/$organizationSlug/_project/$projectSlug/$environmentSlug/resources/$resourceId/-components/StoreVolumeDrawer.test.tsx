@@ -21,9 +21,6 @@ import * as copies from "./StoreVolumeCopies";
 import { StoreVolumeDrawer } from "./StoreVolumeDrawer";
 import { volumeSearchSchema } from "./volume-pages";
 import * as runs from "#/modules/volume-run/volume-run.functions";
-import * as runApproval from "#/modules/volume-run/run-approval";
-import * as scopeRead from "#/modules/volume-run/volume-approval-scope";
-import * as volumeApproval from "#/modules/approval-session/volume-approval";
 import type { Holder } from "#/modules/volume-run/resize-check";
 import type { VolumeRunView } from "#/modules/volume-run/volume-run";
 import { run } from "#/modules/volume-run/volume-run.test-fixture";
@@ -144,8 +141,8 @@ it.each([
 const GB = 1_000_000_000;
 const SIZE = ["ployz.volume.size.set.v1"];
 const holders = (fsn2: readonly string[] = SIZE): Holder[] => [
-  { id: "1".repeat(32) as MachineId, name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB, boundBytes: 10 * GB, passkey: true },
-  { id: "2".repeat(32) as MachineId, name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null, boundBytes: 10 * GB, passkey: true },
+  { id: "1".repeat(32) as MachineId, name: "fsn-1", role: "primary", capabilities: SIZE, committableBytes: 40 * GB, boundBytes: 10 * GB },
+  { id: "2".repeat(32) as MachineId, name: "fsn-2", role: "mirror", capabilities: fsn2, committableBytes: null, boundBytes: 10 * GB },
 ];
 const deployed = (maximumBytes = 10 * GB): Partial<VolumeListing> =>
   ({ deployed: true, storage_locked: true, storage: { kind: "provisioned", maximumBytes }, recorded_storage: 10 * GB });
@@ -156,27 +153,16 @@ const enter = (value: string) => {
   fireEvent.keyDown(limit(), { key: "Enter" });
 };
 
-const APPROVAL = { body: '{"workflow":{"kind":"resize"}}', signatures: [] };
-
-/** The person's passkey review of the grow, answered with `APPROVAL`, or cancelled when `answered` is null. */
-const passkeyReview = (answered: typeof APPROVAL | null = APPROVAL) => {
-  vi.spyOn(scopeRead, "readVolumeScope").mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof scopeRead.readVolumeScope>>>()({ members: [] }));
-  vi.spyOn(runApproval, "runChange").mockReturnValue(asTestDouble<ReturnType<typeof runApproval.runChange>>()({}));
-  return vi.spyOn(volumeApproval, "approveVolume").mockResolvedValue(answered === null ? null : { approval: answered, lines: [] });
-};
-
-it("grows a deployed volume once the person's passkey approves it, then shows the run until it ends", async () => {
+it("grows a deployed volume, then shows the run until it ends", async () => {
   await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
   expect((limit() as HTMLInputElement).value).toBe("10");
   screen.getByText("Grows live on every server that holds a copy. Can't shrink yet.");
-  const review = passkeyReview();
   const resize = vi.spyOn(runs, "resizeVolumeServerFn").mockResolvedValue({ id: "run-1" });
   const growing: VolumeRunView = { ...run("resize", { maximum_bytes: 20 * GB }, "running"), id: "run-1", message: "Growing data to 20 GB on fsn-2" };
   const read = vi.spyOn(runs, "getVolumeRunServerFn").mockResolvedValue(growing);
   enter("20");
   await waitFor(() => expect(resize).toHaveBeenCalledTimes(1));
-  expect(review).toHaveBeenCalledTimes(1);
-  expect(resize.mock.calls[0]?.[0]?.data).toMatchObject({ organizationSlug: "acme", volumeId: "vol", environment, maximumBytes: 20 * GB, approval: APPROVAL });
+  expect(resize.mock.calls[0]?.[0]?.data).toMatchObject({ organizationSlug: "acme", volumeId: "vol", environment, maximumBytes: 20 * GB });
   await screen.findByText("Growing data to 20 GB on fsn-2");
   expect(limit().hasAttribute("disabled")).toBe(true);
   read.mockResolvedValue({ ...growing, state: "failed", message: "fsn-2 has no room to grow data to 20 GB" });
@@ -184,27 +170,14 @@ it("grows a deployed volume once the person's passkey approves it, then shows th
   expect(limit().hasAttribute("disabled")).toBe(false);
 });
 
-it("grows nothing when the person cancels the passkey review", async () => {
-  await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
-  const review = passkeyReview(null);
-  const resize = vi.spyOn(runs, "resizeVolumeServerFn");
-  enter("20");
-  await waitFor(() => expect(review).toHaveBeenCalledTimes(1));
-  expect(resize).not.toHaveBeenCalled();
-  expect(limit().hasAttribute("disabled")).toBe(false);
-});
-
-it("in a Protected environment a member's grow is a request an owner or admin signs for, with no passkey review and no run to watch", async () => {
+it("in a Protected environment a member's grow is a request an owner or admin approves, with no run to watch", async () => {
   vi.spyOn(protectedAsk, "useProtectedAsk").mockReturnValue(true);
   await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
   screen.getByText("Grows live on every server that holds a copy, once an owner or admin approves it. Can't shrink yet.");
-  const review = passkeyReview();
   const resize = vi.spyOn(runs, "resizeVolumeServerFn").mockResolvedValue({ requested: true });
   const read = vi.spyOn(runs, "getVolumeRunServerFn");
   enter("20");
   await waitFor(() => expect(resize).toHaveBeenCalledTimes(1));
-  expect(review).not.toHaveBeenCalled();
-  expect(resize.mock.calls[0]?.[0]?.data).not.toHaveProperty("approval");
   expect(read).not.toHaveBeenCalled();
   expect(limit().hasAttribute("disabled")).toBe(false);
   expect((limit() as HTMLInputElement).value).toBe("10");
@@ -214,17 +187,16 @@ it.each([
   ["a smaller size, as the Store would", holders(), "5", "data is deployed at 10 GB; this panel can't shrink it. Use ployz volume set data --size 5."],
   ["a size a holder's Ployz can't set", holders(["ployz.volume.copy.set.v1"]), "20", "Growing needs a newer Ployz on fsn-2."],
   ["more than the tightest Pool has room for", holders(), "60", "fsn-1 has room to grow it by 40 GB at most."],
-])("refuses %s in the field, before any passkey review", async (_, held, typed, message) => {
+])("refuses %s in the field, before any resize is asked", async (_, held, typed, message) => {
   await openDrawer(SETTINGS, deployed(), null, { data: { holders: held } });
-  const review = passkeyReview();
+  const resize = vi.spyOn(runs, "resizeVolumeServerFn");
   enter(typed);
   await screen.findByText(message);
-  expect(review).not.toHaveBeenCalled();
+  expect(resize).not.toHaveBeenCalled();
 });
 
 it("shows a resize the Servers refuse at admission in the field", async () => {
   await openDrawer(SETTINGS, deployed(), null, { data: { holders: holders() } });
-  passkeyReview();
   vi.spyOn(runs, "resizeVolumeServerFn").mockRejectedValue(new Error("data has a move in progress"));
   enter("20");
   await screen.findByText("data has a move in progress");

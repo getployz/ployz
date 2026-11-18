@@ -612,10 +612,7 @@ async fn ensure(
     client
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
-                teardown: None,
-                preview: None,
                 want,
-                approval: None,
                 deploy: None,
                 rule: None,
             },

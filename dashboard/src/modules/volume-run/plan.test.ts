@@ -1,57 +1,26 @@
 import { describe, expect, it } from "vitest";
-import type { MachineId, ResolvedServiceSpec, Signed, VolumeApproval, VolumeCopy } from "@ployz/sdk";
-import { asTestDouble } from "#/lib/test-double";
-import { approvesMirror, approvesMove, approvesRemoval, approvesRestore, expectOf, MAX_APPROVAL_BYTES, MAX_SERVICE_BYTES, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf, withdrawnMessage } from "#/modules/volume-run/plan";
+import type { MachineId, VolumeCopy } from "@ployz/sdk";
+import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf, withdrawnMessage } from "#/modules/volume-run/plan";
 import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
 import type { DeploymentsSeen } from "#/modules/volume-run/resize";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
 const GB = 1_000_000_000;
 const data = { volumeName: "data", orphan: false } as const;
-/** The planner reads only that an approval came; the Servers check what it says. */
-const approved = (input: PlanInput): PlanInput => {
-  const approval: Signed = { body: "{}", signatures: [] };
-  if (input.kind === "mirror") return { ...input, args: { ...input.args, approval } };
-  if (input.kind === "sync") return { ...input, args: { ...input.args, approval } };
-  if (input.kind === "move") return { ...input, args: { ...input.args, approval } };
-  if (input.kind === "restore") return { ...input, args: { ...input.args, approval } };
-  if (input.kind === "delete_mirror") return { ...input, args: { ...input.args, approval } };
-  if (input.kind === "seed") return { ...input, args: { ...input.args, approval } };
-  return input;
-};
-/** `input` as an agent or the CLI sends it before a person approves it, which every Server refuses. */
-const unapproved = (input: PlanInput): PlanInput => {
-  if (!("approval" in input.args)) return input;
-  const { approval: _, ...args } = input.args;
-  // SAFETY: the same kind's arguments, less the optional approval.
-  return { ...input, args } as PlanInput;
-};
-// Every Server enforces device approval, so the runs below carry one unless a test strips it.
-const mirror = (to: string): PlanInput => approved({ kind: "mirror", args: { to }, ...data });
-const sync = (full = false): PlanInput => approved({ kind: "sync", args: { full }, ...data });
+const mirror = (to: string): PlanInput => ({ kind: "mirror", args: { to }, ...data });
+const sync = (full = false): PlanInput => ({ kind: "sync", args: { full }, ...data });
 const remove = (slot: string | null, confirmed: string | null = null): PlanInput =>
-  approved({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed, role: "any" }, ...data });
-const move = (to: string): PlanInput => approved({ kind: "move", args: { to }, ...data });
+  ({ kind: "delete_mirror", args: { slot, confirmed_name: confirmed, role: "any" }, ...data });
+const move = (to: string): PlanInput => ({ kind: "move", args: { to }, ...data });
 const release: PlanInput = { kind: "release", args: {}, ...data };
-const restore = (from: string): PlanInput => approved({ kind: "restore", args: { from }, ...data });
-const seed: PlanInput = approved({ kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "w-1-4" }, ...data });
-/** A resize to `gigabytes`, approved on every Server these tests name. */
-const resize = (gigabytes: number, size: { recordedBytes?: number; refquotaBytes?: number } = {}): PlanInput => {
-  const recorded = size.recordedBytes ?? 10 * GB;
-  const workflow = { kind: "resize", machines: ["fsn-1", "fsn-2", "fsn-3"].map((name) => name.padEnd(32, "0")), maximum_bytes: gigabytes * GB, shrink: gigabytes * GB <= recorded };
-  const approval: Signed = { body: JSON.stringify({ volume: "ns_data", workflow }), signatures: [] };
-  return { kind: "resize", args: { maximum_bytes: gigabytes * GB, approval }, ...data, recordedBytes: 10 * GB, refquotaBytes: 10 * GB, ...size };
-};
-const orphan: PlanInput = approved({ kind: "delete_mirror", args: { slot: null, confirmed_name: null }, ...data, volumeName: "ns_vol-1", orphan: true });
+const restore = (from: string): PlanInput => ({ kind: "restore", args: { from }, ...data });
+const seed: PlanInput = { kind: "seed", args: { into: { volumeId: "v2", dockerVolume: "ns_vol-v2", name: "data-1027" }, guid: "11", name: "w-1-4" }, ...data };
+const resize = (gigabytes: number, size: { recordedBytes?: number; refquotaBytes?: number } = {}): PlanInput =>
+  ({ kind: "resize", args: { maximum_bytes: gigabytes * GB }, ...data, recordedBytes: 10 * GB, refquotaBytes: 10 * GB, ...size });
+const orphan: PlanInput = { kind: "delete_mirror", args: { slot: null, confirmed_name: null }, ...data, volumeName: "ns_vol-1", orphan: true };
 
 const bare = (server: string, epoch: number): Member =>
   ({ machine: member(server, "cut").machine, address: "fdcc::1", answered: true, view: { copy: { ...COPIES.cut, epoch, newest: null } }, floorless: false });
-
-/** A slot whose first pull never landed: it holds no snapshot, so no data. */
-const emptySlot = (server: string): Member => {
-  const slot = member(server, "mirror");
-  return slot.answered ? { ...slot, view: { copy: { ...COPIES.mirror, newest: null } } } : slot;
-};
 
 const names = (members: readonly Member[]) => (members.length === 0 ? "none" : members.map((each) => each.machine.name).join(","));
 
@@ -166,17 +135,8 @@ describe("plan_from_copies_table", () => {
     ["orphan delete of a root an older daemon reports", orphan, [member("a", "rootWithoutSeed")], "refuse invalid"],
     ["orphan delete with no slot left", orphan, [member("b", "empty")], "refuse no_mirror"],
 
-    ["move from a writer onto an empty Server runs rounds", move("b"), [member("a", "writer"), member("b", "empty")], "move a->b at rounds"],
-    ["move from a writer onto its mirror runs rounds", move("b"), [member("a", "writer"), member("b", "mirror")], "move a->b at rounds"],
-    ["move from a writer onto a mirror mid-pull runs rounds", move("b"), [member("a", "writer"), member("b", "pulling")], "move a->b at rounds"],
-    ["move again once the root is read-only continues the cut", move("b"), [member("a", "cut"), member("b", "mirror")], "move a->b at cut"],
-    ["move again once the root is read-only and the target behind continues the cut", move("b"), [member("a", "cut"), member("b", "behind")], "move a->b at cut"],
-    ["move again once only slots remain and the target is behind pulls the final", move("b"), [member("a", "mirror"), member("b", "behind")], "move a->b at final"],
-    ["move again once only slots remain and the target is mid-pull pulls the final", move("b"), [member("a", "mirror"), member("b", "pulling")], "move a->b at final"],
-    ["move again once only the source slot remains pulls the final", move("b"), [member("a", "mirror"), member("b", "empty")], "move a->b at final"],
-    ["move again once the target slot holds the source's newest starts", move("b"), [member("a", "mirror"), member("b", "mirror")], "move a->b at start"],
-    ["move again once the target writes at the source's newest leaves the run to find the cut source", move("b"), [member("a", "final"), member("b", "writer")], "landed on b behind a"],
-    ["move to the writer beside mirrors at its newest names them all, not only a final snapshot", move("b"), [member("a", "mirror"), member("b", "writer"), member("c", "final")], "landed on b behind a,c"],
+    ["move from a writer onto an empty Server is turned off", move("b"), [member("a", "writer"), member("b", "empty")], "refuse server_lacks"],
+    ["move that already landed is turned off", move("b"), [member("a", "final"), member("b", "writer")], "refuse server_lacks"],
     ["move onto the writer with its mirror behind", move("a"), [member("a", "writer"), member("b", "behind")], "refuse already_on"],
     ["move onto the writer alone", move("a"), [member("a", "writer")], "refuse already_on"],
     ["move onto a root mid-cut", move("a"), [member("a", "cut"), member("b", "mirror")], "refuse volume_switching"],
@@ -247,7 +207,7 @@ describe("plan_from_copies_table", () => {
   });
 
   it("refuses a delete admitted for an old copy once its slot holds the mirror, and deletes nothing", () => {
-    const oldCopy = (slot: string): PlanInput => approved({ kind: "delete_mirror", args: { slot, confirmed_name: null, role: "old_copy" }, ...data });
+    const oldCopy = (slot: string): PlanInput => ({ kind: "delete_mirror", args: { slot, confirmed_name: null, role: "old_copy" }, ...data });
     expect(planFromCopies(oldCopy("fsn-2"), [member("fsn-1", "writer"), member("fsn-2", "mirror")])).toEqual({
       ok: false,
       refusal: { code: "role_changed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" },
@@ -260,7 +220,7 @@ describe("plan_from_copies_table", () => {
   it("leaves a slot whose Server reports no role to that Server's own check", () => {
     const { role: _, ...unreported } = COPIES.mirror;
     const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false };
-    const input = approved({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data });
+    const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
     expect(outcome(input, [member("fsn-1", "writer"), silent])).toBe("delete fsn-2 forget fsn-1");
   });
 
@@ -388,14 +348,13 @@ describe("plan_from_copies_table", () => {
     });
   });
 
-  it("sends a pinned mirror or move to its Machine when another Server took the name", () => {
+  it("sends a pinned mirror to its Machine when another Server took the name", () => {
     const renamed = member("fsn-3", "empty", { id: "fsn-2" });
     const reused = member("fsn-2", "empty", { id: "fsn-9" });
     const pinned = { to: "fsn-2", machine: "fsn-2".padEnd(32, "0") as MachineId };
     const members = [member("fsn-1", "writer"), reused, renamed];
-    expect(outcome(approved({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }), members)).toBe("mirror fsn-1->fsn-3");
-    expect(outcome(approved({ kind: "move", args: pinned, volumeName: "data", orphan: false }), members)).toBe("move fsn-1->fsn-3 at rounds");
-    expect(outcome(approved({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }), [member("fsn-1", "writer"), reused]))
+    expect(outcome({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }, members)).toBe("mirror fsn-1->fsn-3");
+    expect(outcome({ kind: "mirror", args: pinned, volumeName: "data", orphan: false }, [member("fsn-1", "writer"), reused]))
       .toBe("refuse invalid");
   });
 
@@ -403,8 +362,8 @@ describe("plan_from_copies_table", () => {
     const renamed = member("fsn-3", "mirror", { id: "fsn-2" });
     const reused = member("fsn-2", "empty", { id: "fsn-9" });
     const pinned = { from: "fsn-2", machine: "fsn-2".padEnd(32, "0") as MachineId };
-    expect(outcome(approved({ kind: "restore", args: pinned, volumeName: "data", orphan: false }), [reused, renamed])).toBe("restore fsn-3 11");
-    expect(outcome(approved({ kind: "restore", args: pinned, volumeName: "data", orphan: false }), [reused])).toBe("refuse invalid");
+    expect(outcome({ kind: "restore", args: pinned, volumeName: "data", orphan: false }, [reused, renamed])).toBe("restore fsn-3 11");
+    expect(outcome({ kind: "restore", args: pinned, volumeName: "data", orphan: false }, [reused])).toBe("refuse invalid");
   });
 
   it("names every other copy Restore would leave behind", () => {
@@ -453,138 +412,12 @@ describe("plan_from_copies_table", () => {
   });
 });
 
-describe("plan a run on Servers that enforce device approval", () => {
-  const writer = member("a", "writer");
-
-  it.each<[string, PlanInput, Member[], string]>([
-    ["move onto an enforcing Server", unapproved(move("b")), [member("a", "writer"), member("b", "empty")], "refuse enforced"],
-    ["move off an enforcing Server", unapproved(move("b")), [writer, member("b", "mirror")], "refuse enforced"],
-    ["move that lands on an enforcing Server", unapproved(move("b")), [member("a", "final"), member("b", "writer")], "refuse enforced"],
-    ["approved move between enforcing Servers", approved(move("b")), [writer, member("b", "empty")], "move a->b at rounds"],
-    ["approved move that lands on an enforcing Server", approved(move("b")), [member("a", "final"), member("b", "writer")], "landed on b behind a"],
-    ["seed on an enforcing Server", unapproved(seed), [writer, member("b", "mirror")], "refuse enforced"],
-    ["mirror onto an enforcing Server with no approval", unapproved(mirror("b")), [member("a", "writer"), member("b", "empty")], "refuse enforced"],
-    ["mirror off an enforcing Server with no approval", unapproved(mirror("b")), [writer, member("b", "empty")], "refuse enforced"],
-    ["approved mirror between enforcing Servers", approved(mirror("b")), [writer, member("b", "empty")], "mirror a->b"],
-    ["full sync between enforcing Servers with no approval", unapproved(sync(true)), [writer, member("b", "mirror")], "refuse enforced"],
-    ["approved full sync between enforcing Servers", approved(sync(true)), [writer, member("b", "mirror")], "sync a->b full"],
-    ["sync between enforcing Servers", unapproved(sync()), [writer, member("b", "mirror")], "sync a->b"],
-    ["restore on an enforcing Server with no approval", unapproved(restore("b")), [member("a", "empty"), member("b", "mirror")], "refuse enforced"],
-    ["approved restore on an enforcing Server", approved(restore("b")), [member("a", "empty"), member("b", "mirror")], "restore b 11"],
-    ["delete a mirror on an enforcing Server with no approval", unapproved(remove("b")), [writer, member("b", "mirror")], "refuse enforced"],
-    ["approved delete of a mirror on an enforcing Server", approved(remove("b")), [writer, member("b", "mirror")], "delete b forget a"],
-    ["delete an empty slot on an enforcing Server", unapproved(remove("b")), [writer, emptySlot("b")], "delete b forget a"],
-    ["sweep an orphan holding data on an enforcing Server", unapproved(orphan), [member("b", "mirror")], "refuse enforced"],
-    ["sweep an empty orphan on an enforcing Server", unapproved(orphan), [emptySlot("b")], "delete b forget none"],
-    ["release a cut on an enforcing Server", unapproved(release), [member("a", "cut"), member("b", "mirror")], "release cut a"],
-  ])("%s", (_, input, members, expected) => {
-    expect(outcome(input, members)).toBe(expected);
-  });
-
-  it("asks for the person's passkey for a seed that carries no approval, and plans one that does", () => {
-    expect(planFromCopies(unapproved(seed), [writer, member("b", "mirror")])).toEqual({
-      ok: false,
-      refusal: { code: "enforced", message: "a enforces device approval, so restoring data into a new volume needs your passkey. Restore it again from the volume's Copies tab." },
-    });
-    expect(planFromCopies(seed, [writer, member("b", "mirror")])).toMatchObject({ ok: true, phase: { kind: "seed" } });
-  });
-
-  it("names the command that restores or deletes a copy from an approved device", () => {
-    expect(planFromCopies(unapproved(restore("b")), [member("a", "empty"), member("b", "mirror")])).toEqual({
-      ok: false,
-      refusal: {
-        code: "enforced",
-        message: "b enforces device approval, so Ployz Cloud can't restore data on its own. Run ployz volume restore data --from b from an approved device.",
-      },
-    });
-    const old: PlanInput = { kind: "delete_mirror", args: { slot: "b", confirmed_name: null, role: "old_copy" }, ...data };
-    expect(planFromCopies(old, [writer, member("b", "old")])).toEqual({
-      ok: false,
-      refusal: {
-        code: "enforced",
-        message: "b enforces device approval, so Ployz Cloud can't delete data-b on its own. Run ployz volume mirror rm data-b --if-old-copy from an approved device.",
-      },
-      deletes: [],
-    });
-  });
-
-  it("names the command that mirrors, syncs or moves from an approved device", () => {
-    expect(planFromCopies(unapproved(move("b")), [member("a", "writer"), member("b", "empty")])).toEqual({
-      ok: false,
-      refusal: {
-        code: "enforced",
-        message: "a enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to b from an approved device.",
-      },
-    });
-    expect(planFromCopies(unapproved(mirror("b")), [member("a", "writer"), member("b", "empty")])).toEqual({
-      ok: false,
-      refusal: {
-        code: "enforced",
-        message: "a enforces device approval, so Ployz Cloud can't mirror data on its own. Run ployz volume mirror data --to b from an approved device.",
-      },
-    });
-    expect(planFromCopies(unapproved(sync(true)), [writer, member("b", "mirror")])).toEqual({
-      ok: false,
-      refusal: {
-        code: "enforced",
-        message: "a enforces device approval, so Ployz Cloud can't sync data in full on its own. Run ployz volume sync data --full from an approved device.",
-      },
-    });
-  });
-});
-
-describe("read a Mirror approval", () => {
-  const id = (name: string) => name.padEnd(32, "0") as MachineId;
-  const [a, b, c] = [id("a"), id("b"), id("c")];
-  const signed = (body: Pick<VolumeApproval, "volume" | "workflow">): Signed => ({ body: JSON.stringify(body), signatures: [] });
-  const mirrorTo = (mirror: MachineId, volume = "shop_data") => signed({ volume, workflow: { kind: "mirror", writer: a, mirror, replace: false } });
-
-  it.each<[string, Signed, boolean]>([
-    ["the Mirror and Volume asked for", mirrorTo(b), true],
-    ["another Mirror", mirrorTo(c), false],
-    ["another Volume", mirrorTo(b, "shop_logs"), false],
-    ["another workflow", signed({ volume: "shop_data", workflow: { kind: "mirror_removal", mirror: b, writer: a, role: "mirror" } }), false],
-    ["a body that isn't JSON", { body: "{", signatures: [] }, false],
-    ["another Writer", signed({ volume: "shop_data", workflow: { kind: "mirror", writer: c, mirror: b, replace: false } }), false],
-    ["a body past the size limit", { ...mirrorTo(b), signatures: [{ key: "a".repeat(64), signature: "b".repeat(MAX_APPROVAL_BYTES) }] }, false],
-  ])("approves %s", (_, approval, approves) => {
-    expect(approvesMirror(approval, "shop_data", a, b)).toBe(approves);
-  });
-});
-
-describe("read a Restore or a Mirror removal approval", () => {
-  const id = (name: string) => name.padEnd(32, "0") as MachineId;
-  const [a, b] = [id("a"), id("b")];
-  const signed = (body: Pick<VolumeApproval, "volume" | "workflow">): Signed => ({ body: JSON.stringify(body), signatures: [] });
-  const restoring = (machine: MachineId, volume = "shop_data") => signed({ volume, workflow: { kind: "restore", machine, at: "11", loses_after: 1 } });
-  const removing = (mirror: MachineId, volume = "shop_data") => signed({ volume, workflow: { kind: "mirror_removal", mirror, writer: a, role: "mirror" } });
-
-  it.each<[string, Signed, boolean]>([
-    ["the Restore asked for", restoring(b), true],
-    ["a Restore of another Server", restoring(a), false],
-    ["a Restore of another Volume", restoring(b, "shop_logs"), false],
-    ["a removal", removing(b), false],
-    ["a body past the size limit", { ...restoring(b), signatures: [{ key: "a".repeat(64), signature: "b".repeat(MAX_APPROVAL_BYTES) }] }, false],
-  ])("approves restoring from %s", (_, approval, approves) => {
-    expect(approvesRestore(approval, "shop_data", b)).toBe(approves);
-  });
-
-  it.each<[string, Signed, boolean]>([
-    ["the removal asked for", removing(b), true],
-    ["a removal of another copy", removing(a), false],
-    ["a removal in another Volume", removing(b, "shop_logs"), false],
-    ["a Restore", restoring(b), false],
-  ])("approves deleting %s", (_, approval, approves) => {
-    expect(approvesRemoval(approval, "shop_data", b)).toBe(approves);
-  });
-});
-
 describe("name who recorded a Mirror removal", () => {
   it.each<[string, string | undefined, readonly string[], string]>([
     ["the slot and the Writer", "a", [], "Deleted data-b; b and a recorded the removal"],
     ["the slot alone, with no Writer", undefined, [], "Deleted data-b; b recorded the removal"],
     ["the slot, and why the Writer has not", "a", ["a did not answer"],
-      "Deleted data-b; b recorded the removal, but a has not yet (a did not answer). b refuses the old approval either way"],
+      "Deleted data-b; b recorded the removal, but a has not yet (a did not answer)"],
   ])("%s", (_, writer, behind, message) => {
     expect(withdrawnMessage("data", ["b"], writer, behind)).toBe(message);
   });
@@ -592,30 +425,7 @@ describe("name who recorded a Mirror removal", () => {
   it("lists several slots", () => {
     expect(withdrawnMessage("data", ["b", "c"], "a", [])).toBe("Deleted data-b, data-c; b, c and a recorded the removal");
     expect(withdrawnMessage("data", ["b", "c"], "a", ["busy"]))
-      .toBe("Deleted data-b, data-c; b and c recorded the removal, but a has not yet (busy). b and c refuse the old approval either way");
-  });
-});
-
-describe("read a Move approval", () => {
-  const id = (name: string) => name.padEnd(32, "0") as MachineId;
-  const [a, b, c] = [id("a"), id("b"), id("c")];
-  const service = asTestDouble<ResolvedServiceSpec>()({ name: "db" });
-  const moving = (from: MachineId, to: MachineId, { volume = "shop_data", name = "db" } = {}): Signed => ({
-    body: JSON.stringify({ volume, workflow: { kind: "move", from, to, service: { name, digest: "d".repeat(64) }, mirrors: [] } }),
-    signatures: [],
-  });
-
-  it.each<[string, Signed, ResolvedServiceSpec | undefined, boolean]>([
-    ["the Move, Volume and Service asked for", moving(a, b), service, true],
-    ["another target", moving(a, c), service, false],
-    ["another source", moving(c, b), service, false],
-    ["another Volume", moving(a, b, { volume: "shop_logs" }), service, false],
-    ["another Service", moving(a, b, { name: "web" }), service, false],
-    ["no spec", moving(a, b), undefined, false],
-    ["a spec past the size limit", moving(a, b), asTestDouble<ResolvedServiceSpec>()({ name: "db", padding: "x".repeat(MAX_SERVICE_BYTES) }), false],
-    ["a Mirror approval", { body: JSON.stringify({ volume: "shop_data", workflow: { kind: "mirror", writer: a, mirror: b, replace: false } }), signatures: [] }, service, false],
-  ])("approves %s", (_, approval, spec, approves) => {
-    expect(approvesMove(approval, spec, "shop_data", a, b)).toBe(approves);
+      .toBe("Deleted data-b, data-c; b and c recorded the removal, but a has not yet (busy)");
   });
 });
 
@@ -778,7 +588,8 @@ function follow(input: PlanInput, members: readonly Member[]) {
     return;
   }
   const target = slots[0] ?? left.find((each) => roleOf(each) === "empty")?.machine.name ?? "no empty Server";
-  expect(outcome(move(target), left)).toBe(`move ${kept.machine.name}->${target} at cut`);
+  // Moves are turned off, so the move a refusal names is refused for now.
+  expect(outcome(move(target), left)).toBe("refuse server_lacks");
   if (slots.length > 0) expect(outcome(move(named(left, "empty")[0] ?? "no empty Server"), left)).toBe("refuse second_mirror");
 }
 
@@ -787,7 +598,7 @@ describe("follow every next step a refusal names", () => {
   // twin sets it, and `tied` then sees it.
   type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
   const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
-    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null, handoff: false, passkey: false,
+    machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;
@@ -813,10 +624,8 @@ describe("follow every next step a refusal names", () => {
   it("pairs twins that tie only where they must", () => {
     // A leaf may tie only if it makes the member a slot or a cut, if the settled rule ranks it ahead of the name, or if
     // only orphan deletes read it, which follow never plans. `machine.name` is the placeholder each row replaces.
-    // `handoff` only says how a Move's source decides, and `passkey`
-    // only says whether the dashboard can approve a run there.
-    expect(tied(slotA, slotB)).toEqual(["answered", "handoff", "machine.name", "passkey", "view.copy.kind", "view.copy.readonly"]);
-    const cut = ["answered", "handoff", "machine.name", "passkey", "view.copy.epoch", "view.copy.kind", "view.copy.newest", "view.copy.readonly", "view.copy.seed"];
+    expect(tied(slotA, slotB)).toEqual(["answered", "machine.name", "view.copy.kind", "view.copy.readonly"]);
+    const cut = ["answered", "machine.name", "view.copy.epoch", "view.copy.kind", "view.copy.newest", "view.copy.readonly", "view.copy.seed"];
     expect(tied(bareA, bareB)).toEqual(cut);
     expect(tied(heldA, heldB)).toEqual(cut.filter((leaf) => leaf !== "view.copy.newest"));
   });

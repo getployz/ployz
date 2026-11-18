@@ -104,7 +104,7 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
             let approval = match super::device::key::load(&device_key) {
                 Ok(Some(secret)) => Some(device_approval(
                     &Signer::from_seed(&secret),
-                    seal_for.cluster,
+                    seal_for,
                     &sealed,
                 )?),
                 _ => None,

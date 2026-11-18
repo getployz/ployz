@@ -23,7 +23,6 @@ use crate::review::approval;
 use crate::scope::{self, Environment, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, Trusted};
-use ployz_core::authority::TeardownApproval;
 
 /// List what comes off the Servers next, across every removal under way.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -135,7 +134,7 @@ pub(super) fn go_on(
     tx: &mut dyn Tx,
     who: &Actor,
     mark: &mut Mark,
-    (trusted, teardown): (&Trusted, Option<&TeardownApproval>),
+    trusted: &Trusted,
     waiting_on: Vec<Waiting>,
 ) -> Result<Removal, RpcError> {
     let mut left = Vec::new();
@@ -156,7 +155,7 @@ pub(super) fn go_on(
             Standing::Blocked(error) => (None, LeftStatus::WaitingTurn, Some(error.message)),
             Standing::Due => {
                 let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
-                let admitting = (&environment, &id, teardown);
+                let admitting = (&environment, &id);
                 match admit_member(tx, who, admitting, mark, trusted, true) {
                     Ok(admitted) if !admitted.in_flight => continue,
                     Ok(admitted) => (Some(admitted), LeftStatus::Removing, None),
@@ -388,7 +387,7 @@ pub(crate) fn admit(
     admit_member(
         tx,
         who,
-        (&environment, &admit.id, admit.teardown.as_deref()),
+        (&environment, &admit.id),
         &mut mark,
         trusted,
         false,
@@ -400,11 +399,7 @@ pub(crate) fn admit(
 fn admit_member(
     tx: &mut dyn Tx,
     who: &Actor,
-    (environment, deployment_id, teardown): (
-        &Environment,
-        &DeploymentId,
-        Option<&TeardownApproval>,
-    ),
+    (environment, deployment_id): (&Environment, &DeploymentId),
     mark: &mut Mark,
     trusted: &Trusted,
     retry: bool,
@@ -440,10 +435,6 @@ fn admit_member(
         (&review, &losses, namespace),
         trusted,
     )?;
-    // A sweep's admission carries what the person signed when they asked, while it lasts.
-    if let Some(teardown) = teardown.or(mark.teardown.as_ref()) {
-        deployment::torn_down_under(tx, &admitted.id, teardown)?;
-    }
     mark.evidence.insert(
         id.clone(),
         Evidence {

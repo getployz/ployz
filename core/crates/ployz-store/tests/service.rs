@@ -95,7 +95,6 @@ fn a_stored_service_whose_slug_is_not_a_service_name_blocks_neither_removal_nor_
         version: None,
         accept_volume_loss: BTreeMap::default(),
         every_copy: BTreeMap::default(),
-        teardown: None,
     };
     for document in ["working", "saved"] {
         for slug in ["Web_App", "web-", "Web"] {

@@ -68,38 +68,6 @@ describe("planResize", () => {
       .toEqual(["record", "primary fsn-1", "mirror fsn-2", "mirror fsn-3"]);
   });
 
-  describe("under device approval", () => {
-    const holders = () => [copy("fsn-1", "writer"), copy("fsn-2", "mirror")] as const;
-    const plan = (maximumBytes: number, approval?: Signed) => {
-      const [writer, mirror] = holders();
-      return planResize("data", { maximum_bytes: maximumBytes, ...(approval && { approval }) }, { recorded: 10 * GB, working: 10 * GB }, writer, [mirror]);
-    };
-
-    it("refuses a resize with no approval, naming the command to approve it", () => {
-      expect(plan(20 * GB)).toEqual({ ok: false, refusal: {
-        code: "enforced",
-        message: "fsn-2 enforces device approval, so Ployz Cloud can't resize data on its own. Run ployz volume set data --size 20 from an approved device.",
-      } });
-    });
-
-    it("runs a resize whose approval names every holder, the size and its direction", () => {
-      expect(plan(20 * GB, signed(["fsn-1", "fsn-2", "fsn-9"], 20 * GB, false))).toMatchObject({ ok: true, phase: { direction: "grow" } });
-      expect(plan(5 * GB, signed(["fsn-1", "fsn-2"], 5 * GB, true))).toMatchObject({ ok: true, phase: { direction: "shrink" } });
-    });
-
-    it.each<[string, Signed]>([
-      ["another size", signed(["fsn-1", "fsn-2"], 30 * GB, false)],
-      ["a shrink for a grow", signed(["fsn-1", "fsn-2"], 20 * GB, true)],
-      ["a holder it doesn't name", signed(["fsn-1"], 20 * GB, false)],
-      ["another workflow", { body: JSON.stringify({ workflow: { kind: "mirror" } }), signatures: [] }],
-    ])("refuses an approval for %s before any Server is asked", (_, approval) => {
-      expect(plan(20 * GB, approval)).toEqual({ ok: false, refusal: {
-        code: "invalid",
-        message: "The approval from your device is for another change, not setting data to 20 GB on fsn-1 and fsn-2. Run ployz volume set data --size 20 again.",
-      } });
-    });
-  });
-
   it.each<[string, number, number, string[]]>([
     ["a grow asks every holder for the size verb", 10 * GB, 20 * GB, ["ployz.volume.size.set.v1"]],
     ["a shrink asks every holder for the size verb and the shrink", 20 * GB, 10 * GB, ["ployz.volume.size.set.v1", "ployz.volume.size.shrink.v1"]],

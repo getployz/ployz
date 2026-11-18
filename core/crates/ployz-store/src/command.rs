@@ -13,7 +13,7 @@ pub use crate::config_item::{
     DeleteConfig, DetachConfig, PutConfigFile, RemoveConfigFile, RenameConfig,
 };
 pub use crate::deployment::admit::{
-    Admit, AdmitRemoval, ApproveDeployment, Cancel, Deploy, Reapply, Retry, ShutDown, Start,
+    Admit, AdmitRemoval, Cancel, Deploy, Reapply, Retry, ShutDown, Start,
 };
 pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
@@ -477,11 +477,6 @@ commands! {
         needs ChangesDeploy
         agent [DeploymentStart]
         => crate::deployment::start(tx, who, &c.deployment, trusted);
-    /// Approve again the commits of a queued Deployment that waited for its builds.
-    ApproveDeployment(ApproveDeployment) -> Deployment(crate::DeploymentSummary)
-        needs ChangesDeploy
-        agent none "A person's Device approves the commits a redeploy runs."
-        => crate::deployment::approve_commits(tx, who, c);
     /// Cancel a queued or running Deployment.
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
         needs ChangesDeploy
@@ -601,17 +596,6 @@ commands! {
         needs ChangesDeploy
         agent none "A person's Device signs a rule that deploys every push of a branch."
         => crate::auto_rule::approve(tx, who, c);
-    /// Keep the preview rule a Device signed for an Environment.
-    ApprovePreviewRule(crate::ApprovePreviewRule) -> PreviewRule(crate::PreviewRuleView) as *
-        needs ChangesDeploy
-        agent none "A person's Device signs a rule that deploys previews of pull requests."
-        => crate::preview_rule::approve(tx, who, trusted, c);
-    /// What a Device signs a preview rule over: a rehearsed preview's settings. It writes
-    /// nothing.
-    PlanPreviewRule(crate::PlanPreviewRule) -> PreviewRule(crate::PreviewRuleView) as *
-        needs ChangesDeploy
-        agent none "Only a person's Device signs a preview rule."
-        => crate::preview_rule::plan(tx, who, trusted, c);
     /// Deploy a pull request's head that needed a member's approval.
     ApprovePullRequest(crate::ApprovePullRequest) -> Automated(crate::Automated)
         needs ChangesDeploy
@@ -762,7 +746,6 @@ impl Written {
             Self::HistoryStaged(staged) => Some(&staged.environment.id),
             Self::Deployment(deployment) => Some(&deployment.environment_id),
             Self::Rule(rule) => Some(&rule.environment.id),
-            Self::PreviewRule(rule) => Some(&rule.environment.id),
             Self::Domain(staged) => Some(&staged.environment.id),
             Self::DomainAdded(added) => Some(&added.written.environment.id),
             Self::Taken(taken) => Some(&taken.into.id),
@@ -841,8 +824,6 @@ pub enum Written {
     Automated(crate::Automated),
     /// An Environment's automatic deploy rule was kept.
     Rule(Box<crate::RuleView>),
-    /// An Environment's preview rule, kept or planned.
-    PreviewRule(Box<crate::PreviewRuleView>),
     /// A Branch was made, given an Own Copy, or kept.
     Branch(crate::Branched),
     /// The Build Order was set; it applies to the next build.

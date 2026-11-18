@@ -1,7 +1,6 @@
 import "@tanstack/react-start/server-only";
-import { withApproval } from "#/modules/volume-placement/placement-approvals";
 import { isDeepStrictEqual } from "node:util";
-import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace, Signed } from "@ployz/sdk";
+import type { CopyObservation, EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -274,8 +273,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
-    // The step carries the person's passkey answer kept for it, if any; a Server that enforces refuses it without one.
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...withApproval(step.run, row.staged?.approvals, members) }, {
+    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, {
       end: "yielded", fences: replanning?.waited.step.run.kind,
     });
     if (requested.ok) {
@@ -322,10 +320,10 @@ export const unlessPlacementRefused = <A, E, R>(organizationId: string, write: E
     return yield* write;
   });
 
-/** Delete on an old copy in the volume drawer, under the person's passkey answer when the copy holds data. */
+/** Delete on an old copy in the volume drawer. */
 export const deleteCopy = Effect.fn("VolumePlacement.deleteCopy")(function* (
   actor: Actor,
-  input: typeof DeleteCopyInput.Type & { readonly approval?: Signed },
+  input: typeof DeleteCopyInput.Type,
   read: BlockerReader = readPlacementBlockers,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "volumes:delete-copy");

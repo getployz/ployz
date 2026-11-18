@@ -11,17 +11,12 @@ import { Button } from "#/components/ui/button";
 import { beginPasskeyServerFn, finishPasskeyServerFn } from "#/modules/passkeys/passkeys.functions";
 import { passkeysQueryOptions, type PasskeyRow, type PasskeysView, type ServerTrust, trustedEverywhere } from "#/modules/passkeys/passkeys.queries";
 import { RelativeTime } from "#/components/relative-time";
-import { CopyBlock } from "../~/servers/-components/copy-block";
-
-/** On a server the command needs root for the local socket; a computer with an approved device runs it as the user. */
-export const approveCommand = (code: string, on: "server" | "device") =>
-  `${on === "server" ? "sudo " : ""}ployz device approve --passkey ${code}`;
 
 const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 /**
- * Passkeys that let you approve changes from this browser. Adding one here only files it: a Server trusts it once
- * someone runs the approve command on it, and each row says what a Server reports.
+ * Passkeys that let you approve changes from this browser. Adding one here only files it, and each row says which
+ * Servers report they trust it.
  */
 export function PasskeysSection() {
   const { organizationSlug } = organizationRoute.useParams();
@@ -86,7 +81,6 @@ export function PasskeyList({ view }: { view: PasskeysView }) {
           actions={<TrustBadge passkey={passkey} />}
         >
           {passkey.servers.length > 1 ? <ServerTrustList servers={passkey.servers} /> : null}
-          {trustedEverywhere(passkey) ? null : <WaitingSteps code={passkey.code} />}
         </SettingsListItem>
       ))}
     </SettingsList>
@@ -123,14 +117,3 @@ function ServerTrustList({ servers }: { servers: readonly ServerTrust[] }) {
   );
 }
 
-function WaitingSteps({ code }: { code: string }) {
-  return (
-    <div className="flex flex-col gap-2 pt-2">
-      <p className="text-sm text-muted-foreground">Approve it on each server:</p>
-      <CopyBlock value="sudo ployz login" />
-      <CopyBlock value={approveCommand(code, "server")} />
-      <p className="text-sm text-muted-foreground">Or once from an approved device:</p>
-      <CopyBlock value={approveCommand(code, "device")} />
-    </div>
-  );
-}

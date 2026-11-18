@@ -1,6 +1,5 @@
 import { Schema } from "effect";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
-import { TeardownInput } from "#/modules/approval-session/approvals-input";
 
 /**
  * One clean of a Namespace no Environment owns, as its row moves: the CLI's request writes `pending`, the run claims it
@@ -40,6 +39,4 @@ export const RemoveNamespaceInput = Schema.Struct({
   organizationSlug: Schema.NonEmptyString,
   namespace: Schema.NonEmptyString,
   confirmDataLoss: Schema.Array(dataLossIdentitySchema),
-  /** The person's teardown of the Namespace, which a Server that enforces Device approval needs. */
-  teardown: Schema.optionalKey(TeardownInput),
 });

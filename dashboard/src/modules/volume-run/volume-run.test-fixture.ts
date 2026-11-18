@@ -33,12 +33,11 @@ export function member(server: string, copy: Copy, options: { epoch?: number; id
       : answer?.kind === "slot" && options.slot !== undefined ? { ...answer, slot: options.slot }
       : answer,
   };
-  // Every Server that answers runs Ployz 0.4, which takes a passkey's answer to a Volume workflow.
-  const answered: Member = { machine, address: "fdcc::1", answered: true, view, passkey: true };
+  const answered: Member = { machine, address: "fdcc::1", answered: true, view };
   return options.bound === undefined ? answered : { ...answered, boundBytes: options.bound };
 }
 
 export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], state: VolumeRunView["state"]): VolumeRunView => ({
   id: `${kind}-${state}`, volume_id: "v1", volume_name: "data", kind, args, orphan: false, state, epoch: 1, message: null,
-  created_at: "2026-10-09T00:00:00.000Z", updated_at: "2026-10-09T00:00:00.000Z", finished_at: null, answers: [],
+  created_at: "2026-10-09T00:00:00.000Z", updated_at: "2026-10-09T00:00:00.000Z", finished_at: null,
 });

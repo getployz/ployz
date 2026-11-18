@@ -177,9 +177,6 @@ impl Service<http::Request<Body>> for MachineApi {
     }
 
     fn call(&mut self, mut request: http::Request<Body>) -> Self::Future {
-        if self.service.local().activating() && !is_read(request.uri().path()) {
-            return Box::pin(async { Ok(activating().into_http()) });
-        }
         let Some(connection) = request
             .extensions()
             .get::<iroh::endpoint::WeakConnectionHandle>()
@@ -247,7 +244,7 @@ fn refuse_local(request: &mut http::Request<Body>) -> Option<http::Response<Body
         )
         .into_http());
     }
-    refuse_scope(request.uri().path(), provenance.scope(), false)
+    refuse_scope(request.uri().path(), provenance.scope())
 }
 
 /// The refusal of a call over a Management connection that `remote` authenticated, or else
@@ -276,8 +273,7 @@ async fn refuse_remote(
     let scope = record
         .management_scope(&remote)
         .unwrap_or(ManagementScope::Operator);
-    let awaiting = record.trusts_after_activation(&remote);
-    if let Some(refused) = refuse_scope(request.uri().path(), scope, awaiting) {
+    if let Some(refused) = refuse_scope(request.uri().path(), scope) {
         return Some(refused);
     }
     if request.uri().path() == op::SetManagementClient::PATH {
@@ -305,26 +301,6 @@ async fn refuse_remote(
     None
 }
 
-/// Whether `path` is a catalog route the coverage table classes as a read.
-fn is_read(path: &str) -> bool {
-    ployz_core::capability_of(path).is_some_and(|capability| {
-        ployz_core::authority::coverage::authorization(capability)
-            == Some(ployz_core::authority::coverage::Authorization::Read)
-    })
-}
-
-/// The answer to management work while an activation waits for its commit.
-fn activating() -> tonic::Status {
-    ployz_core::rpc::hinted_status(
-        tonic::Code::Unavailable,
-        &crate::machine::LocalMachineError::Activating,
-        serde_json::json!({
-            "capability": ployz_core::ENFORCED_CAPABILITY,
-            "reason": "activating",
-        }),
-    )
-}
-
 /// The way to Full access, said in the refusal itself: a v0.3.4 CLI prints only the
 /// message, and has no `device` command.
 const FULL_ACCESS_NEXT: &str =
@@ -348,39 +324,12 @@ struct NeedsManagementConnection;
 )]
 struct NeedsDirectDevice;
 
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "{capability}: this Server awaits its Cluster's activation and doesn't trust Devices added before Ployz 0.4 until then. Run this over SSH, or activate with `ployz device enforce` and keep this Device"
-)]
-struct TrustedAfterActivation {
-    capability: &'static str,
-}
-
-/// A call `scope` may not make, refused naming its capability. `awaiting` says the caller is
-/// a Device this Server trusts only once its Cluster activates, so the way on is activation.
-fn refuse_scope(
-    path: &str,
-    scope: ManagementScope,
-    awaiting: bool,
-) -> Option<http::Response<Body>> {
+/// A call `scope` may not make, refused naming its capability.
+fn refuse_scope(path: &str, scope: ManagementScope) -> Option<http::Response<Body>> {
     if ployz_core::scope_of(path).is_none_or(|needed| scope >= needed) {
         return None;
     }
     let capability = ployz_core::capability_of(path)?;
-    if awaiting {
-        return Some(
-            ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &TrustedAfterActivation { capability },
-                serde_json::json!({
-                    "capability": capability,
-                    "reason": "awaiting_activation",
-                    "next": "ployz device enforce",
-                }),
-            )
-            .into_http(),
-        );
-    }
     Some(
         ployz_core::rpc::hinted_status(
             tonic::Code::PermissionDenied,

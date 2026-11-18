@@ -2032,7 +2032,6 @@ fn removed_but_unswept() -> ConfigStore {
         .write(
             &who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: deployed.clone(),
                 environment: production(),
                 services: Vec::new(),
@@ -2078,7 +2077,6 @@ fn removed_but_unswept() -> ConfigStore {
         ..Trusted::default()
     };
     let remove = |version| Remove {
-        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: Some(EnvironmentName::parse("production").unwrap()),
         version,

@@ -1603,7 +1603,6 @@ async fn grant_scope_contract() {
         let holder = iroh::SecretKey::generate();
         let id = BuildGrantId::parse(hex::encode(holder.public().as_bytes())).unwrap();
         let request = ployz_core::MintBuildGrantRequest {
-            preview: None,
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder: Some(id),
             sealed: None,
@@ -1759,7 +1758,6 @@ impl GrantMachine {
     /// A grant for one push into `ployz-build/web`, held by `holder` when given.
     fn mint_for(&self, holder: Option<ployz_core::BuildGrantId>) -> ployz_core::BuildGrantMinted {
         let request = ployz_core::MintBuildGrantRequest {
-            preview: None,
             repository: ployz_core::BuildGrantRepository::parse("ployz-build/web").unwrap(),
             holder,
             sealed: None,

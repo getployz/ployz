@@ -1,4 +1,4 @@
-import type { ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import type { ServerRef, ServiceVerb } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { check, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { sqlStringLiterals } from "#/db/tables";
@@ -30,8 +30,8 @@ export const serviceAct = pgTable(
     state: text("state").default("accepted").notNull().$type<ServiceActState>(),
     before: jsonb("before").$type<ServiceActBefore | null>(),
     legs: jsonb("legs").default([]).notNull().$type<ServiceActLeg[]>(),
-    /** The browser's approval for each Container it named, forwarded unchanged to a Server that enforces. Public material only. */
-    approvals: jsonb("approvals").$type<Readonly<Record<string, Signed>> | null>(),
+    /** Unused: what a browser signed for each Container, before acting stopped signing. */
+    approvals: jsonb("approvals"),
     /** The proposal this run is a step of, and which step, so its end starts the next. */
     proposalId: uuid("proposal_id").references(() => operationProposals.id, { onDelete: "set null" }),
     proposalStep: integer("proposal_step"),

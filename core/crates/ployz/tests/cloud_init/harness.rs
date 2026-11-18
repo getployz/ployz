@@ -25,7 +25,6 @@ pub fn fake_wrapped() -> SealingKeyWrapped {
     SealingKeyWrapped {
         public_key: SealingPublicKey::from_bytes([7; 32]),
         backup: SealingKeyBackup::from_bytes(b"wrapped sealing key".to_vec()),
-        rotation: None,
     }
 }
 
@@ -659,8 +658,6 @@ impl FakeMachine for JoinDaemon {
         let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
-            activation: None,
-            sealing_recipient: None,
             id: self.id(),
             phase: if joined {
                 LocalMachinePhase::Participating
@@ -1254,7 +1251,6 @@ pub fn registration() -> Registered {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     }
 }
 

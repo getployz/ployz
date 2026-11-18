@@ -28,7 +28,6 @@ mod old_cli;
 mod permission;
 mod policy;
 mod pr_environment;
-mod preview_rule;
 mod project;
 mod pull_request;
 mod query;
@@ -75,7 +74,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRule, GithubRun, ImageToken, RunEnd,
+    GithubRun, ImageToken, RunEnd,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -103,12 +102,11 @@ pub use ployz_core::authority::rule_draft::RuleSourceView;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use ployz_core::memory_size::memory_size;
-pub use preview_rule::{ApprovePreviewRule, PlanPreviewRule, PreviewRuleView};
 pub use pull_request::{
-    ApprovePullRequest, EnvironmentReview, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion,
-    OnMergeInto, OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView,
-    PreviewReviewQuery, PreviewReviewView, PullRequest, PullRequestQuery, PullRequestRef,
-    PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
+    ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto,
+    OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
+    PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing,
+    Sweep,
 };
 pub use query::*;
 pub use region::{
@@ -559,47 +557,14 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, or a storage error.
-    pub fn github_rule(&self, id: &GithubBuildId) -> Result<Option<GithubRule>, RpcError> {
-        self.storage.read(|tx| build::github_rule(tx, id))
-    }
-
-    /// The review a person signed for GitHub build `id`'s commit, when it builds a
-    /// reviewed preview: Cloud dispatches it on the parent's branch rather than following
-    /// a push.
-    ///
-    /// # Errors
-    /// Returns `not_found` for an unknown Deployment, or a storage error.
-    pub fn github_review(
-        &self,
-        id: &GithubBuildId,
-    ) -> Result<Option<ployz_core::authority::Review>, RpcError> {
-        self.storage.read(|tx| build::github_review(tx, id))
-    }
-
-    /// The approval a person signed for GitHub build `id`'s commit, when it builds under
-    /// its Environment's automatic deploy rule: Cloud dispatches it on the rule's branch,
-    /// and relays the approval to the grant Machine.
-    ///
-    /// # Errors
-    /// Returns `not_found` for an unknown build, or a storage error.
-    pub fn github_approval(
+    pub fn github_rule(
         &self,
         id: &GithubBuildId,
     ) -> Result<
-        Option<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
+        Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
         RpcError,
     > {
-        self.storage.read(|tx| build::github_approval(tx, id))
-    }
-
-    /// Whether Deployment `id` waits, queued, for a person to approve its commits again
-    /// once its builds ended: Cloud holds it until one does.
-    ///
-    /// # Errors
-    /// Returns `not_found` for an unknown Deployment, or a storage error.
-    pub fn awaiting_approval(&self, id: &DeploymentId) -> Result<bool, RpcError> {
-        self.storage
-            .read(|tx| deployment::awaiting_approval(tx, id))
+        self.storage.read(|tx| build::github_rule(tx, id))
     }
 
     /// The GitHub build run `run_id` holds while it builds, if any.

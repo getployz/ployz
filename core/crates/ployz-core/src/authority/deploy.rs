@@ -1,4 +1,4 @@
-//! The approval a Device, or a browser key under a passkey's session grant, signs for one
+//! The approval a Device signs for one
 //! Deploy, and the checks a Machine runs before it creates a Container under one.
 //!
 //! The approval names one [`PayloadDigest`] per Service. A Machine recomputes the digest
@@ -18,17 +18,16 @@ use ts_rs::TS;
 use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
-    open::{covered, open_approval},
+    open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
     rule_draft::{Signs, settings},
-    session::ActionFamily,
     shown::Shown,
     trusted_key::TrustedKeys,
 };
 use crate::value::hex_newtype;
 use crate::{
-    ContainerKind, EnvValue, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
+    ContainerKind, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
     RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName, ServiceNetwork,
     VolumeDriver,
 };
@@ -358,35 +357,7 @@ fn plain_local(driver: &VolumeDriver) -> bool {
                 })))
 }
 
-/// What [`AuthorityRefusal::Mismatch`] names when a session approved a Container with
-/// [`host_reach`].
-pub const HOST_ACCESS: &str = "host access";
-
-/// Refuse `spec`, to run in `namespace`, when it has any [`host_reach`] or mounts a
-/// managed Volume scoped to another Namespace. A browser key under a session grant signs
-/// whatever plan Cloud's page hands it, so a Container it approves stays inside its own
-/// Environment, and anything more needs a Device or a passkey's own prompt.
-///
-/// # Errors
-/// Returns [`AuthorityRefusal::Mismatch`] naming [`HOST_ACCESS`].
-pub fn refuse_host_reach(
-    spec: &ResolvedServiceSpec,
-    namespace: &Namespace,
-) -> Result<(), AuthorityRefusal> {
-    let spec = spec.to_requested();
-    let foreign = spec.volume_graph().volumes().iter().any(|volume| {
-        volume
-            .source
-            .scope_namespace()
-            .is_some_and(|scope| scope != namespace)
-    });
-    if host_reach(&spec).is_empty() && !foreign {
-        return Ok(());
-    }
-    Err(AuthorityRefusal::Mismatch { field: HOST_ACCESS })
-}
-
-/// A Device, or a browser key under a session grant, approves one Deploy: the Services it
+/// A Device approves one Deploy: the Services it
 /// may create in one Cluster and Namespace, on named Machines, for a bounded lifetime.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -415,85 +386,6 @@ pub struct DeployApproval {
 
 impl Statement for DeployApproval {
     const PURPOSE: Purpose = Purpose::Workflow;
-}
-
-/// A Deploy's approval as a browser key signs it, from [`DeployApproval::browser_draft`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct BrowserDraft {
-    /// The canonical body to sign as it is.
-    pub body: String,
-    pub changes: Vec<ApprovedChange>,
-    /// `Approved web: nginx@sha256:0123456789ab…` per Service, then its settings, as
-    /// [`ApprovedChange::lines`] writes them.
-    pub lines: Vec<String>,
-}
-
-/// Why a browser can't sign a Deploy.
-#[derive(Debug, thiserror::Error)]
-pub enum BrowserDraftError {
-    #[error(
-        "{0} builds from source, and servers that enforce device approval can't run a build \
-         yet. Deploy it from an image pinned by digest."
-    )]
-    Built(ServiceName),
-    /// Every Service named by a tag, so one refusal lists each to write by digest.
-    #[error("{}", tagged_message(.0))]
-    Tag(Vec<TaggedImage>),
-    /// Every Service with [`host_reach`], so one refusal lists each.
-    #[error("{}", reach_message(.0))]
-    HostReach(Vec<ReachingService>),
-    #[error(transparent)]
-    Canonical(#[from] CanonicalError),
-}
-
-/// A Service whose image a tag names, as [`BrowserDraftError::Tag`] lists it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TaggedImage {
-    pub service: ServiceName,
-    pub image: String,
-}
-
-fn tagged_message(tagged: &[TaggedImage]) -> String {
-    match tagged {
-        [TaggedImage { service, image }] => format!(
-            "The dashboard can't check what {service}'s tag {image} points to. Write {service}'s \
-             image by digest, which docker buildx imagetools inspect {image} prints."
-        ),
-        _ => format!(
-            "The dashboard can't check what these tags point to: {}. Write each image by digest, \
-             which docker buildx imagetools inspect IMAGE prints.",
-            tagged
-                .iter()
-                .map(|TaggedImage { service, image }| format!("{service}'s {image}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-/// A Service with [`host_reach`], as [`BrowserDraftError::HostReach`] lists it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReachingService {
-    pub service: ServiceName,
-    pub host: Vec<String>,
-}
-
-fn reach_message(reaching: &[ReachingService]) -> String {
-    let shown = |ReachingService { service, host }: &ReachingService| {
-        format!("{service} ({})", host.join(", "))
-    };
-    match reaching {
-        [one] => format!(
-            "{} reaches the server itself, so only an approved device can approve it. Run ployz \
-             deploy on that device.",
-            shown(one)
-        ),
-        _ => format!(
-            "These services reach the server itself, so only an approved device can approve them: \
-             {}. Run ployz deploy on that device.",
-            reaching.iter().map(shown).collect::<Vec<_>>().join(", ")
-        ),
-    }
 }
 
 /// What an approver's client sets around the Services a plan ships.
@@ -528,9 +420,6 @@ impl StepBody for DeployApproval {
     }
     fn namespace(&self) -> &Namespace {
         &self.namespace
-    }
-    fn machines(&self) -> &[MachineId] {
-        &self.machines
     }
     fn window(&self) -> (Timestamp, Timestamp) {
         (self.issued_at, self.expires_at)
@@ -567,56 +456,6 @@ impl DeployApproval {
             proposal: terms.proposal,
         };
         Ok((body, changes))
-    }
-
-    /// What a browser key signs for a Deploy of `target` under `terms`: the canonical
-    /// body, what each Service shows the approver, and one line per Service. The browser
-    /// runs this itself on the plan it read, so it signs no digest Cloud computed. It
-    /// can't ask a registry, so a tag is refused rather than pinned.
-    ///
-    /// # Errors
-    /// Refuses a Service built from source, an image named by a tag, a spec with
-    /// [`host_reach`], which a session's Machines refuse, and a spec with no
-    /// [`PayloadDigest`] in `namespace`.
-    pub fn browser_draft(
-        terms: DeployTerms,
-        namespace: Namespace,
-        target: &[RequestedServiceSpec],
-    ) -> Result<BrowserDraft, BrowserDraftError> {
-        if let Some(spec) = target
-            .iter()
-            .find(|spec| crate::is_built_image(&spec.container.image))
-        {
-            return Err(BrowserDraftError::Built(spec.name.clone()));
-        }
-        let tagged: Vec<TaggedImage> = target
-            .iter()
-            .filter(|spec| !content_addressed(&spec.container.image))
-            .map(|spec| TaggedImage {
-                service: spec.name.clone(),
-                image: spec.container.image.clone(),
-            })
-            .collect();
-        if !tagged.is_empty() {
-            return Err(BrowserDraftError::Tag(tagged));
-        }
-        let reaching: Vec<ReachingService> = target
-            .iter()
-            .map(|spec| ReachingService {
-                service: spec.name.clone(),
-                host: host_reach(spec).into_iter().map(String::from).collect(),
-            })
-            .filter(|reaching| !reaching.host.is_empty())
-            .collect();
-        if !reaching.is_empty() {
-            return Err(BrowserDraftError::HostReach(reaching));
-        }
-        let (body, changes) = Self::draft(terms, namespace, target, &BTreeMap::new())?;
-        Ok(BrowserDraft {
-            body: canonical::to_canonical(&body)?,
-            lines: changes.iter().flat_map(ApprovedChange::lines).collect(),
-            changes,
-        })
     }
 
     /// What this approval names for `service`.
@@ -684,15 +523,12 @@ pub struct DeployApproved {
     pub digest: Option<PayloadDigest>,
 }
 
-/// Check `approval` approves this request, signed by one of this Machine's Devices or by
-/// a browser key a trusted passkey lent a grant covering deploys, or riding unsigned as a
-/// step of a proposal bundle one of them signed.
+/// Check `approval` approves this creation, signed by one of this Machine's Devices, or
+/// riding unsigned as a step of a proposal bundle one of them signed.
 ///
-/// For a creation it recomputes the [`PayloadDigest`] of the requested spec and requires
-/// the one the approval names for that Service, a hook in that spec for a hook creation,
-/// and a content-addressed image. A browser key under a session grant approves no
-/// creation with [`host_reach`], whether made or started again. For a step on an existing Container it checks the
-/// signature, Cluster, Machine, Namespace and window only. Consumption is the Machine's.
+/// It recomputes the [`PayloadDigest`] of the requested spec and requires the one the
+/// approval names for that Service, a hook in that spec for a hook creation, and a
+/// content-addressed image.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found, a [`AuthorityRefusal::Mismatch`] naming
@@ -701,7 +537,7 @@ pub fn verify(
     approval: &Signed<DeployApproval>,
     facts: &DeployFacts<'_>,
 ) -> Result<DeployApproved, AuthorityRefusal> {
-    let (body, by, cluster) = open_approval(approval, facts.trusted, facts.cluster, facts.now)?;
+    let (body, by, cluster) = open_approval(approval, facts.trusted, facts.cluster)?;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),
         (
@@ -710,81 +546,12 @@ pub fn verify(
         ),
         (field::ENVIRONMENT, &body.namespace == facts.namespace),
     ])?;
-    covered(&by, cluster, &body, ActionFamily::Deploy)?;
-    if let (Approver::Browser { .. }, Some(creation)) = (&by, facts.creation) {
-        refuse_host_reach(creation.spec, facts.namespace)?;
-    }
     super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
-    if let Some(creation) = facts.creation {
-        refuse_preview_parts(facts.namespace, creation.spec)?;
-    }
     let digest = facts
         .creation
         .map(|creation| creation_digest(&body, creation))
         .transpose()?;
     Ok(DeployApproved { body, by, digest })
-}
-
-/// Refuse a creation, outside a preview rule, in a reserved preview Namespace or carrying a
-/// parent's value a preview inherits: only a preview rule may admit either, so preview code
-/// shares a Namespace with nothing else and an inherited value opens nowhere else.
-///
-/// # Errors
-/// Returns [`AuthorityRefusal::Mismatch`] naming the Namespace or the Sealed value.
-pub fn refuse_preview_parts(
-    namespace: &Namespace,
-    spec: &ResolvedServiceSpec,
-) -> Result<(), AuthorityRefusal> {
-    if super::preview::is_preview_namespace(namespace) {
-        return Err(AuthorityRefusal::Mismatch {
-            field: "a preview Namespace",
-        });
-    }
-    if sealed_values(spec).any(|value| value.environment.is_some()) {
-        return Err(AuthorityRefusal::Mismatch {
-            field: super::preview::SEALED_VALUE,
-        });
-    }
-    Ok(())
-}
-
-fn sealed_values(spec: &ResolvedServiceSpec) -> impl Iterator<Item = &crate::SealedValue> {
-    let hook = spec
-        .pre_deploy
-        .iter()
-        .flat_map(|hook| hook.environment.values());
-    spec.container
-        .environment
-        .values()
-        .chain(hook)
-        .flat_map(EnvValue::sealed_parts)
-}
-
-/// Whether `by` may approve a Container that opens the Sealed values `spec` carries, in its
-/// environment or its hook's. A Device opens any. A browser key under a session grant
-/// opens only values sealed for its grant's Environment, so a dashboard holding a session
-/// in one Environment cannot deploy a Container that opens another's.
-#[must_use]
-pub fn sealed_scope_allows(by: &Approver, spec: &ResolvedServiceSpec) -> bool {
-    let Approver::Browser { grant, .. } = by else {
-        return true;
-    };
-    let hook = spec
-        .pre_deploy
-        .iter()
-        .flat_map(|hook| hook.environment.values());
-    let sealed = spec
-        .container
-        .environment
-        .values()
-        .chain(hook)
-        .any(EnvValue::is_sealed);
-    !sealed
-        || spec
-            .container
-            .sealed_identity
-            .as_ref()
-            .is_some_and(|identity| identity.environment == grant.body.environment_id)
 }
 
 fn creation_digest(

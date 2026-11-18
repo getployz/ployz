@@ -99,7 +99,6 @@ impl ApprovingCluster {
             target_versions: [("actor".into(), 4)].into(),
             sealing_key: Some(sealed.unwrap()),
             devices: Vec::new(),
-            recipient: None,
         }
     }
 
@@ -135,37 +134,4 @@ pub(crate) fn member(registration: Registered, pin: Option<JoinPin>) -> EnrollRe
         wireguard_mtu: None,
         pinned: Default::default(),
     }
-}
-
-/// `machine.json` as a daemon from before enforcement was the only mode wrote it: no
-/// `born_enforcing`, no activation, and the switch where a person left it.
-pub(crate) fn written_before_f7(dir: &std::path::Path, device_enforcement: bool) {
-    let path = dir.join(super::store::STATE_FILE_NAME);
-    let mut row: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    let row = row.as_object_mut().unwrap();
-    assert!(row.remove("born_enforcing").is_some());
-    assert!(!row.contains_key("activation"));
-    row.insert("device_enforcement".into(), device_enforcement.into());
-    std::fs::write(&path, serde_json::to_vec(row).unwrap()).unwrap();
-}
-
-/// A Machine record that founded its own Cluster in `dir`, as `ployz server init` leaves it.
-pub(crate) fn founded(dir: &std::path::Path) -> super::LocalMachineStore {
-    let mut store = super::LocalMachineStore::open(dir).unwrap();
-    store
-        .enroll(EnrollRequest {
-            role: EnrollAs::Founder {
-                initial_policy: Default::default(),
-                name: MachineName::parse("founder").unwrap(),
-                cluster_network: "10.210.0.0/16".parse().unwrap(),
-                public_ip: None,
-                advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
-                grant: None,
-            },
-            wireguard_mtu: None,
-            pinned: Default::default(),
-        })
-        .unwrap();
-    store
 }

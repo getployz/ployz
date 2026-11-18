@@ -99,7 +99,6 @@ fn removing_an_unknown_project_says_to_list_them() {
                 version: None,
                 accept_volume_loss: Default::default(),
                 every_copy: Default::default(),
-                teardown: None,
             },
         )
         .unwrap_err();

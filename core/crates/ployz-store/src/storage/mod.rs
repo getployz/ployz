@@ -448,19 +448,6 @@ fn newer_store(sqlite: &sqlite::Sqlite, failed: sqlite::Failed, verb: &str) -> R
     refused
 }
 
-/// Run `work` inside a savepoint and undo everything it wrote, whatever it returns: a
-/// rehearsal of writes whose only product is what `work` reads back.
-pub(crate) fn rehearse<T>(
-    tx: &mut dyn Tx,
-    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
-) -> Result<T, RpcError> {
-    tx.execute("SAVEPOINT rehearsal", &[])?;
-    let result = work(tx);
-    tx.execute("ROLLBACK TO SAVEPOINT rehearsal", &[])?;
-    tx.execute("RELEASE SAVEPOINT rehearsal", &[])?;
-    result
-}
-
 /// Run `work` inside a savepoint: when it fails, everything it wrote is undone and
 /// the rest of the transaction goes on. An attempt that may be skipped runs here, so
 /// skipping it leaves no rows behind.

@@ -408,7 +408,7 @@ pub(in crate::handlers) async fn leave(
 ) -> Result<(), Error> {
     let left = client
         .call::<op::Leave>(
-            LeaveRequest { teardown: None },
+            LeaveRequest {},
             Call::keyed().waiting(Wait::of(MACHINE_START_WAIT)),
         )
         .await?;

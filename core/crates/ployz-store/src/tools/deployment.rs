@@ -452,14 +452,11 @@ impl Tool for DeploymentRetry {
         let source = cx.one(&query)?;
         // A human approves the exact set it rolls back, so the agent confirms none.
         let retry = Admit::Retry(Retry {
-            teardown: None,
             id,
             deployment: source.deployment.id.clone(),
             rolls_back: None,
             version: self.version,
             accept_volume_loss: self.accept_volume_loss,
-            approvals: Vec::new(),
-            awaits_approval: false,
             approval: None,
         });
         let summary = cx.write(&retry)?;

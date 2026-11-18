@@ -1162,7 +1162,6 @@ mod tests {
             .write(
                 who,
                 &crate::Admit::Deploy(crate::Deploy {
-                    teardown: None,
                     id: crate::DeploymentId::parse(uuid(10 + n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     services: services

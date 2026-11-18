@@ -413,7 +413,6 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -595,14 +594,11 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
-                teardown: None,
                 id: again.clone(),
                 deployment: first,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approvals: Vec::new(),
-                awaits_approval: false,
                 approval: None,
             }),
             &ployz_store::Trusted::default(),
@@ -675,14 +671,11 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
         .write_trusted(
             &who,
             &Admit::Retry(Retry {
-                teardown: None,
                 id: back.clone(),
                 deployment: first,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approvals: Vec::new(),
-                awaits_approval: false,
                 approval: None,
             }),
             &ployz_store::Trusted::default(),

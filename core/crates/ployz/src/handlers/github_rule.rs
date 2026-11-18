@@ -221,8 +221,8 @@ pub(super) fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> 
         approve::Probe::Enforcing(enforcing) => Ok(enforcing),
         approve::Probe::Off => Err(Error::coded(
             RpcErrorCode::Conflict,
-            "Your servers don't enforce device approval, so pushes already deploy without a \
-             rule. Turn it on with ployz device enforce, then approve the rule.",
+            "None of your servers reported that it checks device approval, so this device \
+             can't sign a rule. Upgrade your servers, then try again.",
         )),
         approve::Probe::NoClusterKey => Err(Error::coded(
             RpcErrorCode::Unavailable,

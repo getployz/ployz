@@ -2,14 +2,13 @@ import "@tanstack/react-start/server-only";
 import type { SealingPublicKey } from "@ployz/sdk";
 import { Effect } from "effect";
 import { currentFounder, currentGeneration } from "#/modules/machines/connections.server";
-import { readSealingPublicKey, readSealingRecipient } from "#/modules/machines/sealing-key-read.server";
+import { readSealingPublicKey } from "#/modules/machines/sealing-key-read.server";
 import { recordReportedSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 
 /**
  * The key a client seals an Organization's Sealed values to, once its Cluster has one. `publicKey` is the Cluster's
- * identity, which sealed values bind to. `sealTo` is the key they seal to: the recipient key a Server reported after
- * activation, or the identity before.
+ * identity, which sealed values bind to, and `sealTo` is the same key.
  */
 export type ClusterSealing =
   | { readonly state: "no_server"; readonly awaitsRecovery?: true }
@@ -20,8 +19,7 @@ export const readClusterSealing = Effect.fn("ClusterSealing.read")(function* (or
   const generation = yield* currentGeneration(organizationId);
   const publicKey = generation === null ? undefined : yield* readSealingPublicKey(organizationId, generation);
   if (generation === null || publicKey === undefined) return { state: "no_server" } satisfies ClusterSealing;
-  const recipient = yield* readSealingRecipient(organizationId, generation);
-  return { state: "ready", publicKey, sealTo: recipient ?? publicKey } satisfies ClusterSealing;
+  return { state: "ready", publicKey, sealTo: publicKey } satisfies ClusterSealing;
 });
 
 /**

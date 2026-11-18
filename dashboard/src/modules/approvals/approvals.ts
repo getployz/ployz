@@ -1,4 +1,4 @@
-import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange, ResolvedServiceSpec, Signed } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, EnvironmentRef, JsonValue, NodeChange } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord, asString } from "#/lib/json";
 import type { Caller } from "#/modules/identity/actor";
@@ -16,9 +16,6 @@ export type OperationReview = { verb: OperationVerb; name: string; preview: Json
 
 /** A stop or restart the dashboard asked for, run as its asker once a protector approves it. */
 export type ServiceApply = { environmentId: string; service: string; verb: "stop" | "restart" };
-
-/** An approver's passkey answer to a Volume run's workflow, and for a Move the spec its target starts. */
-export type KeptVolumeApproval = { readonly approval: Signed; readonly service?: ResolvedServiceSpec };
 
 /** A Volume resize the dashboard asked for, run as its asker once a protector approves it. */
 export type VolumeApply = { volumeId: string; environment: EnvironmentRef; maximum_bytes: number };

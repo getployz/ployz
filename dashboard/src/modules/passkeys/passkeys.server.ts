@@ -157,16 +157,6 @@ export const listPasskeys = Effect.fn("Passkeys.list")(function* (actor: Actor, 
   };
 });
 
-/**
- * The Servers that answered and trust no passkey at all, by ID. A Cluster founded on Ployz 0.4 trusts no key until a
- * person approves one on a Server itself, so Ployz Cloud can change nothing there until then.
- */
-export const serversWithoutPasskey = Effect.fn("Passkeys.serversWithout")(function* (actor: Actor, organizationSlug: string) {
-  const { organizationId } = yield* member(actor, organizationSlug);
-  const servers = yield* trustedPasskeys(organizationId);
-  return servers.flatMap(({ id, passkeys }) => id !== null && passkeys !== null && passkeys.length === 0 ? [id] : []);
-});
-
 export const approvalOf = (passkeys: readonly { code: string; trusted: TrustedPasskey }[], code: string): PasskeyApproval => {
   const held = passkeys.find((passkey) => passkey.code === code);
   if (held === undefined) return null;

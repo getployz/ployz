@@ -1,34 +1,28 @@
 use ployz_core::{
-    ACTIVATE_ENFORCEMENT_CAPABILITY, BUILD_GRANT_HOLDER_CAPABILITY, BUILD_GRANT_PREVIEW_CAPABILITY,
-    BUILD_GRANT_RULE_CAPABILITY, BUILD_SEALED_CAPABILITY, CERTIFICATE_POLICY_CAPABILITY,
-    COMMIT_APPROVAL_CAPABILITY, CapabilityAdvertisement, CapabilityName, DEPLOY_PREVIEW_CAPABILITY,
-    DEPLOY_RULE_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, ENFORCED_CAPABILITY,
-    ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY, ENSURE_CONTAINER_CAPABILITY,
-    ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
-    FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY,
-    INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY,
-    INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY, LEAVE_MACHINE_CAPABILITY,
-    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
-    LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
-    PREPARE_VOLUMES_CAPABILITY, PREVIEW_REVIEW_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
+    BUILD_GRANT_HOLDER_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY, BUILD_SEALED_CAPABILITY,
+    CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName, DEPLOY_RULE_CAPABILITY,
+    DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
+    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
+    EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
+    INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
+    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY,
+    LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
+    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY,
+    MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
     PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
-    READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECIPIENT_RECOVERY_CAPABILITY,
-    RECOVER_SEALING_KEY_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY,
-    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RESEAL_VALUES_CAPABILITY,
-    RESTART_APPROVAL_CAPABILITY, RESTART_SESSION_GRANT_CAPABILITY, RETAINED_ENV_CAPABILITY,
-    RULE_PASSKEY_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY,
-    SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
-    SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY,
-    SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_RECIPIENT_KEY_CAPABILITY,
+    READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
+    REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
+    REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY, RULE_PASSKEY_CAPABILITY,
+    RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
+    SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY,
+    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
+    SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
     TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_CHANNEL_CAPABILITY,
-    UPGRADE_EXACT_CAPABILITY, VOLUME_APPROVAL_CAPABILITY, VOLUME_FLOOR_CAPABILITY,
-    VOLUME_HANDOFF_CAPABILITY, VOLUME_PASSKEY_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY, op,
+    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -54,14 +48,6 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.machine.set-management-client.v1",
         ),
         (SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1"),
-        (ACTIVATE_ENFORCEMENT_CAPABILITY, "ployz.machine.activate.v1"),
-        (SET_RECIPIENT_KEY_CAPABILITY, "ployz.sealing.recipient.v1"),
-        (RESEAL_VALUES_CAPABILITY, "ployz.sealing.reseal.v1"),
-        (ENFORCED_CAPABILITY, "ployz.machine.enforced.v1"),
-        (
-            RECIPIENT_RECOVERY_CAPABILITY,
-            "ployz.sealing.recipient-recovery.v1",
-        ),
         (
             SET_PUSH_TARGET_CAPABILITY,
             "ployz.machine.set-push-target.v1",
@@ -81,39 +67,16 @@ fn catalogued_capabilities_keep_stable_spellings() {
         ),
         (MANAGEMENT_SCOPE_CAPABILITY, "ployz.management.scope.v1"),
         (UPGRADE_EXACT_CAPABILITY, "ployz.machine.upgrade.exact.v1"),
-        (
-            UPGRADE_CHANNEL_CAPABILITY,
-            "ployz.machine.upgrade.channel.v1",
-        ),
         (ENV_SEALED_CAPABILITY, "ployz.env.sealed.v1"),
         (BUILD_SEALED_CAPABILITY, "ployz.build.sealed.v1"),
         (BUILD_GRANT_HOLDER_CAPABILITY, "ployz.build.grant.holder.v1"),
         (BUILD_GRANT_RULE_CAPABILITY, "ployz.build.grant.rule.v1"),
         (DEPLOY_RULE_CAPABILITY, "ployz.container.deploy-rule.v1"),
         (RULE_PASSKEY_CAPABILITY, "ployz.rule.passkey.v1"),
-        (VOLUME_PASSKEY_CAPABILITY, "ployz.volume.passkey.v1"),
-        (
-            BUILD_GRANT_PREVIEW_CAPABILITY,
-            "ployz.build.grant.preview.v1",
-        ),
-        (
-            DEPLOY_PREVIEW_CAPABILITY,
-            "ployz.container.deploy-preview.v1",
-        ),
-        (PREVIEW_REVIEW_CAPABILITY, "ployz.preview.review.v1"),
-        (COMMIT_APPROVAL_CAPABILITY, "ployz.rule.commit-approval.v1"),
-        (
-            SET_DEVICE_ENFORCEMENT_CAPABILITY,
-            "ployz.machine.set-device-enforcement.v2",
-        ),
         (SET_PASSKEY_CAPABILITY, "ployz.machine.set-passkey.v1"),
         (
             REMOVE_TRUSTED_KEY_CAPABILITY,
             "ployz.machine.remove-trusted-key.v1",
-        ),
-        (
-            RESTART_APPROVAL_CAPABILITY,
-            "ployz.restart.device-approval.v2",
         ),
         (LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1"),
         (INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1"),
@@ -186,12 +149,6 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
-        (VOLUME_APPROVAL_CAPABILITY, "ployz.volume.approval.v1"),
-        (VOLUME_HANDOFF_CAPABILITY, "ployz.volume.copy.handoff.v1"),
-        (
-            RESTART_SESSION_GRANT_CAPABILITY,
-            "ployz.restart.session-grant.v2",
-        ),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -216,8 +173,6 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.join.approve.v1",
             "ployz.machine.set-device.v1",
             "ployz.machine.set-push-target.v1",
-            "ployz.machine.set-device-enforcement.v2",
-            "ployz.machine.activate.v1",
             "ployz.machine.set-passkey.v1",
             "ployz.machine.remove-trusted-key.v1",
             "ployz.network.select-endpoint.v1",
@@ -227,36 +182,21 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.sealing.generate.v1",
             "ployz.sealing.share.v1",
             "ployz.sealing.install.v1",
-            "ployz.sealing.recipient.v1",
-            "ployz.sealing.reseal.v1",
             "ployz.machine.leave.v1",
             "ployz.machine.forget.v1",
             "ployz.machine.join.device-approval.v1",
-            "ployz.machine.enforced.v1",
-            "ployz.sealing.recipient-recovery.v1",
             "ployz.certificates.policy.v1",
             "ployz.machine.storage-observation.v1",
             "ployz.management.scope.v1",
             "ployz.machine.upgrade.exact.v1",
-            "ployz.machine.upgrade.channel.v1",
             "ployz.env.sealed.v1",
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
             "ployz.build.grant.rule.v1",
-            "ployz.build.grant.preview.v1",
-            "ployz.restart.device-approval.v2",
-            "ployz.restart.session-grant.v2",
-            "ployz.restart.start-approval.v1",
-            "ployz.restart.proposal.v1",
-            "ployz.teardown.v1",
             "ployz.container.deploy-approval.v1",
             "ployz.container.deploy-proposal.v1",
             "ployz.container.deploy-rule.v1",
             "ployz.rule.passkey.v1",
-            "ployz.volume.passkey.v1",
-            "ployz.container.deploy-preview.v1",
-            "ployz.preview.review.v1",
-            "ployz.rule.commit-approval.v1",
         ]
     );
     assert_eq!(
@@ -290,8 +230,6 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.v1",
             "ployz.volume.copy.floor.v1",
             "ployz.volume.size.shrink.v1",
-            "ployz.volume.approval.v1",
-            "ployz.volume.copy.handoff.v1",
         ]
     );
     assert_eq!(
@@ -434,36 +372,12 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the SDK checks the contract before calling",
     ),
     (
-        "ployz.machine.set-device-enforcement.v2",
-        "gated: `ployz device enforce` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
-    ),
-    (
         "ployz.machine.set-passkey.v1",
-        "gated: `ployz device approve --passkey` checks each Machine's contract first, names a Server whose daemon lacks it as missing and exits partial",
+        "unreached: no client calls SetPasskey",
     ),
     (
         "ployz.machine.remove-trusted-key.v1",
         "falls back: `ployz device rm` calls set-device.v1 Remove on an older daemon, which can hold no passkey",
-    ),
-    (
-        "ployz.restart.device-approval.v2",
-        "falls back: an older daemon ignores the approval on EnsureContainer and restarts as before, since it enforces nothing",
-    ),
-    (
-        "ployz.restart.session-grant.v2",
-        "gated: Cloud attaches a browser approval only for a Machine that advertises it; an older enforcing Machine refuses the restart and the dashboard names that Server. A grant naming its Environment's ID fails closed on a daemon that reads only v1 grants, which refuses unknown grant fields and lends the browser key nothing",
-    ),
-    (
-        "ployz.restart.proposal.v1",
-        "gated: Cloud sends a proposal step only to a Machine that advertises it, and names an older one as needing a newer Ployz before the person signs; an older enforcing Machine refuses the step's envelope as unknown bytes",
-    ),
-    (
-        "ployz.teardown.v1",
-        "refused legibly: an older daemon ignores the teardown and, enforcing, refuses Leave and Forget as before and the takedown as unapproved, naming the Server; one not enforcing takes it off as before",
-    ),
-    (
-        "ployz.restart.start-approval.v1",
-        "gated: Cloud attaches a start approval only for a Machine that advertises it, and names an older one as needing a newer Ployz; the CLI signs one regardless, which an older enforcing Machine refuses as it refused an unapproved start",
     ),
     (
         "ployz.container.deploy-approval.v1",
@@ -482,26 +396,6 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
     ),
     (
-        "ployz.volume.passkey.v1",
-        "gated: the dashboard asks a passkey to approve a Volume workflow only when every enforcing Machine it reaches advertises it. An older daemon refuses the approval's `assertions` and its `\"passkey\"` signer, so a passkey-approved Volume step there fails closed",
-    ),
-    (
-        "ployz.container.deploy-preview.v1",
-        "falls back: an older daemon ignores `preview` on EnsureContainer; one not enforcing creates as before, and one enforcing refuses the Operator's creation for want of a deploy approval, so a preview there fails closed",
-    ),
-    (
-        "ployz.preview.review.v1",
-        "gated: Cloud relays a review at grant only to a Machine that advertises it, and the dashboard offers a review only when every enforcing Machine does. An older daemon refuses every reviewed preview build and deploy, naming a reviewed preview, so one there fails closed",
-    ),
-    (
-        "ployz.machine.upgrade.channel.v1",
-        "falls back: an older daemon ignores `channel` on RequestMachineUpgrade and resolves the requested channel as before, since it enforces no channel",
-    ),
-    (
-        "ployz.rule.commit-approval.v1",
-        "gated: Cloud relays a commit approval at grant only to a Machine that advertises it, and the CLI signs one only when every Server it lists does. An older daemon refuses the approval's field in the grant and in the rule proof as unknown, so a rollback there fails closed",
-    ),
-    (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
     ),
@@ -516,14 +410,6 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.volume.size.set.v1",
         "gated: a caller checks the contract first and refuses the resize, naming the Server whose daemon lacks it",
-    ),
-    (
-        "ployz.volume.copy.handoff.v1",
-        "gated: Cloud asks a Move's source for its handoff only when it advertises the capability, and otherwise commits as before; an enforcing target that has it refuses that promotion, so the Move releases back to its source. An older target ignores the receipt and promotes as before",
-    ),
-    (
-        "ployz.volume.approval.v1",
-        "falls back: an older daemon ignores the approval and the Forget recipient. It checks no approval and grants nothing, so it pulls and serves the send stream as before, and its Forget writes no withdrawal",
     ),
     (
         "ployz.volume.size.shrink.v1",
@@ -590,10 +476,6 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: a rule build's grant request carries `rule` only to a Machine advertising it. An older daemon ignores `rule`, and under Device enforcement it refuses the Operator's mint, so a rule build there fails closed",
     ),
     (
-        "ployz.build.grant.preview.v1",
-        "gated: a preview build's grant request goes only to a Machine advertising it, and otherwise the build fails with \"Previews under a preview rule need a newer Ployz on your servers\"",
-    ),
-    (
         "ployz.sealing.generate.v1",
         "gated: the Sealing Key backfill reads each Machine's contract first and never picks a generator that lacks it",
     ),
@@ -628,26 +510,6 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.join.approve.v1",
         "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
-    ),
-    (
-        "ployz.machine.activate.v1",
-        "refused legibly: the dashboard offers activation only when every Server advertises ployz.machine.enforced.v1, which every daemon serving this route does",
-    ),
-    (
-        "ployz.machine.enforced.v1",
-        "names the Server: `ployz device enforce` and the dashboard leave out a Server that lacks it, by name",
-    ),
-    (
-        "ployz.sealing.recipient-recovery.v1",
-        "names the Server: `ployz recovery rotate` and `ployz recover` refuse a Server that lacks it, by name, before a code is made or sent",
-    ),
-    (
-        "ployz.sealing.recipient.v1",
-        "unreached: rotation follows activation, which needs ployz.machine.enforced.v1, served by the same daemons",
-    ),
-    (
-        "ployz.sealing.reseal.v1",
-        "unreached: re-sealing goes only to an activated Machine, which serves it",
     ),
     (
         "ployz.machine.join.device-approval.v1",
@@ -789,8 +651,7 @@ mod coverage {
                 "a Writer want with a start",
                 "a pull",
                 "a cut",
-                "a handoff",
-                "a promote with no receipt",
+                "a promote",
                 "a forget of a copy",
                 "a forget of nothing",
                 "floor, snapshot",

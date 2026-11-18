@@ -31,5 +31,4 @@ fn every_value_is_frozen_by_release() {
 fn machine_enforced_lifetimes_are_the_authority_values() {
     assert_eq!(MAX_LIFETIME_MILLIS, 15 * 60 * 1000);
     assert_eq!(CLOCK_SKEW_MILLIS, 2 * 60 * 1000);
-    assert_eq!(MAX_GRANT_LIFETIME_MILLIS, 60 * 60 * 1000);
 }

@@ -12,7 +12,7 @@ use ployz_core::{
     ContractDescription, EndpointSelected, EnvironmentValues, Evidence, Gate, GateReason,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLayout, MachineLogService,
     MachineRpc, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, WantedCopy, op,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -22,8 +22,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        HeldTeardown, Landing, LocalMachine, LocalMachineError, LocalMachineRecord, RecoveryError,
-        SealingError, StoreError,
+        LocalMachine, LocalMachineError, LocalMachineRecord, RecoveryError, SealingError,
+        StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -74,32 +74,6 @@ impl MachineService {
         Some(
             self.local
                 .admit_rule_grant(grant, holder, sealed, github, now)
-                .await,
-        )
-    }
-
-    /// Run every check of a preview build's grant against GitHub, or `None` when this
-    /// daemon cannot reach GitHub at all.
-    async fn admit_preview_grant(
-        &self,
-        grant: &ployz_core::PreviewGrant,
-        holder: Option<&ployz_core::BuildGrantId>,
-        sealed: Option<&ployz_core::SealedRecord>,
-    ) -> Option<Result<crate::machine::local_machine::rule_grant::AdmittedRule, LocalMachineError>>
-    {
-        let now = ployz_core::authority::Timestamp::now();
-        #[cfg(test)]
-        if let Some(github) = &self.github {
-            return Some(
-                self.local
-                    .admit_preview_grant(grant, holder, sealed, github.as_ref(), github.now(now))
-                    .await,
-            );
-        }
-        let github = crate::machine::local_machine::rule_grant::GithubOnline::shared()?;
-        Some(
-            self.local
-                .admit_preview_grant(grant, holder, sealed, github, now)
                 .await,
         )
     }
@@ -159,16 +133,6 @@ impl MachineService {
         }
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub(super) fn with_cluster_option(
-        mut self,
-        cluster: Option<(ReplicatedStore, crate::corrosion::AdminClient)>,
-    ) -> Self {
-        self.local = self.local.with_cluster(cluster);
-        self
-    }
-
     /// Serve through `local` itself, so everything else cloned from it shares its state.
     #[must_use]
     pub(super) fn with_local(mut self, local: LocalMachine) -> Self {
@@ -202,14 +166,6 @@ impl MachineService {
     pub fn with_image_ingest(mut self, ingest: Arc<ImageIngest>) -> Self {
         self.ingest = ingest;
         self
-    }
-
-    /// This call's Machine, holding `held` for each admitted turn to check again.
-    fn held(&self, held: Option<HeldTeardown>) -> LocalMachine {
-        match held {
-            Some(held) => self.local.clone().with_teardown(held),
-            None => self.local.clone(),
-        }
     }
 
     /// Local Machine used to construct routing from this Machine's record and store.
@@ -321,36 +277,6 @@ impl MachineService {
         }
     }
 
-    /// [`Self::volume_verb`] for a step a Volume approval admitted: once `landed` reads the
-    /// step's effect in the reply, `operation` ends here, so the approval never runs again.
-    /// A reply that fails to end it fails the call, and the resend finds it still open.
-    async fn landing_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
-        &self,
-        (verb, route): (&'static str, &str),
-        request: &impl serde::Serialize,
-        operation: Option<ployz_core::OperationId>,
-        landed: impl FnOnce(&T) -> bool,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        if let Err(error) = self.require_joined() {
-            return respond(error);
-        }
-        crate::faults::apply(verb, None).await;
-        let reply = match self.local.plugin().call::<T>(route, request).await {
-            Ok(reply) => reply,
-            Err(error) => return respond(error),
-        };
-        if let Some(operation) = operation
-            && landed(&reply)
-            && let Err(error) = self.local.end_volume_operation(operation)
-        {
-            return local_error(error);
-        }
-        respond(reply)
-    }
-
-    /// A Volume verb that takes no switch lock. A read may land beside a cut's drain: the
-    /// write that follows it rechecks the copy under the lock, so a stale view ends in a
-    /// refusal, never a wrong flip.
     async fn volume_verb<T: serde::de::DeserializeOwned + Into<RpcResponse>>(
         &self,
         verb: &'static str,
@@ -532,47 +458,6 @@ impl MachineRpc for MachineService {
         finish(self.local.set_push_target(request).await)
     }
 
-    async fn set_device_enforcement(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.caller(&request);
-        let request = expect::<op::SetDeviceEnforcement>(request)?;
-        finish(local.set_device_enforcement(request).await)
-    }
-
-    async fn activate_enforcement(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.caller(&request);
-        let request = expect::<op::ActivateEnforcement>(request)?;
-        finish(
-            local
-                .activate(
-                    request.starting_set,
-                    ployz_core::ACTIVATE_ENFORCEMENT_CAPABILITY,
-                )
-                .await,
-        )
-    }
-
-    async fn set_recipient_key(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::SetRecipientKey>(request)?;
-        finish(self.local.set_recipient_key(request).await)
-    }
-
-    async fn reseal_values(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::ResealValues>(request)?;
-        finish(self.local.reseal_values(request).await)
-    }
-
     async fn select_endpoint(
         &self,
         request: Request<OpaquePayload>,
@@ -659,37 +544,20 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
-        let mut request = expect::<op::EnsureContainer>(request)?;
-        let teardown_only = request.approval.is_none()
-            && request.deploy.is_none()
-            && request.rule.is_none()
-            && request.preview.is_none();
-        let (want, held) = if let (true, true, Some(teardown)) =
-            (operator, teardown_only, request.teardown.take())
-        {
-            match self.local.admit_teardown_step(request.want, teardown).await {
-                Ok((want, held)) => (want, Some(held)),
-                Err(error) => return local_error(error),
-            }
-        } else if operator {
-            match self
+        let request = expect::<op::EnsureContainer>(request)?;
+        if operator
+            && let Err(error) = self
                 .local
-                .admit_operator_restart(
-                    request.want,
-                    request.approval.as_ref(),
+                .admit_operator_change(
+                    &request.want,
                     request.deploy.as_ref(),
                     request.rule.as_deref(),
-                    request.preview.as_deref(),
                 )
                 .await
-            {
-                Ok(want) => (want, None),
-                Err(error) => return local_error(error),
-            }
-        } else {
-            (request.want, None)
-        };
-        finish(self.held(held).ensure_container(want).await)
+        {
+            return local_error(error);
+        }
+        finish(self.local.ensure_container(request.want).await)
     }
 
     async fn update_container_limits(
@@ -760,24 +628,8 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
         let request = expect::<op::RemoveVolume>(request)?;
-        let held = if operator {
-            match self
-                .local
-                .admit_operator_volume_removal(&request.name, request.teardown)
-            {
-                Ok(held) => Some(held),
-                Err(error) => return local_error(error),
-            }
-        } else {
-            None
-        };
-        finish(
-            self.held(held)
-                .remove_volume(request.name, request.force)
-                .await,
-        )
+        finish(self.local.remove_volume(request.name, request.force).await)
     }
 
     async fn inspect_volume_copy(
@@ -799,49 +651,23 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::SetVolumeCopy>(request)?;
-        // An unapproved start is refused before the switch lock, so nothing is planned
-        // against the copy. One that carries an approval is checked once the plan says the
-        // start can run.
         if operator
-            && matches!(request.want, WantedCopy::Writer { start: Some(_), .. })
-            && let Err(error) = self
-                .local
-                .refuse_unapproved_volume_start(request.approval.as_ref())
+            && let ployz_core::WantedCopy::Writer {
+                start: Some(start), ..
+            } = &request.want
+            && let Err(error) = self.local.admit_operator_volume_start(start).await
         {
             return local_error(error);
         }
-        self.set_copy(request, operator).await
+        self.set_copy(request).await
     }
 
     async fn seed_volume(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
         let request = expect::<op::SeedVolume>(request)?;
-        // Admitted under the switch lock, so a resend queued behind the seed that lands
-        // finds its operation ended and only reads.
         let _guard = self.switch_mutation.lock().await;
-        let landing = if operator {
-            match self.local.admit_operator_seed(&request) {
-                Ok(landing) => landing,
-                Err(error) => return local_error(error),
-            }
-        } else {
-            Landing::Run(None)
-        };
-        let Landing::Run(operation) = landing else {
-            let landed = ployz_core::InspectVolumeCopyRequest {
-                name: request.into.clone(),
-            };
-            return self
-                .volume_verb::<ployz_core::VolumeCopyView>(
-                    "InspectVolumeCopy",
-                    crate::volume_copy::VOLUME_INSPECT_ROUTE,
-                    &landed,
-                )
-                .await;
-        };
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
         // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
@@ -850,12 +676,10 @@ impl MachineRpc for MachineService {
         {
             return local_error(error);
         }
-        // A seed lands once `into` answers as a root.
-        self.landing_verb::<ployz_core::VolumeCopyView>(
-            ("SeedVolume", crate::volume_copy::VOLUME_SEED_ROUTE),
+        self.volume_verb::<ployz_core::VolumeCopyView>(
+            "SeedVolume",
+            crate::volume_copy::VOLUME_SEED_ROUTE,
             &request,
-            operation,
-            |view| matches!(view.copy, Some(ployz_core::VolumeCopy::Root { .. })),
         )
         .await
     }
@@ -864,31 +688,12 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
         let request = expect::<op::SetVolumeSize>(request)?;
-        // Admitted under the switch lock, so a resend queued behind the resize that lands
-        // finds its operation ended and writes nothing.
         let _guard = self.switch_mutation.lock().await;
-        let landing = if operator {
-            match self.local.admit_operator_resize(&request) {
-                Ok(landing) => landing,
-                Err(error) => return local_error(error),
-            }
-        } else {
-            Landing::Run(None)
-        };
-        let Landing::Run(operation) = landing else {
-            // The recorded outcome, not a read: the operation ended only once ZFS answered
-            // this bound, and answering it again changes nothing.
-            return respond(ployz_core::SetVolumeSizeReply {
-                bound_bytes: request.maximum_bytes,
-            });
-        };
-        self.landing_verb::<ployz_core::SetVolumeSizeReply>(
-            ("SetVolumeSize", crate::volume_copy::VOLUME_SIZE_SET_ROUTE),
+        self.volume_verb::<ployz_core::SetVolumeSizeReply>(
+            "SetVolumeSize",
+            crate::volume_copy::VOLUME_SIZE_SET_ROUTE,
             &request,
-            operation,
-            |reply| reply.bound_bytes == request.maximum_bytes,
         )
         .await
     }
@@ -1088,40 +893,16 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
-        let mut request = expect::<op::Leave>(request)?;
-        let held = if operator {
-            match self
-                .local
-                .admit_operator_departure(None, request.teardown.take())
-            {
-                Ok(held) => Some(held),
-                Err(error) => return local_error(error),
-            }
-        } else {
-            None
-        };
-        finish(self.held(held).leave(request).await)
+        let request = expect::<op::Leave>(request)?;
+        finish(self.local.leave(request).await)
     }
 
     async fn forget(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let operator = Provenance::of(&request).operator();
-        let mut request = expect::<op::Forget>(request)?;
-        let held = if operator {
-            match self
-                .local
-                .admit_operator_departure(Some(&request.machine_id), request.teardown.take())
-            {
-                Ok(held) => Some(held),
-                Err(error) => return local_error(error),
-            }
-        } else {
-            None
-        };
-        finish(self.held(held).forget(request).await)
+        let request = expect::<op::Forget>(request)?;
+        finish(self.local.forget(request).await)
     }
 
     async fn list_images(
@@ -1195,29 +976,8 @@ impl MachineRpc for MachineService {
         let request = expect::<op::MintBuildGrant>(request)?;
         // Refused before `Mint::check`, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
-        let admitted = match (&request.rule, &request.preview) {
-            (Some(_), Some(_)) => {
-                return respond(RpcError::invalid_argument(
-                    "a Build Grant is under one rule, not a rule and a preview rule",
-                ));
-            }
-            (None, Some(grant)) => {
-                let admitted = self.admit_preview_grant(
-                    grant,
-                    request.holder.as_ref(),
-                    request.sealed.as_ref(),
-                );
-                let Some(admitted) = admitted.await else {
-                    return respond(RpcError::unavailable(
-                        "This Server cannot reach GitHub to check a preview build",
-                    ));
-                };
-                match admitted {
-                    Ok(admitted) => Some(admitted),
-                    Err(error) => return local_error(error),
-                }
-            }
-            (None, None) => {
+        let admitted = match &request.rule {
+            None => {
                 if operator {
                     return local_error(LocalMachineError::BuildRefused {
                         capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
@@ -1225,7 +985,7 @@ impl MachineRpc for MachineService {
                 }
                 None
             }
-            (Some(grant), None) => {
+            Some(grant) => {
                 let admitted =
                     self.admit_rule_grant(grant, request.holder.as_ref(), request.sealed.as_ref());
                 let Some(admitted) = admitted.await else {
@@ -1472,34 +1232,10 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::OnlyCloudManagesSlots | LocalMachineError::NeedsFullScope => Err(
             ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error),
         ),
-        LocalMachineError::RestartRefused(ref refusal) => {
-            let gate = Gate::new(ployz_core::RESTART_APPROVAL_CAPABILITY)
-                .next("ployz service restart from an approved device");
-            let gate = if matches!(
-                refusal,
-                ployz_core::authority::AuthorityRefusal::Unsigned { .. }
-            ) {
-                gate.because(GateReason::Unsigned)
-            } else {
-                gate
-            };
-            Err(gated(tonic::Code::PermissionDenied, &error, &gate))
-        }
-        LocalMachineError::RestartReachesHost => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(ployz_core::RESTART_APPROVAL_CAPABILITY)
-                .next("ployz service restart from an approved device"),
-        )),
         LocalMachineError::DeployRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::DEPLOY_APPROVAL_CAPABILITY).next("ployz deploy from an approved device"),
-        )),
-        LocalMachineError::HostnameOwned { capability, .. } => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(capability),
         )),
         LocalMachineError::RuleDeployRefused(ref refusal) => {
             let gate = Gate::new(ployz_core::DEPLOY_RULE_CAPABILITY);
@@ -1509,42 +1245,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             };
             Err(gated(tonic::Code::PermissionDenied, &error, &gate))
         }
-        LocalMachineError::PreviewDeployRefused(ref refusal) => {
-            let gate = Gate::new(ployz_core::DEPLOY_PREVIEW_CAPABILITY);
-            let gate = match refusal.next() {
-                Some(next) => gate.next(next),
-                None => gate,
-            };
-            Err(gated(tonic::Code::PermissionDenied, &error, &gate))
-        }
-        LocalMachineError::PreviewGrantRefused(_) => Err(build_refused(
-            &error,
-            ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY,
-        )),
         LocalMachineError::BuildRefused { capability } => Err(build_refused(&error, capability)),
-        LocalMachineError::TeardownRefused(_) => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(ployz_core::TEARDOWN_CAPABILITY).next(
-                "delete it again with your passkey in the dashboard, or from an approved device",
-            ),
-        )),
-        LocalMachineError::UpgradeChannelRefused(_) => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(ployz_core::UPGRADE_CHANNEL_CAPABILITY).next(
-                "ployz server upgrade-policy set --channel stable or beta from an approved device",
-            ),
-        )),
-        LocalMachineError::DepartureRefused { capability, .. } => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(capability).next(if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
-                "ployz server forget from an approved device, or Forget server with your passkey in the dashboard"
-            } else {
-                "ployz server rm from an approved device, or Remove server with your passkey in the dashboard"
-            }),
-        )),
         LocalMachineError::PrivateAccessRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
@@ -1552,35 +1253,11 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
                 "ployz private-access on from an approved device, or Connect in the dashboard with your passkey",
             ),
         )),
-        LocalMachineError::VolumeRefused { capability } => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(capability)
-                .next("approve the change from an approved device or with your passkey"),
-        )),
-        LocalMachineError::VolumeStepRefused(ref refusal) => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(ployz_core::VOLUME_APPROVAL_CAPABILITY).next(
-                if matches!(refusal, ployz_core::authority::AuthorityRefusal::Unreceipted) {
-                    // A new approval would not help: only the source's receipt makes this Machine the writer.
-                    "ployz volume release asks the move's source where the move ends"
-                } else {
-                    "approve the Volume change again from an approved device"
-                },
-            ),
-        )),
         LocalMachineError::RuleGrantRefused(_)
         | LocalMachineError::RuleProofRefused(_)
         | LocalMachineError::RuleHeadUnread(_) => Err(build_refused(
             &error,
             ployz_core::BUILD_GRANT_RULE_CAPABILITY,
-        )),
-        LocalMachineError::EnforcementRefused(_) => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(ployz_core::SET_DEVICE_ENFORCEMENT_CAPABILITY)
-                .next("ployz device enforce from an approved device"),
         )),
         LocalMachineError::JoinConsumed(_) => Err(gated(
             tonic::Code::PermissionDenied,
@@ -1598,53 +1275,6 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         )),
         LocalMachineError::Store(error) => Ok(store_error(error)),
         LocalMachineError::JoinRecord(_) => Err(internal_response(error)),
-        LocalMachineError::ActivationRecord(_) => Err(internal_response(error)),
-        LocalMachineError::RecipientKey(_) => Err(internal_response(error)),
-        LocalMachineError::RecipientRefused { capability, .. } => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(capability),
-        )),
-        LocalMachineError::AwaitingActivation { capability } => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(capability)
-                .because(GateReason::AwaitingActivation)
-                .next("ployz device enforce"),
-        )),
-        LocalMachineError::Activating => Err(gated(
-            tonic::Code::Unavailable,
-            &error,
-            &Gate::new(ployz_core::ENFORCED_CAPABILITY).because(GateReason::Activating),
-        )),
-        LocalMachineError::ActivationRefused {
-            capability,
-            ref reason,
-        } => {
-            use crate::machine::local_machine::activation::Refusal;
-            let mut details = Gate::new(capability)
-                .next("ployz device enforce from an approved device, over SSH to each Server")
-                .to_details();
-            if let serde_json::Value::Object(fields) = &mut details {
-                match reason {
-                    Refusal::LegacyMember(id) => {
-                        fields.insert("legacy_member".to_owned(), serde_json::json!(id));
-                    }
-                    Refusal::LegacyKey(code) => {
-                        fields.insert("legacy_key".to_owned(), serde_json::json!(code));
-                    }
-                    Refusal::Authority(_)
-                    | Refusal::NoOff
-                    | Refusal::Activated
-                    | Refusal::BornEnforcing => {}
-                }
-            }
-            Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                details,
-            ))
-        }
         LocalMachineError::ApprovalRecord(_) => Err(internal_response(error)),
         LocalMachineError::NotParticipating => {
             Ok(RpcError::unavailable("Machine is not participating"))
@@ -1820,8 +1450,6 @@ fn recovery_error(error: RecoveryError) -> RpcError {
         RecoveryError::OtherKey(_) => (RpcErrorCode::InvalidArgument, Refusal::OtherKey),
         RecoveryError::WrongCode => (RpcErrorCode::InvalidArgument, Refusal::WrongCode),
         RecoveryError::HeldAnother { .. } => (RpcErrorCode::Conflict, Refusal::HeldAnother),
-        RecoveryError::NoRecipient => (RpcErrorCode::Conflict, Refusal::NoRecipient),
-        RecoveryError::RotationRefused(_) => (RpcErrorCode::Conflict, Refusal::RotationRefused),
     };
     RpcError::caused(code, &error).with_evidence(&refusal)
 }
@@ -1840,22 +1468,6 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> Result<RpcError, St
                 serde_json::json!({
                     "capability": ployz_core::UPGRADE_EXACT_CAPABILITY,
                     "next": "ployz device request",
-                }),
-            ));
-        }
-        Error::OffApprovedChannel { requested, .. } => {
-            return Err(ployz_core::rpc::hinted_status(
-                tonic::Code::PermissionDenied,
-                &error,
-                serde_json::json!({
-                    "capability": ployz_core::UPGRADE_CHANNEL_CAPABILITY,
-                    "next": match ployz_core::ReleaseChannel::of(requested) {
-                        Some(channel) => format!(
-                            "ployz server upgrade-policy set --channel {channel} from an approved device"
-                        ),
-                        None => "ployz server upgrade-policy set --channel stable or beta from an approved device"
-                            .to_owned(),
-                    },
                 }),
             ));
         }

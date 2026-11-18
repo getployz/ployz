@@ -244,7 +244,6 @@ mod tests {
     fn sealed_intent(ciphertext: u8) -> (DeployIntent, EnvValue) {
         let mut intent = intent(&["api"]);
         let sealed = EnvValue::Sealed(ployz_core::SealedValue {
-            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![ciphertext; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "NPM_TOKEN".into(),
@@ -484,7 +483,6 @@ mod tests {
 
     fn with_sealed(intent: &mut DeployIntent, name: &str, byte: u8) {
         let value = EnvValue::Sealed(ployz_core::SealedValue {
-            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![byte; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: name.into(),
@@ -680,7 +678,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (mut intent, _) = sealed_intent(7);
         let setting = EnvValue::Sealed(ployz_core::SealedValue {
-            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "RAILPACK_BUILD_CMD".into(),
@@ -728,7 +725,6 @@ RUN --mount=type=secret,id=RAILPACK_BUILD_CMD true
         fs::write(source.join("drop.log"), "excluded").unwrap();
         let (mut intent, _) = sealed_intent(7);
         let setting = EnvValue::Sealed(ployz_core::SealedValue {
-            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "RAILPACK_CONFIG_FILE".into(),
@@ -788,7 +784,6 @@ RUN --mount=type=secret,id=RAILPACK_BUILD_CMD true
         let root = tempfile::tempdir().unwrap();
         let (mut intent, _) = sealed_intent(7);
         let setting = EnvValue::Sealed(ployz_core::SealedValue {
-            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![9; 48]),
             scope: ployz_core::SealedScope::Shared,
             key: "RAILPACK_BUILD_CMD".into(),

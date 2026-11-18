@@ -7,9 +7,7 @@ use super::*;
 use crate::authority::deploy::Creation;
 use crate::authority::{
     keys::Signer,
-    session::{Delegation, GrantBody, SessionGrant},
     trusted_key::tests::{Answer, Authenticator, HONEST, trusting},
-    validity,
 };
 use crate::{ContainerKind, DeviceKey};
 
@@ -354,54 +352,13 @@ fn a_device_signs_a_rule() {
         devices: vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
         passkeys: Vec::new(),
     };
-    let (body, key) =
-        verify_signature(&signed, &trusted, Timestamp::from_millis(2_000).unwrap()).unwrap();
+    let (body, key) = verify_signature(&signed, &trusted).unwrap();
     assert_eq!(body, rule());
     assert_eq!(key, Approver::Device(signer().public()));
     assert!(
         signed
             .signing_input()
             .starts_with(b"ployz-authority/v1\nrule\n")
-    );
-}
-
-#[test]
-fn a_browser_key_under_a_valid_session_grant_cannot_sign_a_rule() {
-    let browser = Signer::from_seed(&[4; 32]);
-    let passkey = Authenticator::es256(4);
-    let grant = GrantBody {
-        browser_key: browser.public(),
-        cluster: SealingPublicKey::from_bytes([9; 32]),
-        environment: Namespace::parse("app").unwrap(),
-        environment_id: uuid::Uuid::from_u128(1),
-        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
-        families: vec![super::super::session::ActionFamily::Deploy],
-        issued_at: Timestamp::from_millis(0).unwrap(),
-        expires_at: Timestamp::from_millis(3_000_000).unwrap(),
-        delegation: Delegation::None,
-    };
-    let body = canonical::to_canonical(&grant).unwrap();
-    let assertion = passkey.answer(&Answer {
-        challenge: &GrantBody::challenge(&body),
-        ..HONEST
-    });
-    let mut browser_rule = rule();
-    browser_rule.signer = SignerKey::Browser {
-        browser: browser.public(),
-    };
-    let signed =
-        Signed::sign_under(&browser_rule, &browser, SessionGrant { body, assertion }).unwrap();
-    let trusted = trusting(&passkey);
-    let now = Timestamp::from_millis(2_000).unwrap();
-    assert!(
-        signed.approvers(&trusted, now).is_ok(),
-        "the grant itself verifies"
-    );
-    assert_eq!(
-        verify_signature(&signed, &trusted, now).unwrap_err(),
-        AuthorityRefusal::Mismatch {
-            field: "the signer"
-        }
     );
 }
 
@@ -426,8 +383,7 @@ fn answered(rule: &AutoDeployRule, passkey: &Authenticator) -> Signed<AutoDeploy
 fn a_passkeys_own_prompt_signs_a_rule() {
     let passkey = Authenticator::es256(4);
     let signed = answered(&passkey_rule(), &passkey);
-    let now = Timestamp::from_millis(2_000).unwrap();
-    let (body, approver) = verify_signature(&signed, &trusting(&passkey), now).unwrap();
+    let (body, approver) = verify_signature(&signed, &trusting(&passkey)).unwrap();
     assert_eq!(body, passkey_rule());
     assert_eq!(approver, Approver::Passkey(passkey.passkey().code()));
     let input = super::super::keys::signing_input(Purpose::Rule, &signed.body);
@@ -441,61 +397,27 @@ fn a_passkeys_own_prompt_signs_a_rule() {
 #[test]
 fn a_passkey_answer_counts_only_for_the_rule_it_answered_and_a_trusted_passkey() {
     let passkey = Authenticator::es256(4);
-    let now = Timestamp::from_millis(2_000).unwrap();
     let mut other = passkey_rule();
     other.generation += 1;
     let mut moved = answered(&passkey_rule(), &passkey);
     moved.body = Signed::unsigned(&other).unwrap().body;
     assert_eq!(
-        verify_signature(&moved, &trusting(&passkey), now).unwrap_err(),
+        verify_signature(&moved, &trusting(&passkey)).unwrap_err(),
         AuthorityRefusal::Mismatch {
             field: "a challenge"
         }
     );
     let stranger = Authenticator::es256(5);
     assert_eq!(
-        verify_signature(
-            &answered(&passkey_rule(), &stranger),
-            &trusting(&passkey),
-            now
-        )
-        .unwrap_err(),
+        verify_signature(&answered(&passkey_rule(), &stranger), &trusting(&passkey)).unwrap_err(),
         AuthorityRefusal::UnknownPasskey
     );
     assert_eq!(
-        verify_signature(&answered(&rule(), &passkey), &trusting(&passkey), now).unwrap_err(),
+        verify_signature(&answered(&rule(), &passkey), &trusting(&passkey)).unwrap_err(),
         AuthorityRefusal::Mismatch {
             field: "the signer"
         },
         "a body naming a Device is not a passkey's"
-    );
-}
-
-#[test]
-fn a_passkeys_own_answer_never_signs_a_workflow() {
-    let passkey = Authenticator::es256(4);
-    let grant = GrantBody {
-        browser_key: signer().public(),
-        cluster: SealingPublicKey::from_bytes([9; 32]),
-        environment: Namespace::parse("app").unwrap(),
-        environment_id: uuid::Uuid::from_u128(1),
-        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
-        families: vec![super::super::session::ActionFamily::Deploy],
-        issued_at: Timestamp::from_millis(0).unwrap(),
-        expires_at: Timestamp::from_millis(3_000_000).unwrap(),
-        delegation: Delegation::None,
-    };
-    let unsigned = Signed::unsigned(&grant).unwrap();
-    let assertion = passkey.answer(&Answer {
-        challenge: &unsigned.challenge(),
-        ..HONEST
-    });
-    assert_eq!(
-        unsigned
-            .answered(assertion)
-            .approvers(&trusting(&passkey), Timestamp::from_millis(2_000).unwrap())
-            .unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "a passkey" }
     );
 }
 
@@ -571,7 +493,7 @@ fn create(
     spec: Value,
     kind: ContainerKind,
 ) -> Result<ImageDigest, AuthorityRefusal> {
-    create_at(rule, claim, spec, kind, CommitNow::Head(head()))
+    create_at(rule, claim, spec, kind, head())
 }
 
 fn head() -> CommitSha {
@@ -585,7 +507,7 @@ fn create_at(
     claim: &BuildClaim,
     spec: Value,
     kind: ContainerKind,
-    commit: CommitNow<'_>,
+    head: CommitSha,
 ) -> Result<ImageDigest, AuthorityRefusal> {
     let spec = resolved(&requested(spec));
     let machine = MachineId::parse("1".repeat(32)).unwrap();
@@ -596,7 +518,7 @@ fn create_at(
         machine: &machine,
         namespace: &namespace,
         service: &spec.name,
-        commit,
+        head,
     };
     rule.verify_creation(
         claim,
@@ -867,460 +789,6 @@ fn a_hook_creation_needs_a_hook_in_the_spec() {
         create(&rule, &built(), spec, ContainerKind::PreDeployHook),
         Err(AuthorityRefusal::Mismatch { field: "a hook" })
     );
-}
-
-/// An older commit of `web` a person rolls back to.
-fn older() -> CommitSha {
-    CommitSha::parse(&"0a".repeat(20)).unwrap()
-}
-
-fn machine() -> MachineId {
-    MachineId::parse("1".repeat(32)).unwrap()
-}
-
-fn approval(edit: impl FnOnce(&mut CommitApproval)) -> CommitApproval {
-    let mut approval = CommitApproval {
-        cluster: SealingPublicKey::from_bytes([9; 32]),
-        rule: RuleId::from_bytes([0x11; 16]),
-        generation: 3,
-        service: web(),
-        commit: older(),
-        issued_at: Timestamp::from_millis(1_000).unwrap(),
-        expires_at: Timestamp::from_millis(1_000 + validity::MAX_LIFETIME_MILLIS).unwrap(),
-        signer: SignerKey::Device(DeviceKey::from_bytes(*signer().public().as_bytes())),
-    };
-    edit(&mut approval);
-    approval
-}
-
-fn device_trusted() -> TrustedKeys {
-    TrustedKeys {
-        devices: vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
-        passkeys: Vec::new(),
-    }
-}
-
-/// Check `approval`, signed by the trusted Device, against `rule` at `now`.
-fn checked_at(
-    approval: &CommitApproval,
-    rule: &AutoDeployRule,
-    now: u64,
-) -> Result<CheckedCommitApproval, AuthorityRefusal> {
-    let signed = Signed::sign(approval, &signer()).unwrap();
-    verify_commit_approval(
-        &signed,
-        rule,
-        &ApprovalFacts {
-            cluster: SealingPublicKey::from_bytes([9; 32]),
-            machine: &machine(),
-            trusted: &device_trusted(),
-            now: Timestamp::from_millis(now).unwrap(),
-        },
-    )
-}
-
-fn checked(approval: &CommitApproval) -> CheckedCommitApproval {
-    checked_at(approval, &approved_rule(), 2_000).unwrap()
-}
-
-/// The image the push of `older()` built, as its token's claim names it.
-fn built_older(authority: CommitAuthority) -> BuildClaim {
-    BuildClaim {
-        commit: older(),
-        authority,
-        ..built()
-    }
-}
-
-#[test]
-fn a_commit_approval_is_a_workflow_statement_whose_digest_is_its_signing_input() {
-    let signed = Signed::sign(&approval(|_| {}), &signer()).unwrap();
-    assert!(
-        signed
-            .signing_input()
-            .starts_with(b"ployz-authority/v1\nworkflow\n")
-    );
-    let digest = ApprovalDigest::of(&signed);
-    assert_eq!(
-        digest.as_bytes(),
-        &<[u8; 32]>::from(sha2::Sha256::digest(signed.signing_input()))
-    );
-    assert_eq!(checked(&approval(|_| {})).digest(), digest);
-    let claim = built_older(CommitAuthority::Approved(digest));
-    let text = canonical::to_canonical(&claim).unwrap();
-    assert!(
-        text.starts_with(&format!(r#"{{"authority":{{"approved":"{digest}"}},"#)),
-        "{text}"
-    );
-}
-
-#[test]
-fn a_live_approval_admits_the_approved_commits_image_with_the_rules_settings() {
-    let approved = checked(&approval(|_| {}));
-    let digest = approved.digest();
-    for authority in [CommitAuthority::Head, CommitAuthority::Approved(digest)] {
-        assert_eq!(
-            create_at(
-                &approved_rule(),
-                &built_older(authority),
-                requested_json(),
-                ContainerKind::ServiceContainer,
-                CommitNow::Approved(&approved),
-            ),
-            Ok(ImageDigest::from_bytes([0x44; 32])),
-            "{authority:?}"
-        );
-    }
-}
-
-#[test]
-fn an_approval_admits_only_the_service_and_commit_it_names() {
-    let approved = checked(&approval(|_| {}));
-    for (case, claim) in [
-        ("the head, not the approved commit", built()),
-        (
-            "another commit",
-            BuildClaim {
-                commit: CommitSha::parse(&"0b".repeat(20)).unwrap(),
-                ..built()
-            },
-        ),
-    ] {
-        assert_eq!(
-            create_at(
-                &approved_rule(),
-                &claim,
-                requested_json(),
-                ContainerKind::ServiceContainer,
-                CommitNow::Approved(&approved),
-            ),
-            Err(AuthorityRefusal::Mismatch {
-                field: "an approval"
-            }),
-            "{case}"
-        );
-    }
-    let api = checked(&approval(|approval| {
-        approval.service = ServiceName::parse("api").unwrap();
-    }));
-    assert_eq!(
-        create_at(
-            &approved_rule(),
-            &built_older(CommitAuthority::Head),
-            requested_json(),
-            ContainerKind::ServiceContainer,
-            CommitNow::Approved(&api),
-        ),
-        Err(AuthorityRefusal::Mismatch {
-            field: "an approval"
-        })
-    );
-}
-
-/// Hole 1 of D6's first design: Cloud leaves a build out and swaps the image.
-#[test]
-fn hole_1_an_image_that_is_not_the_tokens_is_refused_under_a_valid_approval() {
-    let approved = checked(&approval(|_| {}));
-    let other_image =
-        "ployz-build/web@sha256:6666666666666666666666666666666666666666666666666666666666666666";
-    assert_eq!(
-        create_at(
-            &approved_rule(),
-            &built_older(CommitAuthority::Head),
-            changed(&["container", "image"], json!(other_image)),
-            ContainerKind::ServiceContainer,
-            CommitNow::Approved(&approved),
-        ),
-        Err(AuthorityRefusal::Mismatch { field: "an image" })
-    );
-}
-
-/// Hole 2 of D6's first design: Cloud keeps the genuine image and changes its settings.
-#[test]
-fn hole_2_settings_that_are_not_the_rules_template_are_refused_under_a_valid_approval() {
-    let approved = checked(&approval(|_| {}));
-    for (case, spec) in [
-        (
-            "entrypoint",
-            changed(&["container", "entrypoint"], json!(["node", "-e"])),
-        ),
-        (
-            "hook command",
-            changed(&["pre_deploy", "command"], json!(["sh", "-c", "curl evil"])),
-        ),
-        (
-            "plain value",
-            changed(&["container", "environment", "PLAIN"], json!("two")),
-        ),
-    ] {
-        assert_eq!(
-            create_at(
-                &approved_rule(),
-                &built_older(CommitAuthority::Head),
-                spec,
-                ContainerKind::ServiceContainer,
-                CommitNow::Approved(&approved),
-            ),
-            Err(AuthorityRefusal::Mismatch { field: "a payload" }),
-            "{case}"
-        );
-    }
-}
-
-/// Finding 6 of the step-back review: Cloud reports its own attest key, so the build's
-/// secrets came from an endpoint it ran.
-#[test]
-fn finding_6_a_claim_naming_another_attest_key_is_refused_under_a_valid_approval() {
-    let approved = checked(&approval(|_| {}));
-    let claim = BuildClaim {
-        stage: BuildStage::Built {
-            image: ImageDigest::from_bytes([0x44; 32]),
-            attest: AttestKey::from_bytes([0x77; 32]),
-        },
-        ..built_older(CommitAuthority::Head)
-    };
-    assert_eq!(
-        create_at(
-            &approved_rule(),
-            &claim,
-            requested_json(),
-            ContainerKind::ServiceContainer,
-            CommitNow::Approved(&approved),
-        ),
-        Err(AuthorityRefusal::Mismatch {
-            field: "the attest key"
-        })
-    );
-}
-
-/// A build under an approval names the commit only in its audience: GitHub's `sha` is the
-/// head the dispatch ran at, and may be that same commit.
-#[test]
-fn a_claim_built_under_an_approval_never_deploys_on_the_head_read_alone() {
-    let approved = checked(&approval(|_| {}));
-    let claim = BuildClaim {
-        authority: CommitAuthority::Approved(approved.digest()),
-        ..built()
-    };
-    assert_eq!(
-        create(
-            &approved_rule(),
-            &claim,
-            requested_json(),
-            ContainerKind::ServiceContainer
-        ),
-        Err(AuthorityRefusal::Mismatch {
-            field: "an authority"
-        })
-    );
-    let reviewed = BuildClaim {
-        authority: CommitAuthority::Review(ReviewDigest::from_bytes([1; 32])),
-        ..built_older(CommitAuthority::Head)
-    };
-    assert_eq!(
-        create_at(
-            &approved_rule(),
-            &reviewed,
-            requested_json(),
-            ContainerKind::ServiceContainer,
-            CommitNow::Approved(&approved),
-        ),
-        Err(AuthorityRefusal::Mismatch {
-            field: "an authority"
-        })
-    );
-}
-
-#[test]
-fn an_approval_is_refused_for_another_rule_generation_cluster_or_an_ended_rule() {
-    let cases: Vec<(&str, CommitApproval, AutoDeployRule, &str)> = vec![
-        (
-            "another rule",
-            approval(|approval| approval.rule = RuleId::from_bytes([0x12; 16])),
-            approved_rule(),
-            "a rule",
-        ),
-        (
-            "an older generation",
-            approval(|approval| approval.generation = 2),
-            approved_rule(),
-            "a generation",
-        ),
-        (
-            "a newer generation than the rule in hand",
-            approval(|approval| approval.generation = 4),
-            approved_rule(),
-            "a generation",
-        ),
-        (
-            "another Cluster",
-            approval(|approval| approval.cluster = SealingPublicKey::from_bytes([8; 32])),
-            approved_rule(),
-            "a Cluster",
-        ),
-        (
-            "an ended rule",
-            approval(|_| {}),
-            AutoDeployRule {
-                ended: true,
-                ..approved_rule()
-            },
-            "an ended rule",
-        ),
-    ];
-    for (case, approval, rule, field) in cases {
-        assert_eq!(
-            checked_at(&approval, &rule, 2_000),
-            Err(AuthorityRefusal::Mismatch { field }),
-            "{case}"
-        );
-    }
-}
-
-#[test]
-fn an_approval_lives_only_in_its_window() {
-    let live = approval(|_| {});
-    assert!(
-        checked_at(
-            &live,
-            &approved_rule(),
-            1_000 + validity::MAX_LIFETIME_MILLIS
-        )
-        .is_ok()
-    );
-    assert_eq!(
-        checked_at(
-            &live,
-            &approved_rule(),
-            1_000 + validity::MAX_LIFETIME_MILLIS + validity::CLOCK_SKEW_MILLIS + 1
-        ),
-        Err(AuthorityRefusal::Expired)
-    );
-    let long = approval(|approval| {
-        approval.expires_at =
-            Timestamp::from_millis(1_000 + validity::MAX_LIFETIME_MILLIS + 1).unwrap();
-    });
-    assert!(checked_at(&long, &approved_rule(), 2_000).is_err());
-}
-
-#[test]
-fn an_approval_by_a_key_this_machine_does_not_trust_is_refused() {
-    let stranger = Signer::from_seed(&[8; 32]);
-    let body = approval(|approval| {
-        approval.signer = SignerKey::Device(DeviceKey::from_bytes(*stranger.public().as_bytes()));
-    });
-    let signed = Signed::sign(&body, &stranger).unwrap();
-    let refused = verify_commit_approval(
-        &signed,
-        &approved_rule(),
-        &ApprovalFacts {
-            cluster: SealingPublicKey::from_bytes([9; 32]),
-            machine: &machine(),
-            trusted: &device_trusted(),
-            now: Timestamp::from_millis(2_000).unwrap(),
-        },
-    );
-    assert!(
-        matches!(refused, Err(AuthorityRefusal::UnknownKey { .. })),
-        "{refused:?}"
-    );
-    let named_other = approval(|approval| {
-        approval.signer = SignerKey::Device(DeviceKey::from_bytes(*stranger.public().as_bytes()));
-    });
-    assert_eq!(
-        checked_at(&named_other, &approved_rule(), 2_000),
-        Err(AuthorityRefusal::Mismatch {
-            field: "the signer"
-        })
-    );
-}
-
-/// A browser key under a session grant for `environment`, whose ID the fixture's Sealed
-/// values are sealed for, and the approval it signs.
-fn session_signed(environment: &str) -> (Signed<CommitApproval>, TrustedKeys) {
-    let browser = Signer::from_seed(&[4; 32]);
-    let passkey = Authenticator::es256(4);
-    let grant = GrantBody {
-        browser_key: browser.public(),
-        cluster: SealingPublicKey::from_bytes([9; 32]),
-        environment: Namespace::parse(environment).unwrap(),
-        environment_id: uuid::Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111),
-        machines: vec![machine()],
-        families: vec![super::super::session::ActionFamily::Deploy],
-        issued_at: Timestamp::from_millis(0).unwrap(),
-        expires_at: Timestamp::from_millis(3_000_000).unwrap(),
-        delegation: Delegation::None,
-    };
-    let body = canonical::to_canonical(&grant).unwrap();
-    let assertion = passkey.answer(&Answer {
-        challenge: &GrantBody::challenge(&body),
-        ..HONEST
-    });
-    let approval = approval(|approval| {
-        approval.signer = SignerKey::Browser {
-            browser: browser.public(),
-        };
-    });
-    let signed = Signed::sign_under(&approval, &browser, SessionGrant { body, assertion }).unwrap();
-    (signed, trusting(&passkey))
-}
-
-#[test]
-fn a_session_grant_approves_a_commit_only_in_the_rules_environment() {
-    let machine = machine();
-    let facts = |trusted| ApprovalFacts {
-        cluster: SealingPublicKey::from_bytes([9; 32]),
-        machine: &machine,
-        trusted,
-        now: Timestamp::from_millis(2_000).unwrap(),
-    };
-    let (signed, trusted) = session_signed("app");
-    let approved = verify_commit_approval(&signed, &approved_rule(), &facts(&trusted)).unwrap();
-    assert!(matches!(approved.by(), Approver::Browser { .. }));
-    let (elsewhere, trusted) = session_signed("other");
-    assert!(
-        verify_commit_approval(&elsewhere, &approved_rule(), &facts(&trusted)).is_err(),
-        "a grant for another Environment"
-    );
-}
-
-/// A session approves whatever commit Cloud's page names, so it runs that commit only with
-/// settings that reach nothing past its Environment. The rule's template here binds a host
-/// path and publishes a host port, which a Device's approval runs.
-#[test]
-fn a_commit_a_session_approved_runs_no_host_reach() {
-    let machine = machine();
-    let (signed, trusted) = session_signed("app");
-    let facts = ApprovalFacts {
-        cluster: SealingPublicKey::from_bytes([9; 32]),
-        machine: &machine,
-        trusted: &trusted,
-        now: Timestamp::from_millis(2_000).unwrap(),
-    };
-    let session = verify_commit_approval(&signed, &approved_rule(), &facts).unwrap();
-    let device = checked(&approval(|_| {}));
-    for (approved, expected) in [
-        (
-            &session,
-            Err(AuthorityRefusal::Mismatch {
-                field: super::super::deploy::HOST_ACCESS,
-            }),
-        ),
-        (&device, Ok(ImageDigest::from_bytes([0x44; 32]))),
-    ] {
-        assert_eq!(
-            create_at(
-                &approved_rule(),
-                &built_older(CommitAuthority::Approved(approved.digest())),
-                requested_json(),
-                ContainerKind::ServiceContainer,
-                CommitNow::Approved(approved),
-            ),
-            expected,
-            "{}",
-            approved.by()
-        );
-    }
 }
 
 #[test]

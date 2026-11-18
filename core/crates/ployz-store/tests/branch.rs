@@ -201,7 +201,6 @@ fn deploy_leaving(
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
                 services: Vec::new(),
@@ -2251,7 +2250,6 @@ fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: at(environment),
                 services: Vec::new(),
@@ -2784,7 +2782,6 @@ fn copying_a_node_waits_for_a_settled_branch() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: DeploymentId::parse(uuid(99)).unwrap(),
                 environment: at("fix-web"),
                 services: Vec::new(),

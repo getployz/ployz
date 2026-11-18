@@ -634,7 +634,6 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let approval = claimed.approval.clone();
-        let teardown = claimed.teardown.clone();
         pin_approved(&mut claimed.intent.target, approval.as_ref());
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
@@ -671,13 +670,7 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_approved(
-            log_id,
-            ImageCleanup::Auto,
-            approval,
-            rules,
-            teardown.clone(),
-        ) {
+        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, approval, rules) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
@@ -702,8 +695,7 @@ impl Run {
                 self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
-                    self.renewing(remove_volumes(session, deletes, teardown), || ())
-                        .await
+                    self.renewing(remove_volumes(session, deletes), || ()).await
                 } else {
                     Vec::new()
                 };
@@ -1490,12 +1482,11 @@ fn targets(
     Ok((targets, built))
 }
 
-/// The proof each Service built under `claimed`'s automatic deploy rule or preview rule
-/// creates with: the rule, its image token, and the claim the token's audience names,
-/// rebuilt from the rule, the pinned commit, the image the Machine received, the
-/// Cluster's keys, and the generation and authority the token was built under. A
-/// person's approval of the commit rides along. A Service without all of them gets
-/// none, and an enforcing Server refuses it.
+/// The proof each Service built under `claimed`'s automatic deploy rule creates with:
+/// the rule, its image token, and the claim the token's audience names, rebuilt from
+/// the rule, the pinned commit, the image the Machine received, the Cluster's keys, and
+/// the generation and authority the token was built under. A Service without all of
+/// them gets none, and a Server refuses it.
 async fn rule_proofs(
     session: &Session,
     claimed: &Claimed,
@@ -1503,27 +1494,15 @@ async fn rule_proofs(
     reader: Option<&ployz_core::GithubToken>,
 ) -> crate::cluster::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, PreviewProof, RuleProof,
+        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleProof,
     };
     let mut proofs = crate::cluster::RuleProofs::default();
-    // Each rule's ID, generation and the policy it approves for a Service.
-    let rule = claimed.rule.as_ref().and_then(|signed| signed.open().ok());
-    let preview = claimed
-        .preview
-        .as_ref()
-        .and_then(|signed| signed.open().ok());
-    let approved = |service: &ServiceName| match (&rule, &preview) {
-        (Some(rule), _) => rule
-            .service(service)
-            .map(|approved| (rule.rule, &approved.policy)),
-        (None, Some(preview)) => preview
-            .service(service)
-            .map(|approved| (preview.rule, &approved.policy)),
-        (None, None) => None,
-    };
-    if (rule.is_none() && preview.is_none()) || claimed.image_tokens.is_empty() {
+    let (Some(signed), false) = (&claimed.rule, claimed.image_tokens.is_empty()) else {
         return proofs;
-    }
+    };
+    let Ok(rule) = signed.open() else {
+        return proofs;
+    };
     let contract = match session.about().await {
         Ok(contract) => contract,
         Err(error) => {
@@ -1537,7 +1516,7 @@ async fn rule_proofs(
         return proofs;
     };
     for (service, token) in &claimed.image_tokens {
-        let approved = approved(service);
+        let approved = rule.service(service);
         let receipt = receipts.get(service);
         let commit = claimed
             .sources
@@ -1548,18 +1527,17 @@ async fn rule_proofs(
         let (Some(approved), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
             continue;
         };
-        let (id, approved) = approved;
         let (Ok(image), Ok(policy)) = (
             ImageDigest::parse(&receipt.image.reference),
-            PolicyDigest::of(approved),
+            PolicyDigest::of(&approved.policy),
         ) else {
             continue;
         };
         // The generation and authority the token was built under: the Machine checks
-        // each against the rule and, for a reviewed or approved build, the person's word.
+        // each against the rule.
         let claim = BuildClaim {
             cluster: public_key,
-            rule: id,
+            rule: rule.rule,
             generation: token.generation,
             service: service.clone(),
             policy,
@@ -1568,33 +1546,15 @@ async fn rule_proofs(
             stage: BuildStage::Built { image, attest },
         };
         let token = ployz_core::GithubToken::new(token.token.clone());
-        match (&claimed.rule, &claimed.preview) {
-            (Some(signed), _) => {
-                proofs.rules.insert(
-                    service.clone(),
-                    RuleProof {
-                        rule: signed.clone(),
-                        token,
-                        claim,
-                        approval: claimed.approvals.get(service).cloned(),
-                        reader: reader.cloned(),
-                    },
-                );
-            }
-            (None, Some(signed)) => {
-                proofs.previews.insert(
-                    service.clone(),
-                    PreviewProof {
-                        rule: signed.clone(),
-                        review: claimed.review.clone(),
-                        token,
-                        claim,
-                        reader: reader.cloned(),
-                    },
-                );
-            }
-            (None, None) => {}
-        }
+        proofs.rules.insert(
+            service.clone(),
+            RuleProof {
+                rule: signed.clone(),
+                token,
+                claim,
+                reader: reader.cloned(),
+            },
+        );
     }
     proofs
 }
@@ -1680,14 +1640,12 @@ fn refused_before_deletes(
 async fn remove_volumes(
     session: &Session,
     volumes: Vec<ployz_core::DockerVolumeId>,
-    teardown: Option<ployz_core::authority::TeardownApproval>,
 ) -> Vec<ployz_core::VolumeRemoval> {
     if volumes.is_empty() {
         return Vec::new();
     }
     session
         .remove_volumes(ployz_core::RemoveVolumesRequest {
-            teardown: teardown.map(Box::new),
             volumes,
             force: false,
         })

@@ -1,35 +1,27 @@
 import "@tanstack/react-start/server-only";
-import type { Operation, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import type { Operation, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { createServiceActRequestedEvent, type ServiceActRequestedEventData } from "#/modules/inngest/events";
 import type { Admission } from "#/modules/operations/keyed.server";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
-import { SESSION_GRANT_CAPABILITY } from "#/modules/approval-session/approval-session";
-import { PROPOSAL_CAPABILITY } from "#/modules/proposals/proposal";
-import { olderPloyzSentence, requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
+import { requirements, ServerLacks, serverSupports } from "#/modules/runtime/daemon-compat";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { type PloyzSdkError, refusedApproval, rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { type PloyzSdkError, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
   type ActiveServiceActState,
   alreadyThere,
-  copiesIn,
   endOf,
-  APPROVAL_RAN_OUT,
   legOf,
   legsOf,
   type LegStep,
   needsNewerPloyz,
-  olderStepSays,
   progressOf,
-  ranOut,
   SERVICE_ACT_PENDING_LIMIT_MS,
   SERVICE_ACT_RUNNING_LIMIT_MS,
   type ServiceActBefore,
   type ServiceActLeg,
   type ServiceActState,
-  START_APPROVAL_CAPABILITY,
-  strandedByStop,
   takes,
 } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
@@ -68,7 +60,6 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
     readonly verb: ServiceVerb;
     readonly only: ServerRef | null;
     readonly digest: string;
-    readonly approvals?: Readonly<Record<string, Signed>>;
     readonly proposal?: { readonly id: string; readonly step: number };
   },
 ) {
@@ -83,7 +74,6 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
     verb: input.verb,
     only: input.only,
     digest: input.digest,
-    approvals: input.approvals ?? null,
     proposalId: input.proposal?.id ?? null,
     proposalStep: input.proposal?.step ?? null,
     requestedByUserId: caller.userId,
@@ -172,75 +162,17 @@ const STARTED = {
   unhealthy: (leg: ServiceActLeg) => ["failed", `${leg.server} started it, but it isn't healthy.`] as const,
 } satisfies Record<"serving" | "unconfirmed" | "unhealthy", (leg: ServiceActLeg) => readonly [LegStep, string | null]>;
 
-type LegSupport = { readonly ensure: boolean | "unknown"; readonly sessionGrant: boolean; readonly startApproval: boolean; readonly proposal: boolean };
-
-/**
- * Whether each Server's record says it runs EnsureContainer, takes a browser's approval, takes one for a start, and
- * takes a proposal's step. A Server Cloud can't read is attempted, without an approval: one from before session grants
- * would refuse the whole request for carrying it.
- */
+/** Whether each Server's record says it runs EnsureContainer. A Server Cloud can't read is attempted. */
 const legSupport = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
-  Effect.map((frame) => new Map<string, LegSupport>((frame?.machines ?? []).map(({ machine }) => {
-    const capabilities = machine.runtime.capabilities ?? [];
-    return [machine.id, {
-      ensure: serverSupports({ capabilities }, requirements.ensureContainer),
-      sessionGrant: capabilities.includes(SESSION_GRANT_CAPABILITY),
-      startApproval: capabilities.includes(START_APPROVAL_CAPABILITY),
-      proposal: capabilities.includes(PROPOSAL_CAPABILITY),
-    }];
-  }))),
-  Effect.orElseSucceed(() => new Map<string, LegSupport>()),
+  Effect.map((frame) => new Map<string, boolean | "unknown">((frame?.machines ?? []).map(({ machine }) =>
+    [machine.id, serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.ensureContainer)]))),
+  Effect.orElseSucceed(() => new Map<string, boolean | "unknown">()),
 );
 
 const writeLegs = (request: ActRequest, runId: string, legs: ServiceActLeg[]) =>
   Effect.flatMap(Database, ({ drizzle }) =>
     drizzle.update(serviceAct).set({ legs }).where(and(owned(request, runId), eq(serviceAct.state, "running"))).returning({ id: serviceAct.id }))
     .pipe(Effect.map((rows) => rows.length > 0));
-
-/**
- * Whether a Server runs a copy of the Service, so a restart sent without approvals would only be refused there. Cloud
- * can't tell when it can't read the Servers, and sends it anyway.
- */
-export const serviceRuns = Effect.fn("ServiceAct.runs")(function* (organizationId: string, service: { readonly namespace: string; readonly runtime: string }) {
-  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  return frame !== null && copiesIn(frame, `${service.namespace}/${service.runtime}`).length > 0;
-});
-
-/** What a browser needs to approve a restart or stop of the Service: its copies and the Servers. Null when Cloud can't read the Servers. */
-export const actTarget = Effect.fn("ServiceAct.actTarget")(function* (
-  organizationId: string,
-  service: { readonly namespace: string; readonly runtime: string },
-) {
-  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  if (frame === null) return null;
-  return {
-    runtime: service.runtime,
-    copies: copiesIn(frame, `${service.namespace}/${service.runtime}`).map((copy) => ({ id: copy.container_id, machineId: copy.machine_id, hook: copy.hook })),
-    machines: frame.machines.map(({ machine }) => ({
-      id: machine.id,
-      name: machine.name,
-      capabilities: machine.runtime.capabilities ?? [],
-      sealing: machine.runtime.sealing ?? null,
-    })),
-  };
-});
-
-/**
- * Why a stop of the Service is refused before anything stops: a Server running it can't take a start approval, so the
- * Service could never be started again from Ployz Cloud. Null when the stop may go. When Cloud can't read the Servers,
- * a stop that carries approvals is refused rather than guessed at; one without approvals goes, and each Server refuses
- * what it can't take.
- */
-export const strandingStop = Effect.fn("ServiceAct.strandingStop")(function* (
-  organizationId: string,
-  service: { readonly namespace: string; readonly runtime: string },
-  approved: boolean,
-) {
-  const target = yield* actTarget(organizationId, service);
-  if (target === null) return approved ? "Cloud couldn't check the servers. Try again." : null;
-  const stranded = strandedByStop(target.copies, target.machines);
-  return stranded === null ? null : olderStepSays(stranded, "stop");
-});
 
 export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
   request: ActRequest,
@@ -267,43 +199,24 @@ export const actOnContainer = Effect.fn("ServiceAct.leg")(function* (
       if (!(yield* write(leg, "already_there"))) return legs;
       continue;
     }
-    // Checked again at each leg: a restart's start leg can fall past the window its stop leg was inside.
-    if (ranOut(row.approvals?.[leg.container], Date.now())) {
-      if (!(yield* write(leg, "failed", APPROVAL_RAN_OUT))) return legs;
-      continue;
-    }
     if (session.status !== "connected") {
       if (!(yield* write(leg, "failed", `Cloud couldn't reach ${leg.server}.`))) return legs;
       continue;
     }
-    const supported = support.get(leg.machine);
-    if (supported?.ensure === false) {
+    if (support.get(leg.machine) === false) {
       if (!(yield* write(leg, "failed", needsNewerPloyz(leg.server, side)))) return legs;
       continue;
     }
     if (!(yield* write(leg, "sent"))) return legs;
-    // A start approval, or a proposal's step, reads as malformed to a Server from before them, so it never goes there.
-    const made = row.approvals?.[leg.container];
-    const takesApproval = supported?.sessionGrant === true && (row.verb !== "start" || supported.startApproval)
-      && (made?.proposal === undefined || supported.proposal);
-    const approval = takesApproval ? made ?? null : null;
-    const withheld = approval === null && row.approvals?.[leg.container] !== undefined;
-    // With the Servers' records unread, Cloud can't tell whether this one takes an approval, so it sent none.
-    const unread = withheld && supported === undefined;
     const sent: Effect.Effect<readonly [LegStep, string | null], PloyzSdkError> = side === "stop"
-      ? session.connected.stopContainer(leg.machine, leg.container, approval).pipe(Effect.as(["done", leg.reason] as const))
-      : session.connected.startContainer(leg.machine, leg.container, approval).pipe(
+      ? session.connected.stopContainer(leg.machine, leg.container).pipe(Effect.as(["done", leg.reason] as const))
+      : session.connected.startContainer(leg.machine, leg.container).pipe(
         Effect.map((started) => STARTED[started](leg)),
       );
     const [step, reason] = yield* sent.pipe(
       Effect.catch((error) => Effect.succeed(
         error instanceof ServerLacks
-          ? ["failed", error.capability === requirements.enforced.capability ? olderPloyzSentence(leg.server) : needsNewerPloyz(leg.server, side)] as const
-          : refusedApproval(error)
-          ? ["failed", unread ? `Cloud couldn't check ${leg.server}. Try again.`
-            : withheld ? needsNewerPloyz(leg.server, side)
-            : approval === null ? `${leg.server} needs your passkey to ${row.verb} it.`
-            : `${leg.server} didn't accept the approval.`] as const
+          ? ["failed", needsNewerPloyz(leg.server, side)] as const
           : rpcErrorCode(error) === "unavailable"
           ? ["unknown", `${leg.server} didn't answer.`] as const
           : ["failed", `${leg.server} couldn't ${side} it.`] as const,

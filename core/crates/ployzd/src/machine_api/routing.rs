@@ -248,13 +248,6 @@ impl MachineProxy {
     }
 
     async fn call_local(&self, request: http::Request<Body>) -> http::Response<Body> {
-        if let Some(refused) = self
-            .machine
-            .as_ref()
-            .and_then(|machine| refuse_awaiting(&request, &machine.record()))
-        {
-            return refused;
-        }
         if let Some(refused) = refuse_operator(&request) {
             return refused;
         }
@@ -541,43 +534,6 @@ fn refuse_operator(request: &http::Request<Body>) -> Option<http::Response<Body>
     }
     let error = crate::machine::LocalMachineError::BuildRefused { capability };
     Some(super::local::build_refused(&error, capability).into_http())
-}
-
-/// An Operator's call to a route a statement must admit, refused while this Machine awaits
-/// its Cluster's activation: the keys it would check were never vouched for. An upgrade is
-/// served, since a Machine moves only forward through Ployz's signed releases, and so is the
-/// activation itself, whose starting set names the keys this Machine may trust.
-fn refuse_awaiting(
-    request: &http::Request<Body>,
-    record: &crate::machine::LocalMachineRecord,
-) -> Option<http::Response<Body>> {
-    use ployz_core::authority::coverage::{Authorization, authorization};
-    if !record.awaits_activation() || !Provenance::of_headers(request.headers()).operator() {
-        return None;
-    }
-    let capability = ployz_core::capability_of(request.uri().path())?;
-    if [
-        ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,
-        ployz_core::ACTIVATE_ENFORCEMENT_CAPABILITY,
-    ]
-    .contains(&capability)
-        || !matches!(authorization(capability), Some(Authorization::Signed(_)))
-    {
-        return None;
-    }
-    let error = crate::machine::LocalMachineError::AwaitingActivation { capability };
-    Some(
-        ployz_core::rpc::hinted_status(
-            tonic::Code::PermissionDenied,
-            &error,
-            serde_json::json!({
-                "capability": capability,
-                "reason": "awaiting_activation",
-                "next": "ployz device enforce",
-            }),
-        )
-        .into_http(),
-    )
 }
 
 #[cfg(test)]

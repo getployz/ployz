@@ -135,7 +135,7 @@ as you in that organization, expires after 365 days, and shows as `agent` under 
 `ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. Once the
 token is revoked or expired, each tool call fails with `Cloud refused the agent token` and names
 `ployz mcp login`; run it again. An agent token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
-`ployz mcp` never reads this computer's [device key](../servers/manage-servers.md#require-a-devices-signature-for-restarts), and says so on its first line of stderr.
+`ployz mcp` never reads this computer's [device key](../servers/manage-servers.md#what-needs-an-approved-device), and says so on its first line of stderr.
 When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
 in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
 for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
@@ -261,13 +261,10 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 
 `exec` and `service port-forward` also need an approved device. Run `ployz device request` and
 have an owner or admin approve the code. See
-[Approve a device](../servers/manage-servers.md#approve-a-device). With
-[device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts) on,
-`service restart` signs each restart with your device key, and a server refuses a restart no
-approved device signed. `service restart`, `service stop` and `service start` sign without asking.
-`deploy` prints every setting it signs and asks first; a script or CI job on an approved device
-adds `--yes`. See
-[Deploy to servers that enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval).
+[Approve a device](../servers/manage-servers.md#approve-a-device). `deploy` signs with your
+device key. It prints every setting it signs and asks first; a script or CI job on an approved
+device adds `--yes`. See
+[Deploy from an approved device](../deploy/deployments.md#deploy-from-an-approved-device).
 
 `logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
 `read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
@@ -447,7 +444,7 @@ resets a server that joined from a Fleet Token, its **this server** line says `N
 and `this_server` adds `"left": true`.
 
 Run on a server whose daemon is running, with `sudo`, `ployz status` also shows a **wireguard key** line.
-It is the server's WireGuard key fingerprint, the same one `ployz device enforce` prints. With
+It is the server's WireGuard key fingerprint. With
 `--json` it is `this_machine`, which holds `wireguard_key` and `fingerprint`.
 
 When a server is up but its proxy hasn't picked up a service's current replicas after a deploy,

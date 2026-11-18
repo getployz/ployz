@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  channelApprovalBody,
-  channelScope,
   compareVersions,
-  crossesIntoEnforcement,
-  needsApproval,
   metricsOnBeta,
   newMajorLine,
   releaseFromPointer,
@@ -15,18 +11,6 @@ import {
   UPGRADE_OBSERVATION_LIMIT_MS,
   type LatestUpgrade,
 } from "./server-upgrade";
-
-describe("crossesIntoEnforcement", () => {
-  it("is an upgrade from 0.3 or older to 0.4 or newer, betas of 0.4 included", () => {
-    expect(crossesIntoEnforcement("0.3.17", "0.4.0")).toBe(true);
-    expect(crossesIntoEnforcement("0.3.17", "0.4.0-beta.1")).toBe(true);
-    expect(crossesIntoEnforcement("0.2.9", "0.5.1")).toBe(true);
-    expect(crossesIntoEnforcement("0.3.16", "0.3.17")).toBe(false);
-    expect(crossesIntoEnforcement("0.4.0-beta.1", "0.4.0")).toBe(false);
-    expect(crossesIntoEnforcement("0.4.1", "0.4.2")).toBe(false);
-    expect(crossesIntoEnforcement("dev", "0.4.0")).toBe(false);
-  });
-});
 
 describe("compareVersions", () => {
   it("orders the published forms as semver, a beta before its release", () => {
@@ -268,37 +252,5 @@ describe("metricsOnBeta", () => {
     expect(metricsOnBeta({ version: "0.2.3", channel: "stable", release: "0.2.4", beta: "0.3.0-beta.6" })).toBe(false);
     expect(metricsOnBeta({ version: "0.2.4", channel: "stable", release: "0.2.4", beta: null })).toBe(false);
     expect(metricsOnBeta({ version: "0.2.4", channel: "beta", release: "0.3.0-beta.6", beta: "0.3.0-beta.6" })).toBe(false);
-  });
-});
-
-describe("a Release Channel approval", () => {
-  const cluster = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
-  const kept = (channel: "stable" | "beta", generation: number, keptCluster = cluster) =>
-    ({ body: JSON.stringify({ channel, cluster: keptCluster, generation, signer: "passkey" }) });
-  const newer = { id: "newer", sealing: { kind: "held", public_key: cluster }, capabilities: ["ployz.machine.enforced.v1"] };
-  const older = { id: "older", sealing: { kind: "held", public_key: cluster }, capabilities: [] };
-  const enforcing = channelScope([newer]);
-
-  // Catches a body the daemon's canonical form doesn't match, which every Server refuses: ployz-core pins the same bytes.
-  it("drafts the body the daemon reads, one generation past the kept approval", () => {
-    expect(channelApprovalBody(cluster, "stable", kept("beta", 1)))
-      .toBe(`{"channel":"stable","cluster":"${cluster}","generation":2,"signer":"passkey"}`);
-    expect(channelApprovalBody(cluster, "beta", null)).toContain(`"generation":1`);
-  });
-
-  it("asks only when a Server past Ployz 0.3 checks it and nobody approved this channel for this Cluster", () => {
-    expect(needsApproval(enforcing, "stable", null)).toBe(true);
-    expect(needsApproval(enforcing, "stable", kept("stable", 3))).toBe(false);
-    expect(needsApproval(enforcing, "beta", kept("stable", 3))).toBe(true);
-    expect(needsApproval(enforcing, "stable", kept("stable", 3, "another"))).toBe(true);
-    expect(needsApproval(channelScope([older]), "beta", null)).toBe(false);
-  });
-
-  // Catches an Upgrade of a 0.3 Server, or of one awaiting activation, waiting on a passkey for an approval it ignores.
-  it("asks only for an upgrade that reaches a Server checking it", () => {
-    expect(needsApproval(channelScope([newer, older], { reaches: new Set(["older"]) }), "stable", null)).toBe(false);
-    expect(needsApproval(channelScope([newer, older], { reaches: new Set(["newer"]), awaiting: new Set(["newer"]) }), "stable", null))
-      .toBe(false);
-    expect(needsApproval(channelScope([newer, older], { reaches: new Set(["newer", "older"]) }), "stable", null)).toBe(true);
   });
 });

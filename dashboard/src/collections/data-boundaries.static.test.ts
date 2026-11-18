@@ -27,11 +27,9 @@ const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryColle
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
-  "modules/approval-session/approval-prompt.tsx": "the passkey prompt waits on the browser's passkey sheet",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule's passkey prompt and its save in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeCopies.tsx": "a Volume run under way or a requested Refresh now",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/PreviewReview.tsx": "a preview review's passkey prompt and its save in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/MirrorNode.tsx": "a copy being made or refreshed",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeTray.tsx": "a Volume run under way",
   "components/ui/spinner.tsx": "the primitive",
@@ -68,7 +66,6 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/cluster-setup.tsx": "token mint in flight, then listening for the first server; Find zones and Check in flight",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/activation-card.tsx": "an activation running: two passkey prompts, each Server's restart, and the new key's install",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "the tunnel setting up on the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-web-traffic-section.tsx": "the web server starting or stopping on the Server",
@@ -99,9 +96,7 @@ const NETWORK_FILES = {
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
-  activationQueryOptions: "each Server is asked live once the Servers list shows; one that doesn't answer takes up to ten seconds, which the page never waits on",
   waitingServerDetailQueryOptions: "opening a Waiting row fetches its full report and probe",
-  serversWithoutPasskeyQueryOptions: "each Server is asked live for its trusted passkeys once the Servers list shows; one that doesn't answer is skipped, which the page never waits on",
   enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read when a repository picker opens; installation access changes in GitHub, so each picker rechecks it",
@@ -147,10 +142,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "forgetting the Servers is destructive: it tries every Server again and forgets only when none answers",
   "routes/_protected/cloud/$organizationSlug/_org/-components/WebTrafficSection.tsx": "setting up creates a tunnel in Cloudflare with a token used once, and says what Cloudflare kept if it stops; a switch moves every address and runs on the Servers, so the dialog waits for Cloud to admit it",
   "routes/_protected/cloud/$organizationSlug/_org/-components/integrations.tsx": "Connect and Turn off run on every Server, and the card lists each Server that refused the key, so it waits for their answers",
-  "components/agent-sidebar/approvals.queries.ts": "an approved restart on enforcing Servers runs only with approvals the owner's passkey signs, so the card waits for them",
-  "modules/server-upgrade/server-upgrade.hooks.ts": "on enforcing Servers a new Release Channel or an upgrade waits for the person's passkey to sign the channel approval, which Cloud keeps; the setting rolls back if they dismiss it",
   "modules/volume-placement/volume-placement.hooks.ts": "a Deploy's Volume workflows run only with answers the owner's passkey gives, so the Deploy waits for them to be kept before it starts",
-  "components/agent-sidebar/proposals.queries.ts": "an approved proposal runs only with the bundle the owner's passkey signs, so the card waits for it",
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
   "routes/connect.tsx": "the answer sends the browser to the agent's callback, a URL only the server builds",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
@@ -163,7 +155,6 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions.tsx": "deploying starts runtime work and opens the admitted Deployment, and a Deploy or Save only that deletes Volume data asks the user first (Save only itself shows at once), and Discard all discards staged Volume placements only after the Store discard lands",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel.tsx": "a review is signed by its own passkey prompt before it can be saved, so nothing shows before it is; the panel stays to show a refusal",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useConfigCreator.ts": "creates the canvas node at once, then opens its files once the Store can serve the new Config",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreVolumeSize.tsx": "a grow is a Volume Run on the Servers, not a Store write; the row shows the Run's progress once Cloud admits it, and its refusal if it doesn't",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/StoreConfigDrawer.tsx": "saves optimistically and retains submitted file drafts through queued refreshes until their own save succeeds",

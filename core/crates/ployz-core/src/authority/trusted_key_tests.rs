@@ -3,7 +3,7 @@ use ed25519_dalek::Signer as _;
 use sha2::{Digest, Sha256};
 
 use super::*;
-use crate::authority::{Signed, StartingSet, Timestamp};
+use crate::authority::{PrivateAccessApproval, Signed, Timestamp};
 
 pub(crate) const CHALLENGE: &[u8] = b"the canonical body's digest";
 
@@ -135,15 +135,10 @@ fn an_es256_and_an_eddsa_passkey_each_approve_a_workflow() {
 }
 
 #[test]
-fn a_passkey_approves_nothing_but_workflows_rules_volume_workflows_and_activations() {
+fn a_passkey_approves_nothing_but_workflows_and_rules() {
     let authenticator = Authenticator::es256(7);
     let trusted = trusting(&authenticator);
-    for purpose in [
-        Purpose::Workflow,
-        Purpose::Rule,
-        Purpose::Volume,
-        Purpose::Enforce,
-    ] {
+    for purpose in [Purpose::Workflow, Purpose::Rule] {
         assert!(
             trusted
                 .passkey_approval(purpose, &authenticator.answer(&HONEST), CHALLENGE)
@@ -244,13 +239,15 @@ fn a_passkey_never_signs_an_envelope_even_when_its_key_is_ed25519() {
     let signer = crate::authority::Signer::from_seed(&[5; 32]);
     let now = Timestamp::from_millis(100_000).unwrap();
     let enrollment = Signed::sign(
-        &StartingSet {
-            operation: crate::OperationId::random(),
-            members: Vec::new(),
+        &PrivateAccessApproval {
+            cluster: crate::SealingPublicKey::from_bytes([9; 32]),
+            auth_key: crate::authority::AuthKeyDigest::of(&crate::Ciphertext::from_bytes(vec![
+                3;
+                80
+            ])),
             issued_at: now,
             expires_at: now.plus(1_000),
             signer: crate::authority::SignerKey::Device(crate::DeviceKey::from(signer.public())),
-            kept_keys: Vec::new(),
         },
         &signer,
     )

@@ -230,8 +230,6 @@ async fn deploy_snapshot_waits_out_a_silent_machine_once_not_per_phase() {
                     RpcRequestBody::Inspect(inspect) => {
                         assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
                         RpcResponse::from(MachineDetails {
-                            activation: None,
-                            sealing_recipient: None,
                             id: answering.id,
                             phase: LocalMachinePhase::Participating,
                             public_key: answering.public_key,
@@ -785,8 +783,6 @@ impl Resealing {
                     calls.lock().unwrap().push("Inspect");
                     let answering = machine('a').machine;
                     ployz_core::RpcResponse::from(ployz_core::MachineDetails {
-                        activation: None,
-                        sealing_recipient: None,
                         id: answering.id,
                         phase: ployz_core::LocalMachinePhase::Joining,
                         public_key: answering.public_key,
@@ -1020,10 +1016,9 @@ async fn a_call_whose_redial_finds_another_cluster_ends_every_clone() {
             ],
             false,
         ))
-        .call_shared::<op::SetDeviceEnforcement>(
-            ployz_core::SetDeviceEnforcementRequest {
-                enforced: false,
-                starting_set: None,
+        .call_shared::<op::RemoveTrustedKey>(
+            ployz_core::RemoveTrustedKeyRequest {
+                code: ployz_core::DeviceKey::from_bytes([1; 32]).code(),
             },
             Call::once().to(&MachineTarget::from(&target)),
         )
@@ -1341,9 +1336,9 @@ fn an_unanswered_listing_keeps_whether_the_router_could_dial_the_target() {
 }
 
 #[test]
-fn a_leave_goes_to_its_target_itself_as_full_routes_do() {
-    assert!(dials_direct(op::Leave::PATH));
-    assert!(dials_direct(op::SetDeviceEnforcement::PATH));
+fn only_a_full_route_goes_to_its_target_itself() {
+    assert!(!dials_direct(op::Leave::PATH));
+    assert!(dials_direct(op::RemoveTrustedKey::PATH));
     assert!(!dials_direct(op::ListMachines::PATH));
     assert!(!dials_direct(op::EnsureContainer::PATH));
 }

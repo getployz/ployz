@@ -6,7 +6,6 @@ import { asTestDouble } from "#/lib/test-double";
 import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { recordSealingRecipient } from "#/modules/machines/sealing-key-read.server";
 import { recordSealingPublicKey } from "#/modules/machines/sealing-key.server";
 import { OrganizationRuntime, type RuntimeEntry } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
@@ -113,16 +112,6 @@ describe("readClusterSealing", () => {
     await pair();
     await report();
     expect(await read()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
-  });
-
-  it("seals to the recipient a Server of the Cluster reported, and keeps the identity it binds to", async () => {
-    await pair();
-    await report();
-    const recipient = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
-    await harness.runEffect(recordSealingRecipient(organizationId, clusterKey, otherKey, recipient));
-    expect(await read()).toEqual({ state: "ready", publicKey, sealTo: publicKey });
-    await harness.runEffect(recordSealingRecipient(organizationId, clusterKey, publicKey, recipient));
-    expect(await read()).toEqual({ state: "ready", publicKey, sealTo: recipient });
   });
 
   it("to seal, records the key a lone recovered Server holds that Cloud never recorded", async () => {

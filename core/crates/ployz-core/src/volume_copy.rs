@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::{
-    CodedRefusal, ContainerId, DockerVolumeName, Evidence, Gen, MachineId, ManagementAddress,
-    Namespace, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole,
-    SnapshotGuid, SnapshotName, VolumeCopy, VolumeGen, WriterEpoch,
+    CodedRefusal, ContainerId, DockerVolumeName, Evidence, Gen, ManagementAddress, Namespace,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, SlotId, SlotRole, SnapshotGuid,
+    SnapshotName, VolumeCopy, VolumeGen, WriterEpoch,
 };
 
 /// The idempotency key a driver gives a new Container.
@@ -123,22 +123,7 @@ pub struct SetVolumeCopyRequest {
     #[serde(default)]
     #[ts(as = "Option<VolumeGen>", optional)]
     pub r#gen: VolumeGen,
-    /// The Device-signed approval of the Volume workflow this step belongs to. An enforcing
-    /// Machine needs one for an Operator's pull, and grants a Mirror's recipient the send
-    /// stream from a Snapshot that carries one. A Machine that predates it ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub approval: Option<crate::authority::Signed<crate::authority::VolumeApproval>>,
-    /// The Move source's receipt for the Volume, which a Move's target needs to become the
-    /// Writer under the Move's approval, and which admits its steps after the window. A
-    /// Machine that predates it ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub receipt: Option<HandoffReceiptEnvelope>,
 }
-
-/// A Move source's signed handoff receipt, as it travels.
-pub type HandoffReceiptEnvelope = crate::authority::MachineSigned<crate::authority::HandoffReceipt>;
 
 /// What the sender believes this Machine holds. Compared by equality; a copy already at
 /// the want is accepted whatever this says.
@@ -190,26 +175,10 @@ pub enum WantedCopy {
     /// A Writer with a run snapshot named `name`, taken only if anything was written
     /// since its newest one.
     Snapshot { name: SnapshotName },
-    /// No run snapshots on a Writer, no slot on a Mirror. A Mirror's own Machine first
-    /// withdraws itself from the Volume. With a `recipient`, a Writer first withdraws that
-    /// Mirror's Server, which ends its grant to the send stream; it destroys nothing more.
-    /// A Machine that predates `recipient` ignores it.
-    Forget {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        recipient: Option<MachineId>,
-    },
+    /// No run snapshots on a Writer, no slot on a Mirror.
+    Forget,
     /// Raise the floor to `gen` and answer with the copy, whatever `expect` says.
     Floor,
-    /// On a Move's source after its cut, give the Volume up to `to`, which becomes the Writer
-    /// at the cut's snapshot `at` with `epoch`. The source records this once and answers
-    /// with its signed receipt; it never becomes the Writer again under that Move. A Machine
-    /// that predates it refuses it, and does not advertise `ployz.volume.copy.handoff.v1`.
-    Handoff {
-        to: MachineId,
-        at: SnapshotGuid,
-        epoch: WriterEpoch,
-    },
 }
 
 /// The Container a Writer runs: one Docker already holds, or one to create under a key.
@@ -239,10 +208,6 @@ pub enum Start {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct SetVolumeCopyReply {
     pub copy: Option<VolumeCopy>,
-    /// A Handoff's receipt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub receipt: Option<HandoffReceiptEnvelope>,
 }
 
 /// Why a Machine refused a `SetVolumeCopy`.
@@ -264,9 +229,6 @@ pub enum CopyRefusal {
     NoSource,
     /// The request's `gen` is below the floor: a newer lane owns the Volume.
     Stale,
-    /// This Machine handed the copy off in a Move: it never becomes the Writer again under
-    /// that Move, and the refusal carries the receipt it signed.
-    HandedOff,
 }
 
 /// `RpcError.details` of a refused `SetVolumeCopy`: the reason and the copy it left.
@@ -278,10 +240,6 @@ pub struct SetVolumeCopyRefused {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub floor: Option<VolumeGen>,
-    /// The receipt a HandedOff refusal names.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub receipt: Option<HandoffReceiptEnvelope>,
 }
 
 impl SetVolumeCopyRefused {
@@ -306,8 +264,7 @@ impl CodedRefusal for SetVolumeCopyRefused {
             | CopyRefusal::Behind
             | CopyRefusal::Written
             | CopyRefusal::NoSource
-            | CopyRefusal::Stale
-            | CopyRefusal::HandedOff => RpcErrorCode::Conflict,
+            | CopyRefusal::Stale => RpcErrorCode::Conflict,
         }
     }
 }
@@ -416,10 +373,8 @@ pub fn plan(
             }
             expected(WriterToSnapshot)
         }
-        (Some(VolumeCopy::Root { seed: true, .. }), WantedCopy::Forget { .. }) => {
-            expected(SeedToForget)
-        }
-        (Some(VolumeCopy::Root { newest, .. }), WantedCopy::Forget { .. }) => {
+        (Some(VolumeCopy::Root { seed: true, .. }), WantedCopy::Forget) => expected(SeedToForget),
+        (Some(VolumeCopy::Root { newest, .. }), WantedCopy::Forget) => {
             if newest.is_none() {
                 return AtWant;
             }
@@ -469,7 +424,7 @@ pub fn plan(
         (Some(VolumeCopy::Slot { .. }), WantedCopy::Snapshot { .. }) => {
             refuse(CopyRefusal::NoTransition)
         }
-        (Some(VolumeCopy::Slot { .. }), WantedCopy::Forget { .. }) => expected(MirrorToForget),
+        (Some(VolumeCopy::Slot { .. }), WantedCopy::Forget) => expected(MirrorToForget),
         (None, WantedCopy::Writer { .. } | WantedCopy::Snapshot { .. }) => {
             refuse(CopyRefusal::NoTransition)
         }
@@ -479,19 +434,8 @@ pub fn plan(
             }
             expected(NoneToMirror)
         }
-        (None, WantedCopy::Forget { .. }) => AtWant,
+        (None, WantedCopy::Forget) => AtWant,
         (_, WantedCopy::Floor) => AtWant,
-        // A handoff changes no dataset: it is at its want on the old copy the cut left at
-        // `at`, and has nothing to give up anywhere else.
-        (Some(VolumeCopy::Slot { newest, .. }), WantedCopy::Handoff { at, .. }) => {
-            if newest.as_ref().is_some_and(|newest| newest.guid == *at) {
-                return AtWant;
-            }
-            Refuse(CopyRefusal::Behind)
-        }
-        (Some(VolumeCopy::Root { .. }) | None, WantedCopy::Handoff { .. }) => {
-            Refuse(CopyRefusal::NoTransition)
-        }
     }
 }
 
@@ -963,7 +907,7 @@ mod tests {
                 Some(root(1, false, None)),
                 false,
                 MIRROR_AT_10,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 AtWant,
             ),
             (
@@ -971,7 +915,7 @@ mod tests {
                 Some(root(1, false, Some(g.clone()))),
                 false,
                 WRITER_1,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Transition(WriterToForget),
             ),
             (
@@ -979,7 +923,7 @@ mod tests {
                 Some(root(1, false, Some(g.clone()))),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Refuse(Mismatch),
             ),
             (
@@ -989,7 +933,7 @@ mod tests {
                 ExpectedCopy::Writer {
                     epoch: WriterEpoch::default(),
                 },
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Transition(SeedToForget),
             ),
             (
@@ -997,7 +941,7 @@ mod tests {
                 Some(seed_root()),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Refuse(Mismatch),
             ),
             (
@@ -1005,7 +949,7 @@ mod tests {
                 Some(slot(Some(g.clone()), None)),
                 false,
                 MIRROR_AT_10,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Transition(MirrorToForget),
             ),
             (
@@ -1013,7 +957,7 @@ mod tests {
                 Some(old_copy(Some(g.clone()))),
                 false,
                 OLD_COPY_AT_10,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Transition(MirrorToForget),
             ),
             (
@@ -1021,7 +965,7 @@ mod tests {
                 Some(slot(Some(g.clone()), None)),
                 false,
                 OLD_COPY_AT_10,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Refuse(Mismatch),
             ),
             (
@@ -1029,7 +973,7 @@ mod tests {
                 Some(slot(None, None)),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Transition(MirrorToForget),
             ),
             (
@@ -1037,7 +981,7 @@ mod tests {
                 Some(slot(Some(g), None)),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 Refuse(Mismatch),
             ),
             (
@@ -1045,7 +989,7 @@ mod tests {
                 None,
                 false,
                 WRITER_1,
-                WantedCopy::Forget { recipient: None },
+                WantedCopy::Forget,
                 AtWant,
             ),
         ];
@@ -1093,11 +1037,7 @@ mod tests {
         if let VolumeCopy::Slot { slot, .. } = &mut again {
             *slot = SlotId::new(2);
         }
-        for want in [
-            writer(10, 2, true),
-            mirror(true, "f-2"),
-            WantedCopy::Forget { recipient: None },
-        ] {
+        for want in [writer(10, 2, true), mirror(true, "f-2"), WantedCopy::Forget] {
             assert_eq!(
                 plan(Some(&again), false, &MIRROR_AT_10, &want),
                 CopyPlan::Refuse(CopyRefusal::Mismatch),
@@ -1148,7 +1088,7 @@ mod tests {
                 &ExpectedCopy::Writer {
                     epoch: WriterEpoch::default()
                 },
-                &WantedCopy::Forget { recipient: None }
+                &WantedCopy::Forget
             ),
             CopyPlan::AtWant
         );
@@ -1192,7 +1132,6 @@ mod tests {
             reason: CopyRefusal::Busy,
             copy: Some(root(1, false, None)),
             floor: None,
-            receipt: None,
         };
         assert!(
             serde_json::to_value(&refused)
@@ -1207,7 +1146,6 @@ mod tests {
             reason: CopyRefusal::NoCapacity,
             copy: None,
             floor: None,
-            receipt: None,
         }
         .rpc_error("no room");
         assert_eq!(capacity.code, RpcErrorCode::Unavailable);
@@ -1219,7 +1157,6 @@ mod tests {
             reason: CopyRefusal::Stale,
             copy: None,
             floor: Some(VolumeGen::new(7)),
-            receipt: None,
         };
         assert_eq!(
             serde_json::to_value(&stale).unwrap(),
@@ -1254,33 +1191,5 @@ mod tests {
             serde_json::from_value::<SetVolumeCopyRequest>(wire).unwrap(),
             sent
         );
-    }
-
-    #[test]
-    fn a_forget_without_a_recipient_and_a_request_without_an_approval_keep_their_wire() {
-        let forget = WantedCopy::Forget { recipient: None };
-        assert_eq!(
-            serde_json::to_value(&forget).unwrap(),
-            serde_json::json!({"kind": "forget"})
-        );
-        let named = WantedCopy::Forget {
-            recipient: Some(MachineId::parse("b".repeat(32)).unwrap()),
-        };
-        let wire = serde_json::to_value(&named).unwrap();
-        assert_eq!(
-            wire,
-            serde_json::json!({"kind": "forget", "recipient": "b".repeat(32)})
-        );
-        assert_eq!(serde_json::from_value::<WantedCopy>(wire).unwrap(), named);
-
-        let older = serde_json::json!({
-            "name": "app_data", "expect": {"kind": "writer", "epoch": 1}, "want": {"kind": "forget"},
-        });
-        let request: SetVolumeCopyRequest = serde_json::from_value(older.clone()).unwrap();
-        assert_eq!(request.approval, None);
-        assert_eq!(request.want, forget);
-        let sent = serde_json::to_value(&request).unwrap();
-        assert_eq!(sent.get("approval"), None);
-        assert_eq!(sent.get("want"), older.get("want"));
     }
 }

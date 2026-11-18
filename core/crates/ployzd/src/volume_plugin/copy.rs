@@ -123,7 +123,6 @@ fn refuse(reason: CopyRefusal, copy: Copy, message: String) -> RpcError {
         reason,
         copy,
         floor: None,
-        receipt: None,
     }
     .rpc_error(message)
 }
