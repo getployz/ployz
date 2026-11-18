@@ -23,6 +23,7 @@ import {
   isReadyFor,
 } from "#/modules/machines/waiting/server-enrollment";
 import { serversOffline } from "#/modules/machines/waiting/servers-offline";
+import { DEFAULT_REGION } from "#/modules/machines/server-regions";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
 import { fleetToken, fleetTokenAttempt, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { observeIngestCursor } from "#/modules/observe-ingest/tables";
@@ -146,10 +147,10 @@ export function planServerEnrollment(
     return { kind: "refused", message: "A name pattern needs {n} to name more than one server." };
   }
   const policyFor = (row: EnrollCandidate) => {
-    const region = input.regions?.[row.id];
-    const labels: Record<string, string> = region === undefined ? {} : { [REGION_LABEL]: region };
+    // A plan from a client that names no region (an older CLI, an API call) puts the Server in the default region.
+    const region = input.regions?.[row.id] ?? DEFAULT_REGION;
     return {
-      labels,
+      labels: { [REGION_LABEL]: region },
       acceptsBuilds: input.runs.builds,
       acceptsServices: input.runs.services,
       acceptsIngress: input.runs.ingress,

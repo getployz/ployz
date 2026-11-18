@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as storeFunctions from "#/modules/config-store/store.functions";
@@ -81,7 +82,7 @@ it("starts each Server in Default, offers the regions by name, and sends each on
     data: expect.objectContaining({ ids: ["id-syd-1", "id-syd-2"], regions: { "id-syd-1": "sydney", "id-syd-2": "fsn" } }),
   }));
   await waitFor(() => expect(write).toHaveBeenCalledWith(expect.objectContaining({
-    data: expect.objectContaining({ command: { command: "name_region", key: "sydney", name: "Sydney" } }),
+    data: expect.objectContaining({ command: { command: "name_region", key: "sydney", name: "Sydney", labels: expect.any(Array), creates: true } }),
   })));
 });
 
@@ -94,4 +95,30 @@ it("refuses a new region whose key a region has in any case, naming it, and enro
   expect(enroll().disabled).toBe(true);
   expect(start).not.toHaveBeenCalled();
   expect(write).not.toHaveBeenCalled();
+});
+
+it("refuses two different names that make one region's key, and enrolls nothing", async () => {
+  sheet();
+  await waitFor(() => expect(regionFor("syd-1").value).toBe("default"));
+  for (const [host, typed] of [["syd-1", "Sydney"], ["syd-2", "SYDNEY"]] as const) {
+    fireEvent.change(regionFor(host), { target: { value: "new region" } });
+    fireEvent.change(screen.getByRole("textbox", { name: `New region for ${host}` }), { target: { value: typed } });
+  }
+  expect((await screen.findAllByText("Sydney and SYDNEY make the same region. Use one name.")).length).toBeGreaterThan(0);
+  expect(enroll().disabled).toBe(true);
+  expect(start).not.toHaveBeenCalled();
+});
+
+it("says when a new region's name wasn't saved after the Servers were enrolled", async () => {
+  const error = vi.spyOn(toast, "error").mockReturnValue("t");
+  write.mockResolvedValue({ ok: false, refusal: { code: "invalid_argument", message: "A region named Sydney has another key.", details: null } });
+  sheet();
+  await waitFor(() => expect(regionFor("syd-1").value).toBe("default"));
+  fireEvent.change(regionFor("syd-1"), { target: { value: "new region" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "New region for syd-1" }), { target: { value: "Sydney" } });
+  await waitFor(() => expect(enroll().disabled).toBe(false));
+  fireEvent.click(enroll());
+  await waitFor(() => expect(error).toHaveBeenCalledWith("Sydney is set, but its name wasn’t saved.", expect.objectContaining({
+    description: expect.stringContaining("shows as sydney until you rename it from Servers"),
+  })));
 });

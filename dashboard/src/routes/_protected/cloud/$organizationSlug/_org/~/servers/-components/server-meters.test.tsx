@@ -28,7 +28,7 @@ function viewport({ wide }: { wide: boolean }) {
 
 function showRow(membership: RuntimeMachineRecord["membership"]) {
   const machine: RuntimeMachineRecord = {
-    id: "1".repeat(32), name: "syd-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
+    id: "1".repeat(32), name: "syd-1", subnet: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
     buildConcurrency: null, region: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion: "0.3.0", capabilities: [], poolCommittableBytes: null, sealing: null, membership, unanswered: false,
     observedContainerCount: 0, observedAt: "2026-10-12T00:00:00Z",
   };

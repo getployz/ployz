@@ -27,6 +27,7 @@ function dialog(allowed = true) {
       <RenameRegionDialog
         organizationSlug="acme"
         regions={REGIONS}
+        labels={["default", "lhr", "syd"]}
         gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
       />
     </QueryClientProvider>,
@@ -52,7 +53,7 @@ it("renames the picked region by its key and closes", async () => {
   fireEvent.change(await screen.findByRole("textbox", { name: "Name" }), { target: { value: " Falkenstein " } });
   fireEvent.click(screen.getAllByRole("button", { name: "Rename region" }).at(-1) as HTMLElement);
   await waitFor(() => expect(write).toHaveBeenCalledWith(expect.objectContaining({
-    data: expect.objectContaining({ command: { command: "name_region", key: "default", name: "Falkenstein" } }),
+    data: expect.objectContaining({ command: { command: "name_region", key: "default", name: "Falkenstein", labels: ["default", "lhr", "syd"] } }),
   })));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
@@ -73,4 +74,25 @@ it("is not offered to a member who can't operate Servers", () => {
   const button = screen.getByRole("button", { name: "Rename region" }) as HTMLButtonElement;
   expect(button.disabled).toBe(true);
   expect(button.title).toBe("Only an owner or admin can change how a server runs.");
+});
+
+it("says the limit beside an over-long name, sends nothing and keeps the dialog open", async () => {
+  dialog();
+  fireEvent.click(screen.getByRole("button", { name: "Rename region" }));
+  fireEvent.change(await screen.findByRole("textbox", { name: "Name" }), { target: { value: "x".repeat(41) } });
+  expect(screen.getByText("A region’s name is 1 to 40 characters on one line.")).toBeTruthy();
+  expect((screen.getAllByRole("button", { name: "Rename region" }).at(-1) as HTMLButtonElement).disabled).toBe(true);
+  expect(write).not.toHaveBeenCalled();
+  expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("x".repeat(41));
+});
+
+it("keeps the dialog and what was typed when the Store refuses the name, and says why", async () => {
+  write.mockResolvedValue({ ok: false, refusal: { code: "conflict", message: "Region London (lhr) already exists.", details: null } });
+  dialog();
+  fireEvent.click(screen.getByRole("button", { name: "Rename region" }));
+  fireEvent.change(await screen.findByRole("textbox", { name: "Name" }), { target: { value: "London" } });
+  fireEvent.click(screen.getAllByRole("button", { name: "Rename region" }).at(-1) as HTMLElement);
+  expect(await screen.findByText("Region London (lhr) already exists.")).toBeTruthy();
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("London");
 });

@@ -18,8 +18,7 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
-import { useServerList } from "#/modules/machines/use-servers";
-import { firstServerRegion } from "#/modules/machines/server-regions";
+import { useNewEnvironmentRegion } from "#/modules/machines/server-regions.hooks";
 
 /** Creates an empty root Environment and opens its canvas. */
 export function CreateEnvironmentDialog({
@@ -36,7 +35,7 @@ export function CreateEnvironmentDialog({
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
   // Its Services run where the Cluster's first Server is; an Environment from before this stays in any region.
-  const region = firstServerRegion(useServerList(organizationSlug).servers.map(({ machine }) => machine));
+  const { settled, region } = useNewEnvironmentRegion(organizationSlug);
   const mutation = useMutation({
     mutationFn: async (input: {
       organizationSlug: string;
@@ -82,7 +81,7 @@ export function CreateEnvironmentDialog({
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (name.trim() && !mutation.isPending)
+            if (name.trim() && settled && !mutation.isPending)
               mutation.mutate({
                 organizationSlug,
                 projectSlug,
@@ -110,7 +109,7 @@ export function CreateEnvironmentDialog({
             <DialogClose render={<Button variant="outline" />}>
               Cancel
             </DialogClose>
-            <Button type="submit" disabled={!name.trim() || mutation.isPending}>
+            <Button type="submit" disabled={!name.trim() || !settled || mutation.isPending}>
               {mutation.isPending && <Spinner data-icon="inline-start" />}
               Add environment
             </Button>

@@ -43,6 +43,7 @@ import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/da
 import { newProjectName, randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, fetchStoreView, projectsQuery } from "#/modules/config-store/store-view.queries";
 import { isRequested, showRefusalInline, useStoreWriter } from "#/modules/config-store/store-write";
+import { useNewEnvironmentRegion } from "#/modules/machines/server-regions.hooks";
 
 type Panel = { kind: CreatePanel };
 type CreateMode = "project" | "service";
@@ -203,6 +204,8 @@ function useServiceCreateActions({
   // Holds the project a failed command already created, so any retry, from any panel, reuses it.
   const createdProjectRef = useRef<CreationTarget | null>(null);
   const storeWriter = useStoreWriter(props.organizationSlug);
+  // A new Project's Environment starts where the Cluster's first Server is, so a new Project waits for the Servers.
+  const { settled, region } = useNewEnvironmentRegion(props.organizationSlug);
   // The ref guards re-entry (two clicks in one tick); the state only renders it.
   const creatingRef = useRef(false);
   const [creating, setCreating] = useState(false);
@@ -256,7 +259,8 @@ function useServiceCreateActions({
       const name = source?.type === "git" || source?.type === "image"
         ? newProjectName(source, (await fetchStoreView(props.organizationSlug, collectionScope, projectsQuery())).projects)
         : randomName();
-      const written = await storeWriter.commit({ command: "create_project", id, name, default_environment: environment });
+      const create = { command: "create_project", id, name, default_environment: environment } as const;
+      const written = await storeWriter.commit(region === null ? create : { ...create, region });
       if (written.written !== "project") throw new Error("The Store didn't create the project.");
       return { projectSlug: written.project.name, environmentSlug: written.environment.name,
         environmentId: written.environment.id, canvasPosition: { x: 0, y: 0 } };
@@ -347,7 +351,7 @@ function useServiceCreateActions({
 
   return {
     error: failure,
-    isPending: creating,
+    isPending: creating || (props.mode !== "service" && !settled),
     selectCreateItem,
     setActivePanel,
     createServiceFromSource,

@@ -4,7 +4,11 @@ import { useEffect, useState } from "react";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { queryOf, storeViewOptions, storeViewPrefix } from "#/modules/config-store/store-view.queries";
-import { useStoreWriter } from "#/modules/config-store/store-write";
+import { toast } from "sonner";
+import { isUnauthorized, toErrorMessage } from "#/lib/error-message";
+import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
+import { firstServerRegion } from "#/modules/machines/server-regions";
+import { useServerList } from "#/modules/machines/use-servers";
 
 /**
  * The Organization's regions with their names: those the Servers' `labels` hold and those given a name. Undefined
@@ -21,16 +25,33 @@ export function useRegions(organizationSlug: string, labels: readonly string[]):
   return read.data !== undefined || read.isError ? [] : undefined;
 }
 
-const NO_NAMESPACES: readonly OwnedNamespace[] = [];
+/** The Namespaces the Environments own as the Store has told: not yet, not at all, or each with where it runs. */
+export type OwnedNamespaces =
+  | { readonly kind: "reading" }
+  | { readonly kind: "failed" }
+  | { readonly kind: "read"; readonly namespaces: readonly OwnedNamespace[] };
 
 /**
- * The Namespaces the Organization's Environments own, each with the region its Environment runs in. Empty until the
- * Store answers, and after a refusal or a failed read: nothing then reads as placed.
+ * The Namespaces the Organization's Environments own, each with the regions its Services run in. An unanswered or
+ * failed read is its own state, never an empty list: no Environment is not the same as one not yet read.
  */
-export function useOwnedNamespaces(organizationSlug: string): readonly OwnedNamespace[] {
+export function useOwnedNamespaces(organizationSlug: string): OwnedNamespaces {
   const scope = useCollectionScope();
   const [read] = useQueries({ queries: [storeViewOptions(organizationSlug, scope, { query: "namespaces" })] });
-  return read.data?.ok ? read.data.value.namespaces : NO_NAMESPACES;
+  if (read.data?.ok && read.data.value.view === "namespaces") return { kind: "read", namespaces: read.data.value.namespaces };
+  return read.data !== undefined || read.isError ? { kind: "failed" } : { kind: "reading" };
+}
+
+/**
+ * The region a new Environment runs in, by the Engine's one rule: the Cluster's first Server's. `settled` waits for the
+ * Servers to be read; a list that isn't live is partial, so it pins nothing (null, any region).
+ */
+export type NewEnvironmentRegion = { readonly settled: boolean; readonly region: string | null };
+
+export function useNewEnvironmentRegion(organizationSlug: string): NewEnvironmentRegion {
+  const { state, servers } = useServerList(organizationSlug);
+  if (state === "loading") return { settled: false, region: null };
+  return { settled: true, region: state === "live" ? firstServerRegion(servers.map(({ machine }) => machine)) : null };
 }
 
 export type NewRegion =
@@ -64,19 +85,36 @@ export function useNewRegions(organizationSlug: string, names: readonly string[]
   };
 }
 
+/** The Store's refusals of a name that the caller shows itself, as the rest toast. */
+const NAME_REFUSALS = ["invalid_argument", "conflict", "not_found"];
+
 /**
- * Gives a region a name in every cached list of regions at once; the Store's refusal rereads them.
+ * Gives a region a name, shown in every cached list of regions once the Store has taken it. A refusal rejects with
+ * `StoreRefused` for the caller to show; `labels` are the Servers' `region` labels, which the Store checks the key
+ * against, and `creates` says the region is the one an enrollment is about to make.
  */
 export function useNameRegion(organizationSlug: string) {
   const { queryClient } = useCollectionScope();
   const writer = useStoreWriter(organizationSlug);
-  return (region: NamedRegion) => {
+  return async (region: NamedRegion, labels: readonly string[], creates = false) => {
+    const command = { command: "name_region" as const, key: region.key, name: region.name, labels: [...labels] };
+    await writer.commit(creates ? { ...command, creates } : command, NAME_REFUSALS);
     queryClient.setQueriesData<StoreResult<ConfigView>>(
       { queryKey: storeViewPrefix(organizationSlug), predicate: (query) => queryOf(query)?.query === "regions" },
       (result) => withName(result, region),
     );
-    return writer.commit({ command: "name_region", key: region.key, name: region.name });
   };
+}
+
+/**
+ * Says a region's name wasn't saved, when its Servers' label already was: the region then shows its key until someone
+ * renames it. The writer says sign-in and approval requests itself.
+ */
+export function nameNotSaved<Cause>(region: NamedRegion, error: Cause) {
+  if (isUnauthorized(error) || (error instanceof Error && isRequested(error))) return;
+  toast.error(`${region.name} is set, but its name wasn’t saved.`, {
+    description: `${toErrorMessage(error, "Ployz Cloud couldn’t save it.")} It shows as ${region.key} until you rename it from Servers.`,
+  });
 }
 
 function withName(result: StoreResult<ConfigView> | undefined, region: NamedRegion) {

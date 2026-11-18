@@ -1,4 +1,5 @@
 import type { MachineUpdate } from "@ployz/sdk";
+import { parseRegion } from "@ployz/sdk/config";
 import { Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
@@ -18,11 +19,19 @@ export const BuildConcurrencyChangeSchema = Schema.Union([
 
 export type BuildConcurrencyChange = typeof BuildConcurrencyChangeSchema.Type;
 
-export const REGION_RULE = "Use up to 63 lowercase letters, digits and hyphens. Start with a letter or digit.";
+/** The Engine's one region key rule, here as the SDK's `parseRegion` runs it. */
+export const REGION_RULE = "A region is up to 63 letters, digits, hyphens, underscores and dots.";
 
-export const RegionSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
+export function isRegionKey(value: string): boolean {
+  try {
+    parseRegion(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-export const isRegion = Schema.is(RegionSchema);
+export const RegionSchema = Schema.String.check(Schema.makeFilter<string>((value) => isRegionKey(value) ? undefined : REGION_RULE));
 
 /** One Server Policy change. Omitted fields keep the Server's current value. */
 export const ServerPolicyChangeSchema = Schema.Struct({

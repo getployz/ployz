@@ -1,21 +1,37 @@
 import type { NamedRegion } from "@ployz/sdk";
+import { firstServerRegion as firstRegion, parseRegionName } from "@ployz/sdk/config";
+import { isRegionKey } from "#/modules/machines/server-policy";
 
 export const DEFAULT_REGION = "default";
 
-/**
- * Each distinct Server `region` label, plus the default region, which a Server can join before any Server is in it.
- */
-export function regionLabels(machines: readonly { readonly region: string | null }[]): string[] {
-  return [...new Set([DEFAULT_REGION, ...machines.flatMap(({ region }) => region === null ? [] : [region])])].sort();
+const NAME_RULE = "A region’s name is 1 to 40 characters on one line.";
+
+/** Why `name` can't be a region's name, in the Engine's rule, or null when it can. */
+export function regionNameProblem(name: string): string | null {
+  try {
+    parseRegionName(name);
+    return null;
+  } catch {
+    return NAME_RULE;
+  }
 }
 
 /**
- * The region a new Environment runs in: that of the first Server by name that has one, in lowercase as placement reads
- * it. Null, any region, while no Server has one.
+ * Each distinct Server `region` label that is a region, plus the default region, which a Server can join before any
+ * Server is in it. A label that is no region (`eu/west`, from an older Ployz) is left out, as the Engine leaves it.
  */
-export function firstServerRegion(machines: readonly { readonly name: string; readonly region: string | null }[]): string | null {
-  const first = machines.filter(({ region }) => region !== null).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))[0];
-  return first?.region?.toLowerCase() ?? null;
+export function regionLabels(machines: readonly { readonly region: string | null }[]): string[] {
+  return [...new Set([DEFAULT_REGION, ...machines.flatMap(({ region }) => region === null || !isRegionKey(region) ? [] : [region])])].sort();
+}
+
+/**
+ * The region a new Environment runs in, by the Engine's one rule: that of the Cluster's first Server, the lowest Machine
+ * Subnet, in lowercase as placement reads it. Null, any region, when that Server has none, when no Server is in a region,
+ * or when a Server's subnet isn't known yet: a cluster that predates regions pins nothing.
+ */
+export function firstServerRegion(machines: readonly { readonly subnet: string | null; readonly region: string | null }[]): string | null {
+  const servers = machines.flatMap(({ subnet, region }) => subnet === null ? [] : [{ subnet, region }]);
+  return servers.length < machines.length ? null : firstRegion(servers);
 }
 
 /** Labels compare without case, as placement does. */

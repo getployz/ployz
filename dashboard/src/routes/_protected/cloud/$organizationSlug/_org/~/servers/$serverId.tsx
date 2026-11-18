@@ -13,7 +13,6 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/u
 import { Input } from "#/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Skeleton } from "#/components/ui/skeleton";
-import { placedServices } from "#/modules/machines/server-move";
 import { regionLabels } from "#/modules/machines/server-regions";
 import { useOwnedNamespaces, useRegions } from "#/modules/machines/server-regions.hooks";
 import { needsAttention } from "#/modules/machines/server-status";
@@ -179,7 +178,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
       />
       <ServerWebTrafficSection view={webTraffic.view} onTurnOn={webTraffic.turnOn} onAskOff={webTraffic.ask} unavailable={webUnavailable} gate={operate} />
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} gate={operate} />
-      <ServerRegionSection machine={machine} machines={machines} placed={placedServices(server.services, owned)} regions={regions} organizationSlug={organizationSlug} gate={operate} />
+      <ServerRegionSection machine={machine} machines={machines} services={server.services} owned={owned} regions={regions} organizationSlug={organizationSlug} gate={operate} />
       <RemoveServerSection
         machine={machine}
         machines={machines}

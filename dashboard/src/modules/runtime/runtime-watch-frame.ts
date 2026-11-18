@@ -26,6 +26,8 @@ const runtimeWatchMachineSchema = Schema.Struct({
   machine: Schema.Struct({
     id: Schema.String,
     name: Schema.String,
+    /** The Machine Subnet; the lowest is the Cluster's first Server. Null from a frame that predates it. */
+    subnet: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
     public_ip: Schema.NullOr(Schema.String),
     accepts_ingress: Schema.Boolean,
     advertised_endpoints: Schema.Array(Schema.String),
@@ -143,6 +145,7 @@ export function runtimeWatchFrameForTransport(
       machine: {
         id: machine.machine.id,
         name: machine.machine.name,
+        subnet: machine.machine.subnet,
         public_ip: machine.machine.public_ip,
         accepts_ingress: machine.machine.accepts_ingress,
         advertised_endpoints: [...machine.machine.advertised_endpoints],
@@ -236,6 +239,7 @@ export function runtimeSnapshotFromWatchFrame(
     machines: frame.machines.map((machine) => ({
       id: machine.machine.id,
       name: machine.machine.name,
+      subnet: machine.machine.subnet,
       publicIp: machine.machine.public_ip,
       acceptsIngress: machine.machine.accepts_ingress,
       endpoints: [...machine.machine.advertised_endpoints],

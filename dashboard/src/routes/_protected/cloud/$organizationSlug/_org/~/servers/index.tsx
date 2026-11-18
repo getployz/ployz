@@ -74,7 +74,7 @@ function RouteComponent() {
         Tokens
       </Button>
       {page.kind === "fleet" && regions !== undefined && regions.length > 0
-        ? <RenameRegionDialog organizationSlug={organizationSlug} regions={regions} gate={operate} />
+        ? <RenameRegionDialog organizationSlug={organizationSlug} regions={regions} labels={labels} gate={operate} />
         : null}
       {canAdd ? (
         <AddServersDialog

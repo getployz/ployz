@@ -12,7 +12,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Skeleton } from "#/components/ui/skeleton";
 import { toErrorMessage } from "#/lib/error-message";
 import { DEFAULT_REGION } from "#/modules/machines/server-regions";
-import { useNameRegion, useNewRegions, useRegions } from "#/modules/machines/server-regions.hooks";
+import { nameNotSaved, useNameRegion, useNewRegions, useRegions } from "#/modules/machines/server-regions.hooks";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { startServerEnrollmentServerFn } from "#/modules/machines/waiting/waiting.functions";
@@ -55,7 +55,13 @@ export function EnrollSheet({ organizationSlug, servers, regionLabels, hasFirst,
     const check = newRegion(row.id);
     return check.kind === "new" ? [{ id: row.id, key: check.key, name: (typed[row.id] ?? "").trim() }] : [];
   });
-  const joinsKnown = regions !== undefined && joins.length === servers.length;
+  // Two names that make one key (`Sydney`, `SYDNEY`) are two names for one region, which the Store refuses.
+  const clash = (id: string) => {
+    const mine = joins.find((join) => join.id === id);
+    const other = mine?.name === undefined ? undefined : joins.find((join) => join.name !== undefined && join.key === mine.key && join.name !== mine.name);
+    return mine?.name === undefined || other === undefined ? null : `${mine.name} and ${other.name} make the same region. Use one name.`;
+  };
+  const joinsKnown = regions !== undefined && joins.length === servers.length && joins.every((join) => clash(join.id) === null);
   const choices = {
     ids: servers.map((row) => row.id),
     storage: storage === "none" ? { kind: "none" } : { kind: "zfs", useSpareDisk: false, fallbackToDocker: fallback },
@@ -72,7 +78,7 @@ export function EnrollSheet({ organizationSlug, servers, regionLabels, hasFirst,
     onSuccess: (result, joining) => {
       const enrolled = new Set(result.attempts.map(({ waitingServerId }) => waitingServerId));
       const created = new Map(joining.flatMap(({ id, key, name }) => name !== undefined && enrolled.has(id) ? [[key, { key, name }] as const] : []));
-      for (const region of created.values()) void nameRegion(region);
+      for (const region of created.values()) nameRegion(region, regionLabels, true).catch((error) => nameNotSaved(region, error));
       toast.success(`Enrolling ${result.attempts.length} ${result.attempts.length === 1 ? "server" : "servers"}${result.skipped.length ? ` · ${result.skipped.length} skipped` : ""}`);
       onClose();
     },
@@ -106,7 +112,7 @@ export function EnrollSheet({ organizationSlug, servers, regionLabels, hasFirst,
             <FieldLegend>Region</FieldLegend>
             {servers.map((row) => {
               const check = pickOf(row.id) === NEW_REGION ? newRegion(row.id) : null;
-              const refused = check?.kind === "refused" ? check.message : null;
+              const refused = check?.kind === "refused" ? check.message : clash(row.id);
               return <Field key={row.id} data-invalid={refused !== null || undefined}>
                 <FieldLabel htmlFor={`enroll-region-${row.id}`}>{row.report.hostname} · {row.observedIp}</FieldLabel>
                 {regions === undefined ? <Skeleton className="h-8" /> : <NativeSelect id={`enroll-region-${row.id}`} value={pickOf(row.id)} onChange={(event) => setPicks({ ...picks, [row.id]: event.target.value })}>

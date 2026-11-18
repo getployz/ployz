@@ -1,16 +1,29 @@
 import { expect, it } from "vitest";
-import { firstServerRegion } from "./server-regions";
+import { firstServerRegion, regionLabels } from "./server-regions";
 
-it("starts a new Environment in the region of the first Server that has one, by name", () => {
+const server = (subnet: string | null, region: string | null) => ({ subnet, region });
+
+it("starts a new Environment in the region of the Cluster's first Server, the lowest subnet, whatever its name", () => {
   expect(firstServerRegion([
-    { name: "np1-vm-2", region: "default" },
-    { name: "fsn-1", region: "FSN" },
-    { name: "np1-vm-1", region: "default" },
+    server("10.210.10.0/24", "default"),
+    server("10.210.9.0/24", "FSN"),
+    server("10.210.11.0/24", "default"),
   ])).toBe("fsn");
-  expect(firstServerRegion([{ name: "a", region: null }, { name: "b", region: "Default" }])).toBe("default");
 });
 
-it("leaves a new Environment in any region while no Server has one", () => {
+it("pins nothing when the first Server has no region, though a later one does", () => {
+  expect(firstServerRegion([server("10.210.0.0/24", null), server("10.210.1.0/24", "default")])).toBeNull();
+});
+
+it("pins nothing when a Server's subnet is not known yet, rather than guess the first", () => {
+  expect(firstServerRegion([server(null, "default"), server("10.210.1.0/24", "fsn")])).toBeNull();
+});
+
+it("pins nothing for no Servers, or a first Server whose label is no region", () => {
   expect(firstServerRegion([])).toBeNull();
-  expect(firstServerRegion([{ name: "a", region: null }])).toBeNull();
+  expect(firstServerRegion([server("10.210.0.0/24", "eu/west"), server("10.210.1.0/24", "default")])).toBeNull();
+});
+
+it("lists the default region and each region the Servers are in, leaving out a label that is no region", () => {
+  expect(regionLabels([{ region: "eu_west.1" }, { region: "eu/west" }, { region: null }, { region: "fsn" }])).toEqual(["default", "eu_west.1", "fsn"]);
 });

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as storeFunctions from "#/modules/config-store/store.functions";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import type { Placed } from "#/modules/machines/server-move";
+import type { OwnedNamespaces } from "#/modules/machines/server-regions.hooks";
 import * as policyFunctions from "#/modules/machines/server-policy.functions";
 import { ServerRegionSection } from "./server-region-section";
 
@@ -33,7 +33,7 @@ afterEach(() => {
 
 function machine(id: string, region: string | null): RuntimeMachineRecord {
   return {
-    id: id.repeat(32), name: `server-${id}`, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: false, acceptsServices: true,
+    id: id.repeat(32), name: `server-${id}`, subnet: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: false, acceptsServices: true,
     storage: "pool", buildConcurrency: null, region, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion: "0.3.0-beta.2", capabilities: [],
     poolCommittableBytes: null, sealing: null, membership: "up", unanswered: false, observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
@@ -53,7 +53,15 @@ async function pick(name: string) {
   fireEvent.click(option);
 }
 
-function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS, placed = [] }: { allowed?: boolean; machines?: RuntimeMachineRecord[]; regions?: NamedRegion[]; placed?: Placed[] } = {}) {
+const NONE: OwnedNamespaces = { kind: "read", namespaces: [] };
+
+function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS, services = [], owned = NONE }: {
+  allowed?: boolean;
+  machines?: RuntimeMachineRecord[];
+  regions?: NamedRegion[];
+  services?: readonly { identity: string; name: string; namespace: string | null }[];
+  owned?: OwnedNamespaces;
+} = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   render(
@@ -61,7 +69,8 @@ function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet
       <ServerRegionSection
         machine={shown}
         machines={machines}
-        placed={placed}
+        services={services}
+        owned={owned}
         regions={regions}
         organizationSlug="acme"
         gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
@@ -117,7 +126,7 @@ it("makes a new region from a typed name: the Server moves to its key and the re
     data: { organizationSlug: "acme", machineId: "4".repeat(32), change: { region: "sydney-2" } },
   }));
   expect(write).toHaveBeenCalledWith(expect.objectContaining({
-    data: expect.objectContaining({ command: { command: "name_region", key: "sydney-2", name: "Sydney 2" } }),
+    data: expect.objectContaining({ command: { command: "name_region", key: "sydney-2", name: "Sydney 2", labels: ["default", "fsn", "syd"], creates: true } }),
   }));
 });
 
@@ -139,16 +148,16 @@ it("leaves the field read-only for a member who can't change policy", () => {
   expect(trigger.getAttribute("title")).toBe("Only an owner or admin can change how a server runs.");
 });
 
-const RUNNING: Placed[] = [
-  { key: "shop-production/web", name: "web", environment: "shop/production", region: "default" },
-  { key: "shop-production/postgres", name: "postgres", environment: "shop/production", region: "default" },
-  { key: "blog-production/api", name: "api", environment: "blog/production", region: "fsn" },
-];
+const service = (namespace: string, name: string) => ({ identity: `${namespace}/${name}`, name, namespace });
+const RUNNING = [service("shop-production", "web"), service("shop-production", "postgres"), service("blog-production", "api")];
+const SHOP = { namespace: "shop-production", project: "shop", environment: "production", region: "default" };
+const BLOG = { namespace: "blog-production", project: "blog", environment: "production", region: "fsn" };
+const READ: OwnedNamespaces = { kind: "read", namespaces: [SHOP, BLOG] };
 const vm3 = machine("3", "default");
 const withDefaultPeer = [...fleet, machine("6", "default")];
 
 it("asks before a move that sends Services off the Server, naming each with its Environment and where it goes", async () => {
-  section(vm3, { placed: RUNNING, machines: withDefaultPeer });
+  section(vm3, { services: RUNNING, owned: READ, machines: withDefaultPeer });
   await pick("Sydney");
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByRole("heading").textContent).toBe("Move server-3 to Sydney");
@@ -167,7 +176,7 @@ it("asks before a move that sends Services off the Server, naming each with its 
 });
 
 it("keeps the Server where it was when the move is cancelled", async () => {
-  section(vm3, { placed: RUNNING, machines: withDefaultPeer });
+  section(vm3, { services: RUNNING, owned: READ, machines: withDefaultPeer });
   await pick("Sydney");
   fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -176,9 +185,54 @@ it("keeps the Server where it was when the move is cancelled", async () => {
 });
 
 it("says so when no other Server is in a Service's region", async () => {
-  section(vm3, { placed: RUNNING.slice(0, 1) });
+  section(vm3, { services: RUNNING.slice(0, 1), owned: READ });
   await pick("Sydney");
   expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
     "webshop/productionNo server in Default",
   ]);
+});
+
+it("asks before a move even when the Service sets its own replica regions, which its Environment's region doesn't name", async () => {
+  const replicated: OwnedNamespaces = { kind: "read", namespaces: [{ ...SHOP, region: "syd", replica_regions: { web: ["default"] } }] };
+  section(vm3, { services: RUNNING.slice(0, 1), owned: replicated, machines: withDefaultPeer });
+  await pick("Sydney");
+  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/production→ server-6"]);
+});
+
+it("leaves out an offline Server as a place a Service can go", async () => {
+  const down = { ...machine("6", "default"), membership: "down", unanswered: true } as const;
+  section(vm3, { services: RUNNING.slice(0, 1), owned: READ, machines: [...fleet, down] });
+  await pick("Sydney");
+  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+    "webshop/productionNo server in Default",
+  ]);
+});
+
+it("names the button after clearing a region, not moving the Server", async () => {
+  section(vm3, { services: RUNNING, owned: READ, machines: withDefaultPeer });
+  await pick("No region");
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByRole("button", { name: "Move server" })).toBeNull();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Clear region" }));
+  await waitFor(() => expect(requestChange).toHaveBeenCalledWith({
+    data: { organizationSlug: "acme", machineId: "3".repeat(32), change: { region: null } },
+  }));
+});
+
+it("holds the region while what runs here is being read, and says when it can't be", () => {
+  section(vm3, { services: RUNNING, owned: { kind: "reading" } });
+  expect(screen.getByText("Reading what runs here…")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Region" }).hasAttribute("disabled")).toBe(true);
+  cleanup();
+  section(vm3, { services: RUNNING, owned: { kind: "failed" } });
+  expect(screen.getByText("Couldn’t read what runs here. Reload to change the region.")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Region" }).hasAttribute("disabled")).toBe(true);
+});
+
+it("asks before a move when an Environment's Working State couldn't be read, naming it instead of showing nothing", async () => {
+  section(vm3, { services: RUNNING.slice(0, 1), owned: { kind: "read", namespaces: [{ ...SHOP, region: undefined, unread: true }] } });
+  await pick("Sydney");
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/Couldn’t read shop\/production/)).toBeTruthy();
+  expect(requestChange).not.toHaveBeenCalled();
 });
