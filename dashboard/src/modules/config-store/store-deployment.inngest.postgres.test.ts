@@ -1,7 +1,7 @@
 import { gzipSync } from "node:zlib";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand, ConfigTrusted } from "@ployz/sdk";
+import type { ConfigCommand, ConfigTrusted, Outcome } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Inngest } from "inngest";
 import { eq } from "drizzle-orm";
@@ -255,7 +255,7 @@ it.live(
 );
 
 it.live(
-  "a deploy GitHub started mails each member who wants it once when it fails; one anybody else started mails no one",
+  "a deploy GitHub started mails each member who wants it once when it fails or leaves a Service waiting; one anybody else started mails no one",
   () =>
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "store-deployment-mail-test" });
@@ -312,6 +312,39 @@ it.live(
       yield* admit(LOST);
       expect((yield* run(LOST)).result).toMatchObject({ ran: { id: LOST, status: "failed" } });
       expect(mails()).toEqual([]);
+
+      // No Server answers here, so a runner that applied QUEUED and left web waiting stands in for one.
+      const waiting = [{ service: "web", reason: "Volume data is on fsn-1, which doesn't run services." }];
+      const outcome: Outcome = { type: "executed", summary: null, reason: null, cause: [], services: [], waiting };
+      yield* admit(QUEUED);
+      const read = store.read.bind(store);
+      vi.spyOn(store, "read").mockImplementation(async (...args: Parameters<typeof read>) => {
+        const view = await read(...args);
+        return view.view === "deployment" && view.id === QUEUED ? { ...view, status: "applied", outcome } : view;
+      });
+      const leftWaiting = (trigger: DeploymentTrigger) => Effect.promise(() => new InngestTestEngine({
+        function: worker, events: [admitted(QUEUED, trigger)],
+        steps: [
+          { id: "run-deployment", handler: () => ({ ran: { id: QUEUED, number: 4, status: "applied", remove: false, outcome } }) },
+          { id: "delete-orphan-mirrors", handler: () => null },
+          ...sentRetire(),
+        ],
+      }).execute());
+      yield* leftWaiting("user");
+      expect(mails()).toEqual([]);
+      yield* leftWaiting("github");
+      const warned = mails();
+      expect(warned.map((mail) => [mail.to, mail.id])).toEqual(expect.arrayContaining([
+        ["ada@example.test", `mail-deployment:${QUEUED}:waiting:${ada}`],
+        ["bob@example.test", `mail-deployment:${QUEUED}:waiting:${bob}`],
+      ]));
+      expect(warned).toHaveLength(2);
+      expect(warned[0]?.subject).toBe("web is waiting to deploy to shop / production");
+      expect(warned[0]?.text).toContain(waiting[0]?.reason);
+      // A retry sends the same IDs, which Inngest drops.
+      send.mockClear();
+      yield* leftWaiting("github");
+      expect(new Set(mails().map((again) => again.id))).toEqual(new Set(warned.map((first) => first.id)));
     }),
   60_000,
 );
