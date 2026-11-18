@@ -124,6 +124,7 @@ const ON_DEMAND_READS = {
   privateAccessQueryOptions: "asks every Server live for its router, so a slow Cluster never holds Integrations; the section says it is checking until it answers",
   lastAnswerOptions: "fetches nothing: it holds the Servers' last answer to a Connect or Turn off made in this tab",
   reviewDoorsSwitchQueryOptions: "the switch dialog's own review of what moves, read when it opens",
+  regionMovesQueryOptions: "asks every Server live for each Volume's copies, so a slow Server would hold the canvas; Details lists a move into a region once it answers",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
