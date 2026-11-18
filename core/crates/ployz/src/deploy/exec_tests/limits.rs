@@ -2,19 +2,22 @@
 
 use super::flip::execute_reported;
 use super::*;
-use ployz_core::{LimitsUpdateOperation, MachineAction, OperationStatus, RpcError};
+use ployz_core::{
+    ContainerUpdateOperation, InPlaceChange, MachineAction, OperationStatus, RpcError,
+};
 
 fn update(
     machine_id: &MachineId,
     container_id: &ContainerId,
     order: UpdateOrder,
-) -> LimitsUpdateOperation {
+) -> ContainerUpdateOperation {
     let mut spec = spec(None, None, None);
     spec.update.order = order;
-    LimitsUpdateOperation {
+    ContainerUpdateOperation {
         machine_id: *machine_id,
         container_id: *container_id,
         spec,
+        change: InPlaceChange::Limits,
     }
 }
 
@@ -50,6 +53,35 @@ async fn an_update_keeps_the_same_copy_in_and_starts_nothing() {
         }
     );
     assert_eq!(warnings, Vec::<String>::new());
+    assert_eq!(client.rotation(&old), Some(CopyRotation::In));
+    assert!(!touched(&client, &old), "{:?}", client.moves());
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_placement_update_records_the_placement_and_keeps_the_copy_in() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![DeployOperation::UpdateContainer(ContainerUpdateOperation {
+        change: InPlaceChange::Placement,
+        ..update(&machine, &old, UpdateOrder::StartFirst)
+    })];
+    let client = Scripted::new(vec![ok(Call::UpdatePlacement(machine, old))]).with_copy(
+        &machine,
+        &old,
+        CopyRotation::In,
+    );
+
+    let (outcome, _warnings) =
+        execute_reported(&plan, &[], &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome,
+        DeployOutcome::Success {
+            completed: plan,
+            services: ended(&[("api", ServiceResult::Updated)]),
+        }
+    );
     assert_eq!(client.rotation(&old), Some(CopyRotation::In));
     assert!(!touched(&client, &old), "{:?}", client.moves());
     client.assert_done();

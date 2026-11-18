@@ -17,6 +17,7 @@ mod managed_service;
 mod observe;
 pub(crate) use observe::published_spec;
 mod peer_pull;
+mod placement;
 mod recovery;
 pub(crate) use peer_pull::ImageProxy;
 mod private_access;
@@ -77,7 +78,7 @@ pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible,
 pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
-use ployz_core::LimitsRefusal;
+use ployz_core::{LimitsRefusal, PlacementRefusal};
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
 pub use unregistry::ImageIngest;
 
@@ -1417,6 +1418,12 @@ pub enum Error {
         container_id: ContainerId,
         refusal: LimitsRefusal,
     },
+    #[error("{service} cannot take this placement in place: {refusal}")]
+    PlacementRefused {
+        service: ployz_core::ServiceName,
+        container_id: ContainerId,
+        refusal: PlacementRefusal,
+    },
     /// Docker accepted the update but reports other limits.
     #[error("Docker reports other limits on container {container_id} after an update: {limits}")]
     LimitsUnapplied {
@@ -1507,6 +1514,7 @@ impl Error {
             | Self::SlotNameOccupied(_)
             | Self::ServicePlacementMismatch
             | Self::LimitsRefused { .. }
+            | Self::PlacementRefused { .. }
             | Self::WorkNotAccepted => RpcErrorCode::Conflict,
             Self::ProvisionedStorageUnsupported | Self::UnsupportedImageStore => RpcErrorCode::Unsupported,
             Self::VolumeCreatedButUnverified { .. }
@@ -1567,6 +1575,17 @@ impl From<&Error> for RpcError {
             }
             Error::DiskFull { full, .. } => full.to_details(),
             Error::LimitsRefused { refusal, .. } => refusal.to_details(),
+            Error::PlacementRefused {
+                container_id,
+                refusal,
+                ..
+            } => {
+                let mut details = refusal.to_details();
+                if let Some(details) = details.as_object_mut() {
+                    details.insert("container_id".to_owned(), serde_json::json!(container_id));
+                }
+                details
+            }
             Error::SpecNotFound(_) => {
                 ployz_core::ContainerNotFoundReason::NoResolvedSpec.to_details()
             }

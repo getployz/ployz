@@ -11,7 +11,8 @@ use crate::scrub::excerpt::{LogText, Withheld};
 use crate::{
     ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
     ExecutionError, HealthFailure, HookFailure, LimitsRefusal, MachineAction, MachineId,
-    OperationPhase, OperationRow, OperationStatus, OutOfMemory, PullPolicy, RpcError, ServiceName,
+    OperationPhase, OperationRow, OperationStatus, OutOfMemory, PlacementRefusal, PullPolicy,
+    RpcError, ServiceName,
 };
 
 /// What one Service's work on one Server is doing.
@@ -137,6 +138,7 @@ impl FailedAt {
                 MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
                 | MachineAction::UpdateContainerLimits
+                | MachineAction::UpdateContainerPlacement
                 | MachineAction::ListContainers
                 | MachineAction::ReadRoutes => from_phase(),
             },
@@ -525,6 +527,31 @@ impl Failure {
                     cause,
                 )
             }
+            ExecutionError::Machine {
+                action: MachineAction::UpdateContainerPlacement,
+                error,
+            } if !error.reply_lost() => {
+                let mut cause = vec![error.message.clone()];
+                cause.extend(crate::error_chain::causes(error));
+                let outcome = match error.evidence::<PlacementRefusal>() {
+                    Some(PlacementRefusal::NotRunning) => {
+                        "found the Container not running, so the new placement does not apply"
+                    }
+                    // A Server that had already recorded the placement answers a resent
+                    // request as recorded, so a refusal means the previous one stays.
+                    Some(PlacementRefusal::OtherService | PlacementRefusal::NeedsRecreate)
+                    | None => {
+                        "did not apply the new placement. The Container keeps its previous placement"
+                    }
+                };
+                (
+                    format!(
+                        "{} {outcome}",
+                        server_named(error, operations).unwrap_or_else(|| "The Server".to_owned())
+                    ),
+                    cause,
+                )
+            }
             // The Server may have done the work: only its answer was lost.
             ExecutionError::Machine { action, error } if error.reply_lost() => {
                 let mut cause = vec![error.message.clone()];
@@ -780,7 +807,8 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
             ExecutionError::Machine { action, .. } => match action {
                 MachineAction::StopContainer
                 | MachineAction::RemoveContainer
-                | MachineAction::UpdateContainerLimits => row.operation.container_id(),
+                | MachineAction::UpdateContainerLimits
+                | MachineAction::UpdateContainerPlacement => row.operation.container_id(),
                 MachineAction::InspectContainer => last,
                 MachineAction::CreateContainer
                 | MachineAction::StartContainer

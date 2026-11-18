@@ -599,6 +599,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     }
                     other @ (RpcRequestBody::DescribeContract(_)
                     | RpcRequestBody::UpdateContainerLimits(_)
+                    | RpcRequestBody::UpdateContainerPlacement(_)
                     | RpcRequestBody::Inspect(_)
                     | RpcRequestBody::Enroll(_)
                     | RpcRequestBody::Register(_)

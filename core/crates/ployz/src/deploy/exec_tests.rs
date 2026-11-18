@@ -4,11 +4,11 @@ use std::{
 };
 
 use ployz_core::{
-    AnswerWhen, ContainerLimitsUpdated, ContainerNow, ContainerRefusal, ContainerRefusalReason,
-    ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
-    EnsuredContainer, HealthFailure, HealthObservation, HookFailure, ImagePulled, LastHealthCheck,
-    MembershipObservation, Namespace, NewContainer, OutOfMemory, RotationTarget, RoutesRead,
-    RpcErrorCode, RunRotation, RunTarget, ServiceName, ServiceResult, UpdateOrder,
+    AnswerWhen, ContainerLimitsUpdated, ContainerNow, ContainerPlacementUpdated, ContainerRefusal,
+    ContainerRefusalReason, ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId,
+    DockerVolumeName, EnsuredContainer, HealthFailure, HealthObservation, HookFailure, ImagePulled,
+    LastHealthCheck, MembershipObservation, Namespace, NewContainer, OutOfMemory, RotationTarget,
+    RoutesRead, RpcErrorCode, RunRotation, RunTarget, ServiceName, ServiceResult, UpdateOrder,
 };
 
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
@@ -92,6 +92,7 @@ enum Call {
     RemoveVolume(DockerVolumeId),
     /// Limits of a running Container changed in place.
     UpdateLimits(MachineId, ContainerId),
+    UpdatePlacement(MachineId, ContainerId),
 }
 
 #[derive(Clone)]
@@ -1140,7 +1141,8 @@ impl Scripted {
                 | Call::Inspect(..)
                 | Call::DiscardSlot(..)
                 | Call::RemoveVolume(_)
-                | Call::UpdateLimits(..) => {}
+                | Call::UpdateLimits(..)
+                | Call::UpdatePlacement(..) => {}
             }
         }
         answer
@@ -1432,6 +1434,19 @@ impl DeployOperations for Scripted {
             ContainerLimitsUpdated {
                 container_id: *container_id,
                 limits: spec.container.resources.limits(),
+            }
+        })
+    }
+
+    async fn update_container_placement(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        _spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerPlacementUpdated, RpcError> {
+        unit(self.next(Call::UpdatePlacement(*machine_id, *container_id))).map(|()| {
+            ContainerPlacementUpdated {
+                container_id: *container_id,
             }
         })
     }

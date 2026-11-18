@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 
 use ployz_core::{
     ContainerNotFoundReason, ContainerRefusal, ContainerRefusalReason, CopyRefusal, Departure,
-    DiskFull, Evidence, ImageIngestReason, LimitsRefusal, MachineId, MachineName,
+    DiskFull, Evidence, ImageIngestReason, LimitsRefusal, MachineId, MachineName, PlacementRefusal,
     ProvisionedVolumeMaximumBytes, PullPolicy, RecoveryRefusal, RpcError, RpcErrorCode,
     SealingRefusal, SetVolumeCopyRefused, SetVolumeSizeRefused, SizeRefusal, StorageCapacityError,
     SwitchError, VolumeGen,
@@ -639,6 +639,16 @@ fn reason_keyed_refusals_read_the_reason_key_only() {
         );
     }
     assert_eq!(read::<LimitsRefusal>(&Value::Null), None);
+    for (reason, name) in [
+        (PlacementRefusal::OtherService, "other_service"),
+        (PlacementRefusal::NeedsRecreate, "needs_recreate"),
+        (PlacementRefusal::NotRunning, "not_running"),
+    ] {
+        assert_eq!(
+            read::<PlacementRefusal>(&json!({ "reason": name })),
+            Some(reason)
+        );
+    }
     assert_eq!(
         read::<ContainerNotFoundReason>(&json!({ "reason": "no_resolved_spec" })),
         Some(ContainerNotFoundReason::NoResolvedSpec)

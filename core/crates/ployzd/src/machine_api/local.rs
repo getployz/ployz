@@ -704,6 +704,18 @@ impl MachineRpc for MachineService {
         )
     }
 
+    async fn update_container_placement(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::UpdateContainerPlacement>(request)?;
+        finish(
+            self.local
+                .update_container_placement(request.container_id, request.spec)
+                .await,
+        )
+    }
+
     async fn inspect_storage(
         &self,
         request: Request<OpaquePayload>,

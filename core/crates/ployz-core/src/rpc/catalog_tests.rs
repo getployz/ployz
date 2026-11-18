@@ -255,6 +255,14 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "UpdateContainerPlacement",
+        "update_container_placement",
+        "ployz.container.placement.update.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "InspectStorage",
         "inspect_storage",
         "ployz.storage.inspect.v1",

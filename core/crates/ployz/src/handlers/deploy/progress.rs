@@ -221,7 +221,7 @@ fn runtime_row(
             starts: preview
                 .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
             updates: preview
-                .is_some_and(|preview| updates(&preview.operations, runtime, row.machine_id)),
+                .and_then(|preview| updates(&preview.operations, runtime, row.machine_id)),
             timing: match (row.started_at, row.finished_at) {
                 (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
                     u64::try_from(end.saturating_sub(start)).unwrap_or(0),

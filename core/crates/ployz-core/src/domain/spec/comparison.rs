@@ -10,14 +10,31 @@ pub fn compare_specs(
     requested: &RequestedServiceSpec,
 ) -> SpecChange {
     if requested.container.pull_policy == PullPolicy::Always
-        || current.serving_shape() != requested.serving_shape()
         // A new hook runs with new Containers; it isn't serving shape, so traffic stays on the old ones meanwhile.
         || current.pre_deploy != requested.pre_deploy
     {
-        SpecChange::NeedsRecreate
-    } else {
-        resource_change(&current.container.resources, &requested.container.resources)
+        return SpecChange::NeedsRecreate;
     }
+    let resources = resource_change(&current.container.resources, &requested.container.resources);
+    if current.serving_shape() == requested.serving_shape() {
+        resources
+    } else if resources == SpecChange::UpToDate && differs_in_placement_only(current, requested) {
+        SpecChange::NeedsPlacementUpdate
+    } else {
+        SpecChange::NeedsRecreate
+    }
+}
+
+/// A Global Container's Creation Key is fixed when it is created and carries its
+/// serving shape, placement included, so a Global Service's placement changes only
+/// with new Containers.
+fn differs_in_placement_only(
+    current: &ResolvedServiceSpec,
+    requested: &RequestedServiceSpec,
+) -> bool {
+    matches!(current.mode, ServiceMode::Replicated { .. })
+        && ServingShape::of_resolved_placed(current, &requested.placement)
+            == requested.serving_shape()
 }
 
 /// Docker applies a raised, lowered or newly set CPU or memory limit to a running
@@ -140,6 +157,64 @@ mod tests {
             Some(serde_json::from_value(json!({"command": ["migrate"]})).unwrap());
         assert_eq!(
             compare_specs(&current, &candidate),
+            SpecChange::NeedsRecreate
+        );
+    }
+
+    #[test]
+    fn a_placement_only_edit_keeps_a_replicated_container_and_anything_more_recreates() {
+        let spec = |mode: serde_json::Value| -> ResolvedServiceSpec {
+            serde_json::from_value(json!({
+                "service_id": "a".repeat(32), "name": "api", "mode": mode,
+                "container": {"image": "api:1", "pull_policy": "missing"}
+            }))
+            .unwrap()
+        };
+        let in_fsn = |spec: &ResolvedServiceSpec| {
+            let mut placed = spec.to_requested();
+            placed.placement = serde_json::from_value(json!({
+                "constraints": ["node.labels.region==fsn"]
+            }))
+            .unwrap();
+            placed
+        };
+        let current = spec(json!({"mode": "replicated", "replicas": 2}));
+        let placed = in_fsn(&current);
+        assert_eq!(
+            compare_specs(&current, &placed),
+            SpecChange::NeedsPlacementUpdate
+        );
+        let mut cleared = current.clone();
+        cleared.placement = placed.placement.clone();
+        assert_eq!(
+            compare_specs(&cleared, &current.to_requested()),
+            SpecChange::NeedsPlacementUpdate
+        );
+
+        let mut with_image = placed.clone();
+        with_image.container.image = "api:2".into();
+        assert_eq!(
+            compare_specs(&current, &with_image),
+            SpecChange::NeedsRecreate
+        );
+        let mut with_limit = placed.clone();
+        with_limit.container.resources.cpu_nanos =
+            Some(crate::CpuNanos::try_from(500_000_000).unwrap());
+        assert_eq!(
+            compare_specs(&current, &with_limit),
+            SpecChange::NeedsRecreate
+        );
+        let mut with_hook = placed;
+        with_hook.pre_deploy =
+            Some(serde_json::from_value(json!({"command": ["migrate"]})).unwrap());
+        assert_eq!(
+            compare_specs(&current, &with_hook),
+            SpecChange::NeedsRecreate
+        );
+
+        let global = spec(json!({"mode": "global"}));
+        assert_eq!(
+            compare_specs(&global, &in_fsn(&global)),
             SpecChange::NeedsRecreate
         );
     }

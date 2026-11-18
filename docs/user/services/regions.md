@@ -35,7 +35,9 @@ Upper and lower case are the same, so `FSN` is `fsn`.
    postgres → fsn
    ```
 
-2. Deploy. Every service restarts, and its new replicas start on the region's servers.
+2. Deploy. A replica already on one of the region's servers keeps running. A replica outside the
+   region is replaced by a new one on the region's servers.
+   [Good to know](#good-to-know) lists when a replica in the region restarts anyway.
 
    ```sh
    ployz deploy
@@ -113,7 +115,14 @@ the environment's region, and deploy again.
 - **A branch starts with its parent's region** and follows later changes to it, like the parent's
   other settings.
 - **Syncing two environments doesn't copy the region.** Set it on each.
-- **Setting or clearing a region restarts every service**, including one whose replicas already
-  run on the region's servers. A service with a volume is down while it restarts.
+- **A replica that can stay keeps running** when the deploy changes only the region and the
+  number of replicas. A replica outside the new region is replaced by one inside it. After you
+  clear a region, or change it to one with more servers, replicas spread again: if several share
+  a server, one moves to another server. The new replica starts before the old one stops, so the
+  service keeps answering.
+- **A service restarts every replica** when the same deploy changes anything else about it, such
+  as its image, a limit or its pre-deploy command. It also restarts every replica when one of
+  them isn't running, when any server running one of them runs an older Ployz, or when it is a
+  global service. A service with a volume is down while it restarts.
 - **Only deploys move replicas.** Changing a server's label or an environment's region changes
   nothing until you deploy.

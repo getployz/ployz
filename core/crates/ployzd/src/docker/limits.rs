@@ -121,7 +121,9 @@ fn refusal(stored: &ResolvedServiceSpec, spec: &ResolvedServiceSpec) -> Option<L
     match compare_specs(stored, &spec.to_requested()) {
         SpecChange::NeedsUpdate => None,
         SpecChange::UpToDate => Some(LimitsRefusal::UpToDate),
-        SpecChange::NeedsRecreate => Some(LimitsRefusal::NeedsRecreate),
+        SpecChange::NeedsPlacementUpdate | SpecChange::NeedsRecreate => {
+            Some(LimitsRefusal::NeedsRecreate)
+        }
     }
 }
 
@@ -194,7 +196,7 @@ fn refuse_unless_running(
     }
 }
 
-fn is_running(inspected: &ContainerInspectResponse) -> bool {
+pub(super) fn is_running(inspected: &ContainerInspectResponse) -> bool {
     inspected
         .state
         .as_ref()

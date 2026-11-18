@@ -519,6 +519,91 @@ impl std::fmt::Display for LimitsRefusal {
     }
 }
 
+/// Ask a Machine to record `spec` as the resolved spec of the running Service
+/// Container `container_id`, which keeps running untouched. The Machine refuses
+/// unless [`admit_placement`] admits `spec` over the Container's spec, and unless
+/// the Machine itself satisfies that placement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateContainerPlacementRequest {
+    pub container_id: ContainerId,
+    pub spec: ResolvedServiceSpec,
+}
+
+/// The Container whose recorded spec now carries the requested placement.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContainerPlacementUpdated {
+    pub container_id: ContainerId,
+}
+
+/// Why a Machine refused to record a Container's new placement in place.
+/// Carried in `RpcError.details.reason`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementRefusal {
+    /// The spec names another Service than the Container runs.
+    OtherService,
+    /// The spec differs from the Container's in more than placement.
+    NeedsRecreate,
+    /// The Container is not running, so there is nothing serving to keep.
+    NotRunning,
+}
+
+impl Evidence for PlacementRefusal {
+    const KEY: Option<&'static str> = Some("reason");
+}
+
+/// What a Machine does with a placement request it admits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlacementAdmission {
+    /// The spec is the Container's under another placement, and the Machine records it.
+    Record,
+    /// The Container's spec already carries the placement, as after a resent request.
+    Recorded,
+}
+
+/// Whether `spec` may take the place of `stored`, the spec of a running Service
+/// Container: only when the two are equal apart from a placement a Replicated
+/// Service can change in place.
+///
+/// A Deploy asks this before it plans the request and the Machine asks it again
+/// on receipt, so a Deploy sends only what a Machine records.
+///
+/// # Errors
+///
+/// Refuses a spec of another Service, and one that differs in more than placement.
+pub fn admit_placement(
+    stored: &ResolvedServiceSpec,
+    spec: &ResolvedServiceSpec,
+) -> Result<PlacementAdmission, PlacementRefusal> {
+    if stored.service_id != spec.service_id || stored.name != spec.name {
+        return Err(PlacementRefusal::OtherService);
+    }
+    let placed = ResolvedServiceSpec {
+        placement: spec.placement.clone(),
+        ..stored.clone()
+    };
+    match crate::compare_specs(stored, &spec.to_requested()) {
+        crate::SpecChange::UpToDate if placed == *spec => Ok(PlacementAdmission::Recorded),
+        crate::SpecChange::NeedsPlacementUpdate if placed == *spec => {
+            Ok(PlacementAdmission::Record)
+        }
+        crate::SpecChange::UpToDate
+        | crate::SpecChange::NeedsPlacementUpdate
+        | crate::SpecChange::NeedsUpdate
+        | crate::SpecChange::NeedsRecreate => Err(PlacementRefusal::NeedsRecreate),
+    }
+}
+
+impl std::fmt::Display for PlacementRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::OtherService => "the spec names another Service",
+            Self::NeedsRecreate => "the change needs a new Container",
+            Self::NotRunning => "the Container is not running",
+        })
+    }
+}
+
 /// What a Machine saw when it answered `NotFound` for a Container.
 /// Carried in `RpcError.details.reason`; an answer without it claims nothing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

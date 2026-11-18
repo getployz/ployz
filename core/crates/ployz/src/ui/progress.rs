@@ -8,7 +8,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use ployz_core::{
-    ContainerId, DeployWarning, MachineId, ObservationKind, QualifiedService, ServiceName,
+    ContainerId, DeployWarning, InPlaceChange, MachineId, ObservationKind, QualifiedService,
+    ServiceName,
 };
 use ployz_store::tools::{LogText, Withheld};
 use ployz_store::{DeploymentId, RowPhase};
@@ -80,10 +81,12 @@ pub(crate) struct GraphService {
     pub ready: usize,
     /// Servers this Deploy works on; 0 before any work is recorded.
     pub total: usize,
-    /// Servers among `total` whose copy keeps serving and takes new limits in place.
+    /// Servers among `total` whose copy keeps serving and takes a change in place.
     pub in_place: usize,
-    /// Servers among `ready` whose copy took its new limits in place.
+    /// Servers among `ready` whose copy took its change in place.
     pub in_place_ready: usize,
+    /// What the copies counted in `in_place` take: limits when any of them does.
+    pub in_place_change: InPlaceChange,
     /// Servers stopping or removing an old Container.
     pub draining: usize,
     pub work: Work,
@@ -121,6 +124,11 @@ impl GraphService {
     }
 
     fn word(&self, state: &State) -> String {
+        let changed = match self.in_place_change {
+            InPlaceChange::Limits => "limits",
+            InPlaceChange::Placement => "placement",
+        };
+        let updating = format!("updating {changed}");
         let word = match state {
             State::Pending if self.work == Work::Remove => "waiting to remove",
             State::Pending => "waiting",
@@ -130,7 +138,7 @@ impl GraphService {
                 RowPhase::StoppingContainer => "stopping old",
                 RowPhase::RemovingContainer => "removing old",
                 RowPhase::RemovingVolume => "removing volume",
-                RowPhase::UpdatingContainer => "updating limits",
+                RowPhase::UpdatingContainer => &updating,
                 RowPhase::WaitingForHealth => "waiting for health",
                 RowPhase::Compensating => "rolling back",
                 RowPhase::WaitingForSwitch => "switching",
@@ -161,11 +169,11 @@ impl GraphService {
         } else if matches!(state, State::Failed | State::Cancelled | State::Interrupted) {
             format!("{word} ({}/{} ready)", self.ready, self.total)
         } else if word == "switched" && self.in_place == self.total {
-            format!("updated limits {}/{}", self.ready, self.total)
+            format!("updated {changed} {}/{}", self.ready, self.total)
         } else if word == "switched" && self.in_place > 0 {
             // No new copy serves for a Server that updated in place, so say which did what.
             format!(
-                "{word} {}/{}, updated limits {}/{}",
+                "{word} {}/{}, updated {changed} {}/{}",
                 self.ready - self.in_place_ready,
                 self.total - self.in_place,
                 self.in_place_ready,
@@ -224,7 +232,7 @@ impl State {
                 RowPhase::StoppingContainer => "stopping",
                 RowPhase::RemovingContainer => "removing",
                 RowPhase::RemovingVolume => "removing volume",
-                RowPhase::UpdatingContainer => "updating limits",
+                RowPhase::UpdatingContainer => "updating",
                 RowPhase::Compensating => "compensating",
             },
             Self::Completed => "completed",

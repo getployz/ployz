@@ -31,8 +31,9 @@ use crate::{
     SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
     SET_PUSH_TARGET_CAPABILITY, SET_RECIPIENT_KEY_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
     SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    TEARDOWN_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_MACHINE_CAPABILITY,
-    UPGRADE_CHANNEL_CAPABILITY, VOLUME_APPROVAL_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY,
+    TEARDOWN_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, UPGRADE_CHANNEL_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY,
 };
 
 /// A statement a trusted key signs that admits an Operator's call.
@@ -162,6 +163,12 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
         Bound("residual: a limit can slow or stop a Service, a drop"),
+    ),
+    (
+        UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
+        Bound(
+            "residual: rewrites a recorded placement to any this Machine satisfies, or clears it, so a later approved Drain may place outside the region; nothing starts or stops at the call",
+        ),
     ),
     (INSPECT_STORAGE_CAPABILITY, Read),
     (PREPARE_VOLUMES_CAPABILITY, Bound("checked at mount by C")),
@@ -517,6 +524,12 @@ pub const CASES: &[Case] = &[
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
         "any limit",
         "an UpdateContainerLimits lowering a Container's memory",
+        Expected::Served,
+    ),
+    case(
+        UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
+        "any placement",
+        "an UpdateContainerPlacement on a running Container",
         Expected::Served,
     ),
     case(

@@ -111,6 +111,17 @@ impl DeployOperations for Recording {
             .await
     }
 
+    async fn update_container_placement(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ployz_core::ContainerPlacementUpdated, RpcError> {
+        self.fake
+            .update_container_placement(machine_id, container_id, spec)
+            .await
+    }
+
     async fn runs_global(
         &self,
         machine_id: &MachineId,

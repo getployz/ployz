@@ -4,13 +4,14 @@ use crate::cluster::{Call, Deadline};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
 use ployz_core::{
     ContainerDetails, ContainerId, ContainerKind, ContainerLimitsUpdated, ContainerNow,
-    ContainerObservation, ContainerWant, CreationKey, DeployWarning, DockerVolumeId,
-    EnsuredContainer, EnvironmentValues, HealthVerdict, ImagePulled, IngressDoorsSet,
-    InspectContainerRequest, ListContainersRequest, MachineFailure, MachineId, MachineName,
-    MachineTarget, MembershipObservation, ObservationGap, ObservationGapReason, ObservationKind,
-    PrivateAccessSet, QualifiedService, ReadRoutesRequest, RemoveVolumeRequest,
+    ContainerObservation, ContainerPlacementUpdated, ContainerWant, CreationKey, DeployWarning,
+    DockerVolumeId, EnsuredContainer, EnvironmentValues, HealthVerdict, ImagePulled,
+    IngressDoorsSet, InspectContainerRequest, ListContainersRequest, MachineFailure, MachineId,
+    MachineName, MachineTarget, MembershipObservation, ObservationGap, ObservationGapReason,
+    ObservationKind, PrivateAccessSet, QualifiedService, ReadRoutesRequest, RemoveVolumeRequest,
     ResolvedServiceSpec, RoutesRead, RpcError, RunTarget, SetIngressDoorsRequest,
-    SetPrivateAccessRequest, SlotKey, UpdateContainerLimitsRequest, op,
+    SetPrivateAccessRequest, SlotKey, UpdateContainerLimitsRequest,
+    UpdateContainerPlacementRequest, op,
 };
 
 use super::{Progress, SlotPolicy, naming_machine};
@@ -141,6 +142,14 @@ pub(crate) trait DeployOperations: Session {
         container_id: &ContainerId,
         spec: &ResolvedServiceSpec,
     ) -> Result<ContainerLimitsUpdated, RpcError>;
+    /// Record `spec`, which differs in placement only, as the spec of the running
+    /// `container_id`. The Machine refuses a placement it does not satisfy.
+    async fn update_container_placement(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerPlacementUpdated, RpcError>;
     /// Whether `machine_id` already runs a Container of this Global spec, which a
     /// start into `slot` adopts instead of creating.
     async fn runs_global(
@@ -450,6 +459,25 @@ impl DeployOperations for Client {
     ) -> Result<ContainerLimitsUpdated, RpcError> {
         self.call_shared::<op::UpdateContainerLimits>(
             UpdateContainerLimitsRequest {
+                container_id: *container_id,
+                spec: spec.clone(),
+            },
+            Call::once()
+                .to(&MachineTarget::from(machine_id))
+                .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
+        )
+        .await
+        .map_err(crate::connect::rpc_error)
+    }
+
+    async fn update_container_placement(
+        &self,
+        machine_id: &MachineId,
+        container_id: &ContainerId,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<ContainerPlacementUpdated, RpcError> {
+        self.call_shared::<op::UpdateContainerPlacement>(
+            UpdateContainerPlacementRequest {
                 container_id: *container_id,
                 spec: spec.clone(),
             },

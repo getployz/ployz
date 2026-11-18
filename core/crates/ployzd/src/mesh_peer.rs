@@ -142,6 +142,9 @@ pub(crate) fn deploy_input(spec: &ResolvedServiceSpec) -> RequestedServiceSpec {
 }
 
 /// Whether a Deploy of `wanted` would make a new Container in place of `current`.
+/// A copy that differs in placement alone is not one: a Deploy keeps it wherever
+/// its Machine satisfies the new placement, and a copy the update missed serves
+/// the same content as the ones it reached.
 pub(crate) fn recreates(wanted: &RequestedServiceSpec, current: &ResolvedServiceSpec) -> bool {
     compare_specs(current, wanted) == SpecChange::NeedsRecreate
 }
