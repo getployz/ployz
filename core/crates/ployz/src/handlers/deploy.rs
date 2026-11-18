@@ -1115,8 +1115,16 @@ fn plan(
                 None => crate::ui::stream(format_args!("{service} → any region")),
             }
         }
-        for volume_moves::VolumeMove { volume, from, to } in &shown.volume_moves {
-            crate::ui::stream(format_args!("{volume} moves {from} → {to}"));
+        for moved in &shown.volume_moves {
+            let volume_moves::VolumeMove {
+                volume, from, to, ..
+            } = moved;
+            match moved.held(matches).as_slice() {
+                [] => crate::ui::stream(format_args!("{volume} moves {from} → {to}")),
+                held => held
+                    .iter()
+                    .for_each(|line| crate::ui::stream(format_args!("{line}"))),
+            }
         }
         if prunes {
             crate::ui::stream(format_args!(

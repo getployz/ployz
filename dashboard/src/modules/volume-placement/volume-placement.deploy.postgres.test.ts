@@ -8,8 +8,10 @@ import { InngestClient } from "#/modules/inngest/client";
 import {
   advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { keepPlacementApprovals, keepRegionMoveApprovals, listPlacements, stagePlacement, stampPlacements, writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
-import { placementTargets } from "#/modules/volume-placement/volume-placement";
+import {
+  keepPlacementApprovals, keepRegionMoveApprovals, listPlacements, regionMoves, stagePlacement, stampPlacements, writeAdmitted,
+} from "#/modules/volume-placement/volume-placement.server";
+import { placementChanges, placementLoss, placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
 import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
 import type { CopyAnswer } from "#/modules/volume-run/volume-run.server";
@@ -832,6 +834,27 @@ describe("deploying a Volume placement", () => {
       if (started.kind !== "wait") throw new Error("expected a run");
       const { rows } = await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId]);
       expect(rows).toEqual([{ kind: "move", args: { to: "fsn-2" } }]);
+    });
+
+    it("stays put, and the Deploy goes on, while its move would delete an old copy the Deploy didn't accept", async () => {
+      members = [member("syd-1", "writer"), member("syd-2", "old"), member("fsn-1", "empty")];
+      const read = regions("syd-1", "syd-2", "fsn-1");
+      expect(await run(regionMoves(organizationId, environment, [], inspect, read))).toMatchObject([{ volume: "data", from: "syd-1", to: "fsn-1", clears: ["syd-2"] }]);
+      expect(await deploy("dep-2", read)).toMatchObject({ written: "deployment", id: "dep-2" });
+      expect(await placement()).toMatchObject({ staged: { primary: web("fsn-1") }, region: true, deploymentId: null });
+      expect(await run(advancePlacement(organizationId, "dep-2", null, inspect, answered))).toEqual({ kind: "done" });
+
+      // The dashboard's confirm names the Volume and binds the version to the copy that goes.
+      statuses.set("dep-2", "applied");
+      const row = (await run(listPlacements(organizationId)))[0] ?? null;
+      const loss = placementLoss(placementChanges({ id: volumeId, name: "data" }, members, row));
+      await run(writeAdmitted(
+        organizationId,
+        { command: "admit", admit: "deploy", id: "dep-3", environment, services: [], version: loss.version("v1"), accept_volume_loss: [...loss.accept] },
+        () => Effect.succeed(asTestDouble<ConfigCommitted>()({ written: "deployment", id: "dep-3", environment_id: "env-1", status: "admitted", checks: [] })),
+        inspect, read,
+      ));
+      expect(await placement()).toMatchObject({ staged: { primary: web("fsn-1") }, deploymentId: "dep-3" });
     });
 
     it("is moved back onto the Server it left under the approval a CLI's Device signed for it", async () => {

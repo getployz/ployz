@@ -311,12 +311,16 @@ export const readRegionServers: RegionReader = (organizationId) => firstRuntimeF
   })),
 );
 
-/** A Volume the next Deploy moves into its Service's region: the row it stages, and the move by name. */
+/**
+ * A Volume the next Deploy moves into its Service's region: the row it stages, and the move by name. `clears` names each
+ * Server whose old copy the move deletes first, which only a Deploy that accepts that loss does.
+ */
 export type RegionMove = {
   readonly row: PlacementRow & { readonly staged: Placement; readonly mirrors: readonly MachineId[] };
   readonly volume: string;
   readonly from: string;
   readonly to: string;
+  readonly clears: readonly string[];
 };
 
 const decodeCounts = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Number));
@@ -368,14 +372,12 @@ const findRegionMoves = Effect.fn("VolumePlacement.regionMoves")(function* (
     const from = observed.primary?.name;
     const to = name(staged?.primary);
     if (staged === null || from === undefined || to === undefined) return [];
-    const move: RegionMove = {
-      row: {
-        volumeId: volume.id, environmentId: listing.environment.id, mirrors: row?.mirrors ?? appliedMirrors(observed, null), staged, unreached: false,
-        deploymentId: null, region: true,
-      },
-      volume: volume.name, from, to,
+    const moved: RegionMove["row"] = {
+      volumeId: volume.id, environmentId: listing.environment.id, mirrors: row?.mirrors ?? appliedMirrors(observed, null), staged, unreached: false,
+      deploymentId: null, region: true,
     };
-    return [move];
+    const clears = placementLosses(placementChanges(volume, members, moved)).flatMap(({ server }) => server?.name ?? []);
+    return [{ row: moved, volume: volume.name, from, to, clears }];
   }), { concurrency: "unbounded" });
   return moves.flat();
 });
@@ -495,7 +497,8 @@ const holderState = (organizationId: string, id: string) => readStore(organizati
  * Servers can't be asked what they hold. The Environment's lock is held from that check to the stamp: a restore staged
  * meanwhile waits for the next Deploy whole, and an edit staged meanwhile waits and then finds the Deploy holds its row.
  * The names consumed here leave `accept_volume_loss`, since the Store refuses a name it doesn't delete itself. It first
- * stages the move of each Volume outside its Service's region, so the Deploy takes that move with the rest.
+ * stages the move of each Volume outside its Service's region, so the Deploy takes that move with the rest. A move into a
+ * region that loses a copy the Deploy doesn't accept is left out instead of refusing the Deploy, which goes on without it.
  */
 export const writeAdmitted = <R>(
   organizationId: string,
@@ -543,11 +546,16 @@ export const writeAdmitted = <R>(
     const members = yield* Effect.forEach(kept, ({ row }) => inspect(organizationId, command.environment, row.volumeId), { concurrency: "unbounded" })
       .pipe(Effect.option);
     if (Option.isNone(members)) return yield* new StoreRefused(NO_ANSWER);
-    const lost = kept.flatMap(({ row, volume }, index) =>
-      placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value[index] ?? [], view(row))));
-    const taken = listed.map(({ row }) => row.volumeId);
-    const names = [...new Set(lost.map(({ volume }) => volume.name))];
     const accepted = command.accept_volume_loss ?? [];
+    const losses = kept.map(({ row, volume }, index) => ({
+      row, lost: placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value[index] ?? [], view(row))),
+    }));
+    // Nobody asked for a move into a region, so one that deletes a copy waits, staged, for a Deploy that accepts the loss.
+    const waiting = losses.filter(({ row, lost: gone }) => row.staged?.region === true && gone.some(({ volume }) => !accepted.includes(volume.name)))
+      .map(({ row }) => row.volumeId);
+    const lost = losses.flatMap(({ row, lost: gone }) => waiting.includes(row.volumeId) ? [] : gone);
+    const taken = listed.flatMap(({ row }) => waiting.includes(row.volumeId) ? [] : [row.volumeId]);
+    const names = [...new Set(lost.map(({ volume }) => volume.name))];
     const store = command.version == null ? command.version : storeVersion(command.version);
     if (!names.every((name) => accepted.includes(name)) || (lost.length > 0 && command.version !== lossVersion(store ?? "", lost))) {
       const version = lossVersion(store ?? (yield* readStore(organizationId, { query: "diff", environment: command.environment })).version, lost);

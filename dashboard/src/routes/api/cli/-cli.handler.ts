@@ -522,7 +522,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (unread !== null) return refusal(unread.refusal);
       const environment = { project: query.get("project"), environment: query.get("environment") };
       const moves = yield* regionMoves(caller.organization.id, environment, query.getAll("service"));
-      return { moves: moves.map(({ volume, from, to }) => ({ volume, from, to })) };
+      return { moves: moves.map(({ volume, from, to, clears }) => ({ volume, from, to, clears })) };
     }
     case "POST volume-moves": {
       const body = yield* decodeBody(VolumeMoveApprovals, request, "A volume move approval takes its environment and what the Device signed.");

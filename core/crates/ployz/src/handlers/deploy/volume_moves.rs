@@ -26,6 +26,34 @@ pub(super) struct VolumeMove {
     pub(super) volume: String,
     pub(super) from: String,
     pub(super) to: String,
+    /// The Servers whose old copy the move deletes first. Cloud leaves such a move out of
+    /// a Deploy that doesn't accept that loss, so the Volume stays where it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) clears: Vec<String>,
+}
+
+impl VolumeMove {
+    /// A line for each old copy that keeps the Volume where it is, with the command that
+    /// deletes it. None for a move the Deploy makes.
+    pub(super) fn held(&self, matches: &ArgMatches) -> Vec<String> {
+        let Self {
+            volume,
+            from,
+            clears,
+            ..
+        } = self;
+        clears
+            .iter()
+            .map(|server| {
+                let copy = format!("{volume}-{server}");
+                let delete = super::super::store::next(
+                    matches,
+                    &["volume", "mirror", "rm", &copy, "--if-old-copy"],
+                );
+                format!("{volume} stays on {from}. Delete its old copy on {server} first: {delete}")
+            })
+            .collect()
+    }
 }
 
 /// The moves Cloud makes for a Deploy of `services`. None without Cloud, from an older
@@ -71,7 +99,8 @@ struct Approved {
 
 /// Sign each move Cloud lists for the Deploy `device` approved, and hand the approvals to
 /// Cloud before that Deploy is admitted. A move this Device can't sign says why and stays
-/// unsigned: the Servers refuse it, and its Service is not started.
+/// unsigned: the Servers refuse it, and its Service is not started. A move Cloud leaves out
+/// says which old copy to delete, and is not signed.
 ///
 /// # Errors
 /// Refuses when the person declines a move or can't be asked without `--yes`; returns
@@ -86,7 +115,15 @@ pub(super) fn approve(
         return Ok(());
     };
     let mut approvals = Vec::new();
-    for VolumeMove { volume, from, to } in listed(store, &device.environment, services) {
+    for moved in listed(store, &device.environment, services) {
+        let held = moved.held(matches);
+        if !held.is_empty() {
+            held.into_iter().for_each(ui::warn);
+            continue;
+        }
+        let VolumeMove {
+            volume, from, to, ..
+        } = moved;
         let (name, draft) = match drafted(matches, store, device, environment, (&volume, &to)) {
             Ok(Some(drafted)) => drafted,
             Ok(None) => continue,
