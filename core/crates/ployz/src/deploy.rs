@@ -756,6 +756,13 @@ pub struct RegionAway {
     pub servers: Vec<(MachineName, ServerAway)>,
 }
 
+fn volume_outside_region(volume: &str, machine: &MachineName, to: Option<&MachineName>) -> String {
+    match to {
+        Some(_) => format!("{volume} is on {machine}"),
+        None => format!("{volume} is a Docker volume and can't move"),
+    }
+}
+
 fn region_unmatched(regions: &[RegionAway]) -> String {
     let (empty, away): (Vec<_>, Vec<_>) =
         regions.iter().partition(|region| region.servers.is_empty());
@@ -859,13 +866,14 @@ pub enum PlanError {
     #[error("{service} has a Volume, so its replicas run in one region")]
     VolumeInSeveralRegions { service: ServiceName },
     /// The Service is kept in a region, and its Volume is on a Server outside it.
-    #[error("{volume} is on {machine}")]
+    #[error("{}", volume_outside_region(volume, machine, to.as_ref()))]
     VolumeOutsideRegion {
         /// The Volume, as its owner named it.
         volume: String,
         machine: MachineName,
-        /// A Server in the region the Service can run on.
-        to: MachineName,
+        /// A Server in the region the Service can run on, which the Volume can move to.
+        /// None for a Docker volume, which nothing moves.
+        to: Option<MachineName>,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
@@ -1121,12 +1129,17 @@ impl PlanError {
                 ref volume,
                 ref machine,
                 ref to,
-            } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
-                "reason": "volume_outside_region",
-                "volume": volume,
-                "server": machine,
-                "to": to,
-            })),
+            } => {
+                let mut details = serde_json::json!({
+                    "reason": "volume_outside_region",
+                    "volume": volume,
+                    "server": machine,
+                });
+                if let Some(to) = to {
+                    details["to"] = serde_json::json!(to);
+                }
+                RpcError::conflict(self.to_string()).with_details(details)
+            }
             error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
                 RpcError::unavailable(error.to_string())
             }

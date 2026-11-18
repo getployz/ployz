@@ -1153,7 +1153,9 @@ fn refused_location(
 }
 
 /// The refusal for a Volume none of whose Servers is in the region `spec` is kept in,
-/// while a Server in the region could run it. Nothing moves the Volume for it yet.
+/// while a Server in the region could run it. Cloud moves the Volume before the Deploy
+/// where it can, so this is what is left: no Cloud, a move that failed, or a Volume
+/// that can't move.
 fn outside_region(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
@@ -1172,10 +1174,15 @@ fn outside_region(
     if holders.any(|machine| Region::of(&machine.machine).as_ref() == Some(&region)) {
         return None;
     }
+    let to = candidates.first()?.machine.name.clone();
+    let docker = matches!(
+        volume.source.kind(),
+        ployz_core::RawVolumeSource::Ordinary { .. }
+    );
     Some(PlanError::VolumeOutsideRegion {
         volume: plan.authored(managed_volume_name(volume)?).to_owned(),
         machine: holder,
-        to: candidates.first()?.machine.name.clone(),
+        to: (!docker).then_some(to),
     })
 }
 

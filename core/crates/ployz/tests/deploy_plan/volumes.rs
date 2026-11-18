@@ -1133,6 +1133,38 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
 }
 
 #[test]
+fn a_docker_volume_outside_the_region_says_it_cannot_move_and_names_no_server_to_move_to() {
+    let mut db = spec("db");
+    add_named_volume(&mut db, "data");
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&kept_in(db, "fsn")],
+        PlanOptions::default(),
+    );
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "fsn"),
+            in_region(machine('2', "second"), "syd"),
+        ],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+            machine_id('2'),
+            "data",
+        )])
+        .unwrap(),
+        ..storage_snapshot()
+    };
+
+    let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
+
+    assert_eq!(rpc.message, "data is a Docker volume and can't move");
+    assert_eq!(
+        rpc.details.get("reason"),
+        Some(&serde_json::json!("volume_outside_region"))
+    );
+    assert_eq!(rpc.details.get("to"), None);
+}
+
+#[test]
 fn a_region_no_server_is_in_stops_a_service_with_a_volume_and_not_the_deploy() {
     let (web, db) = web_and_db();
     let (web, db) = (web, kept_in(db, "lhr"));
