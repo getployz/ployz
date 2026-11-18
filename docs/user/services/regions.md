@@ -131,6 +131,15 @@ A waiting service doesn't fail the deploy. When nothing else failed, the deploym
 `ployz deploy` exits 3. When another service failed, the deployment reads **Failed** and
 `ployz deploy` exits 1.
 
+Before the move copies anything, and again before it stops the service, Ployz checks that the
+deploy still runs the service on the move's server. If that server left the region meanwhile, for
+example because its region label changed, nothing moves and the service keeps running:
+
+```
+! pg-data didn't move to web-1: The Deploy doesn't run postgres on web-1, so this move would stop postgres and start it nowhere. Nothing moved. Deploy again
+! postgres is waiting: pg-data is on db-1
+```
+
 A move that fails before it stops the service leaves the volume where it was, with the service
 running there. One that fails later can leave the service stopped.
 [A move failed partway](../troubleshooting/volumes.md#a-move-failed-partway) says what each stage

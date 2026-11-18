@@ -333,8 +333,12 @@ enum ResizeStep {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum MoveStep {
+    /// `findMovable` before the first copy, run only when the warm round is.
+    Service,
     /// The warm round's pull, run only when B held no copy when the grow ran.
     Warm,
+    /// `findMovable` before the cut.
+    Image,
     Cut,
     Pull,
     Commit,
@@ -422,6 +426,9 @@ struct State {
     crashes: u8,
     /// Device enforcement is on, on both Machines.
     enforcing: bool,
+    /// B is in the placement the Move answers to (`placementFor`): its Deploy's while that
+    /// Deploy can start the Service, else the Service's last Deploy's.
+    takes: bool,
     /// An enforcing Machine refused a Writer start.
     refused_start: bool,
     /// A Container started from a request admitted while its Machine enforced.
@@ -637,6 +644,8 @@ struct Broken {
     start_gate: bool,
     /// `startWriter` asks a B the Service's placement leaves out to create it.
     starts_left_out: bool,
+    /// `findMovable` skips its placement check, as it did for a Move a Deploy marked.
+    placement_unchecked: bool,
     /// A Mirror's `Forget` destroys its slot without first withdrawing the Mirror's
     /// Machine. Only [`removal::MirrorRemoval`] reads it.
     removal_no_withdrawal: bool,
@@ -744,6 +753,9 @@ struct VolumeRuns {
     /// The deployed Service's placement leaves B out, as when its regions name another
     /// one: B refuses to create it, and the Deploy that places it there starts it.
     left_out: bool,
+    /// B may leave the placement the Move answers to before the Move's last check: its
+    /// Server is relabelled, or the Deploy that asked for the Move ends.
+    relabels: bool,
     broken: Broken,
 }
 
@@ -756,6 +768,7 @@ impl Default for VolumeRuns {
             crashes: 1,
             enforce: false,
             left_out: false,
+            relabels: false,
             broken: Broken::default(),
         }
     }
@@ -780,6 +793,8 @@ enum Action {
     EndResize,
     /// A Device turns enforcement on.
     Enforce,
+    /// B leaves the placement the Move answers to.
+    Relabel,
 }
 
 // --- The real planner -------------------------------------------------------------
@@ -1379,8 +1394,15 @@ impl VolumeRuns {
     /// `startWriter`'s start for B from A's stopped Container: none when the Service's
     /// placement leaves B out (`satisfiesPlacement`), so B only becomes the Writer. A's
     /// stopped Container then stays, for a Release to find the Service by.
-    fn create_on_b(&self) -> Option<StartKind> {
-        (!self.left_out || self.broken.starts_left_out).then_some(StartKind::Create)
+    fn create_on_b(&self, state: &State) -> Option<StartKind> {
+        ((!self.left_out && state.takes) || self.broken.starts_left_out)
+            .then_some(StartKind::Create)
+    }
+
+    /// `findMovable`'s placement check: a Move that would stop the Service and start it
+    /// nowhere goes no further.
+    fn movable(&self, state: &State) -> bool {
+        state.takes || self.broken.placement_unchecked
     }
 
     /// `failAndRelease` and the cancel handler: end the running row and request the
@@ -1424,6 +1446,23 @@ impl VolumeRuns {
             state.moving.waiting = None;
         };
         match (driver.step, driver.waiting, reply) {
+            (MoveStep::Service, _, _) => {
+                // `refuseRun`: nothing was copied, so there is nothing to release.
+                if self.movable(state) {
+                    next(state, MoveStep::Warm);
+                } else {
+                    state.row = Row::Failed;
+                    next(state, MoveStep::Over);
+                }
+            }
+            (MoveStep::Image, _, _) => {
+                if self.movable(state) {
+                    next(state, MoveStep::Cut);
+                } else {
+                    self.end_move(state);
+                    next(state, MoveStep::Over);
+                }
+            }
             (MoveStep::Warm, None, _) => {
                 let sent = state.send(
                     Lane::Move,
@@ -1485,7 +1524,7 @@ impl VolumeRuns {
                         Want::Writer {
                             at: Snap::Final,
                             epoch: MOVE_EPOCH,
-                            start: self.create_on_b(),
+                            start: self.create_on_b(state),
                         },
                     );
                     state.moving.waiting = Some(sent);
@@ -1498,7 +1537,7 @@ impl VolumeRuns {
                 // `removeKept` checks the run still owns its row, then removes A's
                 // stopped Container. A Move that started nothing on B skips it.
                 if state.row.running() {
-                    if state.a.holder == Holder::Stopped && self.create_on_b().is_some() {
+                    if state.a.holder == Holder::Stopped && self.create_on_b(state).is_some() {
                         state.a.holder = Holder::Absent;
                     }
                     next(state, MoveStep::Finish);
@@ -1523,7 +1562,7 @@ impl VolumeRuns {
                         Reply::Copy(Held::Slot {
                             newest: Some(Snap::Warm),
                         }),
-                    ) => Some(MoveStep::Cut),
+                    ) => Some(MoveStep::Image),
                     (
                         MoveStep::Cut,
                         Reply::Copy(Held::Slot {
@@ -1539,7 +1578,12 @@ impl VolumeRuns {
                     (MoveStep::Start, Reply::Copy(_)) => Some(MoveStep::Remove),
                     (MoveStep::Warm | MoveStep::Cut | MoveStep::Pull | MoveStep::Start, _)
                     | (
-                        MoveStep::Commit | MoveStep::Remove | MoveStep::Finish | MoveStep::Over,
+                        MoveStep::Service
+                        | MoveStep::Image
+                        | MoveStep::Commit
+                        | MoveStep::Remove
+                        | MoveStep::Finish
+                        | MoveStep::Over,
                         _,
                     ) => None,
                 };
@@ -1718,7 +1762,7 @@ impl VolumeRuns {
                 let start = if state.b.holder == Holder::Running {
                     return next(state, ReleaseStep::RemoveForward);
                 } else if state.a.holder == Holder::Stopped {
-                    self.create_on_b()
+                    self.create_on_b(state)
                 } else if state.b.holder == Holder::Stopped {
                     None
                 } else {
@@ -1733,7 +1777,7 @@ impl VolumeRuns {
                 wait(state, sent);
             }
             (ReleaseStep::RemoveForward, _) => {
-                if state.a.holder == Holder::Stopped && self.create_on_b().is_some() {
+                if state.a.holder == Holder::Stopped && self.create_on_b(state).is_some() {
                     state.a.holder = Holder::Absent;
                 }
                 next(state, ReleaseStep::Finish);
@@ -1909,9 +1953,9 @@ impl VolumeRuns {
             row: Row::Warm,
             moving: Driver {
                 step: if start.b_held {
-                    MoveStep::Cut
+                    MoveStep::Image
                 } else {
-                    MoveStep::Warm
+                    MoveStep::Service
                 },
                 waiting: None,
                 resends: self.resends,
@@ -1920,6 +1964,7 @@ impl VolumeRuns {
             release: None,
             crashes: 0,
             enforcing: false,
+            takes: true,
             refused_start: false,
             unapproved_start: false,
         }
@@ -1994,6 +2039,17 @@ impl Model for VolumeRuns {
         if state.row.running() {
             actions.push(Action::EndMove);
         }
+        // Once the check ahead of the cut has passed, nothing looks again.
+        if self.relabels
+            && state.takes
+            && state.row.running()
+            && matches!(
+                state.moving.step,
+                MoveStep::Service | MoveStep::Warm | MoveStep::Image
+            )
+        {
+            actions.push(Action::Relabel);
+        }
         if let Some(release) = &state.release
             && release.driver.step != ReleaseStep::Over
         {
@@ -2035,6 +2091,7 @@ impl Model for VolumeRuns {
                 state.resize.cut_short = true;
             }
             Action::Enforce => state.enforcing = true,
+            Action::Relabel => state.takes = false,
             Action::Release => self.release_step(&mut state),
             Action::ReleaseResend => {
                 let lost = state
@@ -2089,6 +2146,9 @@ impl Model for VolumeRuns {
             Property::always(ENFORCED_STARTS_NOTHING, |_, state: &State| {
                 !state.unapproved_start
             }),
+            Property::always(NEVER_STRANDED, |_, state: &State| {
+                state.takes || state.row != Row::Done || state.running() > 0
+            }),
             Property::always(STORE_FITS, |_, state: &State| state.store_fits()),
             Property::always(RESIZE_DONE_HOLDS, |_, state: &State| {
                 state.resize.row != Row::Done || state.recorded()
@@ -2106,8 +2166,39 @@ impl Model for VolumeRuns {
         if self.enforce {
             properties.extend(enforced_reached());
         }
+        if self.relabels {
+            properties.extend(relabelled_reached());
+        }
         properties
     }
+}
+
+/// What B leaving the Move's placement mid-Move must reach: the Move refused at each
+/// check, with the Service running on A.
+fn relabelled_reached() -> Vec<Property<VolumeRuns>> {
+    vec![
+        Property::sometimes(
+            "a Move is refused before its first copy, with the Service running",
+            |_, state: &State| {
+                left_serving(state) && state.row == Row::Failed && state.release.is_none()
+            },
+        ),
+        Property::sometimes(
+            "a Move is refused before its cut, and its Release leaves the Service running",
+            |_, state: &State| {
+                left_serving(state)
+                    && state
+                        .release
+                        .as_ref()
+                        .is_some_and(|release| !release.forward && release.row == Row::Done)
+            },
+        ),
+    ]
+}
+
+/// B left the Move's placement, and A is still the Writer running the Service.
+fn left_serving(state: &State) -> bool {
+    !state.takes && state.a.copy.is_writer() && state.a.holder == Holder::Running
 }
 
 /// What turning enforcement on mid-Move must reach: each start a Move or its Release
@@ -2338,6 +2429,8 @@ const DONE_HOLDS: &str = "a run that finished done still holds at rest";
 const RELEASE_WINS: &str = "a Release finishes whatever the dead Move still sends";
 const ENFORCED_STARTS_NOTHING: &str =
     "an enforcing Machine starts no Container an Operator's Writer start names";
+const NEVER_STRANDED: &str =
+    "a Move never finishes with the Service stopped on a Machine nothing starts it on";
 const STORE_FITS: &str = "the Store's size fits every copy";
 const RESIZE_DONE_HOLDS: &str = "a resize that finished done recorded its target";
 const REFUSED_RECORDS_NOTHING: &str =
@@ -2461,6 +2554,43 @@ mod tests {
         );
         let path = checker.assert_any_discovery(RELEASE_WINS);
         println!("{RELEASE_WINS} breaks with the start sent:\n{path}");
+    }
+
+    /// B leaving the Move's placement before the cut, for a Move that starts the Service
+    /// on B and for one whose Deploy starts it there: the Move stops nothing.
+    #[test]
+    fn volume_runs_hold_for_a_target_that_leaves_the_placement() {
+        for left_out in [false, true] {
+            let checker = check(VolumeRuns {
+                left_out,
+                relabels: true,
+                ..VolumeRuns::default()
+            });
+            println!(
+                "relabelled, left out {left_out}: {} states",
+                checker.unique_state_count()
+            );
+            checker.assert_properties();
+        }
+    }
+
+    #[test]
+    fn a_move_its_deploy_no_longer_starts_is_refused_before_the_cut() {
+        let checker = discoveries(
+            VolumeRuns {
+                direction: Some(Direction::Grow),
+                left_out: true,
+                relabels: true,
+                broken: Broken {
+                    placement_unchecked: true,
+                    ..Broken::default()
+                },
+                ..VolumeRuns::default()
+            },
+            &[NEVER_STRANDED],
+        );
+        let path = checker.assert_any_discovery(NEVER_STRANDED);
+        println!("{NEVER_STRANDED} breaks with the check out:\n{path}");
     }
 
     /// The code as it is, in every scenario: every property holds, and every `sometimes`

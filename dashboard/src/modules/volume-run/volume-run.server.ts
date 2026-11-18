@@ -1842,9 +1842,11 @@ const leavesStopped = Effect.fn("VolumeRun.leavesStopped")(function* (
   const service = holder.resolved_spec.name;
   const details = { reason: "leaves_service_stopped", service, server: target.name };
   if (placement.by === "deploy") {
+    // A Deploy works a region move out again; one a person staged goes to the same Server until the placement changes.
+    const again = args.region === true ? "Deploy again" : `Change where ${service} runs and deploy again`;
     return {
-      code: "conflict", message: `This Deploy doesn't run ${service} on ${target.name}, so this move would stop ${service} and start it nowhere. Nothing moved. Deploy again`,
-      details: { ...details, deploys: true },
+      code: "conflict", message: `The Deploy doesn't run ${service} on ${target.name}, so this move would stop ${service} and start it nowhere. Nothing moved. ${again}`,
+      details: { ...details, deploys: args.region === true },
     } satisfies StoreRefusal;
   }
   const region = yield* nextRegion(organizationId, holder.namespace, service);
