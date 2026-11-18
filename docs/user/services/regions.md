@@ -7,7 +7,7 @@ A region is a name you give your servers, such as `fsn` for Falkenstein or `syd`
 an environment a region, and every service in it runs on the servers that carry that name. Without
 one, its services run on any server.
 
-Regions are CLI-only for now.
+You set regions from the CLI and from the Servers page in Ployz Cloud.
 
 ## Give a server a region
 
@@ -24,10 +24,12 @@ same, so `FSN` is `fsn`.
 
 ## A new environment's region
 
-In Ployz Cloud, a new environment runs in the region of the cluster's first server, by name, that has
-one. On a new cluster that is **Default**, which every server starts in. `ployz get
-@environment.region` shows it. An environment you made before this has no region, so it runs in any
-region, and a branch starts with its parent's region.
+A new environment runs in the region of the cluster's first server, the one that joined first,
+whether you make it in Ployz Cloud, with `ployz env new` or `ployz up`, or as a new project's first
+environment. On a new cluster that is **Default**, which every server starts in. `ployz get
+@environment.region` shows it. If that server has no region, because it joined before regions, the
+new environment runs in any region. So does an environment you made before this, and a branch
+starts with its parent's region.
 
 ## Set an environment's region
 

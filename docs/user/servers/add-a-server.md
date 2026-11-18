@@ -309,7 +309,10 @@ to the bottom of the list, and the list never reorders while you look at it. Whe
 server arrives ready, the tray names it and offers **Enroll** and **Reject** right in the header.
 
 Select a waiting server and click **Enroll** to choose its region, name, storage and what it runs.
-Each server starts in the **Default** region unless you pick another.
+Each server starts in the **Default** region unless you pick another. Two servers can't each
+make a new region from names that give one key, such as `Sydney` and `SYDNEY`: the sheet asks
+for one name. If the new region's name can't be saved after the servers enroll, a message says
+so, and the region shows its key until you [rename it](manage-servers.md#list-and-rename-regions).
 You can enroll while it prepares. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can enroll or reject servers. For a member,
 **Enroll** and **Reject** are disabled and say so. Follow [Add many servers](add-many-servers.md) for the full
 review and enrollment flow.

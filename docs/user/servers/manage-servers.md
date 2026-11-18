@@ -89,6 +89,11 @@ disk when available and falls back to Docker volumes where ZFS cannot run. Add
 use ZFS. `--storage none` uses Docker volumes. Each enrolled server runs services, takes web
 traffic and runs builds.
 
+Each server starts in the `default` region. `--region fsn` puts every server of this enrollment
+in `fsn` instead, as the Enroll sheet's region picker does for each server. A `ployz` older than
+this option can't pass it: it enrolls every server in `default`, and you can move one later
+([Set a server's region](#set-a-servers-region)).
+
 Add `--yes` to accept the printed plan without a prompt. Without a terminal or with `--json`,
 Ployz requires `--yes` and otherwise returns the plan with `confirmation_required`.
 To enroll every waiting server without a prompt, for example in a script:
@@ -673,8 +678,11 @@ already has, in any case, is refused under the field with that region's name, su
 
 When a service on the server belongs to an environment that runs in another region, the change
 asks first. **Move web-2 to Sydney** lists each service that leaves web-2 on the next deploy, with
-its environment and the server it goes to, or **No server in fsn** when no other server is in its region. **Move server** changes the region, and **Cancel** keeps
-the old one. When nothing would leave, the region changes at once.
+its environment and the server it goes to, or **No server in fsn** when no other server is in its region. A server that is offline isn't offered as one it goes to. **Move server** changes the region (**Clear region**, when you clear
+it), and **Cancel** keeps the old one. When nothing would leave, the region changes at once.
+The field waits for what runs on the server to load, and says so when it can't be read, rather
+than change a region without knowing what leaves. When one environment's services can't be
+read, the question says so and names it.
 
 The page shows the region you picked and **Queued** until the server reports it, then the server's
 own value. If the server hasn't reported it after a minute, the page goes back to what the server
@@ -686,6 +694,8 @@ The CLI sets the same label, and the list shows it on its next refresh:
 ```sh
 ployz server set web-1 --label-add region=fsn
 ```
+
+`ployz server ls` shows each server's region in its **REGION** column, `-` for a server with none.
 
 Cloud can't set or clear a label other than `region`, and the
 [Ployz agent](../account/agent-sidebar.md) can't set a region yet.
@@ -717,7 +727,8 @@ ployz region rename default Falkenstein
 
 It prints `Renamed default to Falkenstein. Nothing restarts.` Only the name changes. The key, each
 server's label and every environment stay as they are, so no service moves or restarts. A name is
-1 to 40 characters on one line. Renaming needs `servers:operate`, which owners and admins have.
+1 to 40 characters on one line. A name outside that, or one that another region already shows, is
+refused under the field, and the dialog keeps what you typed. Renaming needs `servers:operate`, which owners and admins have.
 Both commands need `ployz login`.
 
 In the dashboard, click **Rename region** on the **Servers** page. Pick the region, type its new
