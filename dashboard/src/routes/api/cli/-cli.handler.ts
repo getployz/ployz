@@ -49,7 +49,7 @@ import { approveUpgradeChannel, readCliServerUpgrade, readUpgradeChannel, upgrad
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
 import { OPERATIONS } from "#/modules/operations/operations";
-import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
+import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, unpermitted, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { CreateOrganization } from "#/modules/organization/organization-state";
 import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
@@ -58,6 +58,7 @@ import { slugifySegment } from "#/utils/slug";
 import { NotFound, Validation } from "#/server/public-error";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
 import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
+import { regionMoves } from "#/modules/volume-placement/volume-placement.server";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
@@ -166,7 +167,7 @@ const NewDeviceRequest = Schema.Struct({ key: Schema.String.check(Schema.isPatte
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
- * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on, and reading the Volumes a Deploy would move into a region. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -504,6 +505,14 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "GET volumes/:id/runs":
       return { runs: yield* listVolumeRuns(caller.organization.id, id ?? "") };
+    case "GET volume-moves": {
+      const query = new URL(request.url).searchParams;
+      const unread = unpermitted(caller, "volumes:read");
+      if (unread !== null) return refusal(unread.refusal);
+      const environment = { project: query.get("project"), environment: query.get("environment") };
+      const moves = yield* regionMoves(caller.organization.id, environment, query.getAll("service"));
+      return { moves: moves.map(({ volume, from, to }) => ({ volume, from, to })) };
+    }
     case "GET volume-runs/:id":
       if (!Schema.is(Uuid)(id)) return missingRefusal("No such volume run.");
       return yield* getVolumeRun(caller.organization.id, id).pipe(

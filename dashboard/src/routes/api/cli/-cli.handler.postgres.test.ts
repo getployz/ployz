@@ -2447,6 +2447,8 @@ it.live(
             [403, "This token can deploy only to staging."], JSON.stringify(body));
         }
         assert.lengthOf(yield* drizzle.select().from(volumeRun), 0);
+        assert.deepStrictEqual(refusedWith(yield* cli("GET", "volume-moves?project=shop&environment=production", { bearer: scoped.secret })),
+          [403, "This token's grant doesn't include volumes:read."]);
 
         const asked = yield* cli("POST", "namespaces/left-behind/clean", alice);
         const details = asked.json.error?.details ?? assert.fail(asked.text);
