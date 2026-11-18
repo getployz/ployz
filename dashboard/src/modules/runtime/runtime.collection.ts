@@ -61,6 +61,7 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   storage: Schema.NullOr(Schema.Literals(["stateless", "ready", "pool"])),
   /** Explicit build concurrency; null means automatic. */
   buildConcurrency: Schema.NullOr(Schema.Number),
+  region: Schema.NullOr(Schema.String),
   /** The build concurrency the Server enforces: the explicit value or the automatic one. */
   effectiveBuildConcurrency: Schema.Number,
   /** Builds the Server reports running now; display only. */

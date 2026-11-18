@@ -6,7 +6,7 @@ import { EnqueueMachineRemoveInput, ForgetServerInput } from "#/modules/machines
 import { ForgetServersInput } from "#/modules/machines/forget-servers";
 import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
-import { BuildConcurrencyChangeSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
+import { BuildConcurrencyChangeSchema, RegionSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
 import { ActivateServersInput, GenerateRecipientInput, InstallRecipientInput, PasskeyAnswered } from "#/modules/server-upgrade/activation";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
@@ -213,6 +213,7 @@ export const OPERATIONS = {
     options: Schema.Struct({
       server: Name, acceptsBuilds: Schema.Boolean, acceptsServices: Schema.Boolean, acceptsIngress: Schema.Boolean,
       buildConcurrency: BuildConcurrencyChangeSchema,
+      region: Schema.NullOr(RegionSchema),
     }),
     requires: "servers:operate",
     gate: "approval",
@@ -227,6 +228,7 @@ export const OPERATIONS = {
           acceptsServices: { via: "accepts_services" },
           acceptsIngress: { via: "accepts_ingress" },
           buildConcurrency: { via: "build_concurrency" },
+          region: { omitted: "No agent tool sets a region yet." },
         },
       },
       ui: {
@@ -239,6 +241,7 @@ export const OPERATIONS = {
           acceptsServices: { via: "change" },
           acceptsIngress: { via: "change" },
           buildConcurrency: { via: "change" },
+          region: { via: "change" },
         },
       },
     },

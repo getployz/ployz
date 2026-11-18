@@ -1,6 +1,7 @@
 import type { MachineUpdate } from "@ployz/sdk";
 import { Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
 
 const NonEmptyString = Schema.String.check(Schema.isNonEmpty());
 
@@ -17,6 +18,12 @@ export const BuildConcurrencyChangeSchema = Schema.Union([
 
 export type BuildConcurrencyChange = typeof BuildConcurrencyChangeSchema.Type;
 
+export const REGION_RULE = "Use up to 63 lowercase letters, digits and hyphens. Start with a letter or digit.";
+
+export const RegionSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
+
+export const isRegion = Schema.is(RegionSchema);
+
 /** One Server Policy change. Omitted fields keep the Server's current value. */
 export const ServerPolicyChangeSchema = Schema.Struct({
   acceptsBuilds: Schema.optionalKey(Schema.Boolean),
@@ -25,6 +32,8 @@ export const ServerPolicyChangeSchema = Schema.Struct({
   acceptsServices: Schema.optionalKey(Schema.Boolean),
   /** Only off: turning web traffic on also starts the Ingress Proxy, which the Server page switch or `ployz server set` does. */
   acceptsIngress: Schema.optionalKey(Schema.Literal(false)),
+  /** Null clears the Server's region. */
+  region: Schema.optionalKey(Schema.NullOr(RegionSchema)),
 });
 
 export type ServerPolicyChange = typeof ServerPolicyChangeSchema.Type;
@@ -41,7 +50,7 @@ export type RequestServerPolicyChangeInput =
 /** A change that sets nothing changes nothing; the request refuses it. */
 export const isEmptyPolicyChange = (change: ServerPolicyChange) =>
   change.acceptsBuilds === undefined && change.buildConcurrency === undefined && change.acceptsServices === undefined &&
-  change.acceptsIngress === undefined;
+  change.acceptsIngress === undefined && change.region === undefined;
 
 /** The Engine's partial MachineUpdate for one Server Policy change. */
 export function machineUpdateForPolicyChange(
@@ -62,12 +71,21 @@ export function machineUpdateForPolicyChange(
   } else if (change.buildConcurrency !== undefined) {
     update.build_concurrency = { action: "set", value: change.buildConcurrency };
   }
+  if (change.region !== undefined) {
+    update.label_changes = { [REGION_LABEL]: change.region };
+  }
   return update;
 }
 
 /** Whether Runtime observation already shows every value of `change`. */
 export function policyChangeObserved(
-  observed: { acceptsBuilds: boolean; acceptsServices: boolean; acceptsIngress: boolean; buildConcurrency: number | null },
+  observed: {
+    acceptsBuilds: boolean;
+    acceptsServices: boolean;
+    acceptsIngress: boolean;
+    buildConcurrency: number | null;
+    region: string | null;
+  },
   change: ServerPolicyChange,
 ): boolean {
   return (
@@ -78,6 +96,7 @@ export function policyChangeObserved(
     (change.acceptsIngress === undefined ||
       change.acceptsIngress === observed.acceptsIngress) &&
     (change.buildConcurrency === undefined ||
-      change.buildConcurrency === (observed.buildConcurrency ?? "automatic"))
+      change.buildConcurrency === (observed.buildConcurrency ?? "automatic")) &&
+    (change.region === undefined || change.region === observed.region)
   );
 }

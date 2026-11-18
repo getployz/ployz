@@ -25,7 +25,7 @@ const observed: RuntimeSnapshot = {
       acceptsBuilds: true,
       acceptsServices: true,
       storage: null,
-      buildConcurrency: null,
+      buildConcurrency: null, region: null,
       effectiveBuildConcurrency: 1,
       runningBuilds: 0,
       daemonVersion: "0.2.1",

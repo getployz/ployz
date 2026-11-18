@@ -23,10 +23,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function server(input: { membership?: RuntimeMachineRecord["membership"]; services?: string[]; storage?: RuntimeMachineRecord["storage"]; acceptsBuilds?: boolean; acceptsServices?: boolean; sealing?: RuntimeMachineRecord["sealing"] } = {}): Server {
+function server(input: { membership?: RuntimeMachineRecord["membership"]; services?: string[]; storage?: RuntimeMachineRecord["storage"]; acceptsBuilds?: boolean; acceptsServices?: boolean; sealing?: RuntimeMachineRecord["sealing"]; region?: string | null } = {}): Server {
   const machine: RuntimeMachineRecord = {
     id: "1".repeat(32), name: "fsn-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
-    acceptsServices: input.acceptsServices ?? true, storage: input.storage === undefined ? "pool" : input.storage, buildConcurrency: null, effectiveBuildConcurrency: 1, runningBuilds: 0,
+    acceptsServices: input.acceptsServices ?? true, storage: input.storage === undefined ? "pool" : input.storage, buildConcurrency: null, region: input.region ?? null, effectiveBuildConcurrency: 1, runningBuilds: 0,
     daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, sealing: input.sealing ?? null, membership: input.membership ?? "up", unanswered: false, observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
   const services = (input.services ?? []).map((name) => ({
@@ -48,6 +48,12 @@ it("shows nothing about a healthy Server beyond its name and what runs there, an
   expect(link.textContent).toBe("fsn-1apiwebOnline");
   expect(link.querySelector(".sr-only")?.textContent).toBe("Online");
   expect(link.getAttribute("href")).toBe(`/cloud/acme/~/servers/${"1".repeat(32)}`);
+});
+
+it("shows the region a Server is labelled with, and nothing when it has none", async () => {
+  expect((await row(server({ services: ["api"], region: "fsn" }))).textContent).toBe("fsn-1apifsnOnline");
+  cleanup();
+  expect((await row(server({ services: ["api"] }))).textContent).toBe("fsn-1apiOnline");
 });
 
 it("shows three Services and counts the rest", async () => {

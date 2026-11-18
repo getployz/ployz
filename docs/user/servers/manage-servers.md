@@ -23,8 +23,8 @@ status only when someone should look.
 | **Upgrading** | Ployz is upgrading it. See [Upgrade Ployz on a server](#upgrade-ployz-on-a-server). |
 | **Upgrade failed** | Its last upgrade didn't finish: it failed, stopped partway, or Cloud couldn't tell how it ended. A failed upgrade goes back to the release it ran before. **Show details** on its page has where it stopped and any error. |
 
-When the list is wide enough, each row also shows how much of the server's CPU and memory is in
-use right now. The meters stay empty until the server sends a reading, and an offline server shows
+When the list is wide enough, each row also shows the server's region, if it has one, and how much
+of its CPU and memory is in use right now. The meters stay empty until the server sends a reading, and an offline server shows
 none. A dash means no recent reading reached Ployz for that meter: the server sent none, or its
 clock runs behind, so its readings look old. The server's page has disk and the full picture.
 
@@ -181,6 +181,7 @@ Click a server. Its page shows its status and public IP address, then:
   [Change what a server does](#change-what-a-server-does).
 - **Builds**: **Run builds here** and **Builds at once**. See
   [Where builds run](../builds/where-builds-run.md#build-on-your-servers).
+- **Region**: where the server sits. See [Set a server's region](#set-a-servers-region).
 
 ![A server's page: Running here with each service's CPU and memory, then Services](../images/server-running-here.png)
 
@@ -657,6 +658,30 @@ In both cases the `next:`, `inspect:` and `retry:` lines select the server the w
 the command leaves out a `retry:` that would repeat its `next:`. They use its Machine ID when the same
 command renamed it with `--name`, since the name you typed no longer selects it. `inspect:` and
 `retry:` also use the Machine ID for another server, since two servers can share a name.
+
+## Set a server's region
+
+A region is a label on the server named `region`, like `fsn` or `lhr`. The Servers list shows it
+in its own column. Servers with no region leave it blank.
+
+On a server's page, under **Placement**, open **Region** and pick one a server in your organization already has, **No
+region** to clear it, or **New region…** to type one. A region is up to 63 lowercase letters, digits
+and hyphens, and starts with a letter or digit. Anything else shows the rule under the field and
+sends nothing. Press Enter or click the check to save.
+
+The page shows the region you picked and **Queued** until the server reports it, then the server's
+own value. If the server hasn't reported it after a minute, the page goes back to what the server
+reports and says so. Changing a region only changes the label: nothing restarts and no service
+moves until your next deploy. Only an owner or admin can change it; other members see the field read-only.
+
+The CLI sets the same label, and the list shows it on its next refresh:
+
+```sh
+ployz server set web-1 --label-add region=fsn
+```
+
+Cloud can't set or clear a label other than `region`, and the
+[Ployz agent](../account/agent-sidebar.md) can't set a region yet.
 
 ## Upgrade Ployz on a server
 
