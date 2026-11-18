@@ -342,8 +342,8 @@ pub(super) fn builders(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
-/// The Services a Deployment that otherwise finished left waiting, each with the planner's
-/// refusal, by the name its Environment gives it.
+/// One line for each Service a Deployment that otherwise finished left waiting, with the
+/// planner's refusal, by the name its Environment gives it.
 pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
     let Some(ployz_store::Outcome::Executed { waiting, .. }) = &view.deployment.outcome else {
         return Vec::new();
@@ -366,7 +366,10 @@ pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
                         .find(|entry| entry.service == *runtime)
                 })
                 .map(|entry| crate::ui::escaped(&entry.error.message));
-            why.map_or_else(|| name.to_string(), |why| format!("{name}: {why}"))
+            why.map_or_else(
+                || format!("{name} is waiting"),
+                |why| format!("{name} is waiting: {why}"),
+            )
         })
         .collect()
 }
@@ -1951,7 +1954,7 @@ mod tests {
         );
         assert_eq!(
             waiting(&view),
-            ["web: wcache is a Docker volume and can't move"]
+            ["web is waiting: wcache is a Docker volume and can't move"]
         );
         let failure = completion(&view, None, &[], command).unwrap_err();
         assert!(!failure.is_outcome());

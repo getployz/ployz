@@ -787,7 +787,8 @@ pub struct DeployPreview {
     pub placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
     /// Services this Deploy plans nothing for because they cannot run: a Volume with
     /// no writer or unknown copies, or a dependency so blocked. Each is reported as
-    /// not attempted, and the Deploy fails, while the other Services deploy.
+    /// not attempted, while the other Services deploy. A Deploy that does all it planned
+    /// ends Applied with these waiting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<BlockedService>>")]
     pub blocked: Vec<BlockedService>,
