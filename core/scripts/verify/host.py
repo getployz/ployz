@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 
 GiB = 1 << 30
@@ -32,9 +33,12 @@ def gib(count):
 
 
 def process_start(pid):
-    """The process's start time in clock ticks, which tells a live owner from a reused pid."""
+    """The process's start time, which tells a live owner from a reused pid: clock ticks from /proc on Linux, else ps's."""
     try:
-        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+        if Path("/proc/self/stat").exists():
+            return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+        started = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout
+        return "-".join(started.split()) or None
     except (OSError, IndexError, ValueError):
         return None
 

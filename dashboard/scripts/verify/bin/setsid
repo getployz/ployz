@@ -1,0 +1,7 @@
+#!/usr/bin/perl
+# setsid(1) for hosts without util-linux, such as macOS: run the command in a new session, forking first when
+# the caller already leads its process group, as util-linux does.
+use POSIX ();
+if (getpgrp() == $$) { defined(my $pid = fork) or die "setsid: fork: $!\n"; exit 0 if $pid; }
+POSIX::setsid() or die "setsid: $!\n";
+exec { $ARGV[0] } @ARGV or die "setsid: $ARGV[0]: $!\n";

@@ -7,3 +7,8 @@ if [ -z "${VERIFY_SCOPED:-}" ] && command -v systemd-run >/dev/null && systemd-r
   VERIFY_SCOPED=1 exec systemd-run --user --scope --quiet --collect -- "$BASH" "$0" "$@"
 fi
 export VERIFY_SCOPED=1
+# macOS has no setsid(1); every script these start inherits this PATH.
+if ! command -v setsid >/dev/null; then
+  PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bin:$PATH"
+  export PATH
+fi

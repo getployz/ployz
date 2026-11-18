@@ -52,16 +52,27 @@ def resolve(source, commands, core):
     return version
 
 
-# Each published Linux archive and the executables taken from it.
+# Each published archive and the executables taken from it.
 ARCHIVES = {"ployzd": ["ployzd", "ployz-uninstall"], "ployz": ["ployz"]}
+ARCHES = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def archive_name(name):
+    """The daemon's archive for the Machines, which run Linux on this host's arch, or x86_64 as Boat does when this
+    host isn't Linux; the CLI's for this host."""
+    linux = platform.system() == "Linux"
+    if name == "ployzd":
+        system, arch = "linux", platform.machine() if linux else "x86_64"
+    else:
+        system, arch = {"Linux": "linux", "Darwin": "macos"}.get(platform.system()), platform.machine()
+    if not system or arch not in ARCHES:
+        raise RuntimeError(f"No published {name} archive for {platform.system()} {platform.machine()}")
+    return f"{name}_{system}_{ARCHES[arch]}.tar.gz"
 
 
 def acquire(version, commands, artifacts, name="ployzd"):
-    arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
-    if not arch:
-        raise RuntimeError("Release verification needs an amd64 or arm64 Linux host")
     base = download_base(version)
-    cache = Path.home() / ".cache" / "ployz" / "verify" / "releases" / f"{version}-{arch}{staged()}"
+    cache = Path.home() / ".cache" / "ployz" / "verify" / "releases" / f"{version}{staged()}"
     cache.mkdir(parents=True, exist_ok=True)
     artifacts.mkdir(parents=True, exist_ok=True)
     with (cache / ".lock").open("a") as lock:
@@ -73,7 +84,7 @@ def acquire(version, commands, artifacts, name="ployzd"):
             temporary.replace(checksums)
         expected = {line.split()[1]: line.split()[0] for line in checksums.read_text().splitlines()}
         hashes = {}
-        archive = cache / f"{name}_linux_{arch}.tar.gz"
+        archive = cache / archive_name(name)
         checksum = expected.get(archive.name)
         if not checksum or not re.fullmatch(r"[0-9a-fA-F]{64}", checksum):
             raise RuntimeError(f"Missing release checksum for {archive.name}")
