@@ -25,9 +25,9 @@ same, so `FSN` is `fsn`.
 ## A new environment's region
 
 In Ployz Cloud, a new environment runs in the region of the cluster's first server, by name, that has
-one. On a new cluster that is **Default**, which every server starts in. Its **Runs in** setting
-shows the region's name. An environment you made before this keeps **Any region**, and a branch
-starts with its parent's region.
+one. On a new cluster that is **Default**, which every server starts in. `ployz get
+@environment.region` shows it. An environment you made before this has no region, so it runs in any
+region, and a branch starts with its parent's region.
 
 ## Set an environment's region
 

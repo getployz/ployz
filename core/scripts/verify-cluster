@@ -917,7 +917,7 @@ def roles_arg(text):
     return chosen
 
 
-def add(run, commands, backend, roles):
+def add(run, commands, backend, roles, region=None):
     # main read the manifest before taking the lock, and an add that finished since then changed it.
     run.update(json.loads(Path(run["manifest"]).read_text()))
     if run.get("bare"):
@@ -941,7 +941,7 @@ def add(run, commands, backend, roles):
     try:
         provision(run, backend, node, node["daemon"], lambda: None)
         save(run)
-        enroll(run, commands, node, Path(run["manifest"]).parent / "private", roles)
+        enroll(run, commands, node, Path(run["manifest"]).parent / "private", roles, region)
         save(run)
         if run.get("powered_off"):
             # doctor needs every Machine up, so with one powered off only the new Machine's own view is checked.
@@ -978,7 +978,7 @@ def joined(run, commands, node, seconds):
         time.sleep(0.25)
 
 
-def enroll(run, commands, node, private, roles=None):
+def enroll(run, commands, node, private, roles=None, region=None):
     """Enroll one Machine and give its Server the public IP the internet reaches it on."""
     # Cloud enrollment pins --public-ip and --wg-endpoint as a direct join does, from 0.3.8 on (#3516).
     # --no-install requires --storage none, yet managed Volumes work: the image ran `ployzd install --storage zfs`,
@@ -993,6 +993,7 @@ def enroll(run, commands, node, private, roles=None):
                        *(["--cluster-name", "verify"] if founder else []),
                        "--name", node["name"], "--ssh-key", str(private / "id_ed25519"),
                        "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420",
+                       *(["--region", region] if region is not None else []),
                        *([f"--accepts-{role}={str(role in roles).lower()}" for role in ROLES] if roles is not None else [])],
                  check=False, device=joiner)
     response = enrolled(node, result, commands.evidence)
@@ -1088,6 +1089,7 @@ def main():
                                    "wait until doctor passes, and print its name")
             command.add_argument("--roles", type=roles_arg, metavar="ROLE[,ROLE…]",
                                  help=f"The roles it takes, from {', '.join(ROLES)}; all of them by default")
+            command.add_argument("--region", metavar="REGION", help="The region it starts in; Default when omitted")
         if action in ["power", "partition"]:
             command.add_argument("state", choices=["on", "off"])
         if action == "runner":
@@ -1225,7 +1227,7 @@ def main():
             teardown(run, commands, backend)
             print(f"Removed cluster. Evidence: {commands.evidence}")
         elif args.action == "add":
-            add(run, commands, backend, args.roles)
+            add(run, commands, backend, args.roles, args.region)
         else:
             select_daemons(run, commands, args.daemon or [], default="checkout")
             select_cli(run, commands)
