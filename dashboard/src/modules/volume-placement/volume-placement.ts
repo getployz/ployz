@@ -62,9 +62,11 @@ export type Placement = {
  * The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark.
  * `approvals` are the person's passkey answers for the Deploy that runs it, which staging again drops. `region` marks a
  * move Cloud staged to bring the Volume into its Service's region: each Deploy stages it afresh, and a placement the
- * user stages takes its place.
+ * user stages takes its place. `reason` is why the last Deploy didn't make that move, until a Deploy stages it afresh.
  */
-export type StoredPlacement = Placement & { readonly unreached?: true; readonly approvals?: readonly PlacementApproval[]; readonly region?: true };
+export type StoredPlacement = Placement & {
+  readonly unreached?: true; readonly approvals?: readonly PlacementApproval[]; readonly region?: true; readonly reason?: string;
+};
 
 /**
  * The dashboard's record of a Volume's placement. Which copies are mirrors is each Server's to say. `mirrors` is only
@@ -82,6 +84,8 @@ export type PlacementRow = {
   readonly deploymentId: string | null;
   /** `staged` is the move into the Volume's region, which only its region changes. */
   readonly region?: true;
+  /** Why the last Deploy didn't make the region move in `staged`. */
+  readonly setAside?: string;
 };
 
 /** Whether `row` holds a placement a person staged. Cloud's move into a region never replaces or lists over one. */
@@ -93,7 +97,7 @@ export const userStaged = (row: Pick<PlacementRow, "staged" | "region">): boolea
  */
 export const ownPlacement = (row: PlacementRow | null): PlacementRow | null => {
   if (row?.region !== true) return row;
-  const { region: _cloud, ...own } = row;
+  const { region: _cloud, setAside: _why, ...own } = row;
   return { ...own, staged: null };
 };
 

@@ -82,16 +82,16 @@ const fail = Effect.fn("VolumePlacement.fail")(function* (
 });
 
 /**
- * A region move that can't run stops only its own Volume. Its row goes back with what is left of the move, the next
- * Deploy stages it afresh, and this one goes on: the Engine leaves the Volume's Service not started and says where the
- * Volume is.
+ * A region move that can't run stops only its own Volume. Its row goes back with what is left of the move and `reason`,
+ * why it didn't run, which the next plan shows. The next Deploy stages it afresh, and this one goes on: the Engine
+ * leaves the Volume's Service not started and says where the Volume is.
  */
 const setAside = Effect.fn("VolumePlacement.setAside")(function* (
-  deploymentId: string, volumeId: string, remaining: Placement | null, message: string, mirrors: readonly MachineId[] | null = null,
+  deploymentId: string, volumeId: string, remaining: Placement | null, reason: string, mirrors: readonly MachineId[] | null = null,
 ) {
-  yield* Effect.logWarning("A Deploy couldn't move a Volume into its region.", { deploymentId, volumeId, message });
+  yield* Effect.logWarning("A Deploy couldn't move a Volume into its region.", { deploymentId, volumeId, reason });
   yield* settleClaimed(volumeId, deploymentId, {
-    staged: remaining === null ? null : { ...remaining, region: true }, deploymentId: null, ...(mirrors !== null && { mirrors: [...mirrors] }),
+    staged: remaining === null ? null : { ...remaining, region: true, reason }, deploymentId: null, ...(mirrors !== null && { mirrors: [...mirrors] }),
   });
 });
 
@@ -106,12 +106,12 @@ const remainingAfterFailure = Effect.fn("VolumePlacement.remainingAfterFailure")
   const [row] = yield* drizzle.select().from(volumePlacement)
     .where(and(eq(volumePlacement.volumeId, volumeId), eq(volumePlacement.deploymentId, deploymentId)));
   const volume = volumes.find((entry) => entry.id === volumeId);
-  if (row?.staged == null || volume === undefined) return { remaining: null, mirrors: null };
+  if (row?.staged == null || volume === undefined) return { remaining: null, mirrors: null, unrun: null };
   const members = yield* inspect(organizationId, environment, volumeId);
   const placement = view(row);
   // A change the Servers no longer show landed despite the failure, so the step's mirrors are what they hold, as on success.
   const landed = !placementChanges(volume, members, placement).some((change) => sameChange(changeKey(change), step.change));
-  return { remaining: dropChange(volume, members, placement, step.change), mirrors: landed ? step.mirrors : null };
+  return { remaining: dropChange(volume, members, placement, step.change), mirrors: landed ? step.mirrors : null, unrun: landed ? null : placement.staged };
 });
 
 const failStep = Effect.fn("VolumePlacement.failStep")(function* (
@@ -233,8 +233,9 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
       }
       if (run.state === "failed" && waited.fenced === true) replanning = { waited, message };
       else if (waited.region === true) {
-        const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
-        yield* setAside(deploymentId, waited.volumeId, remaining, message, mirrors);
+        const { remaining, mirrors, unrun } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
+        // The move that didn't run stays on the row with why, so the next plan can say it.
+        yield* setAside(deploymentId, waited.volumeId, remaining ?? unrun, run.message ?? `The move ended ${run.state}.`, mirrors);
       } else return yield* failStep(organizationId, deploymentId, environment, volumes, waited, message, inspect);
     } else {
       // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
@@ -312,7 +313,7 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     if (row.staged?.region === true && replanning === null) {
       const remaining = requested.busy === null ? dropChange(volume, members, placement, step.change) : placement.staged;
-      yield* setAside(deploymentId, row.volumeId, remaining, `${volume.name}: ${requested.refusal.message}`);
+      yield* setAside(deploymentId, row.volumeId, remaining ?? placement.staged, requested.refusal.message);
       continue;
     }
     if (requested.busy !== null) {

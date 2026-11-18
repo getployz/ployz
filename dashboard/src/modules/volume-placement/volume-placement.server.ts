@@ -35,8 +35,8 @@ export const view = (row: Row): PlacementRow => {
   const { volumeId, environmentId, mirrors, deploymentId } = row;
   if (row.staged === null) return { volumeId, environmentId, mirrors, staged: null, unreached: false, deploymentId };
   // The approvals a Deploy carries stay on the server; the review reads only what is staged.
-  const { unreached = false, approvals: _kept, region, ...staged } = row.staged;
-  return { volumeId, environmentId, mirrors, staged, unreached, deploymentId, ...(region === true && { region }) };
+  const { unreached = false, approvals: _kept, region, reason, ...staged } = row.staged;
+  return { volumeId, environmentId, mirrors, staged, unreached, deploymentId, ...(region === true && { region }), ...(reason !== undefined && { setAside: reason }) };
 };
 
 export const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
@@ -311,7 +311,8 @@ export const readRegionServers: RegionReader = (organizationId) => firstRuntimeF
 
 /**
  * A Volume the next Deploy moves into its Service's region: the row it stages, and the move by name. `clears` names each
- * Server whose old copy the move deletes first, which only a Deploy that accepts that loss does.
+ * Server whose old copy the move deletes first, which only a Deploy that accepts that loss does. `reason` is why the last
+ * Deploy didn't make this same move.
  */
 export type RegionMove = {
   readonly row: PlacementRow & { readonly staged: Placement; readonly mirrors: readonly MachineId[] };
@@ -319,6 +320,7 @@ export type RegionMove = {
   readonly from: string;
   readonly to: string;
   readonly clears: readonly string[];
+  readonly reason?: string;
 };
 
 const readVolumes = (organizationId: string, environment: EnvironmentRef) => readStore(organizationId, { query: "volumes", environment });
@@ -363,7 +365,8 @@ const findRegionMoves = Effect.fn("VolumePlacement.regionMoves")(function* (
       deploymentId: null, region: true,
     };
     const clears = placementLosses(placementChanges(volume, members, moved)).flatMap(({ server }) => server?.name ?? []);
-    return [{ row: moved, volume: volume.name, from, to, clears }];
+    const reason = row?.staged?.primary === staged.primary ? row.setAside : undefined;
+    return [{ row: moved, volume: volume.name, from, to, clears, ...(reason !== undefined && { reason }) }];
   }), { concurrency: "unbounded" });
   return moves.flat();
 });

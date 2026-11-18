@@ -847,10 +847,13 @@ describe("deploying a Volume placement", () => {
       await endRun(started.wait.runId, "failed", "fsn-1 stopped answering");
       expect(await run(advancePlacement(organizationId, "dep-2", started.wait, inspect, answered))).toEqual({ kind: "done" });
       expect(await placement()).toMatchObject({ deploymentId: null });
+      const listed = () => run(regionMoves(organizationId, environment, [], inspect, regions("syd-1", "fsn-1")));
+      expect(await listed()).toMatchObject([{ volume: "data", from: "syd-1", to: "fsn-1", reason: "fsn-1 stopped answering" }]);
 
       statuses.set("dep-2", "failed");
       await deploy("dep-3");
       expect(await placement()).toMatchObject({ staged: { primary: web("fsn-1") }, region: true, deploymentId: "dep-3" });
+      expect((await placement())?.setAside).toBeUndefined();
     });
 
     it("goes back onto the Server there that holds its old copy, ahead of an earlier name, and deletes nothing", async () => {

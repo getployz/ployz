@@ -30,6 +30,9 @@ pub(super) struct VolumeMove {
     /// a Deploy that doesn't accept that loss, so the Volume stays where it is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) clears: Vec<String>,
+    /// Why the last Deploy didn't make this move, when it tried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) reason: Option<String>,
 }
 
 impl VolumeMove {

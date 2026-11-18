@@ -527,7 +527,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         project: query.get("project"), environment: query.get("environment"), services: query.getAll("service"),
       }).pipe(Effect.mapError(() => new Validation({ message: "Listing a deploy's volume moves takes its project and environment.", userFacing: true })));
       const moves = (yield* regionMoves(caller.organization.id, environment, services)) ?? [];
-      return { moves: moves.map(({ volume, from, to, clears }) => ({ volume, from, to, clears })) };
+      return { moves: moves.map(({ volume, from, to, clears, reason }) => ({ volume, from, to, clears, ...(reason !== undefined && { reason }) })) };
     }
     case "POST volume-moves": {
       const body = yield* decodeBody(VolumeMoveApprovals, request, "A volume move approval takes its environment and what the Device signed.");

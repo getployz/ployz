@@ -595,13 +595,21 @@ pub(super) fn execute(
             .flatten()
             .map(String::as_str)
             .collect();
-        progress::completion(
-            &view,
-            successor.as_ref(),
-            &named,
-            store.local().is_none(),
-            |args| super::rerun(matches, args),
-        )
+        let cloud = store.local().is_none();
+        let command = |args: &[&str]| super::rerun(matches, args);
+        // Only Cloud knows why it set a Volume's move aside, so the Deploy that left the
+        // Volume outside its region asks.
+        if !progress::region_moves(&view, cloud, command).is_empty() {
+            for moved in volume_moves::listed(store, &view.environment, &[]) {
+                if let Some(reason) = moved.reason {
+                    ui::warn(format!(
+                        "{} didn't move to {}: {reason}",
+                        moved.volume, moved.to
+                    ));
+                }
+            }
+        }
+        progress::completion(&view, successor.as_ref(), &named, cloud, command)
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
@@ -1176,7 +1184,14 @@ fn plan(
                 [] if shown.moves_need_device => crate::ui::stream(format_args!(
                     "{volume} stays on {from}: your servers move it only for a deploy an approved device signed"
                 )),
-                [] => crate::ui::stream(format_args!("{volume} moves {from} → {to}")),
+                [] => {
+                    crate::ui::stream(format_args!("{volume} moves {from} → {to}"));
+                    if let Some(reason) = &moved.reason {
+                        crate::ui::stream(format_args!(
+                            "The last deploy didn't move {volume}: {reason}"
+                        ));
+                    }
+                }
                 held => held
                     .iter()
                     .for_each(|line| crate::ui::stream(format_args!("{line}"))),
