@@ -198,6 +198,18 @@ The deploy also leaves the volume where it is when:
   ployz deploy
   ```
 
+- **Your service doesn't run on the volume's server.** That is after `ployz volume move
+  --leave-stopped` onto a server outside the region. A move copies the image of the service's
+  container on the server that holds the volume, and that server has none. The plan still lists
+  the move, and the deploy says why it didn't make it. On servers that enforce device approval:
+
+  ```
+  ! pg-data stays on db-1. No Service running on db-1 uses pg-data, so this device can't approve moving it. Run ployz status, then try again.
+  ```
+
+  Set the region to one `db-1` is in and deploy, so your service starts there. Then set the region
+  you want and deploy again: the volume moves with the service running.
+
 A move deletes an [old copy](move-a-volume.md#the-old-copy-a-move-leaves) of the volume on any
 other server first. That happens when a third server holds one, for example after `fsn` to `syd`
 to `lhr`. The deploy moves the volume only when you accept that delete:

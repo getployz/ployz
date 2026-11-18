@@ -3319,7 +3319,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: "web was not started; a Deploy starts it on syd-1" }]);
     });
 
-    it("a move onto a Server outside the Environment's region says the next Deploy moves the Volume back", async () => {
+    it("a move onto a Server outside the Environment's region says a region change starts the Service, and promises no move back", async () => {
       regions = { fsn: 1 };
       storeRegion = "fsn";
       machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
@@ -3329,7 +3329,7 @@ describe("volume runs", () => {
 
       expect(await rows()).toMatchObject([{
         state: "done",
-        message: "web was not started: syd-1 is outside fsn. A Deploy moves data back into fsn and starts web there. To run web on syd-1, change the region first",
+        message: "web was not started: syd-1 is outside fsn. Set a region that holds syd-1, then deploy to start web. data can't move again until web runs",
       }]);
     });
 

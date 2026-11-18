@@ -117,8 +117,10 @@ Your service stops and stays stopped. The move's last line says what starts it:
 
 - `web was not started; a Deploy starts it on web-2.` The environment's region holds `web-2`.
   Deploy to start it.
-- `web was not started: web-2 is outside fsn. A Deploy moves data back into fsn and starts web there. To run web on web-2, change the region first.`
-  The environment's region leaves `web-2` out, so a deploy moves the volume back.
+- `web was not started: web-2 is outside fsn. Set a region that holds web-2, then deploy to start web. data can't move again until web runs.`
+  The environment's region leaves `web-2` out, so a deploy can't start your service there. It
+  can't move the volume back either: a move copies the image of the service's container on the
+  server that holds the volume, and `web-2` has none until your service runs there.
 - `web was not started: its last Deploy doesn't run it on web-2. Deploy to start it.` The
   environment has no region. Change where the service runs before you deploy.
 

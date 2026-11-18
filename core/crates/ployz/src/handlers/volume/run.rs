@@ -560,7 +560,7 @@ pub(crate) fn move_command(command: Command) -> Command {
     )
     .arg(crate::cli::yes("Sign the Move without asking, when your Servers enforce device approval"))
     .arg(switch("leave-stopped", None).help(
-        "Move even when the Service's last Deploy doesn't run it on SERVER; the Service stays stopped until a Deploy starts it",
+        "Move even when the Service's last Deploy doesn't run it on SERVER; the Service stays stopped, and the Volume can't move again, until a Deploy runs it there",
     ))
     .arg(approval_arg())
     .arg(wait_flag())
@@ -768,7 +768,7 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
             return Err(leaves_stopped(matches, (&volume, service, &to), deploys));
         }
         crate::ui::warn(format!(
-            "{service} stays stopped after this move: its last Deploy doesn't run it on {to}. Deploy to start it."
+            "{service} stays stopped after this move, and {volume} can't move again, until a Deploy runs {service} on {to}."
         ));
     }
     let approval = draft

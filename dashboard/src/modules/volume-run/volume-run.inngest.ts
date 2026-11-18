@@ -216,13 +216,15 @@ const doneMessage = (...parts: ReadonlyArray<string | readonly string[] | null>)
 /**
  * What a run says when its target became the writer and was not asked to start the Service, whose placement leaves it
  * out. It names the target as where a Deploy starts the Service only when the region that Deploy places by holds it.
+ * Outside that region it promises no move back: a move copies the image of the Service Container on the writer, and
+ * the new writer has none until a Deploy runs the Service there.
  */
 const unstartedMessage = (volume: string, on: string, stopped: Unstarted | undefined) => {
   const service = stopped?.service ?? `${volume}'s Service`;
   if (stopped?.region === undefined) return `${service} was not started: its last Deploy doesn't run it on ${on}. Deploy to start it`;
   if (stopped.here === true) return `${service} was not started; a Deploy starts it on ${on}`;
   const { region } = stopped;
-  return `${service} was not started: ${on} is outside ${region}. A Deploy moves ${volume} back into ${region} and starts ${service} there. To run ${service} on ${on}, change the region first`;
+  return `${service} was not started: ${on} is outside ${region}. Set a region that holds ${on}, then deploy to start ${service}. ${volume} can't move again until ${service} runs`;
 };
 
 /**
