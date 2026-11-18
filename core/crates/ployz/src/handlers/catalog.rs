@@ -517,8 +517,9 @@ fn stored_paths() -> Vec<String> {
         };
         let view = store.read(&query).ok()?;
         Some(
-            view.settings
+            view.region_row()
                 .into_iter()
+                .chain(view.settings)
                 .map(|row| row.path.to_string())
                 .collect(),
         )

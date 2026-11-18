@@ -353,6 +353,33 @@ fn a_region_no_label_could_spell_is_refused_before_a_label_command_is_suggested(
 }
 
 #[test]
+fn a_read_of_every_setting_keeps_the_region_out_of_the_paths_an_older_ployz_parses() {
+    let (store, who) = shop();
+    let region = edit(None, vec![set("@environment.region", json!("fsn"))]);
+    store.write(&who, &region).unwrap();
+
+    let every = get(&store, &who, None);
+    assert_eq!(every.region, Some(Region::parse("fsn").unwrap()));
+    let paths: Vec<String> = every
+        .settings
+        .iter()
+        .map(|row| row.path.to_string())
+        .collect();
+    assert!(!paths.is_empty());
+    assert!(paths.iter().all(|path| !path.starts_with('@')), "{paths:?}");
+
+    let named = get(&store, &who, Some("@environment.region"));
+    assert_eq!(
+        named
+            .settings
+            .iter()
+            .map(|row| &row.value)
+            .collect::<Vec<_>>(),
+        [&json!("fsn")]
+    );
+}
+
+#[test]
 fn a_patch_keeps_omitted_settings_and_never_clears() {
     let (store, who) = shop();
     store

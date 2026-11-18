@@ -144,11 +144,16 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             "{service}.domains = {}",
             super::store::domain_list(domains.as_deref().unwrap_or_default(), service.as_str())
         )],
-        None => got(
-            &view.settings,
-            domains.as_deref().unwrap_or_default(),
-            every,
-        ),
+        None => {
+            let region = view.region_row().filter(|_| path.is_none());
+            let mut lines = got(region.as_slice(), &[], false);
+            lines.extend(got(
+                &view.settings,
+                domains.as_deref().unwrap_or_default(),
+                every,
+            ));
+            lines
+        }
     };
     let got = Got {
         view: &view,

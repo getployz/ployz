@@ -5,7 +5,7 @@
 //! `{"secret": true}`: no read shows a secret.
 
 use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
-use ployz_core::{ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigName, Region, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
@@ -48,6 +48,22 @@ pub struct EnvironmentView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<RowId>>", optional)]
     pub never_synced: Vec<RowId>,
+    /// The Environment's region, whichever Settings were asked for. `settings` lists it
+    /// only when the read names `@environment.region`: a `ployz` from before regions
+    /// refuses a reply that holds a path it can't parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<Region>,
+}
+
+impl EnvironmentView {
+    /// The region as the row a read of `@environment.region` lists; none without a region.
+    #[must_use]
+    pub fn region_row(&self) -> Option<SettingRow> {
+        self.region
+            .as_ref()
+            .map(|region| SettingRow::region(Some(region)))
+    }
 }
 
 /// One Setting's current Working State value.
@@ -69,6 +85,19 @@ pub struct SettingRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub note: Option<String>,
+}
+
+impl SettingRow {
+    fn region(region: Option<&Region>) -> Self {
+        Self {
+            path: SettingPath::REGION,
+            value: json!(region),
+            default: Value::Null,
+            apply: Apply::Staged,
+            row: None,
+            note: None,
+        }
+    }
 }
 
 pub(crate) fn environment(
@@ -103,15 +132,8 @@ pub(crate) fn environment(
         _ => crate::branch::Own::of(tx, &environment)?,
     };
     let mut settings = Vec::new();
-    if region || (path.is_none() && environment.working.region.is_some()) {
-        settings.push(SettingRow {
-            path: SettingPath::REGION,
-            value: json!(environment.working.region),
-            default: Value::Null,
-            apply: Apply::Staged,
-            row: None,
-            note: None,
-        });
+    if region {
+        settings.push(SettingRow::region(environment.working.region.as_ref()));
     }
     for service in services {
         let name = ServiceName::parse(service.slug.as_str())
@@ -227,6 +249,7 @@ pub(crate) fn environment(
         never_synced: crate::branch::marked(tx, &environment.summary.id)?
             .into_iter()
             .collect(),
+        region: environment.working.region.clone(),
         environment: environment.summary,
         settings,
         values,
