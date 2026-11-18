@@ -160,30 +160,11 @@ api: not started (no Server in syd)
   no longer one the service has a count for, it moves to a server in any region that is. A
   service with one number moves within the environment's region, or to any server when the
   environment has none.
-- **Upgrade every `ployz` before you set a count for each region.** An older `ployz` doesn't
-  know them. [Upgrade the CLI](../cli/overview.md#install-the-cli) on each computer that deploys.
-
-  With Ployz Cloud, an older `ployz` still shows the environment, and its deploys follow your
-  counts. On servers that
-  [enforce device approval](../deploy/deployments.md#deploy-to-servers-that-enforce-device-approval),
-  its deploy fails while a service has a count for each region:
-
-  ```
-  error: web: create Container failed.
-    cause: This service's settings differ from what the device approved.
-  ```
-
-  Without Ployz Cloud, an older `ployz` can't read the environment once a count for each region
-  is staged:
-
-  ```
-  error: The Config Store holds an unreadable Working State
-  ```
-
-  After you deploy a count for each region, an older `ployz` can't deploy that environment
-  again. An older `ployz ps` works again once every service has one number, the environment has
-  no region, and you deploy with the new `ployz`. An older `ployz project rm` still fails, and
-  leaves the removal queued. Run `ployz project rm` with the new `ployz` to finish it.
+- **An older `ployz` still deploys an environment with regions.** Its deploys follow the
+  environment's region and each service's counts. It shows a count for each region as
+  `{"fsn":2,"syd":1}`, and can set one. It doesn't show the environment's region: `ployz get`
+  leaves it out, and `ployz diff` leaves out a staged change to it, which `ployz deploy` still
+  applies. [Upgrade the CLI](../cli/overview.md#install-the-cli) to see or set the region.
 - **A branch starts with its parent's region** and follows later changes to it, like the parent's
   other settings.
 - **Syncing two environments doesn't copy the region.** Set it on each.

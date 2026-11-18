@@ -169,6 +169,10 @@ and `-_./:@+` shows in double quotes. A sealed value shows by the name it was se
 its value, and a value built from text and sealed parts shows its text, quoted. Since the
 approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
 value before a deploy you approve.
+The signature doesn't cover how many replicas a service runs, its
+[count for each region](../services/regions.md#run-a-service-in-more-than-one-region), or the
+order a deploy replaces them in. None of them show here, and Ployz Cloud could change them on a
+deploy you approve.
 Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
 shows here even if Cloud put it there. A control character in a value prints as its escape,
 such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
