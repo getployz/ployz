@@ -22,8 +22,8 @@ use crate::ui;
 
 /// One Volume Cloud moves, with the Server it leaves and the one it lands on, by name.
 #[derive(serde::Deserialize, serde::Serialize)]
-pub(super) struct VolumeMove {
-    pub(super) volume: String,
+pub(in crate::handlers) struct VolumeMove {
+    pub(in crate::handlers) volume: String,
     pub(super) from: String,
     pub(super) to: String,
     /// The Servers whose old copy the move deletes first. Cloud leaves such a move out of
@@ -61,7 +61,7 @@ impl VolumeMove {
 
 /// The moves Cloud makes for a Deploy of `services`. None without Cloud, from an older
 /// Cloud, or when it doesn't answer.
-pub(super) fn listed(
+pub(in crate::handlers) fn listed(
     store: &Store,
     environment: &EnvironmentSummary,
     services: &[ServiceName],

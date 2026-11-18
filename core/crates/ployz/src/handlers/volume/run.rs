@@ -560,7 +560,7 @@ pub(crate) fn move_command(command: Command) -> Command {
     )
     .arg(crate::cli::yes("Sign the Move without asking, when your Servers enforce device approval"))
     .arg(switch("leave-stopped", None).help(
-        "Move even when the Service's last deploy doesn't run it on SERVER; the Service stays stopped until a deploy starts it there",
+        "Move even when the Service's last Deploy doesn't run it on SERVER; the Service stays stopped until a Deploy starts it",
     ))
     .arg(approval_arg())
     .arg(wait_flag())
@@ -761,10 +761,14 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
     {
         let service = &draft.service.name;
         if !leave_stopped {
-            return Err(leaves_stopped(&volume, service, &to));
+            let deploys =
+                super::super::deploy::volume_moves::listed(&store, &found.environment, &[])
+                    .iter()
+                    .any(|moved| moved.volume == volume.as_str());
+            return Err(leaves_stopped(matches, (&volume, service, &to), deploys));
         }
         crate::ui::warn(format!(
-            "{service} stays stopped after this move: its last deploy doesn't run it on {to}. Deploy to start it."
+            "{service} stays stopped after this move: its last Deploy doesn't run it on {to}. Deploy to start it."
         ));
     }
     let approval = draft
@@ -787,18 +791,37 @@ pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// The refusal of a Move that would stop `service` and start it nowhere, before this Device
-/// signs it: the spec `service` runs with doesn't run on `to`.
-fn leaves_stopped(volume: &VolumeName, service: &ServiceName, to: &MachineName) -> Error {
+/// signs it: the spec `service` runs with doesn't run on `to`. `deploys` when the next Deploy
+/// moves the Volume itself, which is then the way out.
+fn leaves_stopped(
+    matches: &ArgMatches,
+    (volume, service, to): (&VolumeName, &ServiceName, &MachineName),
+    deploys: bool,
+) -> Error {
+    let instead = if deploys {
+        format!(
+            "Deploy instead: that moves {volume} into {service}'s region and starts {service} there."
+        )
+    } else {
+        format!(
+            "Change where {service} runs and deploy, or move {volume} now and leave {service} stopped."
+        )
+    };
     Error::detailed(
         RpcErrorCode::Conflict,
         format!(
-            "{service}'s last deploy doesn't run it on {to}, so this move would stop {service} \
-             and not start it again. Nothing moved. To run {service} on {to}, change where it \
-             runs and deploy. To move {volume} now and leave {service} stopped, add \
-             --leave-stopped."
+            "{service}'s last Deploy doesn't run it on {to}, so this move would stop {service} \
+             and start it nowhere. Nothing moved. {instead}"
         ),
-        serde_json::json!({ "reason": "leaves_service_stopped", "service": service, "server": to }),
+        serde_json::json!({
+            "reason": "leaves_service_stopped", "service": service, "server": to, "deploys": deploys,
+        }),
     )
+    .hint(if deploys {
+        Hint::Next(store::next(matches, &["deploy"]))
+    } else {
+        Hint::Retry(super::super::typed_with(&["--leave-stopped"]))
+    })
 }
 
 pub(crate) fn release(root: &ArgMatches) -> Result<(), Error> {

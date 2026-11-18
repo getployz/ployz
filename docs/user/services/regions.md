@@ -167,7 +167,7 @@ The deploy also leaves the volume where it is when:
   key. `ployz deploy --plan` there says so:
 
   ```
-  pg-data stays on db-1: your servers move it only for a deploy an approved device signed
+  pg-data stays on db-1: your Servers move it only for a deploy an approved device signed
   ```
 
   A deploy from the dashboard asks for your passkey and moves the volume. `ployz deploy` on

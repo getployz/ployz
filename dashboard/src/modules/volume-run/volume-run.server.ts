@@ -1813,10 +1813,11 @@ const leavesStopped = Effect.fn("VolumeRun.leavesStopped")(function* (organizati
   const service = holder.resolved_spec.name;
   if (yield* runsOn(args.service ?? holder.resolved_spec, holder.namespace, target)) return null;
   const region = yield* nextRegion(organizationId, holder.namespace, service);
-  const deploys = region !== null && labelledRegion(target.labels) === region;
-  const stops = `${service}'s last deploy doesn't run it on ${target.name}, so this move would stop ${service} and not start it again. Nothing moved`;
+  const from = frame.machines.find(({ machine }) => machine.id === holder.machine_id)?.machine;
+  const deploys = region !== null && labelledRegion(target.labels) === region && from !== undefined && labelledRegion(from.labels) !== region;
+  const stops = `${service}'s last Deploy doesn't run it on ${target.name}, so this move would stop ${service} and start it nowhere. Nothing moved`;
   const instead = deploys
-    ? `Deploy instead: the deploy moves ${volume.volumeName} to ${target.name} and starts ${service} there`
+    ? `Deploy instead: that moves ${volume.volumeName} into ${service}'s region and starts ${service} there`
     : `Change where ${service} runs and deploy, or move ${volume.volumeName} now and leave ${service} stopped`;
   return {
     code: "conflict", message: `${stops}. ${instead}`,

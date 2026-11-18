@@ -1005,7 +1005,7 @@ describe("volume runs", () => {
         ok: false,
         refusal: {
           code: "conflict",
-          message: "web's last deploy doesn't run it on syd-1, so this move would stop web and not start it again. Nothing moved. Deploy instead: the deploy moves data to syd-1 and starts web there",
+          message: "web's last Deploy doesn't run it on syd-1, so this move would stop web and start it nowhere. Nothing moved. Deploy instead: that moves data into web's region and starts web there",
           details: { reason: "leaves_service_stopped", service: "web", server: "syd-1", deploys: true },
         },
       });

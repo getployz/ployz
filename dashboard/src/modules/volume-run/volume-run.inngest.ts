@@ -219,7 +219,7 @@ const doneMessage = (...parts: ReadonlyArray<string | readonly string[] | null>)
  */
 const unstartedMessage = (volume: string, on: string, stopped: Unstarted | undefined) => {
   const service = stopped?.service ?? `${volume}'s Service`;
-  if (stopped?.region === undefined) return `${service} was not started: its last deploy doesn't run it on ${on}. Deploy to start it`;
+  if (stopped?.region === undefined) return `${service} was not started: its last Deploy doesn't run it on ${on}. Deploy to start it`;
   if (stopped.here === true) return `${service} was not started; a Deploy starts it on ${on}`;
   const { region } = stopped;
   return `${service} was not started: ${on} is outside ${region}. A Deploy moves ${volume} back into ${region} and starts ${service} there. To run ${service} on ${on}, change the region first`;

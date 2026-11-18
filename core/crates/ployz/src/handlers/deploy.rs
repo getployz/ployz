@@ -9,7 +9,7 @@ mod built;
 #[cfg(test)]
 mod follow_tests;
 mod progress;
-mod volume_moves;
+pub(super) mod volume_moves;
 
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress};
@@ -1182,7 +1182,7 @@ fn plan(
             } = moved;
             match moved.held(matches).as_slice() {
                 [] if shown.moves_need_device => crate::ui::stream(format_args!(
-                    "{volume} stays on {from}: your servers move it only for a deploy an approved device signed"
+                    "{volume} stays on {from}: your Servers move it only for a deploy an approved device signed"
                 )),
                 [] => {
                     crate::ui::stream(format_args!("{volume} moves {from} → {to}"));

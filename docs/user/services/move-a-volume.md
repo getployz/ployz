@@ -92,14 +92,20 @@ leaves `web-2` out, for example because the service was deployed with a [region]
 before it stops anything:
 
 ```
-error: web's last deploy doesn't run it on web-2, so this move would stop web and not start it again. Nothing moved. Deploy instead: the deploy moves data to web-2 and starts web there
+error: web's last Deploy doesn't run it on web-2, so this move would stop web and start it nowhere. Nothing moved. Deploy instead: that moves data into web's region and starts web there
 
 next: ployz deploy
 ```
 
-When you have already changed the environment's region to one `web-2` is in, deploy: the deploy
+That is the refusal after you changed the environment's region to one `web-2` is in: the deploy
 [moves the volume](regions.md#when-a-volume-is-outside-the-region) and starts your service there.
-Otherwise change where the service runs, then deploy.
+Otherwise the refusal names both ways out:
+
+```
+error: web's last Deploy doesn't run it on web-2, so this move would stop web and start it nowhere. Nothing moved. Change where web runs and deploy, or move data now and leave web stopped.
+
+retry: ployz volume move data --to web-2 --leave-stopped
+```
 
 To move the volume now and start your service later, add `--leave-stopped`:
 
@@ -113,7 +119,7 @@ Your service stops and stays stopped. The move's last line says what starts it:
   Deploy to start it.
 - `web was not started: web-2 is outside fsn. A Deploy moves data back into fsn and starts web there. To run web on web-2, change the region first.`
   The environment's region leaves `web-2` out, so a deploy moves the volume back.
-- `web was not started: its last deploy doesn't run it on web-2. Deploy to start it.` The
+- `web was not started: its last Deploy doesn't run it on web-2. Deploy to start it.` The
   environment has no region. Change where the service runs before you deploy.
 
 If `web-1` still has the old replica's container but holds no Ployz spec under its id, Ployz

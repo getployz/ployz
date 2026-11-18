@@ -144,7 +144,7 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
 });
 
 const UNSTAGED: StoreRefusal = { code: "conflict", message: "These volume changes changed since you approved them. Deploy again.", details: null };
-const MOVES_UNKNOWN: StoreRefusal = { code: "unavailable", message: "Cloud couldn't check which volumes this deploy moves. Try again.", details: null };
+const MOVES_UNKNOWN: StoreRefusal = { code: "unavailable", message: "Couldn't check which Volumes this Deploy moves. Try again.", details: null };
 const FOR_ANOTHER_CHANGE: StoreRefusal = { code: "invalid", message: "An approval doesn't match the staged change. Deploy again to approve it.", details: null };
 
 /**
