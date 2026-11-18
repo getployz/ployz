@@ -158,6 +158,33 @@ it("dates a staged restore's point in Details once the day turns, with the Serve
   }
 });
 
+it("a Deploy pressed before Details lists a move into the region still asks the passkey for it", async () => {
+  const id = (server: string) => server.padEnd(32, "0") as never;
+  const move: PlacementRow = {
+    volumeId: "v1", environmentId: "env-1", mirrors: [], unreached: false, deploymentId: null, region: true,
+    staged: { primary: id("fsn-1"), mirrors: [], deletes: [] },
+  };
+  const answered = [member("syd-1", "writer"), member("fsn-1", "empty")];
+  vi.spyOn(functions, "listPlacementsServerFn").mockResolvedValue([] as never);
+  vi.spyOn(functions, "regionMovesServerFn").mockResolvedValue([move] as never);
+  vi.spyOn(runs, "inspectVolumeCopiesServerFn").mockResolvedValue(answered);
+  const staged = vi.spyOn(functions, "prepareRegionMovesServerFn").mockResolvedValue(undefined);
+  const kept = vi.spyOn(functions, "keepPlacementApprovalsServerFn").mockResolvedValue({ ok: true } as never);
+  scoped(...answered);
+  const approve = vi.spyOn(volumeApproval, "approveVolume").mockResolvedValue({ approval: "signed" as never, lines: [] });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useStagedPlacements("acme", environment, "env-1", [{ id: "v1", name: "pg-data", change: null }]), { wrapper });
+  expect(result.current.count).toBe(0);
+
+  const ask = await result.current.prepare();
+
+  expect(staged).toHaveBeenCalledWith({ data: { organizationSlug: "acme", environment } });
+  expect(await ask()).toBe(true);
+  expect(approve).toHaveBeenCalledTimes(1);
+  expect(kept.mock.calls[0]?.[0]).toMatchObject({ data: { approvals: [{ volumeId: "v1", run: "move", approval: "signed" }] } });
+});
+
 const runView = (id: string, state: string, message: string | null = null) => ({ id, state, message }) as never;
 
 /** What the Servers answer for the Volume just now, which a delete reads before it asks for the person's passkey. */

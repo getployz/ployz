@@ -7,6 +7,7 @@ import { toErrorMessage } from "#/lib/error-message";
 import { diffQuery, environmentKey, invalidateViews, useCachedStoreView } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
+import type { Member } from "#/modules/volume-run/volume-run";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
 import {
   appliedMirrors, observePlacement, type Placement, type PlacementChange, placementChanges, placementGroup, placementLoss, type PlacementLoss, type PlacementRow,
@@ -99,7 +100,8 @@ export type StagedPlacements = {
    * Reads what each Volume workflow the next Deploy runs on a Server that enforces device approval names, then answers
    * with the prompts: they ask the person's passkey once for each workflow and keep the answers on the staged rows,
    * false when they cancel one. Both throw `VolumeNotApproved` or a refusal. The reads need no prompt, so a Deploy starts
-   * them while it asks for its own approval.
+   * them while it asks for its own approval. The moves into a region are read here too, so a Deploy pressed before
+   * Details listed them still asks for theirs.
    */
   readonly prepare: () => Promise<() => Promise<boolean>>;
 };
@@ -114,19 +116,20 @@ export function useStagedPlacements(
   const placements = (useVolumePlacements(organizationSlug).data ?? []).filter((row) => row.environmentId === environmentId);
   const byUser = placements.filter((row) => row.deploymentId === null && userStaged(row));
   const diff = useCachedStoreView(organizationSlug, diffQuery(environment));
-  const moves = useQuery(regionMovesQueryOptions(organizationSlug, environment, diff?.ok === true ? diff.value.version : null)).data ?? [];
+  const regionMoves = regionMovesQueryOptions(organizationSlug, environment, diff?.ok === true ? diff.value.version : null);
+  const moves = useQuery(regionMoves).data ?? [];
   const taken = (volumeId: string) => placements.some((row) => row.volumeId === volumeId && (userStaged(row) || (row.staged !== null && row.deploymentId !== null)));
   const rows = [...byUser, ...moves.filter((move) => !taken(move.volumeId))];
   const members = useQueries({ queries: rows.map((row) => volumeMembersQueryOptions(organizationSlug, environment, row.volumeId)) });
   const failure = "Could not discard the Volume changes";
   const { settle } = useSettle(failure, organizationSlug, environment);
-  const staged = rows.flatMap((row, index) => {
-    const volume = volumes.find((entry) => entry.id === row.volumeId);
-    const answered = members[index]?.data;
+  const entry = (row: PlacementRow, answered: readonly Member[] | undefined) => {
+    const volume = volumes.find((each) => each.id === row.volumeId);
     if (volume === undefined || answered === undefined) return [];
     const changes = placementChanges(volume, answered, row);
     return changes.length === 0 ? [] : [{ volume, row, members: answered, changes }];
-  });
+  };
+  const staged = rows.flatMap((row, index) => entry(row, members[index]?.data));
   const queryClient = useQueryClient();
   const now = useMinute() ?? new Date();
   const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.unreached, row.region === true));
@@ -148,11 +151,13 @@ export function useStagedPlacements(
       } })]);
     },
     prepare: async () => {
-      if (staged.some(({ row }) => row.region === true)) await prepareRegionMovesServerFn({ data: { organizationSlug, environment } });
+      const moving = (await queryClient.fetchQuery(regionMoves)).filter((move) => !taken(move.volumeId));
+      if (moving.length > 0) await prepareRegionMovesServerFn({ data: { organizationSlug, environment } });
+      const answers = await Promise.all(moving.map((row) => queryClient.fetchQuery(volumeMembersQueryOptions(organizationSlug, environment, row.volumeId))));
       // A Volume no Server answered for asks nothing, so it reads nothing more. A restore into a new Volume runs on its
       // source's Servers.
-      const asking = staged.filter(({ members: shown, changes }) =>
-        shown.some((member) => member.answered) || changes.some((change) => change.kind === "seed"));
+      const asking = [...staged.filter(({ row }) => row.region !== true), ...moving.flatMap((row, index) => entry(row, answers[index]))]
+        .filter(({ members: shown, changes }) => shown.some((member) => member.answered) || changes.some((change) => change.kind === "seed"));
       const asked = await Promise.all(asking.map(async ({ volume, row, changes }) =>
         (await placementApprovalAsks(queryClient, organizationSlug, environment, volume, row, changes)).map((each) => ({ ...each, volumeId: volume.id }))));
       return async () => {
