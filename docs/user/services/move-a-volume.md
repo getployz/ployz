@@ -84,9 +84,37 @@ because Ployz restarted there, it can't tell exactly when the service started. T
 gives an estimate and says why: `web was stopped about 43s (its start was retried)`. While the old replica is stopped, `ployz status` names it as not serving, with the
 code it exited with. The row goes once the replica on `web-2` runs.
 
-If the [region](regions.md) your service was last deployed with leaves `web-2` out, the move
-doesn't start it there. The last line says so: `web was not started; a Deploy starts it on web-2.`
-Deploy to start it.
+### When the service can't start on the new server
+
+Your service starts on the new server with the placement of its last deploy. If that placement
+leaves `web-2` out, for example because the service was deployed with a [region](regions.md)
+`web-2` isn't in, the move would stop your service and start it nowhere. Ployz refuses the move
+before it stops anything:
+
+```
+error: web's last deploy doesn't run it on web-2, so this move would stop web and not start it again. Nothing moved. Deploy instead: the deploy moves data to web-2 and starts web there
+
+next: ployz deploy
+```
+
+When you have already changed the environment's region to one `web-2` is in, deploy: the deploy
+[moves the volume](regions.md#when-a-volume-is-outside-the-region) and starts your service there.
+Otherwise change where the service runs, then deploy.
+
+To move the volume now and start your service later, add `--leave-stopped`:
+
+```sh
+ployz volume move data --to web-2 --leave-stopped --wait
+```
+
+Your service stops and stays stopped. The move's last line says what starts it:
+
+- `web was not started; a Deploy starts it on web-2.` The environment's region holds `web-2`.
+  Deploy to start it.
+- `web was not started: web-2 is outside fsn. A Deploy moves data back into fsn and starts web there. To run web on web-2, change the region first.`
+  The environment's region leaves `web-2` out, so a deploy moves the volume back.
+- `web was not started: its last deploy doesn't run it on web-2. Deploy to start it.` The
+  environment has no region. Change where the service runs before you deploy.
 
 If `web-1` still has the old replica's container but holds no Ployz spec under its id, Ployz
 doesn't remove it. The move still finishes, and its last line ends with a sentence naming each

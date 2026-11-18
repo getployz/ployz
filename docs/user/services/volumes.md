@@ -231,6 +231,9 @@ With Ployz Cloud, **Make primary** on a mirror or `ployz volume move data --to w
 volume and the service that mounts it to another server, stopping the service only for the last
 copy. See [Move a volume](move-a-volume.md).
 
+A deploy moves a volume itself when you change the environment's region. See
+[When a volume is outside the region](regions.md#when-a-volume-is-outside-the-region).
+
 ## When a volume has no writer
 
 Each volume has one writer, the server that mounts it. A server you remove or reinstall turns

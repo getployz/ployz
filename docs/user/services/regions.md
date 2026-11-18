@@ -109,37 +109,68 @@ postgres → fsn
 pg-data moves db-1 → web-1
 ```
 
-The volume goes to a server in the region that holds its [mirror](mirror-a-volume.md). With no
-mirror there, it goes back to a server that holds its
+The volume goes to a server in the region that accepts services. The one that holds its
+[mirror](mirror-a-volume.md) comes first. With no mirror there, it goes back to one that holds its
 [old copy](move-a-volume.md#the-old-copy-a-move-leaves) and sends only what changed since. With
-neither, it goes to one with managed volumes and room for it. To choose the server yourself, stage
-the move with **Make primary** before you deploy. See [Move a volume](move-a-volume.md) for what a
-move does to the service while it runs.
+neither, it goes to the first by name with managed volumes and room for it. To choose the server
+yourself, stage the move with **Make primary** before you deploy. See
+[Move a volume](move-a-volume.md) for what a move does to the service while it runs.
 
-If the move fails, the volume stays where it was and the deploy doesn't start that service. The
-rest of the deploy goes ahead, and the service keeps running where it was:
+If the move fails, the deploy doesn't start that service and the rest of the deploy goes ahead.
+The deploy says why the volume didn't move:
 
 ```
+! pg-data didn't move to web-1: web-1 stopped answering
 postgres: not started (pg-data is on db-1)
+
+next: ployz deploy --project shop --env production
 ```
 
-Deploy again to try the move again, or move the volume with the command the deploy prints:
+A move that fails before it stops the service leaves the volume where it was, with the service
+running there. One that fails later can leave the service stopped.
+[A move failed partway](../troubleshooting/volumes.md#a-move-failed-partway) says what each stage
+leaves and how to finish it.
 
-```sh
-ployz volume move pg-data --to web-1
-ployz deploy
+Deploy again to try the move again. `ployz deploy --plan` repeats why the last deploy didn't move
+the volume:
+
+```
+pg-data moves db-1 → web-1
+The last deploy didn't move pg-data: web-1 stopped answering
 ```
 
-When the service was last deployed with another region, the move leaves it stopped and the deploy
-starts it on `web-1`.
+Don't move the volume by hand with `ployz volume move`. The service still has the placement of its
+last deploy, which doesn't run it on `web-1`, so Ployz
+[refuses that move](move-a-volume.md#when-the-service-cant-start-on-the-new-server) before it
+stops anything. The deploy moves the volume and starts the service with its new placement.
 
-The deploy also leaves the volume where it is, and prints that command, when:
+If you change the region again while a deploy is still moving the volume, the deploy you start
+then doesn't move it a second time. Deploy again once the earlier deploy ends.
 
-- **You have no Ployz Cloud.** Moving a volume needs it. Give the volume's server the region, or
-  change the environment's region.
+The deploy also leaves the volume where it is when:
+
+- **You have no Ployz Cloud.** Moving a volume needs it, so the deploy prints no command. Give the
+  volume's server the region, or change the environment's region.
+- **A mirror of the volume is on a server outside the region and none is inside it.** A volume
+  moves only onto a server that holds its mirror while it has one. The plan lists no move, and
+  the deploy prints the command that removes the mirror:
+
+  ```
+  postgres: not started (pg-data is on db-1)
+
+  next: ployz volume mirror rm pg-data-db-2 --project shop --env production
+  ```
+
+  Run it, then deploy again.
 - **Your servers enforce device approval and no approved device or passkey approved the move.**
   That is a deploy from a push, the agent, or `ployz` on a computer without an approved device
-  key. A deploy from the dashboard asks for your passkey and moves the volume. `ployz deploy` on
+  key. `ployz deploy --plan` there says so:
+
+  ```
+  pg-data stays on db-1: your servers move it only for a deploy an approved device signed
+  ```
+
+  A deploy from the dashboard asks for your passkey and moves the volume. `ployz deploy` on
   an approved device shows the move after the deploy's own lines and asks before it signs it:
 
   ```
@@ -157,8 +188,13 @@ The deploy also leaves the volume where it is, and prints that command, when:
   ! pg-data stays on db-1. This device signs a move only into the environment's region, and postgres has a count for each region.
   ```
 
-  Run the command the deploy prints on an approved device, then deploy again. A deploy from the
-  dashboard asks for your passkey and moves the volume.
+  A deploy from the dashboard asks for your passkey and moves the volume. From `ployz`, move the
+  volume first and leave the service stopped, then deploy to start it:
+
+  ```sh
+  ployz volume move pg-data --to web-1 --leave-stopped
+  ployz deploy
+  ```
 
 A move deletes an [old copy](move-a-volume.md#the-old-copy-a-move-leaves) of the volume on any
 other server first. That happens when a third server holds one, for example after `fsn` to `syd`
@@ -168,8 +204,7 @@ to `lhr`. The deploy moves the volume only when you accept that delete:
   servers that enforce device approval, it asks for your passkey for both.
 - **From `ployz deploy`, a push or the agent**, the deploy leaves the volume where it is and
   doesn't start that service. The rest of the deploy goes ahead. `ployz deploy --plan` prints the
-  command that deletes the copy, and so does `ployz deploy` on servers that enforce device
-  approval:
+  command that deletes the copy, and the deploy ends with it as its `next:` line:
 
   ```
   pg-data stays on db-1. Delete its old copy on web-2 first: ployz volume mirror rm pg-data-web-2 --if-old-copy
@@ -182,7 +217,15 @@ to `lhr`. The deploy moves the volume only when you accept that delete:
   ployz deploy
   ```
 
-A Docker volume can't move. Give its server the region, or change the environment's region:
+  `ployz deploy --accept-volume-loss pg-data` accepts the delete instead, and the deploy moves the
+  volume.
+
+A Docker volume can't move. Give its server the region, or change the environment's region.
+`ployz deploy --plan` says the service won't start, and the deploy doesn't start it:
+
+```
+postgres → fsn: won't start (pg-data is a Docker volume and can't move)
+```
 
 ```
 postgres: not started (pg-data is a Docker volume and can't move)
