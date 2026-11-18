@@ -1245,6 +1245,27 @@ pub fn set_volume_copy_refusal(
         .transpose()
 }
 
+/// Whether `machine` satisfies `service`'s placement in `namespace`: its selectors, its
+/// regions and the role its identity needs. A Machine refuses to start a Service whose
+/// placement it does not satisfy. Storage is not judged here.
+///
+/// # Errors
+/// Rejects a spec, Namespace or Machine that does not decode.
+#[napi]
+pub fn satisfies_placement(
+    #[napi(ts_arg_type = "ResolvedServiceSpec")] service: serde_json::Value,
+    namespace: String,
+    #[napi(ts_arg_type = "Machine")] machine: serde_json::Value,
+) -> Result<bool> {
+    let service: ployz_core::ResolvedServiceSpec = from_js(service).map_err(invalid_argument)?;
+    let namespace = Namespace::parse(namespace).map_err(invalid_argument)?;
+    let machine: ployz_core::Machine = from_js(machine).map_err(invalid_argument)?;
+    Ok(!matches!(
+        service.placement_eligibility_in_namespace(&namespace, &machine, None),
+        ployz_core::ServicePlacementEligibility::Ineligible(_)
+    ))
+}
+
 /// The daemon's Machine upgrade attempt ID for a UUID.
 ///
 /// # Errors

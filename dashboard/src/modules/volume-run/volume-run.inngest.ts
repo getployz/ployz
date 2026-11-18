@@ -212,6 +212,9 @@ const doneMessage = (...parts: ReadonlyArray<string | readonly string[] | null>)
   return kept.length === 0 ? null : kept.join("; ");
 };
 
+/** What a run says when its target became the writer and was not asked to start the Service, whose placement leaves it out. */
+const unstartedMessage = (service: string, on: string) => `${service} was not started; a Deploy starts it on ${on}`;
+
 /**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
  * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms. A
@@ -755,6 +758,7 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
     // The receipt names the source, so B starts from the Container its cut stopped, not one an earlier Move left elsewhere.
     const source = members.find((member) => member.machine.id === handed?.from)?.machine ?? null;
     let stays: readonly string[] | null;
+    let unstarted: string | null;
     try {
       const started = await settle(steps, id("03-start"), commitAndStart(run, runId, {
         to: target.machine,
@@ -766,11 +770,12 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
         receipt,
       }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
       if (!started.ok) throw new NonRetriableError(started.message);
-      stays = await step.run(id("04-remove"), () => runEffect(removeKept(run, runId, forward.removeOn)));
+      unstarted = started.unstarted === true ? unstartedMessage(`${run.volumeName}'s Service`, target.machine.name) : null;
+      stays = unstarted === null ? await step.run(id("04-remove"), () => runEffect(removeKept(run, runId, forward.removeOn))) : null;
     } catch (error) {
       return stopped(steps, id("05-failed"), error instanceof Error ? error : new Error(String(error)));
     }
-    await finish(steps, id("05-finish"), doneMessage(stays));
+    await finish(steps, id("05-finish"), doneMessage(unstarted, stays));
     return { runId: run.id, moved: target.machine.name };
   }
 }
@@ -865,14 +870,15 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       receipt,
     }), `${B.name} is still starting ${name}'s Service`);
     if (!started.ok) throw new NonRetriableError(started.message);
-    stays = await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
+    // An unstarted Service keeps A's stopped Container: a Release that takes this run over finds the Service by it,
+    // and the Deploy that starts the Service removes it.
+    if (started.unstarted !== true) stays = await step.run("08-remove", () => runEffect(removeKept(run, runId, [A])));
     // A late start may have been made before its answer, and the cut's answer follows the stop, so the time is
     // only an estimate either way. Times stamped by different workers can disagree; a negative one says nothing.
     const startedAt = started.at ?? started.lateAt;
     const stopped = stoppedAt === null || startedAt === undefined || startedAt < stoppedAt ? null : formatDuration((startedAt - stoppedAt) / 1000);
-    downtime = stopped === null
-      ? null
-      : started.at === undefined ? `${service} was stopped about ${stopped} (its start was retried)` : `${service} was stopped ${stopped}`;
+    if (started.unstarted === true) downtime = unstartedMessage(service, B.name);
+    else if (stopped !== null) downtime = started.at === undefined ? `${service} was stopped about ${stopped} (its start was retried)` : `${service} was stopped ${stopped}`;
   } catch (error) {
     return release(steps, "09-failed", error instanceof Error ? error : new Error(String(error)));
   }

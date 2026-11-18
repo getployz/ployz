@@ -262,6 +262,7 @@ const observeCopies = rpc(native.observeCopies);
 const observeRunning = rpc(native.observeRunning);
 const allocateEnrollment = rpc(native.allocateEnrollment);
 const machineUpgradeAttemptId = rpc(native.machineUpgradeAttemptId);
+const satisfiesPlacement = rpc(native.satisfiesPlacement);
 const ployzVersion = rpc(native.ployzVersion);
 const agentTools = rpc(native.agentTools);
 const agentStart = rpc(native.agentStart);
@@ -289,6 +290,7 @@ module.exports = {
   allocateEnrollment,
   setVolumeCopyRefusal,
   machineUpgradeAttemptId,
+  satisfiesPlacement,
   ployzVersion,
   agentTools,
   agentStart,

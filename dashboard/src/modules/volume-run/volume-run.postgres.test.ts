@@ -101,6 +101,8 @@ type FakeMachine = {
   /** A renamed Server keeps its id; the default derives it from the name. */
   id?: MachineId;
   pool: boolean;
+  /** Its `region` label. Like the daemon, it becomes the writer and then refuses to start a Service whose regions leave it out. */
+  region?: string;
   stateless?: boolean;
   silent?: boolean;
   lacks?: string;
@@ -168,7 +170,8 @@ const writerCopy = (newest: Snapshot | null = base, epoch = 0, readonly = false)
   ({ kind: "root", readonly, newest, epoch, seed: false });
 const slotCopy = (newest: Snapshot | null, pull: { target: string; failure: string | null } | null = null, slot = "1", role: SlotRole = "mirror"): VolumeCopy =>
   ({ kind: "slot", slot, readonly: true, newest, resume_token: null, pull, role });
-const idOf = (name: string) => name.padEnd(32, "0") as MachineId;
+/** A Machine ID as a Server sends one, which the SDK reads. */
+const idOf = (name: string) => Buffer.from(name).toString("hex").padEnd(32, "0") as MachineId;
 /** A Device's Mirror approval as the CLI sends it; the fake Servers don't check it. */
 const APPROVAL: Signed = { body: '{"volume":"vol"}', signatures: [{ key: "a".repeat(64), signature: "b".repeat(128) }] };
 const approvalRefused = (why: string) => new RawFault({
@@ -233,6 +236,8 @@ describe("volume runs", () => {
   let beforeSet: Map<string, () => void | Promise<void>>;
   /** Runs while a writer start reads the kept Container's spec, between the commit and the send. */
   let beforeStart: (() => Promise<void>) | null;
+  /** The regions the deployed Service's spec names. */
+  let regions: Record<string, number> | undefined;
   /**
    * Fails a runtime frame read, counted from 1 in `frames`: true as a Server that never answers its first frame, an RPC
    * error as the Cluster answering with it.
@@ -433,12 +438,25 @@ describe("volume runs", () => {
     return { copy: fake.copy };
   };
 
+  /** The Service's spec as the Server named `on` holds it, whole, since the SDK reads it. */
+  const deployed = (on: string) => asTestDouble<ResolvedServiceSpec>()({
+    service_id: "5".repeat(32), name: "web", mode: { mode: "replicated", replicas: 1 }, placement: { constraints: [] }, regions,
+    container: { config_mounts: [], image: `example.test/web@sha256:${"a".repeat(64)}`, command: [], entrypoint: [], pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${on}` } },
+    volumes: [{ reference: "data", source: { kind: "provisioned", name: dockerVolume, maximum_bytes: 5_000_000, scope: { namespace: "shop-production", logical_name: `vol-${volumeId}` } } }],
+    ports: [], mounts: [], configs: [], pre_deploy: null, update: { order: "stop_first", monitor_millis: null },
+  });
+
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: (timeoutMs: number) => {
       const fault = frameFault?.(++frames) ?? false;
       return fault !== false ? firstFrame(() => answering(fault), fault === true ? 1 : timeoutMs) : Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities === undefined ? ON_PLOYZ_04 : [requirements.enforced.capability, ...fake.capabilities] } },
+        machine: {
+          id: fake.id ?? idOf(fake.name), name: fake.name, public_key: Array.from({ length: 32 }, (_, index) => index),
+          runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities === undefined ? ON_PLOYZ_04 : [requirements.enforced.capability, ...fake.capabilities] },
+          labels: fake.region === undefined ? {} : { region: fake.region }, accepts_builds: false, accepts_services: true, accepts_ingress: false,
+          subnet: "10.210.1.0/24", public_ip: null, advertised_endpoints: [], build_concurrency: null,
+        },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
       containers: containers.map((container) => ({
@@ -468,7 +486,7 @@ describe("volume runs", () => {
           container_id: container,
           rotation,
           gen,
-          resolved_spec: { name: "web", container: { pull_policy: "always", environment: { POSTGRES_PASSWORD: `secret-${machine(target).name}` } }, volumes: [{ source: { kind: "provisioned", name: dockerVolume, maximum_bytes: 5_000_000 } }] },
+          resolved_spec: deployed(machine(target).name),
         },
       };
     }),
@@ -592,8 +610,13 @@ describe("volume runs", () => {
             return Effect.succeed({ copy });
           }
         }
-        const refused = transition(fake, expected, want);
-        return refused === null ? Effect.succeed({ copy: fake.copy }) : fail(refused);
+        const named = want.kind === "writer" && want.start?.kind === "create" ? want.start.resolved_spec.regions ?? {} : {};
+        const leftOut = Object.keys(named).length > 0 && (fake.region === undefined || !(fake.region in named));
+        const refused = transition(fake, expected, leftOut && want.kind === "writer" ? { ...want, start: null } : want);
+        if (refused !== null) return fail(refused);
+        return leftOut
+          ? fail(new RawFault({ code: "conflict", message: "this Machine does not satisfy the resolved Service placement", details: null }))
+          : Effect.succeed({ copy: fake.copy });
       }));
     }),
   });
@@ -759,6 +782,7 @@ describe("volume runs", () => {
     failNext = new Map();
     beforeSet = new Map();
     beforeStart = null;
+    regions = undefined;
     frameFault = null;
     frames = 0;
     openFault = null;
@@ -3255,6 +3279,19 @@ describe("volume runs", () => {
 
       expect(seen).toEqual(["Copying to fsn-2", "Copying to fsn-2", "Starting web on fsn-2"]);
       expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^web was stopped \d+s$/) }]);
+    });
+
+    it("a Server the Service's regions leave out becomes the writer, and the Service stays stopped for the Deploy that places it there", async () => {
+      regions = { fsn: 1 };
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
+      const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1") } });
+
+      await execute(run.id);
+
+      expect(verbs.filter((verb) => verb.startsWith("writer@"))).toEqual(["writer@syd-1(none)"]);
+      expect(named("syd-1").copy).toMatchObject({ kind: "root", readonly: false });
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: false }]);
+      expect(await rows()).toMatchObject([{ state: "done", message: "web was not started; a Deploy starts it on syd-1" }]);
     });
 
     it("says the Service stopped only once a cut answered busy stops it, and times the stop from that answer to B's", async () => {

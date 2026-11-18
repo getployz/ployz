@@ -128,6 +128,9 @@ ployz volume move pg-data --to web-1
 ployz deploy
 ```
 
+When the service was last deployed with another region, the move leaves it stopped and the deploy
+starts it on `web-1`.
+
 The deploy also leaves the volume where it is, and prints that command, when:
 
 - **You have no Ployz Cloud.** Moving a volume needs it. Give the volume's server the region, or

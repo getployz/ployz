@@ -42,6 +42,7 @@ export {
   observeRunning,
   observeVolumes,
   ployzVersion,
+  satisfiesPlacement,
   SealedNames,
 } from "./generated/native";
 export type { NamesRead } from "./generated/native";

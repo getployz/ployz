@@ -256,6 +256,8 @@ enum Refusal {
     BelowFloor,
     /// Device enforcement refused an Operator's Writer start.
     Enforced,
+    /// The Machine does not satisfy the placement of the Service a start creates.
+    LeftOut,
     Other,
 }
 
@@ -633,6 +635,8 @@ struct Broken {
     shrink_keeps_refused_record: bool,
     /// An enforcing Machine admits an Operator's Writer start.
     start_gate: bool,
+    /// `startWriter` asks a B the Service's placement leaves out to create it.
+    starts_left_out: bool,
     /// A Mirror's `Forget` destroys its slot without first withdrawing the Mirror's
     /// Machine. Only [`removal::MirrorRemoval`] reads it.
     removal_no_withdrawal: bool,
@@ -737,6 +741,9 @@ struct VolumeRuns {
     crashes: u8,
     /// Device enforcement may turn on at any moment after the resize.
     enforce: bool,
+    /// The deployed Service's placement leaves B out, as when its regions name another
+    /// one: B refuses to create it, and the Deploy that places it there starts it.
+    left_out: bool,
     broken: Broken,
 }
 
@@ -748,6 +755,7 @@ impl Default for VolumeRuns {
             resends: 1,
             crashes: 1,
             enforce: false,
+            left_out: false,
             broken: Broken::default(),
         }
     }
@@ -1010,6 +1018,21 @@ impl VolumeRuns {
                 state.set_progress(index, Progress::StartRun);
             }
             Progress::StartRun => {
+                // `create_container_admitted`: `require_eligible` refuses after the copy
+                // became the Writer.
+                if self.left_out
+                    && to == Machine::B
+                    && matches!(
+                        request.want,
+                        Want::Writer {
+                            start: Some(StartKind::Create),
+                            ..
+                        }
+                    )
+                {
+                    state.reply(index, Reply::Refused(Refusal::LeftOut));
+                    return;
+                }
                 state.unapproved_start |= state.request(index).enforced;
                 let host = state.host_mut(to);
                 host.holder = Holder::Running;
@@ -1353,6 +1376,13 @@ impl VolumeRuns {
         }
     }
 
+    /// `startWriter`'s start for B from A's stopped Container: none when the Service's
+    /// placement leaves B out (`satisfiesPlacement`), so B only becomes the Writer. A's
+    /// stopped Container then stays, for a Release to find the Service by.
+    fn create_on_b(&self) -> Option<StartKind> {
+        (!self.left_out || self.broken.starts_left_out).then_some(StartKind::Create)
+    }
+
     /// `failAndRelease` and the cancel handler: end the running row and request the
     /// Release, back to A while warm and forward to B once committed.
     fn end_move(&self, state: &mut State) {
@@ -1455,7 +1485,7 @@ impl VolumeRuns {
                         Want::Writer {
                             at: Snap::Final,
                             epoch: MOVE_EPOCH,
-                            start: Some(StartKind::Create),
+                            start: self.create_on_b(),
                         },
                     );
                     state.moving.waiting = Some(sent);
@@ -1466,9 +1496,9 @@ impl VolumeRuns {
             }
             (MoveStep::Remove, _, _) => {
                 // `removeKept` checks the run still owns its row, then removes A's
-                // stopped Container.
+                // stopped Container. A Move that started nothing on B skips it.
                 if state.row.running() {
-                    if state.a.holder == Holder::Stopped {
+                    if state.a.holder == Holder::Stopped && self.create_on_b().is_some() {
                         state.a.holder = Holder::Absent;
                     }
                     next(state, MoveStep::Finish);
@@ -1688,7 +1718,7 @@ impl VolumeRuns {
                 let start = if state.b.holder == Holder::Running {
                     return next(state, ReleaseStep::RemoveForward);
                 } else if state.a.holder == Holder::Stopped {
-                    Some(StartKind::Create)
+                    self.create_on_b()
                 } else if state.b.holder == Holder::Stopped {
                     None
                 } else {
@@ -1703,7 +1733,7 @@ impl VolumeRuns {
                 wait(state, sent);
             }
             (ReleaseStep::RemoveForward, _) => {
-                if state.a.holder == Holder::Stopped {
+                if state.a.holder == Holder::Stopped && self.create_on_b().is_some() {
                     state.a.holder = Holder::Absent;
                 }
                 next(state, ReleaseStep::Finish);
@@ -2044,7 +2074,7 @@ impl Model for VolumeRuns {
                             .is_none_or(|release| release.driver.step == ReleaseStep::Over))
             }),
             Property::always(DONE_HOLDS, |model: &Self, state: &State| {
-                !at_rest(model, state) || done_holds(state)
+                !at_rest(model, state) || done_holds(model, state)
             }),
             // A Release whose start an enforcing Machine refused can't finish until
             // enforcement is off.
@@ -2348,8 +2378,9 @@ fn at_rest_but_enforce(model: &VolumeRuns, state: &State) -> bool {
     )
 }
 
-/// The newest run that reported done left its Writer serving on the Machine it named.
-fn done_holds(state: &State) -> bool {
+/// The newest run that reported done left its Writer serving on the Machine it named. A
+/// Move to a B the Service's placement leaves out leaves it the Writer with no Service.
+fn done_holds(model: &VolumeRuns, state: &State) -> bool {
     let serving = |machine: Machine, started: bool| {
         let host = state.host(machine);
         host.copy.is_writer()
@@ -2363,7 +2394,7 @@ fn done_holds(state: &State) -> bool {
             (false, None) => false,
         },
         Some(_) => true,
-        None => state.row != Row::Done || serving(Machine::B, true),
+        None => state.row != Row::Done || serving(Machine::B, !model.left_out),
     }
 }
 
@@ -2400,6 +2431,36 @@ mod tests {
         );
         let path = checker.assert_any_discovery(ENFORCED_STARTS_NOTHING);
         println!("{ENFORCED_STARTS_NOTHING} breaks with the gate out:\n{path}");
+    }
+
+    /// A Move to a B the Service's placement leaves out: B becomes the Writer, no start
+    /// is refused, and the Move and its Release finish with the Service stopped.
+    #[test]
+    fn volume_runs_hold_for_a_target_the_placement_leaves_out() {
+        let checker = check(VolumeRuns {
+            left_out: true,
+            ..VolumeRuns::default()
+        });
+        println!("left out: {} states", checker.unique_state_count());
+        checker.assert_properties();
+    }
+
+    #[test]
+    fn a_target_the_placement_leaves_out_is_asked_for_no_start() {
+        let checker = discoveries(
+            VolumeRuns {
+                direction: Some(Direction::Grow),
+                left_out: true,
+                broken: Broken {
+                    starts_left_out: true,
+                    ..Broken::default()
+                },
+                ..VolumeRuns::default()
+            },
+            &[RELEASE_WINS],
+        );
+        let path = checker.assert_any_discovery(RELEASE_WINS);
+        println!("{RELEASE_WINS} breaks with the start sent:\n{path}");
     }
 
     /// The code as it is, in every scenario: every property holds, and every `sometimes`

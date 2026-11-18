@@ -11,6 +11,7 @@ import type {
   MachineName,
   MachineSigned,
   ResolvedServiceSpec,
+  RuntimeWatchView,
   Signed,
   SnapshotGuid,
   SwitchError,
@@ -44,7 +45,7 @@ import {
 } from "#/modules/runtime/organization-runtime.server";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import { movedRouting, olderPloyzSentence, type Requirement, requirementFor, requirements, runsOlderPloyz, serverSupports } from "#/modules/runtime/daemon-compat";
-import { observeVolumeCopies, type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
+import { observeVolumeCopies, type PloyzSdkError, RpcError, satisfiesPlacement, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import {
   alreadyOn, approvalExpiredMessage, approvalExpiredReason, approvalRefusedMessage, approvalRefusedReason, approvesMirror, approvesMove, approvesRemoval, approvesRestore, enforcedMessage, otherMoveApprovalMessage, otherRemovalApprovalMessage, otherRestoreApprovalMessage, fullApprovalsMessage, holdingNewest, newestGuid, otherApprovalMessage, type PlanInput, type Planned, planForwardRelease, planFromCopies,
   type Refusal, type RefusalCode, type ReleaseFrom, restoreSource, roleOf, writerRemovedMessage,
@@ -1442,7 +1443,13 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
 
 /** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
 export type CopyAnswer =
-  | { readonly ok: true; readonly copy: VolumeCopy | null; readonly receipt?: MachineSigned }
+  | {
+    readonly ok: true;
+    readonly copy: VolumeCopy | null;
+    readonly receipt?: MachineSigned;
+    /** The Machine became the writer and was not asked to start the Service, whose placement leaves it out. */
+    readonly unstarted?: true;
+  }
   | {
     readonly ok: false;
     readonly reason: CopyRefusal | "enforced" | "unapproved" | "unanswered";
@@ -1553,12 +1560,14 @@ export type Holder = ServiceSpec & { readonly containerId: ContainerId };
 /** Drain::DEFAULT: how long the cut lets requests in flight finish once the Container is out of ingress. */
 export const DRAIN_MS = 3_000;
 
-const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (organizationId: string, dockerVolume: string) {
-  const session = yield* openSession(organizationId);
-  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
-  return frame.containers.filter((container) =>
+const mounting = (frame: Pick<RuntimeWatchView, "containers">, dockerVolume: string) =>
+  frame.containers.filter((container) =>
     container.kind === "service_container"
     && container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
+
+const serviceContainers = Effect.fn("VolumeRun.serviceContainers")(function* (organizationId: string, dockerVolume: string) {
+  const session = yield* openSession(organizationId);
+  return mounting(yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead), dockerVolume);
 }, Effect.scoped);
 
 /**
@@ -1709,12 +1718,16 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
  * healthy when the source was routed; a B already running it is left alone, unless the source is routed and B is not,
  * when B is asked again and fails while its copy stays unrouted. With no stopped Container to start from, a B that
  * holds its own Service becomes the writer and stays stopped: an earlier start moved the Service there, or a Deploy's
- * placement removed the source's Container since the receipt named it. `ownedBy` is the Inngest run that must still own the row when B is
- * told, or null for a Deploy following another run's committed lane, which owns no row.
+ * placement removed the source's Container since the receipt named it. A B the spec's placement leaves out would refuse
+ * the start after it became the writer, so it only becomes the writer, and the Deploy that places the Service there
+ * starts it. `ownedBy` is the Inngest run that must still own the row when B is told, or null for a Deploy following
+ * another run's committed lane, which owns no row.
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string | null, start: WriterStart) {
   const { to, from } = start;
-  const containers = yield* serviceContainers(ctx.organizationId, ctx.dockerVolume);
+  const session = yield* openSession(ctx.organizationId);
+  const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
+  const containers = mounting(frame, ctx.dockerVolume);
   const stopped = containers.filter((container) =>
     container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
   const routed = stopped.some((container) => container.rotation === "in");
@@ -1736,25 +1749,34 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const on = named.map((machine) => machine.name ?? machine.id).join(" and ");
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
   }
-  const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
   );
   const { approved } = start;
+  const spec = approved?.service ?? startingSpec(ctx, container.resolved_spec);
+  const target = frame.machines.find(({ machine }) => machine.id === to.id)?.machine;
+  // A spec or record the SDK can't read is left to B, which checks the placement itself.
+  const placed = target === undefined || (yield* Effect.try(() => satisfiesPlacement(spec, holder.namespace, target)).pipe(
+    Effect.tapError((error) => Effect.logWarning("Could not check a Move target's placement; the Server decides.", { machineId: to.id, error })),
+    Effect.orElseSucceed(() => true),
+  ));
   if (ownedBy !== null) yield* requireOwner(ctx.id, ownedBy);
-  return yield* askCopy(ctx, to, start.expect, {
+  const answer = yield* askCopy(ctx, to, start.expect, {
     kind: "writer",
     at: start.at,
     epoch: start.epoch,
-    start: {
-      kind: "create",
-      namespace: holder.namespace,
-      resolved_spec: approved?.service ?? startingSpec(ctx, container.resolved_spec),
-      creation_key: creationKey(ctx, start.at),
-      gen: container.gen ?? 1,
-      rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
-    },
+    start: placed
+      ? {
+        kind: "create",
+        namespace: holder.namespace,
+        resolved_spec: spec,
+        creation_key: creationKey(ctx, start.at),
+        gen: container.gen ?? 1,
+        rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
+      }
+      : null,
   }, approved?.approval, start.receipt ?? undefined);
+  return answer.ok && !placed ? { ...answer, unstarted: true as const } : answer;
 }, Effect.scoped);
 
 /**
