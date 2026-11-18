@@ -53,7 +53,7 @@ describe("deploying a Volume placement", () => {
           if (query.query === "namespaces") return { namespaces: [{ namespace: "shop-production", project: "shop", environment: "production" }] };
           if (query.query === "deployment") {
             const state = statuses.get(query.id ?? "") ?? status;
-            return { status: state, in_flight: state === "queued", environment: { id: "env-1", project: "shop", name: "production" }, nodes: [] };
+            return { status: state, in_flight: state === "queued" || state === "running", environment: { id: "env-1", project: "shop", name: "production" }, nodes: [] };
           }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
@@ -779,11 +779,11 @@ describe("deploying a Volume placement", () => {
     const regions = (...servers: string[]) => () => Effect.succeed(servers.map((server) => ({
       id: web(server), region: server.split("-")[0] ?? "", acceptsServices: true, committableBytes: null,
     })));
-    const deploy = (id: string, read = regions("syd-1", "fsn-1", "fsn-2")) => run(writeAdmitted(
+    const admitted = (id: string) => asTestDouble<ConfigCommitted>()({ written: "deployment", id, environment_id: "env-1", status: "admitted", checks: [] });
+    const deploy = (id: string, read = regions("syd-1", "fsn-1", "fsn-2"), write = () => Effect.succeed(admitted(id))) => run(writeAdmitted(
       organizationId,
       { command: "admit", admit: "deploy", id, environment, services: [], version: "v1", accept_volume_loss: [] },
-      () => Effect.succeed(asTestDouble<ConfigCommitted>()({ written: "deployment", id, environment_id: "env-1", status: "admitted", checks: [] })),
-      inspect, read,
+      write, inspect, read,
     ));
 
     beforeEach(() => { region = "fsn"; });
@@ -801,6 +801,33 @@ describe("deploying a Volume placement", () => {
       if (started.kind !== "wait") throw new Error("expected a run");
       const { rows } = await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId]);
       expect(rows).toEqual([{ kind: "move", args: { to: "fsn-2" } }]);
+    });
+
+    it("keeps the move its Deploy took when a Deploy admitted alongside picks another Server", async () => {
+      members = [member("syd-1", "writer"), member("fsn-1", "empty"), member("fsn-2", "empty")];
+      let commit = () => {};
+      const committed = new Promise<void>((resolve) => { commit = resolve; });
+      let first: Promise<ConfigCommitted> | undefined;
+      await new Promise<void>((opened) => {
+        first = deploy("dep-2", regions("syd-1", "fsn-2"), () => Effect.promise(async () => {
+          opened();
+          await committed;
+          statuses.set("dep-2", "running");
+          return admitted("dep-2");
+        }));
+      });
+      // fsn-1 has joined the region since, and comes first by name.
+      const second = deploy("dep-3");
+      await vi.waitFor(async () => {
+        const { rowCount } = await harness.pool.query(`select from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`);
+        expect(rowCount).toBe(1);
+      });
+      commit();
+      expect(await Promise.all([first, second])).toMatchObject([{ id: "dep-2" }, { id: "dep-3" }]);
+
+      expect(await run(listPlacements(organizationId))).toMatchObject([{ staged: { primary: web("fsn-2") }, region: true, deploymentId: "dep-2" }]);
+      expect(await run(advancePlacement(organizationId, "dep-3", null, inspect, answered))).toEqual({ kind: "done" });
+      expect((await harness.pool.query(`select from volume_run`)).rowCount).toBe(0);
     });
 
     it("stays where the user staged it, even outside the region", async () => {
