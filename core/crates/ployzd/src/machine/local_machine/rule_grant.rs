@@ -191,8 +191,8 @@ pub(crate) struct AdmittedRule {
 
 impl LocalMachine {
     /// Admit a grant for `holder` under `grant`'s rule, with `sealed` the record Cloud
-    /// relays, at `now`. Every check runs before anything opens, in the order
-    /// `d-build-proof.md` lists them, and the token is spent last. A build of a commit
+    /// relays, at `now`. Every check runs before anything opens, in the order the body
+    /// runs them, and the token is spent last. A build of a commit
     /// that is not the head needs a person's live approval naming it, a dispatched run,
     /// and the commit on the rule's branch as GitHub answers now.
     ///
