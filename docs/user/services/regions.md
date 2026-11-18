@@ -117,8 +117,7 @@ yourself, stage the move with **Make primary** before you deploy. See
 [Move a volume](move-a-volume.md) for what a move does to the service while it runs.
 
 If the move fails, the deploy doesn't start that service and the rest of the deploy goes ahead.
-The deployment reads **Deployed, 1 waiting**, and `ployz deploy` exits 3. The deploy says why the
-volume didn't move:
+The service waits, and the deploy says why the volume didn't move:
 
 ```
 ! pg-data didn't move to web-1: web-1 stopped answering
@@ -126,6 +125,11 @@ volume didn't move:
 
 next: ployz deploy --project shop --env production
 ```
+
+A waiting service doesn't fail the deploy. When nothing else failed, the deployment reads
+**Deployed, 1 waiting**, or **Nothing deployed, 1 waiting** when no other service changed, and
+`ployz deploy` exits 3. When another service failed, the deployment reads **Failed** and
+`ployz deploy` exits 1.
 
 A move that fails before it stops the service leaves the volume where it was, with the service
 running there. One that fails later can leave the service stopped.
