@@ -26,7 +26,11 @@ import {
 import { Database } from "#/server/database.server";
 
 /** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */
-export type PlacementWait = { readonly runId: string; readonly volumeId: string; readonly step: PlacementStep; readonly fenced?: boolean };
+export type PlacementWait = {
+  readonly runId: string; readonly volumeId: string; readonly step: PlacementStep; readonly fenced?: boolean;
+  /** The run moves the Volume into its Service's region. */
+  readonly region?: true;
+};
 
 export type PlacementAdvance =
   | { readonly kind: "wait"; readonly wait: PlacementWait }
@@ -75,6 +79,20 @@ const fail = Effect.fn("VolumePlacement.fail")(function* (
   yield* release(organizationId, deploymentId, true);
   const failed: PlacementAdvance = { kind: "failed", message };
   return failed;
+});
+
+/**
+ * A region move that can't run stops only its own Volume. Its row goes back with what is left of the move, the next
+ * Deploy stages it afresh, and this one goes on: the Engine leaves the Volume's Service not started and says where the
+ * Volume is.
+ */
+const setAside = Effect.fn("VolumePlacement.setAside")(function* (
+  deploymentId: string, volumeId: string, remaining: Placement | null, message: string, mirrors: readonly MachineId[] | null = null,
+) {
+  yield* Effect.logWarning("A Deploy couldn't move a Volume into its region.", { deploymentId, volumeId, message });
+  yield* settleClaimed(volumeId, deploymentId, {
+    staged: remaining === null ? null : { ...remaining, region: true }, deploymentId: null, ...(mirrors !== null && { mirrors: [...mirrors] }),
+  });
 });
 
 const restoreFailed = (volumeId: string, environment: EnvironmentRef, message: string): PlacementAdvance =>
@@ -180,7 +198,8 @@ const unseededVolume = Effect.fn("VolumePlacement.unseededVolume")(function* (
  * Volumes stay staged. A run that fails fails the Deploy: its change is dropped, and the changes it never reached, on that
  * Volume and the others, stay staged. A failed restore is dropped once the Store records the failure. A warm run already
  * on the Volume yields to the Deploy's; a run that keeps the Volume, one past its return or another Deploy's, fails the
- * Deploy, with that change and every one it never reached staged for the next Deploy. A fenced run that fails is planned
+ * Deploy, with that change and every one it never reached staged for the next Deploy. A move into a region is the
+ * exception: one that fails or can't start goes back alone and the Deploy goes on. A fenced run that fails is planned
  * again before any other run starts, and the new run fences too, since the failed fence may have left Machines unfloored.
  * The Deploy fails if that plans the same run or never reaches the Volume; a replanned run never replans.
  */
@@ -213,7 +232,10 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
         return { kind: "failed", message } satisfies PlacementAdvance;
       }
       if (run.state === "failed" && waited.fenced === true) replanning = { waited, message };
-      else return yield* failStep(organizationId, deploymentId, environment, volumes, waited, message, inspect);
+      else if (waited.region === true) {
+        const { remaining, mirrors } = yield* remainingAfterFailure(organizationId, deploymentId, environment, volumes, waited.volumeId, waited.step, inspect);
+        yield* setAside(deploymentId, waited.volumeId, remaining, message, mirrors);
+      } else return yield* failStep(organizationId, deploymentId, environment, volumes, waited, message, inspect);
     } else {
       // The run this Deploy started has ended, so its mirrors are what the Servers hold, whoever claims the row now.
       yield* settle(waited.volumeId, { mirrors: [...waited.step.mirrors] });
@@ -236,13 +258,17 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
   // A Server that joined on an older daemon since these were staged, or one that isn't answering, can't take part in a run.
   const refusal = rows.length === 0 ? null : yield* placementRefusal(organizationId, read);
   if (refusal !== null) {
-    yield* release(organizationId, deploymentId, true);
-    return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
+    if (rows.some((row) => row.staged?.region !== true)) {
+      yield* release(organizationId, deploymentId, true);
+      return { kind: "failed", message: refusal.message } satisfies PlacementAdvance;
+    }
+    for (const row of rows) yield* setAside(deploymentId, row.volumeId, view(row).staged, refusal.message);
   }
+  const runnable = refusal === null ? rows : [];
   // A restore copies from its source first: a move staged on the source in the same Deploy may drop the restore point.
   // The Volume being planned again comes next, so it resolves before any other Volume's run starts.
   const rank = (row: typeof stamped[number]) => row.staged?.seed !== undefined ? 0 : row.volumeId === replanning?.waited.volumeId ? 1 : 2;
-  const ordered = [...rows].sort((a, b) => rank(a) - rank(b));
+  const ordered = [...runnable].sort((a, b) => rank(a) - rank(b));
   // Sources of restores whose Volume isn't in the Store yet: a move on one waits, so the restore point stays.
   const waiting = new Set<string>();
   for (const row of ordered) {
@@ -279,7 +305,15 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
       end: "yielded", fences: replanning?.waited.step.run.kind,
     });
     if (requested.ok) {
-      return { kind: "wait", wait: { runId: requested.run.id, volumeId: row.volumeId, step, fenced: requested.took && replanning === null } } satisfies PlacementAdvance;
+      return {
+        kind: "wait",
+        wait: { runId: requested.run.id, volumeId: row.volumeId, step, fenced: requested.took && replanning === null, ...(row.staged?.region === true && { region: true }) },
+      } satisfies PlacementAdvance;
+    }
+    if (row.staged?.region === true && replanning === null) {
+      const remaining = requested.busy === null ? dropChange(volume, members, placement, step.change) : placement.staged;
+      yield* setAside(deploymentId, row.volumeId, remaining, `${volume.name}: ${requested.refusal.message}`);
+      continue;
     }
     if (requested.busy !== null) {
       // A run that keeps the Volume, one past its return or another Deploy's, fails the Deploy here; the changes it never

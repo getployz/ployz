@@ -3,9 +3,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import * as volumeApproval from "#/modules/approval-session/volume-approval";
+import * as views from "#/modules/config-store/store-view.queries";
 import * as scopeRead from "#/modules/volume-run/volume-approval-scope";
 import type { Member } from "#/modules/volume-run/volume-run";
 import * as runs from "#/modules/volume-run/volume-run.functions";
@@ -14,6 +15,10 @@ import * as functions from "./volume-placement.functions";
 import { useDeleteCopy, useStagedPlacements } from "./volume-placement.hooks";
 import type { PlacementRow } from "./volume-placement";
 
+beforeEach(() => {
+  vi.spyOn(views, "useCachedStoreView").mockReturnValue(undefined);
+  vi.spyOn(functions, "regionMovesServerFn").mockResolvedValue([]);
+});
 afterEach(() => vi.restoreAllMocks());
 
 const environment = { project: "shop", environment: "production" };
@@ -93,6 +98,34 @@ it("leaves a Volume the Deploy deletes out of the copy loss, so only the Store's
   expect(result.current.loss.accept).toEqual([]);
   expect(result.current.loss.items).toEqual([]);
   expect(result.current.count).toBe(1);
+});
+
+it("lists the move a Deploy makes into the region with no Discard, and not once a Deploy holds the Volume", async () => {
+  const id = (server: string) => server.padEnd(32, "0") as never;
+  const move: PlacementRow = {
+    volumeId: "v1", environmentId: "env-1", mirrors: [], unreached: false, deploymentId: null, region: true,
+    staged: { primary: id("fsn-1"), mirrors: [], deletes: [] },
+  };
+  const listed = vi.spyOn(functions, "listPlacementsServerFn").mockResolvedValue([] as never);
+  vi.spyOn(functions, "regionMovesServerFn").mockResolvedValue([move] as never);
+  vi.spyOn(runs, "inspectVolumeCopiesServerFn").mockResolvedValue([member("syd-1", "writer"), member("fsn-1", "empty")] as never);
+  const discarded = vi.spyOn(functions, "discardPlacementServerFn");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const { result } = renderHook(() => useStagedPlacements("acme", environment, "env-1", [{ id: "v1", name: "pg-data", change: null }]), { wrapper });
+
+  await waitFor(() => expect(result.current.count).toBe(1));
+  expect(result.current.groups).toMatchObject([
+    { nodeName: "pg-data", canDiscard: false, rows: [{ label: "Primary", currentValue: "syd-1", newValue: "fsn-1", canDiscard: false }] },
+  ]);
+  let storeDiscarded = false;
+  result.current.discardAll(async () => { storeDiscarded = true; return undefined; });
+  await waitFor(() => expect(storeDiscarded).toBe(true));
+  expect(discarded).not.toHaveBeenCalled();
+
+  listed.mockResolvedValue([{ ...move, deploymentId: "dep-1" }] as never);
+  await act(() => queryClient.invalidateQueries({ queryKey: ["volume-placement", "acme"], exact: true }));
+  await waitFor(() => expect(result.current.count).toBe(0));
 });
 
 it("dates a staged restore's point in Details once the day turns, with the Servers' answer unchanged", async () => {

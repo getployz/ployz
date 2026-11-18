@@ -81,11 +81,13 @@ describe("volume placement", () => {
           if (query.environment?.environment === "staging") {
             return {
               environment: { id: "env-2", project: "shop", name: "staging", revision: 1 },
+              settings: [],
               volumes: [{ id: "vol2", name: "cache", storage: { kind: "provisioned", maximumBytes: 1 }, change: null }],
             };
           }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
+            settings: [],
             volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 }, change: deleting ? "delete" : null }],
           };
         },

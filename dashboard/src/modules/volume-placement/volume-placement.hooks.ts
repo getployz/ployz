@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import type { ConfigWritten, EnvironmentRef, MachineId, MachineName, VolumeListing } from "@ployz/sdk";
 import { useMinute } from "#/hooks/use-minute";
 import { toErrorMessage } from "#/lib/error-message";
-import { environmentKey, invalidateViews } from "#/modules/config-store/store-view.queries";
+import { diffQuery, environmentKey, invalidateViews, useCachedStoreView } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
@@ -16,8 +16,10 @@ import {
 import { approveVolume, VolumeNotApproved, type VolumeScope } from "#/modules/approval-session/volume-approval";
 import { readVolumeScope } from "#/modules/volume-run/volume-approval-scope";
 import { type PlacementApproval, type PlacementAsk, placementAsks, seedAsk, stagedAsks } from "./placement-approvals";
-import { deleteCopyServerFn, discardPlacementServerFn, keepPlacementApprovalsServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
-import { useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
+import {
+  deleteCopyServerFn, discardPlacementServerFn, keepPlacementApprovalsServerFn, prepareRegionMovesServerFn, stagePlacementServerFn, stageRestoreServerFn,
+} from "./volume-placement.functions";
+import { regionMovesQueryOptions, useVolumePlacements, volumePlacementKeys } from "./volume-placement.queries";
 
 type PlacementResult = { readonly ok: true } | { readonly ok: false; readonly refusal: { readonly message: string } };
 
@@ -109,8 +111,14 @@ export type StagedPlacements = {
 export function useStagedPlacements(
   organizationSlug: string, environment: EnvironmentRef, environmentId: string, volumes: readonly (PlacementVolume & Pick<VolumeListing, "change">)[],
 ): StagedPlacements {
-  const rows = (useVolumePlacements(organizationSlug).data ?? [])
-    .filter((row) => row.environmentId === environmentId && row.staged !== null && row.deploymentId === null);
+  // A region move is read afresh, never from the row a Deploy last staged it on: the region may have changed since.
+  const placements = (useVolumePlacements(organizationSlug).data ?? []).filter((row) => row.environmentId === environmentId && row.staged !== null);
+  const stored = placements.filter((row) => row.deploymentId === null && row.region !== true);
+  const diff = useCachedStoreView(organizationSlug, diffQuery(environment));
+  const moves = useQuery(regionMovesQueryOptions(organizationSlug, environment, diff?.ok === true ? diff.value.version : null)).data ?? [];
+  // A Volume a Deploy is moving, or one the user staged since the moves were read, lists no move of Cloud's.
+  const taken = (volumeId: string) => placements.some((row) => row.volumeId === volumeId && (row.deploymentId !== null || row.region !== true));
+  const rows = [...stored, ...moves.filter((move) => !taken(move.volumeId))];
   const members = useQueries({ queries: rows.map((row) => volumeMembersQueryOptions(organizationSlug, environment, row.volumeId)) });
   const failure = "Could not discard the Volume changes";
   const { settle } = useSettle(failure, organizationSlug, environment);
@@ -123,7 +131,7 @@ export function useStagedPlacements(
   });
   const queryClient = useQueryClient();
   const now = useMinute() ?? new Date();
-  const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.unreached));
+  const groups = staged.map(({ volume, row, changes }) => placementGroup(volume, changes, now, row.unreached, row.region === true));
   const discardOf = (volumeId: string) => discardPlacementServerFn({ data: { organizationSlug, volumeId, environment } });
   return {
     groups,
@@ -142,6 +150,7 @@ export function useStagedPlacements(
       } })]);
     },
     prepare: async () => {
+      if (staged.some(({ row }) => row.region === true)) await prepareRegionMovesServerFn({ data: { organizationSlug, environment } });
       // A Volume no Server answered for asks nothing, so it reads nothing more. A restore into a new Volume runs on its
       // source's Servers.
       const asking = staged.filter(({ members: shown, changes }) =>
@@ -164,7 +173,7 @@ export function useStagedPlacements(
     // Every staged row, not just the groups shown: a restore whose Volume the Store discard takes may not have answered yet.
     discardAll: (discardStore) => {
       // One after another: a restore's discard takes the Environment alone, so a sibling sent alongside finds it held.
-      discardStore().then(() => settle(rows.reduce<Promise<PlacementResult>[]>((sent, row) => {
+      discardStore().then(() => settle(stored.reduce<Promise<PlacementResult>[]>((sent, row) => {
         const next = () => discardOf(row.volumeId);
         return [...sent, sent.at(-1)?.then(next, next) ?? next()];
       }, [])), () => undefined);

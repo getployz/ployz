@@ -4,7 +4,9 @@ import { refusedPublicly } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
 import { deleteCopy, placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, keepPlacementApprovals, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
+import {
+  discardPlacement, keepPlacementApprovals, listPlacements, prepareRegionMoves, regionMoves, stagePlacement, stageRestore,
+} from "#/modules/volume-placement/volume-placement.server";
 import { MoveService, VolumeApproval } from "#/modules/operations/cli-wire";
 import { DeleteCopyInput, StageRestoreInput, VolumeInput } from "#/modules/volume-placement/volume-placement";
 import { Conflict } from "#/server/public-error";
@@ -35,6 +37,25 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
       ? stagePlacement(organization.id, data)
       : unlessPlacementRefused(organization.id, stagePlacement(organization.id, data))),
     refusedPublicly,
+  )));
+
+const EnvironmentInput = Schema.Struct({ ...Organization.fields, environment: VolumeInput.fields.environment });
+
+/** The rows the next Deploy stages to move each Volume into its Service's region, for Details to list. */
+export const regionMovesServerFn = createServerFn({ method: "GET" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(EnvironmentInput))
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
+    Effect.flatMap(({ organization }) => regionMoves(organization.id, data.environment)),
+    Effect.map((moves) => moves.map((move) => move.row)),
+  )));
+
+/** Stages those moves just before a Deploy asks for its passkey answers, which their rows then keep. */
+export const prepareRegionMovesServerFn = createServerFn({ method: "POST" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(EnvironmentInput))
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
+    Effect.flatMap(({ organization }) => prepareRegionMoves(organization.id, data.environment)),
   )));
 
 const KeepApprovalsInput = Schema.Struct({

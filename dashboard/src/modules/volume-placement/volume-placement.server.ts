@@ -2,23 +2,25 @@ import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId, Signed } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { Data, Effect, Option, Semaphore } from "effect";
+import { isDeepStrictEqual } from "node:util";
+import { Data, Effect, Option, Schema, Semaphore } from "effect";
 import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
-import { ClusterOutOfTime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, firstRuntimeFrame, type OrganizationRuntime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import { keptFor, type PlacementApproval } from "#/modules/volume-placement/placement-approvals";
 import {
-  lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed,
+  appliedMirrors, lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow,
+  regionPlacement, regionVolumes, type Seed, type SettingRegions, type StoredPlacement,
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
 import {
-  admitRun, ClusterNotConnected, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, storeRefusal, unreachable,
+  admitRun, ClusterNotConnected, commitment, heldStorage, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume, storeRefusal, unreachable,
 } from "#/modules/volume-run/volume-run.server";
 import { asApproved, planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
@@ -33,8 +35,8 @@ export const view = (row: Row): PlacementRow => {
   const { volumeId, environmentId, mirrors, deploymentId } = row;
   if (row.staged === null) return { volumeId, environmentId, mirrors, staged: null, unreached: false, deploymentId };
   // The approvals a Deploy carries stay on the server; the review reads only what is staged.
-  const { unreached = false, approvals: _kept, ...staged } = row.staged;
-  return { volumeId, environmentId, mirrors, staged, unreached, deploymentId };
+  const { unreached = false, approvals: _kept, region, ...staged } = row.staged;
+  return { volumeId, environmentId, mirrors, staged, unreached, deploymentId, ...(region === true && { region }) };
 };
 
 export const DEPLOYING: StoreRefusal = { code: "conflict", message: "A Deploy is moving this Volume. Wait for it to finish.", details: null };
@@ -292,6 +294,136 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
   return { ok: true, placement: view(row) } satisfies PlacementDiscard;
 });
 
+/** A Server in a region: its `region` label, and what it says it takes. */
+type LabelledServer = { readonly id: MachineId; readonly region: string; readonly acceptsServices: boolean; readonly committableBytes: number | null };
+
+/** The Organization's Servers that are in a region. */
+export type RegionReader = (organizationId: string) => Effect.Effect<readonly LabelledServer[], unknown, OrganizationRuntime>;
+
+// The Engine's own test of a region label, which reads it lowercased.
+const REGION = /^[a-z0-9_.-]+$/i;
+
+export const readRegionServers: RegionReader = (organizationId) => firstRuntimeFrame(organizationId).pipe(
+  Effect.map((frame) => (frame?.machines ?? []).flatMap(({ machine }): LabelledServer[] => {
+    const region = machine.labels["region"];
+    return region === undefined || !REGION.test(region) ? [] : [{
+      id: machine.id, region: region.toLowerCase(), acceptsServices: machine.accepts_services, committableBytes: machine.runtime.pool_committable_bytes ?? null,
+    }];
+  })),
+);
+
+/** A Volume the next Deploy moves into its Service's region: the row it stages, and the move by name. */
+export type RegionMove = {
+  readonly row: PlacementRow & { readonly staged: Placement; readonly mirrors: readonly MachineId[] };
+  readonly volume: string;
+  readonly from: string;
+  readonly to: string;
+};
+
+const decodeRegion = Schema.decodeUnknownOption(Schema.String);
+const decodeCounts = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Number));
+const REPLICAS = ".replicas";
+
+/** The regions in the Store's answer for an Environment's Settings, which lists only those that differ from their default. */
+const settingRegions = (settings: readonly { readonly path: string; readonly value: unknown }[]): SettingRegions => ({
+  environment: Option.getOrNull(decodeRegion(settings.find((setting) => setting.path === "@environment.region")?.value)),
+  counted: new Map(settings.flatMap(({ path, value }) => !path.endsWith(REPLICAS) ? [] : Option.match(decodeCounts(value), {
+    onNone: () => [],
+    onSome: (counts) => [[path.slice(0, -REPLICAS.length), Object.keys(counts)] as const],
+  }))),
+});
+
+const readVolumes = (organizationId: string, environment: EnvironmentRef) => readStore(organizationId, { query: "volumes", environment });
+type VolumesListing = Effect.Success<ReturnType<typeof readVolumes>>;
+
+const findRegionMoves = Effect.fn("VolumePlacement.regionMoves")(function* (
+  organizationId: string, environment: EnvironmentRef, services: readonly string[], inspect: typeof inspectVolumeCopies, read: RegionReader,
+  listed: VolumesListing | null,
+) {
+  const [{ settings }, listing] = yield* Effect.all([
+    readStore(organizationId, { query: "environment", environment, path: null, all: false }),
+    listed === null ? readVolumes(organizationId, environment) : Effect.succeed(listed),
+  ], { concurrency: "unbounded" });
+  const kept = regionVolumes(listing.volumes, settingRegions(settings), services);
+  // No Service is kept in a region: the Cluster is never asked.
+  if (kept.length === 0) return [];
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select().from(volumePlacement)
+    .where(and(eq(volumePlacement.organizationId, organizationId), inArray(volumePlacement.volumeId, kept.map(({ volume }) => volume.id))));
+  const open = kept.flatMap(({ volume, region }) => {
+    const row = rows.find((entry) => entry.volumeId === volume.id);
+    // What the user staged is their choice.
+    return row?.staged != null && row.staged.region !== true ? [] : [{ volume, region, row: row === undefined ? null : view(row) }];
+  });
+  if (open.length === 0) return [];
+  const servers = yield* read(organizationId);
+  const moves = yield* Effect.forEach(open, ({ volume, region, row }) => Effect.gen(function* () {
+    const bytes = volume.recorded_storage ?? (volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : 0);
+    const inRegion = servers.filter((server) => server.region === region).map((server) => ({
+      id: server.id, acceptsServices: server.acceptsServices, room: server.committableBytes === null || server.committableBytes >= bytes,
+    }));
+    if (inRegion.length === 0) return [];
+    const members = yield* inspect(organizationId, environment, volume.id);
+    const { owed } = yield* commitment(volume.id);
+    const staged = regionPlacement(volume, members, row, inRegion, owed !== null);
+    const observed = observePlacement(members);
+    const name = (id: MachineId | undefined) => members.find((member) => member.machine.id === id)?.machine.name;
+    const from = observed.primary?.name;
+    const to = name(staged?.primary);
+    if (staged === null || from === undefined || to === undefined) return [];
+    const move: RegionMove = {
+      row: {
+        volumeId: volume.id, environmentId: listing.environment.id, mirrors: row?.mirrors ?? appliedMirrors(observed, null), staged, unreached: false,
+        deploymentId: null, region: true,
+      },
+      volume: volume.name, from, to,
+    };
+    return [move];
+  }), { concurrency: "unbounded" });
+  return moves.flat();
+});
+
+/**
+ * The moves that bring each Volume of `environment` into the region of the Service that mounts it, for a Deploy of
+ * `services` (none: every Service). A Volume the user staged a placement for keeps theirs. None when nothing can be
+ * asked: the Engine then leaves the Service not started and says why. `listed` is the Environment's Volumes when the
+ * caller has just read them.
+ */
+export const regionMoves = (
+  organizationId: string, environment: EnvironmentRef, services: readonly string[] = [],
+  inspect: typeof inspectVolumeCopies = inspectVolumeCopies, read: RegionReader = readRegionServers, listed: VolumesListing | null = null,
+) => findRegionMoves(organizationId, environment, services, inspect, read, listed).pipe(
+  Effect.catch((error) => Effect.logWarning("Couldn't work out the Volume moves into a region.", { organizationId, error }).pipe(Effect.as<RegionMove[]>([]))),
+);
+
+const regionStaged = (move: RegionMove): StoredPlacement => ({ ...move.row.staged, region: true });
+
+/**
+ * Stage each of `moves` on its Volume's row unless a Deploy holds the row or the user staged a placement on it, which
+ * stays whatever it targets. A row that already holds the same move keeps the approvals a person gave it.
+ */
+export const stageRegionMoves = Effect.fn("VolumePlacement.stageRegionMoves")(function* (organizationId: string, moves: readonly RegionMove[]) {
+  const { drizzle } = yield* Database;
+  for (const move of moves) {
+    const staged = regionStaged(move);
+    yield* drizzle.insert(volumePlacement).values({
+      volumeId: move.row.volumeId, organizationId, environmentId: move.row.environmentId, mirrors: [...move.row.mirrors], staged,
+    }).onConflictDoUpdate({
+      target: volumePlacement.volumeId,
+      set: { staged, updatedAt: new Date() },
+      setWhere: and(
+        eq(volumePlacement.organizationId, organizationId), isNull(volumePlacement.deploymentId),
+        sql`(${volumePlacement.staged} is null or (${volumePlacement.staged} ? 'region' and (${volumePlacement.staged} - 'approvals' - 'unreached') <> ${JSON.stringify(staged)}::jsonb))`,
+      ),
+    });
+  }
+});
+
+/** The Deploy button's half: stage the region moves so the passkey answers the Deploy carries have rows to keep them. */
+export const prepareRegionMoves = Effect.fn("VolumePlacement.prepareRegionMoves")(function* (organizationId: string, environment: EnvironmentRef) {
+  yield* stageRegionMoves(organizationId, yield* regionMoves(organizationId, environment));
+});
+
 export const RESTORE_FAILED: StoreRefusal = { code: "conflict", message: "Restore failed. Restore again.", details: null };
 
 /**
@@ -322,13 +454,15 @@ const holderState = (organizationId: string, id: string) => readStore(organizati
  * refuses one that deletes Volumes, unless it names each Volume whose copy or writes go, and `unavailable` while the
  * Servers can't be asked what they hold. The Environment's lock is held from that check to the stamp: a restore staged
  * meanwhile waits for the next Deploy whole, and an edit staged meanwhile waits and then finds the Deploy holds its row.
- * The names consumed here leave `accept_volume_loss`, since the Store refuses a name it doesn't delete itself.
+ * The names consumed here leave `accept_volume_loss`, since the Store refuses a name it doesn't delete itself. It first
+ * stages the move of each Volume outside its Service's region, so the Deploy takes that move with the rest.
  */
 export const writeAdmitted = <R>(
   organizationId: string,
   command: ConfigCommand,
   write: (command: ConfigCommand) => Effect.Effect<ConfigCommitted, StoreRefused, R>,
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
+  read: RegionReader = readRegionServers,
 ) => Effect.gen(function* () {
   if (command.command === "admit" && command.admit === "retry") {
     if (yield* holdsFailedRestore(organizationId, command.deployment)) return yield* new StoreRefused(RESTORE_FAILED);
@@ -336,11 +470,14 @@ export const writeAdmitted = <R>(
   }
   if (command.command !== "admit" || command.admit !== "deploy") return yield* write(command);
   const database = yield* Database;
-  const { environment } = yield* readStore(organizationId, { query: "volumes", environment: command.environment });
+  const listing = yield* readVolumes(organizationId, command.environment);
+  const { environment } = listing;
+  const moves = yield* regionMoves(organizationId, command.environment, command.services, inspect, read, listing);
   let written: ConfigCommitted | undefined;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(environment.id)})`);
+    yield* stageRegionMoves(organizationId, moves);
     const locked = yield* drizzle.select().from(volumePlacement)
       .where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.environmentId, environment.id), isNotNull(volumePlacement.staged)))
       .orderBy(volumePlacement.volumeId)
@@ -352,7 +489,20 @@ export const writeAdmitted = <R>(
     const states = yield* Effect.forEach(holders, (id) => holderState(organizationId, id));
     const ended = holders.filter((_, index) => states[index] === "ended");
     const queued = holders.filter((_, index) => states[index] === "queued");
-    const rows = locked.filter((row) => row.deploymentId === null || ended.includes(row.deploymentId) || queued.includes(row.deploymentId));
+    const free = locked.filter((row) => row.deploymentId === null || ended.includes(row.deploymentId) || queued.includes(row.deploymentId));
+    // A region move an earlier Deploy left on a row gives way to the one this Deploy makes, or goes when it makes none.
+    const rows: Row[] = [];
+    for (const row of free) {
+      const move = moves.find((each) => each.row.volumeId === row.volumeId);
+      if (row.staged?.region !== true || (move !== undefined && isDeepStrictEqual(view(row).staged, move.row.staged))) {
+        rows.push(row);
+        continue;
+      }
+      const staged = move === undefined ? null : regionStaged(move);
+      yield* drizzle.update(volumePlacement).set({ staged, updatedAt: new Date(), ...(staged === null && { deploymentId: null }) })
+        .where(eq(volumePlacement.volumeId, row.volumeId));
+      if (staged !== null) rows.push({ ...row, staged });
+    }
     // Read under the lock: a restore staged before it has landed or never will, so a seeded Volume missing is gone.
     const { volumes } = rows.length === 0 ? { volumes: [] } : yield* readStore(organizationId, { query: "volumes", environment: command.environment });
     const listed = rows.flatMap((row) => {

@@ -16,6 +16,8 @@ import {
   placementTargets,
   placementForm,
   recovery,
+  regionPlacement,
+  regionVolumes,
   seedOffer,
   serversAnswer,
   mirroredVolumes,
@@ -677,6 +679,74 @@ describe("drainPlacement", () => {
   it("leaves a Volume whose primary is elsewhere, or that nowhere takes", () => {
     expect(drain([member("web-2", "writer"), member("web-1", "mirror")], row(["web-1"]))).toBeNull();
     expect(drain([member("web-1", "writer"), pooled("web-2")], row([]), ["web-1"])).toBeNull();
+  });
+});
+
+describe("regionPlacement", () => {
+  const servers = (...names: string[]) => names.map((name) => ({ id: id(name), acceptsServices: true, room: true }));
+  const move = (members: Member[], placement: PlacementRow | null, region = servers("fsn-1", "fsn-2")) =>
+    regionPlacement(volume, members, placement, region, false);
+
+  it("moves the primary to the region's Server that holds its mirror, ahead of an earlier name", () => {
+    expect(move([member("syd-1", "writer"), pooled("fsn-1"), member("fsn-2", "mirror")], row(["fsn-2"])))
+      .toEqual({ primary: id("fsn-2"), mirrors: [], deletes: [] });
+  });
+
+  it("moves to the first Server by name there that accepts Services and has room", () => {
+    const members = [member("syd-1", "writer"), pooled("fsn-3"), pooled("fsn-2"), pooled("fsn-1")];
+    const region = [
+      { id: id("fsn-1"), acceptsServices: false, room: true },
+      { id: id("fsn-2"), acceptsServices: true, room: false },
+      { id: id("fsn-3"), acceptsServices: true, room: true },
+    ];
+    expect(move(members, row([]), region)).toEqual({ primary: id("fsn-3"), mirrors: [], deletes: [] });
+    expect(move(members, row([]))).toEqual({ primary: id("fsn-1"), mirrors: [], deletes: [] });
+  });
+
+  it("leaves a Volume already in the region, or one no Server there takes", () => {
+    expect(move([member("fsn-1", "writer"), pooled("fsn-2")], row([]))).toBeNull();
+    expect(move([member("syd-1", "writer"), pooled("fsn-1")], row([]), [{ id: id("fsn-1"), acceptsServices: true, room: false }])).toBeNull();
+  });
+
+  it("keeps a move to a mirror that handed the primary over, until its last run finishes it", () => {
+    const members = [member("syd-1", "mirror"), member("fsn-1", "writer")];
+    const handed = { ...row(["fsn-1"], { primary: "fsn-1" }), region: true as const };
+    expect(move(members, handed)).toEqual(handed.staged);
+    expect(move([member("syd-1", "old"), member("fsn-1", "writer")], { ...handed, mirrors: [] })).toBeNull();
+  });
+});
+
+describe("regionVolumes", () => {
+  type Listed = Parameters<typeof regionVolumes>[0][number];
+  const data = (name: string, service: string, over: Partial<Listed> = {}): Listed => ({
+    id: name, name, storage: { kind: "provisioned", maximumBytes: 1 }, deployed: true, change: null, mounts: [{ service }], ...over,
+  });
+  const regions = (volumes: Listed[], environment: string | null, counted: Record<string, string[]> = {}, services: string[] = []) =>
+    regionVolumes(volumes, { environment, counted: new Map(Object.entries(counted)) }, services).map(({ volume, region }) => [volume.name, region]);
+
+  it("puts a Volume in its Service's one counted region, else the Environment's", () => {
+    const volumes = [data("pg-data", "postgres"), data("cache", "redis")];
+    expect(regions(volumes, "fsn", { redis: ["syd"] })).toEqual([["pg-data", "fsn"], ["cache", "syd"]]);
+    expect(regions(volumes, null, { redis: ["syd"] })).toEqual([["cache", "syd"]]);
+  });
+
+  it("leaves out a Docker volume, a Volume not deployed yet and one the Deploy deletes", () => {
+    expect(regions([
+      data("docker", "postgres", { storage: { kind: "docker" } }),
+      data("new", "postgres", { deployed: false, change: "create" }),
+      data("going", "postgres", { change: "delete" }),
+    ], "fsn")).toEqual([]);
+  });
+
+  it("leaves out a Volume whose Services run in different regions, or one of them in several", () => {
+    const shared = data("shared", "api", { mounts: [{ service: "api" }, { service: "worker" }] });
+    expect(regions([shared], "fsn", { worker: ["syd"] })).toEqual([]);
+    expect(regions([shared], "fsn", { worker: ["fsn", "syd"] })).toEqual([]);
+    expect(regions([shared], "fsn", { worker: ["fsn"] })).toEqual([["shared", "fsn"]]);
+  });
+
+  it("takes only the Volumes of the Services a narrowed Deploy names", () => {
+    expect(regions([data("pg-data", "postgres"), data("cache", "redis")], "fsn", {}, ["redis"])).toEqual([["cache", "fsn"]]);
   });
 });
 

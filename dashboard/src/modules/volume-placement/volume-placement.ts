@@ -60,9 +60,11 @@ export type Placement = {
 
 /**
  * The row's `staged` as stored: a failed Deploy marks it unreached in place, and the next one clears the mark.
- * `approvals` are the person's passkey answers for the Deploy that runs it, which staging again drops.
+ * `approvals` are the person's passkey answers for the Deploy that runs it, which staging again drops. `region` marks a
+ * move Cloud staged to bring the Volume into its Service's region: each Deploy stages it afresh, and a placement the
+ * user stages takes its place.
  */
-export type StoredPlacement = Placement & { readonly unreached?: true; readonly approvals?: readonly PlacementApproval[] };
+export type StoredPlacement = Placement & { readonly unreached?: true; readonly approvals?: readonly PlacementApproval[]; readonly region?: true };
 
 /**
  * The dashboard's record of a Volume's placement. Which copies are mirrors is each Server's to say. `mirrors` is only
@@ -78,6 +80,8 @@ export type PlacementRow = {
   readonly unreached: boolean;
   /** The Deploy that owns `staged`; Discard waits for it. */
   readonly deploymentId: string | null;
+  /** `staged` is the move into the Volume's region, which only its region changes. */
+  readonly region?: true;
 };
 
 export type MoveHow = "promote" | "copy" | "restore";
@@ -503,6 +507,70 @@ export function drainPlacement(
   return to === undefined ? null : editPlacement(target, { kind: "move", to: to.id });
 }
 
+/** A Server in a Service's region. `room`: its pool can take the Volume, as far as the Server says. */
+export type RegionServer = { readonly id: MachineId; readonly acceptsServices: boolean; readonly room: boolean };
+
+/**
+ * Where a Deploy stages the Volume so its Service can run in its region: its primary moves to one of `servers`, the
+ * region's Servers. The Server that holds its mirror comes first, then the first by name that has room. Each accepts
+ * Services and is one the planner takes. A region move in `row` that already handed the primary over stays as staged,
+ * since only finishing it settles the copies. Null when the primary is already in the region or didn't answer, or
+ * nowhere there takes it.
+ */
+export function regionPlacement(
+  volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null, servers: readonly RegionServer[], owed: boolean,
+): Placement | null {
+  const observed = observePlacement(members);
+  const inRegion = (id: MachineId | undefined) => servers.some((server) => server.id === id);
+  if (observed.primary === null) return null;
+  if (inRegion(observed.primary.id)) {
+    const handedOver = row?.region === true && row.staged?.primary === observed.primary.id && placementChanges(volume, members, row).length > 0;
+    return handedOver ? row.staged : null;
+  }
+  const applied = row === null ? null : { ...row, staged: null };
+  const target = targetPlacement(observed, applied);
+  if (target === null) return null;
+  const mirrors = appliedMirrors(observed, applied);
+  const accepting = servers.filter((server) => server.acceptsServices && (server.room || mirrors.includes(server.id))).map((server) => server.id);
+  const takes = placementTargets(volume, members, applied, accepting, owed).move;
+  const to = takes.find((server) => mirrors.includes(server.id)) ?? [...takes].sort((a, b) => a.name.localeCompare(b.name))[0];
+  return to === undefined ? null : editPlacement(target, { kind: "move", to: to.id });
+}
+
+/** A Volume as the Store lists it, down to what says which region it belongs in. */
+export type RegionVolume = PlacementVolume & {
+  readonly storage: { readonly kind: "docker" } | { readonly kind: "provisioned"; readonly maximumBytes: number };
+  readonly deployed: boolean;
+  readonly change: "create" | "update" | "delete" | null;
+  readonly mounts: readonly { readonly service: string }[];
+};
+
+/** The regions an Environment's Settings name: its own, and those each Service counts its replicas by. */
+export type SettingRegions = { readonly environment: string | null; readonly counted: ReadonlyMap<string, readonly string[]> };
+
+/**
+ * The Volumes a Deploy of `services` (none: every Service) keeps in one region, each with that region. A Service's
+ * region is the one its replicas are counted by, else the Environment's, as the Engine lowers them. Left out: a Docker
+ * volume, which can't move, a Volume no Server holds yet or the Deploy deletes, and one whose Services run in any
+ * region or in different ones.
+ */
+export function regionVolumes<Volume extends RegionVolume>(
+  volumes: readonly Volume[], regions: SettingRegions, services: readonly string[],
+): { readonly volume: Volume; readonly region: string }[] {
+  const regionOf = (service: string) => {
+    const counted = regions.counted.get(service);
+    if (counted === undefined) return regions.environment;
+    return counted.length === 1 ? counted[0] ?? null : null;
+  };
+  return volumes.flatMap((volume) => {
+    if (volume.storage.kind !== "provisioned" || !volume.deployed || volume.change === "delete") return [];
+    const mounting = volume.mounts.map((mount) => mount.service);
+    if (services.length > 0 && !mounting.some((service) => services.includes(service))) return [];
+    const [region, ...others] = new Set(mounting.map(regionOf));
+    return region != null && others.length === 0 ? [{ volume, region }] : [];
+  });
+}
+
 /** How many Volumes whose primary is on `server` have a move off it staged, by the copies the Runtime Watch reports. */
 export function stagedOffServer(server: string, rows: readonly PlacementRow[], copies: readonly RuntimeVolumeCopy[]): number {
   const primaries = new Set(copies.filter((copy) => copy.role === "writer" && copy.machineId === server)
@@ -770,7 +838,8 @@ function detailsRow(volume: PlacementVolume, change: PlacementChange, now: Date)
   }
 }
 
-export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[], now: Date, unreached = false): ChangeGroup {
+/** `derived`: Cloud staged the changes itself, so Details offers no Discard for them. */
+export function placementGroup(volume: PlacementVolume, changes: readonly PlacementChange[], now: Date, unreached = false, derived = false): ChangeGroup {
   return {
     owner: "placement",
     nodeType: "volume",
@@ -781,7 +850,7 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
     lifecycle: changes.some((change) => change.kind === "seed") ? "create" : "update",
     changeCount: changes.length,
     restarts: [],
-    canDiscard: true,
+    canDiscard: !derived,
     unreached,
     rows: changes.map((change, index) => {
       const words = detailsRow(volume, change, now);
@@ -794,7 +863,7 @@ export function placementGroup(volume: PlacementVolume, changes: readonly Placem
         kind: CHANGE_KINDS[change.kind],
         path: String(index),
         row: null,
-        canDiscard: true,
+        canDiscard: !derived,
       };
     }),
   };
