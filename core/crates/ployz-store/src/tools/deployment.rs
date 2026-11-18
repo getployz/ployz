@@ -248,7 +248,7 @@ tool_input! {
 impl Tool for DeploymentList {
     const NAME: &'static str = "deployment_list";
     const TITLE: &'static str = "List Deployments";
-    const DESCRIPTION: &'static str = "List an Environment's Deployments, newest to oldest. Each shows its number, status, whether it is still in flight, why it ended, the Services it left waiting, its message, Saved revision, and start and end times.";
+    const DESCRIPTION: &'static str = "List an Environment's Deployments, newest to oldest. Each shows its number, status, whether it is still in flight, why it ended, what waits, its message, Saved revision, and start and end times.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -296,7 +296,7 @@ tool_input! {
 impl Tool for DeploymentShow {
     const NAME: &'static str = "deployment_show";
     const TITLE: &'static str = "Show a Deployment";
-    const DESCRIPTION: &'static str = "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. It lists under `waiting` the Services it left waiting, with what each waits on; `all_waiting` means it deployed nothing: all it had to do waits. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.";
+    const DESCRIPTION: &'static str = "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. `waiting` names each Service left waiting and why; `all_waiting` means nothing deployed. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {

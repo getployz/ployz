@@ -30,7 +30,7 @@ tool_input! {
 impl Tool for EnvironmentShow {
     const NAME: &'static str = "environment_show";
     const TITLE: &'static str = "Show an Environment";
-    const DESCRIPTION: &'static str = "Show an Environment: its Services with source and domains, Volumes, Configs, how many changes are staged, broken references, latest Deployment with the Services it left waiting, and revision. Also lists every Project with its Environments.";
+    const DESCRIPTION: &'static str = "Show an Environment: its Services with source and domains, Volumes, Configs, how many changes are staged, broken references, latest Deployment and what waits, and revision. Also lists every Project with its Environments.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {

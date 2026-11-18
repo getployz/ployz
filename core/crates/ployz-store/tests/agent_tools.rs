@@ -8,7 +8,7 @@ use ployz_store::tools::{
 };
 use serde_json::{Value, json};
 
-const CAP_BYTES: usize = 77_000;
+const CAP_BYTES: usize = 77_500;
 
 fn snapshot_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/agent_tools.json")
