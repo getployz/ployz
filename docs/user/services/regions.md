@@ -246,8 +246,8 @@ to `lhr`. The deploy moves the volume only when you accept that delete:
   ployz deploy
   ```
 
-  `ployz deploy --accept-volume-loss pg-data` accepts the delete instead, and the deploy moves the
-  volume.
+  `ployz deploy --accept-volume-loss pg-data` doesn't delete the copy. `ployz deploy` signs the
+  move, not the delete, so your servers refuse it and the service waits again.
 
 A Docker volume can't move. Give its server the region, or change the environment's region.
 `ployz deploy --plan` says the service won't start. The deploy doesn't start it, and the
