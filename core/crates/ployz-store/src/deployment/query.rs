@@ -59,8 +59,9 @@ pub struct PlanView {
     #[ts(optional)]
     pub target: Option<Vec<RequestedServiceSpec>>,
     /// The region each Service this Deploy moves runs in next; none for one that leaves
-    /// a region to run on any Server. A Service that stays in its region, or on any
-    /// Server, is left out.
+    /// a region, or its counts by region, to run on any Server. A Service that stays in
+    /// its region, or on any Server, is left out, as is one that sets its replicas by
+    /// region.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(optional, as = "Option<BTreeMap<ServiceName, Option<Region>>>")]
     pub regions: BTreeMap<ServiceName, Option<Region>>,
@@ -288,6 +289,7 @@ pub(crate) fn plan(
     let regions = target
         .services
         .iter()
+        .filter(|service| service.config.replicas.per_region().is_none())
         .filter(|service| landing.changes_region(service, target.region.as_ref()))
         .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
         .filter(|service| frozen.ships(service))

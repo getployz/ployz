@@ -26,6 +26,9 @@ no traffic until it recovers. A new replica gets none until it passes its
 [healthcheck](settings.md#healthcheck); once it has, it keeps getting traffic if the check fails
 later, and the dashboard warns.
 
+To run a set number of replicas in each of your [regions](regions.md#run-a-service-in-more-than-one-region),
+use the CLI: `ployz set web.replicas='{"fsn":2,"syd":1}'`.
+
 **CPU limit** and **Memory limit** in the same section cap what each replica can use. Ployz
 doesn't check that a server has room for them, so leave some headroom.
 
@@ -143,7 +146,8 @@ To bring services back:
 - **A service with a volume runs one replica**, on the volume's server, unless the volume
   [allows shared writes](volumes.md#share-a-volume).
 - **Nothing scales on its own.** There's no autoscaling: you choose the number of replicas.
-- **Preview environments run one replica** of each service, whatever you set here.
+- **Preview environments run one replica** of each service, whatever you set here. A service
+  with a count for each region runs it in the region with the most replicas.
 - **Update your own A records.** If your custom domain's root points at your servers with A
   records, change them when you add or lose a server that takes web traffic. Generated
   addresses and CNAME records follow along on their own. See

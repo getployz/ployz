@@ -1515,6 +1515,238 @@ fn a_server_that_cannot_record_a_placement_replaces_the_container_inside_the_reg
     );
 }
 
+#[test]
+fn replicas_by_region_run_each_count_on_that_regions_servers() {
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 2)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "fsn"),
+            in_region(machine('2', "second"), "lhr"),
+            in_region(machine('3', "third"), "syd"),
+            in_region(machine('4', "fourth"), "fsn"),
+        ],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&api], &snapshot, PlanOptions::default()).unwrap();
+
+    let mut ran = run_machine_ids(&plan);
+    ran.sort();
+    let fsn = [machine_id('1'), machine_id('4')];
+    assert_eq!(ran.iter().filter(|id| fsn.contains(id)).count(), 1);
+    assert_eq!(
+        ran.iter().filter(|id| **id == machine_id('3')).count(),
+        2,
+        "{ran:?}"
+    );
+    assert_eq!(ran.len(), 3);
+}
+
+#[test]
+fn counts_by_region_keep_the_replicas_already_in_those_regions() {
+    let was = kept_in(replicated("api", 2), "fsn");
+    let api = by_region(replicated("api", 1), &[("fsn", 2)]);
+    let id = service_id('a');
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            records_placements(in_region(machine('1', "first"), "fsn")),
+            records_placements(in_region(machine('2', "second"), "fsn")),
+            records_placements(in_region(machine('3', "third"), "syd")),
+        ],
+        containers: vec![
+            container('b', '1', &was, &id),
+            container('c', '2', &was, &id),
+        ],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&api], &snapshot, PlanOptions::default()).unwrap();
+
+    assert_eq!(
+        placements_recorded(&plan, &api),
+        [container_id('b'), container_id('c')]
+    );
+}
+
+#[test]
+fn counts_set_back_to_a_plain_count_keep_every_replica() {
+    let was = by_region(replicated("api", 1), &[("fsn", 2)]);
+    let api = replicated("api", 2);
+    let id = service_id('a');
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            records_placements(in_region(machine('1', "first"), "fsn")),
+            records_placements(in_region(machine('2', "second"), "fsn")),
+            records_placements(in_region(machine('3', "third"), "syd")),
+        ],
+        containers: vec![
+            container('b', '1', &was, &id),
+            container('c', '2', &was, &id),
+        ],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&api], &snapshot, PlanOptions::default()).unwrap();
+
+    assert_eq!(
+        placements_recorded(&plan, &api),
+        [container_id('b'), container_id('c')]
+    );
+}
+
+/// The Containers `plan` updates in place to `requested`'s placement and counts
+/// by region, when it does nothing else.
+fn placements_recorded(plan: &DeployPreview, requested: &RequestedServiceSpec) -> Vec<ContainerId> {
+    operations(plan)
+        .iter()
+        .map(|operation| {
+            let DeployOperation::UpdateContainer(update) = operation else {
+                panic!("only in-place placement updates: {operation:?}");
+            };
+            assert_eq!(update.change, ployz_core::InPlaceChange::Placement);
+            assert_eq!(update.spec.placement, requested.placement);
+            assert_eq!(update.spec.regions, requested.regions);
+            update.container_id
+        })
+        .collect()
+}
+
+#[test]
+fn a_region_that_loses_a_replica_keeps_its_other_one_running() {
+    let was = by_region(replicated("api", 1), &[("fsn", 2)]);
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let id = service_id('a');
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            records_placements(in_region(machine('1', "first"), "fsn")),
+            records_placements(in_region(machine('2', "second"), "fsn")),
+            records_placements(in_region(machine('3', "third"), "syd")),
+        ],
+        containers: vec![
+            container('b', '1', &was, &id),
+            container('c', '2', &was, &id),
+        ],
+        ..Default::default()
+    };
+
+    let plan = plan_deploy([&api], &snapshot, PlanOptions::default()).unwrap();
+
+    assert_eq!(run_machine_ids(&plan), [machine_id('3')]);
+    let operations = operations(&plan);
+    assert!(
+        !operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::ReplaceContainer(_) | DeployOperation::StopContainer { .. }
+        )),
+        "{operations:?}"
+    );
+    let updated: Vec<_> = operations
+        .iter()
+        .filter_map(|operation| {
+            if let DeployOperation::UpdateContainer(update) = operation {
+                assert_eq!(update.change, ployz_core::InPlaceChange::Placement);
+                assert_eq!(update.spec.regions, api.regions);
+                Some(update.container_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let removed: Vec<_> = operations
+        .iter()
+        .filter_map(|operation| {
+            if let DeployOperation::RemoveContainer { container_id, .. } = operation {
+                Some(*container_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        matches!((removed.as_slice(), updated.as_slice()), ([gone], [kept]) if gone != kept),
+        "removed {removed:?}, updated {updated:?}"
+    );
+}
+
+#[test]
+fn a_region_no_server_is_in_stops_every_replica_of_a_service_counted_in_it() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1)]);
+    let mut api = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1), ("nrt", 1)]);
+    api.container.image = "ghcr.io/getployz/api:new".into();
+    let web = kept_in(replicated("web", 1), "fsn");
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "syd"),
+            in_region(machine('2', "second"), "fsn"),
+        ],
+        containers: vec![container('b', '2', &was, &service_id('a'))],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api, &web],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, api.name);
+    assert_eq!(blocked.error.message, "no Server in lhr or nrt");
+    assert!(
+        matches!(
+            operations(&preview).as_slice(),
+            [DeployOperation::RunContainer { machine_id: on, spec, .. }]
+                if on == &machine_id('2') && spec.name == web.name
+        ),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+#[test]
+fn a_region_whose_servers_are_down_stops_a_service_counted_in_it_and_names_them() {
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1), ("syd", 1)]);
+    let mut down = in_region(machine('1', "first"), "syd");
+    down.membership = MembershipObservation::Down;
+    let snapshot = DeploySnapshot {
+        machines: vec![down, in_region(machine('2', "second"), "fsn")],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(
+        blocked.error.message,
+        "no Server in lhr; first is down, and no other Server in syd is up"
+    );
+    assert_eq!(
+        blocked.error.details.get("regions"),
+        Some(&serde_json::json!(["lhr", "syd"]))
+    );
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
 fn replicated(name: &str, replicas: u32) -> RequestedServiceSpec {
     let mut spec = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(replicas).unwrap(),

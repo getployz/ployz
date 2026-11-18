@@ -8829,6 +8829,62 @@ fn a_plan_names_the_region_each_service_it_ships_runs_in_next_and_any_server_onc
     assert_eq!(regions(), []);
 }
 
+/// One replica count puts a Service back in the Environment's region, which the
+/// change to its replicas alone doesn't show.
+#[test]
+fn a_plan_names_the_region_a_service_runs_in_once_it_leaves_its_counts_by_region() {
+    let (store, who) = shop();
+    let stage = |path: SettingPath, value: serde_json::Value| {
+        let edit = Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![Change::Set { path, value }],
+        };
+        store.write(&who, &edit).unwrap();
+    };
+    let replicas = |value| stage(SettingPath::parse("web.replicas").unwrap(), value);
+    let moves = || {
+        store
+            .read(&who, &PlanQuery::default())
+            .unwrap()
+            .regions
+            .into_iter()
+            .map(|(service, region)| (service.to_string(), region.map(|region| region.to_string())))
+            .collect::<Vec<_>>()
+    };
+    let deploy = |n: u8| {
+        admit(&store, &who, n, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    };
+    let syd = || Some("syd".to_owned());
+
+    stage(SettingPath::REGION, json!("syd"));
+    replicas(json!({ "fsn": 2 }));
+    assert_eq!(moves(), [("api".to_owned(), syd())]);
+    deploy(1);
+
+    replicas(json!(2));
+    assert_eq!(moves(), [("web".to_owned(), syd())]);
+    deploy(2);
+    assert_eq!(moves(), []);
+
+    replicas(json!({ "syd": 2 }));
+    deploy(3);
+    replicas(json!(2));
+    assert_eq!(
+        moves(),
+        [],
+        "its counts kept it in the Environment's region"
+    );
+}
+
 #[test]
 fn a_deploy_names_every_service_it_left_not_attempted_and_why() {
     let (store, who) = shop();

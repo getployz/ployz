@@ -1,8 +1,10 @@
 //! Shared placement and storage eligibility policy for Services on Machines.
 
+use std::{collections::BTreeMap, num::NonZeroU32};
+
 use crate::{
-    Machine, MachineStorageObservation, Placement, RequestedServiceSpec, ResolvedServiceSpec,
-    ServiceVolumeGraph, machine_matches_placement,
+    Machine, MachineStorageObservation, Placement, Region, RequestedServiceSpec,
+    ResolvedServiceSpec, ServiceVolumeGraph, machine_matches_placement,
 };
 
 /// Whether one Machine can host a Service under current placement and storage evidence.
@@ -51,7 +53,14 @@ impl RequestedServiceSpec {
             namespace.clone(),
             self.name.clone(),
         ));
-        placement_eligibility(&self.placement, self.volume_graph(), machine, storage, gate)
+        placement_eligibility(
+            &self.placement,
+            &self.regions,
+            self.volume_graph(),
+            machine,
+            storage,
+            gate,
+        )
     }
 }
 
@@ -72,7 +81,14 @@ impl ResolvedServiceSpec {
             namespace.clone(),
             self.name.clone(),
         ));
-        placement_eligibility(&self.placement, self.volume_graph(), machine, storage, gate)
+        placement_eligibility(
+            &self.placement,
+            &self.regions,
+            self.volume_graph(),
+            machine,
+            storage,
+            gate,
+        )
     }
 }
 
@@ -86,6 +102,7 @@ impl crate::ServiceStorageSpec {
     ) -> ServicePlacementEligibility {
         placement_eligibility(
             &self.placement,
+            &BTreeMap::new(),
             self.volume_graph(),
             machine,
             storage,
@@ -125,19 +142,20 @@ impl RoleGate {
     }
 }
 
-/// Evaluate placement constraints and mounted Provisioned Volume capability.
-///
 /// Membership Observation is intentionally a consumer concern. Provisioned
 /// maxima are enforced ceilings and are not compared with current free bytes.
 #[must_use]
 fn placement_eligibility(
     placement: &Placement,
+    regions: &BTreeMap<Region, NonZeroU32>,
     volumes: &ServiceVolumeGraph,
     machine: &Machine,
     storage: Option<&MachineStorageObservation>,
     gate: RoleGate,
 ) -> ServicePlacementEligibility {
-    if !machine_matches_placement(machine, placement) {
+    let in_a_region = regions.is_empty()
+        || Region::of(machine).is_some_and(|region| regions.contains_key(&region));
+    if !in_a_region || !machine_matches_placement(machine, placement) {
         return ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::PlacementMismatch,
         );
@@ -165,7 +183,10 @@ fn placement_eligibility(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, num::NonZeroU64};
+    use std::{
+        collections::BTreeMap,
+        num::{NonZeroU32, NonZeroU64},
+    };
 
     use serde_json::json;
 
@@ -423,6 +444,33 @@ mod tests {
                 },
                 "outside ployz-system it is an ordinary Service",
             );
+        }
+    }
+
+    #[test]
+    fn replicas_by_region_run_only_on_servers_in_those_regions() {
+        let namespace = crate::Namespace::parse("shop").unwrap();
+        let mut spec = requested(Placement::default(), ServiceVolumeGraph::default());
+        spec.regions = [(crate::Region::parse("fsn").unwrap(), NonZeroU32::MIN)].into();
+        let resolved = spec
+            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+            .unwrap();
+        let mut machine = machine("edge");
+        for (region, expected) in [(None, false), (Some("syd"), false), (Some("fsn"), true)] {
+            machine.labels = region
+                .map(|region| ("region".parse().unwrap(), region.parse().unwrap()))
+                .into_iter()
+                .collect();
+            for eligibility in [
+                spec.placement_eligibility_in_namespace(&namespace, &machine, None),
+                resolved.placement_eligibility_in_namespace(&namespace, &machine, None),
+            ] {
+                assert_eq!(
+                    eligibility == ServicePlacementEligibility::Eligible,
+                    expected,
+                    "{region:?}"
+                );
+            }
         }
     }
 

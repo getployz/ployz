@@ -317,15 +317,22 @@ fn each_payload_field_changed_alone_is_refused() {
 }
 
 #[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
 fn derived_fields_change_nothing() {
     let signer = signer(1);
     let base = requested(requested_json());
     let signed = Signed::sign(&approval(&signer, &base), &signer).unwrap();
     let machine = Machine::new(&[&signer]);
-    let mut spec = resolved(&requested(with(
-        &["mode"],
-        json!({"mode": "replicated", "replicas": 7}),
-    )));
+    let mut counted = with(&["mode"], json!({"mode": "replicated", "replicas": 7}));
+    counted["regions"] = json!({"fsn": 5, "syd": 2});
+    let counted = requested(counted);
+    let shown = |spec| ApprovedChange::of(&[spec], &namespace(), &BTreeMap::new()).unwrap();
+    assert_eq!(
+        shown(counted.clone()),
+        shown(base),
+        "an approver reads only what the approval signs"
+    );
+    let mut spec = resolved(&counted);
     spec.service_id = ServiceId::parse("d".repeat(32)).unwrap();
     spec.update = ResolvedUpdateConfig {
         order: crate::UpdateOrder::StopFirst,

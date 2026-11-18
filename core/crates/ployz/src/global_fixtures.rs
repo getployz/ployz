@@ -75,6 +75,7 @@ pub(crate) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
             restart: RestartPolicy::default(),
         },
         placement: Placement::default(),
+        regions: Default::default(),
         ports: Vec::new(),
         mount_graph: Default::default(),
         pre_deploy: None,

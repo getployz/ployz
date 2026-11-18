@@ -22,9 +22,9 @@ pub(crate) mod size;
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
-    MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, ServiceBuildConfig, ServiceHealthcheck,
-    ServiceImageCredentials, ServiceRestartPolicy, ServiceSource, UPDATE_ORDERS,
-    default_max_retries, default_replicas, parse_service_setting,
+    MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, Replicas, ServiceBuildConfig,
+    ServiceHealthcheck, ServiceImageCredentials, ServiceRestartPolicy, ServiceSource,
+    UPDATE_ORDERS, default_max_retries, default_replicas, parse_service_setting,
 };
 use ployz_core::{Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -207,7 +207,9 @@ impl ServiceSetting {
             Self::RegistryCredential => {
                 "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}, and sending that back keeps it."
             }
-            Self::Replicas => "How many copies of the Service run.",
+            Self::Replicas => {
+                "How many copies of the Service run. A number, or a count for each region like {\"fsn\":2,\"syd\":1}."
+            }
             Self::RestartPolicy => "When a stopped replica restarts.",
             Self::StartCommand => "Overrides the image's command. Unset runs the image's own.",
             Self::Template => {
@@ -357,7 +359,10 @@ impl ServiceSetting {
             Self::MaxRetries => {
                 json!({ "type": "integer", "minimum": 0, "maximum": MAX_RETRIES_MAX })
             }
-            Self::Replicas => json!({ "type": "integer", "minimum": 1, "maximum": REPLICAS_MAX }),
+            Self::Replicas => {
+                let count = json!({ "type": "integer", "minimum": 1, "maximum": REPLICAS_MAX });
+                json!({ "anyOf": [count, { "type": "object", "additionalProperties": count }] })
+            }
             Self::PreDeployCommand | Self::StartCommand => {
                 json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": COMMAND_MAX })
             }
@@ -403,7 +408,7 @@ impl ServiceSetting {
             Self::PreDeployCommand => json!(["npm run migrate"]),
             Self::PrivateDns => json!(["api", "api-v2"]),
             Self::RegistryCredential => json!([SecretInput::Keep.to_value()]),
-            Self::Replicas => json!([3]),
+            Self::Replicas => json!([3, { "fsn": 2, "syd": 1 }]),
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
             Self::Template => json!([{ "id": "postgres", "version": 1 }]),
@@ -567,6 +572,12 @@ impl ServiceSetting {
             return self.store(config, value);
         }
         let value = self.validated(self.name(), value)?;
+        if let (Self::Replicas, Some(regions)) = (self, &trusted.regions) {
+            let replicas: Replicas = self.decode(value.clone())?;
+            for region in replicas.regions() {
+                region::refuse_unknown(region, regions)?;
+            }
+        }
         self.store(config, value)
     }
 
@@ -688,13 +699,20 @@ impl ServiceSetting {
 
     /// Text that spells a number becomes the number, for numeric Settings, and text
     /// that spells an object becomes the object, for object Settings.
-    fn coerce(self, value: Value) -> Value {
+    pub(crate) fn coerce(self, value: Value) -> Value {
+        if self == Self::Replicas {
+            return Self::coerce_object(self.coerce_number(value));
+        }
         match self.expected().get("type").and_then(Value::as_str) {
             Some("integer" | "number") => self.coerce_number(value),
-            Some("object") => match value.as_str().map(serde_json::from_str::<Value>) {
-                Some(Ok(object @ Value::Object(_))) => object,
-                _ => value,
-            },
+            Some("object") => Self::coerce_object(value),
+            _ => value,
+        }
+    }
+
+    fn coerce_object(value: Value) -> Value {
+        match value.as_str().map(serde_json::from_str::<Value>) {
+            Some(Ok(object @ Value::Object(_))) => object,
             _ => value,
         }
     }

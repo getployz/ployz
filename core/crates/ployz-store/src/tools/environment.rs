@@ -1,6 +1,8 @@
 //! Tools about one Environment as a whole: what is in it, pull request
 //! Environments built from it, and what it needs before it can deploy.
 
+use std::collections::BTreeSet;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -271,6 +273,26 @@ tool_input! {
     }
 }
 
+pub(super) fn refuse_unknown_regions(
+    cx: &mut Cx<'_>,
+    named: &BTreeSet<Region>,
+) -> Result<(), Stop> {
+    if named.is_empty() || cx.is_local() {
+        return Ok(());
+    }
+    let answer = cx
+        .read(vec![Ask::Cloud(CloudQuery::Servers { only: None })])?
+        .into_iter()
+        .next();
+    if let Some(regions) = cx.cloud::<ServersAnswer>(answer)?.regions {
+        for region in named {
+            crate::refuse_unknown_region(region, &regions)
+                .map_err(|error| from_store(error, cx.call(), Writes::None))?;
+        }
+    }
+    Ok(())
+}
+
 impl Tool for EnvironmentRegion {
     const NAME: &'static str = "environment_region";
     const TITLE: &'static str = "Set an Environment's region";
@@ -286,16 +308,7 @@ impl Tool for EnvironmentRegion {
         let path = SettingPath::REGION;
         let change = match (&self.region, self.clear) {
             (Some(region), false) => {
-                if !cx.is_local() {
-                    let answer = cx
-                        .read(vec![Ask::Cloud(CloudQuery::Servers { only: None })])?
-                        .into_iter()
-                        .next();
-                    if let Some(regions) = cx.cloud::<ServersAnswer>(answer)?.regions {
-                        crate::refuse_unknown_region(region, &regions)
-                            .map_err(|error| from_store(error, cx.call(), Writes::None))?;
-                    }
-                }
+                refuse_unknown_regions(cx, &BTreeSet::from([region.clone()]))?;
                 Change::Set {
                     path,
                     value: json!(region),

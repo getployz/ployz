@@ -526,6 +526,19 @@ fn web_values(
 }
 
 #[test]
+fn a_pr_environment_runs_its_one_replica_in_the_region_with_the_most() {
+    let (store, who) = shop();
+    let counts = json!({ "fsn": 1, "syd": 3 });
+    set(&store, &who, "production", "web.replicas", counts);
+    plan(&store, &who, on());
+
+    pull(&store, &who, facts(true, "2026-09-29T10:00:01Z"));
+
+    let preview = web_values(&store, &who, "pr-5").unwrap();
+    assert_eq!(preview["replicas"], json!({ "syd": 1 }));
+}
+
+#[test]
 fn a_fork_pull_request_from_a_non_member_gets_nothing_until_approved() {
     let (store, who) = shop();
     with_secrets(&store, &who);

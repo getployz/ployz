@@ -1,8 +1,9 @@
 //! The rules an Environment's authored configuration keeps as a whole, which no
 //! single Setting can check alone: a Volume without Shared Writes has one writer
-//! and no Service that updates start-first mounts it, variables never reference
-//! each other in a cycle, and a Setup Command runs in a Service there is. A Config
-//! takes no part in cycles: nothing references a Config.
+//! and no Service that updates start-first mounts it, a Service that mounts a
+//! Volume counts its replicas in one region, variables never reference each other
+//! in a cycle, and a Setup Command runs in a Service there is. A Config takes no
+//! part in cycles: nothing references a Config.
 //!
 //! Every write of Working State, and of an Environment's Setup Commands, passes
 //! [`check_write`]. It refuses only a problem the write adds: an Environment that
@@ -197,8 +198,8 @@ pub(crate) struct Facts<'a> {
 ///
 /// # Errors
 /// The first problem the write adds, naming what breaks the rule and how to fix
-/// it: `conflict` for a second writer of a Volume, or a Setup Command's Service the
-/// write removed; `invalid_argument` for a reference cycle; `not_found` for a Setup
+/// it: `conflict` for a second writer of a Volume, replicas in two regions on one, or
+/// a Setup Command's Service the write removed; `invalid_argument` for a reference cycle; `not_found` for a Setup
 /// Command naming no Service.
 pub(crate) fn check_write(
     environment: &EnvironmentSummary,
@@ -225,6 +226,7 @@ pub(crate) fn check_write(
     Err(match first {
         Problem::Writers { volume, replicas } => refusing.writers(volume, *replicas),
         Problem::StartFirst { service, volume } => refusing.start_first(service, volume),
+        Problem::Regions { service, volume } => refusing.regions(service, volume),
         Problem::Cycle(members) => refusing.cycle(members),
         Problem::NoSetupService(service) => refusing.setup(service),
     })
@@ -238,6 +240,9 @@ enum Problem {
     /// A Service that updates start-first mounts a Volume without Shared Writes, both
     /// by lineage: its old and new replicas would write it at once.
     StartFirst { service: String, volume: String },
+    /// A Service counts its replicas in several regions and mounts a Volume, both by
+    /// lineage: the Volume is on one Server.
+    Regions { service: String, volume: String },
     /// Variables, as (Service lineage, key), that reference each other in a cycle:
     /// one strongly connected group, so an unrelated edit finds the same one.
     Cycle(BTreeSet<(String, String)>),
@@ -296,7 +301,7 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
     {
         let replicas = writers(working, &volume.resource_id)
             .iter()
-            .map(|service| u32::from(service.config.replicas))
+            .map(|service| service.config.replicas.total())
             .sum();
         if replicas > 1 {
             found.insert(Problem::Writers {
@@ -318,6 +323,23 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
                     .any(|mount| mount.volume_resource_id == volume.resource_id)
         }) {
             found.insert(Problem::StartFirst {
+                service: service.lineage_id.clone(),
+                volume: volume.resource_lineage_id.clone(),
+            });
+        }
+    }
+    for service in working
+        .services
+        .iter()
+        .filter(|service| service.config.replicas.regions().nth(1).is_some())
+    {
+        for volume in working.volumes.iter().filter(|volume| {
+            service
+                .volume_attachments
+                .iter()
+                .any(|mount| mount.volume_resource_id == volume.resource_id)
+        }) {
+            found.insert(Problem::Regions {
                 service: service.lineage_id.clone(),
                 volume: volume.resource_lineage_id.clone(),
             });
@@ -474,7 +496,7 @@ fn writers<'a>(intent: &'a SavedEnvironmentIntent, id: &str) -> Vec<&'a SavedSer
     intent
         .services
         .iter()
-        .filter(|service| service.config.replicas > 0)
+        .filter(|service| service.config.replicas.total() > 0)
         .filter(|service| {
             service
                 .volume_attachments
@@ -522,6 +544,15 @@ impl<'a> Refusing<'a> {
                     })
             })
             .unwrap_or_else(|| "a removed Service".to_owned())
+    }
+
+    /// The name of the Volume (lineage) a Service mounts.
+    fn volume(&self, lineage: &str) -> String {
+        let mut volumes = self.after.working.volumes.iter();
+        volumes
+            .find(|candidate| candidate.resource_lineage_id == lineage)
+            .map(|volume| volume.name.clone())
+            .expect("a Volume a Service mounts is in Working State")
     }
 
     /// A second writer of Volume `volume` (lineage): turning Shared Writes off over
@@ -629,14 +660,7 @@ impl<'a> Refusing<'a> {
     /// which has no Shared Writes.
     fn start_first(&self, service: &str, volume: &str) -> RpcError {
         let service = self.name(service);
-        let volume = self
-            .after
-            .working
-            .volumes
-            .iter()
-            .find(|candidate| candidate.resource_lineage_id == volume)
-            .map(|volume| volume.name.clone())
-            .expect("a Volume a Service mounts is in Working State");
+        let volume = self.volume(volume);
         let allow = format!("ployz volume set {volume} --shared-writes");
         error::conflict(
             format!(
@@ -644,6 +668,21 @@ impl<'a> Refusing<'a> {
             ),
             FollowUp::SetStopFirst {
                 service: service.clone(),
+                place: self.place(),
+            }
+            .within(json!({ "service": service, "volume": volume })),
+        )
+    }
+
+    /// Service `service` counts its replicas in several regions and mounts Volume
+    /// `volume` (lineages).
+    fn regions(&self, service: &str, volume: &str) -> RpcError {
+        let service = self.name(service);
+        let volume = self.volume(volume);
+        error::conflict(
+            format!("{volume} is attached to {service}; set replicas in one region"),
+            FollowUp::VolumeInspect {
+                volume: volume.clone(),
                 place: self.place(),
             }
             .within(json!({ "service": service, "volume": volume })),
@@ -715,7 +754,7 @@ impl<'a> Refusing<'a> {
 )]
 pub(crate) mod tests {
     use ployz_core::config::{
-        PlainText, SavedEnvironmentIntent, ValueFingerprint, ValuePart, ValuePartOwner,
+        PlainText, Replicas, SavedEnvironmentIntent, ValueFingerprint, ValuePart, ValuePartOwner,
         VariableValue, VolumeAttachment,
     };
     use ployz_core::{RpcError, RpcErrorCode, ServiceName};
@@ -965,13 +1004,23 @@ pub(crate) mod tests {
         // What production already breaks keeps it editing, and a Branch copies it.
         seed(&store, &who, |working| {
             for service in &mut working.services {
-                service.config.replicas = 2;
+                service.config.replicas = Replicas::Count(2);
             }
         });
         unrelated(&store, &who).unwrap();
         branch(&store, &who, &["db"]).unwrap();
         let refused = set(&store, &who, &[("db.replicas", json!(3))]).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
+    }
+
+    #[test]
+    fn replicas_in_two_regions_are_two_writers_of_a_volume() {
+        let (store, who) = shop();
+        let counts = |counts: Value| set(&store, &who, &[("db.replicas", counts)]);
+        let refused = counts(json!({ "fsn": 1, "syd": 1 })).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(refused.details.get("writers"), Some(&json!(2)));
+        counts(json!({ "fsn": 1 })).unwrap();
     }
 
     #[test]

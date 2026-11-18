@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, MachineId, Namespace,
-    PortPublication, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
+    PortPublication, Region, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
     ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, SpecChange,
     UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder,
     compare_specs,
@@ -482,6 +482,120 @@ fn on_machine(
         .filter(move |container| container.as_observation().machine_id == machine_id)
 }
 
+pub(super) struct Spread<'a> {
+    requested: &'a RequestedServiceSpec,
+    regions: Vec<RegionShare>,
+}
+
+pub(super) struct RegionShare {
+    pub(super) spec: RequestedServiceSpec,
+    count: usize,
+    labelled: BTreeSet<MachineId>,
+}
+
+impl<'a> Spread<'a> {
+    pub(super) fn of(
+        requested: &'a RequestedServiceSpec,
+        snapshot: &super::DeploySnapshot,
+    ) -> Self {
+        let regions = requested
+            .regions
+            .iter()
+            .filter(|_| matches!(requested.mode, ServiceMode::Replicated { .. }))
+            .map(|(region, count)| RegionShare {
+                spec: requested.held_to(region),
+                count: count.get() as usize,
+                labelled: snapshot
+                    .machines
+                    .iter()
+                    .filter(|machine| Region::of(&machine.machine).as_ref() == Some(region))
+                    .map(|machine| machine.machine.id)
+                    .collect(),
+            })
+            .collect();
+        Self { requested, regions }
+    }
+
+    fn anywhere(requested: &'a RequestedServiceSpec) -> Self {
+        Self {
+            requested,
+            regions: Vec::new(),
+        }
+    }
+
+    pub(super) fn requested(&self) -> &'a RequestedServiceSpec {
+        self.requested
+    }
+
+    pub(super) fn regions(&self) -> &[RegionShare] {
+        &self.regions
+    }
+
+    pub(super) fn replicas(&self) -> Option<usize> {
+        let ServiceMode::Replicated { replicas } = self.requested.mode else {
+            return None;
+        };
+        Some(if self.regions.is_empty() {
+            replicas.get() as usize
+        } else {
+            self.regions.iter().map(|share| share.count).sum()
+        })
+    }
+
+    pub(super) fn supplied<'c>(
+        &self,
+        containers: impl IntoIterator<Item = &'c ServiceContainer>,
+    ) -> usize {
+        let mut quota = Quota::of(self);
+        containers
+            .into_iter()
+            .filter(|container| quota.take(&container.as_observation().machine_id))
+            .count()
+    }
+}
+
+struct Quota<'a> {
+    spread: &'a Spread<'a>,
+    left: Vec<usize>,
+}
+
+impl<'a> Quota<'a> {
+    fn of(spread: &'a Spread<'a>) -> Self {
+        Self {
+            spread,
+            left: spread.regions.iter().map(|share| share.count).collect(),
+        }
+    }
+
+    fn share(&self, machine: &MachineId) -> Option<usize> {
+        self.spread
+            .regions
+            .iter()
+            .position(|share| share.labelled.contains(machine))
+    }
+
+    fn open(&self, machine: &MachineId) -> bool {
+        self.spread.regions.is_empty()
+            || self
+                .share(machine)
+                .and_then(|share| self.left.get(share))
+                .is_some_and(|left| *left > 0)
+    }
+
+    fn take(&mut self, machine: &MachineId) -> bool {
+        if !self.open(machine) {
+            return false;
+        }
+        if let Some(left) = self
+            .share(machine)
+            .and_then(|share| self.left.get_mut(share))
+        {
+            *left -= 1;
+        }
+        true
+    }
+}
+
 pub(super) enum CapacityAdmission {
     Pending { error: PlanError, landing: Landing },
     Reserved { reservation: ReplicatedReservation },
@@ -527,6 +641,7 @@ enum ReplicaAction {
 }
 
 pub(super) struct ReplicatedPlacement<'a> {
+    pub(super) spread: &'a Spread<'a>,
     pub(super) volumes: VolumePlacement<'a>,
     pub(super) admission: CapacityAdmission,
 }
@@ -545,7 +660,7 @@ pub(super) fn plan_replicated(
             // Selection uses trial socket claims; the accepted choices are applied below.
             let mut sockets = placement.sockets.clone();
             select_replicated(
-                requested,
+                target.spread,
                 current,
                 machines.iter().map(|machine| machine.machine.id).collect(),
                 &placement.occupancy,
@@ -701,7 +816,7 @@ impl ReplicaEmitter<'_> {
 
 /// The same Container selection and admission for ordinary placement and shared Volume trials.
 fn select_replicated(
-    requested: &RequestedServiceSpec,
+    spread: &Spread<'_>,
     current: &[ServiceContainer],
     mut machines: Vec<MachineId>,
     occupancy: &BTreeMap<MachineId, usize>,
@@ -711,13 +826,13 @@ fn select_replicated(
 ) -> Result<ReplicatedReservation, PlanError> {
     let (capacity, sockets) = budget;
     let (options, landing) = fate;
+    let requested = spread.requested;
     let keeps = |container: &ServiceContainer| {
         container_fate(container, requested, options, landing) != ContainerFate::Replace
     };
-    let ServiceMode::Replicated { replicas } = requested.mode else {
+    let Some(replicas) = spread.replicas() else {
         return Err(capacity_error);
     };
-    let replicas = replicas.get() as usize;
     let mut by_machine = BTreeMap::<MachineId, Vec<&ServiceContainer>>::new();
     for container in current {
         by_machine
@@ -733,15 +848,16 @@ fn select_replicated(
             )
         });
     }
-    let existing = machines
-        .iter()
-        .map(|id| by_machine.get(id).map_or(0, Vec::len))
-        .sum::<usize>();
-    let up_to_date = machines
-        .iter()
-        .flat_map(|id| by_machine.get(id).into_iter().flatten())
-        .filter(|container| keeps(container))
-        .count();
+    let on_machines = |counts: &dyn Fn(&ServiceContainer) -> bool| {
+        spread.supplied(
+            machines
+                .iter()
+                .flat_map(|id| by_machine.get(id).into_iter().flatten().copied())
+                .filter(|container| counts(container)),
+        )
+    };
+    let existing = on_machines(&|_| true);
+    let up_to_date = on_machines(&|container| keeps(container));
     let required = replicas
         .saturating_sub(existing)
         .saturating_add(usize::from(
@@ -767,6 +883,7 @@ fn select_replicated(
     let mut cursor = 0;
     let mut hook_pending = requested.pre_deploy.is_some();
     let mut hook_machine = None;
+    let mut quota = Quota::of(spread);
     for _ in 0..replicas {
         let mut socket_blocked = false;
         let mut selected = None;
@@ -775,6 +892,9 @@ fn select_replicated(
                 .get(cursor % machines.len())
                 .expect("eligible Machines are non-empty");
             cursor += 1;
+            if !quota.open(&machine_id) {
+                continue;
+            }
             let remaining = by_machine.get(&machine_id).map_or(&[][..], Vec::as_slice);
             let existing = remaining.last().copied();
             let operation = replicated_operation(existing, requested, options, landing);
@@ -796,6 +916,7 @@ fn select_replicated(
                 capacity_error
             });
         };
+        quota.take(&machine_id);
         if demand.uses_hook() {
             hook_pending = false;
             hook_machine = Some(machine_id);
@@ -968,9 +1089,9 @@ impl InPlaceUpdaters {
     }
 }
 
-/// Changes the request makes outside the serving shape, such as the replica
-/// count, stay off this spec and wait for the copy's replacement, as they do for
-/// a copy left untouched.
+/// The counts by region go with the placement. Other changes the request makes
+/// outside the serving shape, such as the replica count, stay off this spec and
+/// wait for the copy's replacement, as they do for a copy left untouched.
 fn placed_spec(
     container: &ServiceContainer,
     service_id: ServiceId,
@@ -979,6 +1100,7 @@ fn placed_spec(
     ResolvedServiceSpec {
         service_id,
         placement: requested.placement.clone(),
+        regions: requested.regions.clone(),
         ..container.as_observation().resolved_spec.clone()
     }
 }
@@ -1141,7 +1263,7 @@ fn reserve_replicated_service_demand(
         }
         let error = capacity.error_for([&machine_id]);
         let mut reservation = select_replicated(
-            requested,
+            &Spread::anywhere(requested),
             current,
             vec![machine_id],
             &BTreeMap::new(),

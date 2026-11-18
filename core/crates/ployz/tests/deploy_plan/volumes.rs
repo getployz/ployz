@@ -129,6 +129,39 @@ fn unavailable_named_volume_blocks_only_a_dependent_service() {
         Some(PruneRefusal::IncompleteSnapshot)
     );
 }
+
+/// A Volume is on one Server, so a Service that mounts one can't run replicas in two
+/// regions. An Environment saved before the Config Store refused it still deploys its
+/// other Services.
+#[test]
+fn a_volume_service_counted_in_two_regions_blocks_only_itself() {
+    for provisioned in [false, true] {
+        let mut api = by_region(replicated("api"), &[("fsn", 1), ("syd", 1)]);
+        add_named_volume(&mut api, "data");
+        if provisioned {
+            make_provisioned(&mut api, "data", 1024 * 1024 * 1024);
+        }
+        let snapshot = DeploySnapshot {
+            machines: vec![
+                in_region(machine('1', "first"), "fsn"),
+                in_region(machine('2', "second"), "syd"),
+            ],
+            ..storage_snapshot()
+        };
+
+        let (preview, blocked) = blocked_beside_web(&[&api], &snapshot);
+
+        assert_eq!(
+            blocked,
+            [(
+                "api".to_owned(),
+                "api has a Volume, so its replicas run in one region".to_owned()
+            )]
+        );
+        assert_only_web_runs(&preview);
+    }
+}
+
 #[test]
 fn named_volume_planning_keeps_a_machine_with_a_complete_inventory() {
     let mut service = requested(ServiceMode::Replicated {

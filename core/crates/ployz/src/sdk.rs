@@ -1829,6 +1829,7 @@ fn plan_refusal_code(error: &crate::deploy::PlanError) -> RpcErrorCode {
     match error {
         PlanError::Service { source, .. } => plan_refusal_code(source),
         PlanError::ConflictingHostPublications { .. }
+        | PlanError::VolumeInSeveralRegions { .. }
         | PlanError::HostPortConflict { .. }
         | PlanError::CapacityUnknown
         | PlanError::InsufficientCapacity

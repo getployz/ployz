@@ -643,7 +643,7 @@ mod tests {
         let variable = catalog::explain("web.env.KEY").unwrap().schema;
         assert_eq!(type_of(&variable), "string or object");
         let replicas = catalog::explain("web.replicas").unwrap().schema;
-        assert_eq!(type_of(&replicas), "integer");
+        assert_eq!(type_of(&replicas), "integer or object");
         let domains = catalog::explain("web.domains").unwrap().schema;
         assert_eq!(type_of(&domains), "array");
     }

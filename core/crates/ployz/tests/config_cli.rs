@@ -4176,7 +4176,7 @@ fn the_catalog_describes_settings_without_a_store() {
 
     let (code, one) = ployz(None, &["schema", "web.replicas"]);
     assert_eq!(code, Some(0));
-    assert_eq!(one.get("maximum"), Some(&json!(50)));
+    assert_eq!(one.pointer("/anyOf/0/maximum"), Some(&json!(50)));
 
     let (code, explained) = ployz(None, &["explain", "web.restartPolicy"]);
     assert_eq!(code, Some(0));
@@ -9210,7 +9210,7 @@ fn set_refuses_a_secret_on_the_command_line_and_sends_the_rest_as_typed() {
         let replicas = refused(&[&format!("web.replicas={secret}")]);
         assert_eq!(
             replicas["message"],
-            "replicas: Expected a whole number of replicas from 1–50"
+            "replicas: Expected a whole number of replicas from 1–50, or a count for each region like {\"fsn\":2,\"syd\":1}"
         );
         let setup = refused(&[&format!("setup.web={secret}")]);
         assert_eq!(setup["message"], "production is not a Branch");

@@ -5,8 +5,10 @@
 //! Environment's lock, so edits to different Settings never overwrite each other.
 //! A caller may pass the revision it read; the edit then refuses if Working State moved.
 
-use ployz_core::config::ClientSealedValue;
-use ployz_core::{RpcError, ServiceName};
+use std::collections::BTreeSet;
+
+use ployz_core::config::{ClientSealedValue, Replicas};
+use ployz_core::{Region, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -40,6 +42,28 @@ pub struct Edit {
 }
 
 impl Edit {
+    /// The regions this edit names: the Environment's default, and each one a Service's
+    /// replicas are counted in. None from an edit the Store refuses.
+    #[must_use]
+    pub fn regions(&self) -> BTreeSet<Region> {
+        let mut regions = BTreeSet::new();
+        for (path, step) in expand(&self.changes).unwrap_or_default() {
+            let Step::Set(value) = step else {
+                continue;
+            };
+            if path.environment() == Some(EnvironmentSetting::Region) {
+                regions.extend(settings::region::parse(&value).ok());
+            }
+            let replicas = ServiceSetting::Replicas;
+            if path.target() == Some(&Target::Setting(replicas))
+                && let Ok(counts) = replicas.decode::<Replicas>(replicas.coerce(value))
+            {
+                regions.extend(counts.regions().cloned());
+            }
+        }
+        regions
+    }
+
     /// Whether this edit carries a new secret's plain text, as the Store reads the
     /// edit, or holds `{"secret": "…"}` in an edit the Store refuses.
     #[must_use]

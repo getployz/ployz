@@ -11,7 +11,7 @@ use ployz_core::{
 
 use super::{
     DeployIntent, DeployOperation, DeployPreview, DeploySnapshot, DeployWarning,
-    EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions,
+    EliminatingConstraint, HeldIngress, HostnameRefusal, PlanError, PlanOptions, RegionAway,
     ReplacementOperation,
     schedule::{ServiceGroup, Stage, TaskKind, creates_container},
 };
@@ -28,7 +28,7 @@ mod volumes;
 use candidates::{Candidates, Exclusion};
 use placement::{
     CapacityAdmission, GlobalPlacement, Landing, PlacementReservations, PlacementState,
-    ReplicatedPlacement, ReplicatedReservation, TrialStep, plan_global, plan_replicated,
+    ReplicatedPlacement, ReplicatedReservation, Spread, TrialStep, plan_global, plan_replicated,
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
@@ -800,6 +800,20 @@ fn bind(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<BoundIntent,
     })
 }
 
+fn refuse_volume_in_several_regions(spec: &RequestedServiceSpec) -> Result<(), PlanError> {
+    let mounts_volume = || {
+        spec.volume_graph()
+            .mounted_volumes()
+            .any(|volume| volume.source.managed_docker_volume_name().is_some())
+    };
+    if spec.regions.len() > 1 && mounts_volume() {
+        return Err(PlanError::VolumeInSeveralRegions {
+            service: spec.name.clone(),
+        });
+    }
+    Ok(())
+}
+
 /// The Services this Deploy retires: what a full Deploy prunes, and the removals it
 /// names. Absence is evidence only in a complete snapshot, so a partial one prunes
 /// nothing. A named removal needs no such evidence: it goes ahead on the Servers the
@@ -1136,6 +1150,7 @@ fn assemble_plan(
                 | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }
                 | PlanError::RegionUnmatched { .. }
+                | PlanError::VolumeInSeveralRegions { .. }
                 | PlanError::VolumeOutsideRegion { .. }),
             ) if blocks_unmountable => {
                 block_service(
@@ -1571,7 +1586,7 @@ impl ServiceBudget<'_> {
 
 /// One Service to place, with what the Cluster already runs of it.
 struct ServiceTarget<'a, 'snapshot> {
-    requested: &'a RequestedServiceSpec,
+    spread: &'a Spread<'a>,
     service_id: ServiceId,
     current: &'a [ServiceContainer],
     hooks: &'a [HookContainer],
@@ -1586,7 +1601,9 @@ fn plan_one_service<'snapshot>(
     budget: &mut ServiceBudget<'snapshot>,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
-    let mut machines = eligible_machines(requested, namespace, snapshot, options)?;
+    refuse_volume_in_several_regions(requested)?;
+    let spread = Spread::of(requested, snapshot);
+    let mut machines = spread_machines(&spread, namespace, snapshot, options)?;
     let identity = QualifiedService::new(namespace.clone(), requested.name.clone());
     let existing = services.iter().find(|service| service.identity == identity);
     let (service_id, current, hooks) = match existing {
@@ -1614,7 +1631,7 @@ fn plan_one_service<'snapshot>(
             .constrain_candidates(requested, &mut machines)?;
     }
     let target = ServiceTarget {
-        requested,
+        spread: &spread,
         service_id,
         current,
         hooks,
@@ -1649,31 +1666,29 @@ fn place_service<'snapshot>(
     landing: Landing,
 ) -> Result<Vec<DeployOperation>, PlanError> {
     let ServiceTarget {
-        requested,
+        spread,
         service_id,
         current,
         hooks,
         machines,
     } = target;
+    let requested = spread.requested();
     let ServiceBudget {
         volumes: volume_plan,
         placement,
     } = budget;
     let mut machines = machines.clone();
     let mut capacity_error = None;
-    if let ServiceMode::Replicated { replicas } = requested.mode
+    if let Some(replicas) = spread.replicas()
         && reservation.is_none()
     {
-        let up_to_date = current
-            .iter()
-            .filter(|container| {
-                machines
-                    .iter()
-                    .any(|machine| machine.machine.id == container.as_observation().machine_id)
-                    && PlacementState::keeps_container(container, requested, options, landing)
-            })
-            .count();
-        if requested.pre_deploy.is_some() && up_to_date < replicas.get() as usize {
+        let up_to_date = spread.supplied(current.iter().filter(|container| {
+            machines
+                .iter()
+                .any(|machine| machine.machine.id == container.as_observation().machine_id)
+                && PlacementState::keeps_container(container, requested, options, landing)
+        }));
+        if requested.pre_deploy.is_some() && up_to_date < replicas {
             placement.release_hooks(hooks);
         }
         let relevant = machines
@@ -1697,6 +1712,7 @@ fn place_service<'snapshot>(
             service_id,
             current,
             ReplicatedPlacement {
+                spread,
                 volumes,
                 admission: match reservation {
                     Some(reservation) => CapacityAdmission::Reserved { reservation },
@@ -1735,6 +1751,31 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
         }
     } else {
         source
+    }
+}
+
+fn spread_machines<'snapshot>(
+    spread: &Spread<'_>,
+    namespace: &Namespace,
+    snapshot: &'snapshot DeploySnapshot,
+    options: &PlanOptions,
+) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
+    if spread.regions().is_empty() {
+        return eligible_machines(spread.requested(), namespace, snapshot, options);
+    }
+    let mut machines = Vec::new();
+    let mut unmatched = Vec::new();
+    for share in spread.regions() {
+        match eligible_machines(&share.spec, namespace, snapshot, options) {
+            Ok(eligible) => machines.extend(eligible),
+            Err(PlanError::RegionUnmatched { regions }) => unmatched.extend(regions),
+            Err(error) => return Err(error),
+        }
+    }
+    if unmatched.is_empty() {
+        Ok(machines)
+    } else {
+        Err(PlanError::RegionUnmatched { regions: unmatched })
     }
 }
 
@@ -1865,10 +1906,16 @@ fn storage_eligibility_warnings(
 }
 
 fn region(spec: &RequestedServiceSpec) -> Option<Region> {
+    let mut by_count = spec.regions.keys();
+    let only = match (by_count.next(), by_count.next()) {
+        (Some(region), None) => Some(region.clone()),
+        _ => None,
+    };
     spec.placement
         .constraints
         .iter()
         .find_map(Region::required_by)
+        .or(only)
 }
 
 fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> PlanError {
@@ -1878,7 +1925,9 @@ fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> 
     if let Some(region) = region(spec)
         && let Some(servers) = candidates.away_in(&region)
     {
-        return PlanError::RegionUnmatched { region, servers };
+        return PlanError::RegionUnmatched {
+            regions: vec![RegionAway { region, servers }],
+        };
     }
     if candidates.matches_none() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::UnknownPlacement {

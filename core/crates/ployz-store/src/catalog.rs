@@ -372,7 +372,11 @@ mod tests {
                     let pattern = schema
                         .get("patternProperties")
                         .and_then(|patterns| patterns.as_object()?.values().next());
+                    let any = schema
+                        .get("additionalProperties")
+                        .filter(|any| any.is_object());
                     own.or(pattern)
+                        .or(any)
                         .is_some_and(|schema| satisfies(value, schema))
                 });
         }

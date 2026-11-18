@@ -535,9 +535,9 @@ pub(super) fn settings_edited(
         configs.iter_mut().for_each(config_text);
     }
     let defaults = defaults();
-    // A payload digest leaves out how many copies run and in what order.
-    for unsigned in ["name", "mode", "update"] {
-        fields.remove(unsigned);
+    // The name shows on the Service's own line.
+    for unshown in std::iter::once("name").chain(super::deploy::UNSIGNED) {
+        fields.remove(unshown);
     }
     changed(&mut lines, "", fields, &defaults.service);
     // The image shows on its own line or is a template's placeholder, and the Sealed

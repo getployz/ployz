@@ -332,7 +332,7 @@ struct LoweredConfigs {
 }
 
 struct Limits {
-    replicas: u8,
+    replicas: super::Replicas,
     cpu_nanos: Option<CpuNanos>,
     memory_bytes: Option<i64>,
     restart: RestartPolicy,
@@ -395,9 +395,7 @@ fn lower_snapshot(
     let mut spec = RequestedServiceSpec {
         name: config.private_dns,
         mode: ServiceMode::Replicated {
-            replicas: u32::from(limits.replicas)
-                .try_into()
-                .map_err(lowering_error)?,
+            replicas: limits.replicas.total().try_into().map_err(lowering_error)?,
         },
         container: ServiceContainerSpec {
             image: image.clone(),
@@ -441,8 +439,20 @@ fn lower_snapshot(
             network: None,
         },
         placement: Placement {
-            constraints: sources.region.map(Region::constraint).into_iter().collect(),
+            constraints: match limits.replicas.per_region() {
+                Some(_) => None,
+                None => sources.region.map(Region::constraint),
+            }
+            .into_iter()
+            .collect(),
         },
+        regions: limits
+            .replicas
+            .per_region()
+            .into_iter()
+            .flatten()
+            .map(|(region, count)| (region.clone(), (*count).into()))
+            .collect(),
         ports,
         mount_graph: Default::default(),
         pre_deploy,
@@ -514,8 +524,12 @@ fn lower_limits(
     config: &super::AuthoredServiceConfig,
     replicas_override: Option<u8>,
 ) -> Result<Limits, ConfigError> {
-    let replicas = replicas_override.unwrap_or(config.replicas);
-    if replicas == 0 || replicas > 50 {
+    let replicas = match replicas_override.map(std::num::NonZeroU8::new) {
+        Some(Some(count)) => config.replicas.only(count),
+        Some(None) => super::Replicas::Count(0),
+        None => config.replicas.clone(),
+    };
+    if !(1..=u32::from(super::REPLICAS_MAX)).contains(&replicas.total()) {
         return Err(ConfigError::at(
             "replicas",
             "Runtime deployment requires 1–50 replicas",

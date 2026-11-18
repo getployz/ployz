@@ -165,6 +165,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn changed_counts_by_region_are_recorded_only_on_a_machine_in_one_of_the_regions() {
+        let (runtime, _fake, id) = runtime_with_running_container().await;
+        let plain = runtime.specs.get(&id).await.unwrap().unwrap();
+        let counted = |counts: serde_json::Value| {
+            let mut spec = plain.clone();
+            spec.regions = serde_json::from_value(counts).unwrap();
+            spec
+        };
+        let fsn = machine_in("fsn");
+
+        let error = runtime
+            .update_placement(
+                &fsn,
+                &id,
+                &counted(serde_json::json!({"syd": 1})),
+                std::future::ready(None),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ServicePlacementMismatch),
+            "{error:?}"
+        );
+        assert_eq!(runtime.specs.get(&id).await.unwrap().unwrap(), plain);
+
+        for wanted in [
+            counted(serde_json::json!({"fsn": 1, "syd": 1})),
+            counted(serde_json::json!({"fsn": 1})),
+            plain.clone(),
+        ] {
+            runtime
+                .update_placement(&fsn, &id, &wanted, std::future::ready(None))
+                .await
+                .unwrap();
+            assert_eq!(runtime.specs.get(&id).await.unwrap().unwrap(), wanted);
+        }
+    }
+
+    #[tokio::test]
     async fn a_spec_that_changes_more_than_placement_is_refused_and_the_spec_stays() {
         let (runtime, _fake, id) = runtime_with_running_container().await;
         let stored = runtime.specs.get(&id).await.unwrap().unwrap();

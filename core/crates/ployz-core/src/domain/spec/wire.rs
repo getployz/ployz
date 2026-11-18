@@ -1,5 +1,7 @@
 //! Checked wire admission and serialization for Service specifications.
 
+use std::collections::BTreeMap;
+
 use super::{
     ConfigMount, ConfigSpec, Placement, PortPublication, PreDeployHook, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainerSpec, ServiceMode, UpdateConfig,
@@ -29,6 +31,9 @@ pub(super) struct RequestedServiceSpecWire {
     container: ServiceContainerSpecWire,
     #[serde(default)]
     placement: Placement,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional, as = "Option<BTreeMap<crate::Region, u32>>")]
+    regions: BTreeMap<crate::Region, std::num::NonZeroU32>,
     #[serde(default)]
     ports: Vec<PortPublication>,
     #[serde(default)]
@@ -53,6 +58,9 @@ pub(super) struct ResolvedServiceSpecWire {
     container: ServiceContainerSpecWire,
     #[serde(default)]
     placement: Placement,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional, as = "Option<BTreeMap<crate::Region, u32>>")]
+    regions: BTreeMap<crate::Region, std::num::NonZeroU32>,
     #[serde(default)]
     ports: Vec<PortPublication>,
     #[serde(default)]
@@ -76,6 +84,7 @@ impl TryFrom<RequestedServiceSpecWire> for RequestedServiceSpec {
             mode: wire.mode,
             container: wire.container.spec,
             placement: wire.placement,
+            regions: wire.regions,
             ports: wire.ports,
             mount_graph: crate::ServiceMountGraph::parse(
                 ServiceVolumeGraph::parse(wire.volumes, wire.mounts)?,
@@ -100,6 +109,7 @@ impl From<RequestedServiceSpec> for RequestedServiceSpecWire {
                 config_mounts,
             },
             placement: spec.placement,
+            regions: spec.regions,
             ports: spec.ports,
             volumes,
             mounts,
@@ -120,6 +130,7 @@ impl TryFrom<ResolvedServiceSpecWire> for ResolvedServiceSpec {
             mode: wire.mode,
             container: wire.container.spec,
             placement: wire.placement,
+            regions: wire.regions,
             ports: wire.ports,
             mount_graph: crate::ServiceMountGraph::parse(
                 ServiceVolumeGraph::parse(volumes_from_wire(wire.volumes), wire.mounts)?,
@@ -146,6 +157,7 @@ impl From<ResolvedServiceSpec> for ResolvedServiceSpecWire {
                 config_mounts,
             },
             placement: spec.placement,
+            regions: spec.regions,
             ports: spec.ports,
             volumes,
             mounts,

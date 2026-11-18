@@ -95,6 +95,7 @@ pub fn private_access_service_spec(
         mode: ServiceMode::Global,
         container,
         placement: Default::default(),
+        regions: BTreeMap::new(),
         ports: Vec::new(),
         mount_graph: ServiceMountGraph::parse(router_volume_graph(), Default::default())
             .expect("built-in router mounts are valid"),

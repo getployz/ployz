@@ -386,23 +386,25 @@ impl Tool for ServiceUpdate {
         if let Some(path) = self.set.as_ref().and_then(secret_value) {
             return Err(self.plaintext_secret(cx, scope, &path));
         }
-        let changes = self.changes(cx.call())?;
+        let edit = Edit {
+            environment: scope.clone(),
+            expect: self.expect_revision.map(crate::Revision),
+            changes: self.changes(cx.call())?,
+        };
+        super::environment::refuse_unknown_regions(cx, &edit.regions())?;
         let mut sealed = None;
-        let edited = cx.write_expecting(
-            &Edit {
-                environment: scope.clone(),
-                expect: self.expect_revision.map(crate::Revision),
-                changes,
-            },
-            self.expect_revision,
-            |error, call, writes| match self.sealed_key(&error) {
-                Some(key) => {
-                    sealed = Some(key);
-                    from_store(error, call, writes)
-                }
-                None => refuse_referenced_rename(error, call, writes),
-            },
-        );
+        let edited =
+            cx.write_expecting(
+                &edit,
+                self.expect_revision,
+                |error, call, writes| match self.sealed_key(&error) {
+                    Some(key) => {
+                        sealed = Some(key);
+                        from_store(error, call, writes)
+                    }
+                    None => refuse_referenced_rename(error, call, writes),
+                },
+            );
         let edited = match (edited, sealed) {
             (Err(_), Some(key)) => {
                 return Err(self.plaintext_secret(cx, scope, &format!("env.{key}")));

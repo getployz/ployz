@@ -74,7 +74,7 @@ pub enum ServiceSettingInput {
     RestartPolicy(ServiceRestartPolicy),
     MaxRetries(u8),
     UpdateOrder(Option<ServiceUpdateOrder>),
-    Replicas(u8),
+    Replicas(Replicas),
     CpuLimit(Option<f64>),
     MemLimit(Option<f64>),
     PrivateDns(ServiceName),
@@ -295,7 +295,7 @@ impl ServiceSettingInput {
                 expected("maxRetries"),
             ),
             Self::Replicas(value) => range(
-                (1..=REPLICAS_MAX).contains(value),
+                (1..=u32::from(REPLICAS_MAX)).contains(&value.total()),
                 "replicas",
                 expected("replicas"),
             ),
@@ -501,7 +501,9 @@ fn limit(value: Option<f64>, max: f64, path: &str) -> Result<(), ConfigError> {
 /// What a numeric setting takes: the same words whether the value is out of range or not a number at all.
 fn expected(field: &str) -> &'static str {
     match field {
-        "replicas" => "Expected a whole number of replicas from 1–50",
+        "replicas" => {
+            "Expected a whole number of replicas from 1–50, or a count for each region like {\"fsn\":2,\"syd\":1}"
+        }
         "maxRetries" => "Expected a whole number of retries from 0–100",
         "cpuLimit" => "Expected vCPUs above 0 and up to 64, for example 0.5",
         "memLimit" => "Expected GB above 0 and up to 1024, for example 0.5 or 2",
