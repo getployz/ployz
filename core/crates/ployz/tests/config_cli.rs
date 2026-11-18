@@ -1369,6 +1369,26 @@ fn an_env_value_prints_on_one_escaped_line_for_humans() {
 }
 
 #[test]
+fn get_lists_the_region_above_the_settings() {
+    for store in &targets() {
+        shop_with_web(store);
+        ok(store, &["env", "region", "fsn"]);
+
+        let got = ok(store, &["get"]);
+        assert_eq!(got.get("region"), Some(&json!("fsn")));
+        let home = tempfile::tempdir().unwrap();
+        let human = store.command(home.path()).arg("get").output().unwrap();
+        assert!(human.status.success());
+        let human = String::from_utf8(human.stdout).unwrap();
+        assert_eq!(
+            human.lines().next(),
+            Some(r#"@environment.region = "fsn" (no default)"#)
+        );
+        assert!(human.contains("web.image = "), "{human}");
+    }
+}
+
+#[test]
 fn unsetting_the_image_leaves_an_empty_service() {
     for store in &targets() {
         shop_with_web(store);

@@ -14,15 +14,15 @@ use std::io::{IsTerminal as _, Read};
 
 use ployz_core::{Hint, MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
-    Change, DomainRow, DomainsQuery, DomainsView, Edit, EnvironmentQuery, EnvironmentView, Instead,
-    NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow, TypedAddresses,
+    Change, DomainRow, DomainsQuery, DomainsView, Edit, Edited, EnvironmentQuery, EnvironmentView,
+    Instead, NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow, TypedAddresses,
 };
 use serde::Serialize;
 use serde_json::Value;
 
 use super::input::{self, InputError, Source};
 use super::shared::staged::{StagedReport, Then};
-use super::store::{environment, next, scoped, store, with_refresh_hint};
+use super::store::{Store, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 
@@ -144,11 +144,16 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             "{service}.domains = {}",
             super::store::domain_list(domains.as_deref().unwrap_or_default(), service.as_str())
         )],
-        None => got(
-            &view.settings,
-            domains.as_deref().unwrap_or_default(),
-            every,
-        ),
+        None => {
+            let region = view.region_row().filter(|_| path.is_none());
+            let mut lines = got(region.as_slice(), &[], false);
+            lines.extend(got(
+                &view.settings,
+                domains.as_deref().unwrap_or_default(),
+                every,
+            ));
+            lines
+        }
     };
     let got = Got {
         view: &view,
@@ -209,7 +214,7 @@ fn got(settings: &[SettingRow], domains: &[DomainRow], every: bool) -> Vec<Strin
             rows.iter()
                 .map(|row| format!("{} = {}", row.path, super::store::valued(row))),
         );
-        if let Some(NodeName::Service(service)) = rows.first().map(|row| row.path.node()) {
+        if let Some(NodeName::Service(service)) = rows.first().and_then(|row| row.path.node()) {
             let listed = super::store::domain_list(domains, service.as_str());
             if every || listed != "-" {
                 lines.push(format!("{service}.domains = {listed}"));
@@ -585,7 +590,17 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
     edit(root, changes)
 }
 
-fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+pub(super) fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+    edit_or_discard(root, changes, |_, _| Ok(false))
+}
+
+/// `edit`, which says `Discarded` when `discarded` finds the edit put its paths back
+/// to what is deployed, so nothing waits for a Deploy.
+pub(super) fn edit_or_discard(
+    root: &ArgMatches,
+    changes: Vec<Change>,
+    discarded: impl FnOnce(&Store<'_>, &Edited) -> Result<bool, Error>,
+) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let unchanged = unchanged(&changes);
     let edit = Edit {
@@ -596,13 +611,18 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
     let store = store(root)?;
     let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
     let edit = store.seal_edit(edit, fail)?;
-    let edited = store.try_write(&edit).map_err(fail)?;
+    let edited = store.try_edit(&edit).map_err(fail)?;
+    let (verb, then) = if discarded(&store, &edited)? {
+        ("Discarded", Then::Diff)
+    } else {
+        ("Staged", Then::Deploy)
+    };
     let followed = StagedReport::of(
         matches,
         &edited,
-        format!("Staged {}", super::joined(&edited.staged)),
+        format!("{verb} {}", super::joined(&edited.staged)),
         unchanged,
-        Then::Deploy,
+        then,
     )
     .print(|| {
         if !edited.immediate.is_empty() {
@@ -657,7 +677,9 @@ fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
     } else {
         "them"
     };
-    let consumer = path.node();
+    let Some(consumer) = path.node() else {
+        return;
+    };
     ui::warn(format!(
         "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
     ));

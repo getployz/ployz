@@ -295,6 +295,7 @@ pub(crate) fn discard(
         environment = summary;
     }
     let before = reviewed.view.review_changes();
+    let region = reviewed.view.region.clone();
     let view = if changed {
         let after = scope::load_by_id(tx, &environment.id)?;
         review::review(tx, &after)?.view
@@ -309,13 +310,17 @@ pub(crate) fn discard(
             change,
         })
         .collect();
+    let mut dropped = dropped(&before, &view);
+    if region.is_some() && view.region != region {
+        dropped.insert(0, SettingPath::REGION.to_string());
+    }
     Ok(Discarded {
         environment,
         saved: reviewed.saved.as_ref().map(|saved| saved.revision),
         saved_ran_nothing: view.saved_ran_nothing,
         changed,
         reversed,
-        dropped: dropped(&before, &view),
+        dropped,
     })
 }
 

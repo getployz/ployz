@@ -161,6 +161,7 @@ pub(crate) fn insert_environment(
         services: Vec::new(),
         volumes: Vec::new(),
         configs: Vec::new(),
+        region: None,
     };
     let revision = Revision(1);
     tx.execute(

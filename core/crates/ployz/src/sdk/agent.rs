@@ -9,8 +9,8 @@ use ployz_core::metrics::{MarkerKind, MetricMarker, MetricRange};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
     EnvironmentValues, HealthObservation, HealthVerdict, LiveServices, LogHistoryRequest,
-    MachineId, MachineObservation, MachineStorageObservation, Namespace, RpcError, ServiceName,
-    StopOptions,
+    MachineId, MachineObservation, MachineStorageObservation, Namespace, Region, RpcError,
+    ServiceName, StopOptions,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -135,9 +135,16 @@ async fn servers(
                 .iter()
                 .map(|machine| server(machine, &unanswered, &mut namespaces))
                 .collect();
+            let regions = only.is_none().then(|| {
+                machines
+                    .iter()
+                    .filter_map(|machine| Region::of(&machine.machine))
+                    .collect()
+            });
             Ok(ServersAnswer {
                 servers,
                 seen: seen(&machines, &unanswered),
+                regions,
             })
         })
         .await

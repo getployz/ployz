@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ployz_core::{
     BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
     HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
-    ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService,
+    ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService, Region,
     RequestedServiceSpec, RpcError, ServiceContainer, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, UpdateOrder, VolumeToCreate,
     explicit_ingress_hosts, hostname_owners, same_service_mode_kind,
@@ -1134,7 +1134,9 @@ fn assemble_plan(
                 error @ (PlanError::NoWriter { .. }
                 | PlanError::CopiesUnknown { .. }
                 | PlanError::VolumeHolderUnknown { .. }
-                | PlanError::VolumeServerTakesNoServices { .. }),
+                | PlanError::VolumeServerTakesNoServices { .. }
+                | PlanError::RegionUnmatched { .. }
+                | PlanError::VolumeOutsideRegion { .. }),
             ) if blocks_unmountable => {
                 block_service(
                     &mut blocked,
@@ -1862,9 +1864,21 @@ fn storage_eligibility_warnings(
         .collect()
 }
 
+fn region(spec: &RequestedServiceSpec) -> Option<Region> {
+    spec.placement
+        .constraints
+        .iter()
+        .find_map(Region::required_by)
+}
+
 fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> PlanError {
     if candidates.is_empty() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::NoMachines]);
+    }
+    if let Some(region) = region(spec)
+        && let Some(servers) = candidates.away_in(&region)
+    {
+        return PlanError::RegionUnmatched { region, servers };
     }
     if candidates.matches_none() {
         return PlanError::no_eligible_machines(vec![EliminatingConstraint::UnknownPlacement {

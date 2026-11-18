@@ -18,7 +18,7 @@ use crate::policy::{self, Policy};
 use crate::registry;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
-use crate::settings::{self, Apply, ServiceSetting, SettingPath, Target};
+use crate::settings::{self, Apply, EnvironmentSetting, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 use crate::typed_address::{Instead, Typed};
 use crate::variables::{self, VariableKey};
@@ -474,6 +474,23 @@ struct Editing<'a> {
 
 impl Editing<'_> {
     fn apply(&mut self, path: SettingPath, step: Step) -> Result<(), RpcError> {
+        if let Some(EnvironmentSetting::Region) = path.environment() {
+            let value = match &step {
+                Step::Set(value) => Some(value),
+                Step::Unset => None,
+                Step::Rename { .. } => {
+                    return Err(error::invalid(
+                        format!("{path}: only a variable is renamed"),
+                        json!({ "example": "web.env.API_URL" }),
+                    ));
+                }
+            };
+            let regions = self.trusted.regions.as_ref();
+            if super::region::set(&mut self.environment, value, regions)? {
+                self.staged.push(path);
+            }
+            return Ok(());
+        }
         let service = path.settings_of()?;
         let value = match step {
             Step::Set(value) => Some(value),
@@ -661,7 +678,7 @@ impl Editing<'_> {
                     Apply::Staged,
                 )
             }
-            (None, _) => return Err(crate::settings::name_a_setting(path.node())),
+            (None, _) => return Err(crate::settings::name_a_setting(service)),
         };
         if !changed {
             return Ok(());

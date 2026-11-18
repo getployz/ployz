@@ -5,7 +5,7 @@
 //! `{"secret": true}`: no read shows a secret.
 
 use ployz_core::config::{RowId, SavedEnvironmentIntent, SavedServiceIntent};
-use ployz_core::{ConfigName, RpcError, ServiceName};
+use ployz_core::{ConfigName, Region, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
@@ -18,7 +18,8 @@ use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 use crate::variables::{self, VariableKey};
 
-/// Read an Environment's Working State, narrowed to `SERVICE` or `SERVICE.SETTING`.
+/// Read an Environment's Working State, narrowed to `SERVICE`, `SERVICE.SETTING` or
+/// `@environment.region`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentQuery {
@@ -47,6 +48,22 @@ pub struct EnvironmentView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<RowId>>", optional)]
     pub never_synced: Vec<RowId>,
+    /// The Environment's region, whichever Settings were asked for. `settings` lists it
+    /// only when the read names `@environment.region`: a `ployz` from before regions
+    /// refuses a reply that holds a path it can't parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<Region>,
+}
+
+impl EnvironmentView {
+    /// The region as the row a read of `@environment.region` lists; none without a region.
+    #[must_use]
+    pub fn region_row(&self) -> Option<SettingRow> {
+        self.region
+            .as_ref()
+            .map(|region| SettingRow::region(Some(region)))
+    }
 }
 
 /// One Setting's current Working State value.
@@ -70,6 +87,19 @@ pub struct SettingRow {
     pub note: Option<String>,
 }
 
+impl SettingRow {
+    fn region(region: Option<&Region>) -> Self {
+        Self {
+            path: SettingPath::REGION,
+            value: json!(region),
+            default: Value::Null,
+            apply: Apply::Staged,
+            row: None,
+            note: None,
+        }
+    }
+}
+
 pub(crate) fn environment(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -77,11 +107,13 @@ pub(crate) fn environment(
 ) -> Result<EnvironmentView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let path = query.path.as_ref();
+    let region = path.is_some_and(|path| path.environment().is_some());
     let only = path.and_then(SettingPath::target);
     if only == Some(&Target::Setup) {
         crate::branch::refuse_service_named_setup(&environment)?;
     }
     let services = match path {
+        Some(_) if region => Vec::new(),
         Some(path) => vec![environment.service(path.settings_of()?)?],
         None => {
             let mut services = environment.working.services.iter().collect::<Vec<_>>();
@@ -100,6 +132,9 @@ pub(crate) fn environment(
         _ => crate::branch::Own::of(tx, &environment)?,
     };
     let mut settings = Vec::new();
+    if region {
+        settings.push(SettingRow::region(environment.working.region.as_ref()));
+    }
     for service in services {
         let name = ServiceName::parse(service.slug.as_str())
             .map_err(|_| crate::error::corrupt("Service name"))?;
@@ -214,6 +249,7 @@ pub(crate) fn environment(
         never_synced: crate::branch::marked(tx, &environment.summary.id)?
             .into_iter()
             .collect(),
+        region: environment.working.region.clone(),
         environment: environment.summary,
         settings,
         values,

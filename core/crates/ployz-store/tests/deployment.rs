@@ -8771,3 +8771,269 @@ fn a_refused_claim_says_why_and_leaves_the_deployment_as_its_refusal_recorded() 
     );
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
 }
+
+#[test]
+fn a_plan_names_the_region_each_service_it_ships_runs_in_next_and_any_server_once_it_leaves_one() {
+    let (store, who) = shop();
+    let stage = |change: Change| {
+        let edit = Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![change],
+        };
+        store.write(&who, &edit).unwrap();
+    };
+    let regions = || {
+        store
+            .read(&who, &PlanQuery::default())
+            .unwrap()
+            .regions
+            .into_iter()
+            .map(|(service, region)| (service.to_string(), region.map(|region| region.to_string())))
+            .collect::<Vec<_>>()
+    };
+    let fsn = || Some("fsn".to_owned());
+
+    stage(Change::Set {
+        path: SettingPath::REGION,
+        value: json!("fsn"),
+    });
+    assert_eq!(
+        regions(),
+        [("api".to_owned(), fsn()), ("web".to_owned(), fsn())]
+    );
+
+    let deploy = |n: u8| {
+        admit(&store, &who, n, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+            .unwrap();
+        store
+            .record(&id(n), &a, succeeded(&["web", "api"]))
+            .unwrap();
+    };
+    deploy(1);
+    assert_eq!(regions(), []);
+
+    stage(Change::Unset {
+        path: SettingPath::REGION,
+    });
+    assert_eq!(
+        regions(),
+        [("api".to_owned(), None), ("web".to_owned(), None)]
+    );
+
+    deploy(2);
+    assert_eq!(regions(), []);
+}
+
+#[test]
+fn a_deploy_names_every_service_it_left_not_attempted_and_why() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let mut prepared = serde_json::to_value(preview(&[])).unwrap();
+    let blocked = |service: &str, message: &str| json!({"service": service, "error": {"code": "conflict", "message": message, "details": {}}});
+    prepared["blocked"] = json!([
+        blocked("worker", "no Server in fsn"),
+        blocked("api", "pg-data is on syd-1"),
+        blocked("web", "no Server in fsn"),
+    ]);
+    let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
+    store.record(&id(1), &a, prepared).unwrap();
+    store.record(&id(1), &a, succeeded(&[])).unwrap();
+
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
+        panic!("an executed outcome");
+    };
+    assert_eq!(
+        reason.as_deref(),
+        Some("web, worker: no Server in fsn; api: pg-data is on syd-1")
+    );
+}
+
+#[test]
+fn a_region_deploy_that_left_a_service_not_attempted_still_deployed_the_region() {
+    let (store, who) = shop();
+    let region = || {
+        diff(&store, &who)
+            .region
+            .map(|change| (change.before, change.after))
+    };
+    let moves = || {
+        store
+            .read(&who, &PlanQuery::default())
+            .unwrap()
+            .regions
+            .into_iter()
+            .map(|(service, region)| (service.to_string(), region.map(|region| region.to_string())))
+            .collect::<Vec<_>>()
+    };
+    let deploy = |n: u8, ran: &[&str], blocked: &[&str]| {
+        admit(&store, &who, n, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(n), &a).unwrap();
+        let mut prepared = serde_json::to_value(preview(ran)).unwrap();
+        prepared["blocked"] = blocked
+            .iter()
+            .map(|service| {
+                json!({
+                    "service": service,
+                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": {
+                        "reason": "volume_outside_region", "volume": "pg-data",
+                        "server": "syd-1", "to": "fsn-1"
+                    }}
+                })
+            })
+            .collect();
+        let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
+        store.record(&id(n), &a, prepared).unwrap();
+        store.record(&id(n), &a, succeeded(ran)).unwrap();
+    };
+    let discard = || {
+        let discard = Discard {
+            environment: EnvironmentRef::default(),
+            target: None,
+            path: Some(SettingPath::REGION),
+            version: None,
+        };
+        store.write(&who, &discard).unwrap();
+    };
+    deploy(1, &["web", "api"], &[]);
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &edit).unwrap();
+
+    // web moves into fsn. api's Volume is outside it, so api is Not attempted.
+    deploy(2, &["web"], &["api"]);
+    assert_eq!(region(), None);
+    assert_eq!(moves(), [("api".to_owned(), Some("fsn".to_owned()))]);
+
+    discard();
+    assert_eq!(region(), None);
+    assert_eq!(moves(), [("api".to_owned(), Some("fsn".to_owned()))]);
+}
+
+#[test]
+fn a_roll_back_to_a_version_saved_in_another_region_leaves_the_region_as_it_is() {
+    let (store, who) = shop();
+    let region = |region: &str| {
+        let edit = Edit {
+            environment: EnvironmentRef::default(),
+            expect: None,
+            changes: vec![Change::Set {
+                path: SettingPath::REGION,
+                value: json!(region),
+            }],
+        };
+        store.write(&who, &edit).unwrap();
+    };
+    region("syd");
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    region("fsn");
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    apply(&store, 2);
+
+    let revision = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .deployment
+        .saved;
+    let preview = store
+        .read(
+            &who,
+            &ployz_store::HistoryPreviewQuery {
+                environment: EnvironmentRef::default(),
+                revision,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::StageHistory {
+                environment: EnvironmentRef::default(),
+                revision,
+                action: ployz_store::HistoryAction::Restore,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+        )
+        .unwrap();
+
+    let staged = diff(&store, &who);
+    assert_eq!(staged.region, None);
+    assert_eq!(changed(&store, &who), ["web"]);
+}
+
+#[test]
+fn discarding_everything_names_the_region_it_dropped() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &edit).unwrap();
+    set_replicas(&store, &who, "web", 3);
+
+    let discarded = store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: Some(ployz_store::DiscardTarget::Head),
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(discarded.dropped, ["@environment.region", "web.replicas"]);
+    assert_eq!(diff(&store, &who).total_count, 0);
+}
+
+#[test]
+fn a_staged_region_is_left_to_save_until_a_save_holds_it() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &edit).unwrap();
+
+    let staged = diff(&store, &who);
+    assert_eq!((staged.total_count, staged.draft_count), (1, 1));
+
+    save(&store, &who);
+    let saved = diff(&store, &who);
+    assert_eq!((saved.total_count, saved.draft_count), (1, 0));
+}

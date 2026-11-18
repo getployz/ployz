@@ -12,11 +12,11 @@ use super::{
 use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
     ContainerResources, CpuNanos, DependencyCondition, DeployIntent, EnvValue, HealthcheckCommand,
-    HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, Operator, PlanOptions,
-    PortPublication, PreDeployCommand, PreDeployHook, PruneScope, PullPolicy, RawVolumeSource,
-    RequestedServiceSpec, RestartPolicy, SealedIdentity, ServiceAttempt, ServiceConfigGraph,
-    ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount, ServiceName,
-    ServiceRemovals, ServiceVolume, ServiceVolumeGraph, UpdateConfig, VolumeDriver,
+    HealthcheckSpec, HttpHealthcheck, HttpProtocol, IngressHost, Namespace, Operator, Placement,
+    PlanOptions, PortPublication, PreDeployCommand, PreDeployHook, PruneScope, PullPolicy,
+    RawVolumeSource, Region, RequestedServiceSpec, RestartPolicy, SealedIdentity, ServiceAttempt,
+    ServiceConfigGraph, ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount,
+    ServiceName, ServiceRemovals, ServiceVolume, ServiceVolumeGraph, UpdateConfig, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -94,6 +94,10 @@ pub struct LowerDeploymentInput {
     /// Environment the Deploy is for. Required once any Service's env holds one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed_for: Option<SealedFor>,
+    /// The region every Service is kept in: the Environment's default. Written only
+    /// when set, so inputs from before regions read the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Region>,
 }
 
 impl LowerDeploymentInput {
@@ -255,6 +259,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         sealed_for: input.sealed_for.as_ref(),
         volumes: &volume_sources,
         configs: &config_sources,
+        region: input.region.as_ref(),
     };
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
     let mut volume_names = BTreeMap::new();
@@ -303,6 +308,7 @@ struct Sources<'a> {
     /// Storage, whether a Deploy applied it, and the ID its Docker Volume is named for.
     volumes: &'a BTreeMap<&'a str, (VolumeKind, bool, &'a str)>,
     configs: &'a BTreeMap<&'a str, &'a LowerDeploymentConfig>,
+    region: Option<&'a Region>,
 }
 
 struct LoweredService {
@@ -434,7 +440,9 @@ fn lower_snapshot(
             sysctls: BTreeMap::new(),
             network: None,
         },
-        placement: Default::default(),
+        placement: Placement {
+            constraints: sources.region.map(Region::constraint).into_iter().collect(),
+        },
         ports,
         mount_graph: Default::default(),
         pre_deploy,

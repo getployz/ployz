@@ -17,7 +17,6 @@ mod version;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, Place, ReviewComparisonRole,
     ReviewLifecycleKind, ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId,
@@ -25,6 +24,7 @@ use ployz_core::config::{
     ServiceGitBranch, ServiceSettingChange, ServiceSource, Setting,
     canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
 };
+use ployz_core::{Region, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -61,13 +61,20 @@ pub struct DiffView {
     #[serde(rename = "holds_staged")]
     pub published: bool,
     pub changes: Vec<NodeChange>,
-    /// How many changes there are, counting each node and each Setting.
+    /// The Environment's default region, when the next Deploy changes where its
+    /// Services run. No node holds it, so no row of `changes` names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<RegionChange>,
+    /// How many changes there are, counting each node, each Setting and the region.
     pub total_count: usize,
     /// Working State compared with the latest Saved revision, without Introduction fallback.
     #[serde(default)]
     #[ts(as = "Option<Vec<NodeChange>>", optional)]
     pub draft_changes: Vec<NodeChange>,
-    /// Changes that an explicit Save records, independent of the deployment comparison.
+    /// How many changes an explicit Save records, independent of the deployment
+    /// comparison: each node and Setting of `draft_changes`, and the change `region`
+    /// names until Saved State holds it.
     #[serde(default)]
     #[ts(as = "Option<usize>", optional)]
     pub draft_count: usize,
@@ -104,7 +111,35 @@ pub struct DiffView {
     pub broken: Vec<crate::BrokenReference>,
 }
 
+/// A staged change of an Environment's default region.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct RegionChange {
+    /// The region its Services deployed in; none when they run in any.
+    pub before: Option<Region>,
+    /// The region they deploy in next; none for any.
+    pub after: Option<Region>,
+}
+
+impl RegionChange {
+    /// Where the Services ran and where they run next, as people read it: a region,
+    /// or `any region`.
+    #[must_use]
+    pub fn sides(&self) -> [String; 2] {
+        [&self.before, &self.after].map(|region| {
+            region
+                .as_ref()
+                .map_or_else(|| "any region".to_owned(), ToString::to_string)
+        })
+    }
+}
+
 impl DiffView {
+    /// Whether nothing is staged: no node, no Setting and no region.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty() && self.region.is_none()
+    }
+
     /// One review list with runtime rows and otherwise hidden draft reversals.
     #[must_use]
     pub fn review_changes(&self) -> Vec<NodeChange> {
@@ -138,7 +173,8 @@ impl DiffView {
         changes
     }
 
-    /// How many changes [`Self::review_changes`] lists, counting each node and each Setting.
+    /// How many changes a review lists: each node and each Setting of
+    /// [`Self::review_changes`], and the region.
     #[must_use]
     pub fn review_count(&self) -> usize {
         self.review_changes()
@@ -146,7 +182,8 @@ impl DiffView {
             .map(|change| {
                 change.settings.len() + usize::from(change.lifecycle != ReviewLifecycleKind::Update)
             })
-            .sum()
+            .sum::<usize>()
+            + usize::from(self.region.is_some())
     }
 
     /// The draft reversals on nodes with no deploy change: saved changes the draft no
@@ -267,6 +304,9 @@ pub(crate) struct Head {
     pub(crate) token: String,
     pub(crate) intent: SavedEnvironmentIntent,
     pub(crate) applied: SavedEnvironmentIntent,
+    /// The region each applied node was deployed in, by node ID: none for a Service
+    /// deployed with no default region.
+    pub(crate) regions: BTreeMap<String, Option<Region>>,
     /// Every Deployment in flight, newest first.
     pub(crate) in_flight: Vec<InFlight>,
     /// The Services a Deployment of unknown outcome since the last applied Deployment
@@ -279,6 +319,8 @@ pub(crate) struct Head {
 /// holds them.
 pub(crate) struct InFlight {
     pub(crate) cluster_domain: Option<Hostname>,
+    /// The default region of its Saved revision, which its Services deploy in.
+    pub(crate) region: Option<Region>,
     pub(crate) services: Vec<SavedServiceIntent>,
     pub(crate) volumes: Vec<SavedVolumeIntent>,
     pub(crate) configs: Vec<SavedConfigIntent>,
@@ -313,8 +355,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         .saved
         .unwrap_or_else(|| crate::scope::empty(environment.summary.name.as_str()));
     let draft = saved_comparison(environment, &baseline, &[])?;
+    let region_unsaved = view.region.is_some() && baseline.region != environment.working.region;
     view.draft_changes = draft.changes;
-    view.draft_count = draft.total_count;
+    view.draft_count = draft.total_count + usize::from(region_unsaved);
     // Only staged changes or draft reversals are worded by it.
     if let Some(saved) = &saved
         && (view.total_count > 0 || view.draft_count > 0)
@@ -453,6 +496,10 @@ fn compare(
             .or_else(|| config_name(&intents, &node.id))
             .unwrap_or_default()
     };
+    let region = (head.intent.region != environment.working.region).then(|| RegionChange {
+        before: head.intent.region.clone(),
+        after: environment.working.region.clone(),
+    });
     let mut view = DiffView {
         environment: environment.summary.clone(),
         version: version::of(
@@ -464,7 +511,8 @@ fn compare(
         published: saved.as_ref().is_some_and(|saved| {
             saved.intent == canonicalize_environment_intent(environment.working.clone())
         }),
-        total_count: changes.total_count,
+        total_count: changes.total_count + usize::from(region.is_some()),
+        region,
         draft_changes: Vec::new(),
         draft_count: 0,
         saved_ran_nothing: false,

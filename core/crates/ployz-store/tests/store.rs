@@ -6,12 +6,12 @@
 //! SQLite, and on Postgres when `PLOYZ_STORE_TEST_POSTGRES` names a server as
 //! `postgres://USER:PASSWORD@HOST:PORT` (each test gets its own new database).
 
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{Region, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Change, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentView,
-    OrganizationId, ProjectId, ProjectName, Query, Revision, ServiceLineageId, SettingPath, View,
-    Written,
+    Actor, Change, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService,
+    DiffQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef,
+    EnvironmentView, OrganizationId, ProjectId, ProjectName, Query, Revision, ServiceLineageId,
+    SettingPath, Trusted, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -292,6 +292,91 @@ fn a_memory_limit_takes_a_size_with_a_unit_and_refuses_bytes() {
         .write(&who, &edit(None, vec![set("web.memLimit", json!("10MB"))]))
         .unwrap();
     assert_eq!(value(&store, &who, "web.memLimit"), json!(0.01));
+}
+
+#[test]
+fn settings_refuse_a_region_no_server_is_in_and_stage_nothing() {
+    let store = open();
+    let who = actor(&uuid("org-region"));
+    store.write(&who, &create_project("shop")).unwrap();
+    let seen = Trusted {
+        regions: Some(
+            ["fsn", "syd"]
+                .map(|region| Region::parse(region).unwrap())
+                .into(),
+        ),
+        ..Trusted::default()
+    };
+    let region = |name: &str| edit(None, vec![set("@environment.region", json!(name))]);
+    let staged = || {
+        let query = DiffQuery {
+            environment: EnvironmentRef::default(),
+        };
+        store.read(&who, &query).unwrap().region
+    };
+
+    let refused = store
+        .write_trusted(&who, &region("lhr"), &seen)
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(refused.details.get("regions"), Some(&json!(["fsn", "syd"])));
+    assert_eq!(staged(), None);
+
+    store.write_trusted(&who, &region("fsn"), &seen).unwrap();
+    assert_eq!(staged().unwrap().after, Some(Region::parse("fsn").unwrap()));
+}
+
+#[test]
+fn a_region_no_label_could_spell_is_refused_before_a_label_command_is_suggested() {
+    let store = open();
+    let who = actor(&uuid("org-region-grammar"));
+    store.write(&who, &create_project("shop")).unwrap();
+    let unlabelled = Trusted {
+        regions: Some([].into()),
+        ..Trusted::default()
+    };
+
+    let refused = store
+        .write_trusted(
+            &who,
+            &edit(None, vec![set("@environment.region", json!("not valid"))]),
+            &unlabelled,
+        )
+        .unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        !refused.details.to_string().contains("not valid"),
+        "{}",
+        refused.details
+    );
+}
+
+#[test]
+fn a_read_of_every_setting_keeps_the_region_out_of_the_paths_an_older_ployz_parses() {
+    let (store, who) = shop();
+    let region = edit(None, vec![set("@environment.region", json!("fsn"))]);
+    store.write(&who, &region).unwrap();
+
+    let every = get(&store, &who, None);
+    assert_eq!(every.region, Some(Region::parse("fsn").unwrap()));
+    let paths: Vec<String> = every
+        .settings
+        .iter()
+        .map(|row| row.path.to_string())
+        .collect();
+    assert!(!paths.is_empty());
+    assert!(paths.iter().all(|path| !path.starts_with('@')), "{paths:?}");
+
+    let named = get(&store, &who, Some("@environment.region"));
+    assert_eq!(
+        named
+            .settings
+            .iter()
+            .map(|row| &row.value)
+            .collect::<Vec<_>>(),
+        [&json!("fsn")]
+    );
 }
 
 #[test]

@@ -430,6 +430,19 @@ it("lists a draft-only node by kind and name among the runtime changes, as the C
   expect(groups.map((group) => [group.nodeName, group.lifecycle])).toEqual([["api", "update"], ["web", "delete"], ["web", "create"], ["pg-data", "create"]]);
 });
 
+it("lists a staged region as a change of its own, counted and discarded alone, before the Services it moves", () => {
+  const staged = { ...diff, environment: { id: "e1", name: "production", project: "shop", revision: 3 }, changes: [], region: { before: null, after: "fsn" } };
+  const [alone, ...none] = reviewGroups(staged, services);
+  expect(none).toEqual([]);
+  expect(alone).toMatchObject({
+    nodeName: "production", lifecycle: "update", changeCount: 1, canDiscard: true,
+    rows: [{ name: "Region", path: "@environment.region", kind: "update", currentValue: "any region", newValue: "fsn", canDiscard: true }],
+  });
+  const cleared = reviewGroups({ ...staged, changes: diff.changes, region: { before: "fsn", after: null } }, services);
+  expect(cleared.map((group) => group.nodeName)).toEqual(["production", "web", "pg-data"]);
+  expect(cleared[0]?.rows[0]).toMatchObject({ currentValue: "fsn", newValue: "any region" });
+});
+
 it("lets a whole runtime lifecycle dominate draft children and counts its node marker", () => {
   const runtime = { ...asTestDouble<DiffView["changes"][number]>()(diff.changes[0] ?? {}), lifecycle: "delete" as const };
   const [group] = reviewGroups({ ...diff, changes: [runtime], draft_changes: [{ ...runtime, lifecycle: "update", comparison: "saved", settings: [

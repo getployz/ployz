@@ -266,6 +266,8 @@ impl Reported for PlanError {
             | PlanError::ExistingProvisionedVolumeMismatch { .. }
             | PlanError::NoWriter { .. }
             | PlanError::VolumeServerTakesNoServices { .. }
+            | PlanError::RegionUnmatched { .. }
+            | PlanError::VolumeOutsideRegion { .. }
             | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
             PlanError::CapacityUnknown
             | PlanError::CopiesUnknown { .. }

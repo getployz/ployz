@@ -58,8 +58,8 @@ use ployz_core::config::{
 };
 use ployz_core::{
     ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DeployWarning,
-    DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace, PruneScope, RpcError,
-    ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals, VolumeRemoval,
+    DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace, PruneScope, Region,
+    RpcError, ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals, VolumeRemoval,
     VolumeRemovalOutcome,
 };
 

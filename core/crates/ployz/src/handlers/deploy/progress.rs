@@ -765,6 +765,22 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // failure the inspect hint above reads.
         bad_image |= pulled && !build_failed && built.is_none();
     }
+    for entry in view.preview.iter().flat_map(|preview| &preview.blocked) {
+        let detail = |key| {
+            entry
+                .error
+                .details
+                .get(key)
+                .and_then(|value| value.as_str())
+        };
+        if let (Some("volume_outside_region"), Some(volume), Some(to)) =
+            (detail("reason"), detail("volume"), detail("to"))
+        {
+            hints.push(Hint::Next(command(
+                &[&["volume", "move", volume, "--to", to][..], &scope].concat(),
+            )));
+        }
+    }
     let mut failure = Failure::from(
         RpcError::new(
             if lost_to_newer {
@@ -980,6 +996,47 @@ mod tests {
                 .any(|hint| matches!(hint, Hint::Retry(_))),
             "{:?}",
             failure.hints()
+        );
+    }
+
+    #[test]
+    fn a_volume_outside_its_services_region_names_the_move_into_it() {
+        let mut view = view();
+        view.runtime_names.clear();
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed", "summary": {}, "reason": "db: pg-data is on syd-1", "cause": []
+            }))
+            .unwrap(),
+        );
+        view.nodes = serde_json::from_value(json!([
+            {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "db", "outcome": "not_attempted", "rows": []}
+        ]))
+        .unwrap();
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "warnings": [], "operations": [],
+                "blocked": [{
+                    "service": "db",
+                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": {
+                        "reason": "volume_outside_region", "volume": "pg-data", "server": "syd-1", "to": "fsn-1"
+                    }}
+                }]
+            }))
+            .unwrap(),
+        );
+
+        let text = crate::ui::progress::settled_text(&frame(&view));
+        assert!(
+            text.contains("db: not started (pg-data is on syd-1)"),
+            "{text}"
+        );
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(
+            failure.hints(),
+            [Hint::Next(
+                "ployz volume move pg-data --to fsn-1 --project shop --env production".to_owned()
+            )]
         );
     }
 

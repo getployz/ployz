@@ -2,9 +2,10 @@
 //! Deployments, and one Deployment with its Node Outcomes.
 
 use ployz_core::config::{SavedEnvironmentIntent, canonicalize_environment_intent};
-use ployz_core::{RequestedServiceSpec, RpcError, ServiceName};
+use ployz_core::{Region, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
 use ts_rs::TS;
 
 use crate::Actor;
@@ -57,6 +58,12 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub target: Option<Vec<RequestedServiceSpec>>,
+    /// The region each Service this Deploy moves runs in next; none for one that leaves
+    /// a region to run on any Server. A Service that stays in its region, or on any
+    /// Server, is left out.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional, as = "Option<BTreeMap<ServiceName, Option<Region>>>")]
+    pub regions: BTreeMap<ServiceName, Option<Region>>,
 }
 
 /// Where an Environment runs on the Servers.
@@ -258,11 +265,12 @@ pub(crate) fn plan(
     if !removed.is_empty() {
         unresolved.push("volume data".to_owned());
     }
+    let landing = deployment::Landing::of(&review.head);
     let frozen = deployment::freeze(
         &environment.summary.id,
         &who.organization,
         &target,
-        &deployment::Landing::of(&review.head),
+        &landing,
         deployment::Scope::of(&query.services, &removed),
         namespace.clone(),
         None,
@@ -277,6 +285,14 @@ pub(crate) fn plan(
         )?),
         false => None,
     };
+    let regions = target
+        .services
+        .iter()
+        .filter(|service| landing.changes_region(service, target.region.as_ref()))
+        .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
+        .filter(|service| frozen.ships(service))
+        .map(|service| (service, target.region.clone()))
+        .collect();
     let changes = review
         .view
         .changes
@@ -293,6 +309,7 @@ pub(crate) fn plan(
         changes,
         unresolved,
         target: lowered,
+        regions,
     })
 }
 
@@ -342,6 +359,7 @@ fn redeploy_plan(
         changes: Vec::new(),
         unresolved: vec!["operations".to_owned()],
         target,
+        regions: BTreeMap::new(),
     })
 }
 

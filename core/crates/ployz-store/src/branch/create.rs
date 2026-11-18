@@ -151,7 +151,8 @@ pub(crate) fn create_branch(
     // The failed revision may predate a seal the Parent made since.
     crate::review::sealed::seal_running(tx, &parent, &mut from, &stand_in)?;
 
-    let into = crate::scope::empty(create.name.as_str());
+    let mut into = crate::scope::empty(create.name.as_str());
+    into.region.clone_from(&from.region);
     let hostnames = Hostnames {
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),

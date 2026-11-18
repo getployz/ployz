@@ -1,6 +1,6 @@
 import type { DiffView } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
-import { changeGroups } from "#/modules/config-store/store-deployments";
+import { changeGroups, regionName } from "#/modules/config-store/store-deployments";
 
 /** `name` is a Setting, a variable key when `variable`, or what happened to the node; `values` its machine values. */
 export type ChangeLine = { key: string; mark: "+" | "~" | "−"; node: string; name: string; variable: boolean; values: string };
@@ -26,15 +26,24 @@ function changeLines(diff: DiffView, changes: DiffView["changes"], effects: Appr
   });
 }
 
+/** The region change, which no node of `changes` holds. */
+function regionLine(diff: DiffView): ChangeLine[] {
+  if (!diff.region) return [];
+  const { before, after } = diff.region;
+  return [{ key: "@environment.region", mark: before === null ? "+" : after === null ? "−" : "~", node: diff.environment.name, name: "Region", variable: false,
+    values: `${regionName(before)} → ${regionName(after)}` }];
+}
+
 /**
- * What an ask changes besides what it destroys: `asked` is the asker's own unsaved edit, which only a Save or Deploy
- * saves, and `others` everything else it deploys. A Sync or Take leaves the target's unsaved edit alone.
+ * What an ask changes besides what it destroys: `region` moves every Service, `asked` is the asker's own unsaved edit,
+ * which only a Save or Deploy saves, and `others` everything else it deploys. A Sync or Take leaves the target's
+ * unsaved edit alone.
  */
 export function reviewedChanges(command: string, review: ApprovalReview) {
-  if (!("diff" in review)) return { asked: [], others: [] };
+  if (!("diff" in review)) return { region: [], asked: [], others: [] };
   const { effects, diff } = review;
   const saves = command === "publish" || command === "admit";
   const asked = saves ? changeLines(diff, diff.draft_changes ?? [], effects) : [];
   const keys = new Set(asked.map((line) => line.key));
-  return { asked, others: changeLines(diff, diff.changes, effects).filter((line) => !keys.has(line.key)) };
+  return { region: regionLine(diff), asked, others: changeLines(diff, diff.changes, effects).filter((line) => !keys.has(line.key)) };
 }

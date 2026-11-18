@@ -20,6 +20,7 @@ fn holding(volumes: Vec<SavedVolumeIntent>) -> SavedEnvironmentIntent {
         services: Vec::new(),
         volumes,
         configs: Vec::new(),
+        region: None,
     }
 }
 

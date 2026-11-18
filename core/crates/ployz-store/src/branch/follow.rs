@@ -210,6 +210,7 @@ fn into(
     lineages: &BTreeSet<String>,
     trusted: &Trusted,
 ) -> Result<Vec<RowId>, RpcError> {
+    region(tx, parent, branch, trusted)?;
     let before = Cells::of(&branch.working, "");
     let follow = Move::follow(tx, parent, branch)?;
     let checked = follow.check(tx, branch, Guard::Deploy)?;
@@ -307,6 +308,29 @@ fn into(
         })
         .cloned()
         .collect())
+}
+
+/// Stage in `branch` the default region `parent`'s Services now run in, unless the
+/// Branch changed its own since the two last shared one: the Branch's change wins.
+fn region(
+    tx: &mut dyn Tx,
+    parent: &Environment,
+    branch: &mut Environment,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let id = branch.summary.id.clone();
+    let pair = (&id, &parent.summary.id);
+    let mut base = super::pair::base_of(tx, pair)?;
+    let from = deployment::head(tx, parent)?.applied.region;
+    if from == base.region {
+        return Ok(());
+    }
+    if branch.working.region == base.region {
+        branch.working.region.clone_from(&from);
+        scope::save_working(tx, branch, trusted)?;
+    }
+    base.region = from;
+    super::pair::share(tx, pair, &base)
 }
 
 /// The rows of `follow` into `branch` delivered at the value they carry now, yet not

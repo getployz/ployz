@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use ployz_core::{
-    DockerVolumeId, DockerVolumeName, MachineId, MachineName, QualifiedService, RpcError,
+    DockerVolumeId, DockerVolumeName, MachineId, MachineName, QualifiedService, Region, RpcError,
     SealingPublicKey,
 };
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,12 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub volumes: Option<VolumeObservation>,
+    /// The regions the Organization's Servers are in, as the caller saw their region
+    /// labels: an Environment's default region is refused unless it is one of them.
+    /// None when no one looked, which refuses none.
+    #[serde(default)]
+    #[ts(optional)]
+    pub regions: Option<BTreeSet<Region>>,
     /// How many Servers the Organization has, as Cloud counts them: a Deployment is
     /// admitted only when one could run it. None when the caller can't count them,
     /// such as the hidden local Store, which runs its Deployments itself.

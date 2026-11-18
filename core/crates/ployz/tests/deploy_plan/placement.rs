@@ -1150,6 +1150,100 @@ fn volume_on_another_machine_names_the_volume_and_the_conflict() {
     );
 }
 
+#[test]
+fn a_region_no_server_is_in_stops_only_the_services_kept_in_it() {
+    let api = kept_in(replicated("api", 1), "lhr");
+    let web = kept_in(replicated("web", 1), "fsn");
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "syd"),
+            in_region(machine('2', "second"), "fsn"),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api, &web],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, api.name);
+    assert_eq!(blocked.error.message, "no Server in lhr");
+    assert_eq!(
+        blocked.error.details.get("reason"),
+        Some(&serde_json::json!("region_unmatched"))
+    );
+    assert!(
+        matches!(
+            operations(&preview).as_slice(),
+            [DeployOperation::RunContainer { machine_id: on, spec, .. }]
+                if on == &machine_id('2') && spec.name == web.name
+        ),
+        "{:?}",
+        operations(&preview)
+    );
+
+    let whole = plan_deploy([&api, &web], &snapshot, PlanOptions::default()).unwrap_err();
+    assert_eq!(
+        whole.into_rpc_error().message,
+        "Service api: no Server in lhr"
+    );
+}
+
+#[test]
+fn a_region_whose_servers_cannot_run_services_stops_only_the_services_kept_in_it() {
+    let api = kept_in(replicated("api", 1), "fsn");
+    let web = kept_in(replicated("web", 1), "syd");
+    let mut down = in_region(machine('1', "first"), "fsn");
+    down.membership = MembershipObservation::Down;
+    let mut refusing = in_region(machine('3', "third"), "fsn");
+    refusing.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![down, in_region(machine('2', "second"), "syd"), refusing],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api, &web],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, api.name);
+    assert_eq!(
+        blocked.error.message,
+        "first is down, third doesn't run services, and no other Server in fsn is up"
+    );
+    assert_eq!(
+        blocked.error.details.get("reason"),
+        Some(&serde_json::json!("region_unmatched"))
+    );
+    assert!(
+        matches!(
+            operations(&preview).as_slice(),
+            [DeployOperation::RunContainer { machine_id: on, spec, .. }]
+                if on == &machine_id('2') && spec.name == web.name
+        ),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
 fn replicated(name: &str, replicas: u32) -> RequestedServiceSpec {
     let mut spec = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(replicas).unwrap(),

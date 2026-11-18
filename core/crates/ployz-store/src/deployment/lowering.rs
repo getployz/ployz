@@ -271,15 +271,16 @@ pub(crate) enum Ships {
 }
 
 /// Whether `saved`'s `service` would run otherwise than `landing` leaves it: it,
-/// or a Config or Volume it mounts, isn't settled there. A changed Config or Volume
-/// ships with the Service that mounts it, and is recorded only once that Service is
-/// a node.
+/// or a Config or Volume it mounts, isn't settled there, or it runs outside
+/// `saved`'s default region. A changed Config or Volume ships with the Service that
+/// mounts it, and is recorded only once that Service is a node.
 pub(crate) fn changed(
     saved: &SavedEnvironmentIntent,
     landing: &Landing<'_>,
     service: &SavedServiceIntent,
 ) -> bool {
     !landing.settled_service(service)
+        || !landing.in_region(service, saved.region.as_ref())
         || service.config_attachments.iter().any(|mount| {
             let id = &mount.config_resource_id;
             match saved
@@ -908,6 +909,7 @@ pub(super) fn lower(
         }
     }
     let input = |snapshots: Vec<LowerDeploymentSnapshot>| LowerDeploymentInput {
+        region: saved.region.clone(),
         namespace: namespace.clone(),
         snapshots,
         volumes: saved

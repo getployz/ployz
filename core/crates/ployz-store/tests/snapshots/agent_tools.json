@@ -4,7 +4,7 @@
   "title": "Ployz",
   "tools": [
     {
-      "description": "Search the Ployz docs, or read one page. A search returns the closest sections, each with path, heading and excerpt. A page returns its Markdown. Pages: production-checklist, self-hosting, account/{account,agent-sidebar,connect-an-agent,notifications,organizations,permissions,try-without-an-account}, builds/{build-resources-and-cache,overview,railpack-and-dockerfiles,where-builds-run}, cli/overview, deploy/{deployments,docker-image,github,history-and-rollback,zero-downtime}, environments/{environments,preview-environments}, getting-started/{introduction,quick-start,the-basics}, observe/{analytics,logs,metrics,uptime}, servers/{add-a-server,add-many-servers,manage-servers,recovery-code,upgrade-to-0-4}, services/{cloudflare-tunnel,configs,databases,domains,mirror-a-volume,move-a-volume,private-networking,restore-a-volume,scaling,services,settings,variables,volumes}, troubleshooting/{app-not-reachable,builds,deployments,servers,trace,volumes}.",
+      "description": "Search the Ployz docs, or read one page. A search returns the closest sections, each with path, heading and excerpt. A page returns its Markdown. Pages: production-checklist, self-hosting, account/{account,agent-sidebar,connect-an-agent,notifications,organizations,permissions,try-without-an-account}, builds/{build-resources-and-cache,overview,railpack-and-dockerfiles,where-builds-run}, cli/overview, deploy/{deployments,docker-image,github,history-and-rollback,zero-downtime}, environments/{environments,preview-environments}, getting-started/{introduction,quick-start,the-basics}, observe/{analytics,logs,metrics,uptime}, servers/{add-a-server,add-many-servers,manage-servers,recovery-code,upgrade-to-0-4}, services/{cloudflare-tunnel,configs,databases,domains,mirror-a-volume,move-a-volume,private-networking,regions,restore-a-volume,scaling,services,settings,variables,volumes}, troubleshooting/{app-not-reachable,builds,deployments,servers,trace,volumes}.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,
@@ -1938,6 +1938,46 @@
       },
       "read_only": false,
       "title": "Protect or unprotect an Environment"
+    },
+    {
+      "description": "Set the region an Environment's Services run in, or clear it so they run in any region. A region is the value of a Server's `region` label. Staged until the next deploy, which moves each Service to a Server in the region. A Service whose Volume is on a Server outside the region is not started until the Volume is moved.",
+      "destructive": false,
+      "gate": "never",
+      "idempotent": true,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "clear": {
+            "description": "`true` to clear the region, so its Services run in any region.",
+            "type": "boolean"
+          },
+          "environment": {
+            "description": "Environment name, e.g. `staging`. Defaults to the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name. Defaults to the one you are in.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "region": {
+            "description": "The region to run its Services in, as the Servers' `region` label names it, e.g. `fsn`.",
+            "examples": [
+              "fsn"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "environment_region",
+      "open_world": false,
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false,
+      "title": "Set an Environment's region"
     },
     {
       "description": "Check what an Environment still needs before it can deploy: Servers, a Cluster Domain, and a GitHub connection if a Service builds from a repository. Returns whether it is ready and the dashboard page for each thing missing.",

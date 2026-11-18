@@ -37,14 +37,14 @@ export type ChangeRow = {
   steps?: readonly string[];
 };
 
-/** One changed node in Details, with its changed Settings. */
+/** One changed node in Details, with its changed Settings; the Environment itself for its region. */
 export type ChangeGroup = {
   /** Who keeps the change and takes its Discard: the Config Store, or the dashboard's Volume placement. */
   owner: "store" | "placement";
-  nodeType: NodeChange["type"];
+  nodeType: NodeChange["type"] | "environment";
   nodeId: string;
   nodeName: string;
-  /** What Discard names to put the whole node back: `SERVICE`, or `volumes.VOLUME`. */
+  /** What Discard names to put the whole node back: `SERVICE`, `volumes.VOLUME`, or `@environment.region`. */
   discardPath: string;
   /** The node's own Sync row; none for a placement change, which never syncs. */
   row: RowId | null;
@@ -124,9 +124,28 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
   }));
 }
 
-/** Runtime changes and draft reversals in one review, with each row's Discard baseline. */
+/** A region as people read it: its name, or `any region` for none. */
+export const regionName = (region: string | null) => region ?? "any region";
+
+const REGION_PATH = "@environment.region";
+
+/** The staged region, which no node holds: the Environment's one change, `Region any region → fsn`. */
+function regionGroups(diff: DiffView): ChangeGroup[] {
+  if (!diff.region) return [];
+  const { id, name } = diff.environment;
+  return [{
+    owner: "store", nodeType: "environment", nodeId: id, nodeName: name, discardPath: REGION_PATH, row: null, lifecycle: "update", changeCount: 1,
+    restarts: [], canDiscard: true,
+    rows: [{
+      changeKey: REGION_PATH, path: REGION_PATH, row: null, kind: "update", label: "Region", name: "Region", variable: false,
+      currentValue: regionName(diff.region.before), newValue: regionName(diff.region.after), canDiscard: true,
+    }],
+  }];
+}
+
+/** Runtime changes, the staged region and draft reversals in one review, with each row's Discard baseline. */
 export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
-  const groups = changeGroups(diff, services).map((group) => ({ ...group, rows: [...group.rows] }));
+  const groups = [...regionGroups(diff), ...changeGroups(diff, services).map((group) => ({ ...group, rows: [...group.rows] }))];
   const drafts = changeGroups({ ...diff, changes: diff.draft_changes ?? [] }, services);
   for (const draft of drafts) {
     draft.discardTarget = "saved";
@@ -148,11 +167,11 @@ export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]
   return groups.sort(reviewOrder);
 }
 
-const kindRank = { service: 0, volume: 1, config: 2 } satisfies Record<NodeChange["type"], number>;
+const kindRank = { environment: 0, service: 1, volume: 2, config: 3 } satisfies Record<ChangeGroup["nodeType"], number>;
 const stepRank = { delete: 0, update: 1, create: 2 } satisfies Record<NodeChange["lifecycle"], number>;
 const ascending = (a: number | string, b: number | string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/** The Store's review order: Services, Volumes, then Configs, each by name; a removal before what took its name. */
+/** The Store's review order: the region, then Services, Volumes and Configs, each by name; a removal before what took its name. */
 const reviewOrder = (a: ChangeGroup, b: ChangeGroup) =>
   ascending(kindRank[a.nodeType], kindRank[b.nodeType]) || ascending(a.nodeName, b.nodeName)
   || ascending(stepRank[a.lifecycle], stepRank[b.lifecycle]) || ascending(a.nodeId, b.nodeId);

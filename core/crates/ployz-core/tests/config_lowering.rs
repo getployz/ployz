@@ -102,6 +102,33 @@ fn http_healthcheck_probes_the_port_domains_send_traffic_to() {
 }
 
 #[test]
+fn lowering_keeps_every_service_in_the_default_region_and_nowhere_without_one() {
+    let service = |name: &str| {
+        json!({"config":{"version":2,"privateDns":name,
+            "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+            "healthcheck":{"type":"none"},"restartPolicy":"on-failure"},"resolvedEnv":{}})
+    };
+    let constraints = |region: Option<&str>| {
+        let mut input =
+            json!({"namespace":"production","snapshots":[service("web"),service("api")]});
+        if let Some(region) = region {
+            input["region"] = json!(region);
+        }
+        let intent = lowered(input).unwrap();
+        [0, 1].map(|service| intent["target"][service]["placement"]["constraints"].clone())
+    };
+
+    assert_eq!(
+        constraints(Some("fsn")),
+        [
+            json!(["node.labels.region==fsn"]),
+            json!(["node.labels.region==fsn"])
+        ]
+    );
+    assert_eq!(constraints(None), [json!([]), json!([])]);
+}
+
+#[test]
 fn lowering_refuses_unexpanded_managed_hostnames() {
     let config = json!({"version":2,"privateDns":"api",
         "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},

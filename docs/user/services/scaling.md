@@ -48,7 +48,8 @@ services.
 Every server runs builds, runs services and takes web traffic. Turn jobs off to split the
 work, for example a build server that keeps builds away from your app, or a database server
 the internet can't reach. **Run builds here**, **Run services here** and **Takes web traffic** are
-on each server's page. The [Ployz agent](../account/agent-sidebar.md) turns web traffic off but
+on each server's page. To keep an environment's services on some of your servers, such as the ones nearest
+your users, give it a [region](regions.md). The [Ployz agent](../account/agent-sidebar.md) turns web traffic off but
 not on.
 
 For a build server, also turn off **Run builds here** on your other servers. Running replicas

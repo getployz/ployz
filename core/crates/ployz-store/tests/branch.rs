@@ -183,6 +183,18 @@ fn values(store: &ConfigStore, who: &Actor, environment: &str, service: &str) ->
 /// Deploy `environment` in full and record `outcome` for it: every Service applied,
 /// or nothing executed.
 fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: bool) -> Value {
+    deploy_leaving(store, who, environment, n, applied.then_some(&[]))
+}
+
+/// Deploy `environment`, leaving each of `blocked` Not attempted. With none, no
+/// Server runs it.
+fn deploy_leaving(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+    n: u8,
+    blocked: Option<&[&str]>,
+) -> Value {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
         .write_trusted(
@@ -205,17 +217,18 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
         .unwrap();
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&id, &runner).unwrap();
-    if !applied {
+    let Some(blocked) = blocked else {
         store
             .record(&id, &runner, RunEvidence::NotExecuted("no Servers".into()))
             .unwrap();
         return claimed.input;
-    }
+    };
     let names: Vec<String> = claimed
         .intent
         .target
         .iter()
         .map(|service| service.name.to_string())
+        .filter(|name| !blocked.contains(&name.as_str()))
         .collect();
     let operation = |index: usize| {
         json!({"type": "remove_container", "machine_id": "a".repeat(32),
@@ -226,6 +239,12 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
         "operations": names.iter().enumerate().map(|(index, name)| json!({
             "index": index, "machine_id": "a".repeat(32), "service_name": name,
             "operation": operation(index), "status": {"type": "pending"}
+        })).collect::<Vec<_>>(),
+        "blocked": blocked.iter().map(|service| json!({
+            "service": service,
+            "error": {"code": "conflict", "message": "data is on syd-1", "details": {
+                "reason": "volume_outside_region", "volume": "data", "server": "syd-1", "to": "fsn-1"
+            }}
         })).collect::<Vec<_>>(),
         "warnings": [], "would_remove": [], "preserved_volumes": []
     }))
@@ -2780,5 +2799,67 @@ fn copying_a_node_waits_for_a_settled_branch() {
     assert_eq!(
         running.details["next"],
         "ployz deployment ls --project shop --env fix-web"
+    );
+}
+
+#[test]
+fn a_new_branch_carries_its_parents_default_region() {
+    let (store, who) = shop();
+    let region = Edit {
+        environment: at("production"),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &region).unwrap();
+
+    store
+        .write(&who, &branch("fix-web", "production", &["web"]))
+        .unwrap();
+
+    let diff = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        diff.region.and_then(|region| region.after),
+        Some(ployz_core::Region::parse("fsn").unwrap())
+    );
+}
+
+#[test]
+fn a_branch_follows_the_region_its_parent_deployed_while_a_service_waits_outside_it() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, true);
+    store
+        .write(&who, &branch("fix-web", "production", &["web"]))
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("@environment.region", json!("fsn"))],
+    );
+
+    // web moves into fsn. db's Volume is outside it, so db is Not attempted.
+    deploy_leaving(&store, &who, "production", 2, Some(&["db"]));
+
+    let diff = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        diff.region.and_then(|region| region.after),
+        Some(ployz_core::Region::parse("fsn").unwrap())
     );
 }

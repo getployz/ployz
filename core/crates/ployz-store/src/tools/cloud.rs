@@ -2,8 +2,10 @@
 //! [`CloudQuery`](super::CloudQuery) and for an [`Act`](super::Act). Plans decode
 //! these and never see a Machine directly.
 
+use std::collections::BTreeSet;
+
 use ployz_core::metrics::MarkerKind;
-use ployz_core::{MachineId, Namespace, ServiceName};
+use ployz_core::{MachineId, Namespace, Region, ServiceName};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -16,6 +18,11 @@ use ployz_core::scrub::excerpt::LogText;
 pub struct ServersAnswer {
     pub servers: Vec<ServerReport>,
     pub seen: Freshness,
+    /// The regions the Servers are in, by their `region` label. Left out by an
+    /// answerer that doesn't read labels, and of an answer narrowed to one Server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub regions: Option<BTreeSet<Region>>,
 }
 
 /// One Server as it last reported.

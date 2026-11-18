@@ -2,10 +2,12 @@
 //! Deployments confirmed. A node is replaced only by the Deployment that confirmed it,
 //! and forgotten when that Deployment found it gone.
 
-use ployz_core::RpcError;
+use std::collections::BTreeMap;
+
+use ployz_core::{Region, RpcError};
 
 use crate::id::EnvironmentId;
-use crate::storage::{Row, Tx};
+use crate::storage::{Param, Row, Tx};
 
 /// Every node of `environment`, ordered by node ID, with its node type.
 pub(crate) fn rows(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Row>, RpcError> {
@@ -44,26 +46,61 @@ pub(crate) fn node(
         .next())
 }
 
-/// Deployment `deployment` confirmed node `node_id` as `document`.
+/// The region each node of `environment` was deployed in, by node ID: none for a
+/// Service deployed with no default region, and for a Volume or a Config.
+pub(crate) fn regions(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<BTreeMap<String, Option<Region>>, RpcError> {
+    tx.query(
+        "SELECT node_id, region FROM config_applied WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?
+    .iter()
+    .map(|row| Ok((row.text(0)?.to_owned(), row.parse_optional(1, "region")?)))
+    .collect()
+}
+
+/// The default region `environment`'s newest Deployment to confirm a Service
+/// deployed it in. None when that Deployment had none, or none confirmed a Service.
+pub(crate) fn region(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<Region>, RpcError> {
+    tx.query(
+        "SELECT applied.region FROM config_applied applied \
+         JOIN config_deployment deployment ON deployment.id = applied.deployment_id \
+         WHERE applied.environment_id = ?1 AND applied.node_type = 'service' \
+         ORDER BY deployment.number DESC LIMIT 1",
+        &[environment.as_str().into()],
+    )?
+    .first()
+    .map_or(Ok(None), |row| row.parse_optional(0, "region"))
+}
+
+/// Deployment `deployment` confirmed node `node_id` as `document`, a Service in
+/// `region`.
 pub(crate) fn confirm(
     tx: &mut dyn Tx,
     deployment: &str,
     node_id: &str,
-    document: &str,
-    node_type: &str,
+    (document, node_type): (&str, &str),
+    region: Option<&Region>,
 ) -> Result<(), RpcError> {
     tx.execute(
         "INSERT INTO config_applied \
-         (environment_id, node_id, organization_id, deployment_id, node, node_type) \
-         SELECT environment_id, ?2, organization_id, id, ?3, ?4 \
+         (environment_id, node_id, organization_id, deployment_id, node, node_type, region) \
+         SELECT environment_id, ?2, organization_id, id, ?3, ?4, ?5 \
          FROM config_deployment WHERE id = ?1 \
          ON CONFLICT (environment_id, node_id) \
-         DO UPDATE SET deployment_id = excluded.deployment_id, node = excluded.node",
+         DO UPDATE SET deployment_id = excluded.deployment_id, node = excluded.node, \
+         region = excluded.region",
         &[
             deployment.into(),
             node_id.into(),
             document.into(),
             node_type.into(),
+            region.map_or(Param::NullText, |region| region.as_str().into()),
         ],
     )?;
     Ok(())

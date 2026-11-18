@@ -46,6 +46,10 @@ impl Tool for Review {
             .map(|effect| format!("{} {}", effect.kind.verb(), effect.name))
             .collect::<Vec<_>>();
         let labels = NodeChange::labels(&diff.changes);
+        let region = diff.region.as_ref().map(|region| {
+            let [before, after] = region.sides();
+            format!("{}: {before} -> {after}", SettingPath::REGION)
+        });
         Ok(json!({
             "at": diff.environment.to_string(),
             "revision": diff.environment.revision.0,
@@ -55,7 +59,7 @@ impl Tool for Review {
                 "holds_staged": diff.published,
             })),
             "staged": diff.total_count,
-            "lines": diff.changes.iter().flat_map(|change| lines(change, &labels)).collect::<Vec<_>>(),
+            "lines": region.into_iter().chain(diff.changes.iter().flat_map(|change| lines(change, &labels))).collect::<Vec<_>>(),
             "asks_approval": !cx.is_local(),
             "destroys": destroys,
             "broken": diff.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),

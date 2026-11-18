@@ -8,8 +8,8 @@ use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName, ServiceObservation,
-    VolumeInventory, VolumeObservationFailure, derive_services,
+    ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, ServiceName,
+    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -723,6 +723,40 @@ impl fmt::Display for EliminatingConstraints {
     }
 }
 
+/// Why a Server in a Service's region can't run the Service now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServerAway {
+    Down,
+    /// It did not answer this Deploy's Container listing.
+    Silent,
+    TakesNoServices,
+    /// Its membership is neither up nor down. A refusal doesn't name it.
+    Unreached,
+}
+
+fn region_unmatched(region: &Region, servers: &[(MachineName, ServerAway)]) -> String {
+    if servers.is_empty() {
+        return format!("no Server in {region}");
+    }
+    let mut clauses = servers
+        .iter()
+        .filter_map(|(name, away)| {
+            let why = match away {
+                ServerAway::Down => "is down",
+                ServerAway::Silent => "did not answer",
+                ServerAway::TakesNoServices => "doesn't run services",
+                ServerAway::Unreached => return None,
+            };
+            Some(format!("{name} {why}"))
+        })
+        .collect::<Vec<_>>();
+    if clauses.is_empty() {
+        return format!("no Server in {region} is up");
+    }
+    clauses.push(format!("and no other Server in {region} is up"));
+    clauses.join(", ")
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PlanError {
     /// Complete provisioned storage demand cannot be admitted on this Machine.
@@ -779,6 +813,22 @@ pub enum PlanError {
         volume: String,
         /// The Machine holding the Volume's writer.
         machine: MachineName,
+    },
+    /// No Server in the region the Service is kept in can run it.
+    #[error("{}", region_unmatched(region, servers))]
+    RegionUnmatched {
+        region: Region,
+        /// The Servers in the region, each with why it can't run the Service.
+        servers: Vec<(MachineName, ServerAway)>,
+    },
+    /// The Service is kept in a region, and its Volume is on a Server outside it.
+    #[error("{volume} is on {machine}")]
+    VolumeOutsideRegion {
+        /// The Volume, as its owner named it.
+        volume: String,
+        machine: MachineName,
+        /// A Server in the region the Service can run on.
+        to: MachineName,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
@@ -981,6 +1031,8 @@ impl PlanError {
             | Self::ServiceModeCannotChange
             | Self::NoWriter { .. }
             | Self::VolumeServerTakesNoServices { .. }
+            | Self::RegionUnmatched { .. }
+            | Self::VolumeOutsideRegion { .. }
             | Self::CopiesUnknown { .. }
             | Self::VolumeHolderUnknown { .. }
             | Self::ProvisionedVolumeStorageRequired { .. }
@@ -1022,6 +1074,18 @@ impl PlanError {
                 error.to_string(),
             )
             .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
+            error @ Self::RegionUnmatched { .. } => RpcError::conflict(error.to_string())
+                .with_details(serde_json::json!({ "reason": "region_unmatched" })),
+            Self::VolumeOutsideRegion {
+                ref volume,
+                ref machine,
+                ref to,
+            } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                "reason": "volume_outside_region",
+                "volume": volume,
+                "server": machine,
+                "to": to,
+            })),
             error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
                 RpcError::unavailable(error.to_string())
             }

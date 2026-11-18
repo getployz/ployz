@@ -90,7 +90,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let view = store(root)?.read(&query)?;
     let changes = view.review_changes();
     // A draft reversal alone changes nothing on the Servers, so only a Save records it.
-    let hint = if !view.changes.is_empty() {
+    let hint = if !view.is_empty() {
         Some(next(matches, &["deploy"]))
     } else {
         (view.draft_count > 0).then(|| next(matches, &["deploy", "--skip-deploy"]))
@@ -104,8 +104,12 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let followed = Next::new(&shown, hint);
     crate::ui::finish(&followed, || {
         let where_ = view.environment.to_string();
-        if changes.is_empty() {
+        if changes.is_empty() && view.region.is_none() {
             crate::ui::note(format_args!("No staged changes in {where_}."));
+        }
+        if let Some(region) = &view.region {
+            let [before, after] = region.sides();
+            crate::ui::stream(format_args!("{}: {before} → {after}", SettingPath::REGION));
         }
         // Where a staged change came from, when another Environment sent it.
         let from = |row: Option<&ployz_store::RowId>| {
@@ -171,7 +175,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         let saved = view.saved.map_or(0, |saved| saved.0);
-        if view.published && !view.changes.is_empty() {
+        if view.published && !view.is_empty() {
             if view.saved_ran_nothing {
                 crate::ui::stream(format_args!(
                     "Saved as version #{saved}. Its deploy ran nothing, so none of these changes reached a server."

@@ -118,6 +118,7 @@ tools! {
     deployment::DeploymentCancel,
     environment::EnvironmentPr,
     environment::EnvironmentProtect,
+    environment::EnvironmentRegion,
     environment::EnvironmentSetup,
     github::GithubLs,
     github::GithubConnect,

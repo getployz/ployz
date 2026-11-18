@@ -106,7 +106,9 @@ impl From<NodeName> for String {
 /// `volumes.VOLUME.name` / `volumes.VOLUME.storage` for its name or storage, which
 /// only discard addresses, `configs.CONFIG` for a whole Config,
 /// `configs.CONFIG.name` / `configs.CONFIG.files.FILE` for its name or one file, which
-/// only discard addresses, or `setup.SERVICE` for a Branch's Setup Command in it.
+/// only discard addresses, `setup.SERVICE` for a Branch's Setup Command in it, or
+/// `@environment.region` for the Environment's default region. No Service name holds `@`,
+/// so the Environment's own Settings never shadow a Service's.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
@@ -117,6 +119,22 @@ enum Addressed {
     Service(ServiceName, Option<Target>),
     Volume(VolumeName, Option<VolumeField>),
     Config(ConfigRef, Option<ConfigField>),
+    Environment(EnvironmentSetting),
+}
+
+/// A Setting of the Environment itself, which no node holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnvironmentSetting {
+    /// The default region: where its Services run unless one says otherwise.
+    Region,
+}
+
+impl EnvironmentSetting {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Region => "region",
+        }
+    }
 }
 
 /// A Volume's or Config's field a change row names: what discard restores alone.
@@ -178,8 +196,9 @@ impl SettingPath {
     /// Parse `SERVICE`, `SERVICE.SETTING`, `SERVICE.env.KEY`,
     /// `SERVICE.env.KEY.exported`, `SERVICE.mounts.VOLUME`, `SERVICE.configs.CONFIG`,
     /// `volumes.VOLUME`, `volumes.VOLUME.name`, `volumes.VOLUME.storage`,
-    /// `configs.CONFIG`, `configs.CONFIG.name`, `configs.CONFIG.files.FILE` or
-    /// `setup.SERVICE`. Use `@UUID` in place of `CONFIG` to select an exact Config identity.
+    /// `configs.CONFIG`, `configs.CONFIG.name`, `configs.CONFIG.files.FILE`,
+    /// `setup.SERVICE` or `@environment.region`. Use `@UUID` in place of `CONFIG` to
+    /// select an exact Config identity.
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed path or an unknown Setting, never
@@ -190,6 +209,15 @@ impl SettingPath {
         }
         if path == "configs" {
             return Err(name_a_config());
+        }
+        if path == "@environment.region" {
+            return Ok(Self::REGION);
+        }
+        if path == "@environment" || path.starts_with("@environment.") {
+            return Err(error::invalid(
+                "The Environment has one Setting: @environment.region.",
+                json!({ "example": "@environment.region" }),
+            ));
         }
         if let Some(config) = path.strip_prefix("configs.") {
             let (config, field) = match config.split_once('.') {
@@ -295,13 +323,26 @@ impl SettingPath {
         Ok(Self(Addressed::Service(service, target)))
     }
 
-    /// The node it is in.
+    /// The Environment's default region, `@environment.region`.
+    pub const REGION: Self = Self(Addressed::Environment(EnvironmentSetting::Region));
+
+    /// The node it is in; none for a Setting of the Environment itself.
     #[must_use]
-    pub fn node(&self) -> NodeName {
+    pub fn node(&self) -> Option<NodeName> {
         match &self.0 {
-            Addressed::Service(service, _) => NodeName::Service(service.clone()),
-            Addressed::Volume(volume, _) => NodeName::Volume(volume.clone()),
-            Addressed::Config(config, _) => NodeName::Config(config.clone()),
+            Addressed::Service(service, _) => Some(NodeName::Service(service.clone())),
+            Addressed::Volume(volume, _) => Some(NodeName::Volume(volume.clone())),
+            Addressed::Config(config, _) => Some(NodeName::Config(config.clone())),
+            Addressed::Environment(_) => None,
+        }
+    }
+
+    /// The Setting of the Environment itself it names, if it names one.
+    #[must_use]
+    pub const fn environment(&self) -> Option<EnvironmentSetting> {
+        match &self.0 {
+            Addressed::Environment(setting) => Some(*setting),
+            Addressed::Service(..) | Addressed::Volume(..) | Addressed::Config(..) => None,
         }
     }
 
@@ -310,16 +351,16 @@ impl SettingPath {
         match &self.0 {
             Addressed::Volume(_, field) => field.map(NodeField::Volume),
             Addressed::Config(_, field) => field.as_ref().map(NodeField::Config),
-            Addressed::Service(..) => None,
+            Addressed::Service(..) | Addressed::Environment(_) => None,
         }
     }
 
-    /// The Service it is in; none for a Volume or a Config.
+    /// The Service it is in; none for a Volume, a Config or the Environment itself.
     #[must_use]
     pub const fn service(&self) -> Option<&ServiceName> {
         match &self.0 {
             Addressed::Service(service, _) => Some(service),
-            Addressed::Volume(..) | Addressed::Config(..) => None,
+            Addressed::Volume(..) | Addressed::Config(..) | Addressed::Environment(_) => None,
         }
     }
 
@@ -328,7 +369,10 @@ impl SettingPath {
     pub fn domains_of(&self) -> Option<&ServiceName> {
         match &self.0 {
             Addressed::Service(service, Some(Target::Domains)) => Some(service),
-            Addressed::Service(..) | Addressed::Volume(..) | Addressed::Config(..) => None,
+            Addressed::Service(..)
+            | Addressed::Volume(..)
+            | Addressed::Config(..)
+            | Addressed::Environment(_) => None,
         }
     }
 
@@ -343,12 +387,19 @@ impl SettingPath {
         )
     }
 
-    /// The Service whose Settings it addresses, or why a Volume or Config has none.
+    /// The Service whose Settings it addresses, or why a Volume, a Config or the
+    /// Environment has none.
     pub(crate) fn settings_of(&self) -> Result<&ServiceName, RpcError> {
         self.service().ok_or_else(|| {
             let what = match &self.0 {
                 Addressed::Config(..) => "A Config",
                 Addressed::Volume(..) | Addressed::Service(..) => "A Volume",
+                Addressed::Environment(_) => {
+                    return error::invalid(
+                        format!("{self} is the Environment's own: name a Service, SERVICE.SETTING"),
+                        json!({ "example": "web.replicas" }),
+                    );
+                }
             };
             error::invalid(
                 format!("{what} has no Settings: name a Service, SERVICE.SETTING"),
@@ -357,12 +408,12 @@ impl SettingPath {
         })
     }
 
-    /// What it addresses inside its Service; none for a whole Service, a Volume or
-    /// a Config.
+    /// What it addresses inside its Service; none for a whole Service, a Volume, a
+    /// Config or the Environment itself.
     pub(crate) const fn target(&self) -> Option<&Target> {
         match &self.0 {
             Addressed::Service(_, target) => target.as_ref(),
-            Addressed::Volume(..) | Addressed::Config(..) => None,
+            Addressed::Volume(..) | Addressed::Config(..) | Addressed::Environment(_) => None,
         }
     }
 
@@ -406,6 +457,9 @@ impl fmt::Display for SettingPath {
                 return write!(formatter, "configs.{config}.files.{file}");
             }
             Addressed::Config(config, None) => return write!(formatter, "configs.{config}"),
+            Addressed::Environment(setting) => {
+                return write!(formatter, "@environment.{}", setting.name());
+            }
         };
         match target {
             Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),
@@ -468,6 +522,18 @@ mod tests {
                 "{setting:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_service_named_environment_keeps_its_settings_beside_the_environments_own() {
+        let service = ServiceName::parse("environment").unwrap();
+        let replicas = SettingPath::parse("environment.replicas").unwrap();
+        assert_eq!(replicas.node(), Some(NodeName::Service(service)));
+        assert_eq!(
+            SettingPath::parse("@environment.region").unwrap(),
+            SettingPath::REGION
+        );
+        assert!(ServiceName::parse("@environment").is_err());
     }
 
     #[test]

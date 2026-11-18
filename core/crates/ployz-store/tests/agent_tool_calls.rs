@@ -265,6 +265,7 @@ fn the_catalog_has_the_agreed_tools() {
             "deployment_cancel",
             "environment_pr",
             "environment_protect",
+            "environment_region",
             "environment_setup",
             "github_ls",
             "github_connect",
@@ -678,6 +679,29 @@ fn a_new_volume_on_a_second_replica_is_refused_in_a_whole_sentence() {
         "data would be attached to web; set replicas to 1, or add it with shared writes on"
     );
     assert!(refusal.next.is_empty(), "{refusal:?}");
+}
+
+#[test]
+fn review_and_environment_show_name_and_count_a_region_change() {
+    let store = shop();
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who(), &edit).unwrap();
+
+    let review = call(&store, "review", json!({}), "review-1").ok();
+    assert_eq!(review["staged"], 1, "{review}");
+    assert_eq!(
+        review["lines"],
+        json!(["@environment.region: any region -> fsn"])
+    );
+    let shown = call(&store, "environment_show", json!({}), "show-1").ok();
+    assert_eq!(shown["staged"], 1, "{shown}");
 }
 
 #[test]

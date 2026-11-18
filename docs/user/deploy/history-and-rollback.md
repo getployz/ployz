@@ -19,6 +19,7 @@ not deployed yet has no badge. The version's **⋮** menu:
 - **Undo these N changes** reverses that version's changed fields and keeps the versions saved
   after it. The first recorded version has no earlier version to undo.
 - **Roll back to #N** stages that version's complete configuration, undoing every later version.
+  The environment's [region](../services/regions.md) is the exception: it stays as it is.
   The newest version has nothing to roll back to. After a failed deploy, rolling back to the
   **Live** version deploys too: **Deploy** saves it, and services that already match are left
   running. Like every deploy, it moves GitHub services to the newest commit on their branch, so a

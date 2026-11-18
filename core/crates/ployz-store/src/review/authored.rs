@@ -405,6 +405,7 @@ impl Plan {
             services,
             volumes,
             configs,
+            region: _,
         } = after;
         invariant(
             *version == before.version && *environment_slug == before.environment_slug,
@@ -2234,7 +2235,8 @@ impl Prepared {
                 }
             }
         }
-        let state = if actual.effects.is_empty() {
+        let region = environment.working.region != working.environment().working.region;
+        let state = if actual.effects.is_empty() && !region {
             PreparedState::Unchanged(environment.summary.clone())
         } else {
             PreparedState::Changed {
@@ -2288,7 +2290,9 @@ pub(super) fn prepare_history(
         plan.reverse_into(&mut target, &selection)?;
         target
     } else {
-        selected.clone()
+        let mut target = selected.clone();
+        target.region.clone_from(&environment.working.region);
+        target
     };
     let not_set = keep_sealed(environment, ledger, &mut target)?;
     let mut prepared = Prepared::from_target(
@@ -2415,7 +2419,9 @@ pub(super) fn prepare_discard(
     // A plain value sealed since comes back Not set, never as it was.
     let mut since = super::sealed::SealedSince::new(&environment.summary.id, &environment.working);
     since.unset(tx, &mut baseline)?;
-    if let Some(path) = path {
+    if path.is_some_and(|path| path.environment().is_some()) {
+        working.region.clone_from(&baseline.region);
+    } else if let Some(path) = path {
         if let (Some(Target::Domains), Some(service)) = (path.target(), path.service()) {
             return Err(crate::settings::domains_are_read_only(path, service));
         }
@@ -2559,7 +2565,13 @@ fn resolve_node(
     baseline: &SavedEnvironmentIntent,
 ) -> Result<ReviewNodeIdentity, RpcError> {
     let working = &environment.working;
-    let (node_type, id) = match path.node() {
+    let Some(node) = path.node() else {
+        return Err(error::invalid(
+            format!("{path} is the Environment's own, in no Service, Volume or Config"),
+            json!({ "path": path }),
+        ));
+    };
+    let (node_type, id) = match node {
         NodeName::Service(name) => (
             EnvironmentNodeType::Service,
             [working, baseline]
@@ -3196,6 +3208,7 @@ mod tests {
             services: Vec::new(),
             volumes: Vec::new(),
             configs: Vec::new(),
+            region: None,
         };
         let sides = (&empty, &empty);
         let effect = |id: &str, field| Effect::Service {
