@@ -66,12 +66,12 @@ export function deployWaitingMail({ origin, organization, deployment, sources }:
   if (source?.branch) facts.push({ label: "Branch", value: source.branch, mono: true });
   if (commit) facts.push({ label: "Commit", value: commit, mono: true });
   facts.push({ label: "Environment", value: place }, ...waiting.map(({ service, reason }) => ({ label: service, value: reason })));
-  const rest = deployment.all_waiting ? "Nothing was deployed." : "Everything else was deployed.";
+  const rest = deployment.all_waiting ? "Nothing was deployed." : "The rest of the deploy went through.";
   return {
     subject: `${named} waiting to deploy to ${place}`,
     preview: rest,
     title: `${named} waiting to deploy to ${environment}`,
-    paragraphs: [`${source?.branch ? `GitHub started this deploy from ${source.branch}.` : "GitHub started this deploy."} ${rest} Deploy again once what they wait on is fixed.`],
+    paragraphs: [`${source?.branch ? `GitHub started this deploy from ${source.branch}.` : "GitHub started this deploy."} ${rest} Deploy again once the cause is fixed.`],
     action: {
       label: "View deployment",
       url: `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}`,

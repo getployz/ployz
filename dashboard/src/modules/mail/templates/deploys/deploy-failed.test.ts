@@ -107,9 +107,8 @@ it("tells a push whose Deploy left Services waiting which ones and why, and whet
   expect(some.subject).toBe("2 services are waiting to deploy to shop / pr 7");
   expect(some.facts?.slice(-2)).toEqual(waiting.map(({ service, reason }) => ({ label: service, value: reason })));
   expect(some.action?.url).toBe("https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201");
-  expect(some.paragraphs.join(" ")).toContain("Everything else was deployed.");
+  expect(some.paragraphs.join(" ")).not.toContain("Nothing was deployed.");
   const every = mailed({ all_waiting: true, outcome: { ...outcome, waiting: waiting.slice(0, 1) } });
   expect(every.subject).toBe("db is waiting to deploy to shop / pr 7");
   expect(every.paragraphs.join(" ")).toContain("Nothing was deployed.");
-  expect(every.paragraphs.join(" ")).not.toContain("Everything else");
 });

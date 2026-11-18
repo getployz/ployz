@@ -800,7 +800,7 @@ pub struct BlockedService {
     pub service: ServiceName,
     /// Why, with `details.reason` naming the refusal (`no_writer`).
     pub error: RpcError,
-    /// Whether it waits or is refused. Absent from previews written before it,
+    /// Whether it waits or is refused. Absent from previews written before 0.4.0,
     /// which read as a wait: every reason then was one.
     #[serde(default)]
     #[ts(optional, as = "Option<BlockedKind>")]

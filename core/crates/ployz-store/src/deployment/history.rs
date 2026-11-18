@@ -191,9 +191,7 @@ fn may_run(
     environment: &EnvironmentId,
 ) -> Result<Vec<SavedServiceIntent>, RpcError> {
     let mut services = Vec::new();
-    // The Services every full Deployment that applied, read so far, left waiting:
-    // none read yet leaves every Service in doubt.
-    let mut unsettled: Option<BTreeSet<String>> = None;
+    let mut doubt = Doubt::Every;
     let mut before = i64::MAX;
     loop {
         let settler = tx.query(
@@ -210,42 +208,48 @@ fn may_run(
             .map(|row| Ok::<_, RpcError>((row.int(0)?, row.json::<Run>(1, "Deployment run")?)))
             .transpose()?;
         let after = settler.as_ref().map_or(0, |(number, _)| *number);
-        in_doubt(
-            tx,
-            environment,
-            (after, before),
-            unsettled.as_ref(),
-            &mut services,
-        )?;
+        in_doubt(tx, environment, (after, before), &doubt, &mut services)?;
         let Some((_, run)) = settler else {
             break;
         };
         let waiting: BTreeSet<String> = run
             .unreached()
-            .filter(|id| {
-                unsettled
-                    .as_ref()
-                    .is_none_or(|unsettled| unsettled.contains(*id))
-            })
+            .filter(|id| doubt.holds(id))
             .cloned()
             .collect();
         if waiting.is_empty() {
             break;
         }
-        unsettled = Some(waiting);
+        doubt = Doubt::Only(waiting);
         before = after;
     }
     Ok(services)
 }
 
-/// Add to `services` each Service that `environment`'s Deployments numbered after
-/// `after` and before `before` may have left running, by [`may_run`]: of those in
-/// `unsettled`, or of every one when it is None.
+/// Which Services [`may_run`] still holds in doubt: every one, or only those
+/// each full Deployment that applied, read so far, left waiting.
+enum Doubt {
+    Every,
+    Only(BTreeSet<String>),
+}
+
+impl Doubt {
+    fn holds(&self, service: &str) -> bool {
+        match self {
+            Self::Every => true,
+            Self::Only(services) => services.contains(service),
+        }
+    }
+}
+
+/// Add to `services` each Service in `doubt` that `environment`'s Deployments
+/// numbered after `after` and before `before` may have left running, by
+/// [`may_run`].
 fn in_doubt(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     (after, before): (i64, i64),
-    unsettled: Option<&BTreeSet<String>>,
+    doubt: &Doubt,
     services: &mut Vec<SavedServiceIntent>,
 ) -> Result<(), RpcError> {
     let rows = tx.query(
@@ -272,9 +276,7 @@ fn in_doubt(
             BTreeSet::new()
         };
         for node in &nodes {
-            if node.service().is_none()
-                || unsettled.is_some_and(|unsettled| !unsettled.contains(node.id()))
-            {
+            if node.service().is_none() || !doubt.holds(node.id()) {
                 continue;
             }
             let doubtful = match run.nodes.get(node.id()) {

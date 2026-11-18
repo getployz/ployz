@@ -234,11 +234,8 @@ pub(crate) fn record(
                                         && !saved.services.iter().any(|kept| kept.id == *id))
                         }))
             };
-            // A Deploy that did all it planned and left only waiting Services is
-            // Applied with those waiting: nothing failed, and each still reads Not
-            // attempted (bet 8). Anything that failed or was left unfinished fails
-            // it, and so does a Service the planner refused: no later Deploy of this
-            // config starts it.
+            // Waiting Services leave a Deploy Applied, each Not attempted (bet 8).
+            // A refused one fails it: no later Deploy of this config starts it.
             let refused = preview
                 .blocked
                 .iter()
@@ -467,8 +464,7 @@ fn failure(
 }
 
 /// Why each Service the planner refused was never attempted. Services refused for
-/// the same reason share one clause. One it left waiting fails nothing, so it is no
-/// reason.
+/// the same reason share one clause.
 fn refused(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Option<Failure> {
     let mut refused = blocked
         .iter()

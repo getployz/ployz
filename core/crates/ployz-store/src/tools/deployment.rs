@@ -296,7 +296,7 @@ tool_input! {
 impl Tool for DeploymentShow {
     const NAME: &'static str = "deployment_show";
     const TITLE: &'static str = "Show a Deployment";
-    const DESCRIPTION: &'static str = "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. An applied one lists under `waiting` the Services it did not start, with what each waits on; `all_waiting` means it started none. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.";
+    const DESCRIPTION: &'static str = "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. It lists under `waiting` the Services it left waiting, with what each waits on; `all_waiting` means it applied without starting any. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {

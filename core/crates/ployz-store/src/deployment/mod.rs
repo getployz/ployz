@@ -1039,8 +1039,8 @@ struct Run {
 }
 
 impl Run {
-    /// The nodes its Deployment, once Applied, never reached: the planner left
-    /// their Services waiting, so each runs whatever it ran before.
+    /// The nodes its Deployment never attempted. On an Applied one, the Services
+    /// the planner left waiting.
     fn unreached(&self) -> impl Iterator<Item = &String> {
         self.nodes
             .iter()
@@ -1952,8 +1952,7 @@ fn preparing(status: DeploymentStatus, run: &Run) -> bool {
 }
 
 /// Whether a Deployment in `status` of `nodes` that recorded `run` applied without
-/// reaching a Service: it left one waiting, and none deployed, left or already
-/// ran as saved.
+/// reaching a Service.
 fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> bool {
     let mut services = nodes
         .iter()
@@ -1966,9 +1965,8 @@ fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> boo
 
 impl Stored {
     /// Show its standing on its summary: the status, number, runner, start and end
-    /// [`Standing::shown`] gives at `read_at`, with what follows from that status:
-    /// whether it may still run, chooses its upload as it starts, prepares, or
-    /// left every Service waiting.
+    /// [`Standing::shown`] gives at `read_at`, and the fields that follow from that
+    /// status.
     fn show(&mut self) {
         let Shown {
             status,
