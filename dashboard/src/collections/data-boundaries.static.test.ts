@@ -133,6 +133,7 @@ const HOOK_FILES_NOT_COMMANDS = {
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
+  "modules/machines/server-regions.hooks.ts": "the Store refuses an unknown region or another region's name, and the rename dialog stays open to show it; the cached names change only once the Store has taken one",
   "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule is signed by its own passkey prompt before it can be saved, so nothing shows before it is; the dialog stays open to show a refusal, such as a newer rule another tab approved",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory.tsx": "the Store derives a sealed History inverse and exact overwrite review before staging; it cannot be guessed optimistically",

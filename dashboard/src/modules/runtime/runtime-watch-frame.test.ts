@@ -141,6 +141,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           storage: "pool",
           buildConcurrency: 2,
           region: null,
+          subnet: "10.0.0.0/24",
           effectiveBuildConcurrency: 2,
           runningBuilds: 1,
           capabilities: ["ployz.logs.tail.v1"],
