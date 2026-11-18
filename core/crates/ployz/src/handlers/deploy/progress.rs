@@ -666,6 +666,22 @@ pub(super) fn region_moves(
     commands
 }
 
+/// The step `ployz deployment show` names for a Deployment that left a Volume outside
+/// its Service's region, the one its own output ended on: it ended Applied when the
+/// Service waits for the move, and Failed when it is refused or something else failed.
+pub(super) fn shown_next(
+    view: &DeploymentView,
+    cloud: bool,
+    command: impl Fn(&[&str]) -> String,
+) -> Option<String> {
+    matches!(
+        view.deployment.status,
+        DeploymentStatus::Applied | DeploymentStatus::Failed
+    )
+    .then(|| region_moves(view, cloud, command))
+    .and_then(|moves| moves.into_iter().next())
+}
+
 fn failure(
     view: &DeploymentView,
     named: &[&str],
@@ -1112,6 +1128,11 @@ mod tests {
         assert_eq!(waiting(&view), ["db is waiting: pg-data is on syd-1"]);
         let partial = completion(&view, None, &[], true, command).unwrap_err();
         assert_eq!(crate::ui::after_result(&partial), 3);
+        // `ployz deployment show` of the Deploy that left db waiting names the same step.
+        assert_eq!(
+            shown_next(&view, true, command).as_deref(),
+            Some("ployz deploy --project shop --env production")
+        );
         assert!(region_moves(&view, false, command).is_empty());
 
         for (role, delete) in [

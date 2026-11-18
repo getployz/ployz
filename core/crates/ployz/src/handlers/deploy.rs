@@ -568,14 +568,27 @@ pub(super) fn execute(
     {
         ui::warn(warning);
     }
+    let cloud = store.local().is_none();
+    let command = |args: &[&str]| super::rerun(matches, args);
+    let moves = progress::region_moves(&followed.view, cloud, command);
+    // Only Cloud knows why it set a Volume's move aside, so the Deploy that left the
+    // Volume outside its region asks.
+    if !moves.is_empty() && !interrupted && !detached {
+        for moved in volume_moves::listed(store, &followed.view.environment, &[]) {
+            if let Some(reason) = moved.reason {
+                ui::warn(format!(
+                    "{} didn't move to {}: {reason}",
+                    moved.volume, moved.to
+                ));
+            }
+        }
+    }
     for line in progress::waiting(&followed.view) {
         ui::warn(line);
     }
     // A Deploy that failed carries these on its failure instead.
     if followed.view.deployment.status == DeploymentStatus::Applied {
-        for moved in progress::region_moves(&followed.view, store.local().is_none(), |args| {
-            super::rerun(matches, args)
-        }) {
+        for moved in moves {
             ui::hint(&Hint::Next(moved));
         }
     }
@@ -595,20 +608,6 @@ pub(super) fn execute(
             .flatten()
             .map(String::as_str)
             .collect();
-        let cloud = store.local().is_none();
-        let command = |args: &[&str]| super::rerun(matches, args);
-        // Only Cloud knows why it set a Volume's move aside, so the Deploy that left the
-        // Volume outside its region asks.
-        if !progress::region_moves(&view, cloud, command).is_empty() {
-            for moved in volume_moves::listed(store, &view.environment, &[]) {
-                if let Some(reason) = moved.reason {
-                    ui::warn(format!(
-                        "{} didn't move to {}: {reason}",
-                        moved.volume, moved.to
-                    ));
-                }
-            }
-        }
         progress::completion(&view, successor.as_ref(), &named, cloud, command)
     };
     // A run that found no upload or usable image for its Services says to upload.
@@ -1770,15 +1769,9 @@ pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
     let view = store.read(&ployz_store::DeploymentQuery { id })?;
-    // A failed Deploy that left a Volume outside its Service's region names the same
-    // step its own output did.
-    let hint = (view.deployment.status == DeploymentStatus::Failed)
-        .then(|| {
-            progress::region_moves(&view, store.local().is_none(), |args| {
-                super::rerun(matches, args)
-            })
-        })
-        .and_then(|moves| moves.into_iter().next());
+    let hint = progress::shown_next(&view, store.local().is_none(), |args| {
+        super::rerun(matches, args)
+    });
     finish_view(&view, hint)
 }
 
