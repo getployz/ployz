@@ -1051,6 +1051,25 @@ impl PlanError {
         .then_some(*machine_id)
     }
 
+    /// Whether a Service this stops waits or is refused. It waits when a later Deploy
+    /// of the same config starts it: a Server comes back, or that Deploy makes the move
+    /// this one couldn't. It is refused when none does: its Volume can't move, a copy
+    /// stops the move until it is deleted, no Ployz Cloud is there to move it, or its
+    /// counts put a Volume in two regions.
+    #[must_use]
+    pub fn blocked_kind(&self, operator: ployz_core::Operator) -> ployz_core::BlockedKind {
+        let refused = if let Self::VolumeOutsideRegion { to, copy, .. } = self {
+            to.is_none() || copy.is_some() || !operator.is_cloud()
+        } else {
+            matches!(self, Self::VolumeInSeveralRegions { .. })
+        };
+        if refused {
+            ployz_core::BlockedKind::Refusal
+        } else {
+            ployz_core::BlockedKind::Wait
+        }
+    }
+
     /// Deploying the same thing again is refused this way again: the refusal was
     /// decided from this Deploy's intent alone, so it holds until something staged
     /// changes. A refusal the snapshot, placement or a Server's labels take part in

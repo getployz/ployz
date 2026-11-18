@@ -1161,11 +1161,12 @@ fn assemble_plan(
                 | PlanError::VolumeInSeveralRegions { .. }
                 | PlanError::VolumeOutsideRegion { .. }),
             ) if blocks_unmountable => {
+                let kind = error.blocked_kind(intent.options.mode().operator());
                 block_service(
                     &mut blocked,
                     &mut budget,
                     &spec.name,
-                    (error.into_rpc_error(), BlockedKind::Wait),
+                    (error.into_rpc_error(), kind),
                     Reservation::Release,
                 );
                 continue;

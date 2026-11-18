@@ -158,6 +158,8 @@ fn a_volume_service_counted_in_two_regions_blocks_only_itself() {
                 "api has a Volume, so its replicas run in one region".to_owned()
             )]
         );
+        // Only new counts start it, so it is refused, not left waiting.
+        assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Refusal]);
         assert_only_web_runs(&preview);
     }
 }
@@ -1134,7 +1136,10 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
 
 /// Why `db` is blocked when `fsn` has `first` and `second`, the writer of `data` is on
 /// `third` in `syd`, and its one other copy is a slot on `holder`, with `fourth` in `lhr`.
-fn outside_region_beside_a_copy(holder: char, slot: ployz_core::SlotRole) -> RpcError {
+fn outside_region_beside_a_copy(
+    holder: char,
+    slot: ployz_core::SlotRole,
+) -> ployz_core::BlockedService {
     let (_, db) = web_and_db();
     let db = kept_in(db, "fsn");
     let mut snapshot = copies_snapshot(&[('3', CopyRole::Writer)], vec![provisioned_row('3')]);
@@ -1168,37 +1173,91 @@ fn outside_region_beside_a_copy(holder: char, slot: ployz_core::SlotRole) -> Rpc
         [&db],
         PlanOptions::default(),
     );
-    only_blocked(&runner_preview(&intent, &snapshot).unwrap())
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+    only_blocked(&preview);
+    preview.blocked.into_iter().next().unwrap()
 }
 
+/// The next Deploy makes the move, so the Service waits.
 #[test]
 fn a_volume_outside_the_region_moves_to_the_server_there_that_holds_its_copy() {
     for slot in [ployz_core::SlotRole::Mirror, ployz_core::SlotRole::OldCopy] {
-        let rpc = outside_region_beside_a_copy('2', slot);
+        let blocked = outside_region_beside_a_copy('2', slot);
 
+        let rpc = &blocked.error;
         assert_eq!(
             rpc.details.get("to"),
             Some(&serde_json::json!("second")),
             "{slot:?}"
         );
         assert_eq!(rpc.details.get("copy"), None, "{slot:?}");
+        assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait, "{slot:?}");
     }
 }
 
+/// No Deploy makes the move until the copy is deleted, so the Service is refused.
 #[test]
 fn a_volume_outside_the_region_names_the_copy_elsewhere_that_stops_its_move() {
     for (slot, role) in [
         (ployz_core::SlotRole::Mirror, "mirror"),
         (ployz_core::SlotRole::OldCopy, "old_copy"),
     ] {
-        let rpc = outside_region_beside_a_copy('4', slot);
+        let blocked = outside_region_beside_a_copy('4', slot);
 
+        let rpc = &blocked.error;
         assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("first")));
         assert_eq!(
             rpc.details.get("copy"),
             Some(&serde_json::json!({ "server": "fourth", "role": role }))
         );
+        assert_eq!(blocked.kind, ployz_core::BlockedKind::Refusal, "{role}");
     }
+}
+
+/// Without Ployz Cloud nothing moves the Volume, so its Service is refused, and so is
+/// a Service that depends on it.
+#[test]
+fn a_volume_outside_the_region_refuses_its_service_without_ployz_cloud() {
+    let (web, db) = web_and_db();
+    let (web, db) = (kept_in(web, "fsn"), kept_in(db, "fsn"));
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot.machines = snapshot
+        .machines
+        .into_iter()
+        .zip(["fsn", "syd"])
+        .map(|(machine, region)| in_region(machine, region))
+        .collect();
+    snapshot.containers = vec![container('a', '2', &db, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&web, &db],
+        PlanOptions {
+            operator: ployz_core::Operator::Cli,
+            ..PlanOptions::default()
+        },
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name,
+        vec![ServiceDependency {
+            service: db.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let blocked: Vec<_> = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.as_str(), blocked.kind))
+        .collect();
+    assert_eq!(
+        blocked,
+        [
+            ("db", ployz_core::BlockedKind::Refusal),
+            ("web", ployz_core::BlockedKind::Refusal)
+        ]
+    );
 }
 
 #[test]
@@ -1223,8 +1282,10 @@ fn a_docker_volume_outside_the_region_says_it_cannot_move_and_names_no_server_to
         ..storage_snapshot()
     };
 
-    let rpc = only_blocked(&runner_preview(&intent, &snapshot).unwrap());
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+    let rpc = only_blocked(&preview);
 
+    assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Refusal]);
     assert_eq!(rpc.message, "data is a Docker volume and can't move");
     assert_eq!(
         rpc.details.get("reason"),
@@ -1257,6 +1318,11 @@ fn a_region_no_server_is_in_stops_a_service_with_a_volume_and_not_the_deploy() {
         Some(&serde_json::json!("region_unmatched"))
     );
     assert_eq!(preview.placed_on.keys().collect::<Vec<_>>(), [&web.name]);
+}
+
+/// Whether each Service `preview` blocked waits or is refused, in the order it lists them.
+fn kinds(preview: &DeployPreview) -> Vec<ployz_core::BlockedKind> {
+    preview.blocked.iter().map(|blocked| blocked.kind).collect()
 }
 
 /// The one Service `preview` blocked, and why. Fails when it planned work instead.

@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    BlockedKind, BlockedService, CopyPlace, CopyRole, DockerVolumeId, DockerVolumeName,
+    BlockedService, CopyPlace, CopyRole, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, KnownCopy, MachineId, MachineObservation, Namespace, Operator,
     PlacementConstraint, PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
@@ -816,11 +816,13 @@ impl VolumePlan<'_> {
             ) {
                 Ok(anchor) => anchor,
                 Err(error) if options.mode().blocks_unmountable() => {
-                    let error = unmountable(error, snapshot, requested)?.into_rpc_error();
+                    let error = unmountable(error, snapshot, requested)?;
+                    let kind = error.blocked_kind(options.mode().operator());
+                    let error = error.into_rpc_error();
                     blocked.extend(component.service_names().map(|service| BlockedService {
                         service: service.clone(),
                         error: error.clone(),
-                        kind: BlockedKind::Wait,
+                        kind,
                     }));
                     continue;
                 }
