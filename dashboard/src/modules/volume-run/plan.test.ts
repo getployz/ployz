@@ -516,6 +516,9 @@ describe("plan a run on Servers that enforce device approval", () => {
         message: "a enforces device approval, so Ployz Cloud can't move data on its own. Run ployz volume move data --to b from an approved device.",
       },
     });
+    expect(planFromCopies({ kind: "move", args: { to: "b", region: true }, ...data }, [member("a", "writer"), member("b", "empty")])).toMatchObject({
+      refusal: { message: "a enforces device approval, so Ployz Cloud can't move data on its own. Run ployz deploy from an approved device." },
+    });
     expect(planFromCopies(unapproved(mirror("b")), [member("a", "writer"), member("b", "empty")])).toEqual({
       ok: false,
       refusal: {

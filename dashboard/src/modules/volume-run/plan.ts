@@ -126,7 +126,7 @@ export function planFromCopies(input: PlanInput, observed: readonly Member[]): P
   const unapproved = (input.kind === "mirror" || input.kind === "sync" || input.kind === "move" || input.kind === "restore" || input.kind === "delete_mirror"
     || input.kind === "seed") && input.args.approval === undefined;
   const [gated] = gatedOn(planned.phase, unapproved);
-  return gated === undefined ? planned : enforcedRefusal(planned.phase, input.volumeName, gated.machine.name);
+  return gated === undefined ? planned : enforcedRefusal(planned.phase, input, gated.machine.name);
 }
 
 type PlannedPhase = Extract<Planned, { ok: true }>["phase"];
@@ -157,7 +157,8 @@ function gatedOn(phase: PlannedPhase, unapproved: boolean): readonly AnsweredMem
   }
 }
 
-function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Planned {
+function enforcedRefusal(phase: PlannedPhase, input: PlanInput, server: string): Planned {
+  const name = input.volumeName;
   const own = `${server} enforces device approval, so Ployz Cloud can't`;
   switch (phase.kind) {
     case "mirror":
@@ -165,8 +166,11 @@ function enforcedRefusal(phase: PlannedPhase, name: string, server: string): Pla
     case "sync":
       return refuse("enforced", `${own} sync ${name} in full on its own. Run ployz volume sync ${name} --full from an approved device.`);
     case "move":
-    case "landed":
-      return refuse("enforced", `${own} move ${name} on its own. Run ployz volume move ${name} --to ${phase.target.machine.name} from an approved device.`);
+    case "landed": {
+      // The deploy that moves a Volume into the region signs that move; `ployz volume move` there is refused.
+      const run = input.kind === "move" && input.args.region === true ? "ployz deploy" : `ployz volume move ${name} --to ${phase.target.machine.name}`;
+      return refuse("enforced", `${own} move ${name} on its own. Run ${run} from an approved device.`);
+    }
     case "restore":
       return refuse("enforced", `${own} restore ${name} on its own. Run ployz volume restore ${name} --from ${phase.from.machine.name} from an approved device.`);
     case "delete_mirror": {

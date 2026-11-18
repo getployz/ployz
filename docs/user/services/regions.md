@@ -173,6 +173,13 @@ move the volume, the service waits as above. Where it can't, the deployment read
   pg-data stays on db-1: your Servers move it only for a deploy an approved device signed
   ```
 
+  The deploy says the same, and what to run:
+
+  ```
+  ! pg-data didn't move to web-1: db-1 enforces device approval, so Ployz Cloud can't move pg-data on its own. Run ployz deploy from an approved device.
+  ! postgres is waiting: pg-data is on db-1
+  ```
+
   A deploy from the dashboard asks for your passkey and moves the volume. `ployz deploy` on
   an approved device shows the move after the deploy's own lines and asks before it signs it:
 
