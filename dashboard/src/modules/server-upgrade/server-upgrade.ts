@@ -1,9 +1,6 @@
-import type { Signed, UpgradeChannel } from "@ployz/sdk";
-import { Option, Schema } from "effect";
-import { canonicalJson } from "#/modules/approval-session/approval-session";
+import { Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import type { ServerStatus } from "#/modules/machines/server-status";
-import { runsOlderPloyz } from "#/modules/runtime/daemon-compat";
 
 /** How long Cloud waits for an Upgrade's outcome: longer than the upgrade worker's 15-minute cap. */
 export const UPGRADE_OBSERVATION_LIMIT_MS = 20 * 60_000;
@@ -58,22 +55,6 @@ export function metricsOnBeta({ version, channel, release, beta }: {
   beta: string | null;
 }) {
   return channel === "stable" && !isBehind(version, release) && isBehind(version, beta);
-}
-
-/** The first release whose Servers enforce device approval. A Cluster from 0.3 awaits a person's activation once there. */
-const ENFORCEMENT_RELEASE = [0, 4] as const;
-
-/**
- * An upgrade from `version` to `release` crosses from 0.3 to 0.4, its betas included. Only a person starts one: it
- * brings the activation they approve with a passkey or a Device.
- */
-export function crossesIntoEnforcement(version: string, release: string) {
-  const before = (parts: readonly number[]) =>
-    (parts[0] ?? 0) < ENFORCEMENT_RELEASE[0]
-    || ((parts[0] ?? 0) === ENFORCEMENT_RELEASE[0] && (parts[1] ?? 0) < ENFORCEMENT_RELEASE[1]);
-  const from = versionParts(version);
-  const to = versionParts(release);
-  return from !== null && to !== null && before(from) && !before(to);
 }
 
 /** A Server runs `release` or newer. An unknown version is never current. */
@@ -132,101 +113,17 @@ export type ServerUpgradeSettingsChange = typeof ServerUpgradeSettingsChange.Typ
 
 export const SetServerUpgradeSettingsInput = Schema.Struct({ organizationSlug: Schema.String, ...ServerUpgradeSettingsChange.fields });
 
-/**
- * The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. `approval` is the
- * Release Channel a person last approved for the Cluster, as Servers that enforce device approval check it.
- */
+/** The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. */
 export type ServerUpgradeSettingsRow = {
   readonly id: string;
   readonly automatic: boolean;
   readonly channel: ReleaseChannel;
-  readonly approval?: Signed | null;
 };
 
 export const serverUpgradeSettings = (rows: readonly ServerUpgradeSettingsRow[]) => ({
   automatic: rows[0]?.automatic ?? DEFAULT_SERVER_UPGRADE_SETTINGS.automatic,
   channel: rows[0]?.channel ?? DEFAULT_SERVER_UPGRADE_SETTINGS.channel,
-  approval: rows[0]?.approval ?? null,
 });
-
-const Base64Url = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,8192}$/u));
-const Hex = (digits: number) => Schema.String.check(Schema.isPattern(new RegExp(`^[0-9a-f]{${digits}}$`, "u")));
-
-/**
- * A person's approval of a Release Channel as `ployz_core::authority::Signed<UpgradeChannel>` travels: a Device's
- * signature or a passkey's own answer. Servers check every byte; Cloud bounds its size and reads its channel.
- */
-export const ChannelApproval = Schema.Struct({
-  body: Schema.String.check(Schema.isMaxLength(1024)),
-  signatures: Schema.Array(Schema.Struct({ key: Hex(64), signature: Hex(128) })).check(Schema.isMaxLength(4)),
-  assertions: Schema.optionalKey(Schema.Array(Schema.Struct({
-    credential_id: Base64Url,
-    authenticator_data: Base64Url,
-    client_data_json: Base64Url,
-    signature: Base64Url,
-  })).check(Schema.isMaxLength(4))),
-});
-export type ChannelApproval = typeof ChannelApproval.Type;
-
-/** Keep a person's approval of a Release Channel, which also sets the channel every upgrade follows. */
-export const ApproveUpgradeChannelInput = Schema.Struct({ organizationSlug: Schema.String, approval: ChannelApproval });
-
-/** What Cloud reads of an approval's body to keep the settings in step with it. Servers read the rest. */
-const ApprovedChannel = Schema.Struct({
-  cluster: Schema.String,
-  channel: Schema.Literals(RELEASE_CHANNELS),
-  generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-});
-
-/** The channel, Cluster and generation `approval` names, or null when its body isn't one. */
-export function approvedChannel(approval: Pick<Signed, "body"> | null): typeof ApprovedChannel.Type | null {
-  if (approval === null) return null;
-  try {
-    return Option.getOrNull(Schema.decodeUnknownOption(ApprovedChannel)(JSON.parse(approval.body)));
-  } catch {
-    return null;
-  }
-}
-
-type ScopeMachine = {
-  readonly id: string;
-  readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
-  readonly capabilities: readonly string[];
-};
-
-/**
- * Whether a Server an upgrade `reaches` checks a Release Channel approval, and the Cluster key the Servers hold. A
- * Server past Ployz 0.3 takes an upgrade through Cloud only along a channel a person approved. One on 0.3 checks none,
- * and neither does one in `awaiting`, which awaits its Cluster's activation and takes an upgrade that carries none.
- */
-export function channelScope(machines: readonly ScopeMachine[], { reaches, awaiting }: {
-  readonly reaches?: ReadonlySet<string>;
-  readonly awaiting?: ReadonlySet<string>;
-} = {}) {
-  const checked = machines.some((machine) =>
-    (reaches?.has(machine.id) ?? true) && awaiting?.has(machine.id) !== true && !runsOlderPloyz(machine));
-  const cluster = machines.map((machine) => machine.sealing?.kind === "held" ? machine.sealing.public_key : undefined)
-    .find((key) => key !== undefined) ?? null;
-  return { checked, cluster };
-}
-
-/** Whether an upgrade along `channel` needs a person's approval first: a Server checks one, and none approved it. */
-export function needsApproval(scope: ReturnType<typeof channelScope>, channel: ReleaseChannel, approval: Pick<Signed, "body"> | null) {
-  if (!scope.checked) return false;
-  const kept = approvedChannel(approval);
-  return kept === null || kept.channel !== channel || kept.cluster !== scope.cluster;
-}
-
-/** The body a passkey answers to approve `channel` for `cluster`: one generation past the kept approval. */
-export function channelApprovalBody(cluster: string, channel: ReleaseChannel, approval: Pick<Signed, "body"> | null): string {
-  const statement: UpgradeChannel = {
-    cluster,
-    channel,
-    generation: (approvedChannel(approval)?.generation ?? 0) + 1,
-    signer: "passkey",
-  };
-  return canonicalJson(statement);
-}
 
 /** A Server's latest Upgrade attempt, as the Server page reads it. */
 export const LatestUpgrade = Schema.Struct({

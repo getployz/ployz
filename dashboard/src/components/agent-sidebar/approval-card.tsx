@@ -1,5 +1,4 @@
 import { useEffect, useId, useState } from "react";
-import type { Signed } from "@ployz/sdk";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, XIcon } from "lucide-react";
 import { RelativeTime } from "#/components/relative-time";
@@ -20,11 +19,7 @@ import { landAnswer } from "#/modules/private-access/private-access.queries";
 import { toast } from "sonner";
 import { lossMoment } from "#/modules/volume-placement/volume-placement";
 import { toErrorMessage } from "#/lib/error-message";
-import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
-import {
-  type AskedVolumeDraft, approvalOptions, approverApprovals, askedLoss, decideApproval, draftAskedVolume, landDecision, refetchApprovals, runsServiceAct,
-  signAskedVolume, type ApprovalView,
-} from "./approvals.queries";
+import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
 import { type ChangeLine, reviewedChanges } from "./approval-review";
 
 /**
@@ -63,8 +58,6 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const [reason, setReason] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
-  // A restore that loses writes, waiting for the person to type where the Volume lives before their passkey answers.
-  const [losing, setLosing] = useState<{ draft: AskedVolumeDraft; place: string; item: DeletionItem } | null>(null);
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
   const redeploy = redeployLine(approval.command, approval.review);
@@ -74,43 +67,18 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
   const [authKey, setAuthKey] = useState("");
   const keyProblem = authKey === "" ? null : authKeyProblem(authKey);
   const destroys = approval.command !== "set_cluster_name" && !keyed && !(approval.command === "set_ingress_doors" && effects.length === 0);
-  // The name Servers know a restarted or stopped Service by, which the approvals this card makes carry.
+  // The name Servers know a restarted or stopped Service by.
   const serviceAct = shownServiceAct(approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const { region, asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
   const now = useMinute() ?? new Date();
 
-  // A restart or stop runs with this approver's passkey approvals, made before the answer goes.
   const decide = async (decision: ApprovalDecision) => {
     if (sending) return;
     setSending(true);
     setRefused(null);
-    const approving = "approve" in decision && runsServiceAct(approval);
-    const approvals = approving ? await approverApprovals(organizationSlug, approval).catch((error: Error) => {
-      setRefused(toErrorMessage(error, "Your passkey didn't answer. Try again."));
-      return null;
-    }) : undefined;
-    if (approvals === null) return setSending(false);
-    // A Volume run runs with this approver's passkey answer to its workflow, drafted here first.
-    const draft = "approve" in decision
-      ? await draftAskedVolume(queryClient, organizationSlug, approval).catch((error: Error) => {
-        setRefused(error.message || "Your servers didn't answer. Try again.");
-        return null;
-      })
-      : undefined;
-    if (draft === null) return setSending(false);
-    const loss = draft === undefined ? null : askedLoss(draft);
-    if (draft !== undefined && loss !== null) return setLosing({ draft, ...loss });
-    return send(decision, approvals, draft);
-  };
-  const send = async (decision: ApprovalDecision, approvals?: Readonly<Record<string, Signed>>, draft?: AskedVolumeDraft) => {
-    const volume = draft === undefined ? undefined : await signAskedVolume(draft).catch((error: Error) => {
-      setRefused(error.message || "Your passkey didn't answer. Try again.");
-      return null;
-    });
-    if (volume === null) return setSending(false);
-    const answer = await decideApproval(organizationSlug, approval.id, decision, approvals, volume);
+    const answer = await decideApproval(organizationSlug, approval.id, decision);
     setSending(false);
     if (answer.ok) return landDecision(queryClient, organizationSlug, approval.id, answer.decided);
     setRefused(answer.message);
@@ -225,26 +193,6 @@ function PendingCard({ organizationSlug, approval }: { organizationSlug: string;
           )}
         </CardFooter>}
       </Card>
-      {losing !== null && (
-        <DeletionDialog
-          open
-          onOpenChange={(open) => {
-            if (open) return;
-            setLosing(null);
-            setSending(false);
-          }}
-          title="Data loss"
-          place={losing.place}
-          confirmLabel="Approve"
-          items={[losing.item]}
-          callbacks={{
-            load: () => Promise.resolve({ items: [losing.item], evidence: losing.draft }),
-            confirm: async (draft) => {
-              await send({ approve: { digest: approval.digest } }, undefined, draft);
-            },
-          }}
-        />
-      )}
     </>
   );
 }

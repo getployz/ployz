@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import type { MachineId, MachineName, TeardownApproval } from "@ployz/sdk";
+import type { MachineId, MachineName } from "@ployz/sdk";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -45,7 +45,6 @@ function toContext(attempt: Attempt): MachineRemoveAttemptContext {
     inngestRunId: attempt.inngestRunId,
     confirmDataLoss: attempt.confirmDataLoss,
     noReset: attempt.noReset,
-    teardown: attempt.teardown,
   };
 }
 
@@ -138,8 +137,6 @@ export const requestMachineRemoveAttempt = Effect.fn(
   noReset?: boolean;
   approvalId?: string | null;
   id?: string;
-  /** The person's teardown of the departure; null when none was signed. */
-  teardown?: TeardownApproval | null;
   /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
   serverName: MachineName | null;
 }) {
@@ -155,7 +152,6 @@ export const requestMachineRemoveAttempt = Effect.fn(
       confirmDataLoss: input.confirmDataLoss,
       noReset: input.noReset ?? false,
       approvalId: input.approvalId ?? null,
-      teardown: input.teardown ?? null,
       state: "pending",
     })
     .returning()

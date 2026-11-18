@@ -28,13 +28,11 @@ export function ServerUpgradesDialog({ organizationSlug, open, onOpenChange }: {
 }
 
 /** The dialog's settings, open only to a role that may upgrade. */
-export function ServerUpgradesForm({ automatic, setAutomatic, channel, setChannel, asksPasskey, gate }: {
+export function ServerUpgradesForm({ automatic, setAutomatic, channel, setChannel, gate }: {
   automatic: boolean;
   setAutomatic: (automatic: boolean) => void;
   channel: ReleaseChannel;
   setChannel: (channel: ReleaseChannel) => void;
-  /** The Servers enforce device approval, so changing releases asks for your passkey. */
-  asksPasskey: boolean;
   /** Whether your role may upgrade. */
   gate: RoleGate;
 }) {
@@ -56,7 +54,6 @@ export function ServerUpgradesForm({ automatic, setAutomatic, channel, setChanne
       <Field orientation="horizontal">
         <FieldContent>
           <FieldLabel htmlFor={channelId}>Releases</FieldLabel>
-          {asksPasskey ? <FieldDescription>Changing this asks for your passkey.</FieldDescription> : null}
         </FieldContent>
         <Select value={channel} disabled={!gate.allowed} onValueChange={(value) => { if (value !== null && value !== channel) setChannel(value); }}>
           <SelectTrigger id={channelId}><SelectValue>{CHANNEL_LABELS[channel]}</SelectValue></SelectTrigger>

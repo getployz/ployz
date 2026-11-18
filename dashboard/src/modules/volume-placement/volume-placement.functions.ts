@@ -4,8 +4,7 @@ import { refusedPublicly } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
 import { deleteCopy, placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { discardPlacement, keepPlacementApprovals, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
-import { MoveService, VolumeApproval } from "#/modules/operations/cli-wire";
+import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
 import { DeleteCopyInput, StageRestoreInput, VolumeInput } from "#/modules/volume-placement/volume-placement";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
@@ -37,27 +36,6 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
     refusedPublicly,
   )));
 
-const KeepApprovalsInput = Schema.Struct({
-  ...Organization.fields,
-  environment: VolumeInput.fields.environment,
-  approvals: Schema.Array(Schema.Struct({
-    volumeId: Schema.NonEmptyString,
-    run: Schema.Literals(["move", "restore", "mirror", "delete_mirror", "seed"]),
-    machine: Machine,
-    approval: VolumeApproval,
-    service: Schema.optional(MoveService),
-  })).check(Schema.isMaxLength(64)),
-});
-
-/** Keeps the passkey answers a Deploy carries to the staged Volume changes it runs, just before it is admitted. */
-export const keepPlacementApprovalsServerFn = createServerFn({ method: "POST" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(KeepApprovalsInput))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
-    Effect.flatMap(({ organization }) => keepPlacementApprovals(organization.id, data)),
-    refusedPublicly,
-  )));
-
 export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(VolumeInput))
@@ -84,9 +62,7 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
     refusedPublicly,
   )));
 
-const DeleteCopyApprovedInput = Schema.Struct({ ...DeleteCopyInput.fields, approval: Schema.optional(VolumeApproval) });
-
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(DeleteCopyApprovedInput))
+  .validator(strictValidator(DeleteCopyInput))
   .handler(({ context, data }) => runActor(context, refusedPublicly(deleteCopy(context.actor, data))));

@@ -163,7 +163,7 @@ your services at their private addresses, on any port and protocol.
    the page or the key it seals to, and read your auth key. `ployz private-access on` doesn't
    trust Ployz Cloud for the key. It seals only to your cluster's key as
    [pinned on your computer](../servers/manage-servers.md#pin-your-clusters-key), so run
-   `ployz device pin` once after your cluster is activated.
+   `ployz device pin` once.
 3. In the admin console, open **Machines**, then **ployz-router**, then **Edit route settings**,
    and approve the route. Do this once per server, unless your tailnet auto-approves the tag.
    A server keeps its router's identity across restarts and reboots, so the route stays
@@ -191,8 +191,7 @@ once it's back; the routers already running stay on. A server whose router
 already joined keeps its identity when you run `on` again with another key; to join another
 tailnet, turn Private Access off first.
 
-With [enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, a server runs a router only for a key your passkey or an approved device approved, so
+A server runs a router only for a key your passkey or an approved device approved, so
 **Connect** and the approval card ask for your passkey. `ployz private-access on` from a device
 that isn't approved is refused. Turning Private Access off needs no approval.
 

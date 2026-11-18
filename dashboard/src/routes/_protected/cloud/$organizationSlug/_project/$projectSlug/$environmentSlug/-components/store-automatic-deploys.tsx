@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { RuleDraft, RuleView, Signed } from "@ployz/sdk";
 import { useQuery } from "@tanstack/react-query";
-import { useLoaderData } from "@tanstack/react-router";
 import { KeyRoundIcon, TriangleAlertIcon } from "lucide-react";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { SettingsEmpty } from "#/components/settings/settings-list";
@@ -10,15 +9,12 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { deployScope, RULE_CAPABILITIES } from "#/modules/approval-session/approval-session";
 import { ruleQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "#/modules/github/auto-deploy-rule";
+import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn, ruleScope } from "#/modules/github/auto-deploy-rule";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
-import { olderSays } from "#/modules/runtime/daemon-compat";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useEnvironmentMachines } from "#/providers/runtime-provider";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
@@ -26,11 +22,9 @@ const listed = (names: readonly string[]) =>
   names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
 /** Where a rule goes: the Cluster and every Server in it, and the first Server that can't take one. */
-function useRuleScope(organizationSlug: string, environment: { environmentName: string; namespace: string }) {
-  const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+function useRuleScope(organizationSlug: string, namespace: string) {
   const { machines } = useRuntimeLens(organizationSlug);
-  const environmentMachines = useEnvironmentMachines(environment.namespace);
-  return deployScope({ environmentId, ...environment }, environmentMachines, machines, RULE_CAPABILITIES);
+  return ruleScope(useEnvironmentMachines(namespace), machines);
 }
 
 /**
@@ -41,7 +35,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
   const environment = { project: projectSlug, environment: environmentSlug };
   const read = useStoreView(organizationSlug, ruleQuery(environment));
   const view = read.ok ? read.value : null;
-  const rule = useRuleScope(organizationSlug, { environmentName: environmentSlug, namespace: view?.namespace ?? "" });
+  const rule = useRuleScope(organizationSlug, view?.namespace ?? "");
   const [open, setOpen] = useState<"approve" | "end" | null>(null);
   const writer = useStoreWriter(organizationSlug);
   if (view === null) return null;
@@ -92,7 +86,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
 export function RuleDialog({ organizationSlug, view, scope, ending, onClose, commit, ownerQuery }: {
   organizationSlug: string;
   view: RuleView;
-  scope: ReturnType<typeof deployScope>;
+  scope: ReturnType<typeof ruleScope>;
   ending: boolean;
   onClose: () => void;
   commit: (rule: Signed) => Promise<void>;
@@ -101,7 +95,7 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const blocked = ending ? null
-    : scope.older !== null ? olderSays(scope.older, (server) => `${server} needs a newer Ployz for automatic deploys from the dashboard. Upgrade it, or run ployz github rule approve.`)
+    : scope.older !== null ? `${scope.older} needs a newer Ployz for automatic deploys from the dashboard. Upgrade it, or run ployz github rule approve.`
     : scope.scope === null ? "Cloud couldn't check the servers. Try again."
     : null;
   // What the dialog shows: the rule as it would be signed now. The press drafts it again, at its own moment.

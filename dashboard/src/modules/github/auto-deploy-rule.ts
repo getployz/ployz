@@ -7,8 +7,38 @@
  */
 import type { AutoDeployRule, RuleDraft, RuleTerms, RuleView, Signed } from "@ployz/sdk";
 import { autoDeployRuleBody, autoDeployRuleEndBody } from "@ployz/sdk/authority";
-import { type ApprovalScope, hex } from "#/modules/approval-session/approval-session";
-import { PasskeyRefused, signWithPasskey } from "#/modules/approval-session/passkey-statement";
+import { hex, PasskeyRefused, signWithPasskey } from "#/modules/approval-session/passkey-statement";
+
+/** Where a rule stands: the Cluster, by its Sealing public key as Servers report it, and every Server in it. */
+export type RuleScope = { readonly cluster: string; readonly machines: readonly string[] };
+
+type ScopeMachine = {
+  readonly id: string;
+  readonly name: string;
+  readonly sealing: { readonly kind: string; readonly public_key?: string } | null;
+  readonly capabilities: readonly string[];
+};
+
+const RULE_CAPABILITIES = ["ployz.container.deploy-rule.v1", "ployz.rule.passkey.v1"];
+
+const heldKey = (machine: ScopeMachine) => machine.sealing?.kind === "held" && machine.sealing.public_key ? machine.sealing.public_key : undefined;
+
+/**
+ * The scope a rule names, and the first Server that can't take one from a browser. The Cluster is the one the Servers
+ * `near` (those running the Environment) hold the Sealing Key of, or the only one; the scope names every Server in it,
+ * since a Deploy may place on any of them. Null when Cloud can't tell which Cluster it is.
+ */
+export function ruleScope(near: readonly string[], machines: readonly ScopeMachine[]) {
+  const running = new Set(near);
+  const keys = new Set(machines.map(heldKey).filter((key) => key !== undefined));
+  const cluster = machines.filter((machine) => running.has(machine.id)).map(heldKey).find((key) => key !== undefined)
+    ?? (keys.size === 1 ? [...keys][0] : undefined);
+  const members = cluster === undefined ? machines : machines.filter((machine) => heldKey(machine) === cluster);
+  return {
+    scope: cluster === undefined ? null : { cluster, machines: members.map((machine) => machine.id).sort() },
+    older: members.find((machine) => !RULE_CAPABILITIES.every((capability) => machine.capabilities.includes(capability)))?.name ?? null,
+  };
+}
 
 /** Why a rule couldn't be approved, in words the dialog shows as they are. */
 export class RuleRefused extends Error {}
@@ -37,7 +67,7 @@ const drafting = (message: string | null) => new RuleRefused(message || "This br
  * The rule a person approves now in `scope`: the kept rule's next generation when it is for the same repository and
  * branch, else a new rule. `ownerId` is the repository owner's GitHub ID, which each token the rule takes must name.
  */
-export function draftRule(view: RuleView, scope: ApprovalScope, ownerId: number, now = Date.now()): RuleDraft {
+export function draftRule(view: RuleView, scope: RuleScope, ownerId: number, now = Date.now()): RuleDraft {
   const terms = {
     cluster: scope.cluster,
     machines: [...scope.machines],

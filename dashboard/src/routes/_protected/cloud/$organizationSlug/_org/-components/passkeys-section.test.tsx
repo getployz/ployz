@@ -50,7 +50,7 @@ it("hides passkeys from a support visit without asking for them", async () => {
   expect(list).not.toHaveBeenCalled();
 });
 
-it("keeps the steps, sign-in first, until every server trusts the passkey", () => {
+it("names the servers that trust a passkey and the ones that don't yet", () => {
   const passkey = { code: "q3x7mfk2pa", account: "ada@example.com", createdAt: "2026-11-07T09:00:00.000Z" };
   render(<PasskeyList view={{ observed: true, passkeys: [{ ...passkey, servers: [
     { server: "web-1", approval: { by: "server" } },
@@ -58,8 +58,6 @@ it("keeps the steps, sign-in first, until every server trusts the passkey", () =
   ] }] }} />);
   expect(screen.getByText("Trusted on 1 of 2 servers")).toBeDefined();
   expect(screen.getByText("web-2").nextSibling?.textContent).toBe("Not yet approved");
-  expect(screen.getByText("sudo ployz login")).toBeDefined();
-  expect(screen.getByText("sudo ployz device approve --passkey q3x7mfk2pa")).toBeDefined();
   cleanup();
 
   render(<PasskeyList view={{ observed: true, passkeys: [{ ...passkey, servers: [
@@ -68,5 +66,4 @@ it("keeps the steps, sign-in first, until every server trusts the passkey", () =
   ] }] }} />);
   expect(screen.getByText("Trusted on every server")).toBeDefined();
   expect(screen.getByText("web-1").nextSibling?.textContent).toBe("Trusted");
-  expect(screen.queryByText("sudo ployz login")).toBeNull();
 });

@@ -10,6 +10,9 @@ Closing the pull request without merging deletes it too.
 
 The dashboard calls these PR environments.
 
+In this version of Ployz a preview's deployment doesn't run; see
+[Previews don't deploy in this version](#previews-dont-deploy-in-this-version).
+
 ## Turn on preview environments
 
 Previews work for services that [deploy from GitHub](../deploy/github.md) through the Ployz
@@ -72,140 +75,18 @@ environments** is on. A bot's pull request from a fork still needs approval.
 `ployz env pr` lists each open pull request with where it stands, like `#142 needs approval
 a1b2c3d` or `#140 deploys`.
 
-## Previews on servers that enforce device approval
+## Previews don't deploy in this version
 
-Servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on open a preview only under a preview rule you approve from an approved device. It works like
-[deploy on push](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval):
-approve it once from the environment previews start from, for the services that build from your
-repository, naming the GitHub accounts whose pull requests deploy without a review:
+A preview builds from a pull request, and your servers refuse a build Ployz Cloud starts unless
+an [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push) covers it.
+A rule covers one branch, never a pull request, and this version of Ployz has no rule for
+previews. So a pull request still gets its environment, its settings and its check, but the
+preview's deployment fails at its build with
+`This server runs only builds an approved device starts.` and nothing starts.
 
-```bash
-ployz github preview approve web --env production --trust alice --trust bob
-```
-
-It prints what every preview will run, then signs it with your device key:
-
-```text
-Approving previews of production:
-  repository  acme/web, parent branch main
-  builder     getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
-  urls        <service>-pv-<id>.acme-x7q2.ployz.app
-  trusted     alice (1109914), bob (2207431)
-  servers     2 in the cluster
-  web
-    builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
-    reads     DATABASE_URL from production
-    variables DATABASE_URL=(sealed "DATABASE_URL" from environment 0f8fad5b-d9cb-469f-a165-70867728950e), LOG_LEVEL=info
-    ports [{"container_port":80,"hostname":"web-pv-<id>.acme-x7q2.ployz.app","http_protocol":"https","load_balancer_port":443,"mode":"ingress"}]
-    setup     runs once, on each preview's first deploy, with
-      pre-deploy ["/bin/sh","-c","pnpm db:seed"]
-    generated SESSION_SECRET=${{ secret(32, "a-zA-Z0-9") }}, new in each preview
-Approved. Pull requests to acme/web by the accounts shown now open a preview of web.
-```
-
-From then on a push to a pull request's branch, by an account the rule trusts, deploys its
-preview with no prompt. Each server checks the rule, GitHub's tokens, the branch's head and the
-settings itself, so Ployz Cloud can't put a preview's code into production or hand it a
-production secret the rule doesn't name.
-
-- **Trusted accounts** are only the ones you name with `--trust`, by GitHub login or numeric ID.
-  Ployz reads each one from GitHub and shows its login and ID, so check the list before you rely
-  on it. Without `--trust` the rule trusts nobody, and every pull request waits for a
-  [review](#review-a-preview-from-a-fork). Joining your Ployz organization doesn't add anyone:
-  approve again with the new list when someone joins or leaves, and name every account you
-  still trust, because each approval replaces the last one's list.
-- **Each preview gets its own namespace and address**, which every server works out from the rule
-  and the branch, like `pv-5a5a5a5a5a5a5a5a-3f9c2e1b7d40`. A preview's generated address is
-  `web-pv-5a5a5a5a5a5a5a5a-3f9c2e1b7d40.acme-x7q2.ployz.app`, not `web-pr-142…`. Pull requests
-  already open keep their old address: close and reopen them once the rule exists.
-- **Secrets stay closed unless the rule names them.** A preview reads a sealed value from
-  production, like `DATABASE_URL` above, only if production's value is set and the service's
-  preview copy leaves it **Not set**. A value you set in the preview is the preview's own, and the
-  server refuses it. Every other secret stays out.
-- **Volumes a preview doesn't copy are refused.** If a preview would mount production's volume,
-  approve says so and stops. Copy the volume in the PR plan, or add `--share-mounts` to let every
-  preview read and write it.
-- **A saved change waits for you.** After you change the settings of a service the rule covers,
-  previews stop deploying it until you approve again. So does adding a server.
-- **Closing the pull request removes its preview** with no prompt. Each server checks the rule
-  that opened it and takes off only that preview's namespace and volumes.
-- **Stop it** with `ployz github preview end --env production`. The servers refuse every preview
-  build and deploy under the rule from then on.
-
-GitHub builds each preview on the run its push started, and Ployz runs it again if it ended before
-the pull request opened. So your repository needs Ployz's rule workflow as
-`.github/workflows/ployz-build.yml`, which builds on pushes to every branch, and on a dispatch
-with a `commit` for [reviewed previews](#review-a-preview-from-a-fork). It's the same file as for
-[automatic deploys](../deploy/github.md#deploy-on-push-to-servers-that-enforce-device-approval).
-**Organization → Builds** offers it, under **Update workflow**, once the repository's workflow
-calls Ployz's rule builder. Before that, copy it from here exactly as it is:
-
-```yaml
-name: Ployz build
-on:
-  push:
-    branches: ['**']
-  workflow_dispatch:
-    inputs:
-      cloud: { required: false, type: string }
-      commit: { required: false, type: string }
-permissions:
-  contents: read
-  id-token: write
-jobs:
-  build:
-    if: github.event_name != 'push' || vars.PLOYZ_BRANCH == '' || github.ref_name == vars.PLOYZ_BRANCH
-    uses: getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
-    with:
-      cloud: ${{ inputs.cloud || vars.PLOYZ_CLOUD || 'https://ployz.dev' }}
-      commit: ${{ inputs.commit }}
-```
-
-Leave the repository variable `PLOYZ_BRANCH` unset, or pushes to other branches won't build their
-previews.
-
-### Review a preview from a fork
-
-A pull request from a fork, or from an account the rule doesn't trust, opens its preview but deploys
-nothing until you review its commit. In the PR panel its row reads **Needs approval** with the
-commit. A member's pull request that the rule doesn't trust shows no badge, but your servers still
-refuse its pushes, so its row offers the same review. That includes every pull request when you
-approved the rule without `--trust`. Read the pull request's changes on GitHub,
-then click **Review and approve**. The dialog
-lists each service the review covers and what it asks for, then every setting the review signs,
-like:
-
-```text
-Review web at a1b2c3d4e5f6 (reads DATABASE_URL from the parent, builds with secrets)
-  variables DATABASE_URL=(sealed "DATABASE_URL" from environment 0f8fad5b-d9cb-469f-a165-70867728950e), SESSION_KEY="${{ secret(32, \"a-zA-Z0-9\") }}"
-  command ["npm","start"]
-  ports [{"container_port":3000,"hostname":"web.{preview-namespace}.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]
-```
-
-A generated value shows as the `secret(…)` call that makes it, a secret the preview reads from its
-parent as sealed from that environment, and the preview's own namespace as `{preview-namespace}`,
-since each preview gets its own.
-
-A line also says when the service **opens its own** secrets you set in the preview, when its
-**settings differ from the preview rule** because someone changed them in the preview, and when it
-**runs setup commands** again.
-
-**Approve with passkey** asks your passkey once. Ployz builds that commit with your repository's
-build workflow, on the branch of the environment previews start from, and the preview deploys it.
-
-- **Each server checks the review itself**: your passkey's answer, the commit, the preview rule,
-  and each service's settings. Ployz Cloud can't build or run another commit under it, or open a
-  secret the rule doesn't name.
-- **The review covers one commit.** A new push reads **Needs approval** again, and the preview
-  keeps running the commit you reviewed.
-- **A review lasts 15 minutes.** The commit must build and start in that time, or the servers
-  refuse it: click **Review again** on its row. With **Wait for CI** on, review once CI has
-  passed. Once a server has started the reviewed commit, it restarts it with no new review.
-- **Each project reviews its own preview.** If two projects preview the same repository, review
-  the pull request in each one's PR panel.
-- **Servers need Ployz 0.4.** An older server refuses every reviewed preview, and the dialog names
-  it. Upgrade it first.
+A preview whose services all run from an image doesn't build, and its deployment fails the
+same way a dashboard deploy does: see
+[Deploy from the dashboard](../deploy/deployments.md#deploy-from-the-dashboard).
 
 ## What each pull request gets
 

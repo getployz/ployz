@@ -1,4 +1,4 @@
-import type { RuntimeWatchView, ServiceVerb, Signed } from "@ployz/sdk";
+import type { RuntimeWatchView, ServiceVerb } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
@@ -46,9 +46,9 @@ describe("act-service", () => {
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (verb: ServiceVerb, attemptId: string = crypto.randomUUID(), approvals?: Record<string, Signed>) =>
+  const request = (verb: ServiceVerb, attemptId: string = crypto.randomUUID()) =>
     runEffect(requestServiceAct(caller, {
-      attemptId, environmentId: "env-1", service: "web", namespace: "acme-prod", runtime: "web", verb, only: null, digest: verb, approvals,
+      attemptId, environmentId: "env-1", service: "web", namespace: "acme-prod", runtime: "web", verb, only: null, digest: verb,
     }));
   const act = (actId: string, runId = "run-act") => new InngestTestEngine({
     function: createActService(new Inngest({ id: "test" }), runEffect),
@@ -280,19 +280,6 @@ describe("act-service", () => {
     expect((await operation(admitted.id))?.servers.map(({ stopped }) => stopped)).toEqual(["yes", "yes"]);
   });
 
-  it("asks to try again, not to upgrade, when an approval was held back because the Servers couldn't be read", async () => {
-    frameReads = false;
-    // What an enforcing Server answers a stop that carries no approval.
-    answer = () => Effect.fail(new PloyzProviderError({ operation: "stop", cause: { details: { capability: "ployz.restart.device-approval.v2" } } }));
-    const approval: Signed = { body: "{}", signatures: [] };
-    const admitted = await request("stop", undefined, { "web-a": approval, "web-b": approval });
-    if (!admitted.ok) throw new Error("refused");
-
-    await act(admitted.id);
-    const reasons = (await operation(admitted.id))?.servers.map(({ reason }) => reason);
-    expect(reasons).toEqual(["Cloud couldn't check alpha. Try again.", "Cloud couldn't check beta. Try again."]);
-  });
-
   it("fails a Server whose Ployz can't ensure Containers without asking it", async () => {
     capabilities["m-beta"] = ["ployz.logs.tail.v1"];
     const admitted = await request("stop");
@@ -308,34 +295,6 @@ describe("act-service", () => {
     });
   });
 
-  it("refuses a leg whose approval ran out without asking the Server", async () => {
-    const spent: Signed = { body: JSON.stringify({ expires_at: Date.now() - 1 }), signatures: [] };
-    const admitted = await request("stop", undefined, { "web-a": spent, "web-b": spent });
-    if (!admitted.ok) throw new Error("refused");
-
-    expect((await act(admitted.id)).result).toEqual({ actId: admitted.id, state: "failed" });
-    expect(calls).toEqual([]);
-    expect((await operation(admitted.id))?.servers.map(({ stopped, reason }) => [stopped, reason]))
-      .toEqual([["no", "The approval ran out."], ["no", "The approval ran out."]]);
-  });
-
-  it("leaves a restart's copy stopped, saying the approval ran out, when the proposal's window closes between its stop and its start", async () => {
-    const bundle = (expiresAt: number): Signed => ({ body: JSON.stringify({ expires_at: expiresAt }), signatures: [] });
-    const envelope = (expiresAt: number): Signed => ({ body: "{\"step\":1}", signatures: [], proposal: bundle(expiresAt) });
-    const admitted = await request("restart", undefined, { "web-a": envelope(Date.now() + 60_000) });
-    if (!admitted.ok) throw new Error("refused");
-    const legs: ServiceActLeg[] = [{ server: "alpha", machine: "m-alpha", container: "web-a", hook: false, stop: null, start: null, reason: null }];
-    await harness.pool.query(
-      `update service_act set state = 'running', inngest_run_id = 'run-1', started_at = now(), before = $2, legs = $3 where id = $1`,
-      [admitted.id, JSON.stringify(copies), JSON.stringify(legs)],
-    );
-    const leg = (side: "stop" | "start") => runEffect(actOnContainer({ actId: admitted.id, organizationId }, "run-1", "web-a", side));
-
-    expect(await leg("stop")).toEqual([{ ...legs[0], stop: "done" }]);
-    await harness.pool.query(`update service_act set approvals = $2 where id = $1`, [admitted.id, JSON.stringify({ "web-a": envelope(Date.now() - 1) })]);
-    expect(await leg("start")).toEqual([{ ...legs[0], stop: "done", start: "failed", reason: "The approval ran out." }]);
-    expect(calls).toEqual(["stop web-a"]);
-  });
 });
 
 function ensureEverywhere() {

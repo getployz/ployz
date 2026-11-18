@@ -11,7 +11,6 @@ import type { ToolOutcome } from "#/modules/agent/agent";
 import { findService } from "#/modules/config-store/store-lookup.server";
 import type { Caller } from "#/modules/identity/actor";
 import { member, user } from "#/modules/identity/tables";
-import { PROPOSAL_CAPABILITY, type ProposalApprovals } from "#/modules/proposals/proposal";
 import {
   advanceProposal,
   createProposal,
@@ -19,14 +18,12 @@ import {
   pendingProposals,
   presentProposal,
   proposalStatus,
-  readProposalTarget,
   stageStep,
   sweepProposals,
 } from "#/modules/proposals/proposals.server";
 import { operationProposals } from "#/modules/proposals/tables";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
-import { APPROVAL_RAN_OUT, type ServiceActLeg, START_APPROVAL_CAPABILITY } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
@@ -40,8 +37,6 @@ const DEPLOYMENT = "00000000-0000-4000-8000-00000000b306";
 const CONTAINER = "c".repeat(64);
 const MACHINE = "b".repeat(32);
 const production = { project: "shop", environment: "production" };
-/** What a Server on Ployz 0.4 lists: it enforces device approval. */
-const ENFORCED = "ployz.machine.enforced.v1";
 const page = { at: "here", ...production } as const;
 
 const Created = Schema.Struct({ ok: Schema.Literal(true), value: Schema.Struct({ proposal_id: Schema.String }) });
@@ -68,7 +63,7 @@ const shop = Effect.fn(function* () {
   const protect = Effect.promise(() => store.write(ORGANIZATION, { command: "set_environment_protected", environment: { project: null, environment: null }, protected: true }));
   const agent: AgentCaller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "owner-browser" }, role: "owner", support: null, via: "agent" };
   const owner: Caller = { ...agent, via: "dashboard" };
-  let capabilities = [ENFORCED, "ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY, PROPOSAL_CAPABILITY];
+  const capabilities: string[] = [];
   let readable = true;
   const frame = () => asTestDouble<RuntimeWatchView>()({
     services: [{ identity: `${found.namespace}/${found.runtime}`, containers: [{ container_id: CONTAINER, machine_id: MACHINE }], hook_containers: [] }],
@@ -85,7 +80,7 @@ const shop = Effect.fn(function* () {
   )));
   const acts = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    return yield* drizzle.select({ id: serviceAct.id, verb: serviceAct.verb, step: serviceAct.proposalStep, proposal: serviceAct.proposalId, approvals: serviceAct.approvals, key: serviceAct.state })
+    return yield* drizzle.select({ id: serviceAct.id, verb: serviceAct.verb, step: serviceAct.proposalStep, proposal: serviceAct.proposalId, key: serviceAct.state })
       .from(serviceAct).orderBy(serviceAct.requestedAt);
   }));
   const ended = (actId: string, state: "done" | "failed") => provided(Effect.gen(function* () {
@@ -100,11 +95,8 @@ const shop = Effect.fn(function* () {
     expect(yield* call("service_start", { service: "web", proposal: id })).toMatchObject({ ok: true, value: { step: 2 } });
     return id;
   });
-  const bundle = { body: JSON.stringify({ expires_at: Date.now() + 15 * 60_000 }), signatures: [{ key: "d".repeat(64), signature: "e".repeat(128) }] };
-  const envelope = (step: number) => ({ body: `{"step":${step}}`, signatures: [], proposal: bundle });
-  const approvals: ProposalApprovals = { "0": { [CONTAINER]: envelope(0) }, "1": { [CONTAINER]: envelope(1) } };
-  const approve = { approve: { approvals, bundle: envelope(0).proposal } };
-  return { provided, cluster, agent, owner, found, acts, ended, call, staged, approvals, approve, protect, setCapabilities: (next: string[]) => { capabilities = next; }, setReadable: (next: boolean) => { readable = next; } };
+  const approve = { approve: {} };
+  return { provided, cluster, agent, owner, found, acts, ended, call, staged, approve, protect };
 });
 
 it.live("an agent stages steps without running any, presents them, and the person sees them in order", () =>
@@ -135,14 +127,14 @@ it.live("an agent stages steps without running any, presents them, and the perso
     expect(yield* provided(presentProposal(agent, otherId))).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
   }));
 
-it.live("an approval runs the first step with its envelopes, each done step starts the next, and a failed one stops the rest", () =>
+it.live("an approval runs the first step, each done step starts the next, and a failed one stops the rest", () =>
   Effect.gen(function* () {
-    const { call, staged, acts, cluster, provided, owner, ended, approve, approvals } = yield* shop();
+    const { call, staged, acts, cluster, provided, owner, ended, approve } = yield* shop();
     const id = yield* staged;
     yield* call("proposal_present", { proposal: id });
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
     let rows = yield* acts;
-    expect(rows).toMatchObject([{ verb: "stop", step: 0, proposal: id, approvals: approvals["0"] }]);
+    expect(rows).toMatchObject([{ verb: "stop", step: 0, proposal: id }]);
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { status: "approved", steps: [{ state: "accepted" }, { state: "waiting" }] } });
     // Approving again, or denying, answers that it was decided and runs nothing more.
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: "This proposal was already decided elsewhere (approved)." });
@@ -154,28 +146,12 @@ it.live("an approval runs the first step with its envelopes, each done step star
     yield* cluster(advanceProposal({ actId: first, organizationId: ORGANIZATION }));
     yield* cluster(advanceProposal({ actId: first, organizationId: ORGANIZATION }));
     rows = yield* acts;
-    expect(rows).toMatchObject([{ verb: "stop", step: 0 }, { verb: "start", step: 1, proposal: id, approvals: approvals["1"] }]);
+    expect(rows).toMatchObject([{ verb: "stop", step: 0 }, { verb: "start", step: 1, proposal: id }]);
     const second = rows[1]?.id ?? expect.fail("no second act");
     yield* ended(second, "done");
     yield* cluster(advanceProposal({ actId: second, organizationId: ORGANIZATION }));
     expect(yield* acts).toHaveLength(2);
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: "done" }, { state: "done" }] } });
-  }));
-
-it.live("the approver's browser gets each step's runtime name from the Store, never from the row", () =>
-  Effect.gen(function* () {
-    const { call, staged, cluster, provided, found } = yield* shop();
-    const id = yield* staged;
-    yield* call("proposal_present", { proposal: id });
-    // A row edited to send the stop to another Service's Containers: the browser reads what the Store names for `web`.
-    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.execute(sql`update operation_proposals set steps = jsonb_set(steps, '{0,runtime}', '"api"') where id = ${id}`)));
-    expect(yield* cluster(readProposalTarget(ORGANIZATION, id))).toMatchObject({
-      project: "shop", environmentName: "production", namespace: found.namespace,
-      steps: [{ verb: "stop", service: "web", runtime: "web", copies: [{ id: CONTAINER, machineId: MACHINE }] }, { verb: "start", service: "web", runtime: "web" }],
-    });
-    // A step naming a Service the Store doesn't have gets no runtime name and no Containers.
-    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.execute(sql`update operation_proposals set steps = jsonb_set(steps, '{0,service}', '"api"') where id = ${id}`)));
-    expect(yield* cluster(readProposalTarget(ORGANIZATION, id))).toMatchObject({ steps: [{ service: "api", runtime: null, copies: [] }, { service: "web", runtime: "web" }] });
   }));
 
 it.live("a step with more than one run reads as its newest", () =>
@@ -211,30 +187,6 @@ it.live("a step that fails leaves the ones after it unrun", () =>
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: "failed" }, { state: "not_run" }] } });
   }));
 
-it.live("an approval is refused, running nothing, when it doesn't cover every step, Cloud can't read the Servers, or a Server can't take it", () =>
-  Effect.gen(function* () {
-    const { call, staged, acts, cluster, provided, owner, approve, approvals, setCapabilities, setReadable } = yield* shop();
-    const id = yield* staged;
-    yield* call("proposal_present", { proposal: id });
-    const refusal = (decision: Parameters<typeof decideProposal>[2]) => cluster(decideProposal(owner, id, decision)).pipe(Effect.map((decided) => decided.ok ? expect.fail("approved") : decided.message));
-    expect(yield* refusal({ approve: { approvals: { "0": approvals["0"] ?? {} }, bundle: approve.approve.bundle } })).toBe("The approval doesn't cover every step. Nothing was approved.");
-    setReadable(false);
-    expect(yield* refusal(approve)).toBe("Cloud couldn't check the servers. Try again.");
-    setReadable(true);
-    setCapabilities([ENFORCED, "ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY]);
-    expect(yield* refusal(approve)).toBe("machine-2 needs a newer Ployz to stop it.");
-    setCapabilities([ENFORCED, "ployz.restart.session-grant.v2", PROPOSAL_CAPABILITY]);
-    expect(yield* refusal(approve)).toBe("machine-2 needs a newer Ployz to stop it.");
-    expect(yield* acts).toEqual([]);
-    expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id, status: "presented" }]);
-    // A step swapped in the database after the person saw the card is what they didn't sign: the Server refuses it by its digest. Cloud only ever runs what the row holds.
-    setCapabilities([ENFORCED, "ployz.restart.session-grant.v2", START_APPROVAL_CAPABILITY, PROPOSAL_CAPABILITY]);
-    const denied = yield* cluster(decideProposal(owner, id, { reject: { reason: "not during the sale" } }));
-    expect(denied).toMatchObject({ ok: true, proposal: { status: "denied", reason: "not during the sale" } });
-    expect(yield* call("proposal_status", { proposal: id })).toMatchObject({ ok: true, value: { status: "denied", reason: "not during the sale" } });
-    expect(yield* provided(pendingProposals(ORGANIZATION))).toEqual([]);
-  }));
-
 it.live("a first step that can't start hands the proposal back to waiting", () =>
   Effect.gen(function* () {
     const { call, staged, acts, cluster, provided, owner, approve, agent } = yield* shop();
@@ -247,8 +199,8 @@ it.live("a first step that can't start hands the proposal back to waiting", () =
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringMatching(/^It didn't run: .* It's still waiting for approval\.$/) });
     expect(yield* acts).toEqual([]);
     expect(yield* provided(pendingProposals(ORGANIZATION))).toMatchObject([{ id, status: "presented" }]);
-    const [row] = yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.select({ bundle: operationProposals.bundle, halt: operationProposals.halt }).from(operationProposals).where(eq(operationProposals.id, id))));
-    expect(row).toEqual({ bundle: null, halt: null });
+    const [row] = yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.select({ halt: operationProposals.halt }).from(operationProposals).where(eq(operationProposals.id, id))));
+    expect(row).toEqual({ halt: null });
   }));
 
 it.live("a proposal in a Protected Environment is presented only by someone who could protect it", () =>
@@ -297,54 +249,14 @@ it.live("a token limited to other Environments can't open or add to a proposal h
     expect(yield* acts).toEqual([]);
   }));
 
-it.live("a step due after the approval's 15 minutes doesn't run, and the card says which", () =>
-  Effect.gen(function* () {
-    const { call, staged, acts, cluster, provided, owner, ended, approve } = yield* shop();
-    const id = yield* staged;
-    yield* call("proposal_present", { proposal: id });
-    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true });
-    const [first] = yield* acts;
-    yield* ended(first?.id ?? expect.fail("no act"), "done");
-    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals)
-      .set({ bundle: { ...approve.approve.bundle, body: JSON.stringify({ expires_at: Date.now() - 1 }) } }).where(eq(operationProposals.id, id))));
-    yield* cluster(advanceProposal({ actId: first?.id ?? "", organizationId: ORGANIZATION }));
-    expect(yield* acts).toHaveLength(1);
-    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [
-      { state: "done" },
-      { state: "failed", reason: "The approval ran out. Start web yourself." },
-    ] } });
-  }));
-
-it.live("a step a Server refused for the window reads as the approval running out, naming what to start", () =>
-  Effect.gen(function* () {
-    const { call, acts, cluster, provided, owner, ended, approve } = yield* shop();
-    const id = idOf(yield* call("proposal_create", {}));
-    yield* call("service_stop", { service: "web", proposal: id });
-    yield* call("service_restart", { service: "web", proposal: id });
-    yield* call("proposal_present", { proposal: id });
-    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true });
-    const [first] = yield* acts;
-    yield* ended(first?.id ?? expect.fail("no act"), "done");
-    yield* cluster(advanceProposal({ actId: first?.id ?? "", organizationId: ORGANIZATION }));
-    const [, second] = yield* acts;
-    // The restart's stop leg went inside the window and its start leg fell past it.
-    const leg: ServiceActLeg = { server: "machine-2", machine: MACHINE, container: CONTAINER, hook: false, stop: "done", start: "failed", reason: APPROVAL_RAN_OUT };
-    yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(serviceAct)
-      .set({ state: "failed", reason: `Container 1 on machine-2 didn't come back. ${APPROVAL_RAN_OUT}`, legs: [leg], endedAt: new Date() }).where(eq(serviceAct.id, second?.id ?? ""))));
-    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [
-      { state: "done" },
-      { state: "failed", reason: "The approval ran out. Start web yourself." },
-    ] } });
-  }));
-
 it.live("the sweep starts a step whose kickoff was lost, once, and never a step whose turn hasn't come", () =>
   Effect.gen(function* () {
-    const { call, staged, acts, cluster, provided, owner, ended, approve, approvals } = yield* shop();
+    const { call, staged, acts, cluster, provided, owner, ended } = yield* shop();
     const id = yield* staged;
     yield* call("proposal_present", { proposal: id });
     // Approved in the database but never kicked off: Cloud fell over between the two.
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals)
-      .set({ status: "approved", bundle: approve.approve.bundle, approvals, decidedByUserId: owner.userId, decidedAt: new Date() }).where(eq(operationProposals.id, id))));
+      .set({ status: "approved", decidedByUserId: owner.userId, decidedAt: new Date() }).where(eq(operationProposals.id, id))));
     expect(yield* cluster(sweepProposals(new Date()))).toEqual([id]);
     let rows = yield* acts;
     expect(rows).toMatchObject([{ verb: "stop", step: 0 }]);
@@ -355,7 +267,7 @@ it.live("the sweep starts a step whose kickoff was lost, once, and never a step 
     yield* cluster(sweepProposals(new Date()));
     yield* cluster(sweepProposals(new Date()));
     rows = yield* acts;
-    expect(rows).toMatchObject([{ verb: "stop", step: 0 }, { verb: "start", step: 1, approvals: approvals["1"] }]);
+    expect(rows).toMatchObject([{ verb: "stop", step: 0 }, { verb: "start", step: 1 }]);
     // A plan approved over an hour ago is past every step's window and is left alone.
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals).set({ decidedAt: new Date(Date.now() - 2 * 60 * 60_000) }).where(eq(operationProposals.id, id))));
     expect(yield* cluster(sweepProposals(new Date()))).toEqual([]);

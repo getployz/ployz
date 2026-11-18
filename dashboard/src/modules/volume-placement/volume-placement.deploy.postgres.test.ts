@@ -1,4 +1,4 @@
-import type { ConfigCommand, ConfigCommitted, ConfigStore, CopyObservation, MachineId, ResolvedServiceSpec, VolumeKind, WantedCopy } from "@ployz/sdk";
+import type { ConfigCommand, ConfigCommitted, ConfigStore, CopyObservation, MachineId, VolumeKind, WantedCopy } from "@ployz/sdk";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +8,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import {
   advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { keepPlacementApprovals, listPlacements, stagePlacement, stampPlacements, writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
+import { listPlacements, stagePlacement, stampPlacements, writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import { placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
 import type { CopyAsk } from "#/modules/volume-placement/mirror-sync.server";
@@ -110,40 +110,6 @@ describe("deploying a Volume placement", () => {
     members = [member("web-2", "writer"), member("web-1", "old")];
     expect(await run(advancePlacement(organizationId, "dep-1", started.wait, inspect, answered))).toEqual({ kind: "done" });
     expect(await placement()).toMatchObject({ mirrors: [], staged: null, deploymentId: null });
-  });
-
-  it("runs a staged move under the passkey approval kept for it, and staging again drops it", async () => {
-    members = [member("web-1", "writer"), member("web-2", "mirror")];
-    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
-    const service = { name: "db", container: { image: `postgres@sha256:${"a".repeat(64)}` } } as ResolvedServiceSpec;
-    const body = (to: string, volume = "shop-production_vol-vol1") =>
-      JSON.stringify({ volume, workflow: { kind: "move", from: web("web-1"), to: web(to), service: { name: "db", digest: "d".repeat(64) }, mirrors: [] } });
-    const approval = { body: body("web-2"), signatures: [], assertions: [{ credential_id: "AQID", authenticator_data: "AQID", client_data_json: "AQID", signature: "AQID" }] };
-    // Shaped for another Server or another Volume, an approval is refused and nothing is kept.
-    for (const other of [body("web-3"), body("web-2", "shop-production_vol-vol9")]) {
-      expect(await run(keepPlacementApprovals(organizationId, { environment, approvals: [{ volumeId, run: "move", machine: web("web-2"), approval: { ...approval, body: other }, service }] })))
-        .toMatchObject({ ok: false });
-    }
-    expect(await run(keepPlacementApprovals(organizationId, { environment, approvals: [{ volumeId, run: "move", machine: web("web-2"), approval, service }] }))).toEqual({ ok: true });
-    // The review never reads the answer back.
-    expect((await placement())?.staged).toEqual({ primary: web("web-2"), mirrors: [], deletes: [] });
-    await run(stampPlacements(organizationId, [volumeId], "dep-1"));
-    const started = await run(advancePlacement(organizationId, "dep-1", null, inspect, answered));
-    if (started.kind !== "wait") throw new Error("expected a run");
-    const { rows } = await harness.pool.query(`select args from volume_run where id = $1`, [started.wait.runId]);
-    expect(rows).toEqual([{ args: { to: "web-2", approval, service } }]);
-    const { rows: kept } = await harness.pool.query(`select staged->'approvals' as approvals from volume_placement where volume_id = $1`, [volumeId]);
-    expect(kept[0]?.approvals).toHaveLength(1);
-  });
-
-  it("drops a kept approval when the placement is staged again", async () => {
-    members = [member("web-1", "writer"), member("web-2", "mirror")];
-    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-2"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
-    const approval = { body: JSON.stringify({ volume: "shop-production_vol-vol1", workflow: { kind: "mirror_removal", mirror: web("web-2") } }), signatures: [] };
-    expect(await run(keepPlacementApprovals(organizationId, { environment, approvals: [{ volumeId, run: "delete_mirror", machine: web("web-2"), approval }] }))).toEqual({ ok: true });
-    await run(stagePlacement(organizationId, { environment, volumeId, staged: { primary: web("web-1"), mirrors: [], deletes: [] }, mirrors: [web("web-2")] }));
-    const { rows } = await harness.pool.query(`select staged->'approvals' as approvals from volume_placement where volume_id = $1`, [volumeId]);
-    expect(rows).toEqual([{ approvals: null }]);
   });
 
   it("fails the Deploy when a run fails, dropping the failed change and returning the ones it never reached", async () => {
@@ -741,23 +707,10 @@ describe("deploying a Volume placement", () => {
     const drain = (copies: CopyObservation["copies"], accepting: string[], unrouted: string[] = []) =>
       run(stageOffServer(organizationId, web("web-1"), accepting.map(web), unrouted.map(web), () => Effect.succeed(copies), inspect));
 
-    it("stages the primary on the drained Server to its mirror", async () => {
-      members = [member("web-1", "writer"), member("web-2", "mirror")];
-      expect(await drain([copy("web-1", "writer"), copy("web-2", "slot")], ["web-2"])).toEqual({ stuck: [], blocked: [] });
-      expect(await placement()).toMatchObject({ mirrors: [web("web-2")], staged: { primary: web("web-2"), mirrors: [] }, deploymentId: null });
-    });
-
     it("names a Volume nowhere takes, and leaves a primary on another Server alone", async () => {
       members = [member("web-1", "writer")];
       expect(await drain([copy("web-1", "writer")], [])).toEqual({ stuck: ["data"], blocked: [{ volume: "data", upgrade: null }] });
       expect(await drain([copy("web-2", "writer")], [])).toEqual({ stuck: [], blocked: [] });
-      expect(await run(listPlacements(organizationId))).toEqual([]);
-    });
-
-    it("names the Server whose upgrade would take a Volume nowhere else takes, and only that one", async () => {
-      // web-2's Ployz can't finish a Move: it holds the mirror, but the Drain may not move onto it.
-      members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "empty")];
-      expect(await drain([copy("web-1", "writer"), copy("web-2", "slot")], [], ["web-2"])).toEqual({ stuck: ["data"], blocked: [{ volume: "data", upgrade: "web-2" }] });
       expect(await run(listPlacements(organizationId))).toEqual([]);
     });
 

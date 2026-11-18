@@ -26,7 +26,6 @@ use crate::connect::Client;
 use crate::ui::{self, Cell, Gaps, Table, Tone};
 use ployz_core::Hint;
 
-mod known;
 mod pin;
 mod signing;
 pub(super) use pin::seal_to;
@@ -297,8 +296,6 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
         )
         .await
         .map_err(crate::connect::rpc_error)?;
-    known::KnownMachines::beside(&config_path(leaf)?)
-        .record(ployz_core::authority::Member::from(&body.machine))?;
     ui::finish(&json!({ "approved_join": body.machine.id }), || {
         ui::stream(
             "Approved the Server join. Enroll it again from the dashboard, or rerun its join command.",
@@ -406,8 +403,6 @@ pub(super) async fn sign_waiting_join(
     client
         .call::<op::ApproveJoin>(ployz_core::ApproveJoinRequest { approval }, Call::keyed())
         .await?;
-    known::KnownMachines::beside(config)
-        .record(ployz_core::authority::Member::from(&body.machine))?;
     Ok(true)
 }
 

@@ -6,15 +6,13 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
 import { Textarea } from "#/components/ui/textarea";
-import { toErrorMessage } from "#/lib/error-message";
 import { type StepProgress, stepLoss, stepTitle } from "#/modules/proposals/proposal";
-import { approverBundle, decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "./proposals.queries";
+import { decideProposal, landProposal, type ProposalView, proposalOptions, refetchProposals } from "./proposals.queries";
 
 const stepsWord = (count: number) => `${count} ${count === 1 ? "step" : "steps"}`;
 
 /**
- * One proposal: waiting on a person, with every step an agent staged in the order they run, approved with one passkey
- * prompt; or decided, with where each step got. Drawn from its Cloud row and reread while it waits or runs.
+ * One proposal: waiting on a person, with every step an agent staged in the order they run, approved at once; or decided, with where each step got. Drawn from its Cloud row and reread while it waits or runs.
  * `onDismiss` lets a decided card go.
  */
 export function ProposalCard({ organizationSlug, id, seed, onDismiss }: {
@@ -94,8 +92,7 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
   });
   const destroys = losses.length > 0;
 
-  const decide = async (decision: Parameters<typeof decideProposal>[2] | null) => {
-    if (decision === null) return setSending(false);
+  const decide = async (decision: Parameters<typeof decideProposal>[2]) => {
     const answer = await decideProposal(organizationSlug, proposal.id, decision);
     setSending(false);
     if (answer.ok) return landProposal(queryClient, organizationSlug, proposal.id, answer.decided);
@@ -108,14 +105,7 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
     setRefused(null);
     return true;
   };
-  const approve = async () => {
-    if (!begin()) return;
-    const signed = await approverBundle(organizationSlug, proposal).catch((error: Error) => {
-      setRefused(toErrorMessage(error, "Your passkey didn't answer. Try again."));
-      return null;
-    });
-    return decide(signed === null ? null : { approve: signed });
-  };
+  const approve = () => begin() && decide({ approve: {} });
   const deny = () => begin() && decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
 
   return (

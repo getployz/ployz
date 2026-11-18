@@ -17,7 +17,6 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import type { TeardownApproval } from "@ployz/sdk";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { SYSTEM_NAMESPACE } from "./server-services";
@@ -65,10 +64,10 @@ export const loadNamespaceDataLoss = Effect.fn("NamespaceCleanup.dataLoss")(func
  */
 export const removeNamespace = Effect.fn("NamespaceCleanup.remove")(function* (
   actor: Actor,
-  input: { organizationSlug: string; namespace: string; confirmDataLoss: readonly DataLossIdentity[]; teardown?: TeardownApproval },
+  input: { organizationSlug: string; namespace: string; confirmDataLoss: readonly DataLossIdentity[] },
 ) {
   const session = yield* unownedSession(actor, input.organizationSlug, input.namespace);
-  const outcome = yield* session.destroyNamespace(input.namespace, { confirmed: [...input.confirmDataLoss] }, input.teardown).pipe(
+  const outcome = yield* session.destroyNamespace(input.namespace, { confirmed: [...input.confirmDataLoss] }).pipe(
     Effect.map((done) => done.type === "success" ? { removed: true as const } : { failed: "Some servers didn't finish removing it. Try again." }),
     Effect.catchTag("MissingDataLossIdentities", (missing) => Effect.succeed({ missing: missing.identities })),
     Effect.mapError(() => new Conflict({ userFacing: true, message: "Your servers didn't answer. Try again." })),
@@ -112,8 +111,6 @@ export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(fun
     readonly namespace: string;
     readonly confirmDataLoss: readonly DataLossIdentity[];
     readonly approvalId: string | null;
-    /** The person's teardown of what the clean takes off, carried to every Server. */
-    readonly teardown: TeardownApproval | null;
   },
 ) {
   const { drizzle } = yield* Database;
@@ -124,7 +121,6 @@ export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(fun
     requestedByUserId: caller.userId,
     approvalId: input.approvalId,
     confirmDataLoss: [...input.confirmDataLoss],
-    teardown: input.teardown,
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
     yield* enqueueCleanup(inserted);
@@ -178,7 +174,7 @@ export const executeCleanupOnce = Effect.fn("NamespaceCleanup.execute")(function
   }
   if (current.state !== "pending") return current;
   const [row] = yield* drizzle.select({
-    namespace: namespaceCleanup.namespace, confirmDataLoss: namespaceCleanup.confirmDataLoss, teardown: namespaceCleanup.teardown,
+    namespace: namespaceCleanup.namespace, confirmDataLoss: namespaceCleanup.confirmDataLoss,
   })
     .from(namespaceCleanup).where(eq(namespaceCleanup.id, request.cleanupId));
   if (row === undefined) return yield* stateOf(request.cleanupId);
@@ -194,7 +190,7 @@ export const executeCleanupOnce = Effect.fn("NamespaceCleanup.execute")(function
     .where(and(owned, eq(namespaceCleanup.state, "pending"))).returning({ id: namespaceCleanup.id });
   if (claimed === undefined) return yield* stateOf(request.cleanupId);
   const volumes = row.confirmDataLoss.map(({ id }) => id.name).sort();
-  const end = yield* session.connected.destroyNamespace(row.namespace, { confirmed: row.confirmDataLoss }, row.teardown).pipe(
+  const end = yield* session.connected.destroyNamespace(row.namespace, { confirmed: row.confirmDataLoss }).pipe(
     Effect.map((outcome) => outcome.type === "success"
       ? ({ state: "finished", volumes, endedAt: new Date(), endCode: null, endMessage: null }) as const
       : endedSaying("incomplete", "Some servers didn't finish removing the namespace.")),

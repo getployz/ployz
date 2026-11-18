@@ -564,12 +564,6 @@ describe("seedOffer", () => {
     seedOffer(volume, members, (options.restorable ?? members.map((each) => each.machine.name)).map(id), (options.floorless ?? []).map(id));
   const fresh = () => [member("web-1", "writer"), mirrorAsOf("web-2", at)];
 
-  it("offers a point only where every Server takes a passkey's answer", () => {
-    const trusting = (passkey: boolean) => fresh().map((each): Member => (each.answered ? { ...each, passkey } : each));
-    expect(offer(trusting(true))).toEqual({ offered: true, refused: null });
-    expect(offer(trusting(false)).offered).toBe(false);
-  });
-
   it("offers a point the Deploy's seed run would restore", () => {
     expect(offer(fresh())).toEqual({ offered: true, refused: null });
     expect(offer([...fresh(), pooled("web-3")], { floorless: ["web-3"] })).toEqual({ offered: true, refused: null });
@@ -597,28 +591,10 @@ describe("seedOffer", () => {
 
 describe("placementTargets", () => {
   const servers = ["web-1", "web-2", "web-3"].map(id);
-  const trusting = (each: Member, passkey: boolean): Member => (each.answered ? { ...each, passkey } : each);
 
-  it("offers a move and a mirror only where each Server takes a passkey's answer", () => {
-    const moving = (passkey: boolean) => [member("web-1", "writer"), member("web-2", "mirror")].map((each) => trusting(each, passkey));
-    expect(placementTargets(volume, moving(true), row(["web-2"]), servers, false).move.map((server) => server.name)).toEqual(["web-2"]);
-    expect(placementTargets(volume, moving(false), row(["web-2"]), servers, false).move).toEqual([]);
-    const mirroring = (passkey: boolean) => [member("web-1", "writer"), pooled("web-3")].map((each) => trusting(each, passkey));
-    expect(placementTargets(volume, mirroring(true), row([]), servers, false).mirror.map((server) => server.name)).toEqual(["web-3"]);
-    expect(placementTargets(volume, mirroring(false), row([]), servers, false).mirror).toEqual([]);
-  });
-
-  it("offers a move only to the mirror's Server while a mirror exists", () => {
-    const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
-    const targets = placementTargets(volume, members, row(["web-2"]), servers, false);
-    expect(targets.move.map((server) => server.name)).toEqual(["web-2"]);
-    expect(targets.mirror).toEqual([]);
-  });
-
-  it("offers every other Server once the only other copy is detached, since the Deploy deletes it first", () => {
+  it("offers every other Server a mirror once the only other copy is detached, since the Deploy deletes it first", () => {
     const members = [member("web-2", "writer"), member("web-1", "old"), pooled("web-3")];
     const targets = placementTargets(volume, members, row([]), servers, false);
-    expect(targets.move.map((server) => server.name)).toEqual(["web-1", "web-3"]);
     expect(targets.mirror.map((server) => server.name)).toEqual(["web-1", "web-3"]);
   });
 
@@ -629,14 +605,14 @@ describe("placementTargets", () => {
 
   it("offers nothing on a Server that does not accept Services", () => {
     const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
-    expect(placementTargets(volume, members, row([]), [id("web-2")], false).move.map((server) => server.name)).toEqual(["web-2"]);
+    expect(placementTargets(volume, members, row([]), [id("web-2")], false).mirror.map((server) => server.name)).toEqual(["web-2"]);
   });
 });
 
 describe("storageStep", () => {
   const run = (volumeId: string, message: string | null): VolumeRunView => ({
     id: "r1", volume_id: volumeId, volume_name: "pg-data", kind: "move", args: { to: "web-2" }, orphan: false, state: "running",
-    epoch: null, message, created_at: "", updated_at: "", finished_at: null, answers: [],
+    epoch: null, message, created_at: "", updated_at: "", finished_at: null,
   });
   const taken = { ...row([]), deploymentId: "dep-1" };
 
@@ -663,16 +639,6 @@ describe("storageStep", () => {
 describe("drainPlacement", () => {
   const drain = (members: Member[], placement: PlacementRow | null, accepting = ["web-1", "web-2", "web-3"]) =>
     drainPlacement(volume, members, placement, accepting.map(id), id("web-1"), false);
-
-  it("moves the primary to its mirror", () => {
-    expect(drain([member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")], row(["web-2"])))
-      .toEqual({ primary: id("web-2"), mirrors: [], deletes: [] });
-  });
-
-  it("moves to the first other Server that accepts Services when there is no mirror", () => {
-    expect(drain([member("web-1", "writer"), pooled("web-2"), pooled("web-3")], row([]), ["web-1", "web-3"]))
-      .toEqual({ primary: id("web-3"), mirrors: [], deletes: [] });
-  });
 
   it("leaves a Volume whose primary is elsewhere, or that nowhere takes", () => {
     expect(drain([member("web-2", "writer"), member("web-1", "mirror")], row(["web-1"]))).toBeNull();

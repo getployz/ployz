@@ -408,20 +408,10 @@ describe("mirror detail", () => {
   afterEach(cleanup);
   const fresh = () => [member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 5 * 60_000))];
 
-  it("offers no Make primary on a Server whose Ployz can't finish a Move, and still offers Remove mirror", () => {
-    panel(fresh(), row(["web-2"]), { open: "web-2", unrouted: ["web-2"] });
-    expect(screen.queryByRole("button", { name: "Make primary" })).toBeNull();
-    expect(screen.getByText("Make primary needs a newer Ployz on web-2.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove mirror" })).toBeTruthy();
-  });
-
-  it("stages Make primary and Remove mirror, and goes back to the list", () => {
+  it("stages Remove mirror, and goes back to the list", () => {
     const { stage, onOpen } = panel(fresh(), row(["web-2"]), { open: "web-2" });
     expect(screen.getByText("Every 15 min · on deploy")).toBeTruthy();
-    expect(screen.getByText("Make primary moves postgres to web-2 on deploy. Writes pause for the final sync.")).toBeTruthy();
     expect(screen.getByText("Deletes the copy on web-2 when you deploy.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Make primary" }));
-    expect(stage).toHaveBeenLastCalledWith({ primary: id("web-2"), mirrors: [], deletes: [] }, [id("web-2")]);
     fireEvent.click(screen.getByRole("button", { name: "Remove mirror" }));
     expect(stage).toHaveBeenLastCalledWith({ primary: id("web-1"), mirrors: [], deletes: [] }, [id("web-2")]);
     fireEvent.click(screen.getByRole("button", { name: "Copies" }));
@@ -437,18 +427,6 @@ describe("mirror detail", () => {
     expect(screen.queryByText(/Not yet|hours ago/)).toBeNull();
     for (const name of ["Make primary", "Remove mirror", "Refresh now"]) expect(screen.queryByRole("button", { name })).toBeNull();
     expect(stage).not.toHaveBeenCalled();
-  });
-
-  it("warns that a mirror with no refresh yet catches up first", () => {
-    const base = member("web-2", "mirror");
-    const unrefreshed: Member = base.answered ? { ...base, view: { ...base.view, copy: { ...COPIES.mirror, newest: null } } } : base;
-    panel([member("web-1", "writer"), unrefreshed], row(["web-2"]), { open: "web-2" });
-    expect(screen.getByText(/The deploy catches up first, then pauses writes for the final sync\./)).toBeTruthy();
-  });
-
-  it("warns that a behind mirror catches up first", () => {
-    panel([member("web-1", "writer"), mirrorAsOf("web-2", new Date(NOW.getTime() - 3 * 3_600_000))], row(["web-2"]), { open: "web-2" });
-    expect(screen.getByText(/The deploy catches up first, then pauses writes for the final sync\. If web-2 can't catch up, the deploy fails and web-1 keeps serving\./)).toBeTruthy();
   });
 
   it("restores from the mirror's latest point", () => {

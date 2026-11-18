@@ -8,7 +8,6 @@ import { RemoveNamespaceInput } from "#/modules/machines/namespace-cleanup";
 import { RequestServerDrainInput } from "#/modules/machines/server-drain";
 import { BuildConcurrencyChangeSchema, RegionSchema, RequestServerPolicyChangeInput } from "#/modules/machines/server-policy";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BODIES } from "#/modules/operations/cli-wire";
-import { ActivateServersInput, GenerateRecipientInput, InstallRecipientInput, PasskeyAnswered } from "#/modules/server-upgrade/activation";
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
@@ -78,9 +77,6 @@ const AGENT_ENVIRONMENT = { via: ["project", "environment"] } as const;
 const AGENT_LOSS = { via: ["accept_volume_loss", "version"] } as const;
 const STAGED = { absent: "The dashboard stages it in the Volume's placement, and the deploy runs it." } as const;
 const VOLUME_RUNS = "POST volumes/:id/runs";
-/** A person's teardown, which a Server that enforces Device approval needs before it takes anything off. */
-const Teardown = Schema.Unknown;
-const AGENT_TEARDOWN = { omitted: "An agent can't approve a teardown: only a person's Device or passkey can, and Servers refuse without one." } as const;
 
 /** Restart, start or stop a Service's containers, on one Server or all. */
 const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T, gate: "approval" | "none") =>
@@ -102,7 +98,7 @@ const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>
 /** Every Cloud operation, and how each surface (CLI, agent, dashboard) carries each of its options. */
 export const OPERATIONS = {
   "server.remove": operation({
-    options: Schema.Struct({ server: Name, acceptLoss: Names, teardown: Teardown }),
+    options: Schema.Struct({ server: Name, acceptLoss: Names }),
     requires: "servers:remove",
     gate: "approval",
     idempotency: "server_remove",
@@ -113,20 +109,19 @@ export const OPERATIONS = {
         options: {
           server: { via: ":id" },
           acceptLoss: { via: "confirm_data_loss" },
-          teardown: { omitted: "A Device's CLI removes a Server itself, under its own key." },
         },
       },
-      agent: { tool: "server_remove", options: { server: { via: "server" }, acceptLoss: AGENT_LOSS, teardown: AGENT_TEARDOWN } },
+      agent: { tool: "server_remove", options: { server: { via: "server" }, acceptLoss: AGENT_LOSS } },
       ui: {
         fn: "enqueueMachineRemoveServerFn",
         input: EnqueueMachineRemoveInput,
-        ungated: "The human confirms in the page's own dialog and approves the departure with their passkey.",
-        options: { server: { via: "machineId" }, acceptLoss: { via: "confirmDataLoss" }, teardown: { via: "teardown" } },
+        ungated: "The human confirms in the page's own dialog.",
+        options: { server: { via: "machineId" }, acceptLoss: { via: "confirmDataLoss" } },
       },
     },
   }),
   "server.forget": operation({
-    options: Schema.Struct({ server: Name, teardown: Teardown }),
+    options: Schema.Struct({ server: Name }),
     requires: "servers:remove",
     gate: "approval",
     idempotency: "server_forget",
@@ -134,13 +129,10 @@ export const OPERATIONS = {
       cli: {
         route: "POST servers/:id/forget",
         body: ForgetServer,
-        options: {
-          server: { via: ":id" },
-          teardown: { omitted: "A Device's CLI forgets a Server itself, under its own key." },
-        },
+        options: { server: { via: ":id" } },
       },
-      agent: { tool: "server_forget", options: { server: { via: "server" }, teardown: AGENT_TEARDOWN } },
-      ui: { fn: "forgetServerServerFn", input: ForgetServerInput, options: { server: { via: "machineId" }, teardown: { via: "teardown" } } },
+      agent: { tool: "server_forget", options: { server: { via: "server" } } },
+      ui: { fn: "forgetServerServerFn", input: ForgetServerInput, options: { server: { via: "machineId" } } },
     },
   }),
   "server.drain": operation({
@@ -247,7 +239,7 @@ export const OPERATIONS = {
     },
   }),
   "namespace.clean": operation({
-    options: Schema.Struct({ namespace: Name, acceptLoss: Names, teardown: Teardown }),
+    options: Schema.Struct({ namespace: Name, acceptLoss: Names }),
     requires: "servers:operate",
     gate: "approval",
     idempotency: "server_clean",
@@ -255,14 +247,14 @@ export const OPERATIONS = {
       cli: {
         route: "POST namespaces/:id/clean",
         body: CleanNamespace,
-        options: { namespace: { via: ":id" }, acceptLoss: CLI_APPROVAL, teardown: { via: "teardown" } },
+        options: { namespace: { via: ":id" }, acceptLoss: CLI_APPROVAL },
       },
-      agent: { tool: "server_clean", options: { namespace: { via: "leftover" }, acceptLoss: AGENT_LOSS, teardown: AGENT_TEARDOWN } },
+      agent: { tool: "server_clean", options: { namespace: { via: "leftover" }, acceptLoss: AGENT_LOSS } },
       ui: {
         fn: "removeNamespaceServerFn",
         input: RemoveNamespaceInput,
-        ungated: "The human confirms in the page's own dialog and approves the teardown with their passkey.",
-        options: { namespace: { via: "namespace" }, acceptLoss: { via: "confirmDataLoss" }, teardown: { via: "teardown" } },
+        ungated: "The human confirms in the page's own dialog.",
+        options: { namespace: { via: "namespace" }, acceptLoss: { via: "confirmDataLoss" } },
       },
     },
   }),
@@ -490,53 +482,6 @@ export const OPERATIONS = {
         input: SetPrivateAccessInput,
         ungated: "The human pasted the auth key, which the browser sealed, pressed Connect and approved it with their passkey; or pressed Turn off.",
         options: { to: { via: "to" }, authKey: { via: "on" } },
-      },
-    },
-  }),
-  "cluster.activate": operation({
-    options: Schema.Struct({ startingSet: PasskeyAnswered }),
-    requires: "servers:operate",
-    gate: "approval",
-    idempotency: { none: "Each Server takes one starting set for good and refuses another, so a second call changes nothing." },
-    surfaces: {
-      cli: { absent: "`ployz device enforce` activates from a Device through Server Access, not Cloud." },
-      agent: { absent: "Turning device enforcement on stays with a person's passkey or Device." },
-      ui: {
-        fn: "activateServersServerFn",
-        input: ActivateServersInput,
-        ungated: "The human read every Server the starting set names and answered it with their passkey, which each Server checks.",
-        options: { startingSet: { via: "startingSet" } },
-      },
-    },
-  }),
-  "cluster.recipient_generate": operation({
-    options: Schema.Struct({ operation: Name }),
-    requires: "servers:operate",
-    gate: "none",
-    idempotency: { none: "Nothing holds until the person approves the key in the next prompt; a key not approved is never used." },
-    surfaces: {
-      cli: { absent: "`ployz device enforce` has a Server generate the key from a Device through Server Access, not Cloud." },
-      agent: { absent: "Naming the key new values seal to stays with a person's passkey or Device." },
-      ui: {
-        fn: "generateRecipientServerFn",
-        input: GenerateRecipientInput,
-        options: { operation: { via: "operation" } },
-      },
-    },
-  }),
-  "cluster.recipient_key": operation({
-    options: Schema.Struct({ rotation: PasskeyAnswered, generator: Name }),
-    requires: "servers:operate",
-    gate: "approval",
-    idempotency: { none: "A Server that already holds the key the rotation names installs it again as it was." },
-    surfaces: {
-      cli: { absent: "`ployz device enforce` sets the new key from a Device through Server Access, not Cloud." },
-      agent: { absent: "Naming the key new values seal to stays with a person's passkey or Device." },
-      ui: {
-        fn: "installRecipientServerFn",
-        input: InstallRecipientInput,
-        ungated: "The human read the key and every Server it goes to and answered it with their passkey, which each Server checks.",
-        options: { rotation: { via: "rotation" }, generator: { via: "generator" } },
       },
     },
   }),

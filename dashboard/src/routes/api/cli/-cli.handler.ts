@@ -44,8 +44,7 @@ import type { MachineRemoveAttemptView } from "#/modules/machines/machine-remova
 import { readCliNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
 import { readCliServerDrain } from "#/modules/machines/server-drain.server";
 import { freshApproval, freshOperationDigest, planClean } from "#/modules/machines/server-operations.server";
-import { ChannelApproval } from "#/modules/server-upgrade/server-upgrade";
-import { approveUpgradeChannel, readCliServerUpgrade, readUpgradeChannel, upgradeChannelView } from "#/modules/server-upgrade/server-upgrade.server";
+import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
 import { OPERATIONS } from "#/modules/operations/operations";
@@ -379,12 +378,6 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       if (!call.ok) return refusal(call.refused.refusal);
       return admitted(yield* upgradeServer(caller, { machineId, channel: input.channel }, call, input.server_name), accepted);
     }
-    case "GET upgrade-channel":
-      return yield* readUpgradeChannel(caller, caller.organization.slug);
-    case "POST upgrade-channel": {
-      const body = yield* decodeBody(Schema.Struct({ approval: ChannelApproval }), request, "Approving a Release Channel takes its signed approval.");
-      return upgradeChannelView(yield* approveUpgradeChannel(caller, { organizationSlug: caller.organization.slug, approval: body.approval }));
-    }
     case "GET server-upgrades/:id":
       if (!isUpgradeAttemptId(id)) return missingRefusal("No such upgrade.");
       return yield* readCliServerUpgrade(caller.organization.id, id);
@@ -394,10 +387,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { namespace, volumes: plan.doomed.map(({ identity, label }) => ({ ...identity.id, label })) };
     }
     case "POST namespaces/:id/clean": {
-      const input = request.body === null ? {} : yield* decodeBody(CleanNamespace, request, "A clean takes at most the teardown a Device signed.");
+      if (request.body !== null) yield* decodeBody(CleanNamespace, request, "A clean takes no body.");
       const call = yield* operationCall(request);
       if (!call.ok) return refusal(call.refused.refusal);
-      return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call, input.teardown ?? null), accepted);
+      return admitted(yield* cleanNamespace(caller, decodeURIComponent(id ?? ""), call), accepted);
     }
     case "GET namespace-cleanups/:id": {
       const cleanup = Schema.is(Uuid)(id) ? yield* readCliNamespaceCleanup(caller.organization.id, id) : null;

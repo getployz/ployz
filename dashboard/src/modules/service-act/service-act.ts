@@ -1,6 +1,4 @@
-import type { ContainerState, Leg, Receipt, RunState, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
-import { Option, Schema } from "effect";
-import { type OlderServer, olderServer, olderSays } from "#/modules/runtime/daemon-compat";
+import type { ContainerState, Leg, Receipt, RunState, ServerRef, ServiceVerb } from "@ployz/sdk";
 
 export const SERVICE_ACT_STATES = ["accepted", "running", "done", "failed", "unknown"] as const satisfies readonly RunState[];
 export type ServiceActState = (typeof SERVICE_ACT_STATES)[number];
@@ -46,21 +44,6 @@ const confirmed = (step: LegStep | null) => step === "done" || step === "already
 
 /** A copy a run stopped, or found stopped, and hasn't confirmed started again: what the person has to start now. */
 export const leftStopped = (leg: ServiceActLeg) => confirmed(leg.stop) && takes(leg, "start") && !confirmed(leg.start);
-
-export const APPROVAL_RAN_OUT = "The approval ran out.";
-
-const ApprovalWindow = Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Number }));
-
-/**
- * Whether the approval a leg would carry has run out at `now`: a proposal step's by its bundle, a single act's by its
- * own body, so a Server is never asked to move a copy past what the person was shown. One Cloud can't read goes, and
- * the Server judges it.
- */
-export const ranOut = (approval: Signed | undefined, now: number) => {
-  if (approval === undefined) return false;
-  const window = Schema.decodeUnknownOption(ApprovalWindow)(approval.proposal?.body ?? approval.body);
-  return Option.isSome(window) && now > window.value.expires_at;
-};
 
 /** A restart rolls on only once the copy it just restarted is confirmed started again. */
 export const cameBack = (legs: readonly ServiceActLeg[], copy: Pick<ServiceActLeg, "machine" | "container">) =>
@@ -146,27 +129,9 @@ export function copiesIn(frame: ServicesFrame, identity: string) {
   ];
 }
 
-export const START_APPROVAL_CAPABILITY = "ployz.restart.start-approval.v1";
-
 const NEEDS_NEWER = "needs a newer Ployz to";
 
 /** Why a Server can't take a run's step: its Ployz is too old. No retry helps until it is upgraded. */
 export const needsNewerPloyz = (server: string, side: ServiceVerb) => `${server} ${NEEDS_NEWER} ${side} it.`;
 
 export const needsUpgrade = (reason: string | null) => reason?.includes(` ${NEEDS_NEWER} `) === true;
-
-/**
- * The Server a stop would strand: it runs a copy of the Service but can't take a start approval, so nothing in Ployz
- * Cloud could start the copy again. Null when every such Server can. A hook never starts again, so a Server that holds
- * only hooks strands nothing.
- */
-export function strandedByStop(
-  copies: readonly { readonly machineId: string; readonly hook: boolean }[],
-  machines: readonly { readonly id: string; readonly name: string; readonly capabilities: readonly string[] }[],
-): OlderServer | null {
-  const hosts = new Set(copies.filter((copy) => !copy.hook).map((copy) => copy.machineId));
-  return olderServer(machines.filter((machine) => hosts.has(machine.id)), [START_APPROVAL_CAPABILITY]);
-}
-
-/** Why `older` can't take a run's `verb` step, said before anything is sent. */
-export const olderStepSays = (older: OlderServer, verb: ServiceVerb) => olderSays(older, (server) => needsNewerPloyz(server, verb));
