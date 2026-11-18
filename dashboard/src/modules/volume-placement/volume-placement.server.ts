@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId, Signed } from "@ployz/sdk";
+import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId, ResolvedServiceSpec, Signed } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { isDeepStrictEqual } from "node:util";
 import { Data, Effect, Option, Schema, Semaphore } from "effect";
@@ -441,6 +441,28 @@ const withCurrentRegionMoves = Effect.fn("VolumePlacement.withCurrentRegionMoves
 /** The Deploy button's half: stage the region moves so the passkey answers the Deploy carries have rows to keep them. */
 export const prepareRegionMoves = Effect.fn("VolumePlacement.prepareRegionMoves")(function* (organizationId: string, environment: EnvironmentRef) {
   yield* stageRegionMoves(organizationId, yield* regionMoves(organizationId, environment));
+});
+
+/** A Device's approval of one region move, as the CLI names it, with the spec its target starts. */
+export type RegionMoveApproval = { readonly volume: string; readonly to: string; readonly approval: Signed; readonly service: ResolvedServiceSpec };
+
+/**
+ * The CLI's half: stage the region moves and keep the approvals its Device signed for them, just before its Deploy is
+ * admitted. Refused for an approval that names no move the Deploy makes; the Servers check each one when its run asks them.
+ */
+export const keepRegionMoveApprovals = Effect.fn("VolumePlacement.keepRegionMoveApprovals")(function* (
+  organizationId: string, environment: EnvironmentRef, approvals: readonly RegionMoveApproval[],
+  inspect: typeof inspectVolumeCopies = inspectVolumeCopies, read: RegionReader = readRegionServers,
+) {
+  const moves = yield* regionMoves(organizationId, environment, [], inspect, read);
+  const kept: (PlacementApproval & { readonly volumeId: string })[] = [];
+  for (const { volume, to, approval, service } of approvals) {
+    const move = moves.find((listed) => listed.volume === volume && listed.to === to);
+    if (move === undefined) return { ok: false, refusal: FOR_ANOTHER_CHANGE } as const;
+    kept.push({ volumeId: move.row.volumeId, run: "move", machine: move.row.staged.primary, approval, service });
+  }
+  yield* stageRegionMoves(organizationId, moves);
+  return yield* keepPlacementApprovals(organizationId, { environment, approvals: kept });
 });
 
 export const RESTORE_FAILED: StoreRefusal = { code: "conflict", message: "Restore failed. Restore again.", details: null };

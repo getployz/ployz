@@ -110,9 +110,11 @@ pg-data moves db-1 → web-1
 ```
 
 The volume goes to a server in the region that holds its [mirror](mirror-a-volume.md). With no
-mirror there, it goes to one with managed volumes and room for it. To choose the server yourself,
-stage the move with **Make primary** before you deploy. See [Move a volume](move-a-volume.md) for
-what a move does to the service while it runs.
+mirror there, it goes back to a server that holds its
+[old copy](move-a-volume.md#the-old-copy-a-move-leaves) and sends only what changed since. With
+neither, it goes to one with managed volumes and room for it. To choose the server yourself, stage
+the move with **Make primary** before you deploy. See [Move a volume](move-a-volume.md) for what a
+move does to the service while it runs.
 
 If the move fails, the volume stays where it was and the deploy doesn't start that service. The
 rest of the deploy goes ahead, and the service keeps running where it was:
@@ -135,8 +137,27 @@ The deploy also leaves the volume where it is, and prints that command, when:
 
 - **You have no Ployz Cloud.** Moving a volume needs it. Give the volume's server the region, or
   change the environment's region.
-- **Your servers enforce device approval and the deploy came from the CLI, a push or the agent.**
-  A deploy from the dashboard asks for your passkey and moves the volume.
+- **Your servers enforce device approval and no approved device or passkey approved the move.**
+  That is a deploy from a push, the agent, or `ployz` on a computer without an approved device
+  key. A deploy from the dashboard asks for your passkey and moves the volume. `ployz deploy` on
+  an approved device shows the move after the deploy's own lines and asks before it signs it:
+
+  ```
+  Approved: move pg-data from db-1 to web-1. postgres stops on db-1 for the last copy, then starts on web-1.
+  ```
+
+  Answer no and nothing is deployed. `--yes` signs without asking, as it does for the deploy.
+- **Your servers enforce device approval, the deploy came from `ployz`, and a third server holds
+  an old copy of the volume.** A move deletes that copy first, and `ployz deploy` doesn't sign
+  that. The deploy doesn't start the service and prints the line that deletes the copy. Run it on
+  an approved device, then deploy again:
+
+  ```sh
+  ployz volume mirror rm pg-data-web-2 --if-old-copy
+  ployz deploy
+  ```
+
+  A deploy from the dashboard asks for your passkey for both.
 
 A Docker volume can't move. Give its server the region, or change the environment's region:
 

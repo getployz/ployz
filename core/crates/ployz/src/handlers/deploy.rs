@@ -9,6 +9,7 @@ mod built;
 #[cfg(test)]
 mod follow_tests;
 mod progress;
+mod volume_moves;
 
 use crate::ui::Next;
 use crate::ui::progress::{Disposition, Progress};
@@ -26,10 +27,10 @@ use ployz_store::{
     NodeStatus, PlanQuery, Publish, RunnerId, Start, UploadBase, UploadedSource, VolumeName,
 };
 
-use super::store::{Backend, Store, environment, mint, next, scoped, store};
+use super::store::{Store, environment, mint, next, scoped, store};
 use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
-use crate::cloud_account::{self, StoreCallError};
+use crate::cloud_account::StoreCallError;
 
 pub(super) fn deploy_command(command: Command) -> Command {
     following(
@@ -310,6 +311,9 @@ pub(super) fn upload_and_ship(
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
         store.upload(&id, dir, listing)?;
+    }
+    if let Some(device) = &device {
+        volume_moves::approve(matches, store, device, (&environment, &services))?;
     }
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
@@ -1036,47 +1040,10 @@ struct Planned<'p> {
     unplaced: Vec<&'p ServiceName>,
     /// The Volumes Cloud moves into their Service's region before the Deploy starts it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    volume_moves: Vec<VolumeMove>,
+    volume_moves: Vec<volume_moves::VolumeMove>,
     /// Whether it also removes every other Service running in the Environment,
     /// which only the Servers can name.
     prunes: bool,
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct VolumeMove {
-    volume: String,
-    from: String,
-    to: String,
-}
-
-fn volume_moves(
-    store: &Store,
-    environment: &EnvironmentSummary,
-    services: &[ServiceName],
-) -> Vec<VolumeMove> {
-    #[derive(serde::Deserialize)]
-    struct Moves {
-        moves: Vec<VolumeMove>,
-    }
-    let Backend::Cloud(runtime, credential) = store.backend() else {
-        return Vec::new();
-    };
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    query
-        .append_pair("project", environment.project.as_str())
-        .append_pair("environment", environment.name.as_str());
-    for service in services {
-        query.append_pair("service", service.as_str());
-    }
-    runtime
-        .block_on(cloud_account::refusable::<Moves>(
-            credential,
-            reqwest::Method::GET,
-            &format!("volume-moves?{}", query.finish()),
-            None,
-        ))
-        .map(|answer| answer.moves)
-        .unwrap_or_default()
 }
 
 fn plan(
@@ -1117,7 +1084,7 @@ fn plan(
             .filter(|(_, region)| region.as_ref().is_some_and(&unplaced))
             .map(|(service, _)| service)
             .collect(),
-        volume_moves: volume_moves(store, &plan.environment, &services),
+        volume_moves: volume_moves::listed(store, &plan.environment, &services),
         prunes,
     };
     let followed = Next::new(&shown, Some(hint));
@@ -1148,7 +1115,7 @@ fn plan(
                 None => crate::ui::stream(format_args!("{service} → any region")),
             }
         }
-        for VolumeMove { volume, from, to } in &shown.volume_moves {
+        for volume_moves::VolumeMove { volume, from, to } in &shown.volume_moves {
             crate::ui::stream(format_args!("{volume} moves {from} → {to}"));
         }
         if prunes {

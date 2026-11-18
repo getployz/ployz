@@ -515,10 +515,10 @@ export type RegionServer = { readonly id: MachineId; readonly acceptsServices: b
 
 /**
  * Where a Deploy stages the Volume so its Service can run in its region: its primary moves to one of `servers`, the
- * region's Servers. The Server that holds its mirror comes first, then the first by name that has room. Each accepts
- * Services and is one the planner takes. A region move in `row` that already handed the primary over stays as staged,
- * since only finishing it settles the copies. Null when the primary is already in the region or didn't answer, or
- * nowhere there takes it.
+ * region's Servers. The Server that holds its mirror comes first, then one that holds its old copy, which a move goes
+ * back onto without deleting it, then the first by name that has room. Each accepts Services and is one the planner
+ * takes. A region move in `row` that already handed the primary over stays as staged, since only finishing it settles
+ * the copies. Null when the primary is already in the region or didn't answer, or nowhere there takes it.
  */
 export function regionPlacement(
   volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null, servers: readonly RegionServer[], owed: boolean,
@@ -534,9 +534,10 @@ export function regionPlacement(
   const target = targetPlacement(observed, applied);
   if (target === null) return null;
   const mirrors = appliedMirrors(observed, applied);
-  const accepting = servers.filter((server) => server.acceptsServices && (server.room || mirrors.includes(server.id))).map((server) => server.id);
-  const takes = placementTargets(volume, members, applied, accepting, owed).move;
-  const to = takes.find((server) => mirrors.includes(server.id)) ?? [...takes].sort((a, b) => a.name.localeCompare(b.name))[0];
+  const old = detachedCopies(observed).map((copy) => copy.server.id);
+  const accepting = servers.filter((server) => server.acceptsServices && (server.room || mirrors.includes(server.id) || old.includes(server.id))).map((server) => server.id);
+  const takes = [...placementTargets(volume, members, applied, accepting, owed).move].sort((a, b) => a.name.localeCompare(b.name));
+  const to = takes.find((server) => mirrors.includes(server.id)) ?? takes.find((server) => old.includes(server.id)) ?? takes[0];
   return to === undefined ? null : editPlacement(target, { kind: "move", to: to.id });
 }
 

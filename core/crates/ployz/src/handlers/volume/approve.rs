@@ -17,7 +17,7 @@ use ployz_core::authority::{
 };
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName, Hint,
-    InspectContainerRequest, MachineName, MachineTarget, Namespace, OperationId,
+    InspectContainerRequest, Machine, MachineName, MachineTarget, Namespace, OperationId,
     ProvisionedVolumeMaximumBytes, ResolvedServiceSpec, RpcErrorCode, SlotRole, VolumeCopy, op,
 };
 use ployz_store::{EnvironmentSummary, VolumeId, VolumeName};
@@ -90,30 +90,40 @@ pub(super) fn sign(
 
 /// A signed Move approval, the change it approved, and the spec its Service starts with on
 /// the target.
-pub(super) struct MoveApproval {
-    pub(super) signed: Signed<VolumeApproval>,
+pub(in crate::handlers) struct MoveApproval {
+    pub(in crate::handlers) signed: Signed<VolumeApproval>,
     pub(super) change: ApprovedVolumeChange,
-    pub(super) service: ResolvedServiceSpec,
+    pub(in crate::handlers) service: ResolvedServiceSpec,
 }
 
-/// Sign the Move of `volume` onto `to` with this CLI's Device key, when it holds one and a
-/// Server of the Cluster enforces Device approval, after showing the change and asking. The Service starts
-/// on `to` with the spec its one Container on the Writer runs, from the image already there,
-/// at the size the Store records (`recorded`), as Cloud would start it. None otherwise.
+/// A Move this Device can sign, drafted from what the Servers answer.
+pub(in crate::handlers) struct MoveDraft {
+    signer: Signer,
+    /// The Servers that write the Volume and take it, as the Cluster records them.
+    pub(in crate::handlers) writer: Machine,
+    pub(in crate::handlers) target: Machine,
+    /// The spec the target starts.
+    pub(in crate::handlers) service: ResolvedServiceSpec,
+    body: VolumeApproval,
+    change: ApprovedVolumeChange,
+}
+
+/// Draft the Move of `volume` onto `to` for this CLI's Device key, when it holds one and a
+/// Server of the Cluster enforces Device approval. The Service starts on `to` with the spec
+/// its one Container on the Writer runs, from the image already there, at the size the Store
+/// records (`recorded`), as Cloud would start it. None otherwise.
 ///
 /// # Errors
 /// Refuses as [`sign`] does, and when `to` already writes the Volume, when the Writer runs no
-/// Container of it or more than one, when its image is not pinned by digest, and when the
-/// person says no or can't be asked without `--yes`; returns the
-/// Store's, a Server's or the key's error.
-pub(super) fn sign_move(
-    root: &ArgMatches,
+/// Container of it or more than one, and when its image is not pinned by digest; returns the
+/// Store's or a Server's error.
+pub(in crate::handlers) fn draft_move(
+    matches: &ArgMatches,
     store: &store::Store<'_>,
     (volume, volume_id, environment): (&VolumeName, &VolumeId, &EnvironmentSummary),
     to: &MachineName,
     recorded: Option<ProvisionedVolumeMaximumBytes>,
-) -> Result<Option<MoveApproval>, Error> {
-    let matches = leaf_matches(root);
+) -> Result<Option<MoveDraft>, Error> {
     let Some((signer, enforcing)) = device(matches, "the Move")? else {
         return Ok(None);
     };
@@ -122,15 +132,30 @@ pub(super) fn sign_move(
         let client = super::super::route::connect(matches, context(matches)).await?;
         let seen = copies(&client, &docker).await?;
         let (writer, target) = parties(volume, &seen, MirrorOn::Server(to))?;
-        let service = running_spec(&client, volume, &docker, writer).await?;
-        let ids = (writer.id, target.id);
-        Ok::<_, Error>((seen, ids, service))
+        let frame = client.runtime_frame().await?;
+        let service = running_spec(&client, &frame.containers, volume, &docker, writer).await?;
+        let recorded = |seen: &Seen| {
+            frame
+                .machines
+                .iter()
+                .find(|observed| observed.machine.id == seen.id)
+                .map(|observed| observed.machine.clone())
+                .ok_or_else(|| {
+                    Error::unavailable(format!(
+                        "{} left the cluster, so this device can't approve the move. Run ployz \
+                         status, then try again.",
+                        seen.name
+                    ))
+                })
+        };
+        let machines = (recorded(writer)?, recorded(target)?);
+        Ok::<_, Error>((seen, machines, service))
     })?;
     let service = starting(service, &docker, recorded)?;
     // The approval names its Mirrors sorted by ID, as every Server reads them.
     let mirrors: Vec<_> = seen
         .iter()
-        .filter(|seen| seen.id != target && keeps_mirror(seen))
+        .filter(|seen| seen.id != target.id && keeps_mirror(seen))
         .map(|seen| seen.id)
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -146,32 +171,72 @@ pub(super) fn sign_move(
         namespace,
         docker,
         VolumeWorkflow::Move {
-            from: writer,
-            to: target,
+            from: writer.id,
+            to: target.id,
             service: change.approved(),
             mirrors,
         },
     );
     let change = ApprovedVolumeChange::moving(&body, volume.as_str(), named(&seen), change)
         .expect("a Move approval names the change it was made from");
-    for line in change.lines() {
-        crate::ui::note(format_args!("{line}"));
-    }
-    let yes = matches
-        .try_get_one::<bool>("yes")
-        .ok()
-        .flatten()
-        .copied()
-        .unwrap_or(false);
-    consent(volume, yes, |question, refusal, declined| {
-        crate::ui::confirm(question, || refusal, declined)
-    })?;
-    let signed = Signed::sign(&body, &signer).map_err(Error::command)?;
-    Ok(Some(MoveApproval {
-        signed,
-        change,
+    Ok(Some(MoveDraft {
+        signer,
+        writer,
+        target,
         service,
+        body,
+        change,
     }))
+}
+
+impl MoveDraft {
+    /// Sign the Move of `volume`, after showing the change and asking.
+    ///
+    /// # Errors
+    /// Refuses when the person says no or can't be asked without `--yes`; returns the key's
+    /// error.
+    pub(in crate::handlers) fn sign(
+        self,
+        matches: &ArgMatches,
+        volume: &VolumeName,
+    ) -> Result<MoveApproval, Error> {
+        for line in self.change.lines() {
+            crate::ui::note(format_args!("{line}"));
+        }
+        let yes = matches
+            .try_get_one::<bool>("yes")
+            .ok()
+            .flatten()
+            .copied()
+            .unwrap_or(false);
+        consent(volume, yes, |question, refusal, declined| {
+            crate::ui::confirm(question, || refusal, declined)
+        })?;
+        let signed = Signed::sign(&self.body, &self.signer).map_err(Error::command)?;
+        Ok(MoveApproval {
+            signed,
+            change: self.change,
+            service: self.service,
+        })
+    }
+}
+
+/// Sign the Move of `volume` onto `to` that [`draft_move`] drafts, after showing the change
+/// and asking. None when there is nothing to sign.
+///
+/// # Errors
+/// Refuses as [`draft_move`] and [`MoveDraft::sign`] do.
+pub(super) fn sign_move(
+    root: &ArgMatches,
+    store: &store::Store<'_>,
+    volume: (&VolumeName, &VolumeId, &EnvironmentSummary),
+    to: &MachineName,
+    recorded: Option<ProvisionedVolumeMaximumBytes>,
+) -> Result<Option<MoveApproval>, Error> {
+    let matches = leaf_matches(root);
+    draft_move(matches, store, volume, to, recorded)?
+        .map(|draft| draft.sign(matches, volume.0))
+        .transpose()
 }
 
 /// What a person says to signing the Move of `volume`, asked after its lines show: Cloud
@@ -277,12 +342,12 @@ fn keeps_mirror(seen: &Seen) -> bool {
 /// keeps it.
 async fn running_spec(
     client: &crate::connect::Client,
+    containers: &[ContainerObservation],
     volume: &VolumeName,
     docker: &DockerVolumeName,
     writer: &Seen,
 ) -> Result<ResolvedServiceSpec, Error> {
-    let frame = client.runtime_frame().await?;
-    let holder = match holders(&frame.containers, &writer.id, docker).as_slice() {
+    let holder = match holders(containers, &writer.id, docker).as_slice() {
         [holder] => *holder,
         [] => {
             return Err(Error::coded(

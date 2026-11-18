@@ -47,7 +47,7 @@ import { freshApproval, freshOperationDigest, planClean } from "#/modules/machin
 import { ChannelApproval } from "#/modules/server-upgrade/server-upgrade";
 import { approveUpgradeChannel, readCliServerUpgrade, readUpgradeChannel, upgradeChannelView } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
-import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, volumeRunInput } from "#/modules/operations/cli-wire";
+import { CleanNamespace, DrainServer, ForgetServer, ForgetServers, MoveService, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer, VolumeApproval, volumeRunInput } from "#/modules/operations/cli-wire";
 import { OPERATIONS } from "#/modules/operations/operations";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, unpermitted, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
@@ -58,7 +58,7 @@ import { slugifySegment } from "#/utils/slug";
 import { NotFound, Validation } from "#/server/public-error";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
 import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.server";
-import { regionMoves } from "#/modules/volume-placement/volume-placement.server";
+import { keepRegionMoveApprovals, regionMoves } from "#/modules/volume-placement/volume-placement.server";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
@@ -162,6 +162,17 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 const NewTokenName = Schema.Struct({ name: NewToken.fields.name });
+
+/** What a Device signed for the Volume moves its Deploy makes: each Move, with the spec its target starts. */
+const VolumeMoveApprovals = Schema.Struct({
+  environment: Schema.Struct({ project: Schema.String, environment: Schema.String }),
+  approvals: Schema.Array(Schema.Struct({
+    volume: Schema.NonEmptyString,
+    to: Schema.NonEmptyString,
+    approval: VolumeApproval,
+    service: MoveService,
+  })).check(Schema.isMaxLength(32)),
+});
 
 const NewDeviceRequest = Schema.Struct({ key: Schema.String.check(Schema.isPattern(DEVICE_KEY)) });
 
@@ -512,6 +523,13 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const environment = { project: query.get("project"), environment: query.get("environment") };
       const moves = yield* regionMoves(caller.organization.id, environment, query.getAll("service"));
       return { moves: moves.map(({ volume, from, to }) => ({ volume, from, to })) };
+    }
+    case "POST volume-moves": {
+      const body = yield* decodeBody(VolumeMoveApprovals, request, "A volume move approval takes its environment and what the Device signed.");
+      const unstaged = unheld(caller, "changes:stage", body.environment.environment);
+      if (unstaged !== null) return refusal(unstaged.refusal);
+      const kept = yield* keepRegionMoveApprovals(caller.organization.id, body.environment, body.approvals);
+      return kept.ok ? {} : refusal(kept.refusal);
     }
     case "GET volume-runs/:id":
       if (!Schema.is(Uuid)(id)) return missingRefusal("No such volume run.");

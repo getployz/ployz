@@ -11,10 +11,10 @@ use ployz_core::authority::{
     ApprovedChange, DeployApproval, DeployTerms, Signed, deploy::content_addressed,
 };
 use ployz_core::{
-    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, SealingPublicKey,
-    ServiceName, cluster_sealing_key,
+    Hint, MachineObservation, Namespace, OperationId, RequestedServiceSpec, RpcErrorCode,
+    SealingPublicKey, ServiceName, cluster_sealing_key,
 };
-use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
+use ployz_store::{DeploymentId, EnvironmentRef, EnvironmentSummary, PlanQuery};
 use serde_json::json;
 
 use super::super::device::DeviceSigning;
@@ -27,6 +27,11 @@ pub(in crate::handlers) struct DeviceApproval {
     pub(in crate::handlers) signed: Signed<DeployApproval>,
     pub(in crate::handlers) version: String,
     pub(in crate::handlers) approved: Vec<ApprovedChange>,
+    /// The Environment it deploys and each Service's spec as approved, which decide the
+    /// Volume moves this Device signs for it.
+    pub(in crate::handlers) environment: EnvironmentSummary,
+    pub(in crate::handlers) namespace: Namespace,
+    pub(in crate::handlers) specs: Vec<RequestedServiceSpec>,
 }
 
 /// The Cluster as this Device sees it: the Sealing key every Server holds and the
@@ -107,8 +112,8 @@ pub(in crate::handlers) fn sign(
         signer: window.signer,
         proposal: None,
     };
-    let (body, approved) =
-        DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
+    let (body, approved) = DeployApproval::draft(terms, plan.namespace.clone(), &target, &pins)
+        .map_err(Error::command)?;
     for line in approved.iter().flat_map(ApprovedChange::lines) {
         crate::ui::note(format_args!("{line}"));
     }
@@ -126,6 +131,9 @@ pub(in crate::handlers) fn sign(
         signed,
         version: plan.version,
         approved,
+        environment: plan.environment,
+        namespace: plan.namespace,
+        specs: target,
     }))
 }
 
