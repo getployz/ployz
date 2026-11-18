@@ -342,33 +342,18 @@ pub(super) fn builders(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
-/// One line for each Service a Deployment that otherwise finished left waiting, with the
-/// planner's refusal, by the name its Environment gives it.
+/// One line for each Service the planner left waiting, with what it waits on.
 pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
     let Some(ployz_store::Outcome::Executed { waiting, .. }) = &view.deployment.outcome else {
         return Vec::new();
     };
     waiting
         .iter()
-        .map(|runtime| {
-            let name = view
-                .runtime_names
-                .iter()
-                .find(|(_, shown)| *shown == runtime)
-                .map_or(runtime, |(name, _)| name);
-            let why = view
-                .preview
-                .as_ref()
-                .and_then(|preview| {
-                    preview
-                        .blocked
-                        .iter()
-                        .find(|entry| entry.service == *runtime)
-                })
-                .map(|entry| crate::ui::escaped(&entry.error.message));
-            why.map_or_else(
-                || format!("{name} is waiting"),
-                |why| format!("{name} is waiting: {why}"),
+        .map(|waiting| {
+            format!(
+                "{} is waiting: {}",
+                waiting.service,
+                crate::ui::escaped(&waiting.reason)
             )
         })
         .collect()
@@ -982,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_service_reads_not_attempted_with_its_reason_and_fails_the_deploy() {
+    fn a_refused_service_reads_not_attempted_with_its_reason_and_fails_the_deploy() {
         let reason = "Volume data has no writer; fsn-2 holds its only copy";
         let mut view = view();
         view.runtime_names.clear();
@@ -1005,7 +990,7 @@ mod tests {
                 "namespace": "shop-production", "warnings": [],
                 "operations": [],
                 "blocked": [{
-                    "service": "db",
+                    "service": "db", "kind": "refusal",
                     "error": {"code": "conflict", "message": reason, "details": {"reason": "no_writer"}}
                 }]
             }))
@@ -1939,22 +1924,14 @@ mod tests {
             services: Vec::new(),
             compensation: Vec::new(),
             cancelled: false,
-            waiting: vec!["private-web".parse().unwrap()],
+            waiting: vec![ployz_store::WaitingService {
+                service: "web".parse().unwrap(),
+                reason: "Volume data has no writer; fsn-2 holds its only copy".to_owned(),
+            }],
         });
-        view.preview = Some(
-            serde_json::from_value(json!({
-                "namespace": "shop-production", "operations": [], "warnings": [],
-                "would_remove": [], "preserved_volumes": [],
-                "blocked": [{
-                    "service": "private-web",
-                    "error": {"code": "conflict", "message": "wcache is a Docker volume and can't move", "details": {}}
-                }]
-            }))
-            .unwrap(),
-        );
         assert_eq!(
             waiting(&view),
-            ["web is waiting: wcache is a Docker volume and can't move"]
+            ["web is waiting: Volume data has no writer; fsn-2 holds its only copy"]
         );
         let failure = completion(&view, None, &[], command).unwrap_err();
         assert!(!failure.is_outcome());

@@ -84,7 +84,7 @@ pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
     NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RowTransition, RunEvidence,
-    ServerProgress, ServerRow, StoppedBy, Unclaimed, UploadBase, UploadedSource,
+    ServerProgress, ServerRow, StoppedBy, Unclaimed, UploadBase, UploadedSource, WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,

@@ -460,15 +460,23 @@ pub(crate) fn latest_removal(
         .filter(|latest| latest.remove))
 }
 
-/// The Saved revision `environment`'s latest applied Deployment shipped: what its
-/// Servers run. None before one applied, or once a removal applied.
+/// The Saved revision `environment`'s latest applied Deployment that reached a
+/// Service shipped: what its Servers run. One that left every Service waiting
+/// changed nothing they run. None before one applied, or once a removal applied.
 pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<Revision>, RpcError> {
-    Ok(latest_where(tx, environment, "status = 'applied'")?
-        .map(|deployment| deployment.saved)
-        .filter(|saved| *saved != NOTHING))
+    let mut condition = "status = 'applied'".to_owned();
+    loop {
+        let Some(deployment) = latest_where(tx, environment, &condition)? else {
+            return Ok(None);
+        };
+        if !deployment.all_waiting {
+            return Ok(Some(deployment.saved).filter(|saved| *saved != NOTHING));
+        }
+        condition = format!("status = 'applied' AND number < {}", deployment.numbered()?);
+    }
 }
 
 /// Whether the latest Deployment of Saved `revision` failed. Any later attempt

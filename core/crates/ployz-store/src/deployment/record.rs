@@ -163,7 +163,7 @@ pub(crate) fn record(
                 });
             let (reason, cause) = real
                 .or_else(|| failure(&outcome, &stored.nodes, &preview.operations))
-                .or_else(|| blocked(&stored.nodes, &preview.blocked))
+                .or_else(|| refused(&stored.nodes, &preview.blocked))
                 .or_else(|| {
                     success
                         .then(|| undeleted(&stored.nodes, &removed, &preview.operations))
@@ -234,33 +234,31 @@ pub(crate) fn record(
                                         && !saved.services.iter().any(|kept| kept.id == *id))
                         }))
             };
-            // A Deploy that did all it planned and left only blocked Services is
+            // A Deploy that did all it planned and left only waiting Services is
             // Applied with those waiting: nothing failed, and each still reads Not
-            // attempted (bet 8). Anything that failed or was left unfinished fails it.
-            let status = if success && !nodes.iter().any(unfinished) {
+            // attempted (bet 8). Anything that failed or was left unfinished fails
+            // it, and so does a Service the planner refused: no later Deploy of this
+            // config starts it.
+            let refused = preview
+                .blocked
+                .iter()
+                .any(|entry| entry.kind == BlockedKind::Refusal);
+            let status = if success && !refused && !nodes.iter().any(unfinished) {
                 End::Applied
             } else {
                 End::Failed
             };
-            let waiting: Vec<ServiceName> = if matches!(status, End::Applied) {
-                let mut waiting: Vec<ServiceName> = preview
-                    .blocked
-                    .iter()
-                    .map(|entry| entry.service.clone())
-                    .collect();
-                waiting.sort();
-                waiting.dedup();
-                waiting
-            } else {
-                Vec::new()
-            };
-            // Waiting Services are no failure, so the first one's refusal is no reason.
-            let reason = reason.filter(|_| waiting.is_empty());
-            let cause = if waiting.is_empty() {
-                cause
-            } else {
-                Vec::new()
-            };
+            let mut waiting: Vec<WaitingService> = preview
+                .blocked
+                .iter()
+                .filter(|entry| entry.kind == BlockedKind::Wait)
+                .map(|entry| WaitingService {
+                    service: current_service(&stored.nodes, &entry.service).clone(),
+                    reason: entry.error.message.chars().take(500).collect(),
+                })
+                .collect();
+            waiting.sort_by(|a, b| a.service.cmp(&b.service));
+            waiting.dedup_by(|a, b| a.service == b.service);
             let outcome = Outcome::Executed {
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,
@@ -468,12 +466,17 @@ fn failure(
     })
 }
 
-/// Why each Service the planner blocked was never attempted. Services blocked for
-/// the same reason share one clause.
-fn blocked(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Option<Failure> {
-    let first = blocked.first()?;
+/// Why each Service the planner refused was never attempted. Services refused for
+/// the same reason share one clause. One it left waiting fails nothing, so it is no
+/// reason.
+fn refused(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Option<Failure> {
+    let mut refused = blocked
+        .iter()
+        .filter(|entry| entry.kind == BlockedKind::Refusal)
+        .peekable();
+    let cause = refused.peek()?.error.cause.clone();
     let mut reasons: Vec<(&str, Vec<&str>)> = Vec::new();
-    for entry in blocked {
+    for entry in refused {
         let name = current_name(nodes, &entry.service);
         let message = entry.error.message.as_str();
         match reasons.iter_mut().find(|(other, _)| *other == message) {
@@ -492,7 +495,7 @@ fn blocked(nodes: &[TargetNode], blocked: &[ployz_core::BlockedService]) -> Opti
         .join("; ");
     Some(Failure {
         reason: reason.chars().take(500).collect(),
-        cause: first.error.cause.clone(),
+        cause,
         same_again: false,
     })
 }
@@ -559,14 +562,21 @@ fn undeleted(
 }
 
 /// The current name of the target Service that lowers to runtime Service `runtime`.
-fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceName) -> &'nodes str {
+fn current_service<'nodes>(
+    nodes: &'nodes [TargetNode],
+    runtime: &'nodes ServiceName,
+) -> &'nodes ServiceName {
     nodes
         .iter()
         .find_map(|node| match node.service() {
-            Some(service) if node.runtimes().contains(&runtime) => Some(service.name.as_str()),
+            Some(service) if node.runtimes().contains(&runtime) => Some(service.name),
             Some(_) | None => None,
         })
-        .unwrap_or(runtime.as_str())
+        .unwrap_or(runtime)
+}
+
+fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceName) -> &'nodes str {
+    current_service(nodes, runtime).as_str()
 }
 
 pub(super) fn finish(

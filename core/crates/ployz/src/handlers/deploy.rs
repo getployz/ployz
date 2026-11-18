@@ -1333,6 +1333,9 @@ fn status_word(deployment: &DeploymentSummary) -> String {
         (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
         (DeploymentStatus::Running, _) if deployment.preparing => "preparing".to_owned(),
         (DeploymentStatus::Applied, _) => match &deployment.outcome {
+            Some(ployz_store::Outcome::Executed { waiting, .. }) if deployment.all_waiting => {
+                format!("nothing applied, {} waiting", waiting.len())
+            }
             Some(ployz_store::Outcome::Executed { waiting, .. }) if !waiting.is_empty() => {
                 format!("applied, {} waiting", waiting.len())
             }
@@ -1345,6 +1348,7 @@ fn status_word(deployment: &DeploymentSummary) -> String {
 /// How a Deployment's status reads at a glance.
 const fn status_tone(deployment: &DeploymentSummary) -> Tone {
     match deployment.status {
+        DeploymentStatus::Applied if deployment.all_waiting => Tone::Change,
         DeploymentStatus::Applied => Tone::Good,
         DeploymentStatus::Failed | DeploymentStatus::Unknown => Tone::Bad,
         DeploymentStatus::WaitingForCi => match deployment.ci {
