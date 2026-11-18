@@ -1,4 +1,4 @@
-import type { Region } from "@ployz/sdk";
+import type { NamedRegion } from "@ployz/sdk";
 import { MapPinPenIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
@@ -13,7 +13,7 @@ import type { RoleGate } from "#/modules/organization/members.queries";
 /** Only the name changes; the key stays on every Server, so nothing restarts. */
 export function RenameRegionDialog({ organizationSlug, regions, gate }: {
   organizationSlug: string;
-  regions: readonly Region[];
+  regions: readonly NamedRegion[];
   gate: RoleGate;
 }) {
   const nameRegion = useNameRegion(organizationSlug);
@@ -21,7 +21,7 @@ export function RenameRegionDialog({ organizationSlug, regions, gate }: {
   const [key, setKey] = useState("");
   const [name, setName] = useState("");
   const region = regions.find((each) => each.key === key);
-  const pick = (next: Region | undefined) => {
+  const pick = (next: NamedRegion | undefined) => {
     setKey(next?.key ?? "");
     setName(next?.name ?? "");
   };

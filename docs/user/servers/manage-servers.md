@@ -673,7 +673,7 @@ already has, in any case, is refused under the field with that region's name, su
 
 When a service on the server belongs to an environment that runs in another region, the change
 asks first. **Move web-2 to Sydney** lists each service that leaves web-2 on the next deploy, with
-its environment and the server it goes to. **Move server** changes the region, and **Cancel** keeps
+its environment and the server it goes to, or **No server in fsn** when no other server is in its region. **Move server** changes the region, and **Cancel** keeps
 the old one. When nothing would leave, the region changes at once.
 
 The page shows the region you picked and **Queued** until the server reports it, then the server's

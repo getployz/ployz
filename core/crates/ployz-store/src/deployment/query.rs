@@ -136,7 +136,7 @@ pub struct OwnedNamespace {
     /// The region its Services run in as Working State has it, for the next Deploy; none
     /// when it runs in any region.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[ts(as = "Option<String>", optional)]
     pub region: Option<ployz_core::Region>,
 }
 

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { Region } from "@ployz/sdk";
+import type { NamedRegion } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as storeFunctions from "#/modules/config-store/store.functions";
@@ -42,7 +42,7 @@ function machine(id: string, region: string | null): RuntimeMachineRecord {
 const fsn = machine("1", "fsn");
 const bare = machine("4", null);
 const fleet = [fsn, machine("2", "syd"), machine("3", "default"), bare];
-const REGIONS: Region[] = [{ key: "default", name: "Default" }, { key: "fsn", name: "Falkenstein" }, { key: "syd", name: "Sydney" }];
+const REGIONS: NamedRegion[] = [{ key: "default", name: "Default" }, { key: "fsn", name: "Falkenstein" }, { key: "syd", name: "Sydney" }];
 
 async function pick(name: string) {
   fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
@@ -53,7 +53,7 @@ async function pick(name: string) {
   fireEvent.click(option);
 }
 
-function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS, placed = [] }: { allowed?: boolean; machines?: RuntimeMachineRecord[]; regions?: Region[]; placed?: Placed[] } = {}) {
+function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS, placed = [] }: { allowed?: boolean; machines?: RuntimeMachineRecord[]; regions?: NamedRegion[]; placed?: Placed[] } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   render(
@@ -140,9 +140,9 @@ it("leaves the field read-only for a member who can't change policy", () => {
 });
 
 const RUNNING: Placed[] = [
-  { key: "shop-production/web", name: "web", volume: null, environment: "shop/production", region: "default" },
-  { key: "shop-production/postgres", name: "postgres", volume: "pg-data", environment: "shop/production", region: "default" },
-  { key: "blog-production/api", name: "api", volume: null, environment: "blog/production", region: "fsn" },
+  { key: "shop-production/web", name: "web", environment: "shop/production", region: "default" },
+  { key: "shop-production/postgres", name: "postgres", environment: "shop/production", region: "default" },
+  { key: "blog-production/api", name: "api", environment: "blog/production", region: "fsn" },
 ];
 const vm3 = machine("3", "default");
 const withDefaultPeer = [...fleet, machine("6", "default")];
@@ -155,7 +155,7 @@ it("asks before a move that sends Services off the Server, naming each with its 
   expect(within(dialog).getByText("These leave server-3 on the next deploy.")).toBeTruthy();
   expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
     "webshop/production→ server-6",
-    "postgres · pg-datashop/production→ server-6",
+    "postgresshop/production→ server-6",
     "apiblog/production→ server-1",
   ]);
   expect(requestChange).not.toHaveBeenCalled();

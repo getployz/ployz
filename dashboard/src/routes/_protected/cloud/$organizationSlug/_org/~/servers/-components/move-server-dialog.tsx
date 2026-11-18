@@ -1,11 +1,11 @@
-import type { Region } from "@ployz/sdk";
+import type { NamedRegion } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { regionName } from "#/modules/machines/server-regions";
 import type { Leaving } from "#/modules/machines/server-move";
 
-function destination(row: Leaving, regions: readonly Region[] | undefined) {
+function destination(row: Leaving, regions: readonly NamedRegion[] | undefined) {
   const region = regionName(row.region, regions);
   const [only, ...more] = row.to;
   if (only === undefined) return `No server in ${region}`;
@@ -17,7 +17,7 @@ export function MoveServerDialog({ serverName, regionName: to, rows, regions, op
   /** The region's name, or null when the Server leaves every region. */
   regionName: string | null;
   rows: readonly Leaving[];
-  regions: readonly Region[] | undefined;
+  regions: readonly NamedRegion[] | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
@@ -33,7 +33,7 @@ export function MoveServerDialog({ serverName, regionName: to, rows, regions, op
           {rows.map((row) => (
             <Item key={row.key} role="listitem" variant="outline" size="xs">
               <ItemContent className="min-w-0">
-                <ItemTitle>{row.volume === null ? row.name : `${row.name} · ${row.volume}`}</ItemTitle>
+                <ItemTitle>{row.name}</ItemTitle>
                 <ItemDescription className="font-mono">{row.environment}</ItemDescription>
               </ItemContent>
               <ItemActions><ItemDescription>{destination(row, regions)}</ItemDescription></ItemActions>

@@ -18,6 +18,8 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
+import { useServerList } from "#/modules/machines/use-servers";
+import { firstServerRegion } from "#/modules/machines/server-regions";
 
 /** Creates an empty root Environment and opens its canvas. */
 export function CreateEnvironmentDialog({
@@ -33,6 +35,8 @@ export function CreateEnvironmentDialog({
   const markHere = useStillHere();
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
+  // Its Services run where the Cluster's first Server is; an Environment from before this stays in any region.
+  const region = firstServerRegion(useServerList(organizationSlug).servers.map(({ machine }) => machine));
   const mutation = useMutation({
     mutationFn: async (input: {
       organizationSlug: string;
@@ -44,8 +48,8 @@ export function CreateEnvironmentDialog({
       if (invalid) throw new Error(invalid);
       // The Store names it as typed, or says why not in the form.
       const id = crypto.randomUUID();
-      await writer.commit({ command: "create_environment", id, project: input.projectSlug, name: input.name },
-        ["invalid_argument", "conflict"]);
+      const create = { command: "create_environment", id, project: input.projectSlug, name: input.name } as const;
+      await writer.commit(region === null ? create : { ...create, region }, ["invalid_argument", "conflict"]);
       return input.name;
     },
     onSuccess: async (environmentSlug, input) => {

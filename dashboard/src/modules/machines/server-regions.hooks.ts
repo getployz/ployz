@@ -1,4 +1,4 @@
-import type { ConfigView, Region } from "@ployz/sdk";
+import type { ConfigView, OwnedNamespace, NamedRegion } from "@ployz/sdk";
 import { keepPreviousData, useQueries } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -10,7 +10,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
  * The Organization's regions with their names: those the Servers' `labels` hold and those given a name. Undefined
  * until the Store first answers; empty after a refusal or a failed read.
  */
-export function useRegions(organizationSlug: string, labels: readonly string[]): readonly Region[] | undefined {
+export function useRegions(organizationSlug: string, labels: readonly string[]): readonly NamedRegion[] | undefined {
   const scope = useCollectionScope();
   const [read] = useQueries({ queries: [{
     ...storeViewOptions(organizationSlug, scope, { query: "regions", labels: [...labels] }),
@@ -19,6 +19,18 @@ export function useRegions(organizationSlug: string, labels: readonly string[]):
   }] });
   if (read.data?.ok) return read.data.value.regions;
   return read.data !== undefined || read.isError ? [] : undefined;
+}
+
+const NO_NAMESPACES: readonly OwnedNamespace[] = [];
+
+/**
+ * The Namespaces the Organization's Environments own, each with the region its Environment runs in. Empty until the
+ * Store answers, and after a refusal or a failed read: nothing then reads as placed.
+ */
+export function useOwnedNamespaces(organizationSlug: string): readonly OwnedNamespace[] {
+  const scope = useCollectionScope();
+  const [read] = useQueries({ queries: [storeViewOptions(organizationSlug, scope, { query: "namespaces" })] });
+  return read.data?.ok ? read.data.value.namespaces : NO_NAMESPACES;
 }
 
 export type NewRegion =
@@ -58,7 +70,7 @@ export function useNewRegions(organizationSlug: string, names: readonly string[]
 export function useNameRegion(organizationSlug: string) {
   const { queryClient } = useCollectionScope();
   const writer = useStoreWriter(organizationSlug);
-  return (region: Region) => {
+  return (region: NamedRegion) => {
     queryClient.setQueriesData<StoreResult<ConfigView>>(
       { queryKey: storeViewPrefix(organizationSlug), predicate: (query) => queryOf(query)?.query === "regions" },
       (result) => withName(result, region),
@@ -67,7 +79,7 @@ export function useNameRegion(organizationSlug: string) {
   };
 }
 
-function withName(result: StoreResult<ConfigView> | undefined, region: Region) {
+function withName(result: StoreResult<ConfigView> | undefined, region: NamedRegion) {
   if (result?.ok !== true || result.value.view !== "regions") return result;
   const regions = [...result.value.regions.filter((each) => each.key !== region.key), region].sort((a, b) => a.key.localeCompare(b.key));
   return { ok: true, value: { ...result.value, regions } } as const;

@@ -15,7 +15,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "#/components/ui/sh
 import { Skeleton } from "#/components/ui/skeleton";
 import { placedServices } from "#/modules/machines/server-move";
 import { regionLabels } from "#/modules/machines/server-regions";
-import { useRegions } from "#/modules/machines/server-regions.hooks";
+import { useOwnedNamespaces, useRegions } from "#/modules/machines/server-regions.hooks";
 import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
@@ -157,6 +157,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
   const strays = useStrayNamespaces(organizationSlug, server.services.flatMap((service) => service.namespace ?? []));
   const machines = servers.map((each) => each.machine);
   const regions = useRegions(organizationSlug, regionLabels(machines));
+  const owned = useOwnedNamespaces(organizationSlug);
   // A Drain cordons this Server and copies images from it: it needs the Server online, and the page to see it.
   const unavailable = stale
     ? "Drain needs Cloud to reach your servers."
@@ -178,7 +179,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
       />
       <ServerWebTrafficSection view={webTraffic.view} onTurnOn={webTraffic.turnOn} onAskOff={webTraffic.ask} unavailable={webUnavailable} gate={operate} />
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} gate={operate} />
-      <ServerRegionSection machine={machine} machines={machines} placed={placedServices(server.services)} regions={regions} organizationSlug={organizationSlug} gate={operate} />
+      <ServerRegionSection machine={machine} machines={machines} placed={placedServices(server.services, owned)} regions={regions} organizationSlug={organizationSlug} gate={operate} />
       <RemoveServerSection
         machine={machine}
         machines={machines}

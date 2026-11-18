@@ -1,4 +1,4 @@
-import type { Region } from "@ployz/sdk";
+import type { NamedRegion } from "@ployz/sdk";
 import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
@@ -75,7 +75,7 @@ export function ServerRow({ organizationSlug, server, regions, upgrade, stale, a
   organizationSlug: string;
   server: Server;
   /** Undefined until the region names arrive. */
-  regions: readonly Region[] | undefined;
+  regions: readonly NamedRegion[] | undefined;
   upgrade: ServerUpgradeLine;
   stale: boolean;
   /** Its activation, as it last reported it; null on a Ployz older than 0.4 or before it answered. */

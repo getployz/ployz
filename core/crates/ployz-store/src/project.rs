@@ -68,7 +68,7 @@ pub struct CreateEnvironment {
     /// The region its Services run in until it says otherwise, as the Servers' `region`
     /// label names it. Omitted means any region.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[ts(as = "Option<String>", optional)]
     pub region: Option<Region>,
 }
 

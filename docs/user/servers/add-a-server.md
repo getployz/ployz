@@ -63,8 +63,8 @@ A server joins the `default` region unless you name another one with `--region`:
 ployz server add --command --region fsn
 ```
 
-The printed line keeps `--region`. A region is up to 63 lowercase letters, digits and hyphens, and
-starts with a letter or digit. Capitals are lowered, so `FSN` joins `fsn`. `--label-add
+The printed line keeps `--region`. A region is made of letters, digits, hyphens, underscores and
+dots, such as `fsn` or `eu_west.1`. Capitals are lowered, so `FSN` joins `fsn`. `--label-add
 region=fsn` does the same. Give both with different regions and the command stops before anything
 starts, saying to keep `--region`. From the dashboard, you pick each server's region when you
 enroll it; see [Enroll the selection](add-many-servers.md#enroll-the-selection).

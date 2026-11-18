@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Region } from "@ployz/sdk";
+import type { NamedRegion } from "@ployz/sdk";
 import { serverStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
@@ -36,7 +36,7 @@ function server(input: { membership?: RuntimeMachineRecord["membership"]; servic
   return { machine, name: machine.name, status: serverStatus(machine), services };
 }
 
-async function row(shown: Server, upgrade: ServerUpgradeLine = null, regions: readonly Region[] = []) {
+async function row(shown: Server, upgrade: ServerUpgradeLine = null, regions: readonly NamedRegion[] = []) {
   const root = createRootRoute({ component: () => <ServerRow organizationSlug="acme" server={shown} regions={regions} upgrade={upgrade} stale={false} /> });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
   const queryClient = new QueryClient();

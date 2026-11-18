@@ -153,6 +153,7 @@ pub(crate) fn shown(key: &RegionKey, given: Option<&RegionName>) -> String {
 
 /// One region: its key, and the name it shows as.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[ts(rename = "NamedRegion")]
 pub struct Region {
     pub key: RegionKey,
     /// The name it was given, else its built-in one (see [`shown`]).

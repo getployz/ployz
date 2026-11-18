@@ -1,4 +1,4 @@
-import type { Region } from "@ployz/sdk";
+import type { NamedRegion } from "@ployz/sdk";
 import { useEffect, useState } from "react";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
@@ -14,14 +14,14 @@ import { MoveServerDialog } from "./move-server-dialog";
 const NO_REGION = "no region";
 const NEW_REGION = "new region";
 
-type Move = { readonly region: string | null; readonly name: string | null; readonly created: Region | null; readonly leaving: readonly Leaving[] };
+type Move = { readonly region: string | null; readonly name: string | null; readonly created: NamedRegion | null; readonly leaving: readonly Leaving[] };
 
 export function ServerRegionSection({ machine, machines, placed, regions, organizationSlug, gate }: {
   machine: RuntimeMachineRecord;
   machines: readonly RuntimeMachineRecord[];
   placed: readonly Placed[];
   /** Undefined until the region names arrive. */
-  regions: readonly Region[] | undefined;
+  regions: readonly NamedRegion[] | undefined;
   organizationSlug: string;
   gate: RoleGate;
 }) {
@@ -35,11 +35,11 @@ export function ServerRegionSection({ machine, machines, placed, regions, organi
   const choices = regions ?? [];
   const label = policy.region;
 
-  const apply = (region: string | null, created: Region | null) => {
+  const apply = (region: string | null, created: NamedRegion | null) => {
     policy.request({ region });
     if (created !== null) void nameRegion(created);
   };
-  const move = (region: string | null, created: Region | null = null) => {
+  const move = (region: string | null, created: NamedRegion | null = null) => {
     const leaving = leavingServer(machine.id, region, placed, machines);
     if (leaving.length === 0) apply(region, created);
     else setMoving({ region, name: created?.name ?? regionName(region, regions), created, leaving });
@@ -58,7 +58,7 @@ export function ServerRegionSection({ machine, machines, placed, regions, organi
     setConfirming(false);
   };
   const create = check.kind === "new" ? { key: check.key, name: draft.trim() } : null;
-  const createIn = (region: Region) => {
+  const createIn = (region: NamedRegion) => {
     move(region.key, region);
     stopNaming();
   };

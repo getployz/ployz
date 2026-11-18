@@ -18,8 +18,16 @@ ployz server set web-1 --label-add region=fsn
 ```
 
 Choose any short name made of letters, digits, hyphens, underscores and dots. A label with other
-characters, such as a space, is not a region. Servers with the same name are in the same region.
-Upper and lower case are the same, so `FSN` is `fsn`.
+characters, such as a space or a slash, is not a region, and `ployz server set` and `ployz server
+add` refuse it. Servers with the same name are in the same region. Upper and lower case are the
+same, so `FSN` is `fsn`.
+
+## A new environment's region
+
+In Ployz Cloud, a new environment runs in the region of the cluster's first server, by name, that has
+one. On a new cluster that is **Default**, which every server starts in. Its **Runs in** setting
+shows the region's name. An environment you made before this keeps **Any region**, and a branch
+starts with its parent's region.
 
 ## Set an environment's region
 
