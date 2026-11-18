@@ -101,25 +101,45 @@ ployz deploy
 ## When a volume is outside the region
 
 A service with a [volume](volumes.md) runs on the volume's server. If that server is outside the
-region, the deploy doesn't start the service, and names the volume and where it is:
+region, the deploy moves the volume to a server in the region first, then starts the service there.
+`ployz deploy --plan` and Details in the dashboard list the move:
+
+```
+postgres → fsn
+pg-data moves db-1 → web-1
+```
+
+The volume goes to a server in the region that holds its [mirror](mirror-a-volume.md). With no
+mirror there, it goes to one with managed volumes and room for it. To choose the server yourself,
+stage the move with **Make primary** before you deploy. See [Move a volume](move-a-volume.md) for
+what a move does to the service while it runs.
+
+If the move fails, the volume stays where it was and the deploy doesn't start that service. The
+rest of the deploy goes ahead, and the service keeps running where it was:
 
 ```
 postgres: not started (pg-data is on db-1)
 ```
 
-The rest of the deploy goes ahead, and the service keeps running where it was. The deployment
-reads **Deployed, 1 waiting**, and `ployz deploy` exits 3. Move the volume with the command the
-deploy prints, then deploy again:
+Deploy again to try the move again, or move the volume with the command the deploy prints:
 
 ```sh
 ployz volume move pg-data --to web-1
 ployz deploy
 ```
 
-See [Move a volume](move-a-volume.md) for what a move does to the service while it runs.
+The deploy also leaves the volume where it is, and prints that command, when:
 
-Moving a volume needs Ployz Cloud. Without it, give the volume's server the region, or change the
-environment's region.
+- **You have no Ployz Cloud.** Moving a volume needs it. Give the volume's server the region, or
+  change the environment's region.
+- **Your servers enforce device approval and the deploy came from the CLI, a push or the agent.**
+  A deploy from the dashboard asks for your passkey and moves the volume.
+
+A Docker volume can't move. Give its server the region, or change the environment's region:
+
+```
+postgres: not started (pg-data is a Docker volume and can't move)
+```
 
 ## When no server is in the region
 
@@ -136,9 +156,8 @@ If the region has servers but none can run services, the line names them:
 web: not started (fsn-1 is down, and no other Server in fsn is up)
 ```
 
-Replicas that already run keep running. With two services left waiting, the deployment reads
-**Nothing deployed, 2 waiting**, and `ployz deploy` exits 3. Give a server the region, bring its
-server back, or change the environment's region, and deploy again.
+Replicas that already run keep running. Give a server the region, bring its server back, or change
+the environment's region, and deploy again.
 
 A service with a count for each region isn't started when any of its regions has no server that
 can run it. The deploy names every such region, and the service's replicas in its other regions
