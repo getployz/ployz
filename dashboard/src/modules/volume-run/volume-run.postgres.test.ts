@@ -3305,11 +3305,11 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: expect.stringMatching(/^web was stopped \d+s$/) }]);
     });
 
-    it("a Server the Service's regions leave out becomes the writer, and the Service stays stopped for the Deploy that places it there", async () => {
+    it("a Deploy's move into the region makes a Server the Service's regions leave out the writer, and the Service stays stopped for that Deploy to start", async () => {
       regions = { fsn: 1 };
       storeRegion = "syd";
       machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
-      const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1") } });
+      const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1"), region: true } });
 
       await execute(run.id);
 
@@ -3319,11 +3319,47 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "done", message: "web was not started; a Deploy starts it on syd-1" }]);
     });
 
-    it("a move onto a Server outside the Environment's region says a region change starts the Service, and promises no move back", async () => {
+    describe("a target relabelled out of the Service's regions after the move was admitted", () => {
+      const refused = "web's last Deploy doesn't run it on fsn-2, so this move would stop web and start it nowhere. Nothing moved. Change where web runs and deploy, or move data now and leave web stopped";
+      const admitted = async () => {
+        regions = { fsn: 1 };
+        storeRegion = "fsn";
+        machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "fsn-2", pool: true, copy: null, region: "fsn" }];
+        const input = approvedRun({ kind: "move", args: { to: "fsn-2", service: deployed("fsn-1") } });
+        expect(await runEffect(planVolumeRun(organizationId, { volumeId, environment, ...input }))).toMatchObject({ ok: true });
+        return requested(input);
+      };
+      const relabel = () => { machines[1] = { ...named("fsn-2"), region: "syd" }; };
+
+      it("before the run starts: nothing is copied or stopped, and the run says why", async () => {
+        const run = await admitted();
+        relabel();
+
+        await execute(run.id);
+
+        expect(verbs).toEqual([]);
+        expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+        expect(await rows()).toMatchObject([{ kind: "move", state: "failed", message: refused }]);
+      });
+
+      it("during the warm copy: the Service is never stopped, and the run says why", async () => {
+        const run = await admitted();
+        beforeSet.set("pull@fsn-2", relabel);
+
+        await execute(run.id);
+
+        expect(verbs.filter((verb) => /^(cut|writer)@/.test(verb))).toEqual([]);
+        expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false });
+        expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+        expect((await rows())[0]).toMatchObject({ kind: "move", state: "failed", message: refused });
+      });
+    });
+
+    it("a move asked to leave the Service stopped outside the Environment's region says a region change starts it, and promises no move back", async () => {
       regions = { fsn: 1 };
       storeRegion = "fsn";
       machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), region: "fsn" }, { name: "syd-1", pool: true, copy: null, region: "syd" }];
-      const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1") } });
+      const run = await requested({ kind: "move", args: { to: "syd-1", service: deployed("fsn-1"), leave_stopped: true } });
 
       await execute(run.id);
 

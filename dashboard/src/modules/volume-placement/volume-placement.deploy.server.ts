@@ -302,7 +302,10 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
     // The step carries the person's passkey answer kept for it, if any; a Server that enforces refuses it without one.
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...withApproval(step.run, row.staged?.approvals, members) }, {
+    const approved = withApproval(step.run, row.staged?.approvals, members);
+    // This Deploy starts the Service in the region it moves the Volume into, so that move may end with it stopped.
+    const run = approved.kind === "move" && row.staged?.region === true ? { ...approved, args: { ...approved.args, region: true as const } } : approved;
+    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...run }, {
       end: "yielded", fences: replanning?.waited.step.run.kind,
     });
     if (requested.ok) {

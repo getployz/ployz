@@ -776,7 +776,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const deployments = input.kind === "resize" ? Option.getOrUndefined(yield* answered(deploymentsSeen(organizationId, input.environment))) : undefined;
   const members = yield* answered(observeVolumeMembers(organizationId, volume.dockerVolume, input.kind === "resize" ? { ...input, recordedBytes: volume.recordedBytes } : input));
   if (Option.isNone(members)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
-  if (input.kind === "move" && input.args.leave_stopped !== true) {
+  if (input.kind === "move" && !mayEndStopped(input.args)) {
     const stops = yield* answered(leavesStopped(organizationId, volume, input.args));
     if (Option.isNone(stops)) return { ok: false, refusal: unanswered } satisfies ClusterPlan;
     if (stops.value !== null) return { ok: false, refusal: stops.value } satisfies ClusterPlan;
@@ -1798,13 +1798,17 @@ const runsOn = (spec: ResolvedServiceSpec, namespace: string, target: Parameters
   Effect.orElseSucceed(() => true),
 );
 
+/** A Move that may end with its Service stopped: a person asked for that, or the Deploy that made it starts the Service. */
+const mayEndStopped = (args: VolumeRunArgs["move"]) => args.leave_stopped === true || args.region === true;
+
 /**
- * Why a Move a person asked for is refused before anything stops: the Service runs on the Volume's Server, and the spec
- * the Move would start it with doesn't run on the target, so the Move would stop it and start nothing. Null for a Move
- * that starts its Service, or stops none. A Deploy's own Move into a region is not asked this way: that Deploy starts
- * the Service once the Volume is there.
+ * Why a Move is refused before anything stops: the Service runs on the Volume's Server, and the spec the Move would
+ * start it with doesn't run on the target, so the Move would stop it and start nothing. Null for a Move that starts its
+ * Service, or stops none.
  */
-const leavesStopped = Effect.fn("VolumeRun.leavesStopped")(function* (organizationId: string, volume: ResolvedVolume, args: VolumeRunArgs["move"]) {
+const leavesStopped = Effect.fn("VolumeRun.leavesStopped")(function* (
+  organizationId: string, volume: Pick<ResolvedVolume, "dockerVolume" | "volumeName">, args: VolumeRunArgs["move"],
+) {
   const session = yield* openSession(organizationId);
   const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
   const target = frame.machines.find(({ machine }) => args.machine === undefined ? machine.name === args.to : machine.id === args.machine)?.machine;
@@ -1824,6 +1828,18 @@ const leavesStopped = Effect.fn("VolumeRun.leavesStopped")(function* (organizati
     details: { reason: "leaves_service_stopped", service, server: target.name, deploys },
   } satisfies StoreRefusal;
 }, Effect.scoped);
+
+/**
+ * `findHolder` for a Move about to copy or cut. It asks what admission asked again, since the target's labels or the
+ * Service's last Deploy may have changed since: a Move that would now stop the Service and start it nowhere is refused
+ * here, while the Service still runs.
+ */
+export const findMovable = Effect.fn("VolumeRun.findMovable")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
+  const found = yield* findHolder(ctx, inngestRunId, machine);
+  if (!found.ok || ctx.kind !== "move" || mayEndStopped(ctx.args)) return found;
+  const stops = yield* leavesStopped(ctx.organizationId, ctx, ctx.args);
+  return stops === null ? found : { ok: false, refusal: { code: "invalid", message: stops.message } } as const;
+});
 
 /** The one region the next Deploy runs `service` of `namespace` in, as the Store has it now. Null for any region, and when the Store doesn't say. */
 const nextRegion = (organizationId: string, namespace: string, service: string) => Effect.gen(function* () {

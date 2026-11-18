@@ -60,9 +60,11 @@ export type VolumeRunArgs = {
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" } & Approved;
   /**
    * `leave_stopped`: the person asked for the Move although the Service's last Deploy doesn't run it on the target, so it
-   * stays stopped until a Deploy starts it there. Without it such a Move is refused before anything stops.
+   * stays stopped until a Deploy starts it there. `region`: a Deploy's own Move of the Volume into its Service's region,
+   * where that Deploy starts the Service. A Move with neither is refused before anything stops when it would leave the
+   * Service stopped.
    */
-  move: Destination & Approved & Starting & { readonly leave_stopped?: true };
+  move: Destination & Approved & Starting & { readonly leave_stopped?: true; readonly region?: true };
   /**
    * `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine. The
    * release of a Move carries the Move's approval and spec.

@@ -800,7 +800,7 @@ describe("deploying a Volume placement", () => {
       const started = await run(advancePlacement(organizationId, "dep-3", null, inspect, answered));
       if (started.kind !== "wait") throw new Error("expected a run");
       const { rows } = await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId]);
-      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-2" } }]);
+      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-2", region: true } }]);
     });
 
     it("keeps the move its Deploy took when a Deploy admitted alongside picks another Server", async () => {
@@ -863,7 +863,7 @@ describe("deploying a Volume placement", () => {
       const started = await run(advancePlacement(organizationId, "dep-2", null, inspect, answered));
       if (started.kind !== "wait") throw new Error("expected a run");
       const { rows } = await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId]);
-      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-2" } }]);
+      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-2", region: true } }]);
     });
 
     it("stays put, and the Deploy goes on, while its move would delete an old copy the Deploy didn't accept", async () => {
@@ -903,7 +903,7 @@ describe("deploying a Volume placement", () => {
       const started = await run(advancePlacement(organizationId, "dep-2", null, inspect, answered));
       if (started.kind !== "wait") throw new Error("expected a run");
       const { rows } = await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId]);
-      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-1", approval, service } }]);
+      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-1", approval, service, region: true } }]);
     });
 
     it("leaves a queued Deploy the move it took when that Deploy starts before a later one's write", async () => {
@@ -948,7 +948,7 @@ describe("deploying a Volume placement", () => {
       const started = await run(advancePlacement(organizationId, "dep-3", null, inspect, answered));
       if (started.kind !== "wait") throw new Error("expected a run");
       const { rows } = await harness.pool.query(`select kind, args from volume_run where id = $1`, [started.wait.runId]);
-      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-1", approval, service } }]);
+      expect(rows).toEqual([{ kind: "move", args: { to: "fsn-1", approval, service, region: true } }]);
     });
 
     it("drops the move a cancelled Deploy left staged once the Environment has no region", async () => {

@@ -32,6 +32,7 @@ import {
   failAndRelease,
   failRun,
   findHolder,
+  findMovable,
   findKept,
   handedTo,
   inspectCopy,
@@ -825,7 +826,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)));
 
   if (phase.start === "rounds") {
-    const found = await step.run("02-service", () => runEffect(findHolder(run, runId, A)));
+    const found = await step.run("02-service", () => runEffect(findMovable(run, runId, A)));
     if (!found.ok) {
       await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
       return { runId: run.id, refused: found.refusal };
@@ -841,8 +842,10 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
 
   try {
     if (phase.start === "rounds" || phase.start === "cut") {
+      // Asked again after the image, which can take as long as the rounds: the cut is next.
       const imaged = await step.run("04-image", () => runEffect(findHolder(run, runId, A).pipe(
         Effect.tap((found) => (found.ok ? copyImage(run, runId, A, found.holder, B) : Effect.void)),
+        Effect.andThen(findMovable(run, runId, A)),
       )));
       if (!imaged.ok) throw new NonRetriableError(imaged.refusal.message);
       service = imaged.holder.redactedSpec.name;
