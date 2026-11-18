@@ -275,7 +275,7 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "seed_volume",
         "ployz.volume.seed.v1",
         "Container",
-        "Operator",
+        "Full",
         "Unary",
     ),
     (

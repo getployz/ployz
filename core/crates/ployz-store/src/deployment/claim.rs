@@ -230,10 +230,9 @@ fn take(
     let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
     let ended_runs = ended_runs(tx, &stored.summary)?;
     let approval = device_approval(tx, &id)?;
-    let rule = match &stored.summary.admitted_by {
-        None => crate::auto_rule::stored(tx, &stored.summary.environment_id)?,
-        Some(_) => None,
-    };
+    // Whoever admitted the Deployment: a redeploy a person asked for reuses a rule-built
+    // image, and each Server checks the rule, the token and the branch head itself.
+    let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
     let generation = rule
         .as_ref()
         .and_then(|rule| rule.open().ok())

@@ -666,16 +666,6 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        // A seed puts one Volume's data under another name, which a Service a Device
-        // signed may mount and serve. No statement approves that, so only a Full caller
-        // seeds.
-        if Provenance::of(&request).operator() {
-            return local_error(LocalMachineError::DeployRefused(
-                ployz_core::authority::AuthorityRefusal::Mismatch {
-                    field: "a Volume seed",
-                },
-            ));
-        }
         let request = expect::<op::SeedVolume>(request)?;
         let _guard = self.switch_mutation.lock().await;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check

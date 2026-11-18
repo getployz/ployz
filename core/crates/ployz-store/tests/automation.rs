@@ -2275,6 +2275,36 @@ fn redeploy(n: u8, source: &ployz_store::DeploymentId) -> ployz_store::Retry {
     }
 }
 
+/// A Server admits a rule-built image only with the rule and the build's token, so the
+/// runner of a redeploy a person asked for gets both.
+#[test]
+fn a_persons_redeploy_of_a_rule_built_image_carries_the_rule_and_its_token() {
+    let (store, system_actor) = shop();
+    let first = format!("ployz-build/web@sha256:{}", "d".repeat(64));
+    let pushed = pushed_and_built(&store, &system_actor, "token-1", &first);
+    let again = redeploy(3, &pushed);
+    store
+        .write_trusted(
+            &person(),
+            &ployz_store::Admit::Retry(again.clone()),
+            &permitted(),
+        )
+        .unwrap();
+    reused(&store, &build_id(&again.id, "web"), &first);
+    let claimed = store
+        .claim(&again.id, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    assert!(claimed.rule.is_some());
+    assert_eq!(
+        claimed
+            .image_tokens
+            .values()
+            .map(|token| token.token.as_str())
+            .collect::<Vec<_>>(),
+        ["token-1"]
+    );
+}
+
 #[test]
 fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
     use ployz_core::authority::CommitAuthority;

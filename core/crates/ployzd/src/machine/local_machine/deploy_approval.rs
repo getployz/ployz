@@ -178,9 +178,6 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
             "This server starts a service on a moved or restored Volume only from a deploy an approved device signed."
         }
         AuthorityRefusal::Mismatch {
-            field: "a Volume seed",
-        } => "This server doesn't restore a volume's data into a new volume for Ployz Cloud.",
-        AuthorityRefusal::Mismatch {
             field: "the source Server",
         } => "This server copies a volume's data only from another server of its cluster.",
         AuthorityRefusal::Mismatch {

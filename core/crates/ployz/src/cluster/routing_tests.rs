@@ -415,6 +415,7 @@ const DIRECT: &[&str] = &[
     "SetDevice",
     "SetPasskey",
     "RemoveTrustedKey",
+    "SeedVolume",
     "Exec",
     "Build",
 ];

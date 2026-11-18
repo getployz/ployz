@@ -724,7 +724,7 @@ mod streaming_routing_tests {
     }
 
     #[test]
-    fn only_exec_trusted_key_changes_and_the_recovery_code_routes_need_full_scope() {
+    fn only_exec_a_seed_trusted_key_changes_and_the_recovery_code_routes_need_full_scope() {
         assert_eq!(
             super::ROUTES
                 .iter()
@@ -737,6 +737,7 @@ mod streaming_routing_tests {
                 "SetDevice",
                 "SetPasskey",
                 "RemoveTrustedKey",
+                "SeedVolume",
                 "Exec"
             ]
         );
