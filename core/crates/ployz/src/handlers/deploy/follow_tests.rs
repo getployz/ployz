@@ -22,6 +22,7 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
                 id: ProjectId::parse(mint()).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(mint()).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -113,6 +114,7 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
                 id: ProjectId::parse(mint()).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(mint()).unwrap(),
+                region: None,
             },
         )
         .unwrap();

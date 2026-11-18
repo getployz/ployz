@@ -1078,7 +1078,7 @@ fn server_ls_lists_an_organization_without_servers_as_empty() {
     assert_eq!(code, Some(0), "{stderr}");
     assert_eq!(
         stdout.unwrap(),
-        "SERVER\tMEMBERSHIP\tSTORAGE\tPUBLIC IP\tSUBNET\tDAEMON\tOS\n"
+        "SERVER\tREGION\tMEMBERSHIP\tSTORAGE\tPUBLIC IP\tSUBNET\tDAEMON\tOS\n"
     );
     assert!(stderr.contains("No Servers yet."), "{stderr}");
 }

@@ -26,27 +26,33 @@ pub(super) fn rename_command(command: Command) -> Command {
         .arg(positional("name", true).help("Its new name, up to 40 characters"))
 }
 
-pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
-    let store = store(root)?;
-    let leaf = leaf_matches(root);
+/// The Servers the context's Cluster has, none when it has no Cluster reachable.
+fn machines(leaf: &ArgMatches) -> Result<Vec<ployz_core::MachineObservation>, Error> {
     let context = leaf.get_one::<String>("context").map(String::as_str);
-    let machines = runtime()?.block_on(async {
+    runtime()?.block_on(async {
         Ok::<_, Error>(match connect_or_none(leaf, context).await? {
             Some(mut client) => client.machines().await?,
             None => Vec::new(),
         })
-    })?;
+    })
+}
+
+/// A Server's name and its `region` label's value.
+fn server_region(machine: &ployz_core::Machine) -> (&str, Option<&str>) {
+    let region = machine
+        .labels
+        .iter()
+        .find(|(key, _)| key.as_str() == REGION_LABEL)
+        .map(|(_, region)| region.as_str());
+    (machine.name.as_str(), region)
+}
+
+pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
+    let store = store(root)?;
+    let machines = machines(leaf_matches(root))?;
     let servers = machines
         .iter()
-        .map(|observed| {
-            let machine = &observed.machine;
-            let region = machine
-                .labels
-                .iter()
-                .find(|(key, _)| key.as_str() == REGION_LABEL)
-                .map(|(_, region)| region.as_str());
-            (machine.name.as_str(), region)
-        })
+        .map(|observed| server_region(&observed.machine))
         .collect::<Vec<_>>();
     let labels = servers
         .iter()
@@ -91,7 +97,16 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let key = RegionKey::parse(required(matches, "region")?)?;
     let name = RegionName::parse(required(matches, "name")?)?;
-    let named = store(root)?.write(&NameRegion { key, name })?;
+    let labels = machines(matches)?
+        .iter()
+        .filter_map(|observed| server_region(&observed.machine).1.map(str::to_owned))
+        .collect();
+    let named = store(root)?.write(&NameRegion {
+        key,
+        name,
+        labels,
+        creates: false,
+    })?;
     ui::done(
         &json!({ "region": named.key, "name": named.name }),
         format!("Renamed {} to {}. Nothing restarts.", named.key, named.name),

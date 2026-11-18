@@ -1380,10 +1380,7 @@ fn get_lists_the_region_above_the_settings() {
         let human = store.command(home.path()).arg("get").output().unwrap();
         assert!(human.status.success());
         let human = String::from_utf8(human.stdout).unwrap();
-        assert_eq!(
-            human.lines().next(),
-            Some(r#"@environment.region = "fsn" (no default)"#)
-        );
+        assert_eq!(human.lines().next(), Some(r#"@environment.region = "fsn""#));
         assert!(human.contains("web.image = "), "{human}");
     }
 }
