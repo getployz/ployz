@@ -107,6 +107,15 @@ impl Machine {
         })
     }
 
+    /// When the join that admitted this Machine was approved, as its record keeps it. None for
+    /// the founder and for a Machine that joined before approvals were kept. An observation: the
+    /// signature is not checked here.
+    #[must_use]
+    pub fn joined_at(&self) -> Option<crate::authority::Timestamp> {
+        let approval = self.join_approval.as_ref()?.open().ok()?;
+        Some(approval.issued_at)
+    }
+
     /// Management-plane address derived solely from this Machine's public key.
     #[must_use]
     pub fn management_address(&self) -> ManagementAddress {

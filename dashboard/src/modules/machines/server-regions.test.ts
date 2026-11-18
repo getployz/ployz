@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { firstServerRegion, regionLabels } from "./server-regions";
 
-const server = (subnet: string | null, region: string | null) => ({ subnet, region });
+const server = (subnet: string | null, region: string | null, joinedAt: number | null = null) => ({ subnet, joinedAt, region });
 
 it("starts a new Environment in the region of the Cluster's first Server, the lowest subnet, whatever its name", () => {
   expect(firstServerRegion([
@@ -9,6 +9,14 @@ it("starts a new Environment in the region of the Cluster's first Server, the lo
     server("10.210.9.0/24", "FSN"),
     server("10.210.11.0/24", "default"),
   ])).toBe("fsn");
+});
+
+it("starts a new Environment where the Server that joined first is, though a newer one reused a lower subnet", () => {
+  expect(firstServerRegion([server("10.210.0.0/24", "default", 2_000), server("10.210.1.0/24", "syd", 1_000)])).toBe("syd");
+});
+
+it("pins nothing in a mixed Cluster, whichever Server holds the lowest subnet", () => {
+  expect(firstServerRegion([server("10.210.0.0/24", "default", 2_000), server("10.210.1.0/24", null)])).toBeNull();
 });
 
 it("pins nothing when the first Server has no region, though a later one does", () => {

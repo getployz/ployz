@@ -117,6 +117,30 @@ pub struct Placement {
     pub constraints: std::collections::BTreeSet<PlacementConstraint>,
 }
 
+/// What the rule for a Cluster's first Server reads of one Server.
+#[derive(Clone, Copy, Debug)]
+pub struct JoinedServer<'a> {
+    pub subnet: crate::MachineSubnet,
+    /// When its join was approved, if the Machine record keeps it.
+    pub joined: Option<crate::authority::Timestamp>,
+    /// Its `region` label's value, if it has one.
+    pub label: Option<&'a str>,
+}
+
+impl<'a> JoinedServer<'a> {
+    #[must_use]
+    pub fn of(machine: &'a crate::Machine) -> Self {
+        Self {
+            subnet: machine.subnet,
+            joined: machine.joined_at(),
+            label: machine
+                .labels
+                .get(Region::LABEL)
+                .map(|value| value.as_str()),
+        }
+    }
+}
+
 /// Where a Server is, as its `region` Label says: `fsn`, `syd`. Lowercase, as a
 /// placement constraint compares it.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -163,17 +187,28 @@ impl Region {
         Ok(Self(value.to_ascii_lowercase()))
     }
 
-    /// The region a new Environment starts in: that of the Cluster's first Server, given each
-    /// Server's Machine Subnet and `region` label value. The first is the lowest Subnet, as
-    /// allocation hands out the lowest free one, so it is the Server that joined first. None
-    /// when that Server has no region, so a Cluster of Servers that predate regions, with one
-    /// added since, starts an Environment in any region.
+    /// The region a new Environment starts in: that of the Cluster's first Server. None when
+    /// any Server has no region, since a Cluster that predates regions, or one a Server from
+    /// before them is still in, cannot say which Server was first, and an Environment then runs
+    /// in any region. Otherwise the first is the one with the earliest recorded join time. A
+    /// Server with none was there before join approvals were kept, or founded the Cluster, so
+    /// it comes first. Servers that tie, or none of which has a join time, are told apart by
+    /// the lowest Machine Subnet, which allocation hands out first and a removed Server frees.
     #[must_use]
     pub fn of_first_server<'a>(
-        servers: impl IntoIterator<Item = (crate::MachineSubnet, Option<&'a str>)>,
+        servers: impl IntoIterator<Item = JoinedServer<'a>>,
     ) -> Option<Self> {
-        let (_, label) = servers.into_iter().min_by_key(|(subnet, _)| *subnet)?;
-        Self::parse(label?).ok()
+        let mut first: Option<(JoinedServer<'a>, Self)> = None;
+        for server in servers {
+            let region = Self::parse(server.label?).ok()?;
+            let earlier = first.as_ref().is_none_or(|(held, _)| {
+                (server.joined, server.subnet) < (held.joined, held.subnet)
+            });
+            if earlier {
+                first = Some((server, region));
+            }
+        }
+        first.map(|(_, region)| region)
     }
 
     #[must_use]

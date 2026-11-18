@@ -33,7 +33,7 @@ afterEach(() => {
 
 function machine(id: string, region: string | null): RuntimeMachineRecord {
   return {
-    id: id.repeat(32), name: `server-${id}`, subnet: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: false, acceptsServices: true,
+    id: id.repeat(32), name: `server-${id}`, subnet: null, joinedAt: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: false, acceptsServices: true,
     storage: "pool", buildConcurrency: null, region, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion: "0.3.0-beta.2", capabilities: [],
     poolCommittableBytes: null, sealing: null, membership: "up", unanswered: false, observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
@@ -197,6 +197,14 @@ it("asks before a move even when the Service sets its own replica regions, which
   section(vm3, { services: RUNNING.slice(0, 1), owned: replicated, machines: withDefaultPeer });
   await pick("Sydney");
   expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/production→ server-6"]);
+});
+
+it("asks before a move that takes a Server out of one of the regions a Service counts replicas in, though it counts the new one too", async () => {
+  const counted: OwnedNamespaces = { kind: "read", namespaces: [{ ...SHOP, replica_regions: { web: ["default", "syd"] } }] };
+  section(vm3, { services: RUNNING.slice(0, 1), owned: counted, machines: withDefaultPeer });
+  await pick("Sydney");
+  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/production→ server-6"]);
+  expect(requestChange).not.toHaveBeenCalled();
 });
 
 it("leaves out an offline Server as a place a Service can go", async () => {

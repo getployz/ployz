@@ -20,7 +20,7 @@ function observedSnapshot(): RuntimeSnapshot {
       {
         id: "m1",
         name: "node-1",
-        subnet: null, publicIp: null,
+        subnet: null, joinedAt: null, publicIp: null,
         acceptsIngress: true,
         endpoints: [],
         acceptsBuilds: true, acceptsServices: true, storage: null,
@@ -82,7 +82,7 @@ describe("projectRuntimeMachineRecord", () => {
       projectRuntimeMachineRecord({
         id: "m1",
         name: "node-1",
-        subnet: null, publicIp: null,
+        subnet: null, joinedAt: null, publicIp: null,
         acceptsIngress: true,
         endpoints: [],
         acceptsBuilds: true, acceptsServices: true, storage: null,
@@ -101,7 +101,7 @@ describe("projectRuntimeMachineRecord", () => {
     ).toEqual({
       id: "m1",
       name: "node-1",
-      subnet: null, publicIp: null,
+      subnet: null, joinedAt: null, publicIp: null,
       acceptsIngress: true,
       endpoints: [],
       acceptsBuilds: true, acceptsServices: true, storage: null,

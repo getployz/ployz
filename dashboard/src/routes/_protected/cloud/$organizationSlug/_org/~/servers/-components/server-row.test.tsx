@@ -26,7 +26,7 @@ afterEach(() => {
 
 function server(input: { membership?: RuntimeMachineRecord["membership"]; services?: string[]; storage?: RuntimeMachineRecord["storage"]; acceptsBuilds?: boolean; acceptsServices?: boolean; sealing?: RuntimeMachineRecord["sealing"]; region?: string | null } = {}): Server {
   const machine: RuntimeMachineRecord = {
-    id: "1".repeat(32), name: "fsn-1", subnet: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
+    id: "1".repeat(32), name: "fsn-1", subnet: null, joinedAt: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
     acceptsServices: input.acceptsServices ?? true, storage: input.storage === undefined ? "pool" : input.storage, buildConcurrency: null, region: input.region ?? null, effectiveBuildConcurrency: 1, runningBuilds: 0,
     daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, sealing: input.sealing ?? null, membership: input.membership ?? "up", unanswered: false, observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };

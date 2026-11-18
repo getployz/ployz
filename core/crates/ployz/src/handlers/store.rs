@@ -513,19 +513,11 @@ impl<'m> Store<'m> {
         )
     }
 
-    /// The region a new Environment starts in: the Cluster's first Server's. None when
-    /// that Server has none, or a Server went unobserved, which pins nothing.
+    /// The region a new Environment starts in: the Cluster's first Server's. None when any
+    /// Server has no region, or a Server went unobserved, which pins nothing.
     pub(crate) fn new_environment_region(&self) -> Option<Region> {
         let machines = self.observe_machines()?;
-        Region::of_first_server(machines.iter().map(|machine| {
-            (
-                machine.subnet,
-                machine
-                    .labels
-                    .get(Region::LABEL)
-                    .map(|value| value.as_str()),
-            )
-        }))
+        Region::of_first_server(machines.iter().map(ployz_core::JoinedServer::of))
     }
 
     /// The Servers' certificates, ingress Servers and their addresses, through `--connect` or the

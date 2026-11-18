@@ -94,6 +94,8 @@ export const runtimeWatchFrameSchema = Schema.Struct({
   machines: Schema.Array(runtimeWatchMachineSchema),
   /** Each Machine's build concurrency in effect, by Machine id. */
   effective_build_concurrency: Schema.Record(Schema.String, Schema.Number),
+  /** When each Machine's join was approved, in milliseconds, by Machine id; absent for the founder and older records. */
+  joined_at: Schema.Record(Schema.String, Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed({}))),
   containers: Schema.Array(runtimeWatchContainerSchema),
   volumes: Schema.Array(runtimeWatchVolumeCopySchema),
   certificates: Schema.Array(runtimeWatchCertificateSchema),
@@ -165,6 +167,7 @@ export function runtimeWatchFrameForTransport(
       storage: machine.storage ? { state: machine.storage.state } : null,
     })),
     effective_build_concurrency: { ...frame.effective_build_concurrency },
+    joined_at: { ...frame.joined_at },
     containers: frame.containers.map(runtimeWatchContainerForTransport),
     // Only managed Volumes have copies; their labels, options and paths stay on the Server.
     volumes: frame.volumes.flatMap((volume) => volume.storage.kind === "provisioned"
@@ -240,6 +243,7 @@ export function runtimeSnapshotFromWatchFrame(
       id: machine.machine.id,
       name: machine.machine.name,
       subnet: machine.machine.subnet,
+      joinedAt: frame.joined_at[machine.machine.id] ?? null,
       publicIp: machine.machine.public_ip,
       acceptsIngress: machine.machine.accepts_ingress,
       endpoints: [...machine.machine.advertised_endpoints],

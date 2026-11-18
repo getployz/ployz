@@ -1,15 +1,25 @@
-use ployz_core::{MachineSubnet, Region};
+use ployz_core::authority::Timestamp;
+use ployz_core::{JoinedServer, MachineSubnet, Region};
 
 fn subnet(text: &str) -> MachineSubnet {
     MachineSubnet::parse(text).unwrap()
 }
 
 fn first(servers: &[(&str, Option<&str>)]) -> Option<String> {
-    Region::of_first_server(
-        servers
+    first_joined(
+        &servers
             .iter()
-            .map(|(subnet_, label)| (subnet(subnet_), *label)),
+            .map(|(subnet, label)| (*subnet, None, *label))
+            .collect::<Vec<_>>(),
     )
+}
+
+fn first_joined(servers: &[(&str, Option<u64>, Option<&str>)]) -> Option<String> {
+    Region::of_first_server(servers.iter().map(|(subnet_, joined, label)| JoinedServer {
+        subnet: subnet(subnet_),
+        joined: joined.map(|millis| Timestamp::from_millis(millis).unwrap()),
+        label: *label,
+    }))
     .map(String::from)
 }
 
@@ -66,4 +76,47 @@ fn a_first_server_with_a_label_that_is_no_region_starts_environments_in_any_regi
         None
     );
     assert_eq!(first(&[]), None);
+}
+
+#[test]
+fn a_mixed_cluster_starts_environments_in_any_region_whichever_subnet_is_lowest() {
+    assert_eq!(
+        first(&[("10.210.0.0/24", Some("default")), ("10.210.1.0/24", None),]),
+        None,
+        "the Server on the freed lowest subnet joined last; the unlabelled one is older"
+    );
+}
+
+#[test]
+fn a_reused_subnet_does_not_make_the_newest_server_first() {
+    assert_eq!(
+        first_joined(&[
+            ("10.210.0.0/24", Some(2_000), Some("default")),
+            ("10.210.1.0/24", Some(1_000), Some("syd")),
+        ]),
+        Some("syd".to_owned()),
+        "the Server on the freed lowest subnet was approved after the one on the next"
+    );
+}
+
+#[test]
+fn a_server_with_no_recorded_join_comes_before_those_that_have_one() {
+    assert_eq!(
+        first_joined(&[
+            ("10.210.0.0/24", Some(2_000), Some("later")),
+            ("10.210.5.0/24", None, Some("founder")),
+        ]),
+        Some("founder".to_owned())
+    );
+}
+
+#[test]
+fn servers_joined_at_the_same_time_are_told_apart_by_subnet() {
+    assert_eq!(
+        first_joined(&[
+            ("10.210.4.0/24", Some(1_000), Some("b")),
+            ("10.210.3.0/24", Some(1_000), Some("a")),
+        ]),
+        Some("a".to_owned())
+    );
 }

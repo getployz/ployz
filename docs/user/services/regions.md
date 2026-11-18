@@ -24,12 +24,16 @@ same, so `FSN` is `fsn`.
 
 ## A new environment's region
 
-A new environment runs in the region of the cluster's first server, the one that joined first,
-whether you make it in Ployz Cloud, with `ployz env new` or `ployz up`, or as a new project's first
-environment. On a new cluster that is **Default**, which every server starts in. `ployz get
-@environment.region` shows it. If that server has no region, because it joined before regions, the
-new environment runs in any region. So does an environment you made before this, and a branch
-starts with its parent's region.
+A new environment runs in the region of the cluster's first server, the one that joined first. It
+does so whether you make it in Ployz Cloud, with `ployz env new` or `ployz up`, as a new project's
+first environment, or through the [Ployz agent](../account/agent-sidebar.md). A server that
+joins after you remove another is never first. On a new cluster that is **Default**, which every server starts
+in. `ployz get @environment.region` shows it.
+
+If any server in the cluster has no region, because it joined before regions, a new environment
+runs in any region, since the cluster has no single place to start it. Give those servers a region
+to pin new environments again. An environment you made before this also runs in any region, and a
+branch starts with its parent's region.
 
 ## Set an environment's region
 

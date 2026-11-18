@@ -47,11 +47,14 @@ enum ConfigRequest {
     FirstServerRegion { servers: Vec<ServerRegion> },
 }
 
-/// A Server's Machine Subnet and its `region` label value, as a caller sees them.
+/// A Server's Machine Subnet, when its join was approved and its `region` label value, as a
+/// caller sees them.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerRegion {
     subnet: crate::MachineSubnet,
+    #[serde(default)]
+    joined: Option<crate::authority::Timestamp>,
     region: Option<String>,
 }
 
@@ -79,13 +82,13 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
         ConfigRequest::ParseRegionName { value } => crate::Region::display_name(&value)
             .map(|name| serde_json::Value::String(name.to_owned()))
             .ok_or_else(|| ConfigError::at("name", crate::Region::NAME_RULE)),
-        ConfigRequest::FirstServerRegion { servers } => {
-            Ok(serde_json::to_value(crate::Region::of_first_server(
-                servers
-                    .iter()
-                    .map(|server| (server.subnet, server.region.as_deref())),
-            ))
-            .expect("a region is JSON"))
-        }
+        ConfigRequest::FirstServerRegion { servers } => Ok(serde_json::to_value(
+            crate::Region::of_first_server(servers.iter().map(|server| crate::JoinedServer {
+                subnet: server.subnet,
+                joined: server.joined,
+                label: server.region.as_deref(),
+            })),
+        )
+        .expect("a region is JSON")),
     }
 }

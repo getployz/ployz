@@ -126,8 +126,9 @@ pub use sealed::{
 };
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
-/// from it: the Services of its Containers, and each Machine's build
-/// concurrency in effect (its explicit value, or the automatic one).
+/// from it: the Services of its Containers, each Machine's build
+/// concurrency in effect (its explicit value, or the automatic one), and when each
+/// Machine's join was approved, for those whose record keeps it.
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 pub struct RuntimeWatchView {
     #[serde(flatten)]
@@ -135,6 +136,8 @@ pub struct RuntimeWatchView {
     pub services: Vec<ServiceObservation>,
     pub effective_build_concurrency:
         std::collections::BTreeMap<ployz_core::MachineId, ployz_core::BuildConcurrency>,
+    pub joined_at:
+        std::collections::BTreeMap<ployz_core::MachineId, ployz_core::authority::Timestamp>,
 }
 
 impl From<RuntimeWatchFrame> for RuntimeWatchView {
@@ -150,10 +153,16 @@ impl From<RuntimeWatchFrame> for RuntimeWatchView {
                 )
             })
             .collect();
+        let joined_at = frame
+            .machines
+            .iter()
+            .filter_map(|observed| Some((observed.machine.id, observed.machine.joined_at()?)))
+            .collect();
         Self {
             frame,
             services,
             effective_build_concurrency,
+            joined_at,
         }
     }
 }

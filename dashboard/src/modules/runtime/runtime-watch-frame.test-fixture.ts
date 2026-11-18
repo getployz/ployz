@@ -17,6 +17,7 @@ export function runtimeWatchFrameFixture(
   return {
     machines: [],
     effective_build_concurrency: {},
+    joined_at: {},
     containers: [],
     services: [],
     volumes: [],
