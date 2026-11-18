@@ -34,16 +34,21 @@ use crate::{
 };
 
 hex_newtype!(
-    /// SHA-256 of one Service's requested spec in canonical JSON, without its replica count
-    /// and rollout order, written as 64 lowercase hex digits.
+    /// SHA-256 of one Service's requested spec in canonical JSON, without its replica
+    /// counts and rollout order, written as 64 lowercase hex digits.
     PayloadDigest, "payload digest", 32, "", "64 lowercase hex digits"
 );
 
+/// The fields of a spec no [`PayloadDigest`] covers: they change how many copies run, in
+/// which regions and in what order, never what one runs. `regions` is out so a `ployz` and
+/// a Machine from before it, which drop the field, take the digest the others take.
+pub(super) const UNSIGNED: [&str; 3] = ["mode", "regions", "update"];
+
 impl PayloadDigest {
     /// The digest of `spec` as it runs in `namespace`. Managed Volumes are scoped to
-    /// `namespace` first, as the Machine's resolved spec carries them, and `mode` and
-    /// `update` are left out: they change how many copies run and in what order, never
-    /// what one runs. A field serde writes as `null` is left out, as absent.
+    /// `namespace` first, as the Machine's resolved spec carries them, and the
+    /// [`UNSIGNED`] fields are left out. A field serde writes as `null` is left out, as
+    /// absent.
     ///
     /// # Errors
     /// Returns a [`CanonicalError`] when the spec has no canonical form, or when scoping
@@ -69,8 +74,9 @@ impl PayloadDigest {
         let mut value =
             serde_json::to_value(spec).map_err(|error| CanonicalError::Parse(error.to_string()))?;
         if let Value::Object(fields) = &mut value {
-            fields.remove("mode");
-            fields.remove("update");
+            for unsigned in UNSIGNED {
+                fields.remove(unsigned);
+            }
         }
         drop_nulls(&mut value);
         edit(&mut value);
