@@ -1159,7 +1159,8 @@ fn assemble_plan(
                 | PlanError::VolumeServerTakesNoServices { .. }
                 | PlanError::RegionUnmatched { .. }
                 | PlanError::VolumeInSeveralRegions { .. }
-                | PlanError::VolumeOutsideRegion { .. }),
+                | PlanError::VolumeOutsideRegion { .. }
+                | PlanError::DockerVolumeOutsideRegion { .. }),
             ) if blocks_unmountable => {
                 let kind = error.blocked_kind(intent.options.mode().operator());
                 block_service(

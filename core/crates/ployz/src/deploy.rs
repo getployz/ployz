@@ -756,13 +756,6 @@ pub struct RegionAway {
     pub servers: Vec<(MachineName, ServerAway)>,
 }
 
-fn volume_outside_region(volume: &str, machine: &MachineName, to: Option<&MachineName>) -> String {
-    match to {
-        Some(_) => format!("{volume} is on {machine}"),
-        None => format!("{volume} is a Docker volume and can't move"),
-    }
-}
-
 fn region_unmatched(regions: &[RegionAway]) -> String {
     let (empty, away): (Vec<_>, Vec<_>) =
         regions.iter().partition(|region| region.servers.is_empty());
@@ -866,17 +859,24 @@ pub enum PlanError {
     #[error("{service} has a Volume, so its replicas run in one region")]
     VolumeInSeveralRegions { service: ServiceName },
     /// The Service is kept in a region, and its Volume is on a Server outside it.
-    #[error("{}", volume_outside_region(volume, machine, to.as_ref()))]
+    #[error("{volume} is on {machine}")]
     VolumeOutsideRegion {
         /// The Volume, as its owner named it.
         volume: String,
         machine: MachineName,
         /// A Server in the region the Service can run on, which the Volume can move to.
-        /// None for a Docker volume, which nothing moves.
-        to: Option<MachineName>,
+        to: MachineName,
         /// The Volume's mirror or old copy on a Server other than `to`: a move onto `to`
         /// is refused until that copy is deleted.
         copy: Option<(MachineName, SlotRole)>,
+    },
+    /// The Service is kept in a region, and its Docker volume, which nothing moves, is
+    /// on a Server outside it.
+    #[error("{volume} is a Docker volume and can't move")]
+    DockerVolumeOutsideRegion {
+        /// The Docker volume, as its owner named it.
+        volume: String,
+        machine: MachineName,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
@@ -1058,10 +1058,13 @@ impl PlanError {
     /// counts put a Volume in two regions.
     #[must_use]
     pub fn blocked_kind(&self, operator: ployz_core::Operator) -> ployz_core::BlockedKind {
-        let refused = if let Self::VolumeOutsideRegion { to, copy, .. } = self {
-            to.is_none() || copy.is_some() || !operator.is_cloud()
+        let refused = if let Self::VolumeOutsideRegion { copy, .. } = self {
+            copy.is_some() || !operator.is_cloud()
         } else {
-            matches!(self, Self::VolumeInSeveralRegions { .. })
+            matches!(
+                self,
+                Self::VolumeInSeveralRegions { .. } | Self::DockerVolumeOutsideRegion { .. }
+            )
         };
         if refused {
             ployz_core::BlockedKind::Refusal
@@ -1101,6 +1104,7 @@ impl PlanError {
             | Self::VolumeServerTakesNoServices { .. }
             | Self::RegionUnmatched { .. }
             | Self::VolumeOutsideRegion { .. }
+            | Self::DockerVolumeOutsideRegion { .. }
             | Self::CopiesUnknown { .. }
             | Self::VolumeHolderUnknown { .. }
             | Self::ProvisionedVolumeStorageRequired { .. }
@@ -1157,10 +1161,8 @@ impl PlanError {
                     ("reason".into(), serde_json::json!("volume_outside_region")),
                     ("volume".into(), serde_json::json!(volume)),
                     ("server".into(), serde_json::json!(machine)),
+                    ("to".into(), serde_json::json!(to)),
                 ]);
-                if let Some(to) = to {
-                    details.insert("to".into(), serde_json::json!(to));
-                }
                 if let Some((server, role)) = copy {
                     details.insert(
                         "copy".into(),
@@ -1169,6 +1171,14 @@ impl PlanError {
                 }
                 RpcError::conflict(self.to_string()).with_details(details.into())
             }
+            Self::DockerVolumeOutsideRegion {
+                ref volume,
+                ref machine,
+            } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                "reason": "docker_volume_outside_region",
+                "volume": volume,
+                "server": machine,
+            })),
             error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
                 RpcError::unavailable(error.to_string())
             }

@@ -269,6 +269,7 @@ impl Reported for PlanError {
             | PlanError::VolumeServerTakesNoServices { .. }
             | PlanError::RegionUnmatched { .. }
             | PlanError::VolumeOutsideRegion { .. }
+            | PlanError::DockerVolumeOutsideRegion { .. }
             | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
             PlanError::CapacityUnknown
             | PlanError::CopiesUnknown { .. }

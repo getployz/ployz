@@ -508,7 +508,8 @@ impl VolumePlan<'_> {
                     | PlanError::VolumeHolderUnknown { .. }
                     | PlanError::VolumeServerTakesNoServices { .. }
                     | PlanError::RegionUnmatched { .. }
-                    | PlanError::VolumeOutsideRegion { .. },
+                    | PlanError::VolumeOutsideRegion { .. }
+                    | PlanError::DockerVolumeOutsideRegion { .. },
                 ) => {}
                 Err(error) if super::volume_server_away(&error, snapshot, spec) => {}
                 result => result.map_err(|source| {
@@ -854,6 +855,7 @@ fn unmountable(
             | PlanError::VolumeHolderUnknown { .. }
             | PlanError::RegionUnmatched { .. }
             | PlanError::VolumeOutsideRegion { .. }
+            | PlanError::DockerVolumeOutsideRegion { .. }
     ) || requested
         .iter()
         .find(|spec| spec.name.as_str() == service)
@@ -1212,19 +1214,25 @@ fn outside_region(
         .machine
         .name
         .clone();
-    let docker = matches!(
+    let volume_name = plan.authored(name).to_owned();
+    if matches!(
         volume.source.kind(),
         ployz_core::RawVolumeSource::Ordinary { .. }
-    );
+    ) {
+        return Some(PlanError::DockerVolumeOutsideRegion {
+            volume: volume_name,
+            machine: holder,
+        });
+    }
     let copy = snapshot.machines.iter().find_map(|machine| {
         let role = slot(machine)?;
         (machine.machine.name != to).then(|| (machine.machine.name.clone(), role))
     });
     Some(PlanError::VolumeOutsideRegion {
-        volume: plan.authored(name).to_owned(),
+        volume: volume_name,
         machine: holder,
-        to: (!docker).then_some(to),
-        copy: copy.filter(|_| !docker),
+        to,
+        copy,
     })
 }
 

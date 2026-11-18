@@ -1287,10 +1287,6 @@ fn a_docker_volume_outside_the_region_says_it_cannot_move_and_names_no_server_to
 
     assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Refusal]);
     assert_eq!(rpc.message, "data is a Docker volume and can't move");
-    assert_eq!(
-        rpc.details.get("reason"),
-        Some(&serde_json::json!("volume_outside_region"))
-    );
     assert_eq!(rpc.details.get("to"), None);
 }
 
