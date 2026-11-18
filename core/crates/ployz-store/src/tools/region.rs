@@ -9,9 +9,6 @@ use super::input::tool_input;
 use super::machine::{Cx, Effect, Reach, Stop, Tool};
 use crate::{NameRegion, RegionKey, RegionName, RegionsQuery, region_servers};
 
-/// What a region key is, for a model to send.
-const REGION_KEY: &str = "^[a-z0-9][a-z0-9-]{0,62}$";
-
 tool_input! {
     pub(crate) struct RegionList {}
 }
@@ -50,7 +47,7 @@ impl Tool for RegionList {
 tool_input! {
     pub(crate) struct RegionRename {
         /// The region's key, the `region` label its Servers carry, e.g. `default`.
-        #[schemars(with = "String", pattern(REGION_KEY), example = &"default")]
+        #[schemars(with = "String", pattern(ployz_core::Region::PATTERN), example = &"default")]
         region: RegionKey,
         /// Its new name, one line of 1 to 40 characters.
         #[schemars(with = "String", length(min = 1, max = 40), example = &"Falkenstein")]
@@ -65,15 +62,25 @@ impl Tool for RegionRename {
     const DESCRIPTION: &'static str =
         "Rename a region. Its key, Servers and Environments stay as they are, so nothing restarts.";
     const EFFECT: Effect = Effect::Change { idempotent: true };
+    const REACH: Reach = Reach::CloudOnly { local_next: None };
 
     fn example() -> Value {
         json!({ "region": "default", "name": "Falkenstein" })
     }
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let mut answers = cx.read(vec![servers()])?.into_iter();
+        let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+        let labels = answer
+            .servers
+            .iter()
+            .filter_map(|server| server.region.clone())
+            .collect();
         let named = cx.write(&NameRegion {
             key: self.region,
             name: self.name,
+            labels,
+            creates: false,
         })?;
         Ok(json!({ "region": named.key, "name": named.name }))
     }

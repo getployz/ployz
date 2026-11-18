@@ -49,6 +49,7 @@ fn retiring_api() -> (ConfigStore, Actor) {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();

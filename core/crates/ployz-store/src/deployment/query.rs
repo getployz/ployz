@@ -138,6 +138,20 @@ pub struct OwnedNamespace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(as = "Option<String>", optional)]
     pub region: Option<ployz_core::Region>,
+    /// Working State could not be read, so `region` and `replica_regions` say nothing:
+    /// where its Services run next is unknown, not any.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub unread: bool,
+    /// The regions each Service that sets its replicas by region runs in, by name. Such
+    /// a Service runs there whatever region the Environment names. Keyed by the Service's
+    /// name and its Private DNS name, the one its containers carry.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(
+        optional,
+        as = "Option<BTreeMap<ServiceName, Vec<ployz_core::Region>>>"
+    )]
+    pub replica_regions: BTreeMap<ServiceName, Vec<ployz_core::Region>>,
 }
 
 /// One page of an Environment's Deployments, newest first.
@@ -471,15 +485,27 @@ pub(crate) fn namespaces(tx: &mut dyn Tx, who: &Actor) -> Result<NamespacesView,
     let namespaces = rows
         .iter()
         .map(|row| {
+            // Cloud reads this view to name the Environment whose Working State it can't read.
+            let intent = row.intent(3, "Working State").ok();
+            let mut replica_regions = BTreeMap::new();
+            for service in intent.iter().flat_map(|intent| &intent.services) {
+                let regions: Vec<_> = service.config.replicas.regions().cloned().collect();
+                if regions.is_empty() {
+                    continue;
+                }
+                for name in [service.slug.as_str(), service.config.private_dns.as_str()] {
+                    if let Ok(name) = ServiceName::parse(name) {
+                        replica_regions.insert(name, regions.clone());
+                    }
+                }
+            }
             Ok(OwnedNamespace {
                 namespace: row.parse(0, "Namespace")?,
                 project: row.parse(1, "Project name")?,
                 environment: row.parse(2, "Environment name")?,
-                // Cloud reads this view to name the Environment whose Working State it can't read.
-                region: row
-                    .intent(3, "Working State")
-                    .ok()
-                    .and_then(|intent| intent.region),
+                unread: intent.is_none(),
+                region: intent.and_then(|intent| intent.region),
+                replica_regions,
             })
         })
         .collect::<Result<_, RpcError>>()?;

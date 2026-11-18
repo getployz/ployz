@@ -428,6 +428,7 @@ fn each_destination_takes_a_removal_its_references_never_hold() {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();

@@ -127,18 +127,53 @@ impl Region {
     /// The Machine Label a region is read from.
     pub const LABEL: &'static str = "region";
 
+    /// The longest a region can be: a DNS label's length.
+    pub const MAX_LEN: usize = 63;
+
+    /// What a region's name must be.
+    pub const NAME_RULE: &'static str = "A region's name is 1 to 40 characters on one line.";
+
+    /// A region's display name: `value` trimmed, when that is 1 to 40 characters on one line.
+    /// The Store, the dashboard and the agent all take their rule from here.
+    #[must_use]
+    pub fn display_name(value: &str) -> Option<&str> {
+        let value = value.trim();
+        ((1..=40).contains(&value.chars().count()) && !value.chars().any(char::is_control))
+            .then_some(value)
+    }
+
+    /// What [`Self::parse`] accepts, as a regular expression for a schema to quote. The CLI,
+    /// the Store, the dashboard and the agent all take their rule from `parse`.
+    pub const PATTERN: &'static str = "^[A-Za-z0-9_.-]{1,63}$";
+
     /// # Errors
-    /// Rejects text that is not letters, digits, hyphens, underscores and dots.
+    /// Rejects text that is not 1 to 63 letters, digits, hyphens, underscores and dots.
     pub fn parse(value: impl Into<String>) -> Result<Self, crate::ValueError> {
         let value = value.into();
-        if value.is_empty() || !value.bytes().all(crate::value::is_swarm_key_byte) {
+        if value.is_empty()
+            || value.len() > Self::MAX_LEN
+            || !value.bytes().all(crate::value::is_swarm_key_byte)
+        {
             return Err(crate::ValueError::new(
                 "region",
                 value,
-                "letters, digits, hyphens, underscores and dots",
+                "up to 63 letters, digits, hyphens, underscores and dots",
             ));
         }
         Ok(Self(value.to_ascii_lowercase()))
+    }
+
+    /// The region a new Environment starts in: that of the Cluster's first Server, given each
+    /// Server's Machine Subnet and `region` label value. The first is the lowest Subnet, as
+    /// allocation hands out the lowest free one, so it is the Server that joined first. None
+    /// when that Server has no region, so a Cluster of Servers that predate regions, with one
+    /// added since, starts an Environment in any region.
+    #[must_use]
+    pub fn of_first_server<'a>(
+        servers: impl IntoIterator<Item = (crate::MachineSubnet, Option<&'a str>)>,
+    ) -> Option<Self> {
+        let (_, label) = servers.into_iter().min_by_key(|(subnet, _)| *subnet)?;
+        Self::parse(label?).ok()
     }
 
     #[must_use]

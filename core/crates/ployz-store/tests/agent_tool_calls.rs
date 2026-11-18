@@ -45,6 +45,7 @@ fn shop_in(store: ConfigStore) -> ConfigStore {
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
                     .unwrap(),
+                region: None,
             },
         )
         .unwrap();

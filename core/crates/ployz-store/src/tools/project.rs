@@ -41,6 +41,7 @@ impl Tool for ProjectCreate {
             id,
             name: self.name,
             default_environment,
+            region: None,
         })?;
         Ok(json!({
             "at": created.environment.to_string(),

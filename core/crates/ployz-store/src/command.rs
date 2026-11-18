@@ -347,7 +347,7 @@ commands! {
         keyed [c.id.as_str(), c.default_environment.as_str()] if crate::replay::any
         needs ProjectCreate
         agent [ProjectCreate]
-        => crate::project::create_project(tx, who, c);
+        => crate::project::create_project(tx, who, c, trusted);
     /// Rename a Project; its Namespaces stay.
     RenameProject(RenameProject) -> ProjectRenamed(ProjectSummary)
         needs ProjectEdit

@@ -24,6 +24,7 @@ fn shop() -> (ConfigStore, Actor) {
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
                     .unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -54,10 +55,22 @@ fn shop() -> (ConfigStore, Actor) {
     (store, who)
 }
 
+/// Naming the region `key`, which a Server's label holds.
 fn rename(key: &str, name: &str) -> NameRegion {
     NameRegion {
         key: RegionKey::parse(key).unwrap(),
         name: RegionName::parse(name).unwrap(),
+        labels: vec![key.to_owned()],
+        creates: false,
+    }
+}
+
+/// Naming a region an enrollment makes, with `labels` the Servers' regions so far.
+fn creates(key: &str, name: &str, labels: &[&str]) -> NameRegion {
+    NameRegion {
+        creates: true,
+        labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+        ..rename(key, name)
     }
 }
 
@@ -254,7 +267,7 @@ fn a_new_region_takes_a_key_from_its_name_unless_a_region_has_it_in_any_case() {
     );
 }
 
-const KEY_RULE: &str = "A region is the value of a Server's region label: letters, digits, hyphens, underscores and dots, for example fsn.";
+const KEY_RULE: &str = "A region is the value of a Server's region label: up to 63 letters, digits, hyphens, underscores and dots, for example fsn.";
 
 #[test]
 fn a_key_is_what_placement_reads_in_a_region_label() {
@@ -264,9 +277,96 @@ fn a_key_is_what_placement_reads_in_a_region_label() {
             key.to_ascii_lowercase()
         );
     }
-    for key in ["", "a b", "fsn/1", "é", "🦀"] {
+    assert!(RegionKey::parse("a".repeat(63)).is_ok());
+    for key in ["", "a b", "fsn/1", "é", "🦀", &"a".repeat(64)] {
         assert_eq!(RegionKey::parse(key).unwrap_err().message, KEY_RULE);
     }
+}
+
+#[test]
+fn renaming_a_region_no_server_or_name_holds_is_refused_and_makes_no_region() {
+    let (store, who) = shop();
+    let refused = store
+        .write(
+            &who,
+            &NameRegion {
+                labels: vec!["fsn".into()],
+                ..rename("nosuch", "Foo")
+            },
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, ployz_core::RpcErrorCode::NotFound);
+    assert_eq!(refused.message, "No region nosuch.");
+    assert_eq!(
+        shown(&store, &who, &["fsn"]),
+        [("fsn".into(), "fsn".into())]
+    );
+    store
+        .write(
+            &who,
+            &NameRegion {
+                labels: vec![],
+                ..rename("default", "Falkenstein")
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn renaming_a_region_to_another_regions_name_is_refused_in_any_case() {
+    let (store, who) = shop();
+    store.write(&who, &rename("syd", "Sydney")).unwrap();
+    let both = |key: &str, name: &str| NameRegion {
+        labels: vec!["syd".into(), "default".into()],
+        ..rename(key, name)
+    };
+    for name in ["Sydney", "sydney", "SYDNEY"] {
+        let refused = store.write(&who, &both("default", name)).unwrap_err();
+        assert_eq!(
+            refused.message, "Region Sydney (syd) already exists.",
+            "{name}"
+        );
+    }
+    assert_eq!(
+        shown(&store, &who, &["syd", "default"]),
+        [
+            ("default".into(), "Default".into()),
+            ("syd".into(), "Sydney".into())
+        ]
+    );
+    store.write(&who, &both("syd", "SYDNEY")).unwrap();
+    assert_eq!(
+        shown(&store, &who, &["syd"]),
+        [("syd".into(), "SYDNEY".into())]
+    );
+}
+
+#[test]
+fn two_new_regions_with_one_key_cannot_both_be_made() {
+    let (store, who) = shop();
+    store
+        .write(&who, &creates("us-east", "US East", &[]))
+        .unwrap();
+    for (key, name) in [("us-east", "US-East"), ("us-east", "us east")] {
+        let refused = store
+            .write(&who, &creates(key, name, &["us-east"]))
+            .unwrap_err();
+        assert_eq!(
+            refused.message, "Region US East (us-east) already exists.",
+            "{name}"
+        );
+    }
+    store
+        .write(&who, &creates("us-east", "US East", &["us-east"]))
+        .unwrap();
+    assert_eq!(
+        shown(&store, &who, &[]),
+        [("us-east".into(), "US East".into())]
+    );
+    let wrong = store
+        .write(&who, &creates("elsewhere", "Sydney", &[]))
+        .unwrap_err();
+    assert_eq!(wrong.message, "A region named Sydney has another key.");
 }
 
 #[test]
@@ -309,4 +409,38 @@ fn a_new_environment_runs_where_it_was_created_and_an_older_one_in_any_region() 
     assert_eq!(region_of("staging"), Some("default".to_owned()));
     assert_eq!(region_of("qa"), None);
     assert_eq!(region_of("production"), None);
+}
+
+#[test]
+fn a_projects_default_environment_runs_where_the_project_was_created() {
+    let store = backend::open();
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    let created = store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+                region: Some(ployz_core::Region::parse("Default").unwrap()),
+            },
+        )
+        .unwrap();
+    let region = store
+        .read(
+            &who,
+            &EnvironmentQuery {
+                environment: EnvironmentRef::default(),
+                path: None,
+                all: false,
+            },
+        )
+        .unwrap()
+        .region;
+    assert_eq!(created.environment.name.as_str(), "production");
+    assert_eq!(
+        region.map(|region| region.to_string()),
+        Some("default".to_owned())
+    );
 }

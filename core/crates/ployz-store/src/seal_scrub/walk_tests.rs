@@ -68,6 +68,7 @@ fn planted() -> Planted {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: parent.clone(),
+                region: None,
             },
         )
         .unwrap();

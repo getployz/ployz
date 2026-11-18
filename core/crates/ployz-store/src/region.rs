@@ -17,8 +17,8 @@ use crate::storage::Tx;
 /// The Machine Label that holds a Server's region.
 pub const REGION_LABEL: &str = "region";
 
-const KEY_RULE: &str = "A region is the value of a Server's region label: letters, digits, hyphens, underscores and dots, for example fsn.";
-const NAME_RULE: &str = "A region's name is 1 to 40 characters on one line.";
+const KEY_RULE: &str = "A region is the value of a Server's region label: up to 63 letters, digits, hyphens, underscores and dots, for example fsn.";
+const NAME_RULE: &str = ployz_core::Region::NAME_RULE;
 const DERIVED_RULE: &str = "Use at least one letter a-z or digit.";
 
 /// A region's key: a Server's `region` label value in lowercase, as placement compares it.
@@ -106,12 +106,9 @@ impl RegionName {
     /// Returns `invalid_argument` saying what a name is.
     pub fn parse(value: impl Into<String>) -> Result<Self, RpcError> {
         let value = value.into();
-        let value = value.trim();
-        if (1..=40).contains(&value.chars().count()) && !value.chars().any(char::is_control) {
-            Ok(Self(value.to_owned()))
-        } else {
-            Err(error::invalid(NAME_RULE, Value::Null))
-        }
+        ployz_core::Region::display_name(&value)
+            .map(|name| Self(name.to_owned()))
+            .ok_or_else(|| error::invalid(NAME_RULE, Value::Null))
     }
 
     #[must_use]
@@ -234,6 +231,31 @@ pub fn region_servers<'a>(
     }
 }
 
+/// The region of `known` that has the key `key` or shows `name`, in any case.
+fn taken<'a>(known: &'a [Region], key: &RegionKey, name: &RegionName) -> Option<&'a Region> {
+    known
+        .iter()
+        .find(|region| region.key == *key)
+        .or_else(|| known.iter().find(|region| shows(region, name)))
+}
+
+/// Whether `region` shows `name`, in any case.
+fn shows(region: &Region, name: &RegionName) -> bool {
+    region.name.to_lowercase() == name.as_str().to_lowercase()
+}
+
+fn already(region: &Region) -> RpcError {
+    let existing = if region.name == region.key.as_str() {
+        region.name.clone()
+    } else {
+        format!("{} ({})", region.name, region.key)
+    };
+    error::conflict(
+        format!("Region {existing} already exists."),
+        json!({ "region": region }),
+    )
+}
+
 /// The key a new region named `name` takes among the `known` regions, refused when one of
 /// them has that key or shows that name, in any case.
 ///
@@ -242,23 +264,8 @@ pub fn region_servers<'a>(
 /// that has the key or the name.
 pub(crate) fn new_region(name: &RegionName, known: &[Region]) -> Result<RegionKey, RpcError> {
     let key = RegionKey::from_name(name)?;
-    let named = || {
-        known
-            .iter()
-            .find(|region| region.name.to_lowercase() == name.as_str().to_lowercase())
-    };
-    match known.iter().find(|region| region.key == key).or_else(named) {
-        Some(region) => {
-            let existing = if region.name == region.key.as_str() {
-                region.name.clone()
-            } else {
-                format!("{} ({})", region.name, region.key)
-            };
-            Err(error::conflict(
-                format!("Region {existing} already exists."),
-                json!({ "region": region }),
-            ))
-        }
+    match taken(known, &key, name) {
+        Some(region) => Err(already(region)),
         None => Ok(key),
     }
 }
@@ -296,12 +303,22 @@ pub struct NewRegionView {
 }
 
 /// Give a region a name. Its key stays, and so does every Server's label and every
-/// Environment, so nothing restarts.
+/// Environment, so nothing restarts. Refused when another region shows the name in any
+/// case, and, unless it makes a region, when no Server's label or name holds the key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NameRegion {
     pub key: RegionKey,
     pub name: RegionName,
+    /// The `region` label value of each Server the caller sees: with the names given, the
+    /// regions there are.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Whether this names the region an enrollment makes, which no Server is in yet. Its
+    /// key must be the one `name` makes, and no region may have that key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub creates: bool,
 }
 
 pub(crate) fn view(
@@ -327,6 +344,40 @@ pub(crate) fn new_view(
 }
 
 pub(crate) fn name(tx: &mut dyn Tx, who: &Actor, named: &NameRegion) -> Result<Region, RpcError> {
+    let given = given(tx, who)?;
+    let known = regions(
+        named
+            .labels
+            .iter()
+            .map(String::as_str)
+            .chain([RegionKey::default_region().as_str()]),
+        &given,
+    );
+    if named.creates {
+        let already_named = known
+            .iter()
+            .any(|region| region.key == named.key && given.get(&region.key) == Some(&named.name));
+        if !already_named && new_region(&named.name, &known)? != named.key {
+            return Err(error::invalid(
+                format!("A region named {} has another key.", named.name),
+                Value::Null,
+            ));
+        }
+    } else {
+        if !known.iter().any(|region| region.key == named.key) {
+            return Err(error::choices(
+                format!("No region {}.", named.key),
+                named.key.as_str(),
+                known.iter().map(|region| region.key.as_str()),
+            ));
+        }
+        if let Some(region) = known
+            .iter()
+            .find(|region| region.key != named.key && shows(region, &named.name))
+        {
+            return Err(already(region));
+        }
+    }
     tx.execute(
         "INSERT INTO config_region_name (organization_id, key, name) VALUES (?1, ?2, ?3) \
          ON CONFLICT (organization_id, key) DO UPDATE SET name = excluded.name",

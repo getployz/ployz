@@ -27,6 +27,11 @@ pub struct CreateProject {
     pub name: ProjectName,
     /// The ID of its Default Environment, created with it.
     pub default_environment: EnvironmentId,
+    /// The region its Default Environment's Services run in until it says otherwise: what
+    /// [`CreateEnvironment::region`] says. Omitted means any region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(as = "Option<String>", optional)]
+    pub region: Option<Region>,
 }
 
 /// The new Project and its Default Environment.
@@ -97,8 +102,10 @@ pub(crate) fn create_project(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateProject,
+    trusted: &Trusted,
 ) -> Result<ProjectCreated, RpcError> {
     name_free(tx, who, &create.name)?;
+    refuse_unseen_region(create.region.as_ref(), trusted)?;
     tx.execute(
         "INSERT INTO config_project (id, organization_id, name, default_environment_id) \
          VALUES (?1, ?2, ?3, ?4)",
@@ -115,8 +122,14 @@ pub(crate) fn create_project(
         default_environment: create.default_environment.clone(),
     };
     let name = EnvironmentName::parse(DEFAULT_ENVIRONMENT).expect("a valid name");
-    let default_environment =
-        insert_environment(tx, who, &project, &create.default_environment, name, None)?;
+    let default_environment = insert_environment(
+        tx,
+        who,
+        &project,
+        &create.default_environment,
+        name,
+        create.region.clone(),
+    )?;
     tx.execute(
         "UPDATE config_environment SET protected = 1, protections = 1 WHERE id = ?1",
         &[create.default_environment.as_str().into()],
@@ -128,6 +141,14 @@ pub(crate) fn create_project(
         },
         environment: default_environment,
     })
+}
+
+/// Refuse `region` when the caller looked at the Servers' regions and none is it.
+fn refuse_unseen_region(region: Option<&Region>, trusted: &Trusted) -> Result<(), RpcError> {
+    match (region, &trusted.regions) {
+        (Some(region), Some(regions)) => crate::refuse_unknown_region(region, regions),
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn create_environment(
@@ -151,9 +172,7 @@ pub(crate) fn create_environment(
             json!({ "project": project.name, "environment": create.name }),
         ));
     }
-    if let (Some(region), Some(regions)) = (&create.region, &trusted.regions) {
-        crate::refuse_unknown_region(region, regions)?;
-    }
+    refuse_unseen_region(create.region.as_ref(), trusted)?;
     let environment = insert_environment(
         tx,
         who,

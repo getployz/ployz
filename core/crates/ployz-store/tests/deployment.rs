@@ -44,6 +44,7 @@ fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: ProjectId::parse(PROJECT).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
+                region: None,
             },
         )
         .unwrap();

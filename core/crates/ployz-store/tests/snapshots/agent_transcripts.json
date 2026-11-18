@@ -7372,22 +7372,23 @@
     "turns": [
       {
         "step": {
-          "step": "write",
-          "write": {
-            "at": "store",
-            "write": {
-              "command": "name_region",
-              "key": "default",
-              "name": "Falkenstein"
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
             }
-          }
+          ]
         },
         "answers": [
           {
-            "value": {
-              "key": "default",
-              "name": "Falkenstein",
-              "written": "region_named"
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
             }
           }
         ]
@@ -7396,10 +7397,19 @@
         "step": {
           "step": "done",
           "result": {
-            "ok": true,
-            "value": {
-              "name": "Falkenstein",
-              "region": "default"
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "region_rename",
+                "input": {
+                  "name": "Falkenstein",
+                  "region": "default"
+                }
+              },
+              "writes": "none",
+              "next": []
             }
           }
         }
@@ -7423,34 +7433,26 @@
     "turns": [
       {
         "step": {
-          "step": "write",
-          "write": {
-            "at": "store",
-            "write": {
-              "command": "name_region",
-              "key": "default",
-              "name": "Falkenstein"
-            }
-          }
-        },
-        "answers": [
-          {
-            "value": {
-              "key": "default",
-              "name": "Falkenstein",
-              "written": "region_named"
-            }
-          }
-        ]
-      },
-      {
-        "step": {
           "step": "done",
           "result": {
-            "ok": true,
-            "value": {
-              "name": "Falkenstein",
-              "region": "default"
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "region_rename",
+                "input": {
+                  "name": "Falkenstein",
+                  "region": "default"
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
             }
           }
         }

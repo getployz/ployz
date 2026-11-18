@@ -11,7 +11,7 @@ assert.deepEqual(Object.keys(require.cache).filter(file => file.endsWith('.node'
 assert.equal(typeof require('@ployz/sdk').connect, 'function');
 
 // The browser checks a Setting the way core does before the Store sees it.
-assert.deepEqual(Object.keys(api), ['parseEnvFile', 'parseServiceSetting']);
+assert.deepEqual(Object.keys(api), ['firstServerRegion', 'parseEnvFile', 'parseRegion', 'parseRegionName', 'parseServiceSetting']);
 assert.equal(api.parseServiceSetting('replicas', 3), 3);
 assert.throws(() => api.parseServiceSetting('replicas', 0));
 assert.throws(() => api.parseServiceSetting('replicas', 51));
@@ -30,6 +30,15 @@ for (const path of ['/ready\u0001probe', '/ready\tprobe', '/ready\nprobe', '/rea
   assert.throws(() => api.parseServiceSetting('healthcheckPath', path));
 }
 assert.equal(api.parseServiceSetting('healthcheckPath', '/café?escaped=%0A'), '/café?escaped=%0A');
+
+// A region key is the Engine's one rule, and a new Environment starts where the lowest Machine Subnet's Server is.
+assert.equal(api.parseRegion('EU_west.1'), 'eu_west.1');
+assert.throws(() => api.parseRegion('eu/west'), /63 letters/);
+assert.throws(() => api.parseRegion('a'.repeat(64)));
+assert.equal(api.parseRegionName('  Falkenstein '), 'Falkenstein');
+assert.throws(() => api.parseRegionName('a'.repeat(41)), /40 characters/);
+assert.equal(api.firstServerRegion([{ subnet: '10.210.10.0/24', region: 'later' }, { subnet: '10.210.9.0/24', region: 'Earlier' }]), 'earlier');
+assert.equal(api.firstServerRegion([{ subnet: '10.210.0.0/24', region: null }, { subnet: '10.210.1.0/24', region: 'default' }]), null);
 
 const read = (file) => readFileSync(new URL(file, import.meta.url), 'utf8');
 const names = (body) => [...body.matchAll(/^  (\w+)[<(]/gm)].map(([, name]) => name);

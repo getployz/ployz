@@ -42,6 +42,17 @@ pub use variables::*;
 enum ConfigRequest {
     ParseSetting { value: serde_json::Value },
     ParseEnvFile { text: String },
+    ParseRegion { value: String },
+    ParseRegionName { value: String },
+    FirstServerRegion { servers: Vec<ServerRegion> },
+}
+
+/// A Server's Machine Subnet and its `region` label value, as a caller sees them.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServerRegion {
+    subnet: crate::MachineSubnet,
+    region: Option<String>,
 }
 
 /// The JSON ABI behind the SDK's WASM config export; it validates before policy.
@@ -56,6 +67,25 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
         ConfigRequest::ParseSetting { value } => parse_service_setting(value),
         ConfigRequest::ParseEnvFile { text } => {
             Ok(serde_json::to_value(parse_env_file(&text)?).expect("env entries are JSON"))
+        }
+        ConfigRequest::ParseRegion { value } => crate::Region::parse(value)
+            .map(|region| serde_json::Value::String(region.into()))
+            .map_err(|_| {
+                ConfigError::at(
+                    "region",
+                    "A region is up to 63 letters, digits, hyphens, underscores and dots.",
+                )
+            }),
+        ConfigRequest::ParseRegionName { value } => crate::Region::display_name(&value)
+            .map(|name| serde_json::Value::String(name.to_owned()))
+            .ok_or_else(|| ConfigError::at("name", crate::Region::NAME_RULE)),
+        ConfigRequest::FirstServerRegion { servers } => {
+            Ok(serde_json::to_value(crate::Region::of_first_server(
+                servers
+                    .iter()
+                    .map(|server| (server.subnet, server.region.as_deref())),
+            ))
+            .expect("a region is JSON"))
         }
     }
 }

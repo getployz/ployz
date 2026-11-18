@@ -53,6 +53,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1197,6 +1198,7 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();

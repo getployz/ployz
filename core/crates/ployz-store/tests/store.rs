@@ -32,6 +32,7 @@ fn create_project(name: &str) -> CreateProject {
         id: ProjectId::parse(uuid(&format!("project-{name}"))).unwrap(),
         name: ProjectName::parse(name).unwrap(),
         default_environment: EnvironmentId::parse(uuid(&format!("env-{name}"))).unwrap(),
+        region: None,
     }
 }
 

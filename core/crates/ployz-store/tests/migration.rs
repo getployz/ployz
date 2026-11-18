@@ -163,6 +163,7 @@ fn a_branch_compares_with_its_parent_as_before_the_sync_migration() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -251,6 +252,7 @@ fn a_legacy_configs_service_can_be_renamed_without_losing_data_or_references() {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -416,6 +418,7 @@ fn legacy_arrivals_migrate_unowned_with_their_syncs_receipted() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -765,6 +768,7 @@ fn an_offered_proposal_goes_with_its_receipt_when_offers_retire() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -802,6 +806,7 @@ fn a_seal_only_working_state_held_at_upgrade_keeps_history_from_plain_text() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -880,6 +885,7 @@ fn shop_at(url: &str) -> (ConfigStore, Actor) {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1140,6 +1146,7 @@ fn a_plain_value_kept_in_a_follows_arrival_is_gone_after_upgrade() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -1235,6 +1242,7 @@ fn a_plain_value_landed_in_an_arrival_is_gone_after_upgrade() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -1320,6 +1328,7 @@ fn a_plain_value_kept_in_a_branchs_sync_bases_is_gone_after_upgrade() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -1424,6 +1433,7 @@ fn a_plain_value_sealed_then_added_back_is_gone_from_history_after_upgrade() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
@@ -1531,6 +1541,7 @@ fn an_own_copy_made_after_upgrade_never_shows_a_value_its_owner_sealed_since() {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                    region: None,
                 },
             )
             .unwrap();
