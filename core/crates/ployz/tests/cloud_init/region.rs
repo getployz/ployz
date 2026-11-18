@@ -43,7 +43,21 @@ async fn region_ls_shows_each_region_by_name_with_its_servers() {
     let store = format!("sqlite:{}", directory.path().join("store.db").display());
     let connect = format!("ssh://root@{address}");
 
-    let (renamed, _) = region(&store, &["rename", "default", "Falkenstein"]).await;
+    let refused = harness::cli()
+        .env("PLOYZ_STORE", &store)
+        .args(["region", "rename", "nope", "Nowhere", "--connect", &connect])
+        .output()
+        .await
+        .unwrap();
+    assert!(!refused.status.success());
+    let refused = String::from_utf8_lossy(&refused.stderr);
+    assert!(refused.contains("nope"), "{refused}");
+
+    let (renamed, _) = region(
+        &store,
+        &["rename", "default", "Falkenstein", "--connect", &connect],
+    )
+    .await;
     assert_eq!(
         renamed,
         "Renamed default to Falkenstein. Nothing restarts.\n"
