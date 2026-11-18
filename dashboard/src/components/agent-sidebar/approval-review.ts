@@ -1,6 +1,6 @@
 import type { DiffView } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
-import { changeGroups } from "#/modules/config-store/store-deployments";
+import { changeGroups, regionName } from "#/modules/config-store/store-deployments";
 
 /** `name` is a Setting, a variable key when `variable`, or what happened to the node; `values` its machine values. */
 export type ChangeLine = { key: string; mark: "+" | "~" | "−"; node: string; name: string; variable: boolean; values: string };
@@ -31,7 +31,7 @@ function regionLine(diff: DiffView): ChangeLine[] {
   if (!diff.region) return [];
   const { before, after } = diff.region;
   return [{ key: "@environment.region", mark: before === null ? "+" : after === null ? "−" : "~", node: diff.environment.name, name: "Region", variable: false,
-    values: `${before ?? "any region"} → ${after ?? "any region"}` }];
+    values: `${regionName(before)} → ${regionName(after)}` }];
 }
 
 /**

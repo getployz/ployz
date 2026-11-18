@@ -9014,3 +9014,26 @@ fn discarding_everything_names_the_region_it_dropped() {
     assert_eq!(discarded.dropped, ["@environment.region", "web.replicas"]);
     assert_eq!(diff(&store, &who).total_count, 0);
 }
+
+#[test]
+fn a_staged_region_is_left_to_save_until_a_save_holds_it() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::REGION,
+            value: json!("fsn"),
+        }],
+    };
+    store.write(&who, &edit).unwrap();
+
+    let staged = diff(&store, &who);
+    assert_eq!((staged.total_count, staged.draft_count), (1, 1));
+
+    save(&store, &who);
+    let saved = diff(&store, &who);
+    assert_eq!((saved.total_count, saved.draft_count), (1, 0));
+}

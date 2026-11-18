@@ -72,7 +72,9 @@ pub struct DiffView {
     #[serde(default)]
     #[ts(as = "Option<Vec<NodeChange>>", optional)]
     pub draft_changes: Vec<NodeChange>,
-    /// Changes that an explicit Save records, independent of the deployment comparison.
+    /// How many changes an explicit Save records, independent of the deployment
+    /// comparison: each node and Setting of `draft_changes`, and the change `region`
+    /// names until Saved State holds it.
     #[serde(default)]
     #[ts(as = "Option<usize>", optional)]
     pub draft_count: usize,
@@ -353,8 +355,9 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         .saved
         .unwrap_or_else(|| crate::scope::empty(environment.summary.name.as_str()));
     let draft = saved_comparison(environment, &baseline, &[])?;
+    let region_unsaved = view.region.is_some() && baseline.region != environment.working.region;
     view.draft_changes = draft.changes;
-    view.draft_count = draft.total_count;
+    view.draft_count = draft.total_count + usize::from(region_unsaved);
     // Only staged changes or draft reversals are worded by it.
     if let Some(saved) = &saved
         && (view.total_count > 0 || view.draft_count > 0)

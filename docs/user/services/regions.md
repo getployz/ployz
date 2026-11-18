@@ -42,8 +42,10 @@ Upper and lower case are the same, so `FSN` is `fsn`.
    ```
 
 The region is a staged change like any other: `ployz diff` shows it as `@environment.region`,
-and `ployz discard @environment.region` drops it. The [Ployz agent](../account/agent-sidebar.md)
-can stage a region too. Its deploy waits for your approval, which shows the region.
+and `ployz discard @environment.region` drops it. In Ployz Cloud, the environment's bottom bar
+counts it and **Details** lists it as **Region**, where you can deploy or discard it. The
+[Ployz agent](../account/agent-sidebar.md) can stage a region too. Its deploy waits for your
+approval, which shows the region.
 
 Ployz refuses a region none of your servers is in, and stages nothing:
 
