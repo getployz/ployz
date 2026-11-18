@@ -7,11 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    BlockedKind, BlockedService, CopyRole, DockerVolumeId, DockerVolumeName,
+    BlockedKind, BlockedService, CopyPlace, CopyRole, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, KnownCopy, MachineId, MachineObservation, Namespace, Operator,
     PlacementConstraint, PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
+    ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph, SlotRole, VolumeSource,
+    owned_volume_namespace,
 };
 
 use crate::deploy::{
@@ -274,6 +275,24 @@ impl<'snapshot> VolumePlan<'snapshot> {
             .and_then(|capacity| capacity.as_ref().ok())
             .and_then(|capacity| capacity.copies.get(name))
             .map_or(CopyRole::Writer, |copy| copy.place().role())
+    }
+
+    /// What the Machine's storage records its slot for `name` as: a slot no step marked
+    /// is a mirror. None when the Machine holds no slot for it.
+    fn slot_role(&self, machine_id: MachineId, name: &DockerVolumeName) -> Option<SlotRole> {
+        let place = self
+            .snapshot
+            .storage_capacity
+            .get(&machine_id)?
+            .as_ref()
+            .ok()?
+            .copies
+            .get(name)?
+            .place();
+        match place {
+            CopyPlace::Slot(role) => Some(role.unwrap_or_default()),
+            CopyPlace::Writer | CopyPlace::Switching => None,
+        }
     }
 
     /// Every copy of `name` that is not a writer, by Machine name.
@@ -1155,7 +1174,9 @@ fn refused_location(
 /// The refusal for a Volume none of whose Servers is in the region `spec` is kept in,
 /// while a Server in the region could run it. Cloud moves the Volume before the Deploy
 /// where it can, so this is what is left: no Cloud, a move that failed, or a Volume
-/// that can't move.
+/// that can't move. The Server it names to move to is the one Cloud picks: the one that
+/// holds the Volume's mirror, then the one that holds its old copy, then the first by
+/// name. A copy on any other Server stops that move until it is deleted, so it is named.
 fn outside_region(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
@@ -1174,15 +1195,34 @@ fn outside_region(
     if holders.any(|machine| Region::of(&machine.machine).as_ref() == Some(&region)) {
         return None;
     }
-    let to = candidates.first()?.machine.name.clone();
+    let name = managed_volume_name(volume)?;
+    let slot = |machine: &MachineObservation| plan.slot_role(machine.machine.id, name);
+    let to = candidates
+        .iter()
+        .min_by_key(|machine| {
+            let rank = match slot(machine) {
+                Some(SlotRole::Mirror) => 0,
+                Some(SlotRole::OldCopy) => 1,
+                None => 2,
+            };
+            (rank, &machine.machine.name)
+        })?
+        .machine
+        .name
+        .clone();
     let docker = matches!(
         volume.source.kind(),
         ployz_core::RawVolumeSource::Ordinary { .. }
     );
+    let copy = snapshot.machines.iter().find_map(|machine| {
+        let role = slot(machine)?;
+        (machine.machine.name != to).then(|| (machine.machine.name.clone(), role))
+    });
     Some(PlanError::VolumeOutsideRegion {
-        volume: plan.authored(managed_volume_name(volume)?).to_owned(),
+        volume: plan.authored(name).to_owned(),
         machine: holder,
         to: (!docker).then_some(to),
+        copy: copy.filter(|_| !docker),
     })
 }
 

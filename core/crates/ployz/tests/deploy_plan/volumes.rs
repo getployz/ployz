@@ -1132,6 +1132,75 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
     preview_deploy(&intent, &snapshot).unwrap_err();
 }
 
+/// Why `db` is blocked when `fsn` has `first` and `second`, the writer of `data` is on
+/// `third` in `syd`, and its one other copy is a slot on `holder`, with `fourth` in `lhr`.
+fn outside_region_beside_a_copy(holder: char, slot: ployz_core::SlotRole) -> RpcError {
+    let (_, db) = web_and_db();
+    let db = kept_in(db, "fsn");
+    let mut snapshot = copies_snapshot(&[('3', CopyRole::Writer)], vec![provisioned_row('3')]);
+    let Some(Ok(capacity)) = snapshot.storage_capacity.get_mut(&machine_id(holder)) else {
+        panic!("fixture capacity for {holder}")
+    };
+    capacity.copies.insert(
+        app_volume("data"),
+        ployz_core::ProvisionedCopy::new(
+            ployz_core::CopyPlace::Slot(Some(slot)),
+            maximum_bytes(1_073_741_824),
+            0,
+        ),
+    );
+    snapshot.machines = [
+        ('1', "first", "fsn"),
+        ('2', "second", "fsn"),
+        ('3', "third", "syd"),
+        ('4', "fourth", "lhr"),
+    ]
+    .into_iter()
+    .map(|(id, name, region)| {
+        let mut server = machine(id, name);
+        server.storage = Some(MachineStorageObservation::Ready);
+        in_region(server, region)
+    })
+    .collect();
+    snapshot.containers = vec![container('a', '3', &db, &service_id('a'))];
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&db],
+        PlanOptions::default(),
+    );
+    only_blocked(&runner_preview(&intent, &snapshot).unwrap())
+}
+
+#[test]
+fn a_volume_outside_the_region_moves_to_the_server_there_that_holds_its_copy() {
+    for slot in [ployz_core::SlotRole::Mirror, ployz_core::SlotRole::OldCopy] {
+        let rpc = outside_region_beside_a_copy('2', slot);
+
+        assert_eq!(
+            rpc.details.get("to"),
+            Some(&serde_json::json!("second")),
+            "{slot:?}"
+        );
+        assert_eq!(rpc.details.get("copy"), None, "{slot:?}");
+    }
+}
+
+#[test]
+fn a_volume_outside_the_region_names_the_copy_elsewhere_that_stops_its_move() {
+    for (slot, role) in [
+        (ployz_core::SlotRole::Mirror, "mirror"),
+        (ployz_core::SlotRole::OldCopy, "old_copy"),
+    ] {
+        let rpc = outside_region_beside_a_copy('4', slot);
+
+        assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("first")));
+        assert_eq!(
+            rpc.details.get("copy"),
+            Some(&serde_json::json!({ "server": "fourth", "role": role }))
+        );
+    }
+}
+
 #[test]
 fn a_docker_volume_outside_the_region_says_it_cannot_move_and_names_no_server_to_move_to() {
     let mut db = spec("db");

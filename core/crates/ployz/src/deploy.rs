@@ -9,7 +9,7 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
     MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
     ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, ServiceName,
-    ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
+    ServiceObservation, SlotRole, VolumeInventory, VolumeObservationFailure, derive_services,
 };
 use thiserror::Error;
 
@@ -874,6 +874,9 @@ pub enum PlanError {
         /// A Server in the region the Service can run on, which the Volume can move to.
         /// None for a Docker volume, which nothing moves.
         to: Option<MachineName>,
+        /// The Volume's mirror or old copy on a Server other than `to`: a move onto `to`
+        /// is refused until that copy is deleted.
+        copy: Option<(MachineName, SlotRole)>,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
@@ -1129,6 +1132,7 @@ impl PlanError {
                 ref volume,
                 ref machine,
                 ref to,
+                ref copy,
             } => {
                 let mut details = serde_json::Map::from_iter([
                     ("reason".into(), serde_json::json!("volume_outside_region")),
@@ -1137,6 +1141,12 @@ impl PlanError {
                 ]);
                 if let Some(to) = to {
                     details.insert("to".into(), serde_json::json!(to));
+                }
+                if let Some((server, role)) = copy {
+                    details.insert(
+                        "copy".into(),
+                        serde_json::json!({ "server": server, "role": role.as_str() }),
+                    );
                 }
                 RpcError::conflict(self.to_string()).with_details(details.into())
             }
