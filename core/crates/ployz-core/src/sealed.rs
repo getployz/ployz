@@ -79,12 +79,6 @@ pub struct SealedValue {
     pub sealed: Ciphertext,
     pub scope: SealedScope,
     pub key: String,
-    /// The Environment the value was sealed for, when it is not the Container's own: a
-    /// parent's value a preview inherits, opened in place. A daemon that predates it
-    /// refuses the field, so a preview never starts without the check.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "string")]
-    pub environment: Option<Uuid>,
 }
 
 /// Where the sealed variable was authored.
@@ -171,17 +165,13 @@ impl From<&str> for EnvValue {
 
 impl SealedValue {
     /// HPKE associated data binding this value to the variable it was authored
-    /// as, in `identity`'s Organization and in its own Environment: the one it names, or
-    /// else `identity`'s.
+    /// as, in `identity`'s Organization and Environment.
     #[must_use]
     pub fn associated_data(&self, identity: &SealedIdentity) -> Vec<u8> {
         let mut aad = Vec::new();
         put(&mut aad, separation::SEALED_VALUE);
         put(&mut aad, identity.organization.as_bytes());
-        put(
-            &mut aad,
-            self.environment.unwrap_or(identity.environment).as_bytes(),
-        );
+        put(&mut aad, identity.environment.as_bytes());
         match self.scope {
             SealedScope::Shared => put(&mut aad, b"shared"),
             SealedScope::Service(service) => {
@@ -233,10 +223,13 @@ base64_newtype!(
 #[cfg(not(target_arch = "wasm32"))]
 mod sealer {
     use thiserror::Error;
+    #[cfg(any(test, feature = "test-keypair"))]
     use zeroize::Zeroizing;
 
     use super::{Ciphertext, PlatformPurpose, SealedIdentity, SealedScope, SealedValue};
-    use crate::hpke_suite::{self, OpenAs, SealAs};
+    #[cfg(any(test, feature = "test-keypair"))]
+    use crate::hpke_suite::OpenAs;
+    use crate::hpke_suite::{self, SealAs};
     use crate::separation;
     use crate::{ClientSealedValue, SealingPublicKey};
 
@@ -256,7 +249,6 @@ mod sealer {
         plaintext: &str,
     ) -> Result<ClientSealedValue, SealError> {
         let mut value = SealedValue {
-            environment: None,
             sealed: Ciphertext::from_bytes(Vec::new()),
             scope: SealedScope::Service(identity.service),
             key: key.to_owned(),
@@ -277,137 +269,24 @@ mod sealer {
         })
     }
 
-    /// Seals `plaintext` for `purpose` to the Cluster whose identity is `cluster`, under the
-    /// key `recipient`: the Cluster's recipient key once it activated, its identity before.
+    /// Seals `plaintext` for `purpose` to the Cluster whose Sealing Key is `cluster`.
     ///
     /// # Errors
-    /// [`SealError`] when HPKE refuses `recipient`.
+    /// [`SealError`] when HPKE refuses `cluster`.
     pub fn seal_platform(
         cluster: &SealingPublicKey,
-        recipient: &SealingPublicKey,
         purpose: PlatformPurpose,
         plaintext: &[u8],
     ) -> Result<Ciphertext, SealError> {
         hpke_suite::seal(
             SealAs::Base,
-            recipient.as_bytes(),
+            cluster.as_bytes(),
             separation::PLATFORM_SEALED,
             &purpose.associated_data(cluster),
             plaintext,
         )
         .map(Ciphertext::from_bytes)
         .map_err(|_| SealError)
-    }
-
-    /// A Cluster's recipient key, generated where no Cloud page can see it: a Device's CLI,
-    /// or the Machine an activation picks.
-    pub struct RecipientSecret(Zeroizing<[u8; 32]>);
-
-    impl RecipientSecret {
-        #[must_use]
-        pub fn generate() -> Self {
-            Self(hpke_suite::generate_private())
-        }
-
-        #[must_use]
-        pub fn from_secret(bytes: [u8; 32]) -> Self {
-            Self(Zeroizing::new(bytes))
-        }
-
-        #[must_use]
-        pub fn secret(&self) -> &[u8; 32] {
-            &self.0
-        }
-
-        #[must_use]
-        pub fn public(&self) -> SealingPublicKey {
-            SealingPublicKey::from_bytes(hpke_suite::public_key(&self.0))
-        }
-
-        /// Seal this key to the Machine whose WireGuard public key is `machine`, bound to
-        /// `binding` (see [`crate::authority::rotation::sealed_key_binding`]). Anyone who
-        /// knows `machine` can build such a blob, so it vouches only for a key the signer
-        /// chose itself. Between Machines use [`Self::seal_from`].
-        ///
-        /// # Errors
-        /// [`SealError`] when HPKE refuses `machine`.
-        pub fn seal_to(
-            &self,
-            machine: &crate::WireGuardPublicKey,
-            binding: &[u8],
-        ) -> Result<Ciphertext, SealError> {
-            self.sealed(SealAs::Base, machine, binding)
-        }
-
-        /// Seal this key to `machine` from the Machine whose WireGuard private key is
-        /// `sender`, so it opens only as sent by that Machine. See [`Self::open_from`].
-        ///
-        /// # Errors
-        /// [`SealError`] when HPKE refuses `machine`.
-        pub fn seal_from(
-            &self,
-            sender: &[u8; 32],
-            machine: &crate::WireGuardPublicKey,
-            binding: &[u8],
-        ) -> Result<Ciphertext, SealError> {
-            self.sealed(SealAs::Auth(sender), machine, binding)
-        }
-
-        fn sealed(
-            &self,
-            mode: SealAs<'_>,
-            machine: &crate::WireGuardPublicKey,
-            binding: &[u8],
-        ) -> Result<Ciphertext, SealError> {
-            hpke_suite::seal(
-                mode,
-                &machine.0,
-                separation::RECIPIENT_KEY,
-                binding,
-                self.0.as_ref(),
-            )
-            .map(Ciphertext::from_bytes)
-            .map_err(|_| SealError)
-        }
-
-        /// Open a key [`Self::seal_to`] sealed to the Machine whose WireGuard private key is
-        /// `machine`, under `binding`. `None` when it was sealed to another Machine, under
-        /// another binding, or is not a key.
-        #[must_use]
-        pub fn open(machine: &[u8; 32], binding: &[u8], sealed: &Ciphertext) -> Option<Self> {
-            Self::opened(OpenAs::Base, machine, binding, sealed)
-        }
-
-        /// Open a key [`Self::seal_from`] sealed to `machine` from the Machine whose
-        /// WireGuard public key is `sender`. `None` when another Machine or no Machine sent
-        /// it, as for [`Self::open`].
-        #[must_use]
-        pub fn open_from(
-            machine: &[u8; 32],
-            sender: &crate::WireGuardPublicKey,
-            binding: &[u8],
-            sealed: &Ciphertext,
-        ) -> Option<Self> {
-            Self::opened(OpenAs::Auth(&sender.0), machine, binding, sealed)
-        }
-
-        fn opened(
-            mode: OpenAs<'_>,
-            machine: &[u8; 32],
-            binding: &[u8],
-            sealed: &Ciphertext,
-        ) -> Option<Self> {
-            let opened = hpke_suite::open(
-                mode,
-                machine,
-                separation::RECIPIENT_KEY,
-                binding,
-                sealed.as_bytes(),
-            )
-            .ok()?;
-            let bytes: [u8; 32] = opened.as_slice().try_into().ok()?;
-            Some(Self::from_secret(bytes))
-        }
     }
 
     /// A throwaway Sealing Key for tests that open what [`seal_value`] sealed, as a
@@ -544,7 +423,6 @@ mod sealer {
             let cluster = Keypair::generate();
             let sealed = seal_platform(
                 &cluster.public(),
-                &cluster.public(),
                 PlatformPurpose::PrivateAccess,
                 b"tskey-auth-k",
             )
@@ -567,7 +445,6 @@ mod sealer {
             let cluster = Keypair::generate();
             let sealed = seal_platform(
                 &cluster.public(),
-                &cluster.public(),
                 PlatformPurpose::IngressTunnel,
                 b"eyJhIjoxfQ",
             )
@@ -584,7 +461,6 @@ mod sealer {
                 "another Cluster's key does not open it"
             );
             let as_env = SealedValue {
-                environment: None,
                 sealed: sealed.clone(),
                 scope: SealedScope::Shared,
                 key: "TUNNEL_TOKEN".into(),
@@ -623,7 +499,6 @@ mod tests {
 
     fn sealed(key: &str) -> SealedValue {
         SealedValue {
-            environment: None,
             sealed: Ciphertext::from_bytes(vec![7; MIN_CIPHERTEXT_LEN]),
             scope: SealedScope::Service(Uuid::from_u128(2)),
             key: key.into(),
@@ -696,7 +571,6 @@ mod tests {
             ..identity()
         };
         let shared = SealedValue {
-            environment: None,
             scope: SealedScope::Shared,
             ..sealed("TOKEN")
         };
@@ -708,35 +582,5 @@ mod tests {
         ] {
             assert_ne!(other, base);
         }
-    }
-
-    #[test]
-    fn an_inherited_value_binds_the_environment_it_names_in_place_of_its_containers() {
-        let parent = identity();
-        let preview = SealedIdentity {
-            environment: Uuid::from_u128(3),
-            ..identity()
-        };
-        let inherited = SealedValue {
-            environment: Some(parent.environment),
-            ..sealed("TOKEN")
-        };
-        assert_eq!(
-            inherited.associated_data(&preview),
-            sealed("TOKEN").associated_data(&parent)
-        );
-        assert_ne!(
-            inherited.associated_data(&preview),
-            sealed("TOKEN").associated_data(&preview)
-        );
-        let wire = serde_json::to_value(&inherited).unwrap();
-        assert_eq!(
-            wire.get("environment"),
-            Some(&serde_json::json!(parent.environment.to_string()))
-        );
-        assert_eq!(
-            serde_json::from_value::<SealedValue>(wire).unwrap(),
-            inherited
-        );
     }
 }

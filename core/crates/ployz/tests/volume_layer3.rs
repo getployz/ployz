@@ -153,7 +153,6 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
 
     let removed = client
         .remove_volumes(RemoveVolumesRequest {
-            teardown: None,
             volumes: vec![DockerVolumeId {
                 machine_id: first_machine.machine.id,
                 name: shared.clone(),
@@ -194,7 +193,6 @@ async fn volume_mounts_and_partial_results_stay_machine_local() {
 
     let partial_remove = client
         .remove_volumes(RemoveVolumesRequest {
-            teardown: None,
             volumes: vec![DockerVolumeId {
                 machine_id: first_machine.machine.id,
                 name: DockerVolumeName::parse("reachable").unwrap(),

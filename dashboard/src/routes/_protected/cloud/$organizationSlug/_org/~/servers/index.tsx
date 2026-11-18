@@ -17,9 +17,6 @@ import { foundingFirstServer, serversPageState } from "./-components/servers-pag
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
-import { ActivationCard } from "./-components/activation-card";
-import { FirstKeyAlert } from "./-components/first-key-alert";
-import { useActivation } from "#/modules/server-upgrade/activation.queries";
 import { useEnrollmentStatus, useWaitingServers } from "./-components/use-waiting";
 import { IntakeTray } from "./-components/waiting-list";
 
@@ -53,8 +50,6 @@ function RouteComponent() {
     founding: foundingFirstServer(enrollments.data),
   });
   const upgrade = page.kind === "fleet" && !page.stale ? upgrades : null;
-  const activation = useActivation(organizationSlug, page.kind === "fleet");
-  const activationOf = new Map((activation.data ?? []).map((server) => [server.id, server.activation?.state ?? null]));
   // First run has its own install card; the dialog returns once a server has shown up.
   const canAdd = page.kind !== "first-run" || page.intake;
 
@@ -89,11 +84,6 @@ function RouteComponent() {
       ) : (
         <>
           {page.stale ? <ServersStaleAlert /> : null}
-          <ActivationCard organizationSlug={organizationSlug} servers={activation.data ?? null}
-            reach={servers.map(({ name, machine }) => ({ name, publicIp: machine.publicIp }))} />
-          <FirstKeyAlert organizationSlug={organizationSlug}
-            servers={servers.map(({ name, machine }) => ({ id: machine.id, name, capabilities: machine.capabilities }))}
-            reach={servers.map(({ name, machine }) => ({ name, publicIp: machine.publicIp }))} />
           <FleetHealth servers={servers} upgrades={upgrade?.rows ?? new Map()} />
           <nav aria-label="Servers" className={SERVER_LIST}>
             {servers.map((server) => (
@@ -103,7 +93,6 @@ function RouteComponent() {
                 server={server}
                 upgrade={upgrade?.rows.get(server.machine.id) ?? null}
                 stale={page.stale}
-                activation={activationOf.get(server.machine.id) ?? null}
               />
             ))}
           </nav>

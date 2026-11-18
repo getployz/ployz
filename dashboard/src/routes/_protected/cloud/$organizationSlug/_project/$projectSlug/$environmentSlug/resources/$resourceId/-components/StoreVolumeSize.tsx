@@ -1,10 +1,8 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { EnvironmentRef, Signed, VolumeListing } from "@ployz/sdk";
+import type { EnvironmentRef, VolumeListing } from "@ployz/sdk";
 import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
-import { approveVolume } from "#/modules/approval-session/volume-approval";
-import { runChange } from "#/modules/volume-run/run-approval";
 import { SettingsRow } from "#/components/settings/settings-section";
 import { FieldError } from "#/components/ui/field";
 import { environmentKey, invalidateViews } from "#/modules/config-store/store-view.queries";
@@ -15,13 +13,11 @@ import { type Bytes, gb } from "#/modules/volume-run/resize";
 import { checkResize, type Holder, type ResizeVerdict } from "#/modules/volume-run/resize-check";
 import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { runWords } from "#/modules/volume-run/volume-copies";
-import { readVolumeScope } from "#/modules/volume-run/volume-approval-scope";
 import { resizeVolumeServerFn } from "#/modules/volume-run/volume-run.functions";
 import { useWatchVolumeRun, volumeRunKeys } from "#/modules/volume-run/volume-run.queries";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
 
 type Grow = Extract<ResizeVerdict, { kind: "grow" }>;
-type Asking = { grow: Grow; settle: (error?: Error) => void };
 
 const active = (run: VolumeRunView) => ACTIVE_VOLUME_RUN_STATES.some((state) => state === run.state);
 
@@ -63,43 +59,20 @@ export function StoreVolumeSize({ organizationSlug, environment, volume, recorde
       return writer.commit({ command: "set_volume_storage", environment, volume: volume.name, storage: { kind: "provisioned", maximumBytes: recorded } });
     }
     if (next?.kind !== "grow") return Promise.resolve();
-    // A Server grows only under a passkey. Yours answers it, unless an owner or admin has to approve it first, who
-    // sign it where it lands.
-    return new Promise<void>((resolve, reject) => {
-      const asked = { grow: next, settle: (error?: Error) => (error ? reject(error) : resolve()) };
-      void (asks ? grow(asked) : growApproved(asked));
-    });
+    return grow(next);
   }
 
-  /** The grow under a passkey's answer, drafted over the copies each Server reports now. */
-  async function growApproved(asked: Asking) {
-    try {
-      const scope = await readVolumeScope(queryClient, organizationSlug, environment, volume.id);
-      const approved = await approveVolume(scope, runChange(volume.name, { kind: "resize", args: { maximum_bytes: asked.grow.to } }, scope.members, scope));
-      if (approved === null) return asked.settle();
-      await grow(asked, approved.approval);
-    } catch (error) {
-      asked.settle(error instanceof Error ? error : new Error(`Could not grow ${volume.name}.`));
-    }
-  }
-
-  async function grow(asked: Asking, approval?: Signed) {
-    try {
-      const admitted = await resizeVolumeServerFn({ data: {
-        organizationSlug, volumeId: volume.id, environment, maximumBytes: asked.grow.to, requestId: crypto.randomUUID(),
-        ...(approval !== undefined && { approval }),
-      } });
-      if ("requested" in admitted) {
-        toast("Requested");
-        void refetchApprovals(queryClient, organizationSlug);
-      } else {
-        setGrowingTo(asked.grow.to);
-        watch(admitted.id);
-        void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
-      }
-      asked.settle();
-    } catch (error) {
-      asked.settle(error instanceof Error ? error : new Error(`Could not grow ${volume.name}.`));
+  async function grow(asked: Grow) {
+    const admitted = await resizeVolumeServerFn({ data: {
+      organizationSlug, volumeId: volume.id, environment, maximumBytes: asked.to, requestId: crypto.randomUUID(),
+    } });
+    if ("requested" in admitted) {
+      toast("Requested");
+      void refetchApprovals(queryClient, organizationSlug);
+    } else {
+      setGrowingTo(asked.to);
+      watch(admitted.id);
+      void queryClient.invalidateQueries({ queryKey: volumeRunKeys.all });
     }
   }
 

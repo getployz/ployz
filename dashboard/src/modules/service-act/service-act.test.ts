@@ -5,8 +5,6 @@ import {
   progressOf,
   type ServiceActBefore,
   type ServiceActLeg,
-  START_APPROVAL_CAPABILITY,
-  strandedByStop,
 } from "./service-act";
 
 const before: ServiceActBefore = { copies: [{ server: "a", machine: "m-a", container: "web-1", state: "running", hook: false }], unanswered: [{ machine: "m-b" as MachineId, name: "b" }] };
@@ -80,26 +78,5 @@ describe("progressOf", () => {
       { server: "a", machine: "m-a", container: "web-2", hook: false, stop: "failed", start: null, reason: "a couldn't stop it." },
     ];
     expect(endOf("stop", answered, stopped, null)).toEqual({ state: "failed", reason: "a couldn't stop it." });
-  });
-});
-
-describe("strandedByStop", () => {
-  const ENFORCED = "ployz.machine.enforced.v1";
-  const server = (id: string, capabilities: string[]) => ({ id, name: `machine-${id}`, capabilities });
-  const copy = (machineId: string, hook = false) => ({ machineId, hook });
-
-  it("names a Server running a copy that can't take a start approval", () => {
-    const machines = [server("1", [ENFORCED, START_APPROVAL_CAPABILITY]), server("2", [ENFORCED])];
-    expect(strandedByStop([copy("1"), copy("2")], machines)).toEqual({ name: "machine-2", ployz03: false });
-  });
-
-  it("names a Server on Ployz 0.3 running a copy, which takes only an upgrade", () => {
-    expect(strandedByStop([copy("1")], [server("1", [START_APPROVAL_CAPABILITY])])).toEqual({ name: "machine-1", ployz03: true });
-  });
-
-  it("strands nothing when every such Server can start it again, runs no copy, or holds only a hook", () => {
-    expect(strandedByStop([copy("1")], [server("1", [ENFORCED, START_APPROVAL_CAPABILITY])])).toBeNull();
-    expect(strandedByStop([copy("1")], [server("1", [ENFORCED, START_APPROVAL_CAPABILITY]), server("2", [ENFORCED])])).toBeNull();
-    expect(strandedByStop([copy("1"), copy("2", true)], [server("1", [ENFORCED, START_APPROVAL_CAPABILITY]), server("2", [ENFORCED])])).toBeNull();
   });
 });

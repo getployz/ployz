@@ -9,8 +9,6 @@ export const requirements = {
   olderLogs: { capability: "ployz.logs.history.v2", feature: "Older logs", plural: true },
   volumeMove: { capability: "ployz.volume.copy.set.v1", feature: "Volume move" },
   volumeFloor: { capability: "ployz.volume.copy.floor.v1", feature: "Volume move" },
-  volumeHandoff: { capability: "ployz.volume.copy.handoff.v1", feature: "Volume move" },
-  volumePasskey: { capability: "ployz.volume.passkey.v1", feature: "Approving a volume change with a passkey" },
   volumeSize: { capability: "ployz.volume.size.set.v1", feature: "Volume resize" },
   volumeShrink: { capability: "ployz.volume.size.shrink.v1", feature: "Volume shrink" },
   pruneImages: { capability: "ployz.image.prune.v1", feature: "Image cleanup" },
@@ -19,9 +17,6 @@ export const requirements = {
   forget: { capability: "ployz.machine.forget.v1", feature: "Server removal" },
   ensureContainer: { capability: "ployz.container.ensure.v1", feature: "Deploys", plural: true },
   metrics: { capability: "ployz.metrics.history.v1", feature: "Metrics", plural: true },
-  enforced: { capability: "ployz.machine.enforced.v1", feature: "Device enforcement" },
-  activate: { capability: "ployz.machine.activate.v1", feature: "Turning device enforcement on" },
-  recipientKey: { capability: "ployz.sealing.recipient.v1", feature: "A new key for sealed values" },
 } as const satisfies Record<string, Requirement>;
 
 /**
@@ -51,30 +46,6 @@ export function serverSupports(machine: { readonly capabilities: readonly string
   if (machine.capabilities.length === 0) return "unknown";
   return machine.capabilities.includes(requirement.capability);
 }
-
-/** Whether a Server runs Ployz 0.3, whose daemon enforces no Device approval: Cloud sends it only an upgrade and reads. */
-export function runsOlderPloyz(machine: { readonly capabilities: readonly string[] }) {
-  return !machine.capabilities.includes(requirements.enforced.capability);
-}
-
-/** What the dashboard says wherever it would change a Server that runs Ployz 0.3. */
-export function olderPloyzSentence(server?: string) {
-  return server === undefined ? "This server runs Ployz 0.3. Upgrade it to deploy." : `${server} runs Ployz 0.3. Upgrade it to deploy.`;
-}
-
-/** A Server that would refuse what a browser approves: one on Ployz 0.3, which takes only an upgrade, or one without a step's capability. */
-export type OlderServer = { readonly name: string; readonly ployz03: boolean };
-
-/** The first of `machines` that runs Ployz 0.3, else the first that lacks one of `capabilities`. */
-export function olderServer(machines: readonly { readonly name: string; readonly capabilities: readonly string[] }[], capabilities: readonly string[] = []): OlderServer | null {
-  const older = machines.find((machine) => runsOlderPloyz(machine));
-  if (older !== undefined) return { name: older.name, ployz03: true };
-  const lacking = machines.find((machine) => !capabilities.every((capability) => machine.capabilities.includes(capability)));
-  return lacking === undefined ? null : { name: lacking.name, ployz03: false };
-}
-
-/** Why `older` would refuse: that it runs Ployz 0.3, or `lacks`, the sentence for a Server without the step. */
-export const olderSays = (older: OlderServer, lacks: (name: string) => string) => older.ployz03 ? olderPloyzSentence(older.name) : lacks(older.name);
 
 /** The Servers whose records say they lack the capability. A Server whose record lists none is not named: the call is attempted. */
 export function serversLacking<T extends { readonly name: string; readonly capabilities: readonly string[] }>(machines: readonly T[], requirement: Requirement) {

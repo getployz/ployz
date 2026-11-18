@@ -489,14 +489,14 @@ impl TrustedKeys {
     }
 
     /// The trusted passkey that answered `assertion` to `challenge`, when a statement of
-    /// `purpose` may rest on a passkey at all. Workflows may, through a session grant, and
-    /// rules and Volume workflows, through a prompt of their own.
+    /// `purpose` may rest on a passkey at all: a rule, and the Private Access key approval,
+    /// which signs as a workflow.
     ///
     /// A credential ID is the authenticator's claim, not a key, so every trusted passkey
     /// under it is tried and only a verifying signature picks one.
     ///
     /// # Errors
-    /// Returns [`AuthorityRefusal::ApproveOnly`] for a join or enforcement statement,
+    /// Returns [`AuthorityRefusal::ApproveOnly`] for a join,
     /// [`AuthorityRefusal::UnknownPasskey`] when no trusted passkey has the assertion's
     /// credential, and the first candidate's refusal when none verifies.
     pub fn passkey_approval(
@@ -510,10 +510,7 @@ impl TrustedKeys {
             .iter()
             .filter(|trusted| trusted.passkey.credential_id == assertion.credential_id);
         let first = candidates.next().ok_or(AuthorityRefusal::UnknownPasskey)?;
-        if !matches!(
-            purpose,
-            Purpose::Workflow | Purpose::Rule | Purpose::Volume | Purpose::Enforce
-        ) {
+        if !matches!(purpose, Purpose::Workflow | Purpose::Rule) {
             return Err(AuthorityRefusal::ApproveOnly {
                 code: first.passkey.code(),
                 purpose,

@@ -15,5 +15,4 @@ pub mod fate;
 pub mod github_build;
 pub mod issuance;
 pub mod standing;
-pub mod volume_records;
 pub mod volume_size;

@@ -26,12 +26,6 @@ pub struct SetVolumeSizeRequest {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub allow_shrink: bool,
-    /// The Device-signed Resize approval naming this Machine, this size and whether it may
-    /// shrink. An enforcing Machine needs one from an Operator. A Machine that predates it
-    /// ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub approval: Option<crate::authority::Signed<crate::authority::VolumeApproval>>,
 }
 
 /// The smallest bound a shrink accepts for a Volume that references `referenced_bytes`:
@@ -182,7 +176,6 @@ mod tests {
             allow_shrink: true,
             ..request
         };
-        assert_eq!(request.approval, None);
         assert_eq!(
             serde_json::to_value(&request).unwrap(),
             serde_json::json!({"name": "data", "maximum_bytes": 5, "allow_shrink": true})

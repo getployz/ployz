@@ -109,9 +109,7 @@ service or remove a domain, the agent stops and shows a card. It does the same b
 or forgets a server, cleans up after one, drains a server whose global service runs on no other server, runs a volume
 command that deletes data, takes an environment or a project off your servers, or unprotects an
 environment. The card leads with what would be
-destroyed. A detach that a [restore](../services/restore-a-volume.md) makes also says what the
-new volume leaves out, like "Changes after 10:27 are not in pg-data-1027", with the date as well
-for a point from an earlier day. Everything else the change does is folded under a count, like **2 other changes**;
+destroyed. Everything else the change does is folded under a count, like **2 other changes**;
 click it to see them. Under its name the card says when it was asked, like **9 minutes ago**.
 
 1. Read the list of what gets destroyed.
@@ -161,37 +159,18 @@ it has now follows in brackets, like **Stop web-old (web)**. Under the steps, it
 web until started again**, as a stop or restart card does.
 
 1. Read the steps in order, and what they take away.
-2. Click **Approve all**, then use your passkey when the browser asks. Your passkey approves this
-   proposal only, once, even if you used it a moment ago.
+2. Click **Approve all**.
 3. Or click **Deny**, with a reason if you like. The agent gets it.
 
 <!-- screenshot: a proposal card for 3 steps in shop/production -->
 
-The steps run one after another, and if one fails, the ones after it don't run. Your approval of
-those steps still stands until it runs out, 15 minutes after you gave it. The card moves under
-**Recent** and shows each step as **Done**, **Failed** with why, or **Not run**. You can ask the
-agent how far the plan got. Each server runs only a step you saw, and each step only once.
-When the 15 minutes run out with steps left, they don't run, and the card says what to start
-yourself. A proposal holds only restarts, stops and starts; a deploy or a settings change still
-asks on its own card.
+The steps run one after another, and if one fails, the ones after it don't run. The card moves
+under **Recent** and shows each step as **Done**, **Failed** with why, or **Not run**. You can ask
+the agent how far the plan got. A proposal holds only restarts, stops and starts; a deploy or a
+settings change still asks on its own card.
 
 A proposal in a [Protected environment](../environments/environments.md#protect-an-environment)
-can only be presented by an owner or admin. If a server needs a newer Ployz to take a proposal,
-the card says which one, and nothing runs until it's upgraded.
-
-## Approve a volume change
-
-On servers with [device enforcement](../servers/manage-servers.md#require-a-devices-signature-for-restarts-and-joins)
-on, an agent's volume move, mirror, full sync, restore, mirror removal or resize waits on a card,
-like **Move data to web-2**.
-
-1. Click **Approve**. Your browser lists what the change approves, line by line, as `ployz`
-   prints it.
-2. Read the lines, then use your passkey. Cancel and nothing is approved.
-
-The agent's next try runs the change, once. If a server the change names needs a newer Ployz, or
-doesn't answer, the card says which one and nothing is approved. See
-[Approve from Ployz Cloud](../services/move-a-volume.md#approve-from-ployz-cloud).
+can only be presented by an owner or admin.
 
 ## Good to know
 

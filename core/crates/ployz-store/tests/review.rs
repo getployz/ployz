@@ -4081,7 +4081,6 @@ fn apply_all(store: &ConfigStore, who: &Actor, trusted: &Trusted) {
         .write_trusted(
             who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4457,7 +4456,6 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -4540,7 +4538,6 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
         store.write_trusted(
             &who,
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),

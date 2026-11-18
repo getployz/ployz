@@ -1200,7 +1200,6 @@ mod tests {
             target_versions: BTreeMap::from([("actor".to_owned(), 7)]),
             sealing_key: None,
             devices: Vec::new(),
-            recipient: None,
         };
         let EnrollAs::Member {
             registration: join,

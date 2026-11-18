@@ -167,11 +167,6 @@ impl LocalMachine {
         if recipient.public_key != request.public_key {
             return Err(Error::WireGuardKeyMismatch(request.machine).into());
         }
-        if record.awaits_activation() {
-            return Err(super::Error::AwaitingActivation {
-                capability: ployz_core::SHARE_SEALING_KEY_CAPABILITY,
-            });
-        }
         let approval = request
             .join_approval
             .as_ref()
@@ -188,20 +183,19 @@ impl LocalMachine {
                 },
             ));
         }
-        let fresh =
-            match self.enter_join(request.machine, |stored| Ok(stored.approval == *approval))? {
-                Entered::Fresh(fresh) => fresh,
-                Entered::Replayed(stored) => {
-                    return match stored.reply {
-                        super::restart_approval::JoinReply::Share(sealed) => {
-                            Ok(SealingKeyShared { sealed })
-                        }
-                        super::restart_approval::JoinReply::Register(_) => {
-                            Err(super::Error::JoinConsumed(request.machine))
-                        }
-                    };
-                }
-            };
+        let fresh = match self
+            .enter_join(request.machine, |stored| Ok(stored.approval == *approval))?
+        {
+            Entered::Fresh(fresh) => fresh,
+            Entered::Replayed(stored) => {
+                return match stored.reply {
+                    super::consumption::JoinReply::Share(sealed) => Ok(SealingKeyShared { sealed }),
+                    super::consumption::JoinReply::Register(_) => {
+                        Err(super::Error::JoinConsumed(request.machine))
+                    }
+                };
+            }
+        };
         let network = super::published_network(&record, self.replicated()?).await?;
         self.verify_join(
             approval,
@@ -211,9 +205,9 @@ impl LocalMachine {
         let sealed = key.seal_from(record.private_key(), &request.public_key)?;
         self.consume_join(
             fresh,
-            super::restart_approval::JoinResult {
+            super::consumption::JoinResult {
                 approval: approval.clone(),
-                reply: super::restart_approval::JoinReply::Share(sealed.clone()),
+                reply: super::consumption::JoinReply::Share(sealed.clone()),
             },
         )?;
         tracing::info!(

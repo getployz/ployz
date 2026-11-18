@@ -204,7 +204,7 @@ fn built_under_rule(
     cancellation: &CancellationToken,
 ) -> Result<(Pushed, ployz_core::GithubToken), Error> {
     let service = checked_in.service.clone();
-    let relayed = checked_in.rule.open(&service)?;
+    let relayed = rule::open(&checked_in.rule, &service)?;
     // Frozen once: the policy is checked against exactly what is captured and built.
     let prepared = prepare(PreparationInput {
         deployment: checked_in.deployment.clone(),
@@ -213,7 +213,7 @@ fn built_under_rule(
         ..PreparationInput::default()
     })?;
     let policy = rule::policy(&relayed, &service, &prepared)?.clone();
-    let authority = rule::authority(checked_in, commit)?;
+    let authority = ployz_core::authority::CommitAuthority::Head;
     let keys = rule::Keys::generate();
     let grant_claim = rule::grant_claim(
         checked_in,
@@ -258,7 +258,7 @@ fn built_under_rule(
     let mut captured = prepared.capture(Some(opened))?.build;
     captured.pin_local(
         policy.platforms.iter().cloned().collect(),
-        rule::cache_scope(&relayed, &policy, &checked_in.attest)?,
+        rule::cache_scope(&policy, &checked_in.attest)?,
     );
     let pushed = runtime.block_on(run(captured, &grant, Arc::clone(events), cancellation))?;
     let image = ployz_core::authority::ImageDigest::parse(&pushed.digest)
@@ -691,7 +691,6 @@ mod tests {
 
     fn sealed_record() -> SealedRecord {
         let value = EnvValue::Sealed(SealedValue {
-            environment: None,
             sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
             scope: SealedScope::Shared,
             key: "NPM_TOKEN".into(),

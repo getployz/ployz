@@ -733,7 +733,6 @@ fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
         store.write_trusted(
             &who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000103")
                     .unwrap(),
                 environment: EnvironmentRef::default(),
@@ -895,7 +894,6 @@ fn approve(store: &ConfigStore, who: &Actor, head: &str) -> Automated {
                 repository_id: backend::repo_id(11),
                 number: backend::pr_number(5),
                 head: backend::sha(head),
-                reviews: Vec::new(),
             },
         )
         .unwrap()
@@ -961,7 +959,6 @@ fn an_approval_that_made_no_pr_environment_stays_listed_to_approve_again() {
         repository_id: backend::repo_id(11),
         number: backend::pr_number(5),
         head: backend::sha(H2),
-        reviews: Vec::new(),
     };
     let serverless = Trusted {
         servers: Some(0),
@@ -1252,7 +1249,6 @@ fn deploy_pr_5(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployme
         .write_trusted(
             who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef {
                     project: None,
@@ -1395,7 +1391,6 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
         .write_trusted(
             &who,
             &ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef {
                     project: None,
@@ -1452,7 +1447,6 @@ fn an_approval_racing_news_of_a_push_refuses_the_head_it_moved_from() {
                     repository_id: backend::repo_id(11),
                     number: backend::pr_number(5),
                     head: backend::sha(H2),
-                    reviews: Vec::new(),
                 },
             )
         });
@@ -2177,31 +2171,6 @@ fn a_rule_that_does_not_supersede_the_kept_one_is_refused() {
     assert_eq!(refused.code, RpcErrorCode::Conflict);
 }
 
-/// A person's approval of `service` at `commit` under the rule [`approve_rule`] keeps.
-fn commit_approval(
-    service: &str,
-    commit: &str,
-) -> ployz_core::authority::Signed<ployz_core::authority::CommitApproval> {
-    use ployz_core::authority::{
-        CommitApproval, CommitSha, RuleId, Signed, Signer, SignerKey, Timestamp,
-    };
-    let signer = Signer::from_seed(&[7; 32]);
-    let issued_at = Timestamp::now();
-    let body = CommitApproval {
-        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
-        rule: RuleId::from_bytes([9; 16]),
-        generation: 1,
-        service: ServiceName::parse(service).unwrap(),
-        commit: CommitSha::parse(commit).unwrap(),
-        issued_at,
-        expires_at: issued_at.plus(15 * 60 * 1000),
-        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
-            *signer.public().as_bytes(),
-        )),
-    };
-    Signed::sign(&body, &signer).unwrap()
-}
-
 /// Run `run` of GitHub build `id` to its end, reporting `token` and the image `image`.
 fn built_on_github(
     store: &ConfigStore,
@@ -2294,58 +2263,26 @@ fn pushed_and_built(
     pushed
 }
 
-fn redeploy(
-    n: u8,
-    source: &ployz_store::DeploymentId,
-    approvals: Vec<ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
-) -> ployz_store::Retry {
+fn redeploy(n: u8, source: &ployz_store::DeploymentId) -> ployz_store::Retry {
     ployz_store::Retry {
-        teardown: None,
         id: ployz_store::DeploymentId::parse(format!("00000000-0000-4000-8000-0000000009{n:02}"))
             .unwrap(),
         deployment: source.clone(),
         rolls_back: None,
         version: None,
         accept_volume_loss: Vec::new(),
-        approvals,
-        awaits_approval: true,
         approval: None,
     }
 }
 
+/// A Server admits a rule-built image only with the rule and the build's token, so the
+/// runner of a redeploy a person asked for gets both.
 #[test]
-fn a_redeploy_keeps_its_sources_image_token_and_builds_an_approved_commit_on_a_dispatch() {
-    use ployz_core::authority::{ApprovalDigest, CommitAuthority};
+fn a_persons_redeploy_of_a_rule_built_image_carries_the_rule_and_its_token() {
     let (store, system_actor) = shop();
     let first = format!("ployz-build/web@sha256:{}", "d".repeat(64));
     let pushed = pushed_and_built(&store, &system_actor, "token-1", &first);
-    // A push's token names the head it built, under the rule's generation.
-    let pushed_token = store
-        .github_input(&build_id(&pushed, "web"))
-        .unwrap()
-        .image_token
-        .unwrap();
-    assert_eq!(
-        (pushed_token.token.as_str(), pushed_token.image.as_str()),
-        ("token-1", first.as_str())
-    );
-    assert_eq!(
-        (pushed_token.generation, pushed_token.authority),
-        (1, CommitAuthority::Head)
-    );
-
-    // An approval of a commit the redeploy doesn't build is refused.
-    let error = store
-        .write_trusted(
-            &person(),
-            &ployz_store::Admit::Retry(redeploy(1, &pushed, vec![commit_approval("web", H2)])),
-            &permitted(),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
-
-    let approved = commit_approval("web", H1);
-    let again = redeploy(2, &pushed, vec![approved.clone()]);
+    let again = redeploy(3, &pushed);
     store
         .write_trusted(
             &person(),
@@ -2353,159 +2290,19 @@ fn a_redeploy_keeps_its_sources_image_token_and_builds_an_approved_commit_on_a_d
             &permitted(),
         )
         .unwrap();
-    let web = build_id(&again.id, "web");
-    // It keeps the image its source built, to reuse, and that image's token.
-    let input = store.github_input(&web).unwrap();
-    assert_eq!(input.receipt.unwrap()["image"]["reference"], first);
-    assert_eq!(input.image_token, Some(pushed_token));
-    // The approved build runs under the rule, on Cloud's dispatch; the other Service,
-    // under no rule, as any person's redeploy does.
-    assert!(store.github_rule(&web).unwrap().is_some());
-    assert_eq!(store.github_approval(&web).unwrap(), Some(approved.clone()));
-    let api = build_id(&again.id, "api");
-    assert!(store.github_rule(&api).unwrap().is_none());
-    assert_eq!(store.github_approval(&api).unwrap(), None);
-    let rebuilt = format!("ployz-build/web@sha256:{}", "e".repeat(64));
-    built_on_github(&store, &web, 42, "token-2", &rebuilt);
-    let claims = |event: &str| ployz_store::GithubClaims {
-        repository_id: "11".into(),
-        job_workflow_ref: "acme/build/.github/workflows/build.yml@refs/heads/main".into(),
-        run_id: "42".into(),
-        event_name: event.into(),
-    };
-    assert!(
-        store
-            .github_authorize(&web, &claims("workflow_dispatch"))
-            .is_ok()
-    );
-    assert_eq!(
-        store
-            .github_authorize(&web, &claims("push"))
-            .unwrap_err()
-            .code,
-        RpcErrorCode::Unauthenticated
-    );
-    // Its token names the approval it was built under.
-    let rebuilt_token = store.github_input(&web).unwrap().image_token.unwrap();
-    assert_eq!(rebuilt_token.image, rebuilt);
-    assert_eq!(
-        rebuilt_token.authority,
-        CommitAuthority::Approved(ApprovalDigest::of(&approved))
-    );
-    reused(
-        &store,
-        &api,
-        &format!("ployz-build/api@sha256:{}", "a".repeat(64)),
-    );
-
-    // It waits for the person to approve its commits again; only a Deployment that waits
-    // takes them, and only for a commit it builds.
-    assert!(store.awaiting_approval(&again.id).unwrap());
-    let approve = |deployment: &ployz_store::DeploymentId, approval| {
-        store.write_trusted(
-            &person(),
-            &ployz_store::ApproveDeployment {
-                deployment: deployment.clone(),
-                approvals: vec![approval],
-            },
-            &permitted(),
-        )
-    };
-    assert_eq!(
-        approve(&again.id, commit_approval("web", H2))
-            .unwrap_err()
-            .code,
-        RpcErrorCode::InvalidArgument
-    );
-    assert_eq!(
-        approve(&pushed, commit_approval("web", H1))
-            .unwrap_err()
-            .code,
-        RpcErrorCode::Conflict
-    );
-    let fresh = commit_approval("web", H1);
-    // It takes one approval for each Service it holds one for: none, or one twice, is
-    // refused, and it still waits.
-    for approvals in [Vec::new(), vec![fresh.clone(), fresh.clone()]] {
-        let error = store
-            .write_trusted(
-                &person(),
-                &ployz_store::ApproveDeployment {
-                    deployment: again.id.clone(),
-                    approvals,
-                },
-                &permitted(),
-            )
-            .unwrap_err();
-        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
-    }
-    assert!(store.awaiting_approval(&again.id).unwrap());
-    approve(&again.id, fresh.clone()).unwrap();
-    assert!(!store.awaiting_approval(&again.id).unwrap());
-    // The runner relays the rule, the token with the authority it was built under, and
-    // the fresh approval.
+    reused(&store, &build_id(&again.id, "web"), &first);
     let claimed = store
         .claim(&again.id, &ployz_store::RunnerId::parse("runner").unwrap())
         .unwrap();
     assert!(claimed.rule.is_some());
     assert_eq!(
-        claimed.approvals.get(&ServiceName::parse("web").unwrap()),
-        Some(&fresh)
+        claimed
+            .image_tokens
+            .values()
+            .map(|token| token.token.as_str())
+            .collect::<Vec<_>>(),
+        ["token-1"]
     );
-    assert_eq!(
-        claimed.image_tokens[&ServiceName::parse("web").unwrap()].authority,
-        CommitAuthority::Approved(ApprovalDigest::of(&approved))
-    );
-}
-
-#[test]
-fn a_redeploys_approved_build_walks_only_github_whatever_builder_it_prefers() {
-    use ployz_store::{BuildOrder, Builder, Command, SetBuildOrder};
-    let (store, system_actor) = shop();
-    let first = format!("ployz-build/web@sha256:{}", "d".repeat(64));
-    let pushed = pushed_and_built(&store, &system_actor, "token-1", &first);
-    store
-        .write(
-            &system_actor,
-            &Command::SetBuildOrder(SetBuildOrder {
-                build_order: Some(BuildOrder::ServersThenGithub),
-            }),
-        )
-        .unwrap();
-    let walk = |id: &ployz_store::DeploymentId| {
-        store
-            .sources(id)
-            .unwrap()
-            .into_iter()
-            .find(|source| source.service.as_str() == "web")
-            .unwrap()
-            .builders
-    };
-    // Under a person's approval it builds on GitHub or not at all: a Server that
-    // enforces runs no Servers-built image, and the run waits on the approval.
-    let approved = redeploy(4, &pushed, vec![commit_approval("web", H1)]);
-    store
-        .write_trusted(
-            &person(),
-            &ployz_store::Admit::Retry(approved.clone()),
-            &permitted(),
-        )
-        .unwrap();
-    assert_eq!(walk(&approved.id), [Builder::Github]);
-    // Without one it walks the Build Order, as any redeploy does.
-    let plain = ployz_store::Retry {
-        awaits_approval: false,
-        approval: None,
-        ..redeploy(5, &pushed, Vec::new())
-    };
-    store
-        .write_trusted(
-            &person(),
-            &ployz_store::Admit::Retry(plain.clone()),
-            &permitted(),
-        )
-        .unwrap();
-    assert_eq!(walk(&plain.id), [Builder::Servers, Builder::Github]);
 }
 
 #[test]
@@ -2514,7 +2311,7 @@ fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
     let (store, system_actor) = shop();
     let first = format!("ployz-build/web@sha256:{}", "d".repeat(64));
     let pushed = pushed_and_built(&store, &system_actor, "token-1", &first);
-    let again = redeploy(3, &pushed, vec![commit_approval("web", H1)]);
+    let again = redeploy(3, &pushed);
     store
         .write_trusted(
             &person(),
@@ -2530,7 +2327,7 @@ fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
         ("token-1", CommitAuthority::Head)
     );
     // Another image keeps no token: none names it.
-    let other = redeploy(4, &pushed, vec![commit_approval("web", H1)]);
+    let other = redeploy(4, &pushed);
     store
         .write_trusted(
             &person(),
@@ -2545,41 +2342,4 @@ fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
         &format!("ployz-build/web@sha256:{}", "c".repeat(64)),
     );
     assert_eq!(store.github_input(&web).unwrap().image_token, None);
-}
-
-#[test]
-fn a_redeploy_nobody_approved_again_after_its_builds_fails_when_it_would_run() {
-    let (store, system_actor) = shop();
-    publish(&store, &system_actor);
-    let pushed = system(&store, &push(None, Some(H1), None)).admitted[0]
-        .deployment
-        .id
-        .clone();
-    backend::run(&store, &pushed);
-    let again = redeploy(5, &pushed, Vec::new());
-    store
-        .write_trusted(
-            &person(),
-            &ployz_store::Admit::Retry(again.clone()),
-            &permitted(),
-        )
-        .unwrap();
-    let error = store
-        .claim(&again.id, &ployz_store::RunnerId::parse("runner").unwrap())
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict);
-    assert_eq!(
-        error.message,
-        "Nobody approved this redeploy after its builds, so it didn't run. Run ployz \
-         deployment redeploy again.",
-        "{error:?}"
-    );
-    assert_eq!(error.details, json!({ "deployment": again.id }));
-    let view = store
-        .read(&person(), &ployz_store::DeploymentQuery { id: again.id })
-        .unwrap();
-    assert_eq!(
-        view.deployment.status,
-        ployz_store::DeploymentStatus::Failed
-    );
 }

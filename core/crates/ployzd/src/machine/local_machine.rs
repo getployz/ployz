@@ -14,9 +14,9 @@ use ployz_core::{
     Forgotten, InspectRequest, LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine,
     MachineDetails, MachineId, MachineIdentity, MachineList, MachineName, MachineObservation,
     MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel, MembershipEvidence,
-    PublicIpDiscovery, RESTART_APPROVAL_CAPABILITY, RecoverySeed, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SET_DEVICE_ENFORCEMENT_CAPABILITY,
-    SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
+    PublicIpDiscovery, RecoverySeed, RegisterRequest, Registered, RpcError, RpcErrorCode,
+    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
+    synthesize_membership,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -73,16 +73,13 @@ impl std::ops::Deref for Admission {
 pub struct LocalMachine {
     owner: RecordOwner,
     caller: Caller,
-    /// The Operator's teardown this call was admitted under, which each admitted turn
-    /// checks again before its effect.
-    teardown: Option<teardown::HeldTeardown>,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
     zpool: PathBuf,
     proc_root: PathBuf,
     settled: container::SettledCreations,
-    approvals: Arc<restart_approval::ConsumptionLog>,
+    approvals: Arc<ConsumptionLog>,
     pacing: private_access::Pacing,
     #[cfg(test)]
     peers: Option<PeerInspect>,
@@ -103,39 +100,27 @@ pub(crate) type PeerInspect = std::sync::Arc<
         + Sync,
 >;
 
-pub(crate) mod activation;
+mod consumption;
 mod container;
 mod deploy_approval;
 mod ingress_doors;
 mod private_access;
-pub(crate) use activation::{PendingActivation, Retired};
+pub(crate) use consumption::ConsumptionLog;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]
 pub(crate) use private_access::Pacing;
 mod join_approval;
-pub(crate) use join_approval::reverify_join_proposals;
 mod management_client;
-pub(crate) mod preview_deploy;
-pub(crate) mod preview_grant;
 mod push_target;
-mod recipient;
-mod resize_seed_approval;
-pub(super) mod restart_approval;
-pub(crate) use restart_approval::ConsumptionLog;
 pub(crate) mod rule_deploy;
 pub(crate) mod rule_grant;
-pub(crate) use resize_seed_approval::Landing;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
-mod teardown;
 pub(crate) use sealing_recovery::Error as RecoveryError;
-pub(crate) use teardown::HeldTeardown;
 mod upgrade;
-mod volume_approval;
-pub(crate) use volume_approval::{Admitted, CopyStep};
 
 /// Entry-local admin membership, RTT samples, and selected endpoints.
 ///
@@ -225,28 +210,10 @@ pub enum Error {
     EmptyUpdate,
     #[error("push target {0}")]
     InvalidPushTarget(&'static str),
-    /// Device enforcement refused an Operator's restart step.
-    #[error("{RESTART_APPROVAL_CAPABILITY} needs a Device-signed restart approval")]
-    RestartRefused(#[from] ployz_core::authority::AuthorityRefusal),
-    /// A browser key's restart or start of a Container that reaches the host.
-    #[error(
-        "This service reaches the server itself, so only an approved device can restart or start it. Run ployz service restart on that device."
-    )]
-    RestartReachesHost,
     /// Device enforcement refused an Operator's creation, or its step under a deploy
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
     #[error("{}", deploy_approval::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
-    /// A session's creation claims an Ingress Hostname another Namespace owns. The refusal
-    /// names `capability`, the route's approval, in its details.
-    #[error(
-        "{hostname} belongs to {owner} in another environment, so a passkey approval can't take it. Remove it there first, or deploy from an approved device."
-    )]
-    HostnameOwned {
-        capability: &'static str,
-        hostname: ployz_core::IngressHost,
-        owner: ployz_core::QualifiedService,
-    },
     /// A rule build's grant failed a check before anything opened. The refusal names
     /// [`ployz_core::BUILD_GRANT_RULE_CAPABILITY`] in its details.
     #[error("This Server refused the rule build's grant: {0}")]
@@ -256,14 +223,6 @@ pub enum Error {
     /// details.
     #[error("{0}")]
     RuleDeployRefused(rule_deploy::RuleDeployRefusal),
-    /// A preview build's grant failed a check before anything opened. The refusal names
-    /// [`ployz_core::BUILD_GRANT_PREVIEW_CAPABILITY`] in its details.
-    #[error("This Server refused the preview build's grant: {0}")]
-    PreviewGrantRefused(preview_deploy::PreviewRefusal),
-    /// Device enforcement refused an Operator's Container change under a preview rule.
-    /// The refusal names [`ployz_core::DEPLOY_PREVIEW_CAPABILITY`] in its details.
-    #[error("{0}")]
-    PreviewDeployRefused(preview_deploy::PreviewRefusal),
     /// GitHub did not prove a rule build: its token failed to verify or match the rule.
     #[error("This Server refused the rule build's GitHub token: {0}")]
     RuleProofRefused(crate::github::oidc::ProofRefusal),
@@ -274,73 +233,17 @@ pub enum Error {
     /// names `capability` in its details.
     #[error("{}", ployz_core::BUILD_REFUSED_BY_ENFORCEMENT)]
     BuildRefused { capability: &'static str },
-    /// Device enforcement refused an Operator's upgrade for want of a valid Release Channel
-    /// approval. The refusal names [`ployz_core::UPGRADE_CHANNEL_CAPABILITY`] in its
-    /// details.
-    #[error(
-        "{capability}: no valid Release Channel approval for this Cluster: {0}",
-        capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
-    )]
-    UpgradeChannelRefused(ployz_core::authority::AuthorityRefusal),
-    /// Device enforcement refused an Operator's `Leave` or `Forget` that no teardown names,
-    /// before any Container stopped. The refusal names `capability` in its details.
-    #[error("{}: {refusal}", departure_text(.capability))]
-    DepartureRefused {
-        capability: &'static str,
-        refusal: ployz_core::authority::AuthorityRefusal,
-    },
-    /// Device enforcement refused an Operator's Container step or Volume removal that no
-    /// teardown names.
-    #[error("This server takes this off only under your approval: {0}")]
-    TeardownRefused(ployz_core::authority::AuthorityRefusal),
     /// Device enforcement refused an Operator's `SetPrivateAccess` turning Private Access on
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]
     PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
-    /// Device enforcement refused an Operator's `SeedVolume`, which no Volume approval
-    /// admits yet. The refusal names `capability` in its details.
-    #[error("{}", ployz_core::SEED_REFUSED_BY_ENFORCEMENT)]
-    VolumeRefused { capability: &'static str },
-    /// A Volume step that no Volume approval admits on this Machine.
-    #[error("This Server refused the Volume step: {0}")]
-    VolumeStepRefused(ployz_core::authority::AuthorityRefusal),
     #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
-    #[error("{SET_DEVICE_ENFORCEMENT_CAPABILITY} needs a Device-signed starting set: {0}")]
-    EnforcementRefused(ployz_core::authority::AuthorityRefusal),
-    /// A starting set this Server did not admit. The refusal names `capability`.
-    #[error("{capability}: {reason}")]
-    ActivationRefused {
-        capability: &'static str,
-        reason: activation::Refusal,
-    },
-    /// An activation is committing: the daemon restarts in a few seconds.
-    #[error(
-        "This Server is turning on Device enforcement and restarts in a few seconds. Try again then"
-    )]
-    Activating,
-    /// This Machine awaits its Cluster's activation, so it refuses the change an Operator
-    /// asked, or a join from anyone. The refusal names `capability` and says how to
-    /// activate.
-    #[error(
-        "{capability}: this Server awaits its Cluster's activation. Activate the Cluster, then try again"
-    )]
-    AwaitingActivation { capability: &'static str },
-    #[error("could not keep the pending activation")]
-    ActivationRecord(#[source] std::io::Error),
-    /// A recipient key step this Server did not admit. The refusal names `capability`.
-    #[error("{capability}: {refusal}")]
-    RecipientRefused {
-        capability: &'static str,
-        refusal: ployz_core::authority::AuthorityRefusal,
-    },
-    #[error("could not read or write the Cluster's recipient key")]
-    RecipientKey(#[source] std::io::Error),
     #[error("could not keep the record of join approvals")]
     JoinRecord(#[source] std::io::Error),
     #[error("the join of Machine {0} has already been admitted")]
     JoinConsumed(MachineId),
-    #[error("could not keep the record of restart approvals")]
+    #[error("could not keep the record of consumed approvals")]
     ApprovalRecord(#[source] std::io::Error),
     #[error(transparent)]
     RecordOwner(#[from] RecordOwnerStopped),
@@ -423,7 +326,6 @@ impl LocalMachine {
             approvals: owner.restart_approvals(),
             owner,
             caller: Caller::Routed,
-            teardown: None,
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
@@ -490,21 +392,6 @@ impl LocalMachine {
     pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.caller = Caller::Management(remote);
         self
-    }
-
-    /// Hold `teardown` for this call: each admitted turn checks it again under the turn,
-    /// so a key removed or enforcement turned on while the call waited stops it.
-    #[must_use]
-    pub(crate) fn with_teardown(mut self, teardown: teardown::HeldTeardown) -> Self {
-        self.teardown = Some(teardown);
-        self
-    }
-
-    /// Whether an activation was admitted in this process, which then takes no new
-    /// management work before it restarts.
-    #[must_use]
-    pub(crate) fn activating(&self) -> bool {
-        self.owner.activating()
     }
 
     /// Mark subsequent calls as from this Server's local socket: its terminal, or SSH.
@@ -648,9 +535,6 @@ impl LocalMachine {
         G: Send + 'static,
     {
         let installation = self.admit_installation()?;
-        // Under the turn: a trusted key removed or enforcement turned on while this waited
-        // has taken its own turn before this one.
-        self.recheck_teardown()?;
         let admission = Admission(self.clone());
         tokio::spawn(async move {
             let _held = (turn, installation);
@@ -659,15 +543,9 @@ impl LocalMachine {
         .await?
     }
 
-    /// The exclusive admission turn, for work that takes it itself, with this call's held
-    /// teardown checked again under it.
-    ///
-    /// # Errors
-    /// As [`Self::recheck_teardown`].
-    async fn exclusive_turn(&self) -> Result<tokio::sync::OwnedRwLockWriteGuard<()>, Error> {
-        let turn = self.owner.admission_lock().write_owned().await;
-        self.recheck_teardown()?;
-        Ok(turn)
+    /// The exclusive admission turn, for work that takes it itself.
+    async fn exclusive_turn(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.owner.admission_lock().write_owned().await
     }
 
     /// Run `work` holding the installation guard and no turn. `work` takes the turns it
@@ -865,8 +743,6 @@ impl LocalMachine {
             upgrade,
             token,
             sealing: self.sealing(record.phase()).await,
-            activation: Some(self.activation_report().await),
-            sealing_recipient: self.held_recipient(record.phase()),
         })
     }
 
@@ -891,10 +767,10 @@ impl LocalMachine {
         if !has_cluster_identity(&phase) {
             return None;
         }
-        crate::sealing_key::ClusterKeys::load(self.owner.data_dir())
+        SealingKey::load(self.owner.data_dir())
             .ok()
             .flatten()
-            .map(|keys| keys.attest().attest())
+            .map(|key| key.attest().attest())
     }
 
     /// The key this Machine's file holds, or, when it holds none, the key a recovery
@@ -1119,11 +995,6 @@ impl LocalMachine {
             },
             &[],
         )?;
-        if self.record().awaits_activation() {
-            return Err(Error::AwaitingActivation {
-                capability: ployz_core::REGISTER_MACHINE_CAPABILITY,
-            });
-        }
         let fresh = match self.enter_join(request.machine_id, |stored| {
             Ok(
                 ployz_core::authority::join::JoinAllocation::from(&assignment.machine)
@@ -1136,7 +1007,7 @@ impl LocalMachine {
         })? {
             join_approval::Entered::Fresh(fresh) => fresh,
             join_approval::Entered::Replayed(stored) => {
-                let restart_approval::JoinReply::Register(registration) = stored.reply else {
+                let consumption::JoinReply::Register(registration) = stored.reply else {
                     return Err(Error::JoinConsumed(request.machine_id));
                 };
                 if let Some(confirmation) = &request.join_confirmation {
@@ -1181,19 +1052,18 @@ impl LocalMachine {
             .map_err(Error::JoinRecord)?
             .map(|key| key.seal_join(&assignment.machine.public_key, &approval))
             .transpose()?;
-        let mut registration = registered(
+        let registration = registered(
             assignment.machine,
             snapshot.machines,
             snapshot.target_versions,
             sealing_key,
             self.record().devices().collect(),
         );
-        registration.recipient = self.join_recipient(&registration.assigned_machine.public_key)?;
         self.consume_join(
             fresh,
-            restart_approval::JoinResult {
+            consumption::JoinResult {
                 approval,
-                reply: restart_approval::JoinReply::Register(Box::new(registration.clone())),
+                reply: consumption::JoinReply::Register(Box::new(registration.clone())),
             },
         )?;
         Ok(registration)
@@ -1605,7 +1475,6 @@ fn registered(
         target_versions,
         sealing_key,
         devices,
-        recipient: None,
     }
 }
 
@@ -1732,14 +1601,6 @@ fn unique_identities<T>(entries: impl IntoIterator<Item = (IpAddr, T)>) -> BTree
     }
     identities.retain(|address, _| !ambiguous.contains(address));
     identities
-}
-
-fn departure_text(capability: &str) -> &'static str {
-    if capability == ployz_core::FORGET_MACHINE_CAPABILITY {
-        ployz_core::FORGET_REFUSED_BY_ENFORCEMENT
-    } else {
-        ployz_core::LEAVE_REFUSED_BY_ENFORCEMENT
-    }
 }
 
 fn leave_response(owner: &RecordOwner, reset_warning: Option<String>) -> Left {

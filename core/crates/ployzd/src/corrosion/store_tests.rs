@@ -446,7 +446,6 @@ fn only_a_founder_recovers_a_sealing_key() {
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
                     devices: Vec::new(),
-                    recipient: None,
                 },
             },
             wireguard_mtu: None,

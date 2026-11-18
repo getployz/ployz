@@ -21,22 +21,6 @@ pub(super) async fn participating() -> (
     over_cluster(data_dir, store, founder).await
 }
 
-/// [`participating`], on a record a daemon from before enforcement was the only mode
-/// wrote, so it awaits its Cluster's activation.
-pub(super) async fn participating_awaiting() -> (
-    LocalMachine,
-    ReplicatedStore,
-    Machine,
-    std::path::PathBuf,
-    tokio::task::JoinHandle<()>,
-) {
-    let (data_dir, store, founder) = founded_store("ployzd-register-awaiting");
-    drop(store);
-    crate::machine::test_support::written_before_f7(&data_dir, false);
-    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
-    over_cluster(data_dir, store, founder).await
-}
-
 async fn over_cluster(
     data_dir: std::path::PathBuf,
     store: RecordOwner,

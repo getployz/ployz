@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     Namespace, OpenedSealed, SealingPublicKey,
-    authority::preview::{PreviewKey, PreviewReview, PreviewService, ReviewedService},
     authority::rule::{Builder, PolicyMethod, RuleEvent, RuleSource, Runner},
     authority::{PayloadDigest, RuleId, RuleService, Signer, SignerKey, Timestamp},
 };
@@ -61,21 +60,21 @@ fn rule(policy: BuildPolicy) -> AutoDeployRule {
 
 /// `rule` as a build opens it once Cloud relays it.
 fn opened(rule: &AutoDeployRule) -> Opened {
-    Relayed::Rule(Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap())
-        .open(&web())
-        .unwrap()
+    open(
+        &Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap(),
+        &web(),
+    )
+    .unwrap()
 }
 
 fn checked_in(rule: &AutoDeployRule, deployment: Value) -> CheckedIn {
     CheckedIn {
         build: "deployment.web".to_owned(),
-        rule: Relayed::Rule(Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap()),
+        rule: Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap(),
         cluster: rule.cluster,
         attest: AttestKey::from_bytes([0x55; 32]),
         service: web(),
         deployment,
-        review: None,
-        approval: None,
     }
 }
 
@@ -282,76 +281,21 @@ fn a_registry_cache_is_no_policy() {
 fn a_build_fed_another_attest_key_never_writes_the_clusters_cache_scope() {
     let cluster = X25519Secret::generate().attest();
     let attacker = X25519Secret::generate().attest();
-    let production = opened(&rule(lab_policy(&[])));
-    assert_eq!(
-        cache_scope(&production, &lab_policy(&[]), &cluster).unwrap(),
-        None
-    );
+    assert_eq!(cache_scope(&lab_policy(&[]), &cluster).unwrap(), None);
     let cached = BuildPolicy {
         cache: PolicyCache::Actions,
         ..lab_policy(&[])
     };
-    let honest = cache_scope(&production, &cached, &cluster)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        cache_scope(&production, &cached, &cluster)
-            .unwrap()
-            .unwrap(),
-        honest
-    );
-    assert_ne!(
-        cache_scope(&production, &cached, &attacker)
-            .unwrap()
-            .unwrap(),
-        honest
-    );
+    let honest = cache_scope(&cached, &cluster).unwrap().unwrap();
+    assert_eq!(cache_scope(&cached, &cluster).unwrap().unwrap(), honest);
+    assert_ne!(cache_scope(&cached, &attacker).unwrap().unwrap(), honest);
     // Nor the scope of the policy alone, which any key could name.
     assert_ne!(PolicyDigest::of(&cached).unwrap().to_string(), honest);
     let other = BuildPolicy {
         context: "/web".to_owned(),
         ..cached
     };
-    assert_ne!(
-        cache_scope(&production, &other, &cluster).unwrap().unwrap(),
-        honest
-    );
-}
-
-#[test]
-fn a_preview_build_keeps_a_cache_scope_of_its_own() {
-    let attest = X25519Secret::generate().attest();
-    let cached = BuildPolicy {
-        cache: PolicyCache::Actions,
-        ..lab_policy(&[])
-    };
-    let production = opened(&rule(cached.clone()));
-    let preview = Opened {
-        preview: true,
-        ..opened(&rule(cached.clone()))
-    };
-    assert_ne!(
-        cache_scope(&preview, &cached, &attest).unwrap(),
-        cache_scope(&production, &cached, &attest).unwrap()
-    );
-}
-
-#[test]
-fn a_check_in_relays_either_rule_by_its_key() {
-    let signed = Signed::sign(&rule(lab_policy(&[])), &Signer::from_seed(&[7; 32])).unwrap();
-    let relayed = |key: &str| {
-        serde_json::from_value::<CheckedIn>(json!({
-            "build": "deployment.web", key: signed, "cluster": SealingPublicKey::from_bytes([9; 32]),
-            "attest": AttestKey::from_bytes([0x55; 32]), "service": "web", "deployment": {},
-        }))
-    };
-    let rule = relayed("rule").unwrap().rule;
-    assert!(matches!(rule, Relayed::Rule(_)));
-    assert!(rule.open(&web()).is_ok());
-    // An automatic deploy rule relayed as a preview rule does not open as one.
-    let preview = relayed("preview").unwrap().rule;
-    assert!(matches!(preview, Relayed::Preview(_)));
-    assert!(preview.open(&web()).is_err());
+    assert_ne!(cache_scope(&other, &cluster).unwrap().unwrap(), honest);
 }
 
 #[test]
@@ -367,167 +311,6 @@ fn cloud_takes_only_an_origin() {
     }
 }
 
-/// A build checked in under a preview rule over `rule`'s source, with `review` relayed.
-fn reviewed(rule: &AutoDeployRule, review: Option<Review>) -> CheckedIn {
-    let preview = PreviewRule {
-        cluster: rule.cluster,
-        rule: rule.rule,
-        generation: rule.generation,
-        machines: Vec::new(),
-        parent: rule.namespace.clone(),
-        parent_id: uuid::Uuid::from_bytes([5; 16]),
-        domain: "preview.example.com".to_owned(),
-        source: rule.source.clone(),
-        trusted: Vec::new(),
-        services: vec![PreviewService {
-            name: web(),
-            template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
-            setup: None,
-            policy: lab_policy(&[]),
-            secrets: None,
-            inherit: BTreeSet::new(),
-            generated: BTreeMap::new(),
-        }],
-        issued_at: rule.issued_at,
-        ended: false,
-        signer: rule.signer,
-    };
-    CheckedIn {
-        rule: Relayed::Preview(Signed::sign(&preview, &Signer::from_seed(&[7; 32])).unwrap()),
-        review,
-        ..checked_in(rule, json!({}))
-    }
-}
-
-/// A review of `service` at `commit`, signed by the rule's Device.
-fn review_of(service: ServiceName, commit: CommitSha) -> Review {
-    let issued_at = Timestamp::from_millis(1_800_000_000_000).unwrap();
-    Review::Signed(
-        Signed::sign(
-            &PreviewReview {
-                cluster: SealingPublicKey::from_bytes([9; 32]),
-                rule: RuleId::from_bytes([0x11; 16]),
-                generation: 3,
-                key: PreviewKey::Fork(42),
-                commit,
-                environment: uuid::Uuid::from_bytes([6; 16]),
-                services: vec![ReviewedService {
-                    name: service,
-                    digest: PayloadDigest::parse(&"cd".repeat(32)).unwrap(),
-                }],
-                issued_at,
-                expires_at: Timestamp::from_millis(1_800_000_900_000).unwrap(),
-            },
-            &Signer::from_seed(&[7; 32]),
-        )
-        .unwrap(),
-    )
-}
-
-#[test]
-fn a_build_claims_the_review_cloud_relayed_for_its_commit() {
-    let rule = rule(lab_policy(&[]));
-    let commit = CommitSha::from_bytes([1; 20]);
-    assert_eq!(
-        authority(&checked_in(&rule, json!({})), commit).unwrap(),
-        CommitAuthority::Head
-    );
-    assert_eq!(
-        authority(&reviewed(&rule, None), commit).unwrap(),
-        CommitAuthority::Head
-    );
-    let review = review_of(web(), commit);
-    assert_eq!(
-        authority(&reviewed(&rule, Some(review.clone())), commit).unwrap(),
-        CommitAuthority::Review(review.digest())
-    );
-}
-
-#[test]
-fn a_build_refuses_a_review_of_another_commit_or_service_or_rule() {
-    let rule = rule(lab_policy(&[]));
-    let commit = CommitSha::from_bytes([1; 20]);
-    let other = CommitSha::from_bytes([2; 20]);
-    for checked_in in [
-        reviewed(&rule, Some(review_of(web(), other))),
-        reviewed(
-            &rule,
-            Some(review_of(ServiceName::parse("worker").unwrap(), commit)),
-        ),
-        CheckedIn {
-            review: Some(review_of(web(), commit)),
-            ..checked_in(&rule, json!({}))
-        },
-    ] {
-        assert!(authority(&checked_in, commit).is_err());
-    }
-}
-
-/// A person's approval of `service` at `commit` under `rule`, signed by its Device.
-fn approval_of(
-    rule: &AutoDeployRule,
-    service: ServiceName,
-    commit: CommitSha,
-) -> Signed<CommitApproval> {
-    let issued_at = Timestamp::from_millis(1_800_000_000_000).unwrap();
-    Signed::sign(
-        &CommitApproval {
-            cluster: rule.cluster,
-            rule: rule.rule,
-            generation: rule.generation,
-            service,
-            commit,
-            issued_at,
-            expires_at: Timestamp::from_millis(1_800_000_900_000).unwrap(),
-            signer: rule.signer,
-        },
-        &Signer::from_seed(&[7; 32]),
-    )
-    .unwrap()
-}
-
-#[test]
-fn a_build_claims_the_approval_cloud_relayed_for_its_commit() {
-    let rule = rule(lab_policy(&[]));
-    let commit = CommitSha::from_bytes([1; 20]);
-    let approval = approval_of(&rule, web(), commit);
-    let checked_in = CheckedIn {
-        approval: Some(approval.clone()),
-        ..checked_in(&rule, json!({}))
-    };
-    assert_eq!(
-        authority(&checked_in, commit).unwrap(),
-        CommitAuthority::Approved(ApprovalDigest::of(&approval))
-    );
-}
-
-#[test]
-fn a_build_refuses_an_approval_of_another_commit_or_service_or_under_a_preview_rule() {
-    let rule = rule(lab_policy(&[]));
-    let commit = CommitSha::from_bytes([1; 20]);
-    let other = CommitSha::from_bytes([2; 20]);
-    for checked_in in [
-        CheckedIn {
-            approval: Some(approval_of(&rule, web(), other)),
-            ..checked_in(&rule, json!({}))
-        },
-        CheckedIn {
-            approval: Some(approval_of(
-                &rule,
-                ServiceName::parse("worker").unwrap(),
-                commit,
-            )),
-            ..checked_in(&rule, json!({}))
-        },
-        CheckedIn {
-            approval: Some(approval_of(&rule, web(), commit)),
-            ..reviewed(&rule, None)
-        },
-    ] {
-        assert!(authority(&checked_in, commit).is_err());
-    }
-}
-
 #[test]
 fn a_cache_scope_is_the_digest_of_its_own_domain_policy_and_attest_key() {
     use sha2::Digest as _;
@@ -537,32 +320,18 @@ fn a_cache_scope_is_the_digest_of_its_own_domain_policy_and_attest_key() {
         cache: PolicyCache::Actions,
         ..lab_policy(&[])
     };
-    let production = opened(&rule(cached.clone()));
     let digest = PolicyDigest::of(&cached).unwrap().to_string();
-    let oracle = |preview: &str| {
-        hex::encode(
-            Sha256::new()
-                .chain_update(b"ployz build cache v1\0")
-                .chain_update(digest.as_bytes())
-                .chain_update(attest.as_bytes())
-                .chain_update(preview.as_bytes())
-                .finalize(),
-        )
-    };
-    let scope = cache_scope(&production, &cached, &attest).unwrap().unwrap();
-    assert_eq!(scope, oracle(""));
+    let oracle = hex::encode(
+        Sha256::new()
+            .chain_update(b"ployz build cache v1\0")
+            .chain_update(digest.as_bytes())
+            .chain_update(attest.as_bytes())
+            .finalize(),
+    );
+    let scope = cache_scope(&cached, &attest).unwrap().unwrap();
+    assert_eq!(scope, oracle);
     assert_eq!(
         scope,
         "7481302a037669b05abeb1239b5f07578a34e39c91311fc9bf9c42ddc94b6468"
-    );
-
-    let preview = Opened {
-        preview: true,
-        ..opened(&rule(cached.clone()))
-    };
-    let named = format!("\0preview\0{}", preview.rule);
-    assert_eq!(
-        cache_scope(&preview, &cached, &attest).unwrap().unwrap(),
-        oracle(&named)
     );
 }

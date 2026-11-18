@@ -271,19 +271,19 @@ async fn keys_are_cached_and_fetched_again_once_for_an_unknown_key_id() {
     let keys = keys_at(url, Duration::ZERO);
 
     assert!(matches!(
-        keys.verify(token(), issued_at().into()).await,
+        keys.verify(token(), issued_at()).await,
         Err(TokenRefusal::UnknownKey(_))
     ));
     assert_eq!(hits.load(Ordering::SeqCst), 1, "the first use fetches");
 
-    assert!(keys.verify(token(), issued_at().into()).await.is_ok());
+    assert!(keys.verify(token(), issued_at()).await.is_ok());
     assert_eq!(
         hits.load(Ordering::SeqCst),
         2,
         "a rotated key fetches once more"
     );
 
-    assert!(keys.verify(token(), issued_at().into()).await.is_ok());
+    assert!(keys.verify(token(), issued_at()).await.is_ok());
     assert_eq!(
         hits.load(Ordering::SeqCst),
         2,
@@ -295,7 +295,7 @@ async fn keys_are_cached_and_fetched_again_once_for_an_unknown_key_id() {
     let mut made_up = parts(token());
     *made_up.first_mut().unwrap() = encode(&header);
     assert!(matches!(
-        keys.verify(&made_up.join("."), issued_at().into()).await,
+        keys.verify(&made_up.join("."), issued_at()).await,
         Err(TokenRefusal::UnknownKey(_))
     ));
     assert_eq!(
@@ -309,17 +309,13 @@ async fn keys_are_cached_and_fetched_again_once_for_an_unknown_key_id() {
 async fn unknown_key_ids_cannot_make_the_machine_refetch_within_a_minute() {
     let (url, hits) = jwks_host(vec![JWKS.to_vec()]).await;
     let keys = keys_at(url, REFETCH_FLOOR);
-    assert!(keys.verify(token(), issued_at().into()).await.is_ok());
+    assert!(keys.verify(token(), issued_at()).await.is_ok());
     let mut header = header_of(token());
     for at in 0..5 {
         header["kid"] = json!(format!("made-up-{at}"));
         let mut made_up = parts(token());
         *made_up.first_mut().unwrap() = encode(&header);
-        assert!(
-            keys.verify(&made_up.join("."), issued_at().into())
-                .await
-                .is_err()
-        );
+        assert!(keys.verify(&made_up.join("."), issued_at()).await.is_err());
     }
     assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
@@ -329,7 +325,7 @@ async fn a_key_set_that_does_not_answer_is_a_keys_refusal() {
     let (url, _) = jwks_host(vec![b"not json".to_vec()]).await;
     assert!(matches!(
         keys_at(url, Duration::ZERO)
-            .verify(token(), issued_at().into())
+            .verify(token(), issued_at())
             .await,
         Err(TokenRefusal::Keys(KeysError::Malformed))
     ));
@@ -367,7 +363,7 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     let keys = keys_at(url, Duration::ZERO);
 
     assert!(
-        keys.check(&fixture_rule(), token(), issued_at().into())
+        keys.check(&fixture_rule(), token(), issued_at())
             .await
             .is_ok()
     );
@@ -375,14 +371,13 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     let mut moved = fixture_rule();
     moved.source.builder.sha = CommitSha::from_bytes([0; 20]);
     assert!(matches!(
-        keys.check(&moved, token(), issued_at().into()).await,
+        keys.check(&moved, token(), issued_at()).await,
         Err(ProofRefusal::Claim(AuthorityRefusal::Mismatch {
             field: "job_workflow_sha"
         }))
     ));
     assert!(matches!(
-        keys.check(&fixture_rule(), token(), Timestamp::now().into())
-            .await,
+        keys.check(&fixture_rule(), token(), Timestamp::now()).await,
         Err(ProofRefusal::Token(TokenRefusal::Lifetime(_)))
     ));
 

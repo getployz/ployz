@@ -1,7 +1,6 @@
 import type { AccessChanged, ContainerObservation, RuntimeWatchView } from "@ployz/sdk";
 import { Schema } from "effect";
 import { asRecord } from "#/lib/json";
-import { PasskeyAnswerInput } from "#/modules/approval-session/approvals-input";
 import { offlineServers } from "#/modules/machines/server-status";
 
 export const TAILSCALE = "ployz-system/tailscale";
@@ -18,6 +17,16 @@ export function authKeyProblem(key: string): string | null {
 }
 
 const Slug = Schema.String.check(Schema.isNonEmpty());
+
+const Base64Url = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,8192}$/));
+
+/** A statement a passkey answered with a prompt of its own, as `ployz_core::authority::KeyApproval` travels. Servers check every byte; Cloud only bounds its size. */
+const PasskeyAnswerInput = Schema.Struct({
+  passkey: Schema.Struct({
+    body: Schema.String.check(Schema.isMaxLength(4096)),
+    assertion: Schema.Struct({ credential_id: Base64Url, authenticator_data: Base64Url, client_data_json: Base64Url, signature: Base64Url }),
+  }),
+});
 
 /** The auth key as the browser sealed it to the Cluster, with the passkey's approval of exactly that ciphertext. */
 const PrivateAccessOnInput = Schema.Struct({

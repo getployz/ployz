@@ -29,7 +29,6 @@ fn founder_daemon() -> JoinDaemon {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     })
 }
 

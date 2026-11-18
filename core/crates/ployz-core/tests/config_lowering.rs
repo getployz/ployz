@@ -759,7 +759,7 @@ fn everything() -> Value {
                 "healthcheck":{"type":"none"},"restartPolicy":"on-failure"}}
         ],
         "volumes":[
-            {"volumeResourceId":volume,"storage":{"kind":"docker"},"deployed":true,"namedFor":"parent"},
+            {"volumeResourceId":volume,"storage":{"kind":"docker"},"deployed":true},
             {"volumeResourceId":managed,"storage":{"kind":"provisioned","maximumBytes":1_073_741_824}}
         ],
         "configs":[{"configResourceId":"cfg-app","name":"app","references":[],

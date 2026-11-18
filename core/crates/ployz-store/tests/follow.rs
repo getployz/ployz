@@ -3391,14 +3391,11 @@ fn roll_back(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployment
         .write_trusted(
             who,
             &ployz_store::Admit::Retry(ployz_store::Retry {
-                teardown: None,
                 id: id(n),
                 deployment: id(1),
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approvals: Vec::new(),
-                awaits_approval: false,
                 approval: None,
             }),
             &Trusted::default(),
@@ -5306,7 +5303,6 @@ fn a_follow_into_a_branch_ignores_what_the_deployer_may_protect() {
 
     let id = ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000104").unwrap();
     let admit = ployz_store::Admit::Deploy(ployz_store::Deploy {
-        teardown: None,
         id: id.clone(),
         environment: at("production"),
         services: Vec::new(),

@@ -1,7 +1,7 @@
 {
   "dependencies": {},
   "deployed_volumes": [
-    "production_vol-parent"
+    "production_vol-00000000-0000-4000-8000-000000000002"
   ],
   "namespace": "production",
   "options": {
@@ -101,7 +101,7 @@
           "read_only": false,
           "subpath": null,
           "target": "/cache",
-          "volume": "vol-parent"
+          "volume": "vol-00000000-0000-4000-8000-000000000002"
         },
         {
           "no_copy": false,
@@ -152,7 +152,7 @@
       },
       "volumes": [
         {
-          "reference": "vol-parent",
+          "reference": "vol-00000000-0000-4000-8000-000000000002",
           "source": {
             "driver": {
               "name": "local",
@@ -160,7 +160,7 @@
             },
             "kind": "ordinary",
             "labels": {},
-            "name": "vol-parent"
+            "name": "vol-00000000-0000-4000-8000-000000000002"
           }
         },
         {
@@ -177,6 +177,6 @@
   ],
   "volume_names": {
     "production_vol-00000000-0000-4000-8000-000000000003": "data",
-    "production_vol-parent": "Cache"
+    "production_vol-00000000-0000-4000-8000-000000000002": "Cache"
   }
 }

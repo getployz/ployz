@@ -13,7 +13,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_core::authority::{
-    AuthorityRefusal, CheckedCommitApproval, ClaimRule, GithubClaims, Timestamp,
+    AuthorityRefusal, ClaimRule, GithubClaims, Timestamp,
     validity::{self, CLOCK_SKEW_MILLIS},
 };
 use ring::signature::{RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents};
@@ -168,32 +168,12 @@ fn parse(token: &str) -> Result<Parsed<'_>, TokenRefusal> {
     })
 }
 
-/// What stands for a token's freshness: the Machine's clock, or a person's live approval
-/// of the commit, under which the person, not freshness, is the authority.
-#[derive(Clone, Copy, Debug)]
-pub enum Freshness<'a> {
-    Now(Timestamp),
-    /// The token's lifetime is not checked. Only a checked approval makes this.
-    Approved(&'a CheckedCommitApproval),
-}
-
-impl From<Timestamp> for Freshness<'_> {
-    fn from(now: Timestamp) -> Self {
-        Self::Now(now)
-    }
-}
-
 /// Verify `token` against `keys`, in the order the build proof lists the checks: the
-/// RS256 signature by a key `keys` holds, the issuer, then the lifetime at `freshness`,
-/// which a live commit approval waives.
+/// RS256 signature by a key `keys` holds, the issuer, then the lifetime at `now`.
 ///
 /// # Errors
 /// Returns the first [`TokenRefusal`] found.
-pub fn verify<'a>(
-    token: &str,
-    keys: &KeySet,
-    freshness: impl Into<Freshness<'a>>,
-) -> Result<GithubClaims, TokenRefusal> {
+pub fn verify(token: &str, keys: &KeySet, now: Timestamp) -> Result<GithubClaims, TokenRefusal> {
     let parsed = parse(token)?;
     let key = keys
         .keys
@@ -220,10 +200,6 @@ pub fn verify<'a>(
     if claims.iss != ISSUER {
         return Err(TokenRefusal::Issuer);
     }
-    let now = match freshness.into() {
-        Freshness::Now(now) => now,
-        Freshness::Approved(_) => return Ok(claims),
-    };
     validity::verify_within(claims.iat, claims.exp, now, MAX_LIFETIME_MILLIS)
         .map_err(TokenRefusal::Lifetime)?;
     if claims.nbf > now.plus(CLOCK_SKEW_MILLIS) {
@@ -294,22 +270,18 @@ impl IssuerKeys {
         }
     }
 
-    /// Verify `token` at `freshness` against GitHub's keys, as [`verify`] does.
+    /// Verify `token` at `now` against GitHub's keys, as [`verify`] does.
     ///
     /// # Errors
     /// Returns the [`TokenRefusal`] from [`verify`], and [`TokenRefusal::Keys`] when the
     /// key set the token needs could not be fetched.
-    pub async fn verify(
-        &self,
-        token: &str,
-        freshness: Freshness<'_>,
-    ) -> Result<GithubClaims, TokenRefusal> {
+    pub async fn verify(&self, token: &str, now: Timestamp) -> Result<GithubClaims, TokenRefusal> {
         let kid = parse(token)?.kid;
         let keys = self.keys_naming(&kid).await?;
-        verify(token, &keys, freshness)
+        verify(token, &keys, now)
     }
 
-    /// Verify `token` at `freshness` and check its claims against `rule`. A refusal is
+    /// Verify `token` at `now` and check its claims against `rule`. A refusal is
     /// logged with the rule's ID and the reason, the claim's name for a claim, never the
     /// token.
     ///
@@ -320,10 +292,10 @@ impl IssuerKeys {
         &self,
         rule: &impl ClaimRule,
         token: &str,
-        freshness: Freshness<'_>,
+        now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
         let id = rule.identity().rule;
-        let claims = self.verify(token, freshness).await.map_err(|refusal| {
+        let claims = self.verify(token, now).await.map_err(|refusal| {
             tracing::warn!(rule = %id, %refusal, "refused a GitHub token");
             ProofRefusal::Token(refusal)
         })?;

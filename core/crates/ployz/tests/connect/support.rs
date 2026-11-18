@@ -732,8 +732,6 @@ impl FakeMachine for DiscoveryService {
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
-                activation: None,
-                sealing_recipient: None,
                 id: self.description.machine_id,
                 phase: LocalMachinePhase::Participating,
                 machine: None,
@@ -803,7 +801,6 @@ impl FakeMachine for DiscoveryService {
             target_versions: BTreeMap::new(),
             sealing_key: None,
             devices: Vec::new(),
-            recipient: None,
         };
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),

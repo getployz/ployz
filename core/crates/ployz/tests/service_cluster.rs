@@ -135,7 +135,6 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Start,
             None,
             None,
-            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -154,7 +153,6 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Stop,
             Some("SIGTERM".into()),
             Some(10),
-            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -176,7 +174,6 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Remove,
             None,
             Some(10),
-            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -196,7 +193,6 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Remove,
             None,
             Some(10),
-            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;
@@ -212,7 +208,6 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
             ContainerAction::Remove,
             None,
             Some(10),
-            &std::collections::HashMap::new(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await;

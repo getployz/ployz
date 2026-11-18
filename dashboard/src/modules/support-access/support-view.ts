@@ -133,7 +133,6 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     plan: redact.changes,
     // Support reads which rule an Environment holds, never the settings its target carries.
     rule: (view) => ({ ...view, target: [] }),
-    preview_review: (view) => ({ ...view, target: [] }),
     deployments: (view) => ({ ...view, deployments: view.deployments.map(redact.summary) }),
     deployment: redact.deployment,
     numbered_deployment: redact.deployment,
@@ -187,7 +186,6 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
     case "automated": return redactions(shows).automated(written);
     case "rule": return { ...written, target: [] };
     // Lowered specs hold variables and config files alike.
-    case "preview_rule": return shows.variables && shows.configs ? written : { ...written, target: [], setup: [] };
     case "batch": return { ...written, results: written.results.map((result) => writtenForSupport(result, shows)) };
     case "project":
     case "project_renamed":

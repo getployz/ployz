@@ -4,7 +4,7 @@
 
 use super::*;
 use ployz_core::OperationId;
-use ployz_core::authority::{DeployApproval, Signed, TeardownApproval};
+use ployz_core::authority::{DeployApproval, Signed};
 
 /// Which Deployment an admission queues.
 #[derive(Clone, Copy)]
@@ -255,119 +255,6 @@ pub(crate) fn approved_by_device(
     .map(drop)
 }
 
-/// Keep the teardown a person signed for what Deployment `id` takes off the Servers, for
-/// its runner to hand each Server. Cloud keeps it unread; every Server checks it.
-pub(crate) fn torn_down_under(
-    tx: &mut dyn Tx,
-    id: &DeploymentId,
-    teardown: &TeardownApproval,
-) -> Result<(), RpcError> {
-    let teardown = serde_json::to_string(teardown).map_err(|_| error::corrupt("Teardown"))?;
-    tx.execute(
-        "UPDATE config_deployment SET teardown = ?2 WHERE id = ?1",
-        &[id.as_str().into(), teardown.as_str().into()],
-    )
-    .map(drop)
-}
-
-/// The teardown a person signed for Deployment `id`, if any.
-pub(super) fn teardown(
-    tx: &mut dyn Tx,
-    id: &DeploymentId,
-) -> Result<Option<TeardownApproval>, RpcError> {
-    let rows = tx.query(
-        "SELECT teardown FROM config_deployment WHERE id = ?1",
-        &[id.as_str().into()],
-    )?;
-    rows.first()
-        .map(|row| row.optional_text(0))
-        .transpose()?
-        .flatten()
-        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Teardown")))
-        .transpose()
-}
-
-/// Keep a person's fresh approvals of the commits of queued Deployment
-/// `approve.deployment`, which waited for them once its approved builds ended, and let it
-/// run. They replace every approval it holds, one for each Service.
-///
-/// # Errors
-/// `conflict` for a Deployment that doesn't wait for them, no longer queues, or whose
-/// approved builds haven't all ended with an image, and `invalid_argument` for an
-/// approval naming a Service or commit it doesn't build, or a set that leaves out or
-/// repeats a Service it holds an approval for.
-pub(crate) fn approve_commits(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    approve: &crate::ApproveDeployment,
-) -> Result<DeploymentSummary, RpcError> {
-    let id = &approve.deployment;
-    owned(tx, who, id)?;
-    let stored = locked(tx, id)?;
-    let refused = |why: String| Err(error::conflict(why, json!({ "deployment": id })));
-    let label = stored.summary.label();
-    if !awaits(tx, id)? {
-        return refused(format!("Deployment {label} doesn't wait for an approval"));
-    }
-    if stored.summary.status != DeploymentStatus::Queued {
-        return refused(format!("Deployment {label} already started or ended"));
-    }
-    if !build::approved_built(tx, id)? {
-        return refused(format!("Deployment {label} hasn't built every image yet"));
-    }
-    let held: BTreeSet<ServiceName> = build::commit_approvals(tx, id)?.into_keys().collect();
-    let mut named = BTreeSet::new();
-    for approval in &approve.approvals {
-        let service = approval
-            .open()
-            .map_err(|_| error::invalid("A commit approval can't be read", json!({})))?
-            .service;
-        if !named.insert(service.clone()) {
-            return Err(error::invalid(
-                format!("The approvals name {service} twice"),
-                json!({ "service": service }),
-            ));
-        }
-    }
-    if named != held {
-        return Err(error::invalid(
-            format!(
-                "Approve every service Deployment {label} builds under your approval: {}",
-                held.iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            json!({ "services": held }),
-        ));
-    }
-    for approval in &approve.approvals {
-        build::approve_commit(tx, id, approval)?;
-    }
-    tx.execute(
-        "UPDATE config_deployment SET awaits_approval = 0 WHERE id = ?1",
-        &[id.as_str().into()],
-    )?;
-    Ok(stored.summary)
-}
-
-/// Whether queued Deployment `id` waits for a person to approve its commits again. One
-/// cancelled or replaced meanwhile waits for nothing.
-pub(crate) fn awaiting_approval(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
-    Ok(load(tx, id)?.summary.status == DeploymentStatus::Queued && awaits(tx, id)?)
-}
-
-pub(super) fn awaits(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
-    let rows = tx.query(
-        "SELECT awaits_approval FROM config_deployment WHERE id = ?1",
-        &[id.as_str().into()],
-    )?;
-    rows.first()
-        .ok_or_else(|| missing(id))?
-        .int(0)
-        .map(|awaits| awaits != 0)
-}
-
 /// The deploy approval a Device signed for Deployment `id`, if any.
 pub(super) fn device_approval(
     tx: &mut dyn Tx,
@@ -388,59 +275,6 @@ pub(super) fn device_approval(
     serde_json::from_str(text)
         .map(Some)
         .map_err(|_| error::corrupt("Deploy approval"))
-}
-
-/// Keep `review`, a person's review of preview Deployment `id`'s commit, for its runner
-/// to relay. Cloud checks only that it is readable; every Server checks it.
-pub(crate) fn reviewed(
-    tx: &mut dyn Tx,
-    id: &DeploymentId,
-    review: &ployz_core::authority::Review,
-) -> Result<(), RpcError> {
-    let review = serde_json::to_string(review).map_err(|_| error::corrupt("Preview review"))?;
-    tx.execute(
-        "UPDATE config_deployment SET preview_review = ?2 WHERE id = ?1",
-        &[id.as_str().into(), review.as_str().into()],
-    )
-    .map(drop)
-}
-
-/// Keep `review` on each of `environment`'s Deployments held for CI at `head`, so the
-/// build CI releases carries it.
-pub(crate) fn reviewed_held(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    head: &str,
-    review: &ployz_core::authority::Review,
-) -> Result<(), RpcError> {
-    let review = serde_json::to_string(review).map_err(|_| error::corrupt("Preview review"))?;
-    tx.execute(
-        "UPDATE config_deployment SET preview_review = ?3 WHERE environment_id = ?1 \
-         AND push_head = ?2 AND status = 'waiting_for_ci'",
-        &[
-            environment.as_str().into(),
-            head.into(),
-            review.as_str().into(),
-        ],
-    )
-    .map(drop)
-}
-
-/// The review a person signed for preview Deployment `id`'s commit, if any.
-pub(crate) fn preview_review(
-    tx: &mut dyn Tx,
-    id: &DeploymentId,
-) -> Result<Option<ployz_core::authority::Review>, RpcError> {
-    let rows = tx.query(
-        "SELECT preview_review FROM config_deployment WHERE id = ?1",
-        &[id.as_str().into()],
-    )?;
-    rows.first()
-        .map(|row| row.optional_text(0))
-        .transpose()?
-        .flatten()
-        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Preview review")))
-        .transpose()
 }
 
 /// Who admitted Deployment `id`, by the immutable id Cloud authenticated: none for

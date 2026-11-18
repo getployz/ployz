@@ -271,7 +271,7 @@ pub fn admits_row(
     let Ok(body) = signed.open() else {
         return false;
     };
-    super::Member::from(&body.machine).matches(row)
+    Member::from(&body.machine).matches(row)
         && body.sealing_recipient == row.public_key
         && signers.contains(&body.signer.into())
         && cluster == Some(body.cluster)
@@ -302,6 +302,45 @@ pub fn verify_signature(
     Ok(body)
 }
 
+/// A Machine an enforcing Machine trusts as a Member: the keys its join named.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Member {
+    pub id: MachineId,
+    pub public_key: WireGuardPublicKey,
+    pub subnet: MachineSubnet,
+}
+
+impl Member {
+    #[must_use]
+    pub fn matches(&self, machine: &Machine) -> bool {
+        self == &Self::from(machine)
+    }
+}
+
+impl From<&Machine> for Member {
+    fn from(machine: &Machine) -> Self {
+        Self {
+            id: machine.id,
+            public_key: machine.public_key,
+            subnet: machine.subnet,
+        }
+    }
+}
+
+impl From<&JoinAllocation> for Member {
+    fn from(allocation: &JoinAllocation) -> Self {
+        Self {
+            id: allocation.id,
+            public_key: allocation.public_key,
+            subnet: allocation.subnet,
+        }
+    }
+}
+
+/// A person's approval of the Members every Machine trusts when it turns enforcement on.
+///
+/// A Device signs it, or a trusted passkey answers a prompt of its own for it. A browser
+/// key under a session grant never does: the set stands for the Cluster's whole life.
 #[cfg(test)]
 mod tests {
     use super::*;

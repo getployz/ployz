@@ -14,7 +14,6 @@ import {
   approvalSubject,
   type OperationVerb,
   type ServiceApply,
-  type KeptVolumeApproval,
   type VolumeApply,
   withoutSealedBefore,
 } from "#/modules/approvals/approvals";
@@ -656,7 +655,6 @@ const decide = <R>(
   decision: ApprovalDecision,
   operationDigest: OperationDigest<R> | undefined,
   keyed: boolean,
-  volume?: KeptVolumeApproval,
 ) => Effect.gen(function* () {
   const found = yield* readRow(caller.organization.id, id);
   if (found === undefined) return yield* new NotFound({ message: "No such approval." });
@@ -691,7 +689,7 @@ const decide = <R>(
   const decided = { decidedByUserId: caller.userId, decidedAt: now, updatedAt: now };
   const [updated] = yield* drizzle.update(operationApprovals)
     .set("approve" in decision
-      ? { status: "approved", ...decided, ...(volume !== undefined && { volumeApproval: volume }) }
+      ? { status: "approved", ...decided }
       : { status: "denied", reason: decision.reject.reason ?? null, ...decided })
     .where(and(eq(operationApprovals.id, row.id), eq(operationApprovals.status, "pending")))
     .returning();
@@ -710,21 +708,7 @@ export const decideApproval = <R = never>(
   id: string,
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,
-  volume?: KeptVolumeApproval,
-) => decide(caller, id, decision, operationDigest, false, volume).pipe(Effect.withSpan("Approvals.decide"));
-
-/**
- * The passkey answer kept with approval `approvalId` for the Volume run it approved, once approved; null for any other.
- * Only the asker's credential redeems the approval, and the Servers check the answer.
- */
-export const keptVolumeApproval = Effect.fn("Approvals.keptVolumeApproval")(function* (organizationId: string, approvalId: string | null) {
-  if (approvalId === null || !Schema.is(Uuid)(approvalId)) return null;
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ kept: operationApprovals.volumeApproval }).from(operationApprovals).where(and(
-    eq(operationApprovals.id, approvalId), eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "approved"),
-  )).pipe(Effect.orDie);
-  return row?.kept ?? null;
-});
+) => decide(caller, id, decision, operationDigest, false).pipe(Effect.withSpan("Approvals.decide"));
 
 /**
  * Approve a row that asks for a key (`asksForAuthKey`) before the key goes anywhere. Only the call that moves the row

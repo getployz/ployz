@@ -284,7 +284,7 @@ async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy) -> Value {
         copy.as_ref(),
         false,
         expect,
-        &ployz_core::WantedCopy::Forget { recipient: None },
+        &ployz_core::WantedCopy::Forget,
     );
     if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToForget) {
         return json!({"Planned": format!("{plan:?}")});
@@ -3262,7 +3262,7 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 )
                 .await
         }
-        (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
+        (CopyTransition::WriterToForget, WantedCopy::Forget) => {
             machine
                 .call("/Volume.Copy.Forget", json!({"name": "data"}))
                 .await
@@ -3275,10 +3275,7 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 .call("/Volume.Copy.Pull", pull(&target.to_string()))
                 .await
         }
-        (
-            CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
-            WantedCopy::Forget { .. },
-        ) => {
+        (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
             machine
                 .call("/Volume.Copy.Destroy", json!({"name": "data"}))
                 .await
@@ -3486,7 +3483,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::A,
             expect: mirror_expect(&a),
-            want: ployz_core::WantedCopy::Forget { recipient: None },
+            want: ployz_core::WantedCopy::Forget,
             run: None,
         })
         .await;
@@ -3524,7 +3521,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget { recipient: None },
+            want: ployz_core::WantedCopy::Forget,
             run: None,
         })
         .await;
@@ -3548,7 +3545,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget { recipient: None },
+            want: ployz_core::WantedCopy::Forget,
             run: None,
         })
         .await;
@@ -4060,6 +4057,8 @@ impl ployzd::volume_send::Recipients for SendsToAll {
         _: &ployz_core::DockerVolumeName,
         _: Option<&ployz_core::SnapshotName>,
     ) -> std::result::Result<ployzd::volume_send::Sends, String> {
-        Ok(ployzd::volume_send::Sends::Open)
+        Ok(ployzd::volume_send::Sends::Member(
+            ployz_core::MachineId::random(),
+        ))
     }
 }

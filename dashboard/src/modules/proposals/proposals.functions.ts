@@ -1,15 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
-import type { Signed } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { ProposalApprovalsInput, ProposalBundleInput } from "#/modules/approval-session/proposals-input";
 import { askerNames } from "#/modules/approvals/approvals.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import type { ProposalApprovals } from "#/modules/proposals/proposal";
-import { decideProposal, getProposal, pendingProposals, type ProposalView, readProposalTarget } from "#/modules/proposals/proposals.server";
+import { decideProposal, getProposal, pendingProposals, type ProposalView } from "#/modules/proposals/proposals.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const Decision = Schema.Union([
-  Schema.Struct({ approve: Schema.Struct({ approvals: ProposalApprovalsInput, bundle: ProposalBundleInput }) }),
+  Schema.Struct({ approve: Schema.Struct({}) }),
   Schema.Struct({ reject: Schema.Struct({ reason: Schema.optional(Schema.String.check(Schema.isMaxLength(1024))) }) }),
 ]);
 
@@ -36,26 +33,13 @@ export const getProposalServerFn = createServerFn({ method: "GET" })
     return proposal ?? null;
   })));
 
-/** Each step as the approver's browser signs it: the Service's copies and the Servers. Null when Cloud can't read them. */
-export const proposalTargetServerFn = createServerFn({ method: "GET" })
-  .middleware([publicErrorMiddleware, actorMiddleware])
-  .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String })))
-  .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
-    const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");
-    return yield* readProposalTarget(access.organization.id, data.id);
-  })));
-
 /** The sidebar's answer to one proposal. A refusal, such as a Server that can't take it, comes back as its message. */
 export const decideProposalServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, decision: Decision })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");
-    // SAFETY: the schema bounds each field's shape; Servers parse and verify the rest.
-    const decision = "approve" in data.decision
-      ? { approve: { approvals: data.decision.approve.approvals as ProposalApprovals, bundle: data.decision.approve.bundle as Signed } }
-      : data.decision;
-    const decided = yield* decideProposal(access, data.id, decision).pipe(
+    const decided = yield* decideProposal(access, data.id, data.decision).pipe(
       Effect.catchTag("NotFound", (missing) => Effect.succeed({ ok: false as const, message: missing.message })),
     );
     if (!decided.ok) return decided;

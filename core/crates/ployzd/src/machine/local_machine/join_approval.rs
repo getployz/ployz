@@ -24,7 +24,7 @@ struct Proposal {
 /// What entering a join found for one Machine.
 pub(crate) enum Entered {
     /// An earlier entry already answered this request; the answer stands.
-    Replayed(super::restart_approval::JoinResult),
+    Replayed(super::consumption::JoinResult),
     /// Nothing is stored for the Machine, so this entry may admit it.
     Fresh(FreshJoin),
 }
@@ -33,39 +33,6 @@ pub(crate) enum Entered {
 /// [`LocalMachine::enter_join`] can state and which consuming a join takes.
 pub(crate) struct FreshJoin {
     machine: MachineId,
-}
-
-/// Drop each approved proposal in `data_dir`'s join record whose signer is not one of
-/// `trusted`, and name the Machines dropped. A proposal nobody approved admits nothing and
-/// stays.
-pub(crate) fn reverify_join_proposals(
-    data_dir: &std::path::Path,
-    trusted: &[DeviceKey],
-) -> std::io::Result<Vec<MachineId>> {
-    let path = data_dir.join("join-approvals.json");
-    let mut joins: Joins = match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut dropped = Vec::new();
-    joins.proposals.retain(|id, proposal| {
-        let kept = proposal.approval.as_ref().is_none_or(|approval| {
-            approval
-                .verified_signers(trusted.iter().copied().map(Into::into))
-                .is_ok_and(|signers| signers.contains(&proposal.body.signer.into()))
-                && approval.open().is_ok_and(|body| body == proposal.body)
-        });
-        if !kept {
-            dropped.push(*id);
-        }
-        kept
-    });
-    if !dropped.is_empty() {
-        let bytes = serde_json::to_vec(&joins).map_err(std::io::Error::other)?;
-        crate::filesystem::atomic_write(&path, &bytes, 0o600)?;
-    }
-    Ok(dropped)
 }
 
 impl LocalMachine {
@@ -141,7 +108,7 @@ impl LocalMachine {
     pub(crate) fn enter_join(
         &self,
         machine: MachineId,
-        same_entry: impl FnOnce(&super::restart_approval::JoinResult) -> Result<bool, Error>,
+        same_entry: impl FnOnce(&super::consumption::JoinResult) -> Result<bool, Error>,
     ) -> Result<Entered, Error> {
         let Some(stored) = self.approvals.join_result(machine)? else {
             return Ok(Entered::Fresh(FreshJoin { machine }));
@@ -158,7 +125,7 @@ impl LocalMachine {
     pub(crate) fn consume_join(
         &self,
         fresh: FreshJoin,
-        result: super::restart_approval::JoinResult,
+        result: super::consumption::JoinResult,
     ) -> Result<(), Error> {
         let machine = result
             .approval

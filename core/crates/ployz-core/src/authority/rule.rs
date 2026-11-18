@@ -20,7 +20,6 @@ use super::{
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
     open::the_signer,
     refusal::{AuthorityRefusal, field, first_mismatch},
-    session::{ActionFamily, GrantScope},
     trusted_key::TrustedKeys,
 };
 use crate::value::hex_newtype;
@@ -67,15 +66,6 @@ hex_newtype!(
 hex_newtype!(
     /// The X25519 key a builder makes for one build, which its build secrets are sealed to.
     RecipientKey, "recipient key", 32, ""
-);
-hex_newtype!(
-    /// SHA-256 of a preview review's signing input, which is also the challenge a passkey
-    /// answers to approve it.
-    ReviewDigest, "review digest", 32, ""
-);
-hex_newtype!(
-    /// SHA-256 of a commit approval's signing input, which a build under it names.
-    ApprovalDigest, "approval digest", 32, ""
 );
 hex_newtype!(
     /// The X25519 key every Machine of a Cluster derives from its Sealing Key, which seals
@@ -467,8 +457,7 @@ impl RuleStatement for AutoDeployRule {
 }
 
 /// Open a rule signed by a Device this Machine trusts, or answered by a trusted passkey's
-/// own prompt, as its body says. A browser key is refused even under a valid session
-/// grant: a rule stands for every future push.
+/// own prompt, as its body says.
 ///
 /// # Errors
 /// Returns the envelope's refusal from [`Signed::approvers`], a malformed body, and
@@ -477,164 +466,20 @@ impl RuleStatement for AutoDeployRule {
 pub fn verify_signature<T: RuleStatement>(
     rule: &Signed<T>,
     trusted: &TrustedKeys,
-    now: Timestamp,
 ) -> Result<(T, Approver), AuthorityRefusal> {
-    let approvers = rule.approvers(trusted, now)?;
+    let approvers = rule.approvers(trusted)?;
     let body = rule.open()?;
-    let by = the_signer(approvers, body.signer(), |approver| {
-        !matches!(approver, Approver::Browser { .. })
-    })?;
+    let by = the_signer(approvers, body.signer())?;
     Ok((body, by))
 }
 
-/// Which authority a build claims for its commit.
+/// Which authority a build claims for its commit. Written into every claim, so the
+/// pinned builder's audience keeps its bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitAuthority {
     /// The commit is the branch head the Machine reads from GitHub itself.
     Head,
-    /// A person reviewed the commit for a preview: the review with this digest names it.
-    Review(ReviewDigest),
-    /// A person approved the commit, which is not the branch head: the
-    /// [`CommitApproval`] with this digest names it.
-    Approved(ApprovalDigest),
-}
-
-/// A person's approval of one commit of one Service under a rule, where the branch head
-/// otherwise would be the authority, such as a rollback. Under it the grant Machine
-/// builds the commit once GitHub says the branch holds it, and a Machine deploys the
-/// commit's image with the rule's settings. Every other check stays the Machine's.
-///
-/// The same keys may sign it as a deploy approval: a Device, or a browser key under a
-/// session grant for the rule's Environment.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct CommitApproval {
-    pub cluster: SealingPublicKey,
-    pub rule: RuleId,
-    pub generation: u64,
-    pub service: ServiceName,
-    pub commit: CommitSha,
-    pub issued_at: Timestamp,
-    pub expires_at: Timestamp,
-    pub signer: SignerKey,
-}
-
-impl Statement for CommitApproval {
-    const PURPOSE: Purpose = Purpose::Workflow;
-}
-
-impl ApprovalDigest {
-    /// The digest of `approval` as it was signed, without the signatures or grants beside
-    /// it: what the person approved, not who carried it.
-    #[must_use]
-    pub fn of(approval: &Signed<CommitApproval>) -> Self {
-        Self(Sha256::digest(approval.signing_input()).into())
-    }
-}
-
-/// What a Machine knows when it checks a commit approval: its own keys and clock.
-#[derive(Clone, Copy, Debug)]
-pub struct ApprovalFacts<'a> {
-    /// The Sealing public key this Machine holds.
-    pub cluster: SealingPublicKey,
-    pub machine: &'a MachineId,
-    pub trusted: &'a TrustedKeys,
-    pub now: Timestamp,
-}
-
-/// A commit approval [`verify_commit_approval`] found live, signed by a key this Machine
-/// trusts, for the rule and generation in hand. Nothing else makes one.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckedCommitApproval {
-    body: CommitApproval,
-    digest: ApprovalDigest,
-    by: Approver,
-}
-
-impl CheckedCommitApproval {
-    #[must_use]
-    pub const fn body(&self) -> &CommitApproval {
-        &self.body
-    }
-
-    #[must_use]
-    pub const fn digest(&self) -> ApprovalDigest {
-        self.digest
-    }
-
-    #[must_use]
-    pub const fn by(&self) -> &Approver {
-        &self.by
-    }
-
-    /// Whether this approves building or deploying `commit` of `service` under `rule`.
-    #[must_use]
-    pub fn names(&self, rule: &AutoDeployRule, service: &ServiceName, commit: CommitSha) -> bool {
-        self.body.rule == rule.rule
-            && self.body.generation == rule.generation
-            && &self.body.service == service
-            && self.body.commit == commit
-    }
-}
-
-/// Check `approval` is live now, signed by a Device this Machine trusts or by a browser
-/// key whose session grant covers deploys of `rule`'s Environment on this Machine, and
-/// names this Cluster, `rule`'s ID and generation. A rule that ended admits none.
-///
-/// # Errors
-/// Returns the envelope's refusal from [`Signed::approvers`], a malformed body,
-/// [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold or a session
-/// grant that does not cover the deploy, and [`AuthorityRefusal::Expired`] outside its
-/// window.
-pub fn verify_commit_approval(
-    approval: &Signed<CommitApproval>,
-    rule: &AutoDeployRule,
-    facts: &ApprovalFacts<'_>,
-) -> Result<CheckedCommitApproval, AuthorityRefusal> {
-    let approvers = approval.approvers(facts.trusted, facts.now)?;
-    let body = approval.open()?;
-    let by = approvers
-        .into_iter()
-        .find(|approver| approver.signs_as(body.signer))
-        .ok_or(AuthorityRefusal::Mismatch {
-            field: "the signer",
-        })?;
-    first_mismatch([
-        (
-            field::CLUSTER,
-            body.cluster == facts.cluster && rule.cluster == facts.cluster,
-        ),
-        ("a rule", body.rule == rule.rule),
-        ("a generation", body.generation == rule.generation),
-        ("an ended rule", !rule.ended),
-    ])?;
-    if let Approver::Browser { grant, .. } = &by {
-        grant.body.covers(&GrantScope {
-            cluster: facts.cluster,
-            environment: &rule.namespace,
-            machines: std::slice::from_ref(facts.machine),
-            family: ActionFamily::Deploy,
-            issued_at: body.issued_at,
-            expires_at: body.expires_at,
-        })?;
-    }
-    super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
-    Ok(CheckedCommitApproval {
-        digest: ApprovalDigest::of(approval),
-        body,
-        by,
-    })
-}
-
-/// Why this Machine may run a claim's commit now. Both are facts the Machine established
-/// itself.
-#[derive(Clone, Copy, Debug)]
-pub enum CommitNow<'a> {
-    /// The branch head this Machine read from GitHub just now.
-    Head(CommitSha),
-    /// A person's live approval this Machine checked, in place of the head.
-    Approved(&'a CheckedCommitApproval),
 }
 
 /// Which token of a build this is: the one that asks for the build secrets, or the one
@@ -718,16 +563,10 @@ pub struct RuleProof {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reader: Option<GithubToken>,
-    /// A person's approval of the claim's commit, which replaces the branch-head read.
-    /// Sent only to a daemon advertising [`crate::COMMIT_APPROVAL_CAPABILITY`]; an
-    /// older one refuses the body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(type = "unknown", optional)]
-    pub approval: Option<Signed<CommitApproval>>,
 }
 
 /// What a Machine knows when it checks a rule against a deploy request: its own facts and
-/// why the claim's commit may run now.
+/// the branch head it read from GitHub just now.
 #[derive(Clone, Copy, Debug)]
 pub struct RuleFacts<'a> {
     /// The Sealing public key this Machine holds.
@@ -739,20 +578,18 @@ pub struct RuleFacts<'a> {
     pub namespace: &'a Namespace,
     /// The Service the request creates or acts on.
     pub service: &'a ServiceName,
-    pub commit: CommitNow<'a>,
+    pub head: CommitSha,
 }
 
 impl AutoDeployRule {
-    /// Check a step on an existing Container under this rule: the rule's Cluster,
-    /// Machines, Environment and Service, a live generation, and `claim` naming this
-    /// rule's build of the commit that may run now: the head, built as the head, or the
-    /// commit a person approved, built as the head or under an approval. `claim` must
-    /// already be authentic: its audience is a GitHub token's, or this Machine accepted
-    /// it before.
+    /// Check this rule covers a build of the branch head for one Service: the rule's
+    /// Cluster, Machines, Environment and Service, a live generation, and `claim` naming
+    /// this rule's build of the head. `claim` must already be authentic: its audience is a
+    /// GitHub token's, or this Machine accepted it before.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
-    pub fn verify_step(
+    pub fn verify_claim(
         &self,
         claim: &BuildClaim,
         facts: &RuleFacts<'_>,
@@ -760,25 +597,6 @@ impl AutoDeployRule {
         let policy = self
             .service(facts.service)
             .map(|service| PolicyDigest::of(&service.policy));
-        // A reviewed build deploys only under a preview rule, and a build of a commit a
-        // person approved only under a live approval of it: the head read alone never
-        // admits one.
-        let now = match (facts.commit, claim.authority) {
-            (CommitNow::Head(head), CommitAuthority::Head) => ("a commit", claim.commit == head),
-            (
-                CommitNow::Approved(approval),
-                CommitAuthority::Head | CommitAuthority::Approved(_),
-            ) => (
-                "an approval",
-                approval.names(self, &claim.service, claim.commit),
-            ),
-            (_, CommitAuthority::Review(_))
-            | (CommitNow::Head(_), CommitAuthority::Approved(_)) => {
-                return Err(AuthorityRefusal::Mismatch {
-                    field: "an authority",
-                });
-            }
-        };
         first_mismatch([
             (
                 field::CLUSTER,
@@ -797,15 +615,14 @@ impl AutoDeployRule {
                 "a policy",
                 policy.is_some_and(|policy| policy.ok() == Some(claim.policy)),
             ),
-            now,
+            ("a commit", claim.commit == facts.head),
         ])
     }
 
-    /// Check a new Container under this rule: everything [`Self::verify_step`] checks,
+    /// Check a new Container under this rule: everything [`Self::verify_claim`] checks,
     /// then that `claim` reports an image built with secrets sealed from this Machine's
     /// attest key, that the spec runs exactly that image, and that the spec with its
-    /// image left out is the template the rule approves. A commit a session approved runs
-    /// no [`host_reach`](super::deploy::refuse_host_reach). Returns the image.
+    /// image left out is the template the rule approves. Returns the image.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
@@ -819,8 +636,7 @@ impl AutoDeployRule {
         if creation.service != facts.service || &creation.spec.name != facts.service {
             return Err(mismatch("a Service"));
         }
-        self.verify_step(claim, facts)?;
-        super::deploy::refuse_preview_parts(facts.namespace, creation.spec)?;
+        self.verify_claim(claim, facts)?;
         let (image, attest) = match claim.stage {
             BuildStage::Built { image, attest } => (image, attest),
             BuildStage::Grant { .. } => return Err(mismatch("a stage")),
@@ -846,16 +662,6 @@ impl AutoDeployRule {
             .map_err(|_| mismatch("a payload"))?;
         if template != approved {
             return Err(mismatch("a payload"));
-        }
-        // A session opens only its own Environment's Sealed values and reaches nothing on
-        // the host, as under a deploy approval.
-        if let CommitNow::Approved(approval) = facts.commit {
-            if !super::deploy::sealed_scope_allows(approval.by(), creation.spec) {
-                return Err(mismatch("the signer"));
-            }
-            if matches!(approval.by(), Approver::Browser { .. }) {
-                super::deploy::refuse_host_reach(creation.spec, facts.namespace)?;
-            }
         }
         Ok(image)
     }

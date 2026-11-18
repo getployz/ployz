@@ -1,8 +1,8 @@
 use super::*;
 use ployz_core::{
-    ApproveJoinRequest, DeviceKey, EnrollAs, EnrollRequest, SetDeviceEnforcementRequest,
-    SetDeviceRequest, ShareSealingKeyRequest,
-    authority::{AuthorityRefusal, Member, Signed, Signer, StartingSet, Timestamp},
+    ApproveJoinRequest, DeviceKey, EnrollAs, EnrollRequest, SetDeviceRequest,
+    ShareSealingKeyRequest,
+    authority::{AuthorityRefusal, Signed, Signer, Timestamp},
 };
 
 /// Approve `signer` at `entry`'s console, as a person does on a Server born enforcing.
@@ -15,45 +15,6 @@ async fn enforce(entry: &LocalMachine, signer: &Signer) {
         })
         .await
         .unwrap();
-}
-
-/// Approve `signer` at an awaiting `entry`'s console and activate with every row the store
-/// holds, then commit as the next boot does.
-async fn activate(entry: &LocalMachine, signer: &Signer) {
-    enforce(entry, signer).await;
-    let members = entry
-        .replicated()
-        .unwrap()
-        .machines()
-        .await
-        .unwrap()
-        .observations
-        .iter()
-        .map(Into::into)
-        .collect();
-    entry
-        .clone()
-        .on_local_socket()
-        .set_device_enforcement(enforce_request(signer, members))
-        .await
-        .unwrap();
-    entry.commit_activation_as_if_restarted().await;
-}
-
-fn enforce_request(signer: &Signer, members: Vec<Member>) -> SetDeviceEnforcementRequest {
-    let issued_at = Timestamp::now();
-    let set = StartingSet {
-        operation: ployz_core::OperationId::random(),
-        members,
-        issued_at,
-        expires_at: issued_at.plus(60_000),
-        signer: ployz_core::authority::SignerKey::Device(signer.public().into()),
-        kept_keys: Vec::new(),
-    };
-    SetDeviceEnforcementRequest {
-        enforced: true,
-        starting_set: Some(Signed::sign(&set, signer).unwrap()),
-    }
 }
 
 #[tokio::test]
@@ -286,21 +247,6 @@ async fn enforcing_mesh_tcp_never_grants_full_scope_or_slot_administration() {
                 op::SetDevice::into_request(SetDeviceRequest::Approve { key: device })
                     .encode()
                     .unwrap()
-            ))
-            .await
-            .unwrap_err()
-            .code(),
-        tonic::Code::PermissionDenied
-    );
-    assert_eq!(
-        client
-            .set_device_enforcement(Request::new(
-                op::SetDeviceEnforcement::into_request(SetDeviceEnforcementRequest {
-                    enforced: false,
-                    starting_set: None,
-                })
-                .encode()
-                .unwrap()
             ))
             .await
             .unwrap_err()
@@ -889,7 +835,6 @@ async fn a_mesh_caller_is_never_full_on_an_enforced_v1_daemon() {
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::{Request, transport::Server};
     let (directory, owner, _) = open_store("ployzd-mesh-off");
-    assert_eq!(owner.record().activation(), None);
     let api = crate::machine_api::MachineApi::builder(owner.clone()).build();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -912,29 +857,6 @@ async fn a_mesh_caller_is_never_full_on_an_enforced_v1_daemon() {
     server.abort();
     drop(client);
     drop(owner);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[tokio::test]
-async fn enforcement_pins_existing_id_key_and_subnet_durably() {
-    let (entry, raw, mut founder, directory, server) = participating_awaiting().await;
-    let signer = Signer::from_seed(&[1; 32]);
-    let mut existing = founder.clone();
-    existing.id = MachineId::random();
-    existing.subnet = "10.210.2.0/24".parse().unwrap();
-    existing.public_key = WireGuardPublicKey([2; 32]);
-    raw.publish_local_machine(&existing).await.unwrap();
-    activate(&entry, &signer).await;
-    assert!(entry.record().accepts_machine(&existing));
-    drop(entry);
-    let store = LocalMachineStore::open(&directory).unwrap();
-    assert!(store.record().accepts_machine(&existing));
-    existing.public_key = WireGuardPublicKey([3; 32]);
-    assert!(!store.record().accepts_machine(&existing));
-    founder.public_key = WireGuardPublicKey([4; 32]);
-    assert!(!store.record().accepts_machine(&founder));
-    server.abort();
-    drop(store);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1122,104 +1044,6 @@ async fn resending_the_original_enroll_while_resetting_conflicts() {
         joiner.enroll(enrollment),
         Ok(EnrollPlan::Conflict(_))
     ));
-    server.abort();
-    drop(entry);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[tokio::test]
-async fn enforcement_trusts_only_the_signed_starting_set_not_rows_registered_before_it() {
-    let (entry, raw, founder, directory, server) = participating_awaiting().await;
-    let late = joined_before_activation(&raw, &founder).await;
-    let signer = Signer::from_seed(&[1; 32]);
-    let console = entry.clone().on_local_socket();
-    console
-        .set_device(SetDeviceRequest::Approve {
-            key: signer.public().into(),
-        })
-        .await
-        .unwrap();
-    console
-        .set_device_enforcement(enforce_request(&signer, vec![(&founder).into()]))
-        .await
-        .unwrap();
-    entry.commit_activation_as_if_restarted().await;
-    assert!(!entry.record().accepts_machine(&late));
-    assert!(
-        !raw.machines()
-            .await
-            .unwrap()
-            .observations
-            .iter()
-            .all(|row| entry.record().accepts_machine(row))
-    );
-    assert!(
-        !entry
-            .replicated()
-            .unwrap()
-            .machines()
-            .await
-            .unwrap()
-            .observations
-            .iter()
-            .any(|row| row.id == late.id)
-    );
-    server.abort();
-    drop(entry);
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[tokio::test]
-async fn activation_refuses_a_missing_foreign_or_misscoped_starting_set_and_has_no_off() {
-    let (entry, _, founder, directory, server) = participating_awaiting().await;
-    let signer = Signer::from_seed(&[1; 32]);
-    let console = entry.clone().on_local_socket();
-    console
-        .set_device(SetDeviceRequest::Approve {
-            key: signer.public().into(),
-        })
-        .await
-        .unwrap();
-    let refused = |result| {
-        matches!(
-            result,
-            Err(LocalMachineError::EnforcementRefused(_)
-                | LocalMachineError::ActivationRefused { .. })
-        )
-    };
-    let unsigned = SetDeviceEnforcementRequest {
-        enforced: true,
-        starting_set: None,
-    };
-    assert!(refused(console.set_device_enforcement(unsigned).await));
-    let foreign = enforce_request(&Signer::from_seed(&[2; 32]), vec![(&founder).into()]);
-    assert!(refused(console.set_device_enforcement(foreign).await));
-    let mut other = founder.clone();
-    other.id = MachineId::random();
-    let misscoped = enforce_request(&signer, vec![(&other).into()]);
-    assert!(refused(console.set_device_enforcement(misscoped).await));
-    let approved = enforce_request(&signer, vec![(&founder).into()]);
-    console
-        .set_device_enforcement(approved.clone())
-        .await
-        .unwrap();
-    assert_eq!(entry.record().activation(), None);
-    assert!(matches!(
-        console.set_device_enforcement(approved.clone()).await,
-        Err(LocalMachineError::Activating)
-    ));
-    entry.commit_activation_as_if_restarted().await;
-    let activated = entry.record().activation();
-    assert!(activated.is_some());
-    let off = SetDeviceEnforcementRequest {
-        enforced: false,
-        starting_set: None,
-    };
-    assert!(refused(console.set_device_enforcement(off).await));
-    console.set_device_enforcement(approved).await.unwrap();
-    let again = enforce_request(&signer, vec![(&founder).into()]);
-    assert!(refused(console.set_device_enforcement(again).await));
-    assert_eq!(entry.record().activation(), activated);
     server.abort();
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();

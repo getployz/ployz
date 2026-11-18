@@ -1,34 +1,91 @@
-//! Deploy approvals under Device enforcement: an Operator's new Container is created only
-//! when its spec matches a digest a trusted key approved, and the approval also admits the
-//! Deploy's steps on Containers in its Namespace. A session's Container stays inside its own
-//! Environment: its Sealed values, and the Ingress Hostnames it claims.
+//! The gate an Operator's Container change passes. A new Container is created only when
+//! its spec matches a digest a trusted Device approved, or an automatic deploy rule
+//! admits its build. A step on a Container that already exists is served, except a start
+//! of a hook: a hook runs once, when it is created.
 
 use std::time::Instant;
 
 use ployz_core::{
-    ContainerKind, ContainerNow, ContainerWant, Namespace, ResolvedServiceSpec, RunTarget, Sealing,
-    ServiceName,
+    ContainerKind, ContainerLocator, ContainerNow, ContainerWant, RunTarget, Sealing, Start,
     authority::{
-        Approver, AuthorityRefusal, DeployApproval, DeployApproved, DeployFacts, Purpose,
-        RestartStep, Signed, Timestamp,
+        AuthorityRefusal, DeployApproval, DeployFacts, Purpose, RuleProof, Signed, Timestamp,
         deploy::{self, Creation},
     },
-    explicit_ingress_hosts, hostname_owners,
 };
 
-use super::{Error, LocalMachine, restart_approval::pinned};
+use super::{Error, LocalMachine};
 
 impl LocalMachine {
-    /// Admit an Operator's new creation under enforcement only with a deploy approval whose
-    /// digest for the slot's Service matches the spec, and take a hook's place in the
-    /// consumption log so the same approval never runs that Service's hook twice. A
-    /// Service Container is not consumed: retries and replicas repeat it.
+    /// Let an Operator's Container change through. A new Container, adoption included,
+    /// needs a deploy approval of its spec or an automatic deploy rule's proof of its
+    /// build. Holding, routing out, stopping, starting and removing a Container that
+    /// already exists need neither, and no Operator starts a hook again.
     ///
     /// # Errors
-    /// Returns [`Error::DeployRefused`] naming what the approval lacks,
-    /// [`Error::HostnameOwned`] for a session's claim on another Environment's hostname, and
-    /// [`Error::ApprovalRecord`] when the consumption log cannot be written.
-    pub(super) async fn admit_operator_creation(
+    /// Returns [`Error::DeployRefused`] or [`Error::RuleGrantRefused`] naming what the
+    /// creation lacks, and [`Error::DockerUnavailable`] or [`Error::Docker`] when a
+    /// Container to start cannot be read.
+    pub(crate) async fn admit_operator_change(
+        &self,
+        want: &ContainerWant,
+        deploy: Option<&Signed<DeployApproval>>,
+        rule: Option<&RuleProof>,
+    ) -> Result<(), Error> {
+        let ContainerWant::Running { container, .. } = want else {
+            return Ok(());
+        };
+        if let RunTarget::Existing(locator) = container {
+            return self.refuse_hook_start(locator).await;
+        }
+        match (deploy, rule) {
+            (None, Some(rule)) => self.admit_rule_deploy_online(want, rule).await,
+            (deploy, _) => self.admit_operator_creation(want, deploy),
+        }
+    }
+
+    /// Let an Operator's Writer start through. Starting a Container the Machine already
+    /// holds is served, unless it is a hook. Creating one is refused: its spec comes from
+    /// the Operator, and no statement approves a spec outside a deploy.
+    ///
+    /// # Errors
+    /// Returns [`Error::DeployRefused`] for a creation and for a hook, and
+    /// [`Error::DockerUnavailable`] or [`Error::Docker`] when the Container cannot be read.
+    pub(crate) async fn admit_operator_volume_start(&self, start: &Start) -> Result<(), Error> {
+        match start {
+            Start::Kept { container_id } => {
+                self.refuse_hook_start(&ContainerLocator::Id(*container_id))
+                    .await
+            }
+            Start::Create { resolved_spec, .. } => {
+                tracing::warn!(
+                    "Volume start refused for {}: it creates a Container no deploy approved",
+                    resolved_spec.name,
+                );
+                Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
+                    field: "a Volume start",
+                }))
+            }
+        }
+    }
+
+    /// A hook runs once, when it is created: no Operator starts one again.
+    async fn refuse_hook_start(&self, locator: &ContainerLocator) -> Result<(), Error> {
+        match self.container_now(locator).await? {
+            ContainerNow::Present(observed) if observed.kind == ContainerKind::PreDeployHook => {
+                Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
+                    field: "a hook run",
+                }))
+            }
+            ContainerNow::Present(_) | ContainerNow::Absent { .. } => Ok(()),
+        }
+    }
+
+    /// Admit an Operator's new creation only with a deploy approval, inside its window,
+    /// whose digest for the slot's Service matches the spec.
+    ///
+    /// # Errors
+    /// Returns [`Error::DeployRefused`] naming what the approval lacks.
+    fn admit_operator_creation(
         &self,
         want: &ContainerWant,
         approval: Option<&Signed<DeployApproval>>,
@@ -57,7 +114,6 @@ impl LocalMachine {
         let record = self.record();
         let trusted = record.trusted_keys();
         let machine = record.id();
-        let now = Timestamp::now();
         let approved = deploy::verify(
             approval,
             &DeployFacts {
@@ -70,28 +126,10 @@ impl LocalMachine {
                     kind: new.slot.kind,
                     spec: &new.resolved_spec,
                 }),
-                now,
+                now: Timestamp::now(),
             },
         )
         .map_err(refused)?;
-        admit_sealed_scope(&approved, &new.slot.service, &new.resolved_spec)?;
-        if matches!(approved.by, Approver::Browser { .. })
-            && new.slot.kind == ContainerKind::ServiceContainer
-        {
-            self.admit_session_hostnames(
-                ployz_core::DEPLOY_APPROVAL_CAPABILITY,
-                &new.slot.namespace,
-                &new.resolved_spec,
-            )
-            .await?;
-        }
-        if new.slot.kind == ContainerKind::PreDeployHook {
-            self.approvals.consume_hook(
-                &approved.body,
-                (&new.slot.service, &new.slot.creation_key),
-                now,
-            )?;
-        }
         tracing::info!(
             kind = %new.slot.kind,
             proposal = ?approved.body.proposal,
@@ -105,113 +143,6 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// Admit a Deploy's step on an existing Container in the approval's Namespace, on a
-    /// Machine it names, inside its window. Hold, Out, Stop and Remove act on any copy, so
-    /// a Deploy can retire old ones; Start needs the copy's own spec approved, and never
-    /// starts a hook. Nothing is consumed. Returns the want pinned to the Container seen.
-    ///
-    /// # Errors
-    /// Returns [`Error::DeployRefused`] naming what the approval lacks, and
-    /// [`Error::DockerUnavailable`] or [`Error::Docker`] when the Container cannot be read.
-    pub(super) async fn admit_deploy_step(
-        &self,
-        want: ContainerWant,
-        approval: &Signed<DeployApproval>,
-    ) -> Result<ContainerWant, Error> {
-        let Some((step, locator)) = RestartStep::of(&want) else {
-            unreachable!("a step acts on an existing Container");
-        };
-        let ContainerNow::Present(observed) = self.container_now(locator).await? else {
-            return Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
-                field: "a Container",
-            }));
-        };
-        let record = self.record();
-        let trusted = record.trusted_keys();
-        let machine = record.id();
-        let identity = observed.identity();
-        let refused = |refusal: AuthorityRefusal| {
-            tracing::warn!(?step, "deploy step refused for {identity}: {refusal}");
-            Error::DeployRefused(refusal)
-        };
-        // Starting a copy runs its spec, so it must be one the approval names; a copy
-        // made before enforcement, or for another Service, is not. A hook runs once,
-        // when it is created, so no deploy starts one again.
-        let starts = step == RestartStep::Start;
-        if starts && observed.kind == ContainerKind::PreDeployHook {
-            return Err(refused(AuthorityRefusal::Mismatch {
-                field: "a hook run",
-            }));
-        }
-        let approved = deploy::verify(
-            approval,
-            &DeployFacts {
-                cluster: self.cluster_key(record.phase()),
-                machine: &machine,
-                trusted: &trusted,
-                namespace: &identity.namespace,
-                creation: starts.then_some(Creation {
-                    service: &identity.name,
-                    kind: observed.kind,
-                    spec: &observed.resolved_spec,
-                }),
-                now: Timestamp::now(),
-            },
-        )
-        .map_err(refused)?;
-        tracing::info!(
-            ?step,
-            proposal = ?approved.body.proposal,
-            container = observed.container_id.as_str().get(..12).unwrap_or_default(),
-            "deploy {} step approved by {} for {}",
-            approved.body.operation,
-            approved.by,
-            identity,
-        );
-        Ok(pinned(want, observed.container_id))
-    }
-
-    /// Refuse a Service Container a session approved, by a deploy approval or a preview
-    /// review, that claims an Ingress Hostname whose owner, from this Machine's view of
-    /// every Service Container, is in another Namespace. The oldest claim owns a hostname,
-    /// so a newer claim admitted beside the owner's would take it once the owner's next
-    /// Deploy replaced its Containers. A Device may still move a hostname on purpose. A
-    /// view this Machine can't read refuses the claim.
-    ///
-    /// # Errors
-    /// Returns [`Error::HostnameOwned`] naming `capability`, the hostname and its owner,
-    /// [`Error::ClusterUnavailable`] or [`Error::Cluster`] when the view can't be read.
-    pub(super) async fn admit_session_hostnames(
-        &self,
-        capability: &'static str,
-        namespace: &Namespace,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<(), Error> {
-        let mut claimed = explicit_ingress_hosts(&spec.ports).peekable();
-        if claimed.peek().is_none() {
-            return Ok(());
-        }
-        let observations = self.replicated()?.containers().await?.observations;
-        let owners = hostname_owners(&observations);
-        let Some((hostname, owner)) = claimed.find_map(|hostname| {
-            owners
-                .get(hostname)
-                .filter(|owner| &owner.namespace != namespace)
-                .map(|owner| (hostname.clone(), owner.clone()))
-        }) else {
-            return Ok(());
-        };
-        tracing::warn!(
-            service = %spec.name,
-            "refused deploy in {namespace}: hostname {hostname} belongs to {owner}",
-        );
-        Err(Error::HostnameOwned {
-            capability,
-            hostname,
-            owner,
-        })
-    }
-
     pub(super) fn cluster_key(
         &self,
         phase: ployz_core::LocalMachinePhase,
@@ -219,28 +150,6 @@ impl LocalMachine {
         self.held_sealing(phase).and_then(Sealing::held_key)
     }
 }
-
-/// Refuse a creation whose Sealed values its approver may not open, before anything
-/// opens them. A start needs no check: the Container opened its values when it was made.
-fn admit_sealed_scope(
-    approved: &DeployApproved,
-    service: &ServiceName,
-    spec: &ResolvedServiceSpec,
-) -> Result<(), Error> {
-    if deploy::sealed_scope_allows(&approved.by, spec) {
-        return Ok(());
-    }
-    tracing::warn!(
-        %service,
-        "refused deploy {}: Sealed values belong to another Environment",
-        approved.body.operation,
-    );
-    Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
-        field: SEALED_VALUES,
-    }))
-}
-
-const SEALED_VALUES: &str = "Sealed values";
 
 /// What a refused deploy says to the person who ran it.
 pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
@@ -257,25 +166,20 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch { field: "a Service" } => {
             "The device didn't approve this service."
         }
-        AuthorityRefusal::Mismatch {
-            field: SEALED_VALUES,
-        } => {
-            "This service's sealed values belong to another environment, so a passkey approval can't open them."
-        }
         AuthorityRefusal::Mismatch { field: "a hook" } => {
             "The device approved no pre-deploy command for this service."
         }
         AuthorityRefusal::Mismatch {
-            field: deploy::HOST_ACCESS,
+            field: "a hook run",
+        } => "This deploy already ran its pre-deploy command here.",
+        AuthorityRefusal::Mismatch {
+            field: "a Volume start",
         } => {
-            "This service reaches the server itself, so only an approved device can approve it. Run ployz deploy on that device."
+            "This server starts a service on a moved or restored Volume only from a deploy an approved device signed."
         }
         AuthorityRefusal::Mismatch {
-            field: "a hook run",
-        }
-        | AuthorityRefusal::Replayed { .. } => {
-            "This deploy already ran its pre-deploy command here."
-        }
+            field: "the source Server",
+        } => "This server copies a volume's data only from another server of its cluster.",
         AuthorityRefusal::Mismatch {
             field: "an Environment",
         } => "The device approved a deploy to another environment.",
@@ -285,9 +189,6 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch { field: "a Cluster" } => {
             "The device approved a deploy to another cluster."
         }
-        AuthorityRefusal::Mismatch {
-            field: "a Container",
-        } => "That container isn't on this server.",
         AuthorityRefusal::Expired => "The device's approval expired. Deploy again.",
         AuthorityRefusal::RetiredBuilder { .. } => {
             "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
@@ -300,11 +201,7 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::ApproveOnly { .. }
         | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::NoClusterIdentity
-        | AuthorityRefusal::ProofReplayed
-        | AuthorityRefusal::Unreceipted
-        | AuthorityRefusal::ForeignMachineKey { .. }
-        | AuthorityRefusal::BadMachineSignature { .. }
-        | AuthorityRefusal::MalformedMachineStatement { .. } => {
+        | AuthorityRefusal::ProofReplayed => {
             return format!("This server can't check the deploy's approval: {refusal}.");
         }
     };

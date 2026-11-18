@@ -608,7 +608,7 @@ impl ThisServer {
     }
 }
 
-/// This host's Machine key, so a person can check the fingerprint `device enforce` prints.
+/// This host's Machine key and its fingerprint.
 #[derive(Serialize)]
 struct ThisMachine {
     wireguard_key: String,

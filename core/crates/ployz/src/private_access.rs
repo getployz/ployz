@@ -131,22 +131,16 @@ pub struct AccessChanged {
     pub failures: Vec<MachineFailure<RpcError>>,
 }
 
-/// Seal `key` for the Cluster and to the key [`crate::sealing_pin`] checked.
+/// Seal `key` to the Cluster Sealing Key [`crate::sealing_pin`] checked.
 ///
 /// # Errors
 ///
 /// Fails when the key can't be sealed.
 pub(crate) fn seal_key(
-    seal_for: &crate::sealing_pin::SealFor,
+    seal_for: &ployz_core::SealingPublicKey,
     key: &str,
 ) -> Result<Ciphertext, Failure> {
-    seal_platform(
-        &seal_for.cluster,
-        &seal_for.recipient,
-        PlatformPurpose::PrivateAccess,
-        key.as_bytes(),
-    )
-    .map_err(|error| {
+    seal_platform(seal_for, PlatformPurpose::PrivateAccess, key.as_bytes()).map_err(|error| {
         Failure::caused(
             RpcErrorCode::Internal,
             "Could not seal the auth key for this Cluster",

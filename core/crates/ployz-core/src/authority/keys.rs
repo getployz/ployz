@@ -8,10 +8,9 @@ use sha2::Digest as _;
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp},
+    canonical::{self, CanonicalError},
     proposal::ProposalApproval,
     refusal::AuthorityRefusal,
-    session::{Grant, SessionGrant},
     trusted_key::{PasskeyAssertion, TrustedKeys},
 };
 use crate::{DeviceCode, DeviceKey, separation, value::hex_newtype};
@@ -23,17 +22,9 @@ use crate::{DeviceCode, DeviceKey, separation, value::hex_newtype};
 pub enum Purpose {
     Workflow,
     Join,
-    /// An activation's starting set, or the recipient key it adds. A Device signs one, or a
-    /// passkey answers its own prompt for it: a session grant covers none.
-    Enforce,
     /// Standing authority over every future push, such as an automatic deploy rule. A
-    /// Device signs one, or a passkey answers its own prompt for it: a session grant
-    /// covers workflows only.
+    /// Device signs one, or a passkey answers its own prompt for it.
     Rule,
-    /// One Volume workflow, which can stop a Service, start one elsewhere and send a Volume's
-    /// data to another Machine. A Device signs one, or a passkey answers its own prompt for
-    /// it: a session grant covers none.
-    Volume,
 }
 
 impl Purpose {
@@ -42,9 +33,7 @@ impl Purpose {
         match self {
             Self::Workflow => "workflow",
             Self::Join => "join",
-            Self::Enforce => "enforce",
             Self::Rule => "rule",
-            Self::Volume => "volume",
         }
     }
 }
@@ -114,16 +103,13 @@ impl fmt::Debug for SigningPublicKey {
     }
 }
 
-/// The key a statement says signed it. A Device's key is written bare, as before browser
-/// keys existed, so a Device's approval keeps the bytes an older daemon reads. A browser
-/// key is written as `{"browser": key}`, which an older daemon refuses to parse. A rule a
-/// passkey answers for itself says `"passkey"`: the browser writes the body before the
-/// person picks which passkey answers, and the answer names it.
+/// The key a statement says signed it. A Device's key is written bare. A rule a passkey
+/// answers for itself says `"passkey"`: the browser writes the body before the person
+/// picks which passkey answers, and the answer names it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 pub enum SignerKey {
     Device(DeviceKey),
-    Browser { browser: SigningPublicKey },
     Passkey(OwnPrompt),
 }
 
@@ -194,30 +180,22 @@ impl KeySignature {
     }
 }
 
-/// A statement as it travels: its canonical body, exactly as signed, its signatures, and
-/// the session grants that vouch for a browser key among the signers. On the wire it has
-/// the same shape for every statement, which the TypeScript side sees as one type.
+/// A statement as it travels: its canonical body, exactly as signed, and its signatures.
+/// On the wire it has the same shape for every statement, which the TypeScript side sees
+/// as one type.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-#[ts(concrete(T = super::restart::RestartApproval))]
+#[ts(concrete(T = super::deploy::DeployApproval))]
 pub struct Signed<T> {
     pub body: String,
     pub signatures: Vec<KeySignature>,
-    /// Absent from a Device's envelope, which keeps the bytes a daemon from before grants
-    /// reads. A daemon from before grants refuses an envelope that carries one.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(optional, as = "Option<Vec<SessionGrant>>")]
-    pub grants: Vec<SessionGrant>,
     /// The signed proposal this unsigned step belongs to. Present only on a step of a
-    /// proposal, which carries no signature of its own. A daemon from before proposals
-    /// refuses an envelope that carries one.
+    /// proposal, which carries no signature of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub proposal: Option<Box<Signed<ProposalApproval>>>,
-    /// Passkeys' own answers to [`Signed::challenge`], each a prompt of its own rather
-    /// than a session. Only a rule and a Volume workflow take one. A daemon from before
-    /// passkey-signed rules refuses an envelope that carries one, and one from before
-    /// passkey-signed Volume workflows refuses it on a Volume approval.
+    /// Passkeys' own answers to [`Signed::challenge`], each a prompt of its own. Only a
+    /// rule takes one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PasskeyAssertion>>")]
     pub assertions: Vec<PasskeyAssertion>,
@@ -237,7 +215,6 @@ impl<T: Statement> Signed<T> {
         Ok(Self {
             body,
             signatures,
-            grants: Vec::new(),
             proposal: None,
             assertions: Vec::new(),
             statement: PhantomData,
@@ -255,26 +232,10 @@ impl<T: Statement> Signed<T> {
         Ok(Self {
             body: canonical::to_canonical(statement)?,
             signatures: Vec::new(),
-            grants: Vec::new(),
             proposal: Some(Box::new(bundle)),
             assertions: Vec::new(),
             statement: PhantomData,
         })
-    }
-
-    /// Encode `statement`, sign it with a browser key, and carry the grant that vouches
-    /// for that key.
-    ///
-    /// # Errors
-    /// Returns a [`CanonicalError`] when the statement has no canonical form.
-    pub fn sign_under(
-        statement: &T,
-        signer: &Signer,
-        grant: SessionGrant,
-    ) -> Result<Self, CanonicalError> {
-        let mut signed = Self::sign(statement, signer)?;
-        signed.grants.push(grant);
-        Ok(signed)
     }
 
     /// Encode `statement` with no signature, for a passkey to answer [`Self::challenge`]
@@ -286,7 +247,6 @@ impl<T: Statement> Signed<T> {
         Ok(Self {
             body: canonical::to_canonical(statement)?,
             signatures: Vec::new(),
-            grants: Vec::new(),
             proposal: None,
             assertions: Vec::new(),
             statement: PhantomData,
@@ -301,7 +261,7 @@ impl<T: Statement> Signed<T> {
     }
 
     /// The WebAuthn challenge a passkey answers to sign this statement itself: the
-    /// SHA-256 of its signing input, as a session grant's is.
+    /// SHA-256 of its signing input.
     #[must_use]
     pub fn challenge(&self) -> [u8; 32] {
         sha2::Sha256::digest(self.signing_input()).into()
@@ -355,23 +315,16 @@ impl<T: Statement> Signed<T> {
             .collect()
     }
 
-    /// Who signed this statement, each checked against `trusted` at `now`: a Device it
-    /// trusts, a browser key a grant in this envelope vouches for, or, on a rule or a Volume
-    /// workflow only, a trusted passkey's own answer to [`Self::challenge`]. A grant only says what its key
-    /// may do; the statement's own check decides whether its scope covers this statement.
+    /// Who signed this statement, each checked against `trusted`: a Device it trusts or,
+    /// on a rule only, a trusted passkey's own answer to [`Self::challenge`].
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Unsigned`] when nothing signed,
-    /// [`AuthorityRefusal::UnknownKey`] when a key is neither a trusted Device nor named
-    /// by a grant here, [`AuthorityRefusal::BadSignature`] when a signature does not
-    /// verify, the grant's refusal from [`SessionGrant::verify`], a mismatch naming a
-    /// passkey for an answer to a statement that takes none, and the passkey's refusal
-    /// from [`TrustedKeys::passkey_approval`].
-    pub fn approvers(
-        &self,
-        trusted: &TrustedKeys,
-        now: Timestamp,
-    ) -> Result<Vec<Approver>, AuthorityRefusal> {
+    /// [`AuthorityRefusal::UnknownKey`] when a key is not a trusted Device,
+    /// [`AuthorityRefusal::BadSignature`] when a signature does not verify, a mismatch
+    /// naming a passkey for an answer to a statement that takes none, and the passkey's
+    /// refusal from [`TrustedKeys::passkey_approval`].
+    pub fn approvers(&self, trusted: &TrustedKeys) -> Result<Vec<Approver>, AuthorityRefusal> {
         if self.signatures.is_empty() && self.assertions.is_empty() {
             return Err(AuthorityRefusal::Unsigned {
                 purpose: T::PURPOSE,
@@ -382,39 +335,20 @@ impl<T: Statement> Signed<T> {
             .signatures
             .iter()
             .map(|signature| {
-                let device = trusted.signing_keys().any(|key| key == signature.key);
-                let grant = (!device)
-                    .then(|| {
-                        self.grants
-                            .iter()
-                            .find(|grant| grant.browser_key() == Some(signature.key))
-                    })
-                    .flatten();
-                if !device && grant.is_none() {
+                if !trusted.signing_keys().any(|key| key == signature.key) {
                     return Err(AuthorityRefusal::UnknownKey { key: signature.key });
                 }
                 if !signature.verifies(&input) {
                     return Err(AuthorityRefusal::BadSignature { key: signature.key });
                 }
-                Ok(match grant {
-                    None => Approver::Device(signature.key),
-                    Some(grant) => Approver::Browser {
-                        key: signature.key,
-                        grant: grant.verify(trusted, now)?,
-                    },
-                })
+                Ok(Approver::Device(signature.key))
             })
             .collect::<Result<Vec<_>, _>>()?;
         if self.assertions.is_empty() {
             return Ok(approvers);
         }
-        // A workflow rests on a passkey only through a session grant, whose limits the
-        // workflow's own check reads. A passkey's own answer has none, so only a statement
-        // no session may sign takes one: a rule, a Volume workflow, or an activation.
-        if !matches!(
-            T::PURPOSE,
-            Purpose::Rule | Purpose::Volume | Purpose::Enforce
-        ) {
+        // A passkey's own answer stands with no limits beside it, so only a rule takes one.
+        if T::PURPOSE != Purpose::Rule {
             return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
         }
         let challenge = self.challenge();
@@ -431,21 +365,17 @@ impl<T: Statement> Signed<T> {
 pub enum Approver {
     /// A Device this Machine trusts.
     Device(SigningPublicKey),
-    /// A browser key a passkey this Machine trusts lent `grant`.
-    Browser { key: SigningPublicKey, grant: Grant },
     /// A passkey this Machine trusts, answering a prompt of its own for this statement.
     Passkey(DeviceCode),
 }
 
 impl Approver {
     /// Whether this approver is the signer a statement names, vouched for the way the
-    /// statement says: a Device as that Device, a browser key under a grant, a passkey by
-    /// its own prompt.
+    /// statement says: a Device as that Device, a passkey by its own prompt.
     #[must_use]
     pub fn signs_as(&self, signer: SignerKey) -> bool {
         match (self, signer) {
             (Self::Device(key), SignerKey::Device(device)) => *key == device.into(),
-            (Self::Browser { key, .. }, SignerKey::Browser { browser }) => *key == browser,
             (Self::Passkey(_), SignerKey::Passkey(_)) => true,
             _ => false,
         }
@@ -456,116 +386,8 @@ impl fmt::Display for Approver {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Device(key) => write!(formatter, "device {}", key.code()),
-            Self::Browser { key, grant } => write!(
-                formatter,
-                "passkey {} via browser key {}",
-                grant.passkey,
-                key.code()
-            ),
             Self::Passkey(code) => write!(formatter, "passkey {code}"),
         }
-    }
-}
-
-/// A body a Machine signs about its own transition, with no person behind it. It travels
-/// in a [`MachineSigned`] envelope, never a [`Signed`] one, so no Device signature passes
-/// as a Machine's and no Machine's passes as a Device's.
-pub trait MachineStatement: Serialize + DeserializeOwned {
-    /// What the statement is, signed with it, such as `volume-handoff`.
-    const KIND: &'static str;
-}
-
-/// Which key signed a Machine's statement. Every Machine of a Cluster derives one key from
-/// the Sealing Key and signs with it, so any of them could have signed. A key per Machine
-/// would be another variant.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineKey {
-    Cluster { key: SigningPublicKey },
-}
-
-impl fmt::Display for MachineKey {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Cluster { key } => write!(formatter, "cluster:{key}"),
-        }
-    }
-}
-
-/// A statement a Machine signed: its canonical body exactly as signed, the key that
-/// signed it, and the signature. The signing input names the key, so a body signed under
-/// one key never verifies as signed under another.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-#[ts(concrete(T = super::volume::HandoffReceipt))]
-pub struct MachineSigned<T> {
-    pub body: String,
-    pub key: MachineKey,
-    #[serde(serialize_with = "signature_hex", deserialize_with = "signature_bytes")]
-    #[ts(type = "string")]
-    pub signature: [u8; 64],
-    #[serde(skip)]
-    #[ts(skip)]
-    statement: PhantomData<T>,
-}
-
-/// The bytes a Machine signs: `ployz-machine/v1`, the statement's kind, its key, and the
-/// canonical body, each ended by a newline except the body. Distinct from every
-/// [`signing_input`].
-#[must_use]
-pub fn machine_signing_input(kind: &str, key: MachineKey, body: &str) -> Vec<u8> {
-    let mut input = separation::MACHINE_SIGNING.to_vec();
-    input.extend_from_slice(format!("{kind}\n{key}\n{body}").as_bytes());
-    input
-}
-
-impl<T: MachineStatement> MachineSigned<T> {
-    /// Encode `statement` and sign it with the Cluster key `signer`.
-    ///
-    /// # Errors
-    /// Returns a [`CanonicalError`] when the statement has no canonical form.
-    pub fn sign(statement: &T, signer: &Signer) -> Result<Self, CanonicalError> {
-        let body = canonical::to_canonical(statement)?;
-        let key = MachineKey::Cluster {
-            key: signer.public(),
-        };
-        let signature = signer
-            .0
-            .sign(&machine_signing_input(T::KIND, key, &body))
-            .to_bytes();
-        Ok(Self {
-            body,
-            key,
-            signature,
-            statement: PhantomData,
-        })
-    }
-
-    /// The statement, when `cluster` is its key and its signature verifies. A Machine passes
-    /// the Cluster key it derives itself.
-    ///
-    /// # Errors
-    /// Returns [`AuthorityRefusal::ForeignMachineKey`] for another key,
-    /// [`AuthorityRefusal::BadMachineSignature`] for a signature that does not verify, and
-    /// [`AuthorityRefusal::MalformedMachineStatement`] for a body that is not this
-    /// statement in canonical form.
-    pub fn verify(&self, cluster: SigningPublicKey) -> Result<T, AuthorityRefusal> {
-        let MachineKey::Cluster { key } = self.key;
-        if key != cluster {
-            return Err(AuthorityRefusal::ForeignMachineKey { kind: T::KIND });
-        }
-        if !key.verifies(
-            &machine_signing_input(T::KIND, self.key, &self.body),
-            &self.signature,
-        ) {
-            return Err(AuthorityRefusal::BadMachineSignature { kind: T::KIND });
-        }
-        canonical::from_canonical(&self.body).map_err(|error| {
-            AuthorityRefusal::MalformedMachineStatement {
-                kind: T::KIND,
-                problem: error.to_string(),
-            }
-        })
     }
 }
 

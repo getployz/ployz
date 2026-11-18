@@ -188,18 +188,6 @@ impl ConfigStore {
         self.run(move |store| store.sources(&deployment)).await
     }
 
-    /// Whether Deployment `deployment` waits, queued, for a person to approve its commits
-    /// again once its builds ended. Cloud holds it before it runs until one does.
-    ///
-    /// # Errors
-    /// Returns `not_found` for an unknown Deployment, or a storage error.
-    #[napi(ts_return_type = "Promise<boolean>")]
-    pub async fn awaiting_approval(&self, deployment: String) -> Result<serde_json::Value> {
-        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        self.run(move |store| store.awaiting_approval(&deployment))
-            .await
-    }
-
     /// Pin the commits Cloud resolved (`{runtime Service name: commit}`) for
     /// Deployment `deployment`'s Git Services; a pinned commit never changes. Resolves
     /// to every source with its pin. `trusted` carries the Organization's members as

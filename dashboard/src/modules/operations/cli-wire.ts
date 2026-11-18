@@ -1,7 +1,5 @@
 import { Schema } from "effect";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
-import { TeardownInput } from "#/modules/approval-session/approvals-input";
-import type { ResolvedServiceSpec } from "@ployz/sdk";
 import type { VolumeRunInput, VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
 /** The name the CLI resolved the Server by and showed, which its run keeps. An older CLI sends none. */
@@ -15,8 +13,8 @@ export const ForgetServer = Schema.Struct(shownName);
 
 export const DrainServer = Schema.Struct(shownName);
 
-/** `server clean --namespace`: the teardown a Device signed, when a Server enforces Device approval. */
-export const CleanNamespace = Schema.Struct({ teardown: Schema.optionalKey(TeardownInput) });
+/** `server clean --namespace`: nothing to confirm beyond the approval. */
+export const CleanNamespace = Schema.Struct({});
 
 export const UpgradeServer = Schema.Struct({ channel: Schema.optional(Schema.String), ...shownName });
 
@@ -25,36 +23,6 @@ export const ForgetServers = Schema.Struct({ organization: Schema.String });
 
 const RunEnvironment = Schema.Struct({ project: Schema.String, environment: Schema.String });
 const Destination = Schema.String.check(Schema.isNonEmpty());
-
-const hexOf = (digits: number) => Schema.String.check(Schema.isPattern(new RegExp(`^[0-9a-f]{${digits}}$`)));
-
-const Base64Url = (most: number) => Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]*$/), Schema.isMaxLength(most));
-
-/** A passkey's answer to its own prompt for a Volume workflow, which a dashboard approval carries in place of a signature. */
-const PasskeyAssertion = Schema.Struct({
-  credential_id: Base64Url(1366),
-  authenticator_data: Base64Url(1024),
-  client_data_json: Base64Url(4096),
-  signature: Base64Url(256),
-});
-
-/**
- * A `Signed<VolumeApproval>`: a Device's as the CLI sends it, or a passkey's as the dashboard does. Servers check every
- * byte; Cloud only bounds its size.
- */
-export const VolumeApproval = Schema.Struct({
-  body: Schema.String.check(Schema.isMaxLength(4096)),
-  signatures: Schema.mutable(Schema.Array(Schema.Struct({ key: hexOf(64), signature: hexOf(128) }))).check(Schema.isMaxLength(4)),
-  assertions: Schema.optional(Schema.mutable(Schema.Array(PasskeyAssertion)).check(Schema.isMaxLength(1))),
-});
-
-const NamedSpec = Schema.Struct({ name: Schema.String, container: Schema.Struct({ image: Schema.String }) });
-
-/**
- * The spec a Move's approval names for the Service's start on its target, kept whole. Cloud reads only its name and
- * size; the target checks the rest against the approval before it starts anything.
- */
-export const MoveService = Schema.declare<ResolvedServiceSpec>((value): value is ResolvedServiceSpec => Schema.is(NamedSpec)(value));
 
 /** A byte count the CLI sends: a positive whole number JSON carries exactly. */
 export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER));
@@ -65,8 +33,8 @@ export const MaximumBytes = Schema.Number.check(Schema.isInt(), Schema.isGreater
  * to compile here until it says whether the CLI may ask for it.
  */
 export const VOLUME_RUN_BODIES = {
-  mirror: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Destination, approval: Schema.optional(VolumeApproval) }),
-  sync: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.Literal(true), approval: Schema.optional(VolumeApproval) }),
+  mirror: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("mirror"), to: Destination }),
+  sync: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("sync"), full: Schema.Literal(true) }),
   /**
    * `mirror rm --if-old-copy` sends `delete_old_copy`: the slot is deleted only while it is still an old copy. It is a
    * kind of its own so a Cloud from before it refuses the body instead of dropping the restriction.
@@ -76,18 +44,11 @@ export const VOLUME_RUN_BODIES = {
     kind: Schema.Literals(["delete_mirror", "delete_old_copy"]),
     slot: Schema.optional(Destination),
     confirm: Schema.optional(Schema.String),
-    approval: Schema.optional(VolumeApproval),
   }),
-  move: Schema.Struct({
-    environment: RunEnvironment,
-    kind: Schema.Literal("move"),
-    to: Destination,
-    approval: Schema.optional(VolumeApproval),
-    service: Schema.optional(MoveService),
-  }),
+  move: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("move"), to: Destination }),
   release: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("release") }),
-  restore: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Destination, approval: Schema.optional(VolumeApproval) }),
-  resize: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("resize"), maximum_bytes: MaximumBytes, approval: Schema.optional(VolumeApproval) }),
+  restore: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("restore"), from: Destination }),
+  resize: Schema.Struct({ environment: RunEnvironment, kind: Schema.Literal("resize"), maximum_bytes: MaximumBytes }),
 } as const satisfies Record<Exclude<VolumeRunRequestKind, "seed">, Schema.Top>;
 
 export const NewVolumeRun = Schema.Union(Object.values(VOLUME_RUN_BODIES));
@@ -96,35 +57,23 @@ export const NewVolumeRun = Schema.Union(Object.values(VOLUME_RUN_BODIES));
 export function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
   switch (body.kind) {
     case "mirror":
-      return { kind: "mirror", args: { to: body.to, ...(body.approval && { approval: body.approval }) } };
+      return { kind: "mirror", args: { to: body.to } };
     case "sync":
-      return { kind: "sync", args: { full: true, ...(body.approval && { approval: body.approval }) } };
+      return { kind: "sync", args: { full: true } };
     case "delete_mirror":
     case "delete_old_copy":
       return {
         kind: "delete_mirror",
-        args: {
-          slot: body.slot ?? null,
-          confirmed_name: body.confirm ?? null,
-          role: body.kind === "delete_old_copy" ? "old_copy" : "any",
-          ...(body.approval && { approval: body.approval }),
-        },
+        args: { slot: body.slot ?? null, confirmed_name: body.confirm ?? null, role: body.kind === "delete_old_copy" ? "old_copy" : "any" },
       };
     case "move":
-      return {
-        kind: "move",
-        args: {
-          to: body.to,
-          ...(body.approval && { approval: body.approval }),
-          ...(body.service && { service: body.service }),
-        },
-      };
+      return { kind: "move", args: { to: body.to } };
     case "release":
       return { kind: "release", args: {} };
     case "restore":
-      return { kind: "restore", args: { from: body.from, ...(body.approval && { approval: body.approval }) } };
+      return { kind: "restore", args: { from: body.from } };
     case "resize":
-      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes, ...(body.approval && { approval: body.approval }) } };
+      return { kind: "resize", args: { maximum_bytes: body.maximum_bytes } };
   }
 }
 

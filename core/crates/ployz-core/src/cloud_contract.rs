@@ -9,10 +9,7 @@
 //! the Machine checks them. They are re-exported here so Cloud reads the same numbers, and
 //! Cloud's own choices under them (a session's length, an approval's length) stay Cloud's.
 
-pub use crate::authority::{
-    session::MAX_GRANT_LIFETIME_MILLIS,
-    validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS},
-};
+pub use crate::authority::validity::{CLOCK_SKEW_MILLIS, MAX_LIFETIME_MILLIS};
 
 /// The most compressed source one upload may hold, the same as Cloud's cap. It stays under
 /// the 100 MB request body Cloudflare passes, in front of ployz.dev or a Tunnel.

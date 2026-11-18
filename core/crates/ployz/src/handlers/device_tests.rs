@@ -5,7 +5,7 @@ use ployz_core::authority::trusted_key::PasskeyAlgorithm;
 use ployz_core::{
     CapabilityName, ContractDescription, DeviceKey, DeviceSet, MachineList, MachineObservation,
     MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RpcRequestBody, RpcResponse,
-    SET_DEVICE_CAPABILITY,
+    SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY,
 };
 use tonic::{Request, Response, Status};
 
@@ -95,8 +95,6 @@ async fn cluster(
                 let target = target.unwrap();
                 let listed = machine(target.to_string().chars().next().unwrap(), "fixture");
                 RpcResponse::from(ployz_core::MachineDetails {
-                    activation: None,
-                    sealing_recipient: None,
                     id: target,
                     public_key: listed.public_key,
                     machine: Some(listed),
@@ -254,6 +252,23 @@ async fn request_refuses_a_reply_naming_another_code() {
 
 /// Two keys whose 50-bit names collide, found offline with Pollard's rho: what Cloud would
 /// grind to stand in for the key the requester printed.
+fn passkey_key(seed: u8) -> ployz_core::authority::PasskeyPublicKey {
+    let key = iroh::SecretKey::from_bytes(&[seed; 32]).public();
+    ployz_core::authority::PasskeyPublicKey::parse(PasskeyAlgorithm::Eddsa, key.as_bytes()).unwrap()
+}
+
+fn waiting(public_key: ployz_core::authority::PasskeyPublicKey) -> ployz_core::authority::Passkey {
+    ployz_core::authority::Passkey {
+        credential_id: serde_json::from_value(json!("AQID")).unwrap(),
+        public_key,
+        account: PasskeyAccount::parse("ada@example.com").unwrap(),
+        relying_party: ployz_core::authority::trusted_key::RelyingParty::of(
+            &"https://ployz.cloud".parse().unwrap(),
+        )
+        .unwrap(),
+    }
+}
+
 fn same_name_keys() -> (DeviceKey, DeviceKey) {
     let key = |head: [u8; 8]| {
         let mut bytes = [0; 32];
@@ -599,7 +614,6 @@ fn pin_cluster(config: &std::path::Path, cluster: ployz_core::SealingPublicKey) 
             crate::sealing_pin::Pin {
                 public_key: cluster,
                 server: MachineName::parse("entry").unwrap(),
-                recipient: None,
             },
         )
         .unwrap();
@@ -778,12 +792,6 @@ async fn full_mutations_report_servers_without_a_direct_connection_as_omissions(
     assert_eq!(removed.answers.len(), 1);
     assert_eq!(removed.gaps.omitted, vec![id('2'), id('3')]);
     assert_eq!(removed.gaps.outcome().unwrap_err().printed_exit(), Some(3));
-    let reach = Reach::full(&mut client).await.unwrap();
-    let (_, gaps) = reach
-        .fan_out(|_| async { Ok(Some(ployz_core::DeviceEnforcementSet { enforced: true })) })
-        .await;
-    assert_eq!(gaps.omitted, vec![id('2'), id('3')]);
-    assert_eq!(gaps.outcome().unwrap_err().printed_exit(), Some(3));
     server.abort();
 }
 
@@ -818,62 +826,6 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
             key(1).code()
         )
     );
-}
-
-fn passkey_key(seed: u8) -> PasskeyPublicKey {
-    let key = iroh::SecretKey::from_bytes(&[seed; 32]).public();
-    PasskeyPublicKey::parse(PasskeyAlgorithm::Eddsa, key.as_bytes()).unwrap()
-}
-
-fn waiting_passkey(public_key: PasskeyPublicKey) -> serde_json::Value {
-    json!({
-        "credential_id": "AQID",
-        "public_key": public_key,
-        "account": "ada@example.com",
-        "relying_party": { "id": "evil.example", "origin": "https://evil.example" },
-    })
-}
-
-#[tokio::test]
-async fn a_waiting_passkey_answers_for_this_clis_cloud_not_the_one_cloud_names() {
-    let cloud = crate::cloud_account::testing::fake_cloud(|route, _| {
-        assert_eq!(
-            route,
-            format!("GET /api/cli/passkey-requests/{}", passkey_key(1).code())
-        );
-        (200, waiting_passkey(passkey_key(1)))
-    });
-    let credential = token(cloud.clone());
-
-    let passkey = pending_passkey(&credential, passkey_key(1).code())
-        .await
-        .unwrap();
-
-    let cloud = url::Url::parse(&cloud).unwrap();
-    assert_eq!(passkey.public_key, passkey_key(1));
-    assert_eq!(passkey.account.as_str(), "ada@example.com");
-    assert_eq!(passkey.relying_party, RelyingParty::of(&cloud).unwrap());
-}
-
-#[tokio::test]
-async fn a_passkey_whose_key_does_not_hash_to_the_code_is_refused() {
-    let cloud =
-        crate::cloud_account::testing::fake_cloud(|_, _| (200, waiting_passkey(passkey_key(2))));
-
-    let error = pending_passkey(&token(cloud), passkey_key(1).code())
-        .await
-        .unwrap_err();
-
-    assert!(error.report().message.contains("doesn't match"));
-}
-
-fn waiting(public_key: PasskeyPublicKey) -> Passkey {
-    Passkey {
-        credential_id: serde_json::from_value(json!("AQID")).unwrap(),
-        public_key,
-        account: PasskeyAccount::parse("ada@example.com").unwrap(),
-        relying_party: RelyingParty::of(&"https://ployz.cloud".parse().unwrap()).unwrap(),
-    }
 }
 
 #[tokio::test]
@@ -1022,8 +974,6 @@ async fn raced(
                 RpcRequestBody::Inspect(_) => {
                     let listed_machine = machine('1', "fixture");
                     RpcResponse::from(ployz_core::MachineDetails {
-                        activation: None,
-                        sealing_recipient: None,
                         id: id('1'),
                         public_key: listed_machine.public_key,
                         machine: Some(listed_machine),

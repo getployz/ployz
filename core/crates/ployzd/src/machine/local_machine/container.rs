@@ -456,7 +456,7 @@ impl LocalMachine {
         if let Err(refused) = guard.drained().await? {
             return Ok(Err(refused));
         }
-        let turn = self.exclusive_turn().await?;
+        let turn = self.exclusive_turn().await;
         let held = match guard.check().await? {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
@@ -535,21 +535,16 @@ impl LocalMachine {
     /// writer and stops no holder after the raise, since the raiser may have kept that
     /// holder or started it.
     ///
-    /// `record` gets the holders Docker runs, and returns before any of them stops, so a
-    /// cut under a Volume approval names exactly the Containers it stops.
-    ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
-    pub(crate) async fn cut_volume_copy<R, Z, Fut>(
+    pub(crate) async fn cut_volume_copy<Z, Fut>(
         &self,
         name: DockerVolumeName,
         r#gen: VolumeGen,
         drain: Drain,
-        record: R,
         zfs: Z,
     ) -> Result<Result<(), CutRefusal>, Error>
     where
-        R: FnOnce(&[ContainerId]) -> Result<(), Error> + Send + 'static,
         Z: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), Error>> + Send + 'static,
     {
@@ -557,20 +552,6 @@ impl LocalMachine {
             let containers = local.docker()?;
             let stop = StopOptions::default();
             let holders = containers.volumes().volume_holder_ids(&name).await?;
-            let machine_id = local.record().id();
-            let mut running = Vec::new();
-            for holder in &holders {
-                match containers
-                    .observation()
-                    .inspect_managed(holder, &machine_id)
-                    .await
-                {
-                    Ok(observed) if is_running(&observed.runtime) => running.push(*holder),
-                    Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            record(&running)?;
             for holder in holders {
                 if let Err(floor) = containers
                     .lifecycle()
@@ -592,7 +573,7 @@ impl LocalMachine {
                     return Ok(Err(CutRefusal::Busy));
                 }
             }
-            let _turn = local.exclusive_turn().await?;
+            let _turn = local.exclusive_turn().await;
             if local.volume_holder_running(&name).await? {
                 return Ok(Err(CutRefusal::Busy));
             }
@@ -603,6 +584,56 @@ impl LocalMachine {
             zfs().await.map(Ok)
         })
         .await
+    }
+
+    /// Whether this Machine sends a Volume to the mesh address `peer`: only to the
+    /// management address of a Machine this one accepts.
+    ///
+    /// # Errors
+    /// Returns a store error when the Machines cannot be read.
+    pub(crate) async fn sends_volume(
+        &self,
+        peer: std::net::IpAddr,
+    ) -> Result<crate::volume_send::Sends, Error> {
+        use crate::volume_send::Sends;
+        let std::net::IpAddr::V6(address) = peer.to_canonical() else {
+            return Ok(Sends::Refused);
+        };
+        let machines = self.replicated()?.machines().await?;
+        Ok(machines
+            .observations
+            .into_iter()
+            .find(|machine| machine.management_address().0 == address)
+            .map_or(Sends::Refused, |machine| Sends::Member(machine.id)))
+    }
+
+    /// Refuse a pull whose source is not the management address of a Machine this one
+    /// accepts, so a Mirror holds only data another Machine of this Cluster sent.
+    ///
+    /// # Errors
+    /// Returns [`Error::DeployRefused`] for any other address, and a store error when the
+    /// Machines cannot be read.
+    pub(crate) async fn admit_pull_source(
+        &self,
+        from: &ployz_core::ManagementAddress,
+    ) -> Result<(), Error> {
+        let machines = self.replicated()?.machines().await?;
+        if machines
+            .observations
+            .iter()
+            .any(|machine| machine.management_address() == *from)
+        {
+            return Ok(());
+        }
+        tracing::warn!(
+            "Volume pull refused: {} is no Machine of this Cluster",
+            from.0
+        );
+        Err(Error::DeployRefused(
+            ployz_core::authority::AuthorityRefusal::Mismatch {
+                field: "the source Server",
+            },
+        ))
     }
 
     /// Whether Docker runs any Container that mounts the Volume `name`. A holder gone
@@ -1305,7 +1336,7 @@ impl LocalMachine {
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
-                    let _turn = local.exclusive_turn().await?;
+                    let _turn = local.exclusive_turn().await;
                     let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(

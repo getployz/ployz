@@ -416,7 +416,6 @@ mod tests {
                 omissions: vec![machine_id('b'), machine_id('c')],
             },
             sealing: None,
-            recipient: None,
         };
         let gaps = gaps(&observed);
         assert_eq!(

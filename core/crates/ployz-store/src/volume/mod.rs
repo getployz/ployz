@@ -742,7 +742,6 @@ mod tests {
             .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
-                    teardown: None,
                     id: DeploymentId::parse(uuid(5)).unwrap(),
                     environment: EnvironmentRef::default(),
                     services: Vec::new(),

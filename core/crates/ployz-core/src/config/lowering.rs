@@ -180,10 +180,6 @@ pub struct LowerDeploymentVolume {
     /// A Deploy applied it, so its data is on some Server. Written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deployed: bool,
-    /// The ID its Docker Volume is named for, when not its own: an Own Copy in a
-    /// preview's derived Namespace takes its parent's, so every preview names it alike.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub named_for: Option<String>,
 }
 
 /// One Config the Namespace holds, its references resolved.
@@ -234,13 +230,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     let volume_sources: BTreeMap<_, _> = input
         .volumes
         .iter()
-        .map(|v| {
-            let named = v.named_for.as_deref().unwrap_or(&v.volume_resource_id);
-            (
-                v.volume_resource_id.as_str(),
-                (v.storage, v.deployed, named),
-            )
-        })
+        .map(|v| (v.volume_resource_id.as_str(), (v.storage, v.deployed)))
         .collect();
     let config_sources: BTreeMap<_, _> = input
         .configs
@@ -306,7 +296,7 @@ struct Sources<'a> {
     namespace: &'a Namespace,
     sealed_for: Option<&'a SealedFor>,
     /// Storage, whether a Deploy applied it, and the ID its Docker Volume is named for.
-    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool, &'a str)>,
+    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool)>,
     configs: &'a BTreeMap<&'a str, &'a LowerDeploymentConfig>,
     region: Option<&'a Region>,
 }
@@ -584,12 +574,12 @@ fn lower_volumes(
         deployed: BTreeSet::new(),
     };
     for mount in configured_mounts {
-        let Some((storage, deployed, named)) =
-            sources.volumes.get(mount.volume_resource_id.as_str())
+        let Some((storage, deployed)) = sources.volumes.get(mount.volume_resource_id.as_str())
         else {
             continue;
         };
-        let name = crate::DockerVolumeName::for_resource(named).map_err(lowering_error)?;
+        let name = crate::DockerVolumeName::for_resource(&mount.volume_resource_id)
+            .map_err(lowering_error)?;
         let reference: crate::ServiceVolumeReference = name
             .as_str()
             .to_owned()

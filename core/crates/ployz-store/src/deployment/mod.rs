@@ -646,22 +646,8 @@ pub struct Claimed {
     /// The automatic deploy rule a push's Deployment runs under, which the runner hands
     /// each Server with each Service's image token; none for any other Deployment.
     pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
-    /// The preview rule a preview Deployment runs under, which the runner
-    /// hands each Server like `rule`; none for any other Deployment.
-    pub preview: Option<ployz_core::authority::Signed<ployz_core::authority::PreviewRule>>,
-    /// The review a person signed for a reviewed preview's commit, which the runner hands
-    /// each Server beside `preview`; none for a trusted push's preview.
-    pub review: Option<ployz_core::authority::Review>,
-    /// The image token each Service's GitHub build under `rule` or `preview` reported,
-    /// or a redeploy copied with its source's image.
+    /// The image token each Service's GitHub build under `rule` reported.
     pub image_tokens: BTreeMap<ServiceName, crate::ImageToken>,
-    /// A person's approval of each Service's commit, which the runner hands each Server
-    /// with its image token in place of the branch head.
-    pub approvals:
-        BTreeMap<ServiceName, ployz_core::authority::Signed<ployz_core::authority::CommitApproval>>,
-    /// The teardown the runner hands each Server for what this Deployment takes off it:
-    /// the one a person signed, or for a preview's removal the rule that made it.
-    pub teardown: Option<ployz_core::authority::TeardownApproval>,
 }
 
 /// One node a Deployment targets, as frozen at admission. A row stores a Service the
@@ -1714,37 +1700,6 @@ pub(crate) fn cluster_domain(
     .transpose()
 }
 
-/// Fix `namespace`, a preview's derived one, as Environment `id`'s. Refused when another
-/// Environment holds it: a preview of that branch is open already.
-pub(crate) fn reserve_namespace(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    id: &EnvironmentId,
-    namespace: &Namespace,
-) -> Result<(), RpcError> {
-    let taken = tx.query(
-        "SELECT environment_id FROM config_namespace \
-         WHERE organization_id = ?1 AND namespace = ?2",
-        &[who.organization.as_str().into(), namespace.as_str().into()],
-    )?;
-    if !taken.is_empty() {
-        return Err(error::conflict(
-            "A preview of this branch is open already",
-            json!({ "namespace": namespace }),
-        ));
-    }
-    tx.execute(
-        "INSERT INTO config_namespace (organization_id, namespace, environment_id) \
-         VALUES (?1, ?2, ?3)",
-        &[
-            who.organization.as_str().into(),
-            namespace.as_str().into(),
-            id.as_str().into(),
-        ],
-    )?;
-    Ok(())
-}
-
 /// The Namespace `environment` deploys into: fixed at its first admission, so renames
 /// never move it. `{project}-{environment}` unless another Environment of the
 /// Organization holds that, then suffixed with this Environment's ID. `reserve`
@@ -1783,11 +1738,7 @@ pub(crate) fn namespace(
                 &[who.organization.as_str().into(), namespace.as_str().into()],
             )?
             .is_empty();
-        // A preview's Namespace is only ever one its rule derives.
-        if namespace.is_reserved()
-            || ployz_core::authority::preview::is_preview_namespace(&namespace)
-            || taken
-        {
+        if namespace.is_reserved() || taken {
             continue;
         }
         if reserve {

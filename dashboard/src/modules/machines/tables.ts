@@ -1,4 +1,4 @@
-import type { DrainReport, EnrollmentAssignment, MachineName, QualifiedService, TeardownApproval } from "@ployz/sdk";
+import type { DrainReport, EnrollmentAssignment, MachineName, QualifiedService } from "@ployz/sdk";
 import { createdAt, type EncryptedSecretValue, type MachineId, sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { user } from "#/modules/identity/tables";
@@ -14,7 +14,6 @@ import {
 import { DRAIN_END_CODES, DRAIN_STATES, type DrainEndCode, type DrainState } from "#/modules/machines/server-drain";
 import { WEB_TRAFFIC_STATES, WEB_TRAFFIC_WANTS, type WebTrafficState, type WebTrafficWant } from "#/modules/machines/server-web-traffic";
 
-import type { RecipientRotation } from "#/modules/machines/sealing-key";
 import { organization } from "#/modules/organization/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -46,8 +45,8 @@ export const machineRemoveAttempt = pgTable(
     confirmDataLoss: jsonb("confirm_data_loss")
       .notNull()
       .$type<DataLossIdentity[]>(),
-    /** The person's teardown of the Server's departure; a Server that enforces Device approval leaves or forgets only under it. */
-    teardown: jsonb("teardown").$type<TeardownApproval | null>(),
+    /** Unused: the signed teardown a departure once carried. */
+    teardown: jsonb("teardown"),
     state: text("state")
       .default("pending")
       .notNull()
@@ -311,8 +310,8 @@ export const namespaceCleanup = pgTable(
     approvalId: uuid("approval_id"),
     /** The Volumes the caller confirmed losing. */
     confirmDataLoss: jsonb("confirm_data_loss").notNull().$type<DataLossIdentity[]>(),
-    /** The person's teardown of the Namespace, which every Server is handed; a Server that enforces Device approval needs it. */
-    teardown: jsonb("teardown").$type<TeardownApproval | null>(),
+    /** Unused: the signed teardown a clean once carried. */
+    teardown: jsonb("teardown"),
     state: text("state").default("pending").notNull().$type<CleanupState>(),
     inngestRunId: text("inngest_run_id"),
     /** The Docker Volume names removed; only `finished` has them. */
@@ -555,11 +554,10 @@ export const organizationSealingKey = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     publicKey: text("public_key").notNull(),
     recoveryBlob: text("recovery_blob"),
-    /** The recipient key a Cluster's activation added, wrapped under its own recovery code. */
+    /** Unused: the backup of a second key, from before Clusters kept one Sealing Key. */
     recipientPublicKey: text("recipient_public_key"),
     recipientBlob: text("recipient_blob"),
-    /** The signed rotation that named the recipient key, which a recovering Server verifies. */
-    recipientRotation: jsonb("recipient_rotation").$type<RecipientRotation>(),
+    recipientRotation: jsonb("recipient_rotation"),
     createdAt,
     updatedAt,
   },

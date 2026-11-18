@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, ServerRef, ServiceVerb, Signed } from "@ployz/sdk";
+import type { EnvironmentRef, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import type { AgentCaller } from "#/modules/agent/agent-runner.server";
 import { askerCaller } from "#/modules/approvals/apply.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protectorOnly } from "#/modules/config-store/protected.server";
-import { environmentProtected, environmentServices, findService } from "#/modules/config-store/store-lookup.server";
+import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Actor, callerEnvironments } from "#/modules/identity/actor";
 import { bodyDigest } from "#/modules/operations/keyed.server";
@@ -16,16 +16,12 @@ import { actService, unheld } from "#/modules/operations/operations.server";
 import { beyondEnvironments, requireAccessById } from "#/modules/organization/access.server";
 import {
   PROPOSAL_STEP_LIMIT,
-  type ProposalApprovals,
   type ProposalHalt,
   type ProposalStep,
-  ranOutReason,
   type StepProgress,
-  strandedByProposal,
 } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
-import { APPROVAL_RAN_OUT, olderStepSays, type ServiceActLeg, type ServiceActState, strandedByStop } from "#/modules/service-act/service-act";
-import { actTarget, strandingStop } from "#/modules/service-act/service-act.server";
+import type { ServiceActLeg, ServiceActState } from "#/modules/service-act/service-act";
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound } from "#/server/public-error";
@@ -190,15 +186,11 @@ const stepStates = (row: ProposalRow, acts: readonly StepAct[]) => {
     const run = runs.get(index);
     const halt = row.halt?.index === index ? row.halt : null;
     const state: StepProgress = run !== undefined ? run.state : halt !== null ? "failed" : halted || row.status !== "approved" ? "not_run" : "waiting";
-    const reason = run === undefined ? halt?.reason ?? null : runReason(row.steps, index, run);
+    const reason = run === undefined ? halt?.reason ?? null : run.reason;
     if (state === "failed" || state === "unknown") halted = true;
     return { index: index + 1, verb: step.verb, service: step.service, state, reason };
   });
 };
-
-/** A run's reason as the card shows it: one a leg refused for the window names what the person has to start now. */
-const runReason = (steps: ProposalRow["steps"], index: number, run: StepAct) =>
-  run.legs.some((leg) => leg.reason === APPROVAL_RAN_OUT) ? ranOutReason(steps, index, run.legs) : run.reason;
 
 /** Each step's newest run: a step admitted twice, which its request key stops, would still read as its last run. */
 const latestRuns = (acts: readonly StepAct[]) =>
@@ -233,53 +225,6 @@ export const getProposal = Effect.fn("Proposals.get")(function* (organizationId:
   return proposalView(row, yield* actsOf(row));
 });
 
-/**
- * What the approver's browser signs for each step: the Service as the Servers know it and its Containers, with the
- * Servers and which of them run the Environment. Null when Cloud can't read the Servers.
- */
-export const proposalTarget = Effect.fn("Proposals.target")(function* (organizationId: string, row: ProposalRow) {
-  // Every name comes from the Store as it stands, never from the row, so the browser can check the row against it.
-  const known = yield* environmentServices(organizationId, row.environmentId);
-  if (known === null) return null;
-  const steps = [];
-  let servers = null;
-  for (const step of row.steps) {
-    const runtime = known.services[step.service] ?? null;
-    const target = runtime === null ? null : yield* actTarget(organizationId, { namespace: known.namespace, runtime });
-    if (runtime !== null && target === null) return null;
-    servers = target ?? servers;
-    const copies = (target?.copies ?? []).filter((copy) => step.only === null || copy.machineId === step.only.machine);
-    steps.push({ verb: step.verb, service: step.service, runtime, copies });
-  }
-  if (servers === null) return null;
-  return {
-    environmentId: row.environmentId,
-    project: known.project,
-    environmentName: known.environment,
-    namespace: known.namespace,
-    steps,
-    machines: servers.machines,
-  };
-});
-
-export const readProposalTarget = Effect.fn("Proposals.readTarget")(function* (organizationId: string, id: string) {
-  const row = yield* readRow(organizationId, id);
-  return row === undefined ? null : yield* proposalTarget(organizationId, row);
-});
-
-/** Why a step couldn't go to the Servers as the proposal stands, or null when every step could. Refuses rather than guess when Cloud can't read them. */
-const stranding = Effect.fn("Proposals.stranding")(function* (row: ProposalRow) {
-  const target = yield* proposalTarget(row.organizationId, row);
-  if (target === null) return "Cloud couldn't check the servers. Try again.";
-  for (const step of target.steps) {
-    const older = strandedByProposal(step.copies, target.machines);
-    if (older !== null) return olderStepSays(older, step.verb);
-    const stranded = step.verb === "stop" ? strandedByStop(step.copies, target.machines) : null;
-    if (stranded !== null) return olderStepSays(stranded, "stop");
-  }
-  return null;
-});
-
 const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index: number, reason: string) {
   const { drizzle } = yield* Database;
   yield* drizzle.update(operationProposals).set({ halt: { index, reason }, updatedAt: new Date() }).where(eq(operationProposals.id, row.id));
@@ -289,19 +234,13 @@ const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index:
 /** The request key that admits step `index` once: a second run of the same step replays the first. */
 const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row.id}-${index}`;
 
-const BundleWindow = Schema.fromJsonString(Schema.Struct({ expires_at: Schema.Number }));
-
 /** Why step `index` can't go to the Servers now, checked before anything is sent; null when it can. */
-const stepRefusal = Effect.fn("Proposals.stepRefusal")(function* (row: ProposalRow, index: number, step: ProposalStep) {
-  const window = Schema.decodeUnknownOption(BundleWindow)(row.bundle?.body);
-  if (Option.isNone(window)) return "The approval can't be read.";
-  if (Date.now() > window.value.expires_at) return ranOutReason(row.steps, index, []);
+const stepRefusal = Effect.fn("Proposals.stepRefusal")(function* (row: ProposalRow, step: ProposalStep) {
   const beyond = beyondEnvironments(row.callerEnvironments ?? undefined, { environment: row.environment });
   if (beyond !== null) return beyond;
   const found = yield* findService(row.organizationId, row.environmentId, step.service);
   if (found === null) return "The service is gone.";
-  if (found.namespace !== step.namespace || found.runtime !== step.runtime) return `${step.service} changed since it was approved.`;
-  return step.verb === "stop" ? yield* strandingStop(row.organizationId, found, true) : null;
+  return found.namespace !== step.namespace || found.runtime !== step.runtime ? `${step.service} changed since it was approved.` : null;
 });
 
 type StepStart = { readonly started: true } | { readonly later: true } | { readonly halt: ProposalHalt };
@@ -309,7 +248,7 @@ const started: StepStart = { started: true };
 const later: StepStart = { later: true };
 
 /**
- * Start step `index` as the asker, with the envelopes the approver's browser made for it. Started once it is admitted,
+ * Start step `index` as the asker. Started once it is admitted,
  * which a rerun replays; halted, recorded on the proposal, when it can't go, which stops the steps after it; later
  * when something failed on Cloud's side, so the sweep tries again rather than give the plan up.
  */
@@ -320,7 +259,7 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
   if (asker === null) return { halt: yield* halted(row, index, "Whoever asked is no longer in the Organization.") } satisfies StepStart;
   const halt = (reason: string) => Effect.map(halted(row, index, reason), (halt): StepStart => ({ halt }));
   return yield* Effect.gen(function* () {
-    const refusal = yield* stepRefusal(row, index, step);
+    const refusal = yield* stepRefusal(row, step);
     if (refusal !== null) return yield* halt(refusal);
     const access = yield* requireAccessById({ userId: asker }, row.organizationId, OPERATIONS[`service.${step.verb}`].requires);
     const found = yield* findService(row.organizationId, row.environmentId, step.service);
@@ -328,7 +267,7 @@ const runStep = Effect.fn("Proposals.runStep")(function* (row: ProposalRow, inde
     const body = { environmentId: row.environmentId, service: step.service, only: step.only };
     const admission = yield* actService(
       askerCaller(access, row.credentialId),
-      { ...body, ...found, verb: step.verb, digest: bodyDigest(`service_${step.verb}`, body), approvals: row.approvals?.[index] ?? {}, proposal: { id: row.id, step: index } },
+      { ...body, ...found, verb: step.verb, digest: bodyDigest(`service_${step.verb}`, body), proposal: { id: row.id, step: index } },
       { key: stepKey(row, index), approvalId: null },
     );
     return admission.ok ? started : yield* halt(admission.refusal.message);
@@ -363,7 +302,7 @@ export const advanceProposal = Effect.fn("Proposals.advance")(function* (request
   if (row !== undefined) yield* continueProposal(row);
 });
 
-/** How long after its approval a plan can still have a step to start: the bundle's 15 minutes, with room. */
+/** How long after its approval a plan can still have a step to start. */
 const SWEEP_WINDOW_MS = 60 * 60_000;
 
 /**
@@ -378,7 +317,7 @@ export const sweepProposals = Effect.fn("Proposals.sweep")(function* (now: Date)
   return rows.map((row) => row.id);
 });
 
-export type ProposalDecision = { readonly approve: { readonly approvals: ProposalApprovals; readonly bundle: Signed } } | { readonly reject: { readonly reason?: string } };
+export type ProposalDecision = { readonly approve: Record<string, never> } | { readonly reject: { readonly reason?: string } };
 
 type Decided = { readonly ok: true; readonly proposal: ProposalView } | { readonly ok: false; readonly message: string };
 
@@ -386,7 +325,7 @@ const settled = (row: ProposalRow): Decided =>
   ({ ok: false, message: row.status === "draft" ? "The agent hasn't presented this proposal yet." : `This proposal was already decided elsewhere (${row.status}).` });
 
 /**
- * Approve every step with the envelopes the approver's browser made, which starts the first, or deny with a reason.
+ * Approve every step, which starts the first, or deny with a reason.
  * Only the decision that approved it starts anything, so approving twice never runs a step twice. When the first step
  * doesn't start, the proposal goes back to waiting and the decider hears why.
  */
@@ -402,17 +341,13 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
       .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
     return denied === undefined ? settled((yield* readRow(decider.organization.id, id)) ?? row) : { ok: true, proposal: proposalView(denied) } satisfies Decided;
   }
-  const { approvals, bundle } = decision.approve;
-  if (row.steps.some((_, index) => approvals[String(index)] === undefined)) return { ok: false, message: "The approval doesn't cover every step. Nothing was approved." } satisfies Decided;
-  const stranded = yield* stranding(row);
-  if (stranded !== null) return { ok: false, message: stranded } satisfies Decided;
-  const [approved] = yield* drizzle.update(operationProposals).set({ status: "approved", bundle, approvals, ...decided })
+  const [approved] = yield* drizzle.update(operationProposals).set({ status: "approved", ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   if (approved === undefined) return settled((yield* readRow(decider.organization.id, id)) ?? row);
   const start = yield* runStep(approved, 0);
   if (!("halt" in start)) return { ok: true, proposal: proposalView(approved, yield* actsOf(approved)) } satisfies Decided;
   yield* drizzle.update(operationProposals)
-    .set({ status: "presented", bundle: null, approvals: null, halt: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date() })
+    .set({ status: "presented", halt: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date() })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
   return { ok: false, message: `It didn't run: ${start.halt.reason} It's still waiting for approval.` } satisfies Decided;
 });

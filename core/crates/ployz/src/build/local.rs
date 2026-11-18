@@ -215,7 +215,6 @@ mod tests {
         container.environment.insert(
             "RAILPACK_BUILD_CMD".into(),
             ployz_core::EnvValue::Sealed(ployz_core::SealedValue {
-                environment: None,
                 sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
                 scope: ployz_core::SealedScope::Shared,
                 key: "RAILPACK_BUILD_CMD".into(),
@@ -255,7 +254,6 @@ mod tests {
             container.environment.insert(
                 name.into(),
                 ployz_core::EnvValue::Sealed(ployz_core::SealedValue {
-                    environment: None,
                     sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
                     scope: ployz_core::SealedScope::Shared,
                     key: name.into(),

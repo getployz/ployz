@@ -230,7 +230,6 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
         repository_id,
         number,
         head: head.clone(),
-        reviews: Vec::new(),
     })?;
     let approved = find(&store.read(&query)?)
         .into_iter()

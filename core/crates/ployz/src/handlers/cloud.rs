@@ -1416,8 +1416,6 @@ mod tests {
         let mut fallback = crate::global_fixtures::machine('b', "web-4");
         fallback.runtime.daemon_version = "fixture".into();
         let details = MachineDetails {
-            activation: None,
-            sealing_recipient: None,
             id: fallback.id,
             phase: LocalMachinePhase::Participating,
             public_key: fallback.public_key,
@@ -1493,8 +1491,6 @@ mod tests {
         // machine-b, while the enrollment reached machine-a.
         let daemon = |path: &std::path::Path, machine: Machine| {
             let details = MachineDetails {
-                activation: None,
-                sealing_recipient: None,
                 id: machine.id,
                 phase: LocalMachinePhase::Participating,
                 public_key: machine.public_key,
@@ -1613,8 +1609,6 @@ mod tests {
         machine.accepts_ingress = true;
         machine.runtime.daemon_version = "fixture".into();
         let details = MachineDetails {
-            activation: None,
-            sealing_recipient: None,
             id: machine.id,
             phase: LocalMachinePhase::Participating,
             public_key: machine.public_key,
@@ -1743,7 +1737,6 @@ mod tests {
                             target_versions: Default::default(),
                             sealing_key: None,
                             devices: Vec::new(),
-                            recipient: None,
                         },
                     },
                     &policy,
@@ -1793,8 +1786,6 @@ mod tests {
             let mut machine = crate::global_fixtures::machine('a', "web-3");
             machine.accepts_ingress = false;
             let details = MachineDetails {
-                activation: None,
-                sealing_recipient: None,
                 id: machine.id,
                 phase: LocalMachinePhase::Uninitialized,
                 public_key: machine.public_key,
@@ -1907,7 +1898,6 @@ mod tests {
                                 target_versions: Default::default(),
                                 sealing_key: None,
                                 devices: Vec::new(),
-                                recipient: None,
                             },
                         },
                         &policy,
@@ -1950,8 +1940,6 @@ mod tests {
         };
         let registered = crate::global_fixtures::machine('a', "web-3");
         let details = |phase| MachineDetails {
-            activation: None,
-            sealing_recipient: None,
             id: listed.id,
             phase,
             public_key: listed.public_key,
@@ -2028,8 +2016,6 @@ mod tests {
         ] {
             let assigned = crate::global_fixtures::machine('a', "my-server");
             let details = MachineDetails {
-                activation: None,
-                sealing_recipient: None,
                 id: assigned.id,
                 phase: LocalMachinePhase::Participating,
                 machine: Some(assigned.clone()),
@@ -2066,7 +2052,6 @@ mod tests {
                     target_versions: Default::default(),
                     devices: Vec::new(),
                     sealing_key: Some(ployz_core::SealedSealingKey::from_bytes(vec![7; 80])),
-                    recipient: None,
                 },
             };
             let identity = test_identity(&join.registration.assigned_machine);
@@ -2123,8 +2108,6 @@ mod tests {
         assigned.runtime.daemon_version = "0.3.0".into();
         let other = crate::global_fixtures::machine('b', "web-4");
         let details = |phase, machine: Option<&Machine>| MachineDetails {
-            activation: None,
-            sealing_recipient: None,
             id: assigned.id,
             phase,
             public_key: assigned.public_key,

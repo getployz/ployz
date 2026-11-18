@@ -78,7 +78,7 @@ pub struct PrivateAccessApproval {
     pub auth_key: AuthKeyDigest,
     pub issued_at: Timestamp,
     pub expires_at: Timestamp,
-    /// A Device, or `"passkey"` for a passkey's own prompt. A browser key is refused.
+    /// A Device, or `"passkey"` for a passkey's own prompt.
     pub signer: SignerKey,
 }
 
@@ -87,7 +87,7 @@ impl Statement for PrivateAccessApproval {
 }
 
 /// An approval as it travels: signed by a Device, or answered by a passkey's own prompt
-/// over its challenge, as a preview's [`super::Review`] is.
+/// over its challenge.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum KeyApproval {
@@ -150,10 +150,8 @@ pub struct PrivateAccessFacts<'a> {
 }
 
 /// Check `approval` lets this Machine join the tailnet of `facts.sealed` now: signed by a
-/// Device this Machine trusts, or answered by a trusted passkey's own prompt. A browser
-/// key is refused even under a valid session grant, since a grant lent for deploys says
-/// nothing about which tailnet reaches the Cluster. So is an envelope that rides a
-/// proposal.
+/// Device this Machine trusts, or answered by a trusted passkey's own prompt. An envelope
+/// that rides a proposal is refused.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature problem, a malformed body, a
@@ -183,15 +181,13 @@ pub fn verify(
             Approver::Passkey(passkey.passkey.code())
         }
         KeyApproval::Signed(signed) => {
-            let approvers = signed.approvers(facts.trusted, facts.now)?;
+            let approvers = signed.approvers(facts.trusted)?;
             if signed.proposal.is_some() {
                 return Err(AuthorityRefusal::Mismatch {
                     field: "a proposal",
                 });
             }
-            the_signer(approvers, body.signer, |approver| {
-                matches!(approver, Approver::Device(_))
-            })?
+            the_signer(approvers, body.signer)?
         }
     };
     if !by.signs_as(body.signer) {

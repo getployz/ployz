@@ -5,9 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, RegistryAuth, RunTarget, ServiceName,
-    authority::{
-        DeployApproval, PreviewProof, RestartApproval, RuleProof, Signed, TeardownApproval,
-    },
+    authority::{DeployApproval, RuleProof, Signed},
 };
 
 /// The Deploy this client executes, shared by its clones as their Deploy's own.
@@ -24,52 +22,36 @@ pub(crate) struct DeployContext {
 /// The approvals a client hands each Server with a Container change.
 #[derive(Clone, Debug, Default)]
 struct Approvals {
-    /// The Device-signed approval of a restart step.
-    restart: Option<Signed<RestartApproval>>,
     /// The approval of the Deploy every Container this client creates or steps belongs to.
     deploy: Option<Signed<DeployApproval>>,
     /// A rule's proof for each Service it built, when a rule deploys in place of a
     /// person's approval.
     proofs: RuleProofs,
-    /// The teardown that takes what the Deploy removes off each Server: its Containers,
-    /// when nothing else approves the step, and the Volumes it deletes.
-    teardown: Option<TeardownApproval>,
 }
 
-/// The proof each Service a rule built carries to every Server, in place of a person's
-/// deploy approval: an automatic deploy rule's, or a preview rule's.
+/// The proof each Service an automatic deploy rule built carries to every Server, in
+/// place of a person's deploy approval.
 #[derive(Clone, Debug, Default)]
 pub struct RuleProofs {
     pub rules: BTreeMap<ServiceName, RuleProof>,
-    pub previews: BTreeMap<ServiceName, PreviewProof>,
 }
 
 /// What a Container change carries to the Server: the approvals and the proofs for `want`.
 pub(super) struct Carried {
     pub(super) rule: Option<Box<RuleProof>>,
-    pub(super) preview: Option<Box<PreviewProof>>,
-    pub(super) restart: Option<Signed<RestartApproval>>,
     pub(super) deploy: Option<Signed<DeployApproval>>,
-    pub(super) teardown: Option<Box<TeardownApproval>>,
 }
 
 impl Carried {
     pub(super) fn none() -> Self {
         Self {
             rule: None,
-            preview: None,
-            restart: None,
             deploy: None,
-            teardown: None,
         }
     }
 }
 
 impl DeployContext {
-    pub(super) fn set_restart(&mut self, approval: Option<Signed<RestartApproval>>) {
-        Arc::make_mut(&mut self.approvals).restart = approval;
-    }
-
     pub(super) fn set_deploy(&mut self, approval: Option<Signed<DeployApproval>>) {
         Arc::make_mut(&mut self.approvals).deploy = approval;
     }
@@ -78,23 +60,11 @@ impl DeployContext {
         Arc::make_mut(&mut self.approvals).proofs = proofs;
     }
 
-    pub(super) fn set_teardown(&mut self, teardown: Option<TeardownApproval>) {
-        Arc::make_mut(&mut self.approvals).teardown = teardown;
-    }
-
-    /// The teardown a Volume this client deletes carries.
-    pub(crate) fn teardown(&self) -> Option<Box<TeardownApproval>> {
-        self.approvals.teardown.clone().map(Box::new)
-    }
-
     /// What a change of `want` carries.
     pub(super) fn carried(&self, want: &ContainerWant) -> Carried {
         Carried {
             rule: proof_for(&self.approvals.proofs.rules, want),
-            preview: proof_for(&self.approvals.proofs.previews, want),
-            restart: self.approvals.restart.clone(),
             deploy: self.approvals.deploy.clone(),
-            teardown: self.teardown(),
         }
     }
 }
@@ -102,7 +72,10 @@ impl DeployContext {
 /// The proof in `proofs` a change of `want` carries: its Service's, or for a step on a
 /// Container named only by ID, any of the Deploy's, since such a step needs only the
 /// rule's Environment.
-fn proof_for<P: Clone>(proofs: &BTreeMap<ServiceName, P>, want: &ContainerWant) -> Option<Box<P>> {
+fn proof_for(
+    proofs: &BTreeMap<ServiceName, RuleProof>,
+    want: &ContainerWant,
+) -> Option<Box<RuleProof>> {
     let service = match want {
         ContainerWant::Running {
             container: RunTarget::New(new),

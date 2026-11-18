@@ -1,7 +1,7 @@
 import type { MachineId } from "@ployz/sdk";
 import { Schema } from "effect";
 import { gigabytes } from "#/modules/config-store/store-volumes";
-import { MaximumBytes, VolumeApproval } from "#/modules/operations/cli-wire";
+import { MaximumBytes } from "#/modules/operations/cli-wire";
 import { listNames } from "#/lib/plural";
 import type { RuntimeMachineRecord, RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
 import { serverSupports } from "#/modules/runtime/daemon-compat";
@@ -22,8 +22,6 @@ export type Holder = {
   readonly capabilities: readonly string[] | null;
   readonly committableBytes: number | null;
   readonly boundBytes: number | null;
-  /** Whether the Server takes a passkey's answer to a resize; null when it didn't answer. */
-  readonly passkey: boolean | null;
 };
 
 /** A size typed for a deployed Volume. `holders` is null until the Servers have answered and their records are in. */
@@ -82,12 +80,9 @@ export function holdersOf(volumeId: string, members: readonly Member[] | undefin
   const holder = (server: { readonly id: MachineId; readonly name: string }, role: Holder["role"]): Holder => {
     const machine = machines.find((candidate) => candidate.id === server.id);
     const copy = copies.find((candidate) => candidate.machineId === server.id && parseDockerVolumeName(candidate.name)?.volumeId === volumeId);
-    const member = members.find((candidate) => candidate.machine.id === server.id);
-    const answered = member?.answered === true ? member : null;
     return {
       id: server.id, name: server.name, role, capabilities: machine?.capabilities ?? null, committableBytes: machine?.poolCommittableBytes ?? null,
       boundBytes: copy?.boundBytes ?? null,
-      passkey: answered === null ? null : answered.passkey === true,
     };
   };
   return [
@@ -96,13 +91,9 @@ export function holdersOf(volumeId: string, members: readonly Member[] | undefin
   ];
 }
 
-/**
- * The drawer's confirmed grow; `requestId` is fresh per confirm, so a retried request admits one run. `approval` is the
- * person's passkey answer.
- */
+/** The drawer's confirmed grow; `requestId` is fresh per confirm, so a retried request admits one run. */
 export const ResizeVolumeInput = Schema.Struct({
   ...VolumeInput.fields,
   maximumBytes: MaximumBytes,
   requestId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{8,64}$/)),
-  approval: Schema.optional(VolumeApproval),
 });
