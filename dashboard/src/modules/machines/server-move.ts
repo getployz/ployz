@@ -7,6 +7,8 @@ export type Placed = {
    * names. Empty where it runs in any region.
    */
   readonly regions: readonly string[];
+  /** `regions` are the ones it counts its replicas in, so a Server in one of them holds that region's replica. */
+  readonly perRegion: boolean;
   /** Its Environment's Working State couldn't be read, so where its Services run next is unknown, not any region. */
   readonly unread: boolean;
 };
@@ -41,6 +43,7 @@ export function placedServices(
       name,
       environment: owner === undefined ? namespace ?? "" : `${owner.project}/${owner.environment}`,
       regions: own ?? (owner?.region === undefined ? [] : [owner.region]),
+      perRegion: own !== undefined,
       unread: owner?.unread === true,
     };
   });
@@ -52,9 +55,11 @@ export function unreadEnvironments(placed: readonly Placed[]): string[] {
 }
 
 /**
- * What leaves the Server `serverId` once it is in region `to` (null: no region): the `placed` whose regions don't
- * include it. Region keys compare without case. `to` lists the other Servers in those regions that take Services and
- * are not offline, which a Deploy can move them to.
+ * What leaves the Server `serverId` once it is in region `to` (null: no region). A Service that runs in one region
+ * leaves when `to` isn't it. A Service that counts replicas by region leaves too when the Server holds the replica of
+ * the region it is in now, which it stops doing once `to` is another, though `to` is counted as well. Region keys
+ * compare without case. `to` on each lists the other Servers that take Services and are not offline, in the regions
+ * the Service must run in, where a Deploy can move it.
  */
 export function leavingServer(
   serverId: string,
@@ -69,11 +74,15 @@ export function leavingServer(
   }[],
 ): Leaving[] {
   const here = to?.toLowerCase();
+  const from = servers.find(({ id }) => id === serverId)?.region?.toLowerCase();
   return placed.flatMap((item) => {
     const regions = item.regions.map((region) => region.toLowerCase());
-    if (regions.length === 0 || (here !== undefined && regions.includes(here))) return [];
+    if (regions.length === 0) return [];
+    const heldRegion = item.perRegion && from !== undefined && regions.includes(from) && from !== here ? from : null;
+    if (heldRegion === null && here !== undefined && regions.includes(here)) return [];
+    const wanted = heldRegion === null ? regions : [heldRegion];
     const there = servers.filter((other) =>
-      other.id !== serverId && other.acceptsServices && !other.offline && regions.includes(other.region?.toLowerCase() ?? ""));
+      other.id !== serverId && other.acceptsServices && !other.offline && wanted.includes(other.region?.toLowerCase() ?? ""));
     return [{ ...item, to: there.map(({ name }) => name).sort() }];
   });
 }

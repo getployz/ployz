@@ -12,7 +12,7 @@ const servers = [
 ];
 
 const service = (name: string, ...regions: string[]) =>
-  ({ key: `shop-production/${name}`, name, environment: "shop/production", regions, unread: false });
+  ({ key: `shop-production/${name}`, name, environment: "shop/production", regions, perRegion: false, unread: false });
 
 const owned = [
   { namespace: "shop-production", project: "shop", environment: "production", region: "default" },
@@ -26,9 +26,9 @@ const running = (identity: string) => {
 
 it("names each Service's Environment and the region that Environment runs in", () => {
   expect(placedServices([running("shop-production/web"), running("blog-production/api"), running("lab-production/cron")], owned)).toEqual([
-    { key: "shop-production/web", name: "web", environment: "shop/production", regions: ["default"], unread: false },
-    { key: "blog-production/api", name: "api", environment: "blog/production", regions: ["fsn"], unread: false },
-    { key: "lab-production/cron", name: "cron", environment: "lab/production", regions: [], unread: false },
+    { key: "shop-production/web", name: "web", environment: "shop/production", regions: ["default"], perRegion: false, unread: false },
+    { key: "blog-production/api", name: "api", environment: "blog/production", regions: ["fsn"], perRegion: false, unread: false },
+    { key: "lab-production/cron", name: "cron", environment: "lab/production", regions: [], perRegion: false, unread: false },
   ]);
 });
 
@@ -76,6 +76,21 @@ it("takes a Service's own replica regions over its Environment's, which names no
   ]);
   // A Service in the region the Server joins stays, though its Environment names another.
   expect(leavingServer("2", "FSN", placed, servers).map(({ name }) => name)).toEqual(["db"]);
+});
+
+it("lists a Service that counts replicas in both the region a Server leaves and the one it joins", () => {
+  const counted = placedServices(
+    [running("shop-production/web")],
+    [{ namespace: "shop-production", project: "shop", environment: "production", replica_regions: { web: ["default", "syd"] } }],
+  );
+  expect(counted.map(({ regions, perRegion }) => [regions, perRegion])).toEqual([[["default", "syd"], true]]);
+  // Server 2 holds web's default replica; in syd it no longer does, though syd also has a count.
+  expect(leavingServer("2", "syd", counted, servers).map(({ name, to }) => [name, to])).toEqual([["web", ["np1-vm-1"]]]);
+  expect(leavingServer("2", "SYD", counted, servers).map(({ name }) => name)).toEqual(["web"]);
+  // Staying where it is changes nothing, and a Server in neither counted region holds none of its replicas.
+  expect(leavingServer("2", "default", counted, servers)).toEqual([]);
+  expect(leavingServer("3", "syd", counted, servers).map(({ name }) => name)).toEqual([]);
+  expect(leavingServer("3", "default", counted, servers)).toEqual([]);
 });
 
 it("leaves out an offline Server as a place a Service can go", () => {
