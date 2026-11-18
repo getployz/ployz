@@ -6,6 +6,7 @@ import type { MachineId } from "@ployz/sdk";
 import type { RoleGate } from "#/modules/organization/members.queries";
 import { copiesFromPlacement } from "#/modules/volume-copies/volume-copies.placement";
 import type { PlacementRow } from "#/modules/volume-placement/volume-placement";
+import { SEED_OFF } from "#/modules/volume-run/plan";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { type CopyServer, VolumeCopiesPanel } from "./StoreVolumeCopies";
@@ -164,10 +165,11 @@ describe("VolumeCopiesPanel", () => {
     expect(deleteCopy).toHaveBeenCalledWith("web-3");
   });
 
-  it("restores from an old copy's latest point, as from a mirror's", () => {
+  it("offers no restore from an old copy's latest point, and says restoring into a new volume is off", () => {
     const { restore } = panel([member("web-1", "writer"), oldAsOf("web-3", new Date(NOW.getTime() - 3_600_000))], row([]));
-    fireEvent.click(screen.getByRole("button", { name: "Restore from web-3" }));
-    expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-3" }));
+    expect(screen.queryByRole("button", { name: "Restore from web-3" })).toBeNull();
+    expect(screen.getByText(SEED_OFF)).toBeTruthy();
+    expect(restore).not.toHaveBeenCalled();
   });
 
   it("keeps an old copy's staged restore Staged while Restore isn't offered, and offers no new one", () => {
@@ -429,10 +431,11 @@ describe("mirror detail", () => {
     expect(stage).not.toHaveBeenCalled();
   });
 
-  it("restores from the mirror's latest point", () => {
+  it("offers no restore from the mirror's latest point, and says restoring into a new volume is off", () => {
     const { restore } = panel(fresh(), row(["web-2"]), { open: "web-2" });
-    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
-    expect(restore).toHaveBeenCalledWith(expect.objectContaining({ guid: "web-2" }));
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
+    expect(screen.getByText(SEED_OFF)).toBeTruthy();
+    expect(restore).not.toHaveBeenCalled();
   });
 
   it("offers no Restore while a Server is silent or its report hasn't arrived", () => {
