@@ -117,11 +117,12 @@ yourself, stage the move with **Make primary** before you deploy. See
 [Move a volume](move-a-volume.md) for what a move does to the service while it runs.
 
 If the move fails, the deploy doesn't start that service and the rest of the deploy goes ahead.
-The deploy says why the volume didn't move:
+The deployment reads **Deployed, 1 waiting**, and `ployz deploy` exits 3. The deploy says why the
+volume didn't move:
 
 ```
 ! pg-data didn't move to web-1: web-1 stopped answering
-postgres: not started (pg-data is on db-1)
+! postgres is waiting: pg-data is on db-1
 
 next: ployz deploy --project shop --env production
 ```
@@ -147,13 +148,15 @@ stops anything. The deploy moves the volume and starts the service with its new 
 If you change the region again while a deploy is still moving the volume, the deploy you start
 then doesn't move it a second time. Deploy again once the earlier deploy ends.
 
-The deploy also leaves the volume where it is when:
+The deploy also leaves the volume where it is in the cases below. Where deploying again can
+move the volume, the service waits as above. Where it can't, the deployment reads **Failed** and
+`ployz deploy` exits 1.
 
-- **You have no Ployz Cloud.** Moving a volume needs it, so the deploy prints no command. Give the
-  volume's server the region, or change the environment's region.
+- **You have no Ployz Cloud.** Moving a volume needs it, so the deploy fails and prints no
+  command. Give the volume's server the region, or change the environment's region.
 - **A mirror of the volume is on a server outside the region and none is inside it.** A volume
-  moves only onto a server that holds its mirror while it has one. The plan lists no move, and
-  the deploy prints the command that removes the mirror:
+  moves only onto a server that holds its mirror while it has one. The plan lists no move. The
+  deploy fails and prints the command that removes the mirror:
 
   ```
   postgres: not started (pg-data is on db-1)
@@ -164,7 +167,7 @@ The deploy also leaves the volume where it is when:
   Run it, then deploy again.
 - **Your servers enforce device approval and no approved device or passkey approved the move.**
   That is a deploy from a push, the agent, or `ployz` on a computer without an approved device
-  key. `ployz deploy --plan` there says so:
+  key. The service waits. `ployz deploy --plan` there says so:
 
   ```
   pg-data stays on db-1: your Servers move it only for a deploy an approved device signed
@@ -217,8 +220,9 @@ to `lhr`. The deploy moves the volume only when you accept that delete:
 - **From the dashboard**, Details lists the delete and the deploy asks you to confirm it. On
   servers that enforce device approval, it asks for your passkey for both.
 - **From `ployz deploy`, a push or the agent**, the deploy leaves the volume where it is and
-  doesn't start that service. The rest of the deploy goes ahead. `ployz deploy --plan` prints the
-  command that deletes the copy, and the deploy ends with it as its `next:` line:
+  doesn't start that service. The rest of the deploy goes ahead, and the deployment reads
+  **Failed**. `ployz deploy --plan` prints the command that deletes the copy, and the deploy ends
+  with it as its `next:` line:
 
   ```
   pg-data stays on db-1. Delete its old copy on web-2 first: ployz volume mirror rm pg-data-web-2 --if-old-copy
@@ -235,7 +239,8 @@ to `lhr`. The deploy moves the volume only when you accept that delete:
   volume.
 
 A Docker volume can't move. Give its server the region, or change the environment's region.
-`ployz deploy --plan` says the service won't start, and the deploy doesn't start it:
+`ployz deploy --plan` says the service won't start. The deploy doesn't start it, and the
+deployment reads **Failed**:
 
 ```
 postgres → fsn: won't start (pg-data is a Docker volume and can't move)
@@ -260,8 +265,9 @@ If the region has servers but none can run services, the line names them:
 web: not started (fsn-1 is down, and no other Server in fsn is up)
 ```
 
-Replicas that already run keep running. Give a server the region, bring its server back, or change
-the environment's region, and deploy again.
+Replicas that already run keep running. With two services left waiting, the deployment reads
+**Nothing deployed, 2 waiting**, and `ployz deploy` exits 3. Give a server the region, bring its
+server back, or change the environment's region, and deploy again.
 
 A service with a count for each region isn't started when any of its regions has no server that
 can run it. The deploy names every such region, and the service's replicas in its other regions
