@@ -598,7 +598,6 @@ fn needs_approval_at_push_holds_nothing() {
                 repository_id: backend::repo_id(11),
                 number: backend::pr_number(5),
                 head: backend::sha(H2),
-                reviews: Vec::new(),
             },
         )
         .unwrap();
@@ -655,7 +654,6 @@ fn teardown_cancels_hold() {
     system(&store, &push(None, Some(H2), None));
     let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
     let remove = Remove {
-        teardown: None,
         project: ProjectName::parse("shop").unwrap(),
         environment: None,
         version: None,
@@ -801,15 +799,12 @@ fn cancelled_hold_cannot_be_retried() {
         .write_trusted(
             &who,
             &ployz_store::Admit::Retry(ployz_store::Retry {
-                teardown: None,
                 id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000199")
                     .unwrap(),
                 deployment: hold.id,
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approvals: Vec::new(),
-                awaits_approval: false,
                 approval: None,
             }),
             &Trusted::default(),

@@ -9,7 +9,7 @@ use super::error::{RpcError, RpcErrorCode};
 use super::evidence::{Departure, Evidence};
 use crate::{
     ContainerId, ContainerKind, ContainerLimits, ContainerObservation, Namespace,
-    ResolvedServiceSpec, authority::DeployApproval, authority::RestartApproval, authority::Signed,
+    ResolvedServiceSpec, authority::DeployApproval, authority::Signed,
 };
 
 /// Whether listed Container observations carry real environment values.
@@ -73,12 +73,6 @@ pub enum ContainerLocator {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnsureContainerRequest {
     pub want: ContainerWant,
-    /// A Device's approval of the restart this want is a step of. A Machine under
-    /// Device enforcement requires it from an Operator caller; an older daemon
-    /// ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub approval: Option<Signed<RestartApproval>>,
     /// The approval of the Deploy this want is part of. A Machine under Device
     /// enforcement requires it from an Operator caller for a new creation, and takes
     /// it for a step on a Container in its Namespace; an older daemon ignores it.
@@ -92,21 +86,6 @@ pub struct EnsureContainerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub rule: Option<Box<crate::authority::RuleProof>>,
-    /// The preview rule this want is part of, with the pinned builder's image token for its
-    /// Service. A Machine under Device enforcement takes it in place of a deploy approval
-    /// from an Operator caller. Sent only to a daemon advertising
-    /// [`crate::DEPLOY_PREVIEW_CAPABILITY`]; an older daemon ignores it and, enforcing,
-    /// refuses the want as unapproved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub preview: Option<Box<crate::authority::PreviewProof>>,
-    /// A person's teardown of the Container's Namespace, or the preview rule whose own
-    /// preview it closes. A Machine under Device enforcement takes it from an Operator
-    /// caller for a step that starts nothing. Sent only to a daemon advertising
-    /// [`crate::TEARDOWN_CAPABILITY`]; an older daemon ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// The state a driver wants one Container in. The Machine converges to it and

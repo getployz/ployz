@@ -652,22 +652,16 @@ fn variables(lines: &mut Vec<Shown>, label: &'static str, environment: Option<Va
 }
 
 fn plain_seal(sealed: &SealedValue) -> bool {
-    sealed.scope == SealedScope::Shared && sealed.environment.is_none()
+    sealed.scope == SealedScope::Shared
 }
 
-/// `(sealed KEY)`, with the Service it was authored on and the Environment it was sealed
-/// for when they are not the Container's own.
+/// `(sealed KEY)`, with the Service it was authored on when that is not the Container's own.
 fn sealed_part(sealed: &SealedValue) -> Shown {
     let mut shown = Shown::words("(sealed ").and_value(&sealed.key);
     if let SealedScope::Service(service) = sealed.scope {
         shown = shown
             .and_words(" of service ")
             .and_text(&service.to_string());
-    }
-    if let Some(environment) = sealed.environment {
-        shown = shown
-            .and_words(" from environment ")
-            .and_text(&environment.to_string());
     }
     shown.and_words(")")
 }

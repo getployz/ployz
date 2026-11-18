@@ -21,16 +21,12 @@
 mod checks;
 pub(crate) mod on_merge;
 mod plan;
-mod reviewed;
 pub use crate::pr_environment::PullRequestRef;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
 pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
 pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
-pub(crate) use reviewed::preview_review;
-use reviewed::reviews;
-pub use reviewed::{EnvironmentReview, PreviewReviewQuery, PreviewReviewView};
 
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
@@ -186,10 +182,6 @@ pub struct OpenPullRequest {
     pub standing: Standing,
     /// None until a member approves it.
     pub environment: Option<EnvironmentName>,
-    /// Whether each Server starts its head only once a person reviews it, whatever its
-    /// standing: its PR Environment runs under a live preview rule that doesn't trust
-    /// its author.
-    pub needs_review: bool,
 }
 
 /// Whether a pull request's head deploys. Only a member's pull request from the
@@ -421,12 +413,6 @@ pub struct ApprovePullRequest {
     pub number: PullRequestNumber,
     /// The head the approver saw: refused once the pull request moved on.
     pub head: CommitSha,
-    /// A person's review of `head` for each PR Environment that runs under a preview
-    /// rule, which their client signed. Cloud keeps each with the Deployment it admits
-    /// there; every Server checks it before anything opens.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[ts(optional, as = "Option<Vec<EnvironmentReview>>")]
-    pub reviews: Vec<EnvironmentReview>,
 }
 
 /// A pull request's PR Environments and whether it is ready to merge.
@@ -517,12 +503,7 @@ fn open_in(
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
         let environment = row.parse::<EnvironmentName>(1, "Environment name")?;
-        let id = row.parse::<EnvironmentId>(2, "Environment")?;
         let record = record(tx, who, repository_id, number)?;
-        let needs_review = match &record {
-            Some(record) => reviewed::needs_review(tx, &id, &record.facts)?,
-            None => false,
-        };
         open.push(OpenPullRequest {
             number,
             title: record
@@ -536,7 +517,6 @@ fn open_in(
             head: record.as_ref().map(|r| r.facts.head.clone()),
             standing: record.map_or(Standing::NeedsApproval, |r| r.phase.standing()),
             environment: Some(environment),
-            needs_review,
         });
     }
     if !plan.enabled || plan.start_from.is_none() {
@@ -566,7 +546,6 @@ fn open_in(
                 head: Some(facts.head),
                 standing,
                 environment: None,
-                needs_review: false,
             });
         }
     }
@@ -1131,7 +1110,6 @@ pub(crate) fn approve(
         repository_id,
         number,
     };
-    let reviews = reviews(tx, approval, &current)?;
     let first = !record
         .phase
         .admits(&approval.head, &record.facts, trusted.members.as_deref());
@@ -1147,18 +1125,9 @@ pub(crate) fn approve(
         trusted,
     };
     open(tx, who, &at, &current, &mut automated)?;
-    for (environment, _) in &current {
-        let review = reviews.get(environment);
-        if !first && review.is_none() {
-            continue;
-        }
-        let before = automated.admitted.len();
-        crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
-        if let Some(review) = review {
-            for admitted in automated.admitted.get(before..).unwrap_or_default() {
-                deployment::reviewed(tx, &admitted.deployment.id, review)?;
-            }
-            deployment::reviewed_held(tx, environment, event.head.as_str(), review)?;
+    if first {
+        for (environment, _) in &current {
+            crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
         }
     }
     automated.checks.push(pr);
@@ -1291,20 +1260,6 @@ fn open(
                 environment: start.summary.id.clone(),
                 reason: NEEDS_APPROVAL.to_owned(),
             });
-            // A person reviews the head under a preview rule, and the review names the PR
-            // Environment, so it opens now and deploys nothing.
-            if let Some(rule) =
-                crate::preview_rule::live(tx, &start.summary.id, event.repository_id.get())?
-            {
-                let opened = crate::storage::attempt(tx, |tx| {
-                    make(tx, who, &start, &plan, (event, trusted), Some(rule.rule))
-                });
-                match opened {
-                    Ok(_) => {}
-                    Err(error) if crate::automation::skippable(&error) => {}
-                    Err(error) => return Err(error),
-                }
-            }
             continue;
         }
         if trusted.runnable().is_err() {
@@ -1339,9 +1294,7 @@ fn create(
     plan: &Stored,
     (event, trusted): (&PullRequest, &Trusted),
 ) -> Result<Option<AutoDeployed>, RpcError> {
-    let preview = crate::preview_rule::live(tx, &start.summary.id, event.repository_id.get())?
-        .map(|rule| rule.rule);
-    let Some(made) = make(tx, who, start, plan, (event, trusted), preview)? else {
+    let Some(made) = make(tx, who, start, plan, (event, trusted))? else {
         return Ok(None);
     };
     let Made {
@@ -1392,39 +1345,14 @@ struct Made {
     cluster_domain: Option<crate::Hostname>,
 }
 
-/// Open a PR Environment from `parent` for the sample pull request `event`, as a preview
-/// of rule `rule` would open, for the caller to lower and then undo: what a Device
-/// signs a preview rule over. None when no Service of `parent` deploys from the
-/// repository.
-pub(crate) fn rehearse(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    parent: &Environment,
-    (event, trusted): (&PullRequest, &Trusted),
-    rule: ployz_core::authority::RuleId,
-) -> Result<Option<Environment>, RpcError> {
-    let rows = tx.query(
-        "SELECT project_id FROM config_environment WHERE id = ?1",
-        &[parent.summary.id.as_str().into()],
-    )?;
-    let project = rows
-        .first()
-        .ok_or_else(|| error::corrupt("Environment"))?
-        .parse::<crate::id::ProjectId>(0, "Project ID")?;
-    let plan = load(tx, &project, event.repository_id)?.unwrap_or_default();
-    Ok(make(tx, who, parent, &plan, (event, trusted), Some(rule))?.map(|made| made.environment))
-}
-
-/// Make the pull request's PR Environment from `start` and save its first revision,
-/// in the Namespace a preview of rule `preview` derives when there is one. None when no
-/// Service of `start` deploys from the repository.
+/// Make the pull request's PR Environment from `start` and save its first revision. None
+/// when no Service of `start` deploys from the repository.
 fn make(
     tx: &mut dyn Tx,
     who: &Actor,
     start: &Environment,
     plan: &Stored,
     (event, trusted): (&PullRequest, &Trusted),
-    preview: Option<ployz_core::authority::RuleId>,
 ) -> Result<Option<Made>, RpcError> {
     let working = &start.working;
     let ours = |source: &ServiceSource| ours(event, source);
@@ -1486,15 +1414,6 @@ fn make(
         trusted,
     )?;
     let mut environment = scope::lock_id(tx, who, &id)?;
-    if let Some(rule) = preview {
-        // Every Server derives a preview's Namespace from the rule and the branch, and
-        // its generated domains hold it.
-        let namespace =
-            ployz_core::authority::preview::preview_namespace(rule, &preview_key(event));
-        deployment::reserve_namespace(tx, who, &id, &namespace)?;
-        environment.working = preview_prefixes(environment.working, working, &namespace);
-        environment.working = inherit_sealed(environment.working, working);
-    }
     environment.working = derive(environment.working, event);
     scope::save_working(tx, &mut environment, trusted)?;
     // Copies keep their Deployment Policy, except that the repository's Services
@@ -1539,80 +1458,6 @@ fn make(
         saved,
         cluster_domain,
     }))
-}
-
-/// Which preview `event` is: its branch for a pull request from the repository itself,
-/// its number for one from a fork.
-pub(super) fn preview_key(event: &PullRequest) -> ployz_core::authority::PreviewKey {
-    if event.head_repository_id == Some(event.repository_id) {
-        ployz_core::authority::PreviewKey::Branch(event.head_branch.to_string())
-    } else {
-        ployz_core::authority::PreviewKey::Fork(event.number.get())
-    }
-}
-
-/// `intent` with each secret an Own Copy holds no value for taking the value `parent`
-/// sealed for itself: lowered in a preview's Namespace, a Server opens it under the
-/// parent's identity only for a key the preview rule lets that Service inherit.
-fn inherit_sealed(
-    mut intent: SavedEnvironmentIntent,
-    parent: &SavedEnvironmentIntent,
-) -> SavedEnvironmentIntent {
-    for service in &mut intent.services {
-        let Some(from) = parent
-            .services
-            .iter()
-            .find(|from| from.lineage_id == service.lineage_id)
-        else {
-            continue;
-        };
-        for variable in &mut service.variables {
-            if variable.value != ployz_core::config::VariableValue::NotSet {
-                continue;
-            }
-            if let Some(sealed) = from.variables.iter().find(|held| {
-                held.key == variable.key
-                    && matches!(
-                        held.value,
-                        ployz_core::config::VariableValue::Sealed {
-                            ciphertext: Some(ployz_core::config::SecretCiphertext::ClientSealed(_)),
-                            ..
-                        }
-                    )
-            }) {
-                variable.value = sealed.value.clone();
-            }
-        }
-    }
-    intent
-}
-
-/// `intent` with each generated domain's prefix taken from the Service's in `parent`,
-/// followed by the preview's `namespace`: one per preview, alike in every preview.
-fn preview_prefixes(
-    mut intent: SavedEnvironmentIntent,
-    parent: &SavedEnvironmentIntent,
-    namespace: &ployz_core::Namespace,
-) -> SavedEnvironmentIntent {
-    for service in &mut intent.services {
-        let Some(from) = parent
-            .services
-            .iter()
-            .find(|from| from.lineage_id == service.lineage_id)
-        else {
-            continue;
-        };
-        for (managed, from) in service
-            .config
-            .managed_hostnames
-            .iter_mut()
-            .zip(&from.config.managed_hostnames)
-        {
-            managed.prefix =
-                ployz_core::authority::preview::preview_prefix(&from.prefix, namespace);
-        }
-    }
-    intent
 }
 
 /// `pr-N`, or `pr-N-2`… when that is taken in the Project.

@@ -31,7 +31,6 @@ async fn a_repeated_upgrade_request_returns_the_same_attempt() {
     let request = RequestMachineUpgradeRequest {
         attempt_id: MachineUpgradeAttemptId::random(),
         release: MachineRelease::Stable,
-        channel: None,
     };
 
     let first = client
@@ -67,7 +66,6 @@ async fn another_attempt_is_refused() {
     let request = |attempt_id| RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::Stable,
-        channel: None,
     };
 
     client

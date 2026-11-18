@@ -22,7 +22,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use ployz_core::{DockerVolumeName, MachineId, MachineName, SendSource, SendStream, SnapshotName};
+use ployz_core::{DockerVolumeName, MachineId, SendSource, SendStream, SnapshotName};
 use tokio::{net::TcpListener, process::Command};
 use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
@@ -33,13 +33,10 @@ use crate::{dataset_layout::DatasetLayout, machine_pool};
 /// Whether this Machine sends a Volume to a mesh peer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Sends {
-    /// The Machine doesn't enforce, so it sends to any mesh peer.
-    Open,
-    /// A live grant to this accepted Machine covers the stream.
-    Granted(MachineId),
-    /// No accepted Machine has the address, or, when `recipient` names one, it holds no
-    /// live grant that covers the stream.
-    Refused { recipient: Option<MachineName> },
+    /// The address is the management address of this accepted Machine.
+    Member(MachineId),
+    /// No accepted Machine has the address.
+    Refused,
 }
 
 /// Who this Machine sends a Volume's streams to.
@@ -61,7 +58,8 @@ impl Recipients for crate::machine::LocalMachine {
         volume: &DockerVolumeName,
         snapshot: Option<&SnapshotName>,
     ) -> Result<Sends, String> {
-        self.sends_volume(peer, volume, snapshot)
+        let _ = (volume, snapshot);
+        self.sends_volume(peer)
             .await
             .map_err(|error| error.to_string())
     }
@@ -163,7 +161,7 @@ async fn send<R: Recipients>(
 }
 
 /// Refuse with no bytes of the Volume unless `recipients` sends `snapshot` of `volume` to
-/// `peer`. A refusal names the Server the address belongs to in this Machine's journal.
+/// `peer`.
 async fn admit<R: Recipients>(
     recipients: &R,
     peer: IpAddr,
@@ -171,19 +169,17 @@ async fn admit<R: Recipients>(
     snapshot: Option<&SnapshotName>,
 ) -> Result<(), Response> {
     match recipients.sends(peer, volume, snapshot).await {
-        Ok(Sends::Open | Sends::Granted(_)) => Ok(()),
-        Ok(Sends::Refused { recipient }) => {
-            let server = recipient.as_ref().map_or("no Server", |name| name.as_str());
+        Ok(Sends::Member(_)) => Ok(()),
+        Ok(Sends::Refused) => {
             tracing::warn!(
                 %peer,
-                %server,
                 %volume,
                 snapshot = snapshot.map(SnapshotName::as_str),
-                "send stream refused: no live grant to this address"
+                "send stream refused: no Server of this Cluster has this address"
             );
             Err((
                 StatusCode::FORBIDDEN,
-                format!("this Server sends {volume} only to a Server approved to receive it"),
+                format!("this Server sends {volume} only to a Server of its Cluster"),
             )
                 .into_response())
         }
@@ -394,7 +390,7 @@ mod tests {
 
     const POOLS: &str = "tank\t4294967296\t0\t4294967296\tONLINE\toff\nold\t4294967296\t0\t4294967296\tONLINE\ton\n";
 
-    /// Serves every peer, as a Machine that doesn't enforce.
+    /// Serves every peer.
     #[derive(Clone)]
     struct ToAll;
 
@@ -405,7 +401,7 @@ mod tests {
             _: &DockerVolumeName,
             _: Option<&SnapshotName>,
         ) -> Result<Sends, String> {
-            Ok(Sends::Open)
+            Ok(Sends::Member(MachineId::random()))
         }
     }
 
@@ -507,55 +503,53 @@ esac
         (status, response.text().await.unwrap())
     }
 
-    const GRANTED: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
+    const MEMBER: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
     const STRANGER: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 2));
 
-    /// A grant to one peer that covers `w-1-2` only, and a Server with no grant.
-    fn granted_w_1_2(peer: IpAddr, snapshot: Option<&SnapshotName>) -> Result<Sends, String> {
-        let covered = snapshot.is_none_or(|name| name.as_str() == "w-1-2");
-        Ok(if peer == GRANTED && covered {
-            Sends::Granted(MachineId::random())
+    /// One peer is a Server of the Cluster, the other is not.
+    fn member(peer: IpAddr, _: Option<&SnapshotName>) -> Result<Sends, String> {
+        Ok(if peer == MEMBER {
+            Sends::Member(MachineId::random())
         } else {
-            Sends::Refused {
-                recipient: Some(MachineName::parse("web-3").unwrap()),
-            }
+            Sends::Refused
         })
     }
 
     #[tokio::test]
-    async fn serves_a_granted_peer_and_refuses_any_other_before_zfs_runs() {
+    async fn serves_a_member_and_refuses_any_other_before_zfs_runs() {
         let dir = TestDir::new("ployzd-volume-send");
         let asked = Asked {
-            answer: granted_w_1_2,
+            answer: member,
             asks: Default::default(),
         };
         let (base, shutdown) = start_for(&dir, POOLS, asked.clone()).await;
         assert_eq!(
-            get_from(GRANTED, &base, "/volume-send/data?target=w-1-2&base=11").await,
+            get_from(MEMBER, &base, "/volume-send/data?target=w-1-2&base=11").await,
             (StatusCode::OK, "incremental stream".to_owned())
         );
         assert_eq!(
-            get_from(GRANTED, &base, "/volume-bound/data").await,
+            get_from(MEMBER, &base, "/volume-bound/data").await,
             (StatusCode::OK, "1073741824".to_owned())
         );
         for (from, path) in [
             (STRANGER, "/volume-send/data?target=w-1-2"),
             (STRANGER, "/volume-send/data?target=w-1-2&token=token-1"),
             (STRANGER, "/volume-bound/data"),
-            (GRANTED, "/volume-send/data?target=w-1-1"),
-            (GRANTED, "/volume-send/other?target=w-1-1"),
         ] {
             let (status, body) = get_from(from, &base, path).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
-            assert!(body.contains("only to a Server approved"), "{path}: {body}");
+            assert!(
+                body.contains("only to a Server of its Cluster"),
+                "{path}: {body}"
+            );
             assert!(!body.contains("stream"), "no bytes of the Volume: {body}");
         }
         assert_eq!(
             asked.asks.lock().unwrap().get(..3),
             Some(
                 &[
-                    (GRANTED, Some("w-1-2".to_owned())),
-                    (GRANTED, None),
+                    (MEMBER, Some("w-1-2".to_owned())),
+                    (MEMBER, None),
                     (STRANGER, Some("w-1-2".to_owned())),
                 ][..]
             ),

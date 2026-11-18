@@ -83,13 +83,7 @@ async fn seeded(
 
 fn wrap(local: &LocalMachine, code: &RecoveryCode) -> ployz_core::SealingKeyWrapped {
     local
-        .wrap_sealing_key(
-            WrapSealingKeyRequest {
-                code: code.clone(),
-                key: ployz_core::SealingKeyRole::Identity,
-            },
-            false,
-        )
+        .wrap_sealing_key(WrapSealingKeyRequest { code: code.clone() }, false)
         .unwrap()
 }
 
@@ -103,7 +97,6 @@ async fn recover(
             RecoverSealingKeyRequest {
                 code: code.clone(),
                 backup,
-                rotation: None,
             },
             false,
         )
@@ -521,18 +514,14 @@ async fn the_management_tunnel_never_carries_a_recovery_code() {
     let service = machine_service(store, replicated, None);
     let code = RecoveryCode::generate();
     let wrap = || {
-        op::WrapSealingKey::into_request(WrapSealingKeyRequest {
-            code: code.clone(),
-            key: ployz_core::SealingKeyRole::Identity,
-        })
-        .encode()
-        .unwrap()
+        op::WrapSealingKey::into_request(WrapSealingKeyRequest { code: code.clone() })
+            .encode()
+            .unwrap()
     };
     let recover = || {
         op::RecoverSealingKey::into_request(RecoverSealingKeyRequest {
             code: code.clone(),
             backup: None,
-            rotation: None,
         })
         .encode()
         .unwrap()
@@ -589,24 +578,17 @@ async fn the_cloud_slot_needs_full_access_to_wrap_or_recover() {
 
     let wrap = client
         .wrap_sealing_key(operator(
-            op::WrapSealingKey::into_request(WrapSealingKeyRequest {
-                code: code.clone(),
-                key: ployz_core::SealingKeyRole::Identity,
-            })
-            .encode()
-            .unwrap(),
+            op::WrapSealingKey::into_request(WrapSealingKeyRequest { code: code.clone() })
+                .encode()
+                .unwrap(),
         ))
         .await
         .expect_err("the cloud slot must not wrap the Sealing Key");
     let recover = client
         .recover_sealing_key(operator(
-            op::RecoverSealingKey::into_request(RecoverSealingKeyRequest {
-                code,
-                backup: None,
-                rotation: None,
-            })
-            .encode()
-            .unwrap(),
+            op::RecoverSealingKey::into_request(RecoverSealingKeyRequest { code, backup: None })
+                .encode()
+                .unwrap(),
         ))
         .await
         .expect_err("the cloud slot must not recover the Sealing Key");

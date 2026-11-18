@@ -9,8 +9,8 @@ use std::{
 };
 
 use ployz_core::{
-    InspectRequest, LeaveRequest, ListMachinesRequest, MembershipObservation, ONE_TARGET_HEADER,
-    OpaquePayload, RpcRequestBody, SetDeviceEnforcementRequest,
+    InspectRequest, ListMachinesRequest, MembershipObservation, ONE_TARGET_HEADER, OpaquePayload,
+    RpcRequestBody,
 };
 use tonic::{Request, Response, Status, Streaming, transport::Channel};
 
@@ -204,39 +204,30 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
 
     // A Full route to `b`: dialed itself, confirmed first, sent with no target header.
     let _ = client
-        .call_shared::<op::SetDeviceEnforcement>(
-            SetDeviceEnforcementRequest {
-                enforced: false,
-                starting_set: None,
-            },
-            Call::once().to(&target('b')),
-        )
+        .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target('b')))
         .await;
     assert_eq!(
         pinned.seen(),
         [
             at('b', "describe_contract", None),
-            at('b', "set_device_enforcement", None)
+            at('b', "remove_trusted_key", None)
         ]
     );
     assert_eq!(pinned.dials(), [machine_id('b')]);
 
-    // A route a Full caller alone may use, as Leave is, goes the same way; each call dials anew.
+    // Each call dials anew.
     for _ in 0..2 {
         let _ = client
-            .call_shared::<op::Leave>(
-                LeaveRequest { teardown: None },
-                Call::once().to(&target('b')),
-            )
+            .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target('b')))
             .await;
     }
     assert_eq!(
         pinned.seen(),
         [
             at('b', "describe_contract", None),
-            at('b', "leave", None),
+            at('b', "remove_trusted_key", None),
             at('b', "describe_contract", None),
-            at('b', "leave", None),
+            at('b', "remove_trusted_key", None),
         ]
     );
     assert_eq!(pinned.dials(), [machine_id('b'), machine_id('b')]);
@@ -255,14 +246,11 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
     // entry's too, naming the target.
     for id in ['a', 'c'] {
         let _ = client
-            .call_shared::<op::Leave>(
-                LeaveRequest { teardown: None },
-                Call::once().to(&target(id)),
-            )
+            .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target(id)))
             .await;
         assert_eq!(
             pinned.seen(),
-            [at('a', "leave", Some(&target(id).to_string()))],
+            [at('a', "remove_trusted_key", Some(&target(id).to_string()))],
             "{id}"
         );
     }
@@ -272,11 +260,14 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
         .call_shared::<op::Inspect>(InspectRequest::default(), Call::once())
         .await;
     let _ = client
-        .call_shared::<op::Leave>(LeaveRequest { teardown: None }, Call::once())
+        .call_shared::<op::RemoveTrustedKey>(removal(), Call::once())
         .await;
     assert_eq!(
         pinned.seen(),
-        [at('a', "inspect", None), at('a', "leave", None)]
+        [
+            at('a', "inspect", None),
+            at('a', "remove_trusted_key", None)
+        ]
     );
     assert!(pinned.dials().is_empty());
 }
@@ -287,14 +278,15 @@ async fn a_client_with_no_full_connection_sends_every_route_through_the_entry() 
     let _ = pinned.dials();
     let _ = pinned
         .client
-        .call_shared::<op::Leave>(
-            LeaveRequest { teardown: None },
-            Call::once().to(&target('b')),
-        )
+        .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target('b')))
         .await;
     assert_eq!(
         pinned.seen(),
-        [at('a', "leave", Some(&target('b').to_string()))]
+        [at(
+            'a',
+            "remove_trusted_key",
+            Some(&target('b').to_string())
+        )]
     );
     assert!(pinned.dials().is_empty());
 }
@@ -303,14 +295,21 @@ async fn a_client_with_no_full_connection_sends_every_route_through_the_entry() 
 async fn a_raw_call_routes_by_scope_as_a_unary_one_does() {
     let (pinned, _) = pinned(true).await;
     let _ = pinned.dials();
-    let request = op::Leave::into_request(LeaveRequest { teardown: None });
+    let request = op::RemoveTrustedKey::into_request(removal());
     let _ = pinned
         .client
-        .call_raw(&request, op::Leave::PATH, Call::once().to(&target('b')))
+        .call_raw(
+            &request,
+            op::RemoveTrustedKey::PATH,
+            Call::once().to(&target('b')),
+        )
         .await;
     assert_eq!(
         pinned.seen(),
-        [at('b', "describe_contract", None), at('b', "leave", None)]
+        [
+            at('b', "describe_contract", None),
+            at('b', "remove_trusted_key", None)
+        ]
     );
 }
 
@@ -401,6 +400,12 @@ async fn an_exec_with_no_full_connection_goes_through_the_entry_naming_its_targe
     );
 }
 
+fn removal() -> ployz_core::RemoveTrustedKeyRequest {
+    ployz_core::RemoveTrustedKeyRequest {
+        code: ployz_core::DeviceKey::from_bytes([1; 32]).code(),
+    }
+}
+
 /// The paths a call to a named Machine dials itself, as the catalog and the authorization
 /// table say. A route joining or leaving this list changes where a command's request goes.
 /// A Build is on it, yet a Build is submitted through the entry whatever the connections.
@@ -408,12 +413,8 @@ const DIRECT: &[&str] = &[
     "WrapSealingKey",
     "RecoverSealingKey",
     "SetDevice",
-    "SetDeviceEnforcement",
     "SetPasskey",
     "RemoveTrustedKey",
-    "Leave",
-    "Forget",
-    "RemoveVolume",
     "Exec",
     "Build",
 ];
@@ -497,7 +498,6 @@ async fn the_reads_that_list_machines_without_a_deadline_wait_for_a_slow_daemon(
         "remove_volumes",
         client
             .remove_volumes(ployz_core::RemoveVolumesRequest {
-                teardown: None,
                 volumes: Vec::new(),
                 force: false,
             })

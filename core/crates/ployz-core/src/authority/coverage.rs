@@ -9,30 +9,28 @@
 use serde::Serialize;
 
 use crate::{
-    ACTIVATE_ENFORCEMENT_CAPABILITY, APPROVE_JOIN_CAPABILITY, BUILD_CAPABILITY,
-    BUILD_GRANT_RULE_CAPABILITY, DEPLOY_APPROVAL_CAPABILITY, DEPLOY_PROPOSAL_CAPABILITY,
-    DEPLOY_RULE_CAPABILITY, DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY,
-    ENROLL_MACHINE_CAPABILITY, ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY,
-    EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
-    INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY,
-    JOIN_APPROVAL_CAPABILITY, LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY,
-    LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY,
-    LOG_HISTORY_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
-    PENDING_JOINS_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PRIVATE_ACCESS_APPROVAL_CAPABILITY,
-    PROPOSAL_APPROVAL_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
-    PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
+    APPROVE_JOIN_CAPABILITY, BUILD_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY,
+    DEPLOY_APPROVAL_CAPABILITY, DEPLOY_PROPOSAL_CAPABILITY, DEPLOY_RULE_CAPABILITY,
+    DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
+    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
+    FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY,
+    INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY,
+    INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY, JOIN_APPROVAL_CAPABILITY,
+    LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
+    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY,
+    METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PENDING_JOINS_CAPABILITY,
+    PREPARE_VOLUMES_CAPABILITY, PRIVATE_ACCESS_APPROVAL_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
+    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RESEAL_VALUES_CAPABILITY, RESTART_APPROVAL_CAPABILITY,
-    RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY, SEED_VOLUME_CAPABILITY,
-    SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY,
-    SET_DEVICE_CAPABILITY, SET_DEVICE_ENFORCEMENT_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
+    REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY,
+    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_DOORS_CAPABILITY,
+    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
     SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
-    SET_PUSH_TARGET_CAPABILITY, SET_RECIPIENT_KEY_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
-    SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    TEARDOWN_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, UPGRADE_CHANNEL_CAPABILITY, VOLUME_APPROVAL_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
     WRAP_SEALING_KEY_CAPABILITY,
 };
 
@@ -42,17 +40,9 @@ use crate::{
 pub enum Statement {
     Join,
     Deploy,
-    Restart,
     Proposal,
     Rule,
-    Volume,
-    Upgrade,
-    Teardown,
     PrivateAccess,
-    /// A starting set: the Members and kept keys an activation trusts.
-    Activation,
-    /// A recipient key a person named at activation.
-    Rotation,
 }
 
 impl Statement {
@@ -63,14 +53,9 @@ impl Statement {
         match self {
             Self::Join => &[JOIN_APPROVAL_CAPABILITY],
             Self::Deploy => &[DEPLOY_APPROVAL_CAPABILITY],
-            Self::Restart => &[RESTART_APPROVAL_CAPABILITY],
-            Self::Proposal => &[PROPOSAL_APPROVAL_CAPABILITY, DEPLOY_PROPOSAL_CAPABILITY],
+            Self::Proposal => &[DEPLOY_PROPOSAL_CAPABILITY],
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
-            Self::Upgrade => &[UPGRADE_CHANNEL_CAPABILITY],
             Self::PrivateAccess => &[PRIVATE_ACCESS_APPROVAL_CAPABILITY],
-            Self::Volume => &[VOLUME_APPROVAL_CAPABILITY],
-            Self::Teardown => &[TEARDOWN_CAPABILITY],
-            Self::Activation | Self::Rotation => &[],
         }
     }
 }
@@ -93,10 +78,7 @@ pub enum Authorization {
 }
 
 use Authorization::{Bound, Full, Read, Signed};
-use Statement::{
-    Activation, Deploy, Join, PrivateAccess, Proposal, Restart, Rotation, Rule, Teardown, Upgrade,
-    Volume,
-};
+use Statement::{Deploy, Join, PrivateAccess, Proposal, Rule};
 
 const IMAGE_BOUND: &str = "content-addressed; checked at creation by C";
 
@@ -125,8 +107,6 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         SET_PUSH_TARGET_CAPABILITY,
         Bound("crash events are data Cloud already reads"),
     ),
-    (SET_DEVICE_ENFORCEMENT_CAPABILITY, Full),
-    (ACTIVATE_ENFORCEMENT_CAPABILITY, Signed(&[Activation])),
     (SET_PASSKEY_CAPABILITY, Full),
     (REMOVE_TRUSTED_KEY_CAPABILITY, Full),
     (SELECT_ENDPOINT_CAPABILITY, Bound("residual: delay or drop")),
@@ -135,7 +115,10 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         UPDATE_MACHINE_CAPABILITY,
         Bound("residual: mislabel; approvals bind IDs"),
     ),
-    (REQUEST_MACHINE_UPGRADE_CAPABILITY, Signed(&[Upgrade])),
+    (
+        REQUEST_MACHINE_UPGRADE_CAPABILITY,
+        Bound("installs only a release Ployz signed, and never one older than the installed"),
+    ),
     (
         GENERATE_SEALING_KEY_CAPABILITY,
         Bound("the key never leaves the Machine"),
@@ -145,20 +128,19 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         INSTALL_SEALING_KEY_CAPABILITY,
         Bound("Cloud holds no Machine's key to seal from"),
     ),
-    (SET_RECIPIENT_KEY_CAPABILITY, Signed(&[Rotation])),
     (
-        RESEAL_VALUES_CAPABILITY,
-        Bound(
-            "seals only to this Machine's own recipient key, which a verified rotation installed",
-        ),
+        LEAVE_MACHINE_CAPABILITY,
+        Bound("residual: a drop; a removed Machine keeps its Volume data on disk"),
     ),
-    (LEAVE_MACHINE_CAPABILITY, Signed(&[Teardown])),
-    (FORGET_MACHINE_CAPABILITY, Signed(&[Teardown])),
+    (
+        FORGET_MACHINE_CAPABILITY,
+        Bound("residual: a drop; coming back is a join, which a person signs"),
+    ),
     (LIST_CONTAINERS_CAPABILITY, Read),
     (INSPECT_CONTAINER_CAPABILITY, Read),
     (
         ENSURE_CONTAINER_CAPABILITY,
-        Signed(&[Deploy, Restart, Proposal, Rule, Teardown]),
+        Signed(&[Deploy, Proposal, Rule]),
     ),
     (
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
@@ -173,11 +155,23 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (INSPECT_STORAGE_CAPABILITY, Read),
     (PREPARE_VOLUMES_CAPABILITY, Bound("checked at mount by C")),
     (LIST_VOLUMES_CAPABILITY, Read),
-    (REMOVE_VOLUME_CAPABILITY, Signed(&[Teardown])),
+    (
+        REMOVE_VOLUME_CAPABILITY,
+        Bound("residual: a drop; the data leaves no Machine"),
+    ),
     (INSPECT_VOLUME_COPY_CAPABILITY, Read),
-    (SEED_VOLUME_CAPABILITY, Signed(&[Volume])),
-    (SET_VOLUME_COPY_CAPABILITY, Signed(&[Volume])),
-    (SET_VOLUME_SIZE_CAPABILITY, Signed(&[Volume])),
+    (
+        SEED_VOLUME_CAPABILITY,
+        Bound("copies only between this Cluster's Machines; checked at mount by C"),
+    ),
+    (
+        SET_VOLUME_COPY_CAPABILITY,
+        Bound("copies only between this Cluster's Machines; checked at mount by C"),
+    ),
+    (
+        SET_VOLUME_SIZE_CAPABILITY,
+        Bound("residual: a bound can refuse writes, a drop"),
+    ),
     (LIST_IMAGES_CAPABILITY, Read),
     (
         PRUNE_IMAGES_CAPABILITY,
@@ -225,16 +219,11 @@ pub fn authorization(capability: &str) -> Option<Authorization> {
         .map(|(_, class)| *class)
 }
 
-/// Whether an Operator caller is served `capability` on an enforcing Machine only with a
-/// person's teardown or not at all, so a client holding a Full path sends it there itself:
-/// a call forwarded over the mesh arrives as an Operator's, and a Device's own call needs
-/// no teardown.
+/// Whether an Operator caller is never served `capability`, so a client holding a Full
+/// path sends it there itself: a call forwarded over the mesh arrives as an Operator's.
 #[must_use]
 pub fn needs_full_caller(capability: &str) -> bool {
-    matches!(
-        authorization(capability),
-        Some(Full | Signed(&[] | [Statement::Teardown]))
-    )
+    matches!(authorization(capability), Some(Full | Signed(&[])))
 }
 
 /// Whether an enforcing Machine refuses an Operator's `capability` call outright: no
@@ -359,24 +348,6 @@ pub const CASES: &[Case] = &[
         Expected::Served,
     ),
     case(
-        SET_DEVICE_ENFORCEMENT_CAPABILITY,
-        "from the mesh",
-        "a SetDeviceEnforcement turning enforcement off, from Cloud",
-        Expected::Refused(&[SET_DEVICE_ENFORCEMENT_CAPABILITY]),
-    ),
-    case(
-        ACTIVATE_ENFORCEMENT_CAPABILITY,
-        "a legacy Member",
-        "an ActivateEnforcement whose set names a Member this Machine holds no evidence for",
-        Expected::Refused(&[ACTIVATE_ENFORCEMENT_CAPABILITY]),
-    ),
-    case(
-        ACTIVATE_ENFORCEMENT_CAPABILITY,
-        "an untrusted signer",
-        "an ActivateEnforcement whose set a key outside the trusted snapshot signed",
-        Expected::Refused(&[ACTIVATE_ENFORCEMENT_CAPABILITY]),
-    ),
-    case(
         SET_PASSKEY_CAPABILITY,
         "from the mesh",
         "a SetPasskey adding a passkey, from Cloud",
@@ -404,19 +375,19 @@ pub const CASES: &[Case] = &[
         REQUEST_MACHINE_UPGRADE_CAPABILITY,
         "a release channel",
         "a RequestMachineUpgrade to stable",
-        Expected::Refused(&[UPGRADE_CHANNEL_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         REQUEST_MACHINE_UPGRADE_CAPABILITY,
         "an exact version no channel resolves to",
         "a RequestMachineUpgrade to an exact version neither channel resolves to",
-        Expected::Refused(&[UPGRADE_CHANNEL_CAPABILITY]),
+        Expected::Refused(&[UPGRADE_EXACT_CAPABILITY]),
     ),
     case(
         REQUEST_MACHINE_UPGRADE_CAPABILITY,
         "a downgrade",
         "a RequestMachineUpgrade to a release older than the installed one, which no channel resolves to",
-        Expected::Refused(&[UPGRADE_CHANNEL_CAPABILITY]),
+        Expected::Refused(&[REQUEST_MACHINE_UPGRADE_CAPABILITY, UPGRADE_EXACT_CAPABILITY]),
     ),
     case(
         GENERATE_SEALING_KEY_CAPABILITY,
@@ -449,40 +420,16 @@ pub const CASES: &[Case] = &[
         Expected::Refused(&[INSTALL_SEALING_KEY_CAPABILITY]),
     ),
     case(
-        SET_RECIPIENT_KEY_CAPABILITY,
-        "generate",
-        "a SetRecipientKey Generate on an activated Machine",
-        Expected::Bounded("the key is held unused until a verified rotation names it"),
-    ),
-    case(
-        SET_RECIPIENT_KEY_CAPABILITY,
-        "install",
-        "a SetRecipientKey Install under a rotation a key outside the trusted snapshot signed",
-        Expected::Refused(&[SET_RECIPIENT_KEY_CAPABILITY]),
-    ),
-    case(
-        SET_RECIPIENT_KEY_CAPABILITY,
-        "share",
-        "a SetRecipientKey Share to a Machine no verified rotation names",
-        Expected::Refused(&[SET_RECIPIENT_KEY_CAPABILITY]),
-    ),
-    case(
-        RESEAL_VALUES_CAPABILITY,
-        "any value",
-        "a ResealValues of a value sealed to the Cluster's identity",
-        Expected::Bounded("the result opens only under this Machine's recipient key"),
-    ),
-    case(
         LEAVE_MACHINE_CAPABILITY,
         "no statement",
         "a Leave from Cloud",
-        Expected::Refused(&[LEAVE_MACHINE_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         FORGET_MACHINE_CAPABILITY,
         "no statement",
         "a Forget of another Machine, from Cloud",
-        Expected::Refused(&[FORGET_MACHINE_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
@@ -494,31 +441,31 @@ pub const CASES: &[Case] = &[
         ENSURE_CONTAINER_CAPABILITY,
         "start",
         "an EnsureContainer starting a stopped Container",
-        Expected::Refused(&[RESTART_APPROVAL_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
         "stop",
         "an EnsureContainer stopping a running Container",
-        Expected::Refused(&[RESTART_APPROVAL_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
         "held",
         "an EnsureContainer holding a routed Container out of routing for a run",
-        Expected::Refused(&[RESTART_APPROVAL_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
         "out",
         "an EnsureContainer setting a routed Container Out",
-        Expected::Refused(&[RESTART_APPROVAL_CAPABILITY, DEPLOY_APPROVAL_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
         "remove",
         "an EnsureContainer removing a Container",
-        Expected::Refused(&[RESTART_APPROVAL_CAPABILITY, DEPLOY_APPROVAL_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
@@ -540,51 +487,45 @@ pub const CASES: &[Case] = &[
     ),
     case(
         REMOVE_VOLUME_CAPABILITY,
-        "no teardown",
-        "a RemoveVolume of a Docker Volume, with no teardown",
-        Expected::Refused(&[TEARDOWN_CAPABILITY]),
+        "any Volume",
+        "a RemoveVolume of a Docker Volume",
+        Expected::Served,
     ),
     case(
         SEED_VOLUME_CAPABILITY,
-        "no approval",
+        "any copy",
         "a SeedVolume from another Machine's copy",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+        Expected::Served,
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
         "a Writer want with a start",
-        "a SetVolumeCopy making this copy Writer and creating its Container, with no approval",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+        "a SetVolumeCopy making this copy Writer and creating its Container",
+        Expected::Refused(&[DEPLOY_APPROVAL_CAPABILITY]),
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
         "a pull",
-        "a SetVolumeCopy pulling the Volume from another Machine, with no approval",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+        "a SetVolumeCopy pulling the Volume from another Machine",
+        Expected::Served,
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
         "a cut",
-        "a SetVolumeCopy cutting the Writer for a Move, with no approval",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+        "a SetVolumeCopy cutting the Writer for a Move",
+        Expected::Served,
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
-        "a handoff",
-        "a SetVolumeCopy handing a cut Volume to its Move's target, with no approval",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
-    ),
-    case(
-        SET_VOLUME_COPY_CAPABILITY,
-        "a promote with no receipt",
-        "a SetVolumeCopy making a Mirror the Writer with no receipt and no Restore approval",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+        "a promote",
+        "a SetVolumeCopy making a Mirror the Writer",
+        Expected::Served,
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
         "a forget of a copy",
-        "a SetVolumeCopy deleting a slot that holds a snapshot, with no approval",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+        "a SetVolumeCopy deleting a slot that holds a snapshot",
+        Expected::Served,
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
@@ -601,8 +542,8 @@ pub const CASES: &[Case] = &[
     case(
         SET_VOLUME_SIZE_CAPABILITY,
         "grow, or a shrink",
-        "a SetVolumeSize growing a Volume, with no approval",
-        Expected::Refused(&[VOLUME_APPROVAL_CAPABILITY]),
+        "a SetVolumeSize growing a Volume",
+        Expected::Served,
     ),
     case(
         PRUNE_IMAGES_CAPABILITY,

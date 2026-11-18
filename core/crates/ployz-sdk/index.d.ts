@@ -292,13 +292,7 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
    */
   volumeSwitch<R extends VolumeSwitchRequest>(machine: MachineTarget, request: R): Promise<VolumeSwitchReply<R["command"]>>;
   dataLossIfNamespaceDestroyed(namespace: Namespace, destroy_volumes?: boolean): Promise<ObservedDataLoss>;
-  /** `teardown`, a person's approval of what goes, reaches each Server; one that enforces Device approval removes nothing without it. */
-  destroyNamespace(
-    namespace: Namespace,
-    confirmDataLoss: DataLossConfirmation,
-    destroy_volumes?: boolean,
-    teardown?: import("./generated/payloads").TeardownApproval | null,
-  ): Promise<DeployOutcome<ExecutionError>>;
+  destroyNamespace(namespace: Namespace, confirmDataLoss: DataLossConfirmation, destroy_volumes?: boolean): Promise<DeployOutcome<ExecutionError>>;
 }
 export declare const Client: { new (inner: native.Client): Client; prototype: Client };
 

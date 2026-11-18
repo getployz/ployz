@@ -189,8 +189,6 @@ pub(super) fn plan(
                 start: None,
             },
             r#gen: VolumeGen::default(),
-            approval: None,
-            receipt: None,
         },
         lost_after,
     })

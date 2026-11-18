@@ -4,9 +4,9 @@
 use ployz_core::{
     ClusterNamed, CodecError, ContainerNotFoundReason, ContainerNow, ContainerRefusal,
     ContainerRefusalReason, ContainerWant, ContractDescription, CreateVolumeRequest,
-    DescribeContractRequest, DeviceEnforcementSet, DeviceKey, DeviceSet, DiskFull, DiskSpace,
-    DoorChange, EnsureImageIngestRequest, EnvironmentValues, Evidence, ExposedPort, ForgetRequest,
-    Forgotten, HealthVerdict, ImageIngestReason, ImagePulled, ImageRemovalOutcome, ImageSummary,
+    DescribeContractRequest, DeviceKey, DeviceSet, DiskFull, DiskSpace, DoorChange,
+    EnsureImageIngestRequest, EnvironmentValues, Evidence, ExposedPort, ForgetRequest, Forgotten,
+    HealthVerdict, ImageIngestReason, ImagePulled, ImageRemovalOutcome, ImageSummary,
     ImagesRemoved, IngressDoors, IngressDoorsSet, IngressStage, InspectContainerRequest,
     InspectStorageRequest, JoinApproved, LeaveRequest, Left, LimitsRefusal, ListContainersRequest,
     ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveLogTarget, LocalMachineRemoved,
@@ -15,10 +15,10 @@ use ployz_core::{
     PrivateAccessProblem, PrivateAccessSet, PruneImagesRequest, PublishCertificateMaterialRequest,
     PullImageRequest, PushTargetSet, ReadClusterNameRequest, ReadRoutedAddressesRequest,
     RemoveTrustedKeyRequest, RemoveVolumeRequest, RetainedEnvReply, RetainedEnvRequest,
-    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, RuntimeWatchRequest,
-    SetDeviceEnforcementRequest, SetDeviceRequest, SetManagementClientRequest,
-    SetManagementClientResponse, SetPrivateAccessRequest, SetPushTargetRequest, TailLogsRequest,
-    TrustedKeyRemoved, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
+    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, RuntimeWatchRequest, SetDeviceRequest,
+    SetManagementClientRequest, SetManagementClientResponse, SetPrivateAccessRequest,
+    SetPushTargetRequest, TailLogsRequest, TrustedKeyRemoved, VolumeInventory,
+    VolumeObservationFailure, VolumeRemoved,
 };
 use serde_json::{Value, json};
 
@@ -78,8 +78,6 @@ fn membership_and_machine_dtos_keep_their_wire_text() {
             "code": code,
             "approved_passkeys": [],
         });
-        SetDeviceEnforcementRequest => json!({ "enforced": false });
-        DeviceEnforcementSet => json!({ "enforced": true });
     }
 }
 

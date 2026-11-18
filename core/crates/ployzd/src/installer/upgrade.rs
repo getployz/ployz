@@ -62,16 +62,6 @@ pub enum Error {
         capability = ployz_core::UPGRADE_EXACT_CAPABILITY
     )]
     OffChannel { target: MachineVersion },
-    /// An Operator asked a Machine that enforces Device approval for a release off the
-    /// Release Channel a person approved for its Cluster.
-    #[error(
-        "{capability}: {requested} isn't on the approved {approved} Release Channel. Approve its channel under Server upgrades, or with `ployz server upgrade-policy set --channel` from an approved device",
-        capability = ployz_core::UPGRADE_CHANNEL_CAPABILITY
-    )]
-    OffApprovedChannel {
-        approved: ReleaseChannel,
-        requested: MachineRelease,
-    },
     /// The requested release could not be parsed or resolved.
     #[error("could not resolve the Machine release")]
     Resolve(#[source] InstallError),
@@ -166,12 +156,8 @@ impl Downgrade {
 pub(crate) enum ReleaseChoice {
     /// A Full caller: any published release.
     AnyRelease,
-    /// An Operator on a Machine awaiting its Cluster's activation: a channel, or an exact
-    /// version either channel resolves to now.
+    /// An Operator: a channel, or an exact version either channel resolves to now.
     ChannelResolved,
-    /// Any other Operator: the channel a person approved, or the exact version it resolves
-    /// to now.
-    Signed(ReleaseChannel),
 }
 
 impl ReleaseChoice {
@@ -195,20 +181,6 @@ impl ReleaseChoice {
                 Err(Error::OffChannel {
                     target: target.clone(),
                 })
-            }
-            Self::Signed(approved) => {
-                let on_channel = match named {
-                    Some(channel) => channel == approved,
-                    None => resolves_to(approved, target, source, installed).await,
-                };
-                if on_channel {
-                    Ok(())
-                } else {
-                    Err(Error::OffApprovedChannel {
-                        approved,
-                        requested: requested.clone(),
-                    })
-                }
             }
         }
     }

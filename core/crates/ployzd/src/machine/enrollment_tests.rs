@@ -6,7 +6,7 @@ use ployz_core::{
     authority::{AuthorityRefusal, Purpose},
 };
 
-use super::test_support::{ApprovingCluster, member, passkey, written_before_f7};
+use super::test_support::{ApprovingCluster, member, passkey};
 use super::{EnrollPlan, LocalMachine, LocalMachineStore, RecordOwner, StoreError};
 use crate::network::WireGuardPrivateKey;
 
@@ -127,7 +127,6 @@ fn a_pinned_join_under_the_clusters_device_enrolls_trusting_only_the_approvals_d
     );
     assert_eq!(record.management_scope(&clouds_device.into()), None);
     assert!(record.filters_peers());
-    assert!(!record.awaits_activation());
 }
 
 /// Cloud relays the body a person signs, so it can name a Device of its own beside theirs.
@@ -155,54 +154,6 @@ fn a_pinned_join_trusts_no_device_the_pin_leaves_out_even_when_the_approval_name
     assert_eq!(record.devices().collect::<Vec<_>>(), [cluster.device()]);
     assert_eq!(record.management_scope(&clouds_device.into()), None);
     assert_eq!(record.management_scope(&unsigned_pin.into()), None);
-}
-
-/// A Device Cloud named in the body could otherwise sign the recipient rotation, so the
-/// joiner would seal new values to a key Cloud holds.
-#[test]
-fn a_pinned_joiner_takes_no_recipient_key_from_a_device_the_pin_leaves_out() {
-    use ployz_core::authority::{SealingRotation, Signed, Signer, SignerKey};
-    let (dir, mut store) = fresh();
-    let cluster = ApprovingCluster::new(1);
-    let cloud = Signer::from_seed(&[7; 32]);
-    let mut approval = cluster.approval(store.record());
-    approval.devices.push(cloud.public().into());
-    let mut registration = cluster.registration_with(store.record(), Some(&approval));
-    let operation = ployz_core::OperationId::random();
-    let clouds_recipient = ployz_core::RecipientSecret::generate();
-    let rotation = SealingRotation {
-        cluster: cluster.sealing_key.public_key(),
-        operation,
-        recipient: clouds_recipient.public(),
-        members: Vec::new(),
-        signer: SignerKey::Device(cloud.public().into()),
-    };
-    registration.recipient = Some(ployz_core::JoinRecipient {
-        rotation: Signed::sign(&rotation, &cloud).unwrap(),
-        sealed: clouds_recipient
-            .seal_to(
-                &store.record().private_key().public_key(),
-                &ployz_core::authority::rotation::sealed_key_binding(
-                    &cluster.sealing_key.public_key(),
-                    &operation,
-                ),
-            )
-            .unwrap(),
-    });
-
-    assert_eq!(
-        store
-            .enroll(member(registration, Some(cluster.pin())))
-            .unwrap(),
-        EnrollPlan::Fresh
-    );
-
-    assert!(
-        crate::sealing_key::SealingKey::load_recipient(dir.path())
-            .unwrap()
-            .is_none()
-    );
-    assert!(store.record().activation().is_none());
 }
 
 #[test]
@@ -338,31 +289,4 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
         Enrolled::Refused { .. }
     ));
     assert_eq!(local.record().id(), id);
-}
-
-#[test]
-fn a_record_from_before_f7_awaits_activation() {
-    for device_enforcement in [false, true] {
-        let (dir, mut store) = fresh();
-        let cluster = ApprovingCluster::new(1);
-        store.enroll(cluster.join(store.record())).unwrap();
-        assert!(!store.record().awaits_activation());
-        assert!(store.record().filters_peers());
-        drop(store);
-
-        written_before_f7(dir.path(), device_enforcement);
-        let reopened = LocalMachineStore::open(dir.path()).unwrap();
-
-        assert!(
-            reopened.record().awaits_activation(),
-            "device_enforcement {device_enforcement}"
-        );
-        assert_eq!(reopened.record().filters_peers(), device_enforcement);
-    }
-}
-
-#[test]
-fn an_uninitialized_record_never_awaits_activation() {
-    let (_dir, store) = fresh();
-    assert!(!store.record().awaits_activation());
 }

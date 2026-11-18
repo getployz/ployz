@@ -90,36 +90,13 @@ fn typescript_declarations() -> String {
     declarations.add::<LocalMachineRemoved>();
     declarations.add::<MachineId>();
     declarations.add::<ployz_core::MachineDetails>();
-    declarations.add::<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>();
-    declarations.add::<ployz_core::authority::RestartApproval>();
     declarations.add::<ployz_core::authority::ProposalApproval>();
     declarations.add::<ployz_core::authority::DeployApproval>();
     declarations.add::<ployz_core::authority::ApprovedChange>();
     declarations.add::<ployz_core::authority::DeployTerms>();
-    declarations.add::<ployz_core::authority::GrantBody>();
-    declarations.add::<ployz_core::authority::VolumeApproval>();
-    declarations.add::<ployz_core::authority::VolumeTerms>();
-    declarations.add::<ployz_core::authority::VolumeDraft>();
-    declarations.add::<ployz_core::authority::TeardownApproval>();
-    declarations.add::<ployz_core::authority::Teardown>();
-    declarations.add::<ployz_core::authority::TeardownTerms>();
-    declarations.add::<ployz_core::authority::TeardownScope>();
     declarations.add::<ployz_core::authority::AutoDeployRule>();
-    declarations.add::<ployz_core::authority::StartingSet>();
-    declarations.add::<ployz_core::authority::StartingSetTerms>();
-    declarations.add::<ployz_core::authority::SealingRotation>();
-    declarations.add::<ployz_core::authority::ActivationDraft>();
-    declarations.add::<ployz_core::ActivateEnforcementRequest>();
-    declarations.add::<ployz_core::DeviceEnforcementSet>();
-    declarations.add::<ployz_core::SetRecipientKeyRequest>();
-    declarations.add::<ployz_core::RecipientKeySet>();
-    declarations.add::<ployz_core::ResealValuesRequest>();
-    declarations.add::<ployz_core::ValuesResealed>();
-    declarations.add::<ployz_core::authority::UpgradeChannel>();
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();
-    declarations.add::<ployz_core::authority::ReviewTerms>();
-    declarations.add::<ployz_core::authority::ReviewDraft>();
     declarations.add::<ployz_core::MachineUpdate>();
     declarations.add::<ployz_core::MachineUpdated>();
     declarations.add::<ployz_core::RequestMachineUpgradeRequest>();
@@ -334,10 +311,6 @@ fn cloud_contract_constants() -> Vec<(&'static str, Constant)> {
         (
             "CLOCK_SKEW_MILLIS",
             Number(contract::CLOCK_SKEW_MILLIS.into()),
-        ),
-        (
-            "MAX_GRANT_LIFETIME_MILLIS",
-            Number(contract::MAX_GRANT_LIFETIME_MILLIS.into()),
         ),
     ]
 }

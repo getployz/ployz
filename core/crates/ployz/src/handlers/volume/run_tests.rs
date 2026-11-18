@@ -189,19 +189,13 @@ fn each_ask_names_its_run_and_its_retry_command() {
     let web = |name: &str| MachineName::parse(name).unwrap();
     let asks = [
         (
-            RunAsk::Mirror {
-                to: web("web-2"),
-                approval: None,
-            },
+            RunAsk::Mirror { to: web("web-2") },
             "Mirror of Volume data onto web-2",
             OperationVerb::Mirror,
             "volume mirror data --to web-2",
         ),
         (
-            RunAsk::Sync {
-                full: Full,
-                approval: None,
-            },
+            RunAsk::Sync { full: Full },
             "full Sync of Volume data's Mirror",
             OperationVerb::Sync,
             "volume sync data --full",
@@ -210,7 +204,6 @@ fn each_ask_names_its_run_and_its_retry_command() {
             RunAsk::DeleteMirror {
                 slot: web("web-2"),
                 confirm: Some("data".to_owned()),
-                approval: None,
             },
             "deletion of Mirror data-web-2",
             OperationVerb::RemoveMirror,
@@ -220,18 +213,13 @@ fn each_ask_names_its_run_and_its_retry_command() {
             RunAsk::DeleteOldCopy {
                 slot: web("web-1"),
                 confirm: None,
-                approval: None,
             },
             "deletion of Mirror data-web-1",
             OperationVerb::RemoveMirror,
             "volume mirror rm data-web-1 --if-old-copy",
         ),
         (
-            RunAsk::Move {
-                to: web("web-2"),
-                approval: None,
-                service: None,
-            },
+            RunAsk::Move { to: web("web-2") },
             "Move of Volume data onto web-2",
             OperationVerb::Move,
             "volume move data --to web-2",
@@ -243,10 +231,7 @@ fn each_ask_names_its_run_and_its_retry_command() {
             "volume release data",
         ),
         (
-            RunAsk::Restore {
-                from: web("web-2"),
-                approval: None,
-            },
+            RunAsk::Restore { from: web("web-2") },
             "Restore of Volume data from web-2",
             OperationVerb::Restore,
             "volume restore data --from web-2",
@@ -254,7 +239,6 @@ fn each_ask_names_its_run_and_its_retry_command() {
         (
             RunAsk::Resize {
                 maximum_bytes: twenty_gb(),
-                approval: None,
             },
             "resize of Volume data to 20 GB",
             OperationVerb::Resize,
@@ -375,7 +359,6 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Mirror {
                     to: MachineName::parse("web-2").unwrap(),
-                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "mirror", "to": "web-2" }),
@@ -384,10 +367,7 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                ask: RunAsk::Sync {
-                    full: Full,
-                    approval: None,
-                },
+                ask: RunAsk::Sync { full: Full },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "sync", "full": true }),
             json!({ "full": true }),
@@ -398,7 +378,6 @@ async fn each_kind_posts_only_its_own_fields() {
                 ask: RunAsk::DeleteMirror {
                     slot: MachineName::parse("web-2").unwrap(),
                     confirm: Some("data".to_owned()),
-                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
@@ -410,7 +389,6 @@ async fn each_kind_posts_only_its_own_fields() {
                 ask: RunAsk::DeleteOldCopy {
                     slot: MachineName::parse("web-1").unwrap(),
                     confirm: None,
-                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_old_copy", "slot": "web-1" }),
@@ -421,8 +399,6 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Move {
                     to: MachineName::parse("web-2").unwrap(),
-                    approval: None,
-                    service: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2" }),
@@ -441,7 +417,6 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Restore {
                     from: MachineName::parse("web-2").unwrap(),
-                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "restore", "from": "web-2" }),
@@ -452,7 +427,6 @@ async fn each_kind_posts_only_its_own_fields() {
                 environment: named(),
                 ask: RunAsk::Resize {
                     maximum_bytes: twenty_gb(),
-                    approval: None,
                 },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "resize", "maximum_bytes": 20_000_000_000_u64 }),
@@ -559,7 +533,6 @@ async fn an_old_copy_delete_fails_closed_on_a_cloud_from_before_if_old_copy() {
     let flagged = RunAsk::DeleteOldCopy {
         slot: slot.clone(),
         confirm: None,
-        approval: None,
     };
     let request = RunRequest {
         environment: named(),
@@ -588,7 +561,6 @@ async fn an_old_copy_delete_fails_closed_on_a_cloud_from_before_if_old_copy() {
         ask: RunAsk::DeleteMirror {
             slot,
             confirm: None,
-            approval: None,
         },
     };
     assert!(start(&token(&cloud), &volume(), &bare, None).await.is_ok());
@@ -604,10 +576,7 @@ async fn a_refused_run_keeps_cloud_s_refusal() {
     });
     let request = RunRequest {
         environment: named(),
-        ask: RunAsk::Sync {
-            full: Full,
-            approval: None,
-        },
+        ask: RunAsk::Sync { full: Full },
     };
     let error = start(&token(&cloud), &volume(), &request, None)
         .await
@@ -720,13 +689,7 @@ fn a_run_that_did_not_finish_is_the_command_s_failure() {
         serde_json::from_value(run("failed", "mirror", json!({ "to": "web-2" }))).unwrap();
     failed.message = Some("data-web-2 diverged".to_owned());
     let follow = format!("ployz volume runs data {RUN}");
-    let error = ended(
-        &failed,
-        "Mirror of Volume data onto web-2",
-        follow.clone(),
-        None,
-    )
-    .unwrap_err();
+    let error = ended(&failed, "Mirror of Volume data onto web-2", follow.clone()).unwrap_err();
     assert_eq!(error.hints(), [Hint::Inspect(follow.clone())]);
     let error = error.report();
     assert_eq!(error.code, RpcErrorCode::Conflict);
@@ -738,7 +701,7 @@ fn a_run_that_did_not_finish_is_the_command_s_failure() {
     assert_eq!(error.details["run"]["id"], json!(RUN));
 
     failed.state = MaybeKnown::Known(VolumeRunState::Lost);
-    let error = ended(&failed, "Mirror", follow, None).unwrap_err().report();
+    let error = ended(&failed, "Mirror", follow).unwrap_err().report();
     assert_eq!(error.code, RpcErrorCode::Unavailable);
 }
 
@@ -759,7 +722,6 @@ fn a_resize_reads_back_its_size_and_names_it_when_it_fails() {
         &failed,
         "resize of Volume data to 20 GB",
         format!("ployz volume runs data {RUN}"),
-        None,
     )
     .unwrap_err()
     .report();
@@ -776,14 +738,9 @@ fn a_yielded_run_says_a_deploy_took_its_volume() {
         serde_json::from_value(run("yielded", "move", json!({ "to": "web-2" }))).unwrap();
     assert_eq!(yielded.state, MaybeKnown::Known(VolumeRunState::Yielded));
     yielded.message = Some("a Deploy took the Volume".to_owned());
-    let error = ended(
-        &yielded,
-        "Move",
-        format!("ployz volume runs data {RUN}"),
-        None,
-    )
-    .unwrap_err()
-    .report();
+    let error = ended(&yielded, "Move", format!("ployz volume runs data {RUN}"))
+        .unwrap_err()
+        .report();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
         error.message,
@@ -890,14 +847,9 @@ fn a_wait_stops_on_a_state_this_cli_predates_and_names_it() {
     let paused: VolumeRun =
         serde_json::from_value(run("paused_for_review", "move", json!({ "to": "web-2" }))).unwrap();
     assert!(paused.state.ended());
-    let error = ended(
-        &paused,
-        "Move",
-        format!("ployz volume runs data {RUN}"),
-        None,
-    )
-    .unwrap_err()
-    .report();
+    let error = ended(&paused, "Move", format!("ployz volume runs data {RUN}"))
+        .unwrap_err()
+        .report();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
         error.message,
@@ -934,88 +886,4 @@ async fn a_release_cloud_plans_for_20_seconds_still_starts() {
     let started = start(&token(&cloud), &volume(), &release, None).await;
     server.await.unwrap();
     assert_eq!(started.unwrap().id.as_str(), RUN);
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_signed_volume_run_goes_to_cloud_with_its_approval() {
-    use ployz_core::authority::{Signer, SignerKey, Timestamp, VolumeWorkflow};
-    let signer = Signer::from_seed(&[7; 32]);
-    let issued_at = Timestamp::from_millis(100_000).unwrap();
-    let body = VolumeApproval {
-        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
-        operation: ployz_core::OperationId::random(),
-        namespace: ployz_core::Namespace::parse("shop").unwrap(),
-        volume: ployz_core::DockerVolumeName::parse("shop_data").unwrap(),
-        workflow: VolumeWorkflow::Mirror {
-            writer: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
-            mirror: ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
-            replace: true,
-        },
-        issued_at,
-        expires_at: issued_at.plus(60_000),
-        signer: SignerKey::Device(signer.public().into()),
-    };
-    let signed = Signed::sign(&body, &signer).unwrap();
-    let expected = serde_json::to_value(&signed).unwrap();
-    for (ask, kind) in [
-        (
-            RunAsk::Mirror {
-                to: MachineName::parse("web-2").unwrap(),
-                approval: Some(signed.clone()),
-            },
-            "mirror",
-        ),
-        (
-            RunAsk::Sync {
-                full: Full,
-                approval: Some(signed.clone()),
-            },
-            "sync",
-        ),
-        (
-            RunAsk::Resize {
-                maximum_bytes: twenty_gb(),
-                approval: Some(signed.clone()),
-            },
-            "resize",
-        ),
-        (
-            RunAsk::Restore {
-                from: MachineName::parse("web-2").unwrap(),
-                approval: Some(signed.clone()),
-            },
-            "restore",
-        ),
-        (
-            RunAsk::DeleteMirror {
-                slot: MachineName::parse("web-2").unwrap(),
-                confirm: None,
-                approval: Some(signed.clone()),
-            },
-            "delete_mirror",
-        ),
-        (
-            RunAsk::DeleteOldCopy {
-                slot: MachineName::parse("web-2").unwrap(),
-                confirm: None,
-                approval: Some(signed.clone()),
-            },
-            "delete_mirror",
-        ),
-    ] {
-        let expected = expected.clone();
-        let cloud = fake_cloud(move |_, sent| {
-            let sent: Value = serde_json::from_str(sent).unwrap();
-            assert_eq!(sent["approval"], expected);
-            (200, json!({ "run": run("requested", kind, json!({})) }))
-        });
-        let request = RunRequest {
-            environment: named(),
-            ask,
-        };
-        start(&token(&cloud), &volume(), &request, None)
-            .await
-            .unwrap();
-    }
 }

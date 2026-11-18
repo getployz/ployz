@@ -149,27 +149,6 @@ impl Client {
             )
     }
 
-    /// A client to `machine` over the route the person chose to it, so what it answers is
-    /// its own word: this client when `machine` is the entry, else a fresh dial of that
-    /// route. `None` when `machine` doesn't [answer for itself](Self::answers_for_itself)
-    /// here. An RPC routed through the entry instead reaches whatever the replicated rows
-    /// say `machine` is.
-    ///
-    /// # Errors
-    /// Fails when the chosen route doesn't connect.
-    pub(crate) async fn own_route(
-        &self,
-        machine: &MachineId,
-    ) -> Result<Option<Self>, ConnectError> {
-        if !self.answers_for_itself(machine) {
-            return Ok(None);
-        }
-        if self.session.entry.as_ref() == Some(machine) {
-            return Ok(Some(self.clone()));
-        }
-        self.full_client(&MachineTarget::from(machine)).await
-    }
-
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.session.ended()?;
         if self.routes.is_empty()
@@ -196,15 +175,6 @@ impl Client {
         Ok(Some(client))
     }
 
-    #[must_use]
-    pub(crate) fn with_restart_approval(
-        mut self,
-        approval: Option<ployz_core::authority::Signed<ployz_core::authority::RestartApproval>>,
-    ) -> Self {
-        self.deploy.set_restart(approval);
-        self
-    }
-
     /// Hand every Server the approval of the Deploy this client runs.
     #[must_use]
     pub(crate) fn with_deploy_approval(
@@ -220,16 +190,6 @@ impl Client {
     #[must_use]
     pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
         self.deploy.set_proofs(proofs);
-        self
-    }
-
-    /// Hand every Server the teardown of what this client's Deploy takes off it.
-    #[must_use]
-    pub(crate) fn with_teardown(
-        mut self,
-        teardown: Option<ployz_core::authority::TeardownApproval>,
-    ) -> Self {
-        self.deploy.set_teardown(teardown);
         self
     }
 
@@ -1179,10 +1139,7 @@ impl Client {
             Carry::Nothing => Carried::none(),
         };
         Ok(EnsureContainerRequest {
-            teardown: carried.teardown,
-            preview: carried.preview,
             want,
-            approval: carried.restart,
             deploy: carried.deploy,
             rule: carried.rule,
         })
@@ -1194,10 +1151,6 @@ impl Client {
         action: ContainerAction,
         signal: Option<String>,
         grace_period_seconds: Option<u16>,
-        approvals: &HashMap<
-            ContainerId,
-            ployz_core::authority::Signed<ployz_core::authority::RestartApproval>,
-        >,
         cancellation: &CancellationToken,
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
@@ -1213,8 +1166,7 @@ impl Client {
             let machine_id = observation.machine_id;
             let container_id = observation.container_id;
             let handle = tasks.spawn(change_on_machine(
-                self.clone()
-                    .with_restart_approval(approvals.get(&container_id).cloned()),
+                self.clone(),
                 machine_id,
                 container_id,
                 action,
@@ -1355,12 +1307,7 @@ async fn remove_volumes_on(
     machines: &[MachineObservation],
     request: RemoveVolumesRequest,
 ) -> Vec<VolumeRemoval> {
-    let RemoveVolumesRequest {
-        volumes,
-        force,
-        teardown,
-    } = request;
-    let teardown = &teardown;
+    let RemoveVolumesRequest { volumes, force } = request;
     join_all(volumes.into_iter().map(|id| async move {
         let outcome = if machines
             .iter()
@@ -1369,7 +1316,6 @@ async fn remove_volumes_on(
             match client
                 .call_shared::<op::RemoveVolume>(
                     RemoveVolumeRequest {
-                        teardown: teardown.clone(),
                         name: id.name.clone(),
                         force,
                     },
@@ -1797,8 +1743,8 @@ impl StreamRpc for op::RuntimeWatch {
 }
 
 /// Whether a call on `path` to a named target goes to that target itself when a Full
-/// connection reaches it: a Full route, or one an enforcing Machine refuses every Operator,
-/// such as Leave. A call forwarded over the mesh arrives as an Operator's.
+/// connection reaches it: a Full route, or one a Machine refuses every Operator, such as
+/// a build. A call forwarded over the mesh arrives as an Operator's.
 fn dials_direct(path: &str) -> bool {
     ployz_core::scope_of(path) == Some(ployz_core::ManagementScope::Full)
         || ployz_core::capability_of(path)
@@ -1819,9 +1765,7 @@ async fn depart(
 ) -> Result<LocalMachineRemoved, RpcError> {
     let departed = match client
         .call::<op::Leave>(
-            LeaveRequest {
-                teardown: client.deploy.teardown(),
-            },
+            LeaveRequest {},
             Call::keyed().to(&MachineTarget::from(&machine)),
         )
         .await
@@ -1876,17 +1820,10 @@ impl LeftNotForgotten {
     }
 }
 
-/// Delete `machine_id`'s shared row through the entry Machine, under the teardown the
-/// client carries.
+/// Delete `machine_id`'s shared row through the entry Machine.
 pub(crate) async fn forget(client: &mut Client, machine_id: MachineId) -> Result<(), RpcError> {
     match client
-        .call::<op::Forget>(
-            ForgetRequest {
-                teardown: client.deploy.teardown(),
-                machine_id,
-            },
-            Call::keyed(),
-        )
+        .call::<op::Forget>(ForgetRequest { machine_id }, Call::keyed())
         .await
         .map_err(RpcError::from)?
     {

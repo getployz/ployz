@@ -343,7 +343,6 @@ async fn cloud_founder_advertises_and_pins_the_chosen_public_ip() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
 
@@ -560,7 +559,6 @@ async fn cloud_init_initialize_participates() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     })
     .with_events(events.clone());
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -792,7 +790,6 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
 
@@ -880,7 +877,6 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
@@ -938,7 +934,6 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     let mut client = connect_daemon(machine_addr).await;
@@ -1004,7 +999,6 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)

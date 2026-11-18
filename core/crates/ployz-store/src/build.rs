@@ -6,7 +6,7 @@
 use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryName};
 use std::collections::BTreeMap;
 
-use ployz_core::authority::{ApprovalDigest, CommitApproval, CommitAuthority, Signed};
+use ployz_core::authority::{AutoDeployRule, CommitAuthority, Signed};
 use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
 use ployz_core::{MachineId, RpcError, ServiceName};
 use ployz_decide::github_build::{EndKind, Hold, Target, github_end_holds};
@@ -393,8 +393,6 @@ struct BuildRow {
     receipt: Option<serde_json::Value>,
     /// The image token of that image, or its source's for a redeploy.
     image_token: Option<ImageToken>,
-    /// A person's approval of its commit, which the Servers check in place of the head.
-    commit_approval: Option<Signed<CommitApproval>>,
 }
 
 /// An image token GitHub's builder reported under a rule, with what its audience names
@@ -536,8 +534,7 @@ impl BuildRow {
 fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
         "SELECT service, commit_sha, status, message, log, github, organization_id, \
-         started, finished, server, github_skipped, interrupted, receipt, image_token, \
-         commit_approval \
+         started, finished, server, github_skipped, interrupted, receipt, image_token \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -564,7 +561,6 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             github_skipped: row.optional_text(10)?.map(str::to_owned),
             receipt: json_column(row.optional_text(12)?, "build receipt")?,
             image_token: json_column(row.optional_text(13)?, "image token")?,
-            commit_approval: json_column(row.optional_text(14)?, "commit approval")?,
         })
     })
     .collect()
@@ -612,22 +608,14 @@ pub(crate) fn routed(
     saved: &ployz_core::config::SavedEnvironmentIntent,
 ) -> Result<Vec<GitSource>, RpcError> {
     let organization = organization(tx, &stored.summary.id)?;
-    // A build a person approved builds only on GitHub, under the rule. A Server that
-    // enforces runs no other Builder's image, and a build left for the run's own Builders
-    // would wait behind the run's hold on that approval.
-    let approved = commit_approvals(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
     for (id, mut source) in git_sources(tx, stored, saved)? {
-        (source.builders, source.preferred_machine) = if approved.contains_key(&source.service) {
-            (vec![Builder::Github], None)
-        } else {
-            builders::walk(
-                tx,
-                organization.as_str(),
-                &stored.summary.environment_id,
-                &id,
-            )?
-        };
+        (source.builders, source.preferred_machine) = builders::walk(
+            tx,
+            organization.as_str(),
+            &stored.summary.environment_id,
+            &id,
+        )?;
         sources.push(source);
     }
     Ok(sources)
@@ -1119,11 +1107,8 @@ pub(crate) fn github_authorize(
         return refused("The token is for another run");
     }
     // A rule's build of a push runs on the run GitHub started, which Cloud followed. Any
-    // other build, a reviewed preview's or an approved commit's included, runs only on
-    // the dispatch Cloud sent.
-    let pushed = github_rule(tx, id)?.is_some()
-        && github_review(tx, id)?.is_none()
-        && github_approval(tx, id)?.is_none();
+    // other build runs only on the dispatch Cloud sent.
+    let pushed = github_rule(tx, id)?.is_some();
     let event = if pushed { "push" } else { "workflow_dispatch" };
     if claims.event_name != event {
         return refused("The run was not dispatched by Ployz");
@@ -1131,87 +1116,24 @@ pub(crate) fn github_authorize(
     Ok(build)
 }
 
-/// The rule a GitHub build builds under, on the run its push started. Cloud relays it;
-/// the builder and the grant Machine check it.
-#[derive(Clone, Debug, PartialEq)]
-pub enum GithubRule {
-    /// A push to the approved branch, under its Environment's automatic deploy rule.
-    Auto(ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>),
-    /// A push to a preview's branch, under the preview rule of the Environment it
-    /// starts from.
-    Preview(ployz_core::authority::Signed<ployz_core::authority::PreviewRule>),
-}
-
-impl GithubRule {
-    /// The repository, workflow and builder the rule names, once its signature checks.
-    #[must_use]
-    pub fn source(&self) -> Option<ployz_core::authority::RuleSource> {
-        match self {
-            Self::Auto(signed) => signed.open().ok().map(|rule| rule.source),
-            Self::Preview(signed) => signed.open().ok().map(|rule| rule.source),
-        }
-    }
-}
-
-/// The rule GitHub build `id` builds under, ended or not, when the rule covers the
-/// Service: for a preview, the preview rule its Namespace derives from, when automation
-/// or a person's review admitted it; otherwise its Environment's automatic deploy rule,
-/// when the Store's automation admitted the Deployment for a push, or a person approved
-/// the build's commit. Its run is then the push's own, which Cloud follows, or for a
-/// review or an approval the one Cloud dispatches.
+/// The automatic deploy rule GitHub build `id` builds under, ended or not, when the rule
+/// covers the Service and the Store's automation admitted the Deployment for a push. Its
+/// run is then the push's own, which Cloud follows. Cloud relays the rule; the builder and
+/// the grant Machine check it.
 pub(crate) fn github_rule(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
-) -> Result<Option<GithubRule>, RpcError> {
+) -> Result<Option<Signed<AutoDeployRule>>, RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
-    if let Some(preview) = crate::preview_rule::of_deployment(tx, &stored)? {
-        let covers = preview
-            .open()
-            .is_ok_and(|rule| rule.service(&id.service).is_some());
-        return Ok(covers.then_some(GithubRule::Preview(preview)));
-    }
-    if stored.summary.admitted_by.is_some()
-        && github_row(tx, &stored, id)?.commit_approval.is_none()
-    {
+    if stored.summary.admitted_by.is_some() {
         return Ok(None);
     }
     let rule = crate::auto_rule::stored(tx, &stored.summary.environment_id)?;
-    Ok(rule
-        .filter(|signed| {
-            signed
-                .open()
-                .is_ok_and(|rule| rule.service(&id.service).is_some())
-        })
-        .map(GithubRule::Auto))
-}
-
-/// The review a person signed for the commit of GitHub build `id`, when it builds a
-/// reviewed preview under its preview rule: Cloud then dispatches the rule's workflow on
-/// the parent's branch with that commit, rather than following a push.
-pub(crate) fn github_review(
-    tx: &mut dyn Tx,
-    id: &GithubBuildId,
-) -> Result<Option<ployz_core::authority::Review>, RpcError> {
-    match github_rule(tx, id)? {
-        Some(GithubRule::Preview(_)) => deployment::preview_review(tx, &id.deployment),
-        Some(GithubRule::Auto(_)) | None => Ok(None),
-    }
-}
-
-/// The approval a person signed for the commit of GitHub build `id`, when it builds
-/// under its Environment's automatic deploy rule: Cloud then dispatches the rule's
-/// workflow on its branch with that commit, and relays the approval to the grant Machine.
-pub(crate) fn github_approval(
-    tx: &mut dyn Tx,
-    id: &GithubBuildId,
-) -> Result<Option<Signed<CommitApproval>>, RpcError> {
-    match github_rule(tx, id)? {
-        Some(GithubRule::Auto(_)) => {
-            let stored = deployment::load(tx, &id.deployment)?;
-            Ok(github_row(tx, &stored, id)?.commit_approval)
-        }
-        Some(GithubRule::Preview(_)) | None => Ok(None),
-    }
+    Ok(rule.filter(|signed| {
+        signed
+            .open()
+            .is_ok_and(|rule| rule.service(&id.service).is_some())
+    }))
 }
 
 /// The GitHub build run `run_id` holds while it builds, if any: a rule build's runner
@@ -1276,65 +1198,6 @@ pub(crate) fn image_tokens(
             Some((row.service, token))
         })
         .collect())
-}
-
-/// The approval a person signed of each Service's commit in Deployment `id`, which the
-/// runner hands each Server with its image token.
-pub(crate) fn commit_approvals(
-    tx: &mut dyn Tx,
-    id: &DeploymentId,
-) -> Result<BTreeMap<ServiceName, Signed<CommitApproval>>, RpcError> {
-    Ok(rows(tx, id)?
-        .into_iter()
-        .filter_map(|row| Some((row.service, row.commit_approval?)))
-        .collect())
-}
-
-/// Whether every build of Deployment `id` a person approved ended with an image.
-pub(crate) fn approved_built(tx: &mut dyn Tx, id: &DeploymentId) -> Result<bool, RpcError> {
-    Ok(rows(tx, id)?
-        .iter()
-        .filter(|row| row.commit_approval.is_some())
-        .all(|row| {
-            matches!(
-                row.stage.status(),
-                RowStatus::Reported(BuildStatus::Built | BuildStatus::Reused)
-            )
-        }))
-}
-
-/// Keep a person's approval of the build of its Service at its commit in Deployment
-/// `deployment`, in place of any earlier one. One naming a Service or commit the
-/// Deployment doesn't build is `invalid_argument`.
-pub(crate) fn approve_commit(
-    tx: &mut dyn Tx,
-    deployment: &DeploymentId,
-    approval: &Signed<CommitApproval>,
-) -> Result<(), RpcError> {
-    let body = approval
-        .open()
-        .map_err(|_| error::invalid("A commit approval can't be read", json!({})))?;
-    let text = serde_json::to_string(approval).expect("a commit approval is JSON");
-    let changed = tx.execute(
-        "UPDATE config_build SET commit_approval = ?4 \
-         WHERE deployment_id = ?1 AND service = ?2 AND commit_sha = ?3",
-        &[
-            deployment.as_str().into(),
-            body.service.as_str().into(),
-            body.commit.to_string().as_str().into(),
-            text.as_str().into(),
-        ],
-    )?;
-    if changed == 0 {
-        return Err(error::invalid(
-            format!(
-                "The approval names {} at {}, which this Deployment doesn't build",
-                body.service, body.commit
-            ),
-            json!({ "service": body.service }),
-        ));
-    }
-    Ok(())
 }
 
 /// What a GitHub build builds.
@@ -1589,34 +1452,14 @@ fn built_token(
     else {
         return Ok(None);
     };
-    let (generation, authority) = match github_rule(tx, id)? {
-        Some(GithubRule::Auto(rule)) => {
-            let Ok(rule) = rule.open() else {
-                return Ok(None);
-            };
-            let authority = match &row.commit_approval {
-                Some(approval) => CommitAuthority::Approved(ApprovalDigest::of(approval)),
-                None => CommitAuthority::Head,
-            };
-            (rule.generation, authority)
-        }
-        Some(GithubRule::Preview(rule)) => {
-            let Ok(rule) = rule.open() else {
-                return Ok(None);
-            };
-            let authority = match deployment::preview_review(tx, &id.deployment)? {
-                Some(review) => CommitAuthority::Review(review.digest()),
-                None => CommitAuthority::Head,
-            };
-            (rule.generation, authority)
-        }
-        None => return Ok(None),
+    let Some(Ok(rule)) = github_rule(tx, id)?.map(|rule| rule.open()) else {
+        return Ok(None);
     };
     Ok(Some(ImageToken {
         token: token.clone(),
         image: image.to_owned(),
-        generation,
-        authority,
+        generation: rule.generation,
+        authority: CommitAuthority::Head,
     }))
 }
 

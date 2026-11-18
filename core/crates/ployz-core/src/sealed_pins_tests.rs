@@ -15,13 +15,9 @@ use rand_core::{OsRng, TryRngCore as _};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
-use crate::authority::Signer;
-use crate::authority::keys::{MachineKey, machine_signing_input};
-use crate::authority::rotation::sealed_key_binding;
 use crate::{
-    BuildSecretsError, Ciphertext, FoundingClaim, ManagementProof, OpenedSealed, OperationId,
-    PlatformPurpose, RecipientSecret, SealError, SealedIdentity, SealingPublicKey,
-    WireGuardPublicKey, X25519Secret, seal_platform, seal_value,
+    BuildSecretsError, FoundingClaim, ManagementProof, OpenedSealed, PlatformPurpose, SealError,
+    SealedIdentity, SealingPublicKey, WireGuardPublicKey, X25519Secret, seal_platform, seal_value,
 };
 
 type Kem = X25519HkdfSha256;
@@ -31,14 +27,9 @@ const SENDER: [u8; 32] = [0x22; 32];
 const SECRET: [u8; 32] = [0x33; 32];
 const AUDIENCE: &str = "ployz-build:0123";
 
-/// `RecipientSecret::from_secret(SECRET).seal_to(MACHINE's public key, b"binding")`.
-const RECIPIENT_BASE: &str = "be1dfdc0d427add0431b42afbcf0012502df56aa4efd150bfbbd952b2c855d4bef31c82e01bce06b38e4ae4baf63da43d375ada2447b49de48b4847f23ac41da96c5255d52178198cd3355393f4f478e";
-/// `RecipientSecret::from_secret(SECRET).seal_from(&SENDER, MACHINE's public key, b"binding")`.
-const RECIPIENT_AUTH: &str = "9b173df3ff38c531d7ba3ee7ea717eb9c82630c5e1dd8977c8c77c96db48567eeba60d832642504e3b24a5b9867ae3968735c0f268d8412878e31f64584b218f763ddac82475a8f7c242400217bbfdf1";
 /// `seal_for_build` from SENDER as the attest key to SECRET as the recipient, for `AUDIENCE`,
 /// of the values in [`opened`].
 const BUILD_SECRETS: &str = "6caac79b41ce676cf0d53d1e51ecb5d27c18929ff9b3d074bda7798272e1056612929cbd1f01e6e8c55aa0452cd97ac4f17085f28f271616a994efd86f7278d73147196024d228002cb7435c84f82b375922555fa7689c5d7afc8ff8bd8b183096357d7186ed363776b0a41f82abaa50f847edd92eb991caf9728d3bf341de1b091a";
-const SENDER_PUBLIC: &str = "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20";
 
 fn unhex(text: &str) -> Vec<u8> {
     (0..text.len())
@@ -48,7 +39,7 @@ fn unhex(text: &str) -> Vec<u8> {
 }
 
 fn public_of(private: [u8; 32]) -> [u8; 32] {
-    *RecipientSecret::from_secret(private).public().as_bytes()
+    *X25519Secret::from_bytes(private).recipient().as_bytes()
 }
 
 fn opened() -> OpenedSealed {
@@ -138,10 +129,6 @@ fn mutations(sealed: &[u8]) -> Vec<Vec<u8>> {
     all
 }
 
-fn machine_wg() -> WireGuardPublicKey {
-    WireGuardPublicKey(public_of(MACHINE))
-}
-
 fn identity() -> SealedIdentity {
     SealedIdentity {
         organization: "org_1".into(),
@@ -151,125 +138,8 @@ fn identity() -> SealedIdentity {
 }
 
 #[test]
-fn a_recipient_key_sealed_to_a_machine_opens_in_base_mode_only() {
-    let sealed = Ciphertext::from_bytes(unhex(RECIPIENT_BASE));
-    let opened = RecipientSecret::open(&MACHINE, b"binding", &sealed).unwrap();
-    assert_eq!(opened.secret(), &SECRET);
-
-    let sender = WireGuardPublicKey(public_of(SENDER));
-    assert!(RecipientSecret::open_from(&MACHINE, &sender, b"binding", &sealed).is_none());
-    assert!(RecipientSecret::open(&MACHINE, b"other", &sealed).is_none());
-    assert!(RecipientSecret::open(&[0x44; 32], b"binding", &sealed).is_none());
-    for bytes in mutations(sealed.as_bytes()) {
-        let mutated = Ciphertext::from_bytes(bytes);
-        assert!(RecipientSecret::open(&MACHINE, b"binding", &mutated).is_none());
-    }
-}
-
-#[test]
-fn a_recipient_key_sealed_from_a_machine_opens_in_auth_mode_for_that_sender_only() {
-    let sealed = Ciphertext::from_bytes(unhex(RECIPIENT_AUTH));
-    let sender = WireGuardPublicKey(unhex(SENDER_PUBLIC).try_into().unwrap());
-    let opened = RecipientSecret::open_from(&MACHINE, &sender, b"binding", &sealed).unwrap();
-    assert_eq!(opened.secret(), &SECRET);
-
-    assert!(RecipientSecret::open(&MACHINE, b"binding", &sealed).is_none());
-    let other = WireGuardPublicKey(public_of([0x55; 32]));
-    assert!(RecipientSecret::open_from(&MACHINE, &other, b"binding", &sealed).is_none());
-    assert!(RecipientSecret::open_from(&MACHINE, &sender, b"other", &sealed).is_none());
-    for bytes in mutations(sealed.as_bytes()) {
-        let mutated = Ciphertext::from_bytes(bytes);
-        assert!(RecipientSecret::open_from(&MACHINE, &sender, b"binding", &mutated).is_none());
-    }
-}
-
-#[test]
-fn a_recipient_key_is_sealed_under_its_own_info_in_either_mode() {
-    let secret = RecipientSecret::from_secret(SECRET);
-    let base = secret.seal_to(&machine_wg(), b"binding").unwrap();
-    assert_eq!(
-        oracle_open(
-            None,
-            MACHINE,
-            b"ployz-recipient-key-v1",
-            b"binding",
-            base.as_bytes()
-        )
-        .as_deref(),
-        Some(&SECRET[..])
-    );
-    let auth = secret
-        .seal_from(&SENDER, &machine_wg(), b"binding")
-        .unwrap();
-    assert_eq!(
-        oracle_open(
-            Some(public_of(SENDER)),
-            MACHINE,
-            b"ployz-recipient-key-v1",
-            b"binding",
-            auth.as_bytes()
-        )
-        .as_deref(),
-        Some(&SECRET[..])
-    );
-    assert_eq!(base.as_bytes().len(), 32 + 32 + 16);
-    assert_eq!(auth.as_bytes().len(), 32 + 32 + 16);
-
-    let from_oracle = oracle_seal(
-        None,
-        public_of(MACHINE),
-        b"ployz-recipient-key-v1",
-        b"binding",
-        &SECRET,
-    );
-    let opened =
-        RecipientSecret::open(&MACHINE, b"binding", &Ciphertext::from_bytes(from_oracle)).unwrap();
-    assert_eq!(opened.secret(), &SECRET);
-    let from_oracle = oracle_seal(
-        Some(SENDER),
-        public_of(MACHINE),
-        b"ployz-recipient-key-v1",
-        b"binding",
-        &SECRET,
-    );
-    let sender = WireGuardPublicKey(public_of(SENDER));
-    let opened = RecipientSecret::open_from(
-        &MACHINE,
-        &sender,
-        b"binding",
-        &Ciphertext::from_bytes(from_oracle),
-    )
-    .unwrap();
-    assert_eq!(opened.secret(), &SECRET);
-}
-
-#[test]
-fn a_recipient_key_opens_only_when_its_plaintext_is_32_bytes() {
-    for plaintext in [&[7; 33][..], &[7; 31][..]] {
-        let sealed = oracle_seal(
-            None,
-            public_of(MACHINE),
-            b"ployz-recipient-key-v1",
-            b"b",
-            plaintext,
-        );
-        assert!(RecipientSecret::open(&MACHINE, b"b", &Ciphertext::from_bytes(sealed)).is_none());
-    }
-}
-
-#[test]
-fn the_binding_of_a_sealed_recipient_key_and_the_aad_of_a_platform_value_are_framed_as_before() {
+fn the_aad_of_a_platform_value_is_framed_as_before() {
     let cluster = SealingPublicKey::from_bytes(public_of(MACHINE));
-    let operation = OperationId::parse("a".repeat(32)).unwrap();
-    assert_eq!(
-        sealed_key_binding(&cluster, &operation),
-        [
-            b"ployz-recipient-key-v1".as_slice(),
-            cluster.as_bytes(),
-            "a".repeat(32).as_bytes()
-        ]
-        .concat()
-    );
     for (purpose, name) in [
         (PlatformPurpose::IngressTunnel, "ingress-tunnel"),
         (PlatformPurpose::PrivateAccess, "private-access"),
@@ -316,13 +186,12 @@ fn a_sealed_value_is_sealed_under_the_env_info_and_its_variables_associated_data
 
 #[test]
 fn a_platform_value_is_sealed_under_the_platform_info_and_its_purposes_associated_data() {
-    let cluster = SealingPublicKey::from_bytes(public_of(MACHINE));
-    let recipient = SealingPublicKey::from_bytes(public_of(SECRET));
+    let cluster = SealingPublicKey::from_bytes(public_of(SECRET));
     for (purpose, name) in [
         (PlatformPurpose::IngressTunnel, "ingress-tunnel"),
         (PlatformPurpose::PrivateAccess, "private-access"),
     ] {
-        let sealed = seal_platform(&cluster, &recipient, purpose, b"platform-secret").unwrap();
+        let sealed = seal_platform(&cluster, purpose, b"platform-secret").unwrap();
         let aad = framed(&[
             b"ployz-platform-sealed-v1",
             name.as_bytes(),
@@ -351,14 +220,7 @@ fn a_value_sealed_to_a_low_order_key_is_refused_as_a_failed_seal() {
         Err(SealError)
     ));
     assert!(matches!(
-        seal_platform(&low_order, &low_order, PlatformPurpose::IngressTunnel, b"x"),
-        Err(SealError)
-    ));
-    let secret = RecipientSecret::from_secret(SECRET);
-    let zero = WireGuardPublicKey([0; 32]);
-    assert!(matches!(secret.seal_to(&zero, b"binding"), Err(SealError)));
-    assert!(matches!(
-        secret.seal_from(&SENDER, &zero, b"binding"),
+        seal_platform(&low_order, PlatformPurpose::IngressTunnel, b"x"),
         Err(SealError)
     ));
 }
@@ -440,17 +302,11 @@ fn a_pairing_secret_names_its_founding_claim_under_its_own_domain() {
 }
 
 #[test]
-fn a_management_proof_and_a_machine_statement_sign_under_their_own_domains() {
+fn a_management_proof_signs_under_its_own_domain() {
     assert_eq!(
         ManagementProof::message(&[7; ManagementProof::EXPORTER_LEN]),
         [b"ployz management client proof v1".as_slice(), &[7; 32]].concat()
     );
-    let key = Signer::from_seed(&[9; 32]).public();
-    let input = machine_signing_input("kind", MachineKey::Cluster { key }, "{body}");
-    let text = String::from_utf8(input).unwrap();
-    assert!(text.starts_with("ployz-machine/v1\nkind\ncluster:"));
-    assert!(text.ends_with("\n{body}"));
-    assert_eq!(text.matches('\n').count(), 3);
 }
 
 #[test]
@@ -473,12 +329,7 @@ fn an_authority_statement_signs_under_its_domain_and_purpose() {
         signing_input(Purpose::Join, "{body}"),
         b"ployz-authority/v1\njoin\n{body}".to_vec()
     );
-    for (purpose, name) in [
-        (Purpose::Workflow, "workflow"),
-        (Purpose::Enforce, "enforce"),
-        (Purpose::Rule, "rule"),
-        (Purpose::Volume, "volume"),
-    ] {
+    for (purpose, name) in [(Purpose::Workflow, "workflow"), (Purpose::Rule, "rule")] {
         assert_eq!(
             signing_input(purpose, ""),
             [b"ployz-authority/v1\n".as_slice(), name.as_bytes(), b"\n"].concat()

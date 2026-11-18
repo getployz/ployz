@@ -16,7 +16,6 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     };
     let enroll = EnrollListen::script([
         json!({
@@ -95,7 +94,6 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     })
     .lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -175,7 +173,6 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     });
     let machine_addr = serve_machine(daemon.clone()).await;
     connect_daemon(machine_addr)
@@ -264,7 +261,6 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     })
     .with_containers(vec![holder, ingress]);
     let machine_addr = serve_machine(daemon.clone()).await;
@@ -360,7 +356,6 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     })
     .with_events(events.clone())
     .transient_founder_tail_failures(1);
@@ -442,7 +437,6 @@ async fn founder_recovery_rejects_replaced_identity() {
             target_versions: Default::default(),
             sealing_key: None,
             devices: Vec::new(),
-            recipient: None,
         });
         let daemon = daemon.replace_identity_on_initialize();
         let address = serve_machine(daemon.clone()).await;
@@ -491,7 +485,6 @@ async fn publication_failure_does_not_complete_and_resumes_the_same_founder() {
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     });
     let address = serve_machine(daemon.clone()).await;
     let connect = format!("ssh://root@{address}");
@@ -541,7 +534,6 @@ async fn participating_founder(
         target_versions: Default::default(),
         sealing_key: None,
         devices: Vec::new(),
-        recipient: None,
     })
     .participating()
     .founded(founding);

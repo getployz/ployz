@@ -126,7 +126,6 @@ async fn mint_build_grant_whose_reply_is_lost_answers_with_the_transport_error()
         Box::pin(async move {
             session
                 .mint_build_grant(MintBuildGrantRequest {
-                    preview: None,
                     repository: ployz_core::BuildGrantRepository::parse("ployz-build/app").unwrap(),
                     holder: None,
                     sealed: None,

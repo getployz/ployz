@@ -2176,7 +2176,6 @@ fn deploying() -> (ConfigStore, DeploymentId) {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -2242,7 +2241,6 @@ fn a_deployment_shows_what_it_left_out_and_what_its_servers_warned() {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -2556,7 +2554,6 @@ fn deployed_shop() -> ConfigStore {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -3173,7 +3170,6 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: second.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
@@ -3326,14 +3322,11 @@ fn store_retry(
         .write_trusted(
             &who(),
             &Admit::Retry(ployz_store::Retry {
-                teardown: None,
                 id: DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap(),
                 deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap(),
                 rolls_back: None,
                 version: confirmed["version"].as_str().map(str::to_owned),
                 accept_volume_loss: serde_json::from_value(accept.clone()).unwrap(),
-                approvals: Vec::new(),
-                awaits_approval: false,
                 approval: None,
             }),
             trusted,
@@ -3470,7 +3463,6 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
             .write(
                 &who(),
                 &Admit::Deploy(Deploy {
-                    teardown: None,
                     id: id.clone(),
                     environment: EnvironmentRef::default(),
                     services: services
@@ -3760,7 +3752,6 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
         .write(
             &who(),
             &Admit::Deploy(Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),

@@ -2594,7 +2594,6 @@ fn an_environment_cloud_forgets_and_sweeps_first_still_says_it_was_left_on_old_s
                 .write_trusted(
                     &who,
                     &ployz_store::Admit::Remove(ployz_store::AdmitRemoval {
-                        teardown: None,
                         id: ployz_store::DeploymentId::parse(uuid::Uuid::new_v4().to_string())
                             .unwrap(),
                         environment: ployz_store::EnvironmentRef {
@@ -6040,7 +6039,6 @@ fn applied(store: &Target, environment: &str) {
             let who = Actor::system(OrganizationId::parse("local").unwrap());
             let id = ployz_store::DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
             let deploy = ployz_store::Admit::Deploy(ployz_store::Deploy {
-                teardown: None,
                 id: id.clone(),
                 environment: ployz_store::EnvironmentRef {
                     project: Some(ployz_store::ProjectName::parse("shop").unwrap()),
@@ -6340,7 +6338,7 @@ fn an_outsiders_pull_request_deploys_once_a_member_approves_its_head() {
         waiting["plans"][0]["open"][0],
         json!({
             "number": 5, "title": "Add search", "author": "ada", "head": "1".repeat(40),
-            "standing": "needs_approval", "environment": null, "needs_review": false,
+            "standing": "needs_approval", "environment": null,
         })
     );
     let names = |listed: &Value| -> Vec<Value> {

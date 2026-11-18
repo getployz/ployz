@@ -18,7 +18,9 @@ use std::time::Duration;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DoorChange, DoorOutcome,
     Namespace, PrivateAccessFailure, PrivateAccessProblem, PrivateAccessSet, ResolvedServiceSpec,
-    SetPrivateAccessRequest, private_access_router_joined, private_access_sealed_key,
+    Sealing, SetPrivateAccessRequest,
+    authority::{AuthorityRefusal, PrivateAccessFacts, Purpose, Timestamp, private_access},
+    private_access_router_joined, private_access_sealed_key,
 };
 use zeroize::Zeroizing;
 
@@ -153,6 +155,48 @@ pub(super) struct Wanted {
 }
 
 impl LocalMachine {
+    /// An Operator's `SetPrivateAccess` turns Private Access on only with an approval, by a
+    /// trusted Device or a trusted passkey's own prompt, of the sealed auth key it carries.
+    /// The key decides which tailnet reaches the whole Cluster network. Turning off needs
+    /// none, and neither does a Full caller.
+    ///
+    /// # Errors
+    /// Returns [`Error::PrivateAccessRefused`] naming what the approval lacks.
+    pub(crate) fn admit_operator_private_access(
+        &self,
+        request: &SetPrivateAccessRequest,
+    ) -> Result<(), Error> {
+        let record = self.record();
+        if !request.enabled {
+            return Ok(());
+        }
+        let approval = request
+            .approval
+            .as_ref()
+            .ok_or(Error::PrivateAccessRefused(AuthorityRefusal::Unsigned {
+                purpose: Purpose::Workflow,
+            }))?;
+        let sealed = request
+            .sealed_auth_key
+            .as_ref()
+            .ok_or(Error::PrivateAccessKeyMissing)?;
+        let cluster = self
+            .held_sealing(record.phase())
+            .and_then(Sealing::held_key);
+        let approver = private_access::verify(
+            approval,
+            &PrivateAccessFacts {
+                cluster,
+                trusted: &record.trusted_keys(),
+                sealed,
+                now: Timestamp::now(),
+            },
+        )
+        .map_err(Error::PrivateAccessRefused)?;
+        tracing::info!(%approver, "Private Access approved");
+        Ok(())
+    }
+
     /// The Cluster network, from this Machine's record or, once joined, from the
     /// replicated Cluster record.
     ///

@@ -1,9 +1,8 @@
 use super::*;
 use crate::{
-    DeviceKey, MachineId, Namespace,
+    DeviceKey,
     authority::{
         keys::{OwnPrompt, Signer},
-        session::{ActionFamily, Delegation, GrantBody, SessionGrant},
         trusted_key::tests::{Answer, Authenticator, HONEST},
         trusted_key::{PasskeyApprover, TrustedPasskey},
     },
@@ -173,46 +172,6 @@ fn the_device_the_body_names_approves_whatever_order_its_signature_comes_in() {
     assert_eq!(
         check(&KeyApproval::Signed(signed), &trusted, &sealed()),
         Ok(Approver::Device(device().public()))
-    );
-}
-
-#[test]
-fn a_browser_key_under_a_session_grant_is_refused() {
-    let passkey = Authenticator::es256(4);
-    let browser = Signer::from_seed(&[6; 32]);
-    let grant = GrantBody {
-        browser_key: browser.public(),
-        cluster: cluster(),
-        environment: Namespace::parse("app").unwrap(),
-        environment_id: uuid::Uuid::from_u128(1),
-        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
-        families: vec![ActionFamily::Deploy],
-        issued_at: at(0),
-        expires_at: at(3_000_000),
-        delegation: Delegation::None,
-    };
-    let unsigned = Signed::unsigned(&grant).unwrap();
-    let assertion = passkey.answer(&Answer {
-        challenge: &unsigned.challenge(),
-        ..HONEST
-    });
-    let grant = SessionGrant {
-        body: unsigned.body,
-        assertion,
-    };
-    let signed = Signed::sign_under(
-        &approval(SignerKey::Browser {
-            browser: browser.public(),
-        }),
-        &browser,
-        grant,
-    )
-    .unwrap();
-    assert_eq!(
-        check(&KeyApproval::Signed(signed), &trusted(&passkey), &sealed()),
-        Err(AuthorityRefusal::Mismatch {
-            field: "the signer"
-        })
     );
 }
 

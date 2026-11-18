@@ -1027,7 +1027,6 @@ fn removing_a_project_with_a_protected_environment_needs_environments_protect() 
         store.write_trusted(
             who,
             &ployz_store::Remove {
-                teardown: None,
                 project: ProjectName::parse("shop").unwrap(),
                 environment: None,
                 version: None,

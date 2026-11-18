@@ -1522,9 +1522,8 @@ fn typed_errors_preserve_future_error_codes() {
 #[test]
 fn leave_and_forget_round_trip_under_stable_capabilities() {
     let requests = [
-        op::Leave::into_request(LeaveRequest { teardown: None }),
+        op::Leave::into_request(LeaveRequest {}),
         op::Forget::into_request(ForgetRequest {
-            teardown: None,
             machine_id: MachineId::parse(MACHINE_ID).unwrap(),
         }),
     ];
@@ -1583,7 +1582,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
     );
     assert_eq!(
         op::RemoveVolume::into_request(RemoveVolumeRequest {
-            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1593,7 +1591,6 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         .unwrap()
         .body,
         RpcRequestBody::RemoveVolume(RemoveVolumeRequest {
-            teardown: None,
             name: name.clone(),
             force: true,
         })
@@ -1650,9 +1647,6 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         "creation_key": "deploy/slot-1"
     });
     let running = EnsureContainerRequest {
-        teardown: None,
-        preview: None,
-        approval: None,
         deploy: None,
         rule: None,
         want: ContainerWant::Running {
@@ -1960,10 +1954,7 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
     let public_key = ployz_core::SealingPublicKey::from_bytes([9; 32]);
     let backup = ployz_core::SealingKeyBackup::from_bytes(vec![3; 77]);
 
-    let wrap = ployz_core::WrapSealingKeyRequest {
-        code: code.clone(),
-        key: ployz_core::SealingKeyRole::Identity,
-    };
+    let wrap = ployz_core::WrapSealingKeyRequest { code: code.clone() };
     assert_eq!(
         op::WrapSealingKey::into_request(wrap.clone())
             .encode()
@@ -1977,7 +1968,6 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
         let recover = ployz_core::RecoverSealingKeyRequest {
             code: code.clone(),
             backup,
-            rotation: None,
         };
         assert_eq!(
             op::RecoverSealingKey::into_request(recover.clone())
@@ -1990,11 +1980,7 @@ fn sealing_key_recovery_rpcs_have_one_typed_wire_contract() {
         );
     }
 
-    let wrapped = ployz_core::SealingKeyWrapped {
-        public_key,
-        backup,
-        rotation: None,
-    };
+    let wrapped = ployz_core::SealingKeyWrapped { public_key, backup };
     assert_eq!(
         RpcResponse::from(wrapped.clone())
             .decode::<op::WrapSealingKey>()
@@ -2024,7 +2010,6 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
     let request = RequestMachineUpgradeRequest {
         attempt_id,
         release: MachineRelease::parse("beta").unwrap(),
-        channel: None,
     };
     assert_eq!(
         op::RequestMachineUpgrade::into_request(request.clone())
@@ -2065,8 +2050,6 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
         upgrade: None,
         token: None,
         sealing: None,
-        activation: None,
-        sealing_recipient: None,
         founding: Default::default(),
     };
     let encoded = serde_json::to_value(&details).unwrap();

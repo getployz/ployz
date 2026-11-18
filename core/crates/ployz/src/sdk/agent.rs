@@ -4,7 +4,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::join_all;
 use ployz_core::QualifiedService;
-use ployz_core::authority::{RestartApproval, Signed};
 use ployz_core::metrics::{MarkerKind, MetricMarker, MetricRange};
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
@@ -571,9 +570,8 @@ fn copies_of<'a>(
 
 /// Stop Container `container` on `machine` once no proxy routes to it, or once the
 /// wait for a proxy that never confirms ends. A copy that serves leaves rotation first
-/// and stays startable. `approval` rides every step, for a Machine under Device
-/// enforcement. An answer is the Machine's; a lost one is the transport's error, and
-/// the stop may have happened.
+/// and stays startable. An answer is the Machine's; a lost one is the transport's error,
+/// and the stop may have happened.
 ///
 /// # Errors
 /// Returns the Machine's refusal, a cancelled wait (left running), or the transport's
@@ -582,9 +580,8 @@ pub async fn stop_one(
     session: &Session,
     machine: MachineId,
     container: ContainerId,
-    approval: Option<Signed<RestartApproval>>,
 ) -> Result<(), RpcError> {
-    let client = session.client()?.with_restart_approval(approval);
+    let client = session.client()?;
     session
         .until_closed(cleanup::user_stop(
             &client,
@@ -651,7 +648,6 @@ impl Started {
 
 /// Start Container `container` on `machine`, then wait until it is healthy or past its
 /// healthcheck deadline. A copy that serves is brought back into rotation once healthy.
-/// `approval` rides every step, for a Machine under Device enforcement.
 ///
 /// # Errors
 /// Returns the Machine's refusal, a Conflict for a copy out of rotation (deploy again),
@@ -660,9 +656,8 @@ pub async fn start_one(
     session: &Session,
     machine: MachineId,
     container: ContainerId,
-    approval: Option<Signed<RestartApproval>>,
 ) -> Result<Started, RpcError> {
-    let client = session.client()?.with_restart_approval(approval);
+    let client = session.client()?;
     session
         .until_closed(async {
             Ok(

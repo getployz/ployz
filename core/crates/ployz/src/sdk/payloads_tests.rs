@@ -86,7 +86,6 @@ const CLOUD_CONTRACT: &[(&str, &str, &str)] = &[
     ("MIN_MANAGED_VOLUME_BYTES", "100000000", "100000000"),
     ("MAX_LIFETIME_MILLIS", "900000", "900000"),
     ("CLOCK_SKEW_MILLIS", "120000", "120000"),
-    ("MAX_GRANT_LIFETIME_MILLIS", "3600000", "3600000"),
 ];
 
 /// The generated text is what Cloud's TypeScript imports, so its bytes are the contract.
@@ -113,30 +112,4 @@ fn cloud_contract_files_spell_every_constant_in_all_three_module_forms() {
         file("cloud-contract.js"),
         format!("{HEADER}\"use strict\";\n\n{cjs}")
     );
-}
-
-/// The dashboard drafts an activation with `@ployz/sdk/authority` and drives it with the
-/// SDK's activation methods, so each type they name is declared.
-#[test]
-fn the_activation_statements_and_requests_are_declared() {
-    let payloads = file("payloads.d.ts");
-    for name in [
-        "StartingSet",
-        "StartingSetTerms",
-        "SealingRotation",
-        "ActivationDraft",
-        "Member",
-        "ActivateEnforcementRequest",
-        "DeviceEnforcementSet",
-        "SetRecipientKeyRequest",
-        "RecipientKeySet",
-        "ResealValuesRequest",
-        "ValuesResealed",
-        "ActivationReport",
-    ] {
-        assert!(
-            payloads.contains(&format!("export type {name} =")),
-            "{name} is not declared"
-        );
-    }
 }

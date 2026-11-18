@@ -4,7 +4,6 @@ use crate::{
     metrics::{MetricHistoryReply, MetricHistoryRequest},
 };
 
-mod activation;
 mod build_grant;
 mod catalog;
 #[cfg(test)]
@@ -22,7 +21,6 @@ mod sealing;
 mod sealing_recovery;
 mod upgrade;
 mod volume;
-pub use activation::*;
 pub use build_grant::*;
 pub use catalog::*;
 pub use container::*;
@@ -418,9 +416,6 @@ define_responses! {
     PendingJoins(PendingJoins) => "pending_joins";
     JoinApproved(JoinApproved) => "join_approved";
     PushTargetSet(PushTargetSet) => "push_target_set";
-    DeviceEnforcementSet(DeviceEnforcementSet) => "device_enforcement_set";
-    RecipientKeySet(RecipientKeySet) => "recipient_key_set";
-    ValuesResealed(ValuesResealed) => "values_resealed";
     EndpointSelected(EndpointSelected) => "endpoint_selected";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
@@ -646,7 +641,6 @@ mod set_management_client_wire {
                     target_versions: BTreeMap::new(),
                     sealing_key: None,
                     devices: Vec::new(),
-                    recipient: None,
                 },
             },
             wireguard_mtu: Some(1380),
@@ -741,7 +735,6 @@ mod streaming_routing_tests {
                 "WrapSealingKey",
                 "RecoverSealingKey",
                 "SetDevice",
-                "SetDeviceEnforcement",
                 "SetPasskey",
                 "RemoveTrustedKey",
                 "Exec"

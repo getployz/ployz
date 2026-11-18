@@ -99,15 +99,7 @@ pub enum Enrolled {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct LeaveRequest {
-    /// A person's teardown naming this request, or the preview rule whose own preview it
-    /// closes. A Machine under Device enforcement requires it from an Operator caller; an
-    /// older daemon ignores it. Sent only to a daemon advertising
-    /// [`crate::TEARDOWN_CAPABILITY`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
-}
+pub struct LeaveRequest {}
 
 /// A successful Leave cannot report a Machine that still participates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -138,13 +130,6 @@ pub enum Left {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ForgetRequest {
     pub machine_id: MachineId,
-    /// A person's teardown naming this request, or the preview rule whose own preview it
-    /// closes. A Machine under Device enforcement requires it from an Operator caller; an
-    /// older daemon ignores it. Sent only to a daemon advertising
-    /// [`crate::TEARDOWN_CAPABILITY`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub teardown: Option<Box<crate::authority::TeardownApproval>>,
 }
 
 /// A missing row is success.
@@ -258,11 +243,6 @@ pub struct Registered {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<crate::DeviceKey>>")]
     pub devices: Vec<crate::DeviceKey>,
-    /// After activation, the Cluster's recipient key for the joiner. Absent before
-    /// activation, without a join approval, and from an issuer that predates it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub recipient: Option<crate::JoinRecipient>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

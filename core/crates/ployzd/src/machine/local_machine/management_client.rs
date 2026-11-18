@@ -98,8 +98,7 @@ impl LocalMachine {
                             {
                                 return Err(Error::DeviceIsPasskey(code));
                             }
-                            let evidence = store.record().evidence_from(&by);
-                            if store.approve_device(key, evidence)? {
+                            if store.approve_device(key)? {
                                 DeviceSet::Approved { code }
                             } else {
                                 DeviceSet::AlreadyApproved { code }
@@ -155,15 +154,11 @@ impl LocalMachine {
                             held: held.passkey.code(),
                         });
                     }
-                    let evidence = record.evidence_from(&by);
                     Ok(
-                        if store.approve_passkey(
-                            TrustedPasskey {
-                                passkey: *passkey,
-                                approved_by: by,
-                            },
-                            evidence,
-                        )? {
+                        if store.approve_passkey(TrustedPasskey {
+                            passkey: *passkey,
+                            approved_by: by,
+                        })? {
                             tracing::info!("trusted key added kind=passkey code={code} by={by}");
                             DeviceSet::Approved { code }
                         } else {

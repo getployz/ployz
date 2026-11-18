@@ -21,7 +21,6 @@ fn golden() -> Value {
         "push_target": "https://cloud.example/push",
         "device_slots_vetted": false,
         "device_enforcement": true,
-        "born_enforcing": true,
         "trusted_machines": [{
             "id": "c".repeat(32),
             "public_key": bytes(3),
@@ -70,7 +69,6 @@ fn born_defaults(body: Value) -> Value {
         "trusted_machines": [],
         "membership_cluster": null,
         "enrollment": null,
-        "trusted_snapshot": {},
     })
 }
 
@@ -91,27 +89,6 @@ fn a_record_written_today_reads_and_writes_back_unchanged() {
         MachineId::parse("a".repeat(32)).unwrap(),
         "the id lives inside the tagged body"
     );
-}
-
-/// A record the boot commit activated keeps when it did: a Volume approval issued before
-/// `activated_at` is judged under the old derivation, so reading it as absent would judge
-/// every approval under the new one.
-#[test]
-fn a_record_keeps_the_time_it_was_activated_across_a_read() {
-    let mut row = golden();
-    row.as_object_mut()
-        .unwrap()
-        .insert("activated_at".into(), json!(1_700_000_000_000_u64));
-
-    let record: LocalMachineRecord = serde_json::from_value(row.clone()).unwrap();
-
-    assert_eq!(
-        record
-            .activated_at()
-            .map(ployz_core::authority::Timestamp::as_millis),
-        Some(1_700_000_000_000)
-    );
-    assert_eq!(serde_json::to_value(&record).unwrap(), row);
 }
 
 /// The bytes a client key takes in `machine.json`: a JSON array of its 32 byte values.
@@ -145,7 +122,7 @@ fn record_text(body: &str) -> String {
             r#"{{"body":{body},"wireguard_private_key":{private},"management_secret":{secret},"#,
             r#""management_clients":{{}},"pinned_addresses":{{"public_ip":false,"advertised_endpoints":false}},"#,
             r#""device_slots_vetted":true,"device_enforcement":false,"trusted_machines":[],"#,
-            r#""membership_cluster":null,"enrollment":null,"trusted_snapshot":{{}}}}"#,
+            r#""membership_cluster":null,"enrollment":null}}"#,
         ),
         body = body,
         private = key_text(7),
@@ -304,14 +281,10 @@ fn resetting_keeps_every_field_but_the_body() {
         push_target,
         device_slots_vetted,
         filters_peers,
-        born_enforcing,
         trusted_machines,
         passkeys,
         membership_cluster,
         enrollment,
-        trusted_snapshot,
-        activation,
-        activated_at,
     } = before.clone();
 
     let LocalMachineRecord {
@@ -325,14 +298,10 @@ fn resetting_keeps_every_field_but_the_body() {
         push_target: kept_push_target,
         device_slots_vetted: kept_vetted,
         filters_peers: kept_filter,
-        born_enforcing: kept_born,
         trusted_machines: kept_trusted,
         passkeys: kept_passkeys,
         membership_cluster: kept_cluster,
         enrollment: kept_enrollment,
-        trusted_snapshot: kept_snapshot,
-        activation: kept_activation,
-        activated_at: kept_activated_at,
     } = before.into_resetting();
 
     assert_eq!(
@@ -350,14 +319,10 @@ fn resetting_keeps_every_field_but_the_body() {
     assert_eq!(kept_push_target, push_target);
     assert_eq!(kept_vetted, device_slots_vetted);
     assert_eq!(kept_filter, filters_peers);
-    assert_eq!(kept_born, born_enforcing);
     assert_eq!(kept_trusted, trusted_machines);
     assert_eq!(kept_passkeys, passkeys);
     assert_eq!(kept_cluster, membership_cluster);
     assert_eq!(kept_enrollment, enrollment);
-    assert_eq!(kept_snapshot, trusted_snapshot);
-    assert_eq!(kept_activation, activation);
-    assert_eq!(kept_activated_at, activated_at);
 }
 
 #[test]

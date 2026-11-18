@@ -27,7 +27,6 @@ pub(crate) mod docs;
 pub(crate) mod domain;
 pub(crate) mod env;
 pub(crate) mod github;
-mod github_preview;
 mod github_rule;
 pub(crate) mod ingress;
 mod input;
@@ -925,19 +924,6 @@ mod tests {
             (&["device", "ls"], Some("b")),
             (&["device", "rm", "mmg42klgyq"], Some("b")),
             (&["device", "approve", "mmg42-klgyq-p3w7d-xa5re"], Some("b")),
-            (&["device", "enforce"], Some("b")),
-            (
-                &[
-                    "device",
-                    "enforce",
-                    "--pin",
-                    "3f9a1c2e",
-                    "--keep",
-                    "mmg42-klgyq-p3w7d-xa5re",
-                    "--yes",
-                ],
-                Some("b"),
-            ),
         ] {
             let argv = args
                 .iter()

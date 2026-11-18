@@ -1081,16 +1081,14 @@ impl Session {
     /// Management Client other than Cloud holds a key, the Machine did not respond so Data Loss cannot
     /// be listed, the confirmation does not cover the fresh Data Loss, or
     /// reset or shared-row removal fails. Unconfirmed names are in
-    /// `UnconfirmedDataLoss` details. `teardown` is the person's approval of the
-    /// removal, which a Server that enforces Device approval needs to leave or forget.
+    /// `UnconfirmedDataLoss` details.
     pub async fn remove_machine(
         &self,
         machine: &str,
         confirm_data_loss: &DataLossConfirmation,
-        teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let target = resolve_target(machine)?;
-        let mut client = self.client()?.with_teardown(teardown);
+        let mut client = self.client()?;
         self.until_closed(client.remove_machine(
             &target,
             confirm_data_loss,
@@ -1230,10 +1228,7 @@ impl Session {
                         )
                     })?;
                     Some(crate::ingress::NewToken {
-                        seal_for: crate::sealing_pin::SealFor {
-                            cluster,
-                            recipient: observed.recipient.unwrap_or(cluster),
-                        },
+                        seal_for: cluster,
                         token,
                     })
                 }
@@ -1322,13 +1317,9 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, `machine` is not a
     /// Machine Target or not visible, it is the last Machine and a Management Client
     /// holds a key or its holders can't be read, or shared-row removal fails.
-    pub async fn remove_machine_membership(
-        &self,
-        machine: &str,
-        teardown: Option<ployz_core::authority::TeardownApproval>,
-    ) -> Result<(), RpcError> {
+    pub async fn remove_machine_membership(&self, machine: &str) -> Result<(), RpcError> {
         let target = resolve_target(machine)?;
-        let mut client = self.client()?.with_teardown(teardown);
+        let mut client = self.client()?;
         self.until_closed(client.remove_machine_membership(&target))
             .await
     }
@@ -1477,91 +1468,6 @@ impl Session {
         .await
     }
 
-    /// Hand one Machine a person's signed starting set. The Machine checks it against its own
-    /// trusted snapshot and restarts to commit it, so this is sent once; Inspect's `activation`
-    /// reports how it settled.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when `machine` isn't a Machine target, the session is
-    /// closed, or the Machine refuses the set.
-    pub async fn activate_enforcement(
-        &self,
-        machine: &str,
-        request: ployz_core::ActivateEnforcementRequest,
-    ) -> Result<ployz_core::DeviceEnforcementSet, RpcError> {
-        let target = resolve_target(machine)?;
-        let client = self.client()?;
-        self.until_closed(async {
-            client
-                .call_shared::<op::ActivateEnforcement>(
-                    request,
-                    Call::once()
-                        .to(&target)
-                        .within(Deadline::Target(crate::connect::TARGET_RPC_TIMEOUT)),
-                )
-                .await
-                .map_err(crate::connect::rpc_error)
-        })
-        .await
-    }
-
-    /// Generate, install or share the recipient key of one Machine's activation. Each request
-    /// answers the same when repeated.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when `machine` isn't a Machine target, the session is
-    /// closed, or the Machine refuses the rotation.
-    pub async fn set_recipient_key(
-        &self,
-        machine: &str,
-        request: ployz_core::SetRecipientKeyRequest,
-    ) -> Result<ployz_core::RecipientKeySet, RpcError> {
-        let target = resolve_target(machine)?;
-        let mut client = self.client()?;
-        self.until_closed(async {
-            client
-                .call::<op::SetRecipientKey>(
-                    request,
-                    Call::keyed()
-                        .to(&target)
-                        .budget(crate::connect::target_read_timeout()),
-                )
-                .await
-                .map_err(crate::connect::rpc_error)
-        })
-        .await
-    }
-
-    /// Ask one activated Machine to seal values again to its own recipient key. It changes
-    /// nothing on the Machine.
-    ///
-    /// # Errors
-    ///
-    /// Returns a generated [`RpcError`] when `machine` isn't a Machine target, the session is
-    /// closed, or the Machine holds no recipient key.
-    pub async fn reseal_values(
-        &self,
-        machine: &str,
-        request: ployz_core::ResealValuesRequest,
-    ) -> Result<ployz_core::ValuesResealed, RpcError> {
-        let target = resolve_target(machine)?;
-        let mut client = self.client()?;
-        self.until_closed(async {
-            client
-                .call::<op::ResealValues>(
-                    request,
-                    Call::keyed()
-                        .to(&target)
-                        .budget(crate::connect::target_read_timeout()),
-                )
-                .await
-                .map_err(crate::connect::rpc_error)
-        })
-        .await
-    }
-
     /// Live Observation of Data Loss that destroying `namespace` would cause.
     ///
     /// [`VolumeFate::Preserve`] yields an empty list. Mutates nothing.
@@ -1596,18 +1502,16 @@ impl Session {
     /// is not a Namespace or is reserved, the Namespace is not visible, the
     /// snapshot is incomplete, or the confirmation does not cover the fresh
     /// Data Loss. Unconfirmed names are in `UnconfirmedDataLoss` details.
-    /// Execution failure is a [`DeployOutcome::Failed`]. `teardown` is the person's
-    /// approval, which a Server that enforces Device approval needs to take it off.
+    /// Execution failure is a [`DeployOutcome::Failed`].
     pub async fn destroy_namespace(
         &self,
         namespace: &str,
         confirm_data_loss: &DataLossConfirmation,
         volumes: VolumeFate,
-        teardown: Option<ployz_core::authority::TeardownApproval>,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let namespace = Namespace::parse(namespace)
             .map_err(|error| RpcError::invalid_argument(error.to_string()))?;
-        let mut client = self.client()?.with_teardown(teardown);
+        let mut client = self.client()?;
         self.until_closed(client.destroy_namespace(
             &namespace,
             confirm_data_loss,

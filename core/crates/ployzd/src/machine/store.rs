@@ -54,77 +54,18 @@ pub(crate) struct PreparedReset {
 pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
-    recipient: Option<JoinedRecipient>,
     keys: ployz_core::authority::TrustedKeys,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
     enrollment: EnrollRequest,
 }
 
-/// The recipient key a joiner after activation opened from its registration, under a
-/// rotation it verified against the keys its join approval names.
-struct JoinedRecipient {
-    key: SealingKey,
-    rotation: ployz_core::authority::Signed<ployz_core::authority::SealingRotation>,
-    operation: ployz_core::OperationId,
-}
-
-/// What an enrollment installs: the body, the Cluster's key, the keys its approval names,
-/// and the recipient key after activation.
+/// What an enrollment installs: the body, the Cluster's key and the keys its approval names.
 type Enrolled = (
     LocalMachineBody,
     Option<SealingKey>,
     ployz_core::authority::TrustedKeys,
-    Option<JoinedRecipient>,
 );
-
-/// The recipient key in `recipient`, when its rotation is for the join's Cluster and signed by
-/// a Device the joiner trusts, and its sealed key opens to the key the rotation names.
-/// Anything else is refused: the joiner installs no recipient key and says so.
-fn joined_recipient(
-    recipient: &ployz_core::JoinRecipient,
-    body: &ployz_core::authority::JoinApproval,
-    devices: &[DeviceKey],
-    wireguard: &crate::network::WireGuardPrivateKey,
-) -> Option<JoinedRecipient> {
-    let trusted = ployz_core::authority::TrustedKeys {
-        devices: devices.to_vec(),
-        passkeys: Vec::new(),
-    };
-    let verified = ployz_core::authority::rotation::verify_for_join(
-        &recipient.rotation,
-        &trusted,
-        body.cluster,
-        ployz_core::authority::Timestamp::now(),
-    );
-    let rotation = match verified {
-        Ok((rotation, _)) => rotation,
-        Err(refusal) => {
-            tracing::warn!(
-                %refusal,
-                "joined without the Cluster's recipient key: its rotation did not verify"
-            );
-            return None;
-        }
-    };
-    let opened = ployz_core::RecipientSecret::open(
-        wireguard.as_bytes(),
-        &ployz_core::authority::rotation::sealed_key_binding(&body.cluster, &rotation.operation),
-        &recipient.sealed,
-    )
-    .map(|secret| SealingKey::from_secret(*secret.secret()))
-    .filter(|key| key.public_key() == rotation.recipient);
-    if opened.is_none() {
-        tracing::warn!(
-            "joined without the Cluster's recipient key: it did not open to the key its rotation names"
-        );
-    }
-    opened.map(|key| JoinedRecipient {
-        key,
-        rotation: recipient.rotation.clone(),
-        operation: rotation.operation,
-    })
-}
 
 impl Installation {
     pub(crate) fn machine(&self) -> Option<&Machine> {
@@ -309,20 +250,7 @@ impl LocalMachineStore {
             return Ok(Opened::Resetting(InterruptedReset(store)));
         }
         store.refresh_runtime()?;
-        store.ensure_snapshot()?;
         Ok(Opened::Ready(store))
-    }
-
-    /// Write the trusted snapshot, empty, on this daemon's first start: nothing a record
-    /// learned before a daemon that never gives the mesh Full scope has evidence.
-    fn ensure_snapshot(&mut self) -> Result<(), StoreError> {
-        if self.record.trusted_snapshot.is_some() {
-            return Ok(());
-        }
-        self.commit(|record| {
-            record.trusted_snapshot = Some(super::TrustedSnapshot::default());
-            Ok(())
-        })
     }
 
     /// Run `edit` on a copy of the record and keep what it left: the file is written even
@@ -456,7 +384,6 @@ impl LocalMachineStore {
                 Installation {
                     body: self.record.body.clone(),
                     sealing_key: None,
-                    recipient: None,
                     keys: ployz_core::authority::TrustedKeys::default(),
                     wireguard_mtu: request.wireguard_mtu,
                     pinned: request.pinned,
@@ -469,7 +396,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, keys, recipient) = match role {
+        let (body, sealing_key, keys) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -493,7 +420,6 @@ impl LocalMachineStore {
                     body,
                     sealing_key,
                     ployz_core::authority::TrustedKeys::default(),
-                    None,
                 )
             }
             EnrollAs::Member { .. } if recovery.is_some() => {
@@ -513,7 +439,6 @@ impl LocalMachineStore {
             Installation {
                 body,
                 sealing_key,
-                recipient,
                 keys,
                 wireguard_mtu,
                 pinned,
@@ -575,7 +500,6 @@ impl LocalMachineStore {
             target_versions,
             sealing_key,
             devices: _,
-            recipient,
         } = registration;
         if self.record.id() != machine.id {
             return Err(StoreError::IdentityMismatch);
@@ -654,14 +578,6 @@ impl LocalMachineStore {
             }
         }
         machine.join_approval = Some(approval);
-        let joined = recipient.and_then(|recipient| {
-            joined_recipient(
-                &recipient,
-                &body,
-                &devices,
-                &self.record.wireguard_private_key,
-            )
-        });
         machine.runtime = crate::host_facts::local_runtime_blocking(&self.data_dir);
         Ok((
             LocalMachineBody::Joining {
@@ -674,25 +590,15 @@ impl LocalMachineStore {
                 devices,
                 passkeys: approved_passkeys,
             },
-            joined,
         ))
     }
 
     pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
         self.require_uninitialized()?;
-        if let Some(joined) = &installation.recipient {
-            SealingKey::set_recipient_rotation(&self.data_dir, &joined.rotation)?;
-            SealingKey::set_recipient(&self.data_dir, &joined.key)?;
-            tracing::info!(
-                operation = %joined.operation,
-                "installed the Cluster's recipient key from the join"
-            );
-        }
         self.set_sealing_key(installation.sealing_key.as_ref())?;
         self.commit(|installed| {
             installed.body = installation.body;
             installed.filters_peers = true;
-            installed.born_enforcing = true;
             let joins = installed.phase() == LocalMachinePhase::Joining;
             installed.trusted_machines =
                 installed.body.bootstrap().iter().map(Into::into).collect();
@@ -719,35 +625,6 @@ impl LocalMachineStore {
                         }),
                     )
                 }));
-            if let Some(joined) = &installation.recipient {
-                let snapshot = installed
-                    .trusted_snapshot
-                    .get_or_insert_with(super::TrustedSnapshot::default);
-                for member in installed
-                    .trusted_machines
-                    .iter()
-                    .chain(installed.body.machine().map(Into::into).as_ref())
-                {
-                    snapshot.add_member(member.clone());
-                }
-                let codes = installation.keys.devices.iter().map(DeviceKey::code).chain(
-                    installation
-                        .keys
-                        .passkeys
-                        .iter()
-                        .map(|trusted| trusted.passkey.code()),
-                );
-                for code in codes {
-                    snapshot.add_key(
-                        code,
-                        super::Evidence::Activation {
-                            operation: joined.operation,
-                        },
-                    );
-                }
-                installed.activation = Some(joined.operation);
-                installed.activated_at = Some(ployz_core::authority::Timestamp::now());
-            }
             Ok(())
         })
     }
@@ -935,11 +812,7 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn approve_device(
-        &mut self,
-        key: DeviceKey,
-        evidence: Option<super::Evidence>,
-    ) -> Result<bool, StoreError> {
+    pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
         let label = key.label();
         let slot = ManagementClientSlot::Live(LiveSlot::Active {
             accepted: ClientKey::from(key),
@@ -947,9 +820,6 @@ impl LocalMachineStore {
         let held = self.record.management_clients.get(&label) == Some(&slot);
         self.commit_if_changed::<_, StoreError>(|record| {
             record.management_clients.insert(label, slot);
-            if let (Some(evidence), Some(snapshot)) = (evidence, record.trusted_snapshot.as_mut()) {
-                snapshot.add_key(key.code(), evidence);
-            }
             Ok(())
         })?;
         Ok(!held)
@@ -967,7 +837,6 @@ impl LocalMachineStore {
             .get(&label)
             .is_some_and(|slot| slot.live().is_some());
         self.clear_management_client(&label)?;
-        self.forget_evidence(code)?;
         Ok(live)
     }
 
@@ -979,26 +848,18 @@ impl LocalMachineStore {
         self.commit_if_changed(|record| {
             let trusted = record.passkeys.len();
             record.passkeys.retain(|held| held.passkey.code() != code);
-            if record.passkeys.len() == trusted {
-                return Ok(false);
-            }
-            if let Some(snapshot) = record.trusted_snapshot.as_mut() {
-                snapshot.remove_key(code);
-            }
-            Ok(true)
+            Ok(record.passkeys.len() != trusted)
         })
     }
 
     /// Trust `trusted` to approve workflows. Returns `false` when a passkey with its code
-    /// is already trusted, which keeps its first approval and gains `evidence` if it had
-    /// none, as a held key a person approves again at the console does.
+    /// is already trusted, which keeps its first approval.
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
     pub fn approve_passkey(
         &mut self,
         trusted: ployz_core::authority::TrustedPasskey,
-        evidence: Option<super::Evidence>,
     ) -> Result<bool, StoreError> {
         let code = trusted.passkey.code();
         self.commit_if_changed(|record| {
@@ -1006,19 +867,8 @@ impl LocalMachineStore {
                 .passkeys
                 .iter()
                 .any(|held| held.passkey.code() == code);
-            let evidenced = evidence.is_none()
-                || record
-                    .trusted_snapshot
-                    .as_ref()
-                    .is_none_or(|snapshot| snapshot.holds_key(code));
-            if held && evidenced {
-                return Ok(false);
-            }
             if !held {
                 record.passkeys.push(trusted);
-            }
-            if let (Some(evidence), Some(snapshot)) = (evidence, record.trusted_snapshot.as_mut()) {
-                snapshot.add_key(code, evidence);
             }
             Ok(!held)
         })
@@ -1078,76 +928,6 @@ impl LocalMachineStore {
                 }
             }
             Ok(())
-        })
-    }
-
-    /// Drop `code`'s evidence, as a person removing the key asked.
-    fn forget_evidence(&mut self, code: DeviceCode) -> Result<(), StoreError> {
-        self.commit_if_changed(|record| {
-            if let Some(snapshot) = record.trusted_snapshot.as_mut() {
-                snapshot.remove_key(code);
-            }
-            Ok(())
-        })
-    }
-
-    /// Commit an activation in one write: enforce, trust exactly the set's Members, put
-    /// them and the kept keys in the snapshot, and retire every Device slot and passkey
-    /// outside it with a Cleared tombstone for each retired Device. Only the boot commit
-    /// calls this, in a process that has served nothing yet.
-    ///
-    /// # Errors
-    /// Returns a storage error if the record cannot be saved atomically.
-    pub(crate) fn commit_activation(
-        &mut self,
-        pending: &super::local_machine::PendingActivation,
-    ) -> Result<super::local_machine::Retired, StoreError> {
-        let held_cluster = if self.record.membership_cluster.is_none() {
-            SealingKey::load(&self.data_dir)?.map(|key| key.public_key())
-        } else {
-            None
-        };
-        let held = self.record.held_keys();
-        self.commit(|updated| {
-            let snapshot = updated
-                .trusted_snapshot
-                .get_or_insert_with(super::TrustedSnapshot::default);
-            for member in &pending.members {
-                snapshot.add_member(member.clone());
-            }
-            for (code, evidence) in pending.kept(&held) {
-                snapshot.add_key(code, evidence);
-            }
-            let keeps = |code: DeviceCode| snapshot.holds_key(code);
-            let mut retired = super::local_machine::Retired::default();
-            for (label, slot) in &mut updated.management_clients {
-                let Some(code) = DeviceCode::named_by(label) else {
-                    continue;
-                };
-                let Some(live) = slot.live() else {
-                    continue;
-                };
-                if !keeps(code) {
-                    *slot = ManagementClientSlot::Cleared { was: live };
-                    retired.devices.push(code);
-                }
-            }
-            updated.passkeys.retain(|held| {
-                let code = held.passkey.code();
-                let kept = keeps(code);
-                if !kept {
-                    retired.passkeys.push(code);
-                }
-                kept
-            });
-            updated.filters_peers = true;
-            updated.trusted_machines = pending.members.clone();
-            if updated.membership_cluster.is_none() {
-                updated.membership_cluster = held_cluster;
-            }
-            updated.activation = Some(pending.operation);
-            updated.activated_at = Some(ployz_core::authority::Timestamp::now());
-            Ok(retired)
         })
     }
 
@@ -1698,7 +1478,7 @@ mod device_slot_tests {
                 pinned: Default::default(),
             })
             .unwrap();
-        store.approve_device(key(), None).unwrap();
+        store.approve_device(key()).unwrap();
         (dir, store)
     }
 
@@ -1738,7 +1518,7 @@ mod device_slot_tests {
     fn vetting_runs_once_so_a_later_approval_survives_reopening() {
         let (dir, store) = founded();
         let mut store = reopened_unvetted(&dir, store);
-        assert!(store.approve_device(key(), None).unwrap());
+        assert!(store.approve_device(key()).unwrap());
 
         let store = reopened(&dir, store);
 

@@ -21,10 +21,7 @@ use record_wire::LocalMachineRecordWire;
 mod ingress;
 pub(crate) mod local_machine;
 mod record_owner;
-mod snapshot;
 pub(crate) mod store;
-
-pub(crate) use snapshot::{Evidence, TrustedSnapshot};
 
 pub use record_owner::{RecordOwner, RecordOwnerStopped};
 #[cfg(test)]
@@ -32,12 +29,10 @@ use store::PENDING_RESET_FILE_NAME;
 pub use store::{EnrollPlan, LocalMachineStore, StoreError};
 pub(crate) use store::{InterruptedReset, Opened};
 
-pub(crate) use local_machine::Landing;
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Admitted, Caller, CopyStep, CutRefusal, HeldTeardown, RecoveryError, RuntimeWatchTelemetry,
-    SealingError,
+    Caller, CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError,
 };
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
@@ -200,16 +195,10 @@ pub struct LocalMachineRecord {
     /// records from before Devices were Full-only, when any client could name one.
     #[serde(default)]
     device_slots_vetted: bool,
-    /// Whether only trusted Members peer here. Every record enrolled since enforcement
-    /// became the only mode sets it, and so does an activation. A record from before that
-    /// keeps what it had until it activates. Written under its old name, so an older daemon
-    /// that reads this record enforces too.
+    /// Whether only trusted Members peer here. Every enrollment sets it. Written under its
+    /// old name, so an older daemon that reads this record enforces too.
     #[serde(default, rename = "device_enforcement")]
     filters_peers: bool,
-    /// Whether this record was enrolled by a daemon on which enforcement is the only mode.
-    /// Absent from every record written before, which awaits activation instead.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    born_enforcing: bool,
     #[serde(default)]
     trusted_machines: Vec<ployz_core::authority::Member>,
     /// Passkeys a Full caller approved here. They approve workflows and rules only and hold no slot.
@@ -219,20 +208,6 @@ pub struct LocalMachineRecord {
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
     enrollment: Option<ployz_core::EnrollRequest>,
-    /// The Members and keys this Machine holds evidence for. Written empty on the first
-    /// start of a daemon that advertises `ployz.machine.enforced.v1`, never from the
-    /// replicated store. See [`TrustedSnapshot`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    trusted_snapshot: Option<TrustedSnapshot>,
-    /// The activation this record committed. Set once, by the boot commit, and never
-    /// cleared: an activated record enforces, and reads only snapshot keys.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    activation: Option<ployz_core::OperationId>,
-    /// When the boot commit, or a join after activation, activated this record. A Volume
-    /// approval issued before it may carry a receipt signed under the identity's
-    /// derivation; one issued after needs the recipient's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    activated_at: Option<ployz_core::authority::Timestamp>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -329,90 +304,20 @@ impl LocalMachineRecord {
     }
 
     /// Every key this Machine trusts, from its own record: its Devices and its passkeys.
-    /// Once activated, and while awaiting activation, only those in the trusted snapshot.
     #[must_use]
     pub fn trusted_keys(&self) -> ployz_core::authority::TrustedKeys {
         ployz_core::authority::TrustedKeys {
             devices: self.devices().collect(),
-            passkeys: self
-                .passkeys
-                .iter()
-                .filter(|held| self.trusts_key(held.passkey.code()))
-                .cloned()
-                .collect(),
-        }
-    }
-
-    /// Every key the record holds, evidence or not: what a person at this Server's local
-    /// socket may approve an activation with.
-    #[must_use]
-    pub fn held_keys(&self) -> ployz_core::authority::TrustedKeys {
-        ployz_core::authority::TrustedKeys {
-            devices: self.held_devices().collect(),
             passkeys: self.passkeys.clone(),
         }
     }
 
     /// Keys of the approved Devices: accepted slots whose `device-` label names their key.
-    /// Once activated, and while awaiting activation, a slot whose key is outside the
-    /// trusted snapshot is answered as if absent.
     pub fn devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
-        self.held_devices()
-            .filter(|key| self.trusts_key(key.code()))
-    }
-
-    fn held_devices(&self) -> impl Iterator<Item = DeviceKey> + '_ {
         self.management_clients.iter().filter_map(|(label, slot)| {
             let key = DeviceKey::from_bytes(*slot.accepted()?.as_bytes());
             (DeviceCode::named_by(label) == Some(key.code())).then_some(key)
         })
-    }
-
-    /// Whether `code` is a key this record lets approve. An activated record, and one that
-    /// awaits activation, trust only snapshot keys: before its first 0.4 start the mesh had
-    /// Full scope, so any other key held then may be Cloud's. A record born enforcing that
-    /// no activation reached trusts every key it holds, since only its join approval or a
-    /// Full caller installed one.
-    fn trusts_key(&self, code: DeviceCode) -> bool {
-        let reads_snapshot = self.activation.is_some() || self.awaits_activation();
-        !reads_snapshot
-            || self
-                .trusted_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.holds_key(code))
-    }
-
-    #[must_use]
-    pub fn trusted_snapshot(&self) -> Option<&TrustedSnapshot> {
-        self.trusted_snapshot.as_ref()
-    }
-
-    /// The activation this record committed, if any.
-    #[must_use]
-    pub fn activation(&self) -> Option<ployz_core::OperationId> {
-        self.activation
-    }
-
-    #[must_use]
-    pub fn activated_at(&self) -> Option<ployz_core::authority::Timestamp> {
-        self.activated_at
-    }
-
-    /// The evidence a Full caller gives a key it installs here: the local socket's, or the
-    /// installing Device's when that Device is in the snapshot. `None` for any other caller.
-    #[must_use]
-    pub fn evidence_from(&self, by: &ployz_core::authority::PasskeyApprover) -> Option<Evidence> {
-        use ployz_core::authority::PasskeyApprover;
-        self.trusted_snapshot.as_ref()?;
-        match by {
-            PasskeyApprover::Server => Some(Evidence::LocalSocket),
-            PasskeyApprover::Device { code } => self
-                .trusted_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.holds_key(*code))
-                .then_some(Evidence::Key { code: *code }),
-            PasskeyApprover::Routed | PasskeyApprover::Unknown => None,
-        }
     }
 
     /// Whether this Machine accepts the row as a Cluster member using its own authority.
@@ -421,30 +326,6 @@ impl LocalMachineRecord {
             return true;
         }
         ployz_core::authority::join::admits_row(machine, self.devices(), self.membership_cluster)
-    }
-
-    /// Whether this Machine holds evidence for `machine` as a Member: itself, a Member an
-    /// activation named, or a row whose `JoinApproval` verifies against a snapshot Device
-    /// key and binds `cluster`, this Cluster's identity.
-    pub(crate) fn evidences_member(
-        &self,
-        machine: &Machine,
-        cluster: Option<ployz_core::SealingPublicKey>,
-    ) -> bool {
-        let member = ployz_core::authority::Member::from(machine);
-        if self.machine().is_some_and(|own| member.matches(own)) {
-            return true;
-        }
-        let Some(snapshot) = &self.trusted_snapshot else {
-            return false;
-        };
-        if snapshot.holds_member(&member) {
-            return true;
-        }
-        let evidenced = self
-            .held_devices()
-            .filter(|key| snapshot.holds_key(key.code()));
-        ployz_core::authority::join::admits_row(machine, evidenced, cluster)
     }
 
     /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
@@ -559,21 +440,7 @@ impl LocalMachineRecord {
                 slot.accepted().as_ref() == Some(remote) || slot.pending().as_ref() == Some(remote)
             })
             .map(|(label, _)| ployz_core::ManagementScope::of(label, remote))
-            .filter(|scope| {
-                *scope != ployz_core::ManagementScope::Full
-                    || self.trusts_key(DeviceKey::from_bytes(*remote.as_bytes()).code())
-            })
             .max()
-    }
-
-    /// Whether `remote` is a Device this record holds but trusts only once its Cluster
-    /// activates: a key from before its first 0.4 start, while it awaits activation.
-    #[must_use]
-    pub fn trusts_after_activation(&self, remote: &ClientKey) -> bool {
-        self.awaits_activation()
-            && self
-                .held_devices()
-                .any(|key| ClientKey::from(key) == *remote && !self.trusts_key(key.code()))
     }
 
     /// Whether `remote` is any slot's accepted or pending key, so it may connect.
@@ -776,14 +643,10 @@ impl LocalMachineRecord {
             push_target: None,
             device_slots_vetted: true,
             filters_peers: false,
-            born_enforcing: false,
             trusted_machines: Vec::new(),
             passkeys: Vec::new(),
             membership_cluster: None,
             enrollment: None,
-            trusted_snapshot: Some(TrustedSnapshot::default()),
-            activation: None,
-            activated_at: None,
         }
     }
 
@@ -796,15 +659,6 @@ impl LocalMachineRecord {
     #[must_use]
     pub fn push_target(&self) -> Option<&Url> {
         self.push_target.as_ref()
-    }
-
-    /// Whether this Machine waits for its Cluster's activation: it joined or founded its
-    /// Cluster before enforcement was the only mode, and no activation has committed here.
-    /// It serves reads, upgrades and the routes that cross no part of the bar, and nothing
-    /// else an Operator asks.
-    #[must_use]
-    pub fn awaits_activation(&self) -> bool {
-        self.activation.is_none() && !self.born_enforcing && self.has_cluster_identity()
     }
 
     /// Whether this Machine has joined or founded a Cluster, which `Joining` and
@@ -825,14 +679,6 @@ impl LocalMachineRecord {
         } else {
             Err(LocalMachineError::NotParticipating)
         }
-    }
-
-    /// Whether this Machine enrolled under enforcement as the only mode, so it never awaits an
-    /// activation: it trusts what its join approval named, or, as a founder, no key until a
-    /// person installs one over local administration.
-    #[must_use]
-    pub fn born_enforcing(&self) -> bool {
-        self.born_enforcing
     }
 
     /// Secret behind this Machine's Management Identity.
