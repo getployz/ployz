@@ -1,23 +1,7 @@
-// @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
-import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
-import * as scopes from "#/collections/use-collection-scope";
-import * as prompt from "#/modules/approval-session/approval-prompt";
-import * as views from "#/modules/config-store/store-view.queries";
+import { expect, it, vi } from "vitest";
 import { applyRuntimeSnapshot, getRuntimeCollections, type RuntimeSnapshot, unreachableRuntimeSnapshot } from "#/modules/runtime/runtime.collection";
-import { useDeployApproval } from "./useDeployApproval";
-
-vi.mock("@tanstack/react-router", async (original) => ({
-  ...(await original<typeof import("@tanstack/react-router")>()),
-  useLoaderData: () => ({ environmentId: "env-1" }),
-  useHydrated: () => true,
-}));
-
-afterEach(() => {
-  cleanup();
-  vi.restoreAllMocks();
-});
+import { pressedScope } from "./useDeployApproval";
 
 const SCOPE = { environmentId: "env-1", environmentName: "production", namespace: "shop-production", cluster: "key-1", machines: ["m1"] };
 
@@ -39,14 +23,13 @@ const listed: RuntimeSnapshot = {
 };
 
 function pressed() {
-  const scope = { queryClient: new QueryClient(), sessionId: "session", userId: "user" };
-  vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
-  // SAFETY: the hook reads only the namespace of the Environment's view.
-  vi.spyOn(views, "useCachedStoreView").mockReturnValue({ ok: true, value: { namespace: "shop-production" } } as never);
-  const asked = vi.spyOn(prompt, "deployApprovalScope").mockResolvedValue(SCOPE);
-  const { result } = renderHook(() => useDeployApproval("acme", { project: "shop", environment: "production" }));
-  const lists = (snapshot: RuntimeSnapshot) => act(() => applyRuntimeSnapshot({ collections: getRuntimeCollections("acme", scope), snapshot }));
-  return { asked, lists, press: () => result.current.scope() };
+  const collections = getRuntimeCollections("acme", { queryClient: new QueryClient(), sessionId: "session", userId: "user" });
+  const asked = vi.fn<Parameters<typeof pressedScope>[2] & {}>(() => Promise.resolve(SCOPE));
+  return {
+    asked,
+    lists: (snapshot: RuntimeSnapshot) => applyRuntimeSnapshot({ collections, snapshot }),
+    press: () => pressedScope(collections, { environmentId: "env-1", environmentName: "production", namespace: "shop-production" }, asked),
+  };
 }
 
 it("asks for the passkey when Deploy is pressed before Cloud lists the Servers", async () => {
