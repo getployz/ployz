@@ -567,6 +567,12 @@ pub(super) fn execute(
     for line in progress::waiting(&followed.view) {
         ui::warn(line);
     }
+    // A Deploy that failed carries these on its failure instead.
+    if followed.view.deployment.status == DeploymentStatus::Applied {
+        for hint in progress::moves(&followed.view, |args| super::rerun(matches, args)) {
+            ui::hint(&hint);
+        }
+    }
     let Followed {
         view, successor, ..
     } = followed;

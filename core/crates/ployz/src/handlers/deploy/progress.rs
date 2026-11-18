@@ -359,6 +359,38 @@ pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
+/// The command that moves each Volume a Service waits on into the region the
+/// Service is kept in.
+pub(super) fn moves(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Vec<Hint> {
+    let scope = [
+        "--project",
+        view.environment.project.as_str(),
+        "--env",
+        view.environment.name.as_str(),
+    ];
+    view.preview
+        .iter()
+        .flat_map(|preview| &preview.blocked)
+        .filter_map(|entry| {
+            let detail = |key| {
+                entry
+                    .error
+                    .details
+                    .get(key)
+                    .and_then(|value| value.as_str())
+            };
+            let (Some("volume_outside_region"), Some(volume), Some(to)) =
+                (detail("reason"), detail("volume"), detail("to"))
+            else {
+                return None;
+            };
+            Some(Hint::Next(command(
+                &[&["volume", "move", volume, "--to", to][..], &scope].concat(),
+            )))
+        })
+        .collect()
+}
+
 /// What the Deployment left out of a Service's variables or a Config's files.
 pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
     view.deployment
@@ -783,22 +815,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // failure the inspect hint above reads.
         bad_image |= pulled && !build_failed && built.is_none();
     }
-    for entry in view.preview.iter().flat_map(|preview| &preview.blocked) {
-        let detail = |key| {
-            entry
-                .error
-                .details
-                .get(key)
-                .and_then(|value| value.as_str())
-        };
-        if let (Some("volume_outside_region"), Some(volume), Some(to)) =
-            (detail("reason"), detail("volume"), detail("to"))
-        {
-            hints.push(Hint::Next(command(
-                &[&["volume", "move", volume, "--to", to][..], &scope].concat(),
-            )));
-        }
-    }
+    hints.extend(moves(view, &command));
     let mut failure = Failure::from(
         RpcError::new(
             if lost_to_newer {
@@ -1017,13 +1034,18 @@ mod tests {
         );
     }
 
+    /// A Volume outside its Service's region leaves the Service waiting. The Deploy
+    /// names the move into the region when that is all it left, and when something
+    /// else failed beside it.
     #[test]
     fn a_volume_outside_its_services_region_names_the_move_into_it() {
         let mut view = view();
         view.runtime_names.clear();
+        view.deployment.status = DeploymentStatus::Applied;
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
-                "type": "executed", "summary": {}, "reason": "db: pg-data is on syd-1", "cause": []
+                "type": "executed", "summary": {}, "cause": [],
+                "waiting": [{"service": "db", "reason": "pg-data is on syd-1"}]
             }))
             .unwrap(),
         );
@@ -1043,19 +1065,31 @@ mod tests {
             }))
             .unwrap(),
         );
+        let moved = [Hint::Next(
+            "ployz volume move pg-data --to fsn-1 --project shop --env production".to_owned(),
+        )];
 
         let text = crate::ui::progress::settled_text(&frame(&view));
         assert!(
             text.contains("db: not started (pg-data is on syd-1)"),
             "{text}"
         );
-        let failure = completion(&view, None, &[], command).unwrap_err();
-        assert_eq!(
-            failure.hints(),
-            [Hint::Next(
-                "ployz volume move pg-data --to fsn-1 --project shop --env production".to_owned()
-            )]
+        assert_eq!(waiting(&view), ["db is waiting: pg-data is on syd-1"]);
+        assert_eq!(moves(&view, command), moved);
+        let partial = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&partial), 3);
+
+        view.deployment.status = DeploymentStatus::Failed;
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed", "summary": {}, "reason": "web: CreateContainer failed", "cause": [],
+                "waiting": [{"service": "db", "reason": "pg-data is on syd-1"}]
+            }))
+            .unwrap(),
         );
+        let failure = completion(&view, None, &[], command).unwrap_err();
+        assert_eq!(failure.hints(), moved);
+        assert_eq!(crate::ui::after_result(&failure), 1);
     }
 
     #[test]

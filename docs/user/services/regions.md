@@ -107,8 +107,9 @@ region, the deploy doesn't start the service, and names the volume and where it 
 postgres: not started (pg-data is on db-1)
 ```
 
-The rest of the deploy goes ahead, and the service keeps running where it was. Move the volume
-with the command the deploy prints, then deploy again:
+The rest of the deploy goes ahead, and the service keeps running where it was. The deployment
+reads **Deployed, 1 waiting**, and `ployz deploy` exits 3. Move the volume with the command the
+deploy prints, then deploy again:
 
 ```sh
 ployz volume move pg-data --to web-1
@@ -135,8 +136,9 @@ If the region has servers but none can run services, the line names them:
 web: not started (fsn-1 is down, and no other Server in fsn is up)
 ```
 
-Replicas that already run keep running. Give a server the region, bring its server back, or change
-the environment's region, and deploy again.
+Replicas that already run keep running. With two services left waiting, the deployment reads
+**Nothing deployed, 2 waiting**, and `ployz deploy` exits 3. Give a server the region, bring its
+server back, or change the environment's region, and deploy again.
 
 A service with a count for each region isn't started when any of its regions has no server that
 can run it. The deploy names every such region, and the service's replicas in its other regions

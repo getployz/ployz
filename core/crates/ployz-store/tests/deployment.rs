@@ -8945,33 +8945,61 @@ fn a_plan_names_the_region_a_service_runs_in_once_it_leaves_its_counts_by_region
     );
 }
 
+/// A region no Server is in and a Volume outside the region leave Services
+/// waiting: the Deploy names each with its reason and fails nothing. Refused, the
+/// same Services fail it, and those refused for one reason share a clause.
 #[test]
 fn a_deploy_names_every_service_it_left_not_attempted_and_why() {
-    let (store, who) = shop();
-    admit(&store, &who, 1, &[], None).unwrap();
-    let a = runner("runner-a");
-    store.claim(&id(1), &a).unwrap();
-    let mut prepared = serde_json::to_value(preview(&[])).unwrap();
-    let blocked = |service: &str, message: &str| json!({"service": service, "error": {"code": "conflict", "message": message, "details": {}}});
-    prepared["blocked"] = json!([
-        blocked("worker", "no Server in fsn"),
-        blocked("api", "pg-data is on syd-1"),
-        blocked("web", "no Server in fsn"),
-    ]);
-    let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
-    store.record(&id(1), &a, prepared).unwrap();
-    store.record(&id(1), &a, succeeded(&[])).unwrap();
-
-    let view = store
-        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
-        .unwrap();
-    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
-        panic!("an executed outcome");
+    let left = |n: u8, kind: &str| {
+        let (store, who) = shop();
+        admit(&store, &who, n, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(n), &a).unwrap();
+        let mut prepared = serde_json::to_value(preview(&[])).unwrap();
+        let blocked = |service: &str, message: &str| json!({"service": service, "kind": kind, "error": {"code": "conflict", "message": message, "details": {}}});
+        prepared["blocked"] = json!([
+            blocked("worker", "no Server in fsn"),
+            blocked("api", "pg-data is on syd-1"),
+            blocked("web", "no Server in fsn"),
+        ]);
+        let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
+        store.record(&id(n), &a, prepared).unwrap();
+        store.record(&id(n), &a, succeeded(&[])).unwrap();
+        let view = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(n) })
+            .unwrap();
+        let Some(ployz_store::Outcome::Executed {
+            reason, waiting, ..
+        }) = view.deployment.outcome
+        else {
+            panic!("an executed outcome");
+        };
+        let waiting: Vec<_> = waiting
+            .into_iter()
+            .map(|waiting| (waiting.service.to_string(), waiting.reason))
+            .collect();
+        (view.deployment.status, reason, waiting)
     };
+
+    let (status, reason, waiting) = left(1, "wait");
+    assert_eq!(status, DeploymentStatus::Applied);
+    assert_eq!(reason, None);
+    assert_eq!(
+        waiting,
+        [
+            ("api".to_owned(), "pg-data is on syd-1".to_owned()),
+            ("web".to_owned(), "no Server in fsn".to_owned()),
+            ("worker".to_owned(), "no Server in fsn".to_owned()),
+        ]
+    );
+
+    let (status, reason, waiting) = left(2, "refusal");
+    assert_eq!(status, DeploymentStatus::Failed);
     assert_eq!(
         reason.as_deref(),
         Some("web, worker: no Server in fsn; api: pg-data is on syd-1")
     );
+    assert_eq!(waiting, []);
 }
 
 #[test]
