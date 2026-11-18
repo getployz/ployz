@@ -314,6 +314,39 @@ export function getCachedRuntimeSnapshot(collections: RuntimeCollections) {
   });
 }
 
+/**
+ * What the Runtime Watch sees, once it has said: waits while it is still connecting, for `withinMs` at most. Null when
+ * it still hasn't said by then.
+ */
+export function settledRuntimeSnapshot(collections: RuntimeCollections, withinMs = 10_000): Promise<RuntimeSnapshot | null> {
+  const settled = () => {
+    const snapshot = getCachedRuntimeSnapshot(collections);
+    return snapshot === null || snapshot.status === "connecting" ? null : snapshot;
+  };
+  const now = settled();
+  if (now !== null) return Promise.resolve(now);
+  return new Promise((resolve) => {
+    const finish = (snapshot: RuntimeSnapshot | null) => {
+      clearTimeout(timer);
+      subscription.unsubscribe();
+      resolve(snapshot);
+    };
+    const subscription = collections.status.subscribeChanges(() => {
+      const snapshot = settled();
+      if (snapshot !== null) finish(snapshot);
+    });
+    const timer = setTimeout(() => finish(null), withinMs);
+  });
+}
+
+/** The Servers that run a copy of a Service in `namespace`, by id. */
+export function environmentMachineIds(services: readonly RuntimeServiceRecord[], namespace: string) {
+  const prefix = `${namespace}/`;
+  const copies = services.filter((service) => service.identity.startsWith(prefix))
+    .flatMap((service) => [...service.containers, ...service.hookContainers]);
+  return [...new Set(copies.map((copy) => copy.machineId))];
+}
+
 function createRuntimeCollections(organizationSlug: string, scope: CollectionScope) {
   const client = getDbClient(scope.queryClient);
   const prefix = `runtime:${scope.sessionId}:${scope.userId}:${organizationSlug}`;

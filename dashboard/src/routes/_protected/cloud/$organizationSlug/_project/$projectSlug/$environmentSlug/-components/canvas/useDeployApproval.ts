@@ -5,15 +5,15 @@ import { deployApprovalScope } from "#/modules/approval-session/approval-prompt"
 import { type ApprovalScope, approveDeploy, type DeployApproved, SessionRefused } from "#/modules/approval-session/approval-session";
 import { deployPlanQuery, namespaceQuery, storeViewOptions, useCachedStoreView } from "#/modules/config-store/store-view.queries";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { useEnvironmentMachines } from "#/providers/runtime-provider";
+import { environmentMachineIds, getRuntimeCollections, settledRuntimeSnapshot } from "#/modules/runtime/runtime.collection";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 const UNCHECKED = "Cloud couldn't check the servers. Try again.";
 
 /**
- * A Deploy's approval. `scope` runs at the press: undefined when there is no Server, so nothing would run it; null when
- * the person cancels the prompt. `approve` runs in the write queue, after the edits
+ * A Deploy's approval. `scope` runs at the press, and waits for Cloud to list the Servers: undefined when Cloud knows
+ * there is no Server, so nothing would run it; null when the person cancels the prompt. It throws when Cloud can't
+ * list them, since a Deploy no passkey approved is one the Servers may refuse. `approve` runs in the write queue, after the edits
  * before it: it reads the plan, and this browser builds and signs the approval of it at the version the person
  * reviewed. A refusal reads as the Store's.
  */
@@ -22,12 +22,15 @@ export function useDeployApproval(organizationSlug: string, environment: Environ
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const view = useCachedStoreView(organizationSlug, namespaceQuery(environment));
   const namespace = view?.ok ? view.value.namespace : null;
-  const { machines } = useRuntimeLens(organizationSlug);
-  const environmentMachines = useEnvironmentMachines(namespace);
+  const runtime = getRuntimeCollections(organizationSlug, collectionScope);
 
   async function scope(): Promise<ApprovalScope | null | undefined> {
-    if (machines.length === 0) return undefined;
-    if (namespace === null) throw new Error(UNCHECKED);
+    const seen = await settledRuntimeSnapshot(runtime);
+    if (seen === null) throw new Error(UNCHECKED);
+    const { machines, services, status } = seen;
+    if (machines.length === 0 && (status === "no_connection" || status === "observed")) return undefined;
+    if (machines.length === 0 || namespace === null) throw new Error(UNCHECKED);
+    const environmentMachines = environmentMachineIds(services, namespace);
     return deployApprovalScope({ environment: { environmentId, environmentName: environment.environment ?? "", namespace }, environmentMachines, machines });
   }
 

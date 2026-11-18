@@ -8,6 +8,7 @@ import {
   getCachedRuntimeSnapshot,
   getRuntimeCollections,
   noConnectionRuntimeSnapshot,
+  environmentMachineIds,
   projectRuntimeServiceRecord,
   unavailableRuntimeSnapshot,
   unreachableRuntimeSnapshot,
@@ -167,8 +168,5 @@ export function useEnvironmentMachines(namespace: string | null) {
     query: (q) => q.from({ service: collections.services }).select(({ service }) => service),
   });
   if (namespace === null) return [];
-  const prefix = `${namespace}/`;
-  const copies = rows.filter((row) => row.identity.startsWith(prefix)).map(projectRuntimeServiceRecord)
-    .flatMap((service) => [...service.containers, ...service.hookContainers]);
-  return [...new Set(copies.map((copy) => copy.machineId))];
+  return environmentMachineIds(rows.map(projectRuntimeServiceRecord), namespace);
 }
