@@ -1105,13 +1105,14 @@ fn assemble_plan(
                 .find(|entry| entry.service == *service)
                 .map(|entry| entry.kind)
         };
-        if let Some((dependency, kind)) = intent
-            .dependencies()
-            .get(&spec.name)
-            .into_iter()
-            .flatten()
-            .find_map(|dependency| Some((dependency, kind_of(&dependency.service)?)))
-        {
+        if let Some((dependency, kind)) = blocked_behind(
+            intent
+                .dependencies()
+                .get(&spec.name)
+                .into_iter()
+                .flatten()
+                .filter_map(|dependency| Some((dependency, kind_of(&dependency.service)?))),
+        ) {
             block_service(
                 &mut blocked,
                 &mut budget,
@@ -1121,11 +1122,12 @@ fn assemble_plan(
             );
             continue;
         }
-        if let Some((handover, kind)) = handovers
-            .iter()
-            .filter(|handover| handover.from == spec.name)
-            .find_map(|handover| Some((handover, kind_of(&handover.to)?)))
-        {
+        if let Some((handover, kind)) = blocked_behind(
+            handovers
+                .iter()
+                .filter(|handover| handover.from == spec.name)
+                .filter_map(|handover| Some((handover, kind_of(&handover.to)?))),
+        ) {
             block_service(
                 &mut blocked,
                 &mut budget,
@@ -1562,6 +1564,12 @@ enum Reservation<'snapshot> {
     /// Put back the budget as it was before the Service was placed, then give back what it
     /// had committed.
     Restore(Box<ServiceBudget<'snapshot>>),
+}
+
+/// Which of the blocked Services a Service is behind says how it is blocked: a
+/// refused one before a waiting one, since only a config change deploys it then.
+fn blocked_behind<T>(blockers: impl Iterator<Item = (T, BlockedKind)>) -> Option<(T, BlockedKind)> {
+    blockers.min_by_key(|(_, kind)| *kind == BlockedKind::Wait)
 }
 
 /// Report `service` not attempted with `error` and settle its share of the budget.
@@ -2054,4 +2062,22 @@ fn pre_deploy_operations(
             .collect(),
     });
     operations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlockedKind, blocked_behind};
+
+    #[test]
+    fn a_service_behind_a_waiting_and_a_refused_one_is_refused() {
+        let behind = [("db", BlockedKind::Wait), ("cache", BlockedKind::Refusal)];
+        assert_eq!(
+            blocked_behind(behind.into_iter()),
+            Some(("cache", BlockedKind::Refusal))
+        );
+        assert_eq!(
+            blocked_behind(behind.into_iter().take(1)),
+            Some(("db", BlockedKind::Wait))
+        );
+    }
 }

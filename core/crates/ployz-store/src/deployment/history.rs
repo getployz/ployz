@@ -462,9 +462,10 @@ pub(crate) fn latest_removal(
         .filter(|latest| latest.remove))
 }
 
-/// The Saved revision `environment`'s latest applied Deployment that reached a
-/// Service shipped: what its Servers run. One that left every Service waiting
-/// changed nothing they run. None before one applied, or once a removal applied.
+/// The Saved revision `environment`'s latest applied Deployment that deployed or
+/// removed a Service shipped: what its Servers run. One that left all it had to
+/// do waiting changed nothing they run. None before one applied, or once a
+/// removal applied.
 pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,

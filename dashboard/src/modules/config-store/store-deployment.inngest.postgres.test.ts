@@ -255,7 +255,7 @@ it.live(
 );
 
 it.live(
-  "a deploy GitHub started mails each member who wants it once when it fails or leaves a Service waiting; one anybody else started mails no one",
+  "a deploy GitHub started mails each member who wants it once when it fails or leaves a Service waiting; one anybody else started, or a person cancelled, mails no one",
   () =>
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "store-deployment-mail-test" });
@@ -313,23 +313,28 @@ it.live(
       expect((yield* run(LOST)).result).toMatchObject({ ran: { id: LOST, status: "failed" } });
       expect(mails()).toEqual([]);
 
-      // No Server answers here, so a runner that applied QUEUED and left web waiting stands in for one.
+      // No Server answers here, so a runner that ended QUEUED with web waiting stands in for one.
       const waiting = [{ service: "web", reason: "Volume data is on fsn-1, which doesn't run services." }];
       const outcome: Outcome = { type: "executed", summary: null, reason: null, cause: [], services: [], waiting };
       yield* admit(QUEUED);
+      let status: "applied" | "cancelled" = "cancelled";
       const read = store.read.bind(store);
       vi.spyOn(store, "read").mockImplementation(async (...args: Parameters<typeof read>) => {
         const view = await read(...args);
-        return view.view === "deployment" && view.id === QUEUED ? { ...view, status: "applied", outcome } : view;
+        return view.view === "deployment" && view.id === QUEUED ? { ...view, status, outcome } : view;
       });
       const leftWaiting = (trigger: DeploymentTrigger) => Effect.promise(() => new InngestTestEngine({
         function: worker, events: [admitted(QUEUED, trigger)],
         steps: [
-          { id: "run-deployment", handler: () => ({ ran: { id: QUEUED, number: 4, status: "applied", remove: false, outcome } }) },
+          { id: "run-deployment", handler: () => ({ ran: { id: QUEUED, number: 4, status, remove: false, outcome } }) },
           { id: "delete-orphan-mirrors", handler: () => null },
           ...sentRetire(),
         ],
       }).execute());
+      // A cancelled Deploy still lists web waiting, but the rest of it didn't go through.
+      yield* leftWaiting("github");
+      expect(mails()).toEqual([]);
+      status = "applied";
       yield* leftWaiting("user");
       expect(mails()).toEqual([]);
       yield* leftWaiting("github");

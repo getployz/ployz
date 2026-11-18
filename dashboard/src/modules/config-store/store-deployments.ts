@@ -262,8 +262,8 @@ const deploymentStatusIcons = {
 type WaitingCi = Partial<Pick<DeploymentSummary, "ci">>;
 
 /**
- * A Deployment as its icon shows it: one waiting for CI that failed reads as failed, and one that left every Service
- * waiting deployed nothing, so it never reads as deployed.
+ * A Deployment as its icon shows it: one waiting for CI that failed reads as failed, and one that left all it had to
+ * do waiting deployed nothing, so it never reads as deployed.
  */
 export const deploymentLight = ({ status, ci, all_waiting }: Pick<DeploymentSummary, "status" | "all_waiting"> & WaitingCi): DeploymentLight =>
   ci === "failed" ? "failed" : all_waiting ? "queued" : deploymentStatusIcons[status];
@@ -328,6 +328,13 @@ export function deploymentStatusLabel(
  */
 export const waitingServices = ({ outcome }: Pick<DeploymentView, "outcome">) =>
   outcome?.type === "executed" ? outcome.waiting ?? [] : [];
+
+/**
+ * What a Deployment nobody watched has to tell them: it failed, or it applied and left Services waiting. One that ended
+ * any other way says nothing, though it may list waiting Services: a cancelled one didn't deploy the rest.
+ */
+export const deploymentTrouble = ({ status, outcome }: Pick<DeploymentView, "status" | "outcome">) =>
+  status === "failed" || status === "unknown" ? "failed" : status === "applied" && waitingServices({ outcome }).length > 0 ? "waiting" : null;
 
 /**
  * How a Deployment is named: "#N" once it queued; while it waits for CI it has no number yet, so the push's short sha

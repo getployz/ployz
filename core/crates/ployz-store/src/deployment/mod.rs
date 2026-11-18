@@ -183,8 +183,8 @@ pub struct DeploymentSummary {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub preparing: bool,
-    /// Whether it applied without reaching a Service: the planner left every one
-    /// it ships waiting, so its Servers run what they ran before it.
+    /// Whether it applied without deploying or removing a Service: the planner
+    /// left all it had to do waiting, so its Servers run what they ran before it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub all_waiting: bool,
@@ -1952,7 +1952,7 @@ fn preparing(status: DeploymentStatus, run: &Run) -> bool {
 }
 
 /// Whether a Deployment in `status` of `nodes` that recorded `run` applied without
-/// reaching a Service.
+/// deploying or removing a Service. An Unchanged one ran nothing.
 fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> bool {
     let mut services = nodes
         .iter()
@@ -1960,7 +1960,7 @@ fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> boo
         .filter_map(|node| run.nodes.get(node.id()));
     status == DeploymentStatus::Applied
         && run.unreached().next().is_some()
-        && !services.any(|outcome| outcome.applied(true))
+        && !services.any(|outcome| outcome.advances())
 }
 
 impl Stored {

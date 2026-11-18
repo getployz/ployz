@@ -3,7 +3,7 @@ import {
   stopStoreDeploymentRun, storeDeploymentAwaitsApproval, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import { mailGithubDeployTrouble } from "#/modules/config-store/deploy-failed-mail.server";
-import { waitingServices } from "#/modules/config-store/store-deployments";
+import { deploymentTrouble } from "#/modules/config-store/store-deployments";
 import { serversLackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
@@ -107,7 +107,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       if (applied) {
         await step.run("delete-orphan-mirrors", () => runEffect(cleanOrphans(event.data.organizationId)));
       }
-      if ("ran" in ran && (ran.ran.status === "failed" || ran.ran.status === "unknown" || waitingServices(ran.ran).length > 0)) {
+      if ("ran" in ran && deploymentTrouble(ran.ran) !== null) {
         await step.run("mail-failure", () => runEffect(mailGithubDeployTrouble(event.data)));
       }
       return ran;

@@ -1737,6 +1737,18 @@ fn blocked(service: &str, kind: &str) -> Value {
 
 /// Claim Deployment 1 with a preview that plans `api` unless it is among `blocked`.
 fn claim_with_blocked(store: &ConfigStore, who: &Actor, blocked: Vec<Value>) -> RunnerId {
+    let api_changes = !blocked.iter().any(|entry| entry["service"] == "api");
+    claim_planning(store, who, api_changes, blocked)
+}
+
+/// Claim Deployment 1 with a preview that leaves `blocked` out, and plans work
+/// for `api` when `api_changes`.
+fn claim_planning(
+    store: &ConfigStore,
+    who: &Actor,
+    api_changes: bool,
+    blocked: Vec<Value>,
+) -> RunnerId {
     store
         .write(
             who,
@@ -1752,13 +1764,13 @@ fn claim_with_blocked(store: &ConfigStore, who: &Actor, blocked: Vec<Value>) -> 
     admit(store, who, 1, &[], None).unwrap();
     let runner = RunnerId::parse("runner").unwrap();
     store.claim(&id(1), &runner).unwrap();
-    let operations = if blocked.iter().any(|entry| entry["service"] == "api") {
-        json!([])
-    } else {
+    let operations = if api_changes {
         json!([{
             "index": 0, "machine_id": "a".repeat(32), "service_name": "api",
             "operation": remove_web(), "status": {"type": "pending"}
         }])
+    } else {
+        json!([])
     };
     let preview: DeployPreview = serde_json::from_value(json!({
         "namespace": "shop-production", "operations": operations,
@@ -1769,6 +1781,23 @@ fn claim_with_blocked(store: &ConfigStore, who: &Actor, blocked: Vec<Value>) -> 
         .record(&id(1), &runner, RunEvidence::Prepared(preview))
         .unwrap();
     runner
+}
+
+/// Record that Deployment 1 succeeded without running an operation.
+fn succeed_at_nothing(store: &ConfigStore, runner: &RunnerId) {
+    let outcome: DeployOutcome<ployz_core::ExecutionError> =
+        serde_json::from_value(json!({ "type": "success", "completed": [] })).unwrap();
+    store
+        .record(
+            &id(1),
+            runner,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
 }
 
 fn waiting_web() -> Vec<ployz_store::WaitingService> {
@@ -1830,22 +1859,27 @@ fn a_deploy_that_leaves_every_service_waiting_says_so_and_is_not_what_runs() {
         &who,
         vec![blocked("web", "wait"), blocked("api", "wait")],
     );
-    let outcome: DeployOutcome<ployz_core::ExecutionError> =
-        serde_json::from_value(json!({ "type": "success", "completed": [] })).unwrap();
-    store
-        .record(
-            &id(1),
-            &runner,
-            RunEvidence::Executed {
-                progress: Vec::new(),
-                outcome: Box::new(outcome),
-                removed: Vec::new(),
-            },
-        )
-        .unwrap();
+    succeed_at_nothing(&store, &runner);
 
     let view = store.read(&who, &DeploymentQuery { id: id(1) }).unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+    assert!(view.deployment.all_waiting);
+    assert_eq!(live(&store, &who), None);
+}
+
+#[test]
+fn a_deploy_whose_only_change_waits_beside_an_unchanged_service_deployed_nothing() {
+    let (store, who) = shop();
+    let runner = claim_planning(&store, &who, false, vec![blocked("web", "wait")]);
+    succeed_at_nothing(&store, &runner);
+
+    let view = store.read(&who, &DeploymentQuery { id: id(1) }).unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+    let outcomes = outcomes(&store, &who, 1);
+    assert!(
+        outcomes.contains(&("api".to_owned(), NodeStatus::Unchanged)),
+        "{outcomes:?}"
+    );
     assert!(view.deployment.all_waiting);
     assert_eq!(live(&store, &who), None);
 }

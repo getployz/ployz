@@ -85,7 +85,7 @@ yours stops at its next step. What the CLI says depends on how far #3 got:
 A failed deploy exits with code 1. A Deployment that applied but whose result is missing
 a Server, or that left an old container running because its Server didn't answer, exits
 with code 3. So does one that left a service waiting, for example on a volume with no writer:
-it reads `applied, 1 waiting`, or `nothing applied, 1 waiting` when every service waited, and
+it reads `applied, 1 waiting`, or `nothing applied, 1 waiting` when no other service changed, and
 prints `db is waiting:` with what it waits on. So does a removal while a Server that may run one of the service's replicas is
 down or can't be checked: it removes the replicas on the Servers that answer, reads
 `rmme: removed 2/3; web-2 didn't answer, the next full deploy removes its copy once it is back`,
