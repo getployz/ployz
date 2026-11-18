@@ -2,6 +2,8 @@
 //! what Cloud lists of them, and, on Servers that enforce Device approval, this Device's
 //! approval of each, which Cloud keeps for the move that Deploy runs.
 
+use std::collections::BTreeMap;
+
 use clap::ArgMatches;
 use ployz_core::authority::{Signed, VolumeApproval};
 use ployz_core::{
@@ -159,9 +161,11 @@ fn drafted(
     Ok(Some((name, draft)))
 }
 
-/// Whether the Deploy that ships `specs` calls for moving `volume`, which `service` writes,
-/// off `writer` onto `target`: it places `service` on `target` and not on `writer`. Cloud
-/// names the Volume and the target, so this Device signs only what that holds for.
+/// Whether the Deploy this Device signed calls for moving `volume`, which `service` writes,
+/// off `writer` onto `target`: what it signed of `specs` places `service` on `target` and
+/// not on `writer`. Cloud names the Volume and the target, and a spec's counts by region are
+/// Cloud's word that no signature covers, so they decide nothing here: this Device signs
+/// only what the placement it signed and the Servers' own labels hold for.
 ///
 /// # Errors
 /// Refuses a Service the Deploy doesn't ship, a target it leaves out, and a Writer it takes.
@@ -177,9 +181,13 @@ fn called_for(
             "This deploy doesn't include {service}, which uses {volume}."
         )));
     };
+    let signed = RequestedServiceSpec {
+        regions: BTreeMap::new(),
+        ..spec.clone()
+    };
     let takes = |machine: &Machine| {
         !matches!(
-            spec.placement_eligibility_in_namespace(namespace, machine, None),
+            signed.placement_eligibility_in_namespace(namespace, machine, None),
             ServicePlacementEligibility::Ineligible(_)
         )
     };
@@ -190,10 +198,17 @@ fn called_for(
         )));
     }
     if takes(writer) {
-        return Err(Error::conflict(format!(
-            "This deploy can run {service} on {}, where {volume} is.",
-            writer.name
-        )));
+        return Err(Error::conflict(if spec.regions.is_empty() {
+            format!(
+                "This deploy can run {service} on {}, where {volume} is.",
+                writer.name
+            )
+        } else {
+            format!(
+                "This device signs a move only into the environment's region, and {service} \
+                 has a count for each region."
+            )
+        }));
     }
     Ok(())
 }

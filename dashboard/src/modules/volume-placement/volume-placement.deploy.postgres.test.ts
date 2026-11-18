@@ -39,8 +39,7 @@ describe("deploying a Volume placement", () => {
   let recordedStorage: number | undefined;
   /** Volumes discarded from the Store. */
   const discarded = new Set<string>();
-  /** The Environment's Settings that differ from their default. */
-  let settings: { path: string; value: unknown }[];
+  let region: string | null;
   const inspect: MemberInspector = () => Effect.succeed(members);
 
   const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | CloudStore | InngestClient | OrganizationRuntime>) => harness.runEffect(operation.pipe(
@@ -56,7 +55,8 @@ describe("deploying a Volume placement", () => {
           }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
-            settings,
+            region,
+            settings: [],
             volumes: [
               { id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 }, recorded_storage: recordedStorage, deployed: true, change: null, mounts: [{ service: "postgres", path: "/data" }] },
               { id: "vol2", name: "data-1430", storage: restoredStorage },
@@ -93,7 +93,7 @@ describe("deploying a Volume placement", () => {
     statuses.clear();
     discarded.clear();
     restoredStorage = { kind: "provisioned", maximumBytes: 1 };
-    settings = [];
+    region = null;
     recordedStorage = undefined;
     send.mockClear();
     await harness.pool.query(`
@@ -784,7 +784,7 @@ describe("deploying a Volume placement", () => {
       inspect, read,
     ));
 
-    beforeEach(() => { settings = [{ path: "@environment.region", value: "fsn" }]; });
+    beforeEach(() => { region = "fsn"; });
 
     it("is moved by the Deploy onto the Server there that holds its mirror, once however many Deploys ask", async () => {
       members = [member("syd-1", "writer"), member("fsn-1", "empty"), member("fsn-2", "mirror")];
@@ -860,7 +860,7 @@ describe("deploying a Volume placement", () => {
       expect(await run(advancePlacement(organizationId, "dep-2", null, inspect, answered))).toEqual({ kind: "stopped" });
       expect(await placement()).toMatchObject({ staged: { primary: web("fsn-1") }, deploymentId: null });
 
-      settings = [];
+      region = null;
       await deploy("dep-3");
       expect(await placement()).toMatchObject({ staged: null, deploymentId: null });
     });

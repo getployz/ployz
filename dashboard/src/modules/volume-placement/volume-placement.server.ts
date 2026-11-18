@@ -319,14 +319,13 @@ export type RegionMove = {
   readonly to: string;
 };
 
-const decodeRegion = Schema.decodeUnknownOption(Schema.String);
 const decodeCounts = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Number));
 const REPLICAS = ".replicas";
 
-/** The regions in the Store's answer for an Environment's Settings, which lists only those that differ from their default. */
-const settingRegions = (settings: readonly { readonly path: string; readonly value: unknown }[]): SettingRegions => ({
-  environment: Option.getOrNull(decodeRegion(settings.find((setting) => setting.path === "@environment.region")?.value)),
-  counted: new Map(settings.flatMap(({ path, value }) => !path.endsWith(REPLICAS) ? [] : Option.match(decodeCounts(value), {
+/** The regions in the Store's answer for an Environment: its own, and those its listed Settings count replicas by. The answer lists only the Settings that differ from their default. */
+const settingRegions = (answer: { readonly region?: string | null; readonly settings: readonly { readonly path: string; readonly value: unknown }[] }): SettingRegions => ({
+  environment: answer.region ?? null,
+  counted: new Map(answer.settings.flatMap(({ path, value }) => !path.endsWith(REPLICAS) ? [] : Option.match(decodeCounts(value), {
     onNone: () => [],
     onSome: (counts) => [[path.slice(0, -REPLICAS.length), Object.keys(counts)] as const],
   }))),
@@ -339,11 +338,11 @@ const findRegionMoves = Effect.fn("VolumePlacement.regionMoves")(function* (
   organizationId: string, environment: EnvironmentRef, services: readonly string[], inspect: typeof inspectVolumeCopies, read: RegionReader,
   listed: VolumesListing | null,
 ) {
-  const [{ settings }, listing] = yield* Effect.all([
+  const [answer, listing] = yield* Effect.all([
     readStore(organizationId, { query: "environment", environment, path: null, all: false }),
     listed === null ? readVolumes(organizationId, environment) : Effect.succeed(listed),
   ], { concurrency: "unbounded" });
-  const kept = regionVolumes(listing.volumes, settingRegions(settings), services);
+  const kept = regionVolumes(listing.volumes, settingRegions(answer), services);
   if (kept.length === 0) return [];
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(volumePlacement)
