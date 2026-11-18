@@ -256,9 +256,9 @@ def harness_build(args, commands=run, **kwargs):
         return commands(["nice", "-n", "10", *args], env={**os.environ, **HARNESS_ENV}, **kwargs)
 
 
-def for_packages(cargo_args, packages):
-    """cargo_args with each `--features` list cut to the features of packages, since cargo refuses `other/feature`
-    for a package it isn't building."""
+def for_packages(cargo_args, packages, elsewhere):
+    """cargo_args without the `--features` entries of the binaries elsewhere, which build in another cargo run;
+    cargo refuses `binary/feature` for a binary it isn't building. Dependency features like `tracing/x` stay."""
     kept, args = [], iter(cargo_args)
     for arg in args:
         flag, _, inline = arg.partition("=")
@@ -266,7 +266,7 @@ def for_packages(cargo_args, packages):
             kept.append(arg)
             continue
         features = [feature for feature in (inline or next(args, "")).replace(",", " ").split()
-                    if "/" not in feature or feature.split("/")[0] in packages]
+                    if (owner := feature.partition("/")[0]) == feature or owner in packages or owner not in elsewhere]
         if features:
             kept += ["--features", ",".join(features)]
     return kept
@@ -287,7 +287,7 @@ def binaries(destination, names, cargo_args=(), commands=run):
         builds.setdefault(cross_target(name), []).append(name)
     for triple, group in builds.items():
         cargo = ["cargo", "zigbuild", "--target", triple] if triple else ["cargo", "build"]
-        harness_build([*cargo, "--locked", *(arg for name in group for arg in ["-p", name]), *for_packages(cargo_args, group)],
+        harness_build([*cargo, "--locked", *(arg for name in group for arg in ["-p", name]), *for_packages(cargo_args, group, missing)],
                       commands, cwd=CORE, timeout=1800)
         for name in group:
             shutil.copy2(target / (triple or "") / "debug" / name, destination / name)
