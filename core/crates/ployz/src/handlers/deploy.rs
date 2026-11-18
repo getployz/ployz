@@ -564,6 +564,15 @@ pub(super) fn execute(
     {
         ui::warn(warning);
     }
+    for line in progress::waiting(&followed.view) {
+        ui::warn(line);
+    }
+    // A Deploy that failed carries these on its failure instead.
+    if followed.view.deployment.status == DeploymentStatus::Applied {
+        for hint in progress::moves(&followed.view, |args| super::rerun(matches, args)) {
+            ui::hint(&hint);
+        }
+    }
     let Followed {
         view, successor, ..
     } = followed;
@@ -1329,6 +1338,15 @@ fn status_word(deployment: &DeploymentSummary) -> String {
         (DeploymentStatus::WaitingForCi, Some(CiVerdict::Failed)) => "CI failed".to_owned(),
         (DeploymentStatus::WaitingForCi, _) => "waiting for CI".to_owned(),
         (DeploymentStatus::Running, _) if deployment.preparing => "preparing".to_owned(),
+        (DeploymentStatus::Applied, _) => match &deployment.outcome {
+            Some(ployz_store::Outcome::Executed { waiting, .. }) if deployment.all_waiting => {
+                format!("nothing applied, {} waiting", waiting.len())
+            }
+            Some(ployz_store::Outcome::Executed { waiting, .. }) if !waiting.is_empty() => {
+                format!("applied, {} waiting", waiting.len())
+            }
+            _ => super::store::word(&deployment.status),
+        },
         (status, _) => super::store::word(&status),
     }
 }
@@ -1336,6 +1354,7 @@ fn status_word(deployment: &DeploymentSummary) -> String {
 /// How a Deployment's status reads at a glance.
 const fn status_tone(deployment: &DeploymentSummary) -> Tone {
     match deployment.status {
+        DeploymentStatus::Applied if deployment.all_waiting => Tone::Change,
         DeploymentStatus::Applied => Tone::Good,
         DeploymentStatus::Failed | DeploymentStatus::Unknown => Tone::Bad,
         DeploymentStatus::WaitingForCi => match deployment.ci {
@@ -1613,6 +1632,9 @@ pub(super) fn say_view(view: &DeploymentView) {
         if let Some(cause) = cause.last() {
             crate::ui::stream(format_args!("    cause: {cause}"));
         }
+    }
+    for line in progress::waiting(view) {
+        crate::ui::stream(format_args!("  {line}"));
     }
     if let Some(ployz_store::Outcome::Executed { services, .. }) = &view.deployment.outcome {
         for line in service_outcome_lines(services) {

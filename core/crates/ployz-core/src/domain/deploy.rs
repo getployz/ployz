@@ -787,7 +787,8 @@ pub struct DeployPreview {
     pub placed_on: BTreeMap<ServiceName, BTreeSet<MachineId>>,
     /// Services this Deploy plans nothing for because they cannot run: a Volume with
     /// no writer or unknown copies, or a dependency so blocked. Each is reported as
-    /// not attempted, and the Deploy fails, while the other Services deploy.
+    /// not attempted, while the other Services deploy. A Deploy that does all it planned
+    /// ends Applied with these waiting, unless one is a [`BlockedKind::Refusal`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<BlockedService>>")]
     pub blocked: Vec<BlockedService>,
@@ -799,6 +800,24 @@ pub struct BlockedService {
     pub service: ServiceName,
     /// Why, with `details.reason` naming the refusal (`no_writer`).
     pub error: RpcError,
+    /// Whether it waits or is refused. Absent from previews written before 0.4.0,
+    /// which read as a wait: every reason then was one.
+    #[serde(default)]
+    #[ts(optional, as = "Option<BlockedKind>")]
+    pub kind: BlockedKind,
+}
+
+/// What it takes for a blocked Service to deploy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockedKind {
+    /// A condition outside its config that clears without a config change: a
+    /// Server comes back, a move is retried, a Volume's holder answers. A later
+    /// Deploy of the same config starts it.
+    #[default]
+    Wait,
+    /// Its config can't be placed as written: only a config change deploys it.
+    Refusal,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.

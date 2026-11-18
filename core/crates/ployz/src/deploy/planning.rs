@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ployz_core::{
-    BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss, DependencyCondition,
-    HookContainer, IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace,
-    ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal, QualifiedService, Region,
-    RequestedServiceSpec, RpcError, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, UpdateOrder, VolumeToCreate,
-    explicit_ingress_hosts, hostname_owners, same_service_mode_kind,
+    BlockedKind, BlockedService, ContainerAction, ContainerId, CopyRotation, DataLoss,
+    DependencyCondition, HookContainer, IngressHost, MachineId, MachineObservation,
+    MembershipObservation, Namespace, ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal,
+    QualifiedService, Region, RequestedServiceSpec, RpcError, ServiceContainer, ServiceId,
+    ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, UpdateOrder,
+    VolumeToCreate, explicit_ingress_hosts, hostname_owners, same_service_mode_kind,
 };
 
 use super::{
@@ -1097,34 +1097,42 @@ fn assemble_plan(
         if blocked.iter().any(|entry| entry.service == spec.name) {
             continue;
         }
-        if let Some(dependency) = intent
-            .dependencies()
-            .get(&spec.name)
-            .into_iter()
-            .flatten()
-            .find(|dependency| {
-                blocked
-                    .iter()
-                    .any(|entry| entry.service == dependency.service)
-            })
-        {
+        // A Service blocked behind another is blocked the way that one is: it
+        // waits while that one waits, and is refused while that one is.
+        let kind_of = |service: &ServiceName| {
+            blocked
+                .iter()
+                .find(|entry| entry.service == *service)
+                .map(|entry| entry.kind)
+        };
+        if let Some((dependency, kind)) = blocked_behind(
+            intent
+                .dependencies()
+                .get(&spec.name)
+                .into_iter()
+                .flatten()
+                .filter_map(|dependency| Some((dependency, kind_of(&dependency.service)?))),
+        ) {
             block_service(
                 &mut blocked,
                 &mut budget,
                 &spec.name,
-                dependency_blocked(&dependency.service),
+                (dependency_blocked(&dependency.service), kind),
                 Reservation::Release,
             );
             continue;
         }
-        if let Some(handover) = handovers.iter().find(|handover| {
-            handover.from == spec.name && blocked.iter().any(|entry| entry.service == handover.to)
-        }) {
+        if let Some((handover, kind)) = blocked_behind(
+            handovers
+                .iter()
+                .filter(|handover| handover.from == spec.name)
+                .filter_map(|handover| Some((handover, kind_of(&handover.to)?))),
+        ) {
             block_service(
                 &mut blocked,
                 &mut budget,
                 &spec.name,
-                handover_blocked(handover),
+                (handover_blocked(handover), kind),
                 Reservation::Release,
             );
             continue;
@@ -1157,7 +1165,7 @@ fn assemble_plan(
                     &mut blocked,
                     &mut budget,
                     &spec.name,
-                    error.into_rpc_error(),
+                    (error.into_rpc_error(), BlockedKind::Wait),
                     Reservation::Release,
                 );
                 continue;
@@ -1167,7 +1175,7 @@ fn assemble_plan(
                     &mut blocked,
                     &mut budget,
                     &spec.name,
-                    error.into_rpc_error(),
+                    (error.into_rpc_error(), BlockedKind::Wait),
                     Reservation::Release,
                 );
                 continue;
@@ -1187,7 +1195,7 @@ fn assemble_plan(
                 &mut blocked,
                 &mut budget,
                 &spec.name,
-                error.into_rpc_error(),
+                (error.into_rpc_error(), BlockedKind::Wait),
                 before.map_or(Reservation::Release, |before| {
                     Reservation::Restore(Box::new(before))
                 }),
@@ -1558,17 +1566,24 @@ enum Reservation<'snapshot> {
     Restore(Box<ServiceBudget<'snapshot>>),
 }
 
+/// Which of the blocked Services a Service is behind says how it is blocked: a
+/// refused one before a waiting one, since only a config change deploys it then.
+fn blocked_behind<T>(blockers: impl Iterator<Item = (T, BlockedKind)>) -> Option<(T, BlockedKind)> {
+    blockers.min_by_key(|(_, kind)| *kind == BlockedKind::Wait)
+}
+
 /// Report `service` not attempted with `error` and settle its share of the budget.
 fn block_service<'snapshot>(
     blocked: &mut Vec<BlockedService>,
     budget: &mut ServiceBudget<'snapshot>,
     service: &ServiceName,
-    error: RpcError,
+    (error, kind): (RpcError, BlockedKind),
     reservation: Reservation<'snapshot>,
 ) {
     blocked.push(BlockedService {
         service: service.clone(),
         error,
+        kind,
     });
     if let Reservation::Restore(before) = reservation {
         *budget = *before;
@@ -2047,4 +2062,22 @@ fn pre_deploy_operations(
             .collect(),
     });
     operations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlockedKind, blocked_behind};
+
+    #[test]
+    fn a_service_behind_a_waiting_and_a_refused_one_is_refused() {
+        let behind = [("db", BlockedKind::Wait), ("cache", BlockedKind::Refusal)];
+        assert_eq!(
+            blocked_behind(behind.into_iter()),
+            Some(("cache", BlockedKind::Refusal))
+        );
+        assert_eq!(
+            blocked_behind(behind.into_iter().take(1)),
+            Some(("db", BlockedKind::Wait))
+        );
+    }
 }

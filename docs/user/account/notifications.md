@@ -14,7 +14,9 @@ Each kind of email has a row, set to **Email** or **None**:
   incident and sends no email.
 - **Failed GitHub deploys**: when a deploy from a push or pull request fails, or Cloud loses
   track of it partway. The email names the service that failed and the commit GitHub deployed
-  when it can tell, and links to the logs. A deploy you start yourself doesn't send one.
+  when it can tell, and links to the logs. A deploy that leaves services
+  [waiting](../deploy/deployments.md#follow-a-deployment) sends one too, naming each service and what
+  it waits on. A deploy you start yourself doesn't send one.
 - **Failed automatic upgrades**: when an automatic server upgrade fails.
 - **Crashed services**: when a service's replica exits with an error or runs out of memory. The
   email names the service and the Server, says how many times it crashed, and gives the last

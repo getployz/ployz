@@ -261,9 +261,12 @@ const deploymentStatusIcons = {
 /** What a Deployment's CI says while it waits for it; a summary the Store wrote before it said so has none. */
 type WaitingCi = Partial<Pick<DeploymentSummary, "ci">>;
 
-/** A Deployment as its icon shows it: one waiting for CI that failed reads as failed. */
-export const deploymentLight = ({ status, ci }: Pick<DeploymentSummary, "status"> & WaitingCi): DeploymentLight =>
-  ci === "failed" ? "failed" : deploymentStatusIcons[status];
+/**
+ * A Deployment as its icon shows it: one waiting for CI that failed reads as failed, and one that left all it had to
+ * do waiting deployed nothing, so it never reads as deployed.
+ */
+export const deploymentLight = ({ status, ci, all_waiting }: Pick<DeploymentSummary, "status" | "all_waiting"> & WaitingCi): DeploymentLight =>
+  ci === "failed" ? "failed" : all_waiting ? "queued" : deploymentStatusIcons[status];
 
 /**
  * A node's outcome as users read it: Failed work the Deployment's cancel stopped reads Cancelled. The Store marks it
@@ -307,15 +310,31 @@ export function nodeLight(outcome: ShownNodeStatus, deployment: Pick<DeploymentS
  * Preparing: it unpacks its upload, builds and plans.
  */
 export function deploymentStatusLabel(
-  { status, remove, outcome, ci, preparing }: Pick<DeploymentSummary, "status" | "remove" | "outcome" | "preparing"> & WaitingCi,
+  { status, remove, outcome, ci, preparing, all_waiting }: Pick<DeploymentSummary, "status" | "remove" | "outcome" | "preparing" | "all_waiting"> & WaitingCi,
 ) {
   if (ci === "failed") return "CI failed";
   if (outcome?.type === "forgotten") return "Left on old servers";
   if (remove && status === "running") return "Coming off the servers";
   if (remove && status === "applied") return "Off the servers";
   if (preparing && status === "running") return "Preparing";
+  const waiting = status === "applied" && outcome?.type === "executed" ? outcome.waiting?.length ?? 0 : 0;
+  if (waiting) return `${all_waiting ? "Nothing deployed" : "Deployed"}, ${waiting} waiting`;
   return deploymentStatusLabels[status];
 }
+
+/**
+ * The Services a Deployment left waiting on something outside their config, each with why. The Store lists them
+ * however the Deployment ended, so one that failed beside them still says why they didn't start.
+ */
+export const waitingServices = ({ outcome }: Pick<DeploymentView, "outcome">) =>
+  outcome?.type === "executed" ? outcome.waiting ?? [] : [];
+
+/**
+ * What a Deployment nobody watched has to tell them: it failed, or it applied and left Services waiting. One that ended
+ * any other way says nothing, though it may list waiting Services: a cancelled one didn't deploy the rest.
+ */
+export const deploymentTrouble = ({ status, outcome }: Pick<DeploymentView, "status" | "outcome">) =>
+  status === "failed" || status === "unknown" ? "failed" : status === "applied" && waitingServices({ outcome }).length > 0 ? "waiting" : null;
 
 /**
  * How a Deployment is named: "#N" once it queued; while it waits for CI it has no number yet, so the push's short sha
@@ -380,10 +399,12 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
 
 /**
  * Whether a failed Deployment's `node` can be fixed on a Branch: the Deployment ran and `node` didn't apply. With no
- * Server the failure is having none, and adding one is the way on.
+ * Server the failure is having none, and adding one is the way on. A Service left waiting isn't a code failure: a
+ * Branch changes neither where its Volume is nor which Servers run services.
  */
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
-  !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
+  !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome)
+  && !waitingServices(deployment).some((waiting) => waiting.service === node.name);
 
 /**
  * What a Deployment shipped despite, in words: "TOKEN not set", with the variable without a value it reads, a broken

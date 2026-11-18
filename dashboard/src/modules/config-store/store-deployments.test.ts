@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
   buildInterrupted, showCancelling,
-  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
+  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason, waitingServices,
   deploymentLabel, freshRollback, nodeLight, nodeStatusLabels, reviewGroups, rollbackConfirm, shippedService, shownNodeStatus, shownValue,
   uploadLabel, warnedService, deployWarningNotices,
 } from "./store-deployments";
@@ -230,7 +230,7 @@ it("reads a running Deployment as preparing until its runner records a Deploy Pr
 
 const node = (name: string, outcome: DeploymentView["nodes"][number]["outcome"]) => ({ type: "service" as const, id: `id-${name}`, name, outcome, rows: [] });
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
-  status: "failed", nodes: [], builds: [], upload: null, admitted_by: null, started_at: 100, outcome: { type: "executed", summary: null, reason: "x" },
+  status: "failed", nodes: [], builds: [], runtime_names: {}, upload: null, admitted_by: null, started_at: 100, outcome: { type: "executed", summary: null, reason: "x" },
   ...fields,
 });
 
@@ -252,6 +252,36 @@ it("offers a fix only for what ran and failed", () => {
   // With no Server the way on is adding one; with nothing run, giving it a source.
   expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"), true)).toBe(false);
   expect(canFixOnBranch(deployment({ outcome: { type: "not_executed", reason: "x", cause: [], needs_upload: [] } }), node("api", "pending"), false)).toBe(false);
+});
+
+const NO_WRITER = "Volume data has no writer; fsn-2 holds its only copy. Make it the writer: ployz volume restore data --from fsn-2";
+const executed = { type: "executed" as const, summary: null, reason: null, cause: [], services: [] };
+
+it("offers a fix for a Service the planner refused, and none for one left waiting", () => {
+  const nodes = [node("api", "failed"), node("worker", "not_attempted"), node("cron", "not_attempted")];
+  const preview = { blocked: [
+    { service: "private-worker", error: { message: NO_WRITER }, kind: "wait" },
+    { service: "cron", error: { message: "cron's region has no Server" }, kind: "refusal" },
+  ] } as DeploymentView["preview"];
+  const failed = deployment({
+    nodes, preview, runtime_names: { worker: "private-worker" },
+    outcome: { ...executed, reason: "api: failed", waiting: [{ service: "worker", reason: NO_WRITER }] },
+  });
+  expect(canFixOnBranch(failed, node("worker", "not_attempted"), false)).toBe(false);
+  expect(canFixOnBranch(failed, node("cron", "not_attempted"), false)).toBe(true);
+  expect(canFixOnBranch(failed, node("api", "failed"), false)).toBe(true);
+  expect(waitingServices(failed)).toEqual([{ service: "worker", reason: NO_WRITER }]);
+});
+
+it("never reads a Deployment that left every Service waiting as deployed", () => {
+  const outcome: Outcome = { ...executed, waiting: [{ service: "worker", reason: NO_WRITER }] };
+  const some = { status: "applied" as const, remove: false, outcome };
+  const every = { ...some, all_waiting: true };
+  expect(deploymentLight(some)).toBe("deployed");
+  expect(deploymentStatusLabel(some)).toBe("Deployed, 1 waiting");
+  expect(deploymentLight(every)).not.toBe("deployed");
+  expect(deploymentStatusLabel(every)).toBe("Nothing deployed, 1 waiting");
+  expect(deploymentStatusLabel({ status: "failed", remove: false, outcome: { ...outcome, reason: "api: failed" } })).toBe("Failed");
 });
 
 it("says why a Service has no deploy logs: the Deployment never ran, or its turn never came", () => {

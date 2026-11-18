@@ -151,10 +151,34 @@ fn summary(deployment: &DeploymentSummary) -> Value {
         "started_at": deployment.started_at,
         "ended_at": deployment.ended_at,
     });
-    if let (true, Value::Object(object)) = (deployment.preparing, &mut summary) {
-        object.insert("preparing".into(), true.into());
+    if let Value::Object(object) = &mut summary {
+        if deployment.preparing {
+            object.insert("preparing".into(), true.into());
+        }
+        say_waiting(object, deployment);
     }
     summary
+}
+
+/// Add to `shown` the Services `deployment` left waiting: their names, and what
+/// each waits on under `untrusted`, since the reason names what a Server reported.
+/// `all_waiting` marks one that deployed or removed no Service.
+pub(super) fn say_waiting(shown: &mut Map<String, Value>, deployment: &DeploymentSummary) {
+    let Some(Outcome::Executed { waiting, .. }) = &deployment.outcome else {
+        return;
+    };
+    if waiting.is_empty() {
+        return;
+    }
+    let names: Vec<_> = waiting.iter().map(|waiting| &waiting.service).collect();
+    shown.insert("waiting".into(), json!(names));
+    if deployment.all_waiting {
+        shown.insert("all_waiting".into(), true.into());
+    }
+    let untrusted = shown.entry("untrusted").or_insert_with(|| json!({}));
+    if let Value::Object(untrusted) = untrusted {
+        untrusted.insert("waiting".into(), json!(waiting));
+    }
 }
 
 /// Whether a warning holds only names the Config Store wrote, such as a variable
@@ -224,7 +248,7 @@ tool_input! {
 impl Tool for DeploymentList {
     const NAME: &'static str = "deployment_list";
     const TITLE: &'static str = "List Deployments";
-    const DESCRIPTION: &'static str = "List an Environment's Deployments, newest to oldest. Each shows its number, status, whether it is still in flight, why it ended, its message, Saved revision, and start and end times.";
+    const DESCRIPTION: &'static str = "List an Environment's Deployments, newest to oldest. Each shows its number, status, whether it is still in flight, why it ended, what waits, its message, Saved revision, and start and end times.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -272,7 +296,7 @@ tool_input! {
 impl Tool for DeploymentShow {
     const NAME: &'static str = "deployment_show";
     const TITLE: &'static str = "Show a Deployment";
-    const DESCRIPTION: &'static str = "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.";
+    const DESCRIPTION: &'static str = "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. `waiting` names each Service left waiting and why; `all_waiting` means nothing deployed. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {

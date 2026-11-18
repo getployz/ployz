@@ -7,11 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    BlockedService, CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
-    KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
-    PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
-    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServiceStorageSpec,
-    ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
+    BlockedKind, BlockedService, CopyRole, DockerVolumeId, DockerVolumeName,
+    DockerVolumeStorageObservation, KnownCopy, MachineId, MachineObservation, Namespace, Operator,
+    PlacementConstraint, PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName,
+    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
 };
 
 use crate::deploy::{
@@ -801,6 +801,7 @@ impl VolumePlan<'_> {
                     blocked.extend(component.service_names().map(|service| BlockedService {
                         service: service.clone(),
                         error: error.clone(),
+                        kind: BlockedKind::Wait,
                     }));
                     continue;
                 }

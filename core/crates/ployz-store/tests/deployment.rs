@@ -7977,6 +7977,66 @@ fn a_deploy_of_some_services_leaves_a_lost_deployments_service_in_doubt() {
     assert_eq!(removes, ["cron"]);
 }
 
+/// [`preview`] of `planned`, where the planner left `waiting` blocked for want of a
+/// writer.
+fn preview_with_waiting(planned: &[&str], waiting: &str) -> DeployPreview {
+    let mut preview = preview(planned);
+    preview.blocked = serde_json::from_value(json!([{
+        "service": waiting,
+        "error": {
+            "code": "conflict", "message": "Volume data has no writer",
+            "details": {"reason": "no_writer"}
+        }
+    }]))
+    .unwrap();
+    preview
+}
+
+/// Run full Deployment `n` to its end: `planned` deploy and `waiting` is left waiting.
+fn apply_with_waiting(store: &ConfigStore, n: u8, planned: &[&str], waiting: &str) {
+    let b = runner("runner-b");
+    store.claim(&id(n), &b).unwrap();
+    store
+        .record(
+            &id(n),
+            &b,
+            RunEvidence::Prepared(preview_with_waiting(planned, waiting)),
+        )
+        .unwrap();
+    store.record(&id(n), &b, succeeded(planned)).unwrap();
+}
+
+#[test]
+fn a_full_deploy_that_leaves_a_lost_deployments_service_waiting_leaves_it_in_doubt() {
+    let (store, who) = cron_lost();
+    // #3 deploys every Service and leaves cron waiting: it never reached cron, so
+    // what #2 may have started of it may still run.
+    admit(&store, &who, 3, &[], None).unwrap();
+    apply_with_waiting(&store, 3, &["web", "api"], "cron");
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+
+    let refused = rollback_to(&store, &who, (4, 1)).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(removes_service(&refused), ["cron"]);
+}
+
+#[test]
+fn a_full_deploy_that_leaves_a_service_waiting_keeps_the_domain_an_unknown_deployment_may_hold() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    add_web_domain(&store, &who, "app.example.com");
+    lose_track(&store, &who, 2);
+    remove_domain(&store, &who, "app.example.com");
+    // #3 ships the removal, deploys api and leaves web waiting: #2 may still have put
+    // the domain on web, and nothing took it off.
+    deploy_as(&store, &who, 3, Approval::NotRequired).unwrap();
+    apply_with_waiting(&store, 3, &["api"], "web");
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Applied);
+
+    let refused = retry_as(&store, &who, (4, 3), &admins_token(nothing_else_runs())).unwrap_err();
+    assert_admin_asked(&refused);
+}
+
 #[test]
 fn rolling_back_to_a_deploy_of_some_services_leaves_the_others_running_unasked() {
     let (store, who) = shop();
@@ -8885,33 +8945,61 @@ fn a_plan_names_the_region_a_service_runs_in_once_it_leaves_its_counts_by_region
     );
 }
 
+/// A region no Server is in and a Volume outside the region leave Services
+/// waiting: the Deploy names each with its reason and fails nothing. Refused, the
+/// same Services fail it, and those refused for one reason share a clause.
 #[test]
 fn a_deploy_names_every_service_it_left_not_attempted_and_why() {
-    let (store, who) = shop();
-    admit(&store, &who, 1, &[], None).unwrap();
-    let a = runner("runner-a");
-    store.claim(&id(1), &a).unwrap();
-    let mut prepared = serde_json::to_value(preview(&[])).unwrap();
-    let blocked = |service: &str, message: &str| json!({"service": service, "error": {"code": "conflict", "message": message, "details": {}}});
-    prepared["blocked"] = json!([
-        blocked("worker", "no Server in fsn"),
-        blocked("api", "pg-data is on syd-1"),
-        blocked("web", "no Server in fsn"),
-    ]);
-    let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
-    store.record(&id(1), &a, prepared).unwrap();
-    store.record(&id(1), &a, succeeded(&[])).unwrap();
-
-    let view = store
-        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
-        .unwrap();
-    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
-        panic!("an executed outcome");
+    let left = |n: u8, kind: &str| {
+        let (store, who) = shop();
+        admit(&store, &who, n, &[], None).unwrap();
+        let a = runner("runner-a");
+        store.claim(&id(n), &a).unwrap();
+        let mut prepared = serde_json::to_value(preview(&[])).unwrap();
+        let blocked = |service: &str, message: &str| json!({"service": service, "kind": kind, "error": {"code": "conflict", "message": message, "details": {}}});
+        prepared["blocked"] = json!([
+            blocked("worker", "no Server in fsn"),
+            blocked("api", "pg-data is on syd-1"),
+            blocked("web", "no Server in fsn"),
+        ]);
+        let prepared = RunEvidence::Prepared(serde_json::from_value(prepared).unwrap());
+        store.record(&id(n), &a, prepared).unwrap();
+        store.record(&id(n), &a, succeeded(&[])).unwrap();
+        let view = store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(n) })
+            .unwrap();
+        let Some(ployz_store::Outcome::Executed {
+            reason, waiting, ..
+        }) = view.deployment.outcome
+        else {
+            panic!("an executed outcome");
+        };
+        let waiting: Vec<_> = waiting
+            .into_iter()
+            .map(|waiting| (waiting.service.to_string(), waiting.reason))
+            .collect();
+        (view.deployment.status, reason, waiting)
     };
+
+    let (status, reason, waiting) = left(1, "wait");
+    assert_eq!(status, DeploymentStatus::Applied);
+    assert_eq!(reason, None);
+    assert_eq!(
+        waiting,
+        [
+            ("api".to_owned(), "pg-data is on syd-1".to_owned()),
+            ("web".to_owned(), "no Server in fsn".to_owned()),
+            ("worker".to_owned(), "no Server in fsn".to_owned()),
+        ]
+    );
+
+    let (status, reason, waiting) = left(2, "refusal");
+    assert_eq!(status, DeploymentStatus::Failed);
     assert_eq!(
         reason.as_deref(),
         Some("web, worker: no Server in fsn; api: pg-data is on syd-1")
     );
+    assert_eq!(waiting, []);
 }
 
 #[test]

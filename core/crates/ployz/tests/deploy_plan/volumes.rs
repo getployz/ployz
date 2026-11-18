@@ -1118,6 +1118,7 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
         panic!("{:?}", preview.blocked)
     };
     assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
     let rpc = &blocked.error;
     assert_eq!(rpc.message, "data is on second");
     assert_eq!(
@@ -1149,6 +1150,7 @@ fn a_region_no_server_is_in_stops_a_service_with_a_volume_and_not_the_deploy() {
         panic!("{:?}", preview.blocked)
     };
     assert_eq!(blocked.service, db.name);
+    assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
     assert_eq!(
         blocked.error.details.get("reason"),
         Some(&serde_json::json!("region_unmatched"))

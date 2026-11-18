@@ -30,7 +30,7 @@
       "title": "Search the Ployz docs"
     },
     {
-      "description": "Show an Environment: its Services with source and domains, Volumes, Configs, how many changes are staged, broken references, latest Deployment and revision. Also lists every Project with its Environments.",
+      "description": "Show an Environment: its Services with source and domains, Volumes, Configs, how many changes are staged, broken references, latest Deployment and what waits, and revision. Also lists every Project with its Environments.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,
@@ -1677,7 +1677,7 @@
       "title": "Deploy an Environment"
     },
     {
-      "description": "List an Environment's Deployments, newest to oldest. Each shows its number, status, whether it is still in flight, why it ended, its message, Saved revision, and start and end times.",
+      "description": "List an Environment's Deployments, newest to oldest. Each shows its number, status, whether it is still in flight, why it ended, what waits, its message, Saved revision, and start and end times.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,
@@ -1716,7 +1716,7 @@
       "title": "List Deployments"
     },
     {
-      "description": "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.",
+      "description": "Show one Deployment, the latest unless you give a number: its status, each node's outcome, and warnings such as variables left out. `waiting` names each Service left waiting and why; `all_waiting` means nothing deployed. A failure comes with its Server, step, reason and a short scrubbed log excerpt. One still in flight also shows its progress, and the call can wait for it to end.",
       "destructive": false,
       "gate": "never",
       "idempotent": true,

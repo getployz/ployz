@@ -57,10 +57,10 @@ use ployz_core::config::{
     lower_deployment, parse_runtime_preview, project_runtime_outcome, redacted_runtime_preview,
 };
 use ployz_core::{
-    ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DeployWarning,
-    DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace, PruneScope, Region,
-    RpcError, ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals, VolumeRemoval,
-    VolumeRemovalOutcome,
+    BlockedKind, ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview,
+    DeployWarning, DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace,
+    PruneScope, Region, RpcError, ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals,
+    VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,8 @@ pub enum DeploymentStatus {
     Superseded,
     /// Its runner claimed it and has not recorded an outcome yet.
     Running,
-    /// Every planned operation completed.
+    /// Every planned operation completed. The planner may have left Services
+    /// waiting, which the outcome lists: it planned no operation for them.
     Applied,
     /// It stopped before every operation completed. Confirmed Node Outcomes still count.
     Failed,
@@ -182,6 +183,11 @@ pub struct DeploymentSummary {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub preparing: bool,
+    /// Whether it applied without deploying or removing a Service: the planner
+    /// left all it had to do waiting, so its Servers run what they ran before it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub all_waiting: bool,
     /// Whether it removes the Environment from the Servers: it ships the empty
     /// Environment ([`NOTHING`]) and deletes the data it accepted.
     pub remove: bool,
@@ -486,6 +492,15 @@ impl NodeStatus {
     }
 }
 
+/// A Service a Deploy left waiting on a condition outside its config.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct WaitingService {
+    /// Its current name.
+    pub service: ServiceName,
+    /// What it waits on, in the planner's words; users read it.
+    pub reason: String,
+}
+
 /// What a Deployment's runner recorded at its end.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -512,6 +527,12 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(as = "Option<bool>", optional)]
         cancelled: bool,
+        /// The Services the planner left waiting, however the Deployment ended:
+        /// each reads Not attempted. They fail nothing, so `reason` never names
+        /// one. A Deployment that did all it planned ends Applied with them.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<WaitingService>>", optional)]
+        waiting: Vec<WaitingService>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.
@@ -1018,6 +1039,15 @@ struct Run {
 }
 
 impl Run {
+    /// The nodes its Deployment never attempted. On an Applied one, the Services
+    /// the planner left waiting.
+    fn unreached(&self) -> impl Iterator<Item = &String> {
+        self.nodes
+            .iter()
+            .filter(|(_, status)| **status == NodeStatus::NotAttempted)
+            .map(|(id, _)| id)
+    }
+
     fn summary_warnings(&self) -> Vec<DeploymentWarning> {
         let failed = self.ingress.iter().filter_map(|repair| {
             let ingress = repair.failure.clone()?;
@@ -1873,6 +1903,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
                 .map_err(|_| error::corrupt("Deployment upload"))?,
             chooses_upload_at_start: chooses_upload_at_start(status, service_uploads.as_ref()),
             preparing: preparing(status, &run),
+            all_waiting: all_waiting(status, &nodes, &run),
             remove: row.number::<Revision>(4, "revision")? == NOTHING,
             prune: run.prune,
             admitted_by: row.parse_optional(13, "identity")?,
@@ -1920,10 +1951,22 @@ fn preparing(status: DeploymentStatus, run: &Run) -> bool {
     status == DeploymentStatus::Running && run.preview.is_none()
 }
 
+/// Whether a Deployment in `status` of `nodes` that recorded `run` applied without
+/// deploying or removing a Service. An Unchanged one ran nothing.
+fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> bool {
+    let mut services = nodes
+        .iter()
+        .filter(|node| node.service().is_some())
+        .filter_map(|node| run.nodes.get(node.id()));
+    status == DeploymentStatus::Applied
+        && run.unreached().next().is_some()
+        && !services.any(|outcome| outcome.advances())
+}
+
 impl Stored {
     /// Show its standing on its summary: the status, number, runner, start and end
-    /// [`Standing::shown`] gives at `read_at`, with what follows from that status:
-    /// whether it may still run, chooses its upload as it starts, or prepares.
+    /// [`Standing::shown`] gives at `read_at`, and the fields that follow from that
+    /// status.
     fn show(&mut self) {
         let Shown {
             status,
@@ -1941,6 +1984,7 @@ impl Stored {
         self.summary.chooses_upload_at_start =
             chooses_upload_at_start(status, self.service_uploads.as_ref());
         self.summary.preparing = preparing(status, &self.run);
+        self.summary.all_waiting = all_waiting(status, &self.nodes, &self.run);
     }
 }
 

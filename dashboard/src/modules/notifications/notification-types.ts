@@ -10,7 +10,7 @@ export const NOTIFICATION_TYPES = {
   },
   "deploy-failed": {
     label: "Failed GitHub deploys",
-    description: "When a deploy from a push or pull request fails.",
+    description: "When a deploy from a push or pull request fails, or leaves a service waiting.",
     unsubscribe: "Turn off failed deploy emails",
     emails: "failed deploy emails",
   },

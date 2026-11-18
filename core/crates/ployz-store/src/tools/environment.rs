@@ -30,7 +30,7 @@ tool_input! {
 impl Tool for EnvironmentShow {
     const NAME: &'static str = "environment_show";
     const TITLE: &'static str = "Show an Environment";
-    const DESCRIPTION: &'static str = "Show an Environment: its Services with source and domains, Volumes, Configs, how many changes are staged, broken references, latest Deployment and revision. Also lists every Project with its Environments.";
+    const DESCRIPTION: &'static str = "Show an Environment: its Services with source and domains, Volumes, Configs, how many changes are staged, broken references, latest Deployment and what waits, and revision. Also lists every Project with its Environments.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -91,10 +91,13 @@ impl Tool for EnvironmentShow {
             .map(|project| json!({ "name": project.name, "environments": project.environments }))
             .collect::<Vec<_>>();
         let services = services_with_domains(&services.services, &domains.domains);
-        let latest = deployments
-            .latest
-            .as_ref()
-            .map(|deployment| json!({ "number": deployment.number, "status": deployment.status }));
+        let latest = deployments.latest.as_ref().map(|deployment| {
+            let mut latest = serde_json::Map::new();
+            latest.insert("number".into(), json!(deployment.number));
+            latest.insert("status".into(), json!(deployment.status));
+            super::deployment::say_waiting(&mut latest, deployment);
+            latest
+        });
         Ok(json!({
             "at": diff.environment.to_string(),
             "revision": diff.environment.revision.0,

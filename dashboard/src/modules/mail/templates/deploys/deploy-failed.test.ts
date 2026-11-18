@@ -1,7 +1,7 @@
 import type { DeploymentView, GitSource } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { deployFailedMail } from "#/modules/mail/templates/deploys/deploy-failed";
+import { deployFailedMail, deployWaitingMail } from "#/modules/mail/templates/deploys/deploy-failed";
 
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "dep 1", environment: { id: "e", project: "shop", name: "pr 7" }, status: "failed", builds: [], nodes: [], runtime_names: {}, outcome: null, ...fields,
@@ -91,4 +91,24 @@ it("never names a build its Deployment ended under as the failure, nor opens it"
   expect(interrupted.subject).toBe("A deploy to shop / pr 7 failed");
   expect(interrupted.facts?.at(-1)?.value).toBe("Ployz lost track of it partway through, so some of it may be live.");
   expect(interrupted.action?.url).toMatch(/\/deployments\/dep%201$/);
+});
+
+it("tells a push whose Deploy left Services waiting which ones and why, and whether anything deployed", () => {
+  const waiting = [
+    { service: "db", reason: "Volume data is on fsn-1, which doesn't run services" },
+    { service: "worker", reason: "depends on db, which was not attempted" },
+  ];
+  const outcome = { type: "executed" as const, summary: null, reason: null, cause: [], services: [], waiting };
+  const mailed = (fields: Partial<DeploymentView>) => deployWaitingMail({
+    origin: "https://ployz.dev", organization: { name: "Shop", slug: "shop co" }, sources: [source("web")],
+    deployment: deployment({ status: "applied", outcome, ...fields }),
+  });
+  const some = mailed({});
+  expect(some.subject).toBe("2 services are waiting to deploy to shop / pr 7");
+  expect(some.facts?.slice(-2)).toEqual(waiting.map(({ service, reason }) => ({ label: service, value: reason })));
+  expect(some.action?.url).toBe("https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201");
+  expect(some.paragraphs.join(" ")).not.toContain("Nothing was deployed.");
+  const every = mailed({ all_waiting: true, outcome: { ...outcome, waiting: waiting.slice(0, 1) } });
+  expect(every.subject).toBe("db is waiting to deploy to shop / pr 7");
+  expect(every.paragraphs.join(" ")).toContain("Nothing was deployed.");
 });
