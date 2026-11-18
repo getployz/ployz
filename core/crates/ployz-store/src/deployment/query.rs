@@ -475,7 +475,8 @@ pub(crate) fn namespaces(tx: &mut dyn Tx, who: &Actor) -> Result<NamespacesView,
                 namespace: row.parse(0, "Namespace")?,
                 project: row.parse(1, "Project name")?,
                 environment: row.parse(2, "Environment name")?,
-                region: row.intent(3, "Working State")?.region,
+                // Cloud reads this view to name the Environment whose Working State it can't read.
+                region: row.intent(3, "Working State").ok().and_then(|intent| intent.region),
             })
         })
         .collect::<Result<_, RpcError>>()?;
