@@ -381,11 +381,10 @@ to your other servers. If no other server runs services, deploys fail until you 
 back on or add a server.
 
 In this version of Ployz a drain carries no signature. It moves a service that
-[reaches no data](../deploy/deployments.md#deploy-from-the-dashboard), and one whose version
-the other server already ran under a signature. It reports any other service as failed and
-leaves it where it runs. Turn off **Run services here**, then run `ployz deploy` from an
-approved device to move those off. A volume
-stays on its server; see [Move a volume](../services/move-a-volume.md).
+[reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). It reports any other
+service as failed and leaves it where it runs, even one the other server already runs. Turn
+off **Run services here**, then run `ployz deploy` from an approved device to move those off.
+A volume stays on its server; see [Move a volume](../services/move-a-volume.md).
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
