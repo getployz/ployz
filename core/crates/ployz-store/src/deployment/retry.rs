@@ -257,6 +257,7 @@ pub(crate) fn retry(
             ..uploads
         })
     });
+    let ran = super::versions::replaying(tx, source)?;
     let admitted_at = now();
     queue(tx, &stored.summary.environment_id, false, |tx, number| {
         let listed = next_listed(tx, &stored.summary.environment_id)?;
@@ -269,7 +270,7 @@ pub(crate) fn retry(
               message, listed, service_uploads, ran) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10, ran \
+              ?10, ?11 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -289,6 +290,7 @@ pub(crate) fn retry(
                 json_text(&nodes).as_str().into(),
                 listed.into(),
                 retried_uploads.as_deref().into(),
+                ran.as_str().into(),
             ],
         )?;
         // A retry builds the commits its source pinned, and may reuse the image its

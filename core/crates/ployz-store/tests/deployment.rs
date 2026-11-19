@@ -9181,30 +9181,74 @@ fn a_staged_region_is_left_to_save_until_a_save_holds_it() {
     assert_eq!((saved.total_count, saved.draft_count), (1, 0));
 }
 
-/// A Device's signed version of `service` in `shop-production` at `digest`, posted with
-/// `tag` pinned to `image`.
-fn posted(service: &str, digest: u8, (tag, image): (&str, &str)) -> ployz_store::PostedVersion {
-    use ployz_core::authority::{
-        PayloadDigest, ServiceVersion, Signed, Signer, SignerKey, Timestamp,
-    };
+/// What Deployment `n` would lower for `service` if it were admitted now, with its image set
+/// to `image`, and the digest of that spec.
+fn signed_spec(
+    store: &ConfigStore,
+    who: &Actor,
+    service: &str,
+    image: &str,
+) -> ployz_core::authority::PayloadDigest {
+    let plan = store
+        .read(
+            who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: true,
+                deployment: None,
+            },
+        )
+        .unwrap();
+    let mut spec = plan
+        .target
+        .unwrap()
+        .into_iter()
+        .find(|spec| spec.name.as_str() == service)
+        .unwrap();
+    spec.container.image = image.to_owned();
+    ployz_core::authority::PayloadDigest::of(&spec, &plan.namespace).unwrap()
+}
+
+/// A Device's signed version of `service` in `namespace` at `digest`, signed at `at`.
+fn statement(
+    (namespace, service): (&str, &str),
+    digest: ployz_core::authority::PayloadDigest,
+    at: ployz_core::authority::Timestamp,
+) -> ployz_core::authority::Signed<ployz_core::authority::ServiceVersion> {
+    use ployz_core::authority::{ServiceVersion, Signed, Signer, SignerKey};
     let signer = Signer::from_seed(&[7; 32]);
-    let statement = Signed::sign(
+    Signed::sign(
         &ServiceVersion {
             cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
-            namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+            namespace: ployz_core::Namespace::parse(namespace).unwrap(),
             service: ServiceName::parse(service).unwrap(),
-            digest: PayloadDigest::parse(&format!("{digest:02x}").repeat(32)).unwrap(),
-            signed_at: Timestamp::now(),
+            digest,
+            signed_at: at,
             signer: SignerKey::Device(signer.public().into()),
             proposal: None,
         },
         &signer,
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// A Device's signed version of `service` as saved now, with its tag `nginx:1` pinned to
+/// `image`.
+fn posted(
+    store: &ConfigStore,
+    who: &Actor,
+    service: &str,
+    image: &str,
+) -> ployz_store::PostedVersion {
     ployz_store::PostedVersion {
-        statement,
+        statement: statement(
+            ("shop-production", service),
+            signed_spec(store, who, service, image),
+            ployz_core::authority::Timestamp::now(),
+        ),
         pin: Some(ployz_store::TagPin {
-            tag: tag.to_owned(),
+            tag: "nginx:1".to_owned(),
             image: image.to_owned(),
         }),
     }
@@ -9213,50 +9257,116 @@ fn posted(service: &str, digest: u8, (tag, image): (&str, &str)) -> ployz_store:
 const P1: &str = "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
 const P2: &str = "nginx@sha256:2222222222222222222222222222222222222222222222222222222222222222";
 
-/// Admit a Deploy of every Service as `n`, carrying `versions`.
+/// Admit a Deploy of every Service as `n`, carrying `versions` and `approval`.
+fn admit_with(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    (versions, approval): (
+        Vec<ployz_store::PostedVersion>,
+        Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    ),
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            approval: approval.map(Box::new),
+            versions,
+        }),
+        &Trusted::default(),
+    )
+}
+
 fn admit_signed(
     store: &ConfigStore,
     who: &Actor,
     n: u8,
     versions: Vec<ployz_store::PostedVersion>,
 ) -> DeploymentSummary {
-    store
-        .write_trusted(
-            who,
-            &Admit::Deploy(Deploy {
-                id: id(n),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-                message: None,
-                prune: false,
-                no_prune: false,
-                approval: None,
-                versions,
-            }),
-            &Trusted::default(),
-        )
-        .unwrap()
+    admit_with(store, who, n, (versions, None)).unwrap()
 }
 
-/// The image Deployment `n` runs `web` from, and how many signed versions it sends.
-fn web_runs(store: &ConfigStore, n: u8) -> Option<(String, usize)> {
+/// A Device's approval of Deployment `n` naming each of `pins`' Services pinned to its
+/// image, as a CLI from before signed versions posts it.
+fn approval_pinning(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    pins: &[(&str, &str)],
+) -> ployz_core::authority::Signed<ployz_core::authority::DeployApproval> {
+    use ployz_core::authority::{
+        ApprovedService, DeployApproval, Signed, Signer, SignerKey, Timestamp,
+    };
+    let signer = Signer::from_seed(&[7; 32]);
+    let mut services: Vec<ApprovedService> = pins
+        .iter()
+        .map(|(service, image)| ApprovedService {
+            name: ServiceName::parse(*service).unwrap(),
+            digest: signed_spec(store, who, service, image),
+            image: Some((*image).to_owned()),
+        })
+        .collect();
+    services.sort_by(|left, right| left.name.cmp(&right.name));
+    let issued_at = Timestamp::now();
+    let body = DeployApproval {
+        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        operation: ployz_core::OperationId::from_uuid(id(n).as_str()).unwrap(),
+        namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
+        services,
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
+    };
+    Signed::sign(&body, &signer).unwrap()
+}
+
+/// The image Deployment `n` pins `service` to, and how many signed versions it sends.
+fn runs(store: &ConfigStore, n: u8, service: &str) -> Option<(String, usize)> {
     let claimed = store.claim(&id(n), &runner("runner-a")).unwrap();
-    let pinned = claimed.ran.get(&ServiceName::parse("web").unwrap())?;
+    let pinned = claimed.ran.get(&ServiceName::parse(service).unwrap())?;
     let image = pinned.ran.pin.as_ref().map(|pin| pin.image.clone())?;
     Some((image, pinned.versions.len()))
+}
+
+fn web_runs(store: &ConfigStore, n: u8) -> Option<(String, usize)> {
+    runs(store, n, "web")
+}
+
+fn set(store: &ConfigStore, who: &Actor, path: &str, value: serde_json::Value) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse(path).unwrap(),
+                    value,
+                }],
+            },
+        )
+        .unwrap();
 }
 
 #[test]
 fn a_rollback_runs_the_image_its_source_ran_after_the_tag_moved() {
     let (store, who) = shop();
-    admit_signed(&store, &who, 1, vec![posted("web", 1, ("nginx:1", P1))]);
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
     assert_eq!(web_runs(&store, 1), Some((P1.to_owned(), 1)));
     apply(&store, 1);
     set_replicas(&store, &who, "web", 2);
-    admit_signed(&store, &who, 2, vec![posted("web", 2, ("nginx:1", P2))]);
+    admit_signed(&store, &who, 2, vec![posted(&store, &who, "web", P2)]);
     apply(&store, 2);
 
     retry(&store, &who, 3, 1).unwrap();
@@ -9272,23 +9382,91 @@ fn a_rollback_runs_the_image_its_source_ran_after_the_tag_moved() {
 #[test]
 fn a_deploy_without_a_signature_runs_no_older_pin_once_the_tag_changed() {
     let (store, who) = shop();
-    admit_signed(&store, &who, 1, vec![posted("web", 1, ("nginx:1", P1))]);
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
     apply(&store, 1);
-    store
-        .write(
-            &who,
-            &Edit {
-                environment: EnvironmentRef::default(),
-                expect: None,
-                changes: vec![Change::Set {
-                    path: SettingPath::parse("web.image").unwrap(),
-                    value: json!("nginx:2"),
-                }],
-            },
-        )
-        .unwrap();
+    set(&store, &who, "web.image", json!("nginx:2"));
     admit(&store, &who, 2, &[], None).unwrap();
     assert_eq!(web_runs(&store, 2), None);
+}
+
+#[test]
+fn a_deploy_that_changes_a_signed_setting_runs_the_tag_not_the_last_pin() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    // A free Service's variable changes after its tag moved: it runs what the tag names.
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    admit(&store, &who, 2, &[], None).unwrap();
+    assert_eq!(web_runs(&store, 2), None);
+}
+
+#[test]
+fn a_service_saved_by_digest_records_the_digest_it_sends() {
+    let (store, who) = shop();
+    set(&store, &who, "web.image", json!(P1));
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set(&store, &who, "web.image", json!(P2));
+    admit(&store, &who, 2, &[], None).unwrap();
+    let claimed = store.claim(&id(2), &runner("runner-a")).unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    let spec = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name == web)
+        .unwrap();
+    assert_eq!(spec.container.image, P2);
+    assert_eq!(
+        claimed.ran[&web].ran.digest,
+        ployz_core::authority::PayloadDigest::of(spec, &claimed.intent.namespace).unwrap()
+    );
+}
+
+#[test]
+fn a_deploy_with_only_an_approval_runs_and_keeps_the_image_it_approved() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    // A released CLI posts only its approval, after the tag moved to P2.
+    let approval = approval_pinning(&store, &who, 2, &[("web", P2)]);
+    admit_with(&store, &who, 2, (Vec::new(), Some(approval))).unwrap();
+    assert_eq!(web_runs(&store, 2), Some((P2.to_owned(), 0)));
+    apply(&store, 2);
+    retry(&store, &who, 3, 2).unwrap();
+    assert_eq!(web_runs(&store, 3), Some((P2.to_owned(), 0)));
+}
+
+#[test]
+fn a_rollback_to_a_deployment_from_before_pins_were_kept_borrows_no_later_pin() {
+    let (store, who, url, _dir) = own_shop();
+    let approval = approval_pinning(&store, &who, 1, &[("web", P1)]);
+    admit_with(&store, &who, 1, (Vec::new(), Some(approval))).unwrap();
+    apply(&store, 1);
+    // What the Store kept of #1 before it recorded what each Deployment ran.
+    backend::execute(
+        &url,
+        &format!(
+            "UPDATE config_deployment SET ran = NULL WHERE id = '{}'",
+            id(1)
+        ),
+    );
+    set_replicas(&store, &who, "web", 2);
+    admit_signed(
+        &store,
+        &who,
+        2,
+        vec![
+            posted(&store, &who, "web", P2),
+            posted(&store, &who, "api", P2),
+        ],
+    );
+    apply(&store, 2);
+
+    retry(&store, &who, 3, 1).unwrap();
+    // #1's own approval pinned web; it pinned nothing of api, which ran its tag.
+    assert_eq!(web_runs(&store, 3), Some((P1.to_owned(), 0)));
+    assert_eq!(runs(&store, 3, "api"), None);
 }
 
 #[test]
@@ -9299,19 +9477,55 @@ fn two_services_with_one_signer_keep_their_own_pins() {
         &who,
         1,
         vec![
-            posted("web", 1, ("nginx:1", P1)),
-            posted("api", 2, ("nginx:1", P2)),
+            posted(&store, &who, "web", P1),
+            posted(&store, &who, "api", P2),
         ],
     );
-    let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
-    let image = |service: &str| {
-        claimed.ran[&ServiceName::parse(service).unwrap()]
-            .ran
-            .pin
-            .as_ref()
-            .unwrap()
-            .image
-            .clone()
+    assert_eq!(
+        (web_runs(&store, 1), runs(&store, 1, "api")),
+        (Some((P1.to_owned(), 1)), Some((P2.to_owned(), 1)))
+    );
+}
+
+#[test]
+fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_one() {
+    let (store, who) = shop();
+    let digest = signed_spec(&store, &who, "web", P1);
+    let at = ployz_core::authority::Timestamp::now();
+    let version = |namespace, service| ployz_store::PostedVersion {
+        statement: statement((namespace, service), digest, at),
+        pin: None,
     };
-    assert_eq!((image("web"), image("api")), (P1.to_owned(), P2.to_owned()));
+    for refused in [
+        vec![version("shop-staging", "web")],
+        vec![version("shop-production", "db")],
+        vec![
+            version("shop-production", "web"),
+            version("shop-production", "api"),
+            version("shop-production", "web"),
+        ],
+    ] {
+        assert_eq!(
+            code(admit_with(&store, &who, 1, (refused, None))),
+            RpcErrorCode::InvalidArgument
+        );
+    }
+    let first = posted(&store, &who, "web", P1);
+    admit_signed(&store, &who, 1, vec![first.clone()]);
+    apply(&store, 1);
+    let mut later = first.clone();
+    later.statement = statement(("shop-production", "web"), digest, at.plus(1_000));
+    admit_signed(&store, &who, 2, vec![later.clone()]);
+    let kept = store
+        .versions_for(
+            &OrganizationId::parse("org").unwrap(),
+            (
+                &ployz_core::Namespace::parse("shop-production").unwrap(),
+                &ServiceName::parse("web").unwrap(),
+            ),
+            digest,
+        )
+        .unwrap();
+    assert!(kept.contains(&first.statement), "{kept:?}");
+    assert!(kept.contains(&later.statement), "{kept:?}");
 }

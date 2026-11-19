@@ -207,13 +207,14 @@ needs no new signature, from the dashboard or the CLI. A version stops counting 
 remove every device that signed it. One deployed from the server's own terminal keeps
 counting.
 
-Ployz Cloud keeps every version you sign, and each deployment records the image each service
-ran. **Roll back** or **Redeploy** runs the images that deployment ran and sends their
+Ployz Cloud keeps every version you sign, and each deployment records the image each signed
+service ran. **Roll back** or **Redeploy** runs the images that deployment ran and sends their
 signatures, so every server runs them, even one that never ran that version, and even after
-the tag moved. A deploy that changes only how many copies run, where they run or their CPU and
-memory limits runs the image the service last ran, with its signature, as long as your
-settings still name the same tag. Ployz Cloud can replay a version you signed, but it can't
-sign one.
+the tag moved. A service that deployment ran unsigned runs its tag again, as the tag points
+now. A deploy that changes only how many copies run, where they run or their CPU and memory
+limits runs the image the service last ran, with its signature, as long as your settings still
+name the same tag. Change anything else, such as a variable, and it runs the image your
+settings name now. Ployz Cloud can replay a version you signed, but it can't sign one.
 
 A server also keeps which devices approved each container it made, and checks they're still
 approved before it creates the container and each time the dashboard starts it again. Once
