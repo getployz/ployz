@@ -99,6 +99,18 @@ impl Budget {
             .ok_or(AuthorityRefusal::Overspent)?;
         Ok(())
     }
+
+    /// Reserve one verification of a signature that is not a [`Signed`] statement.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Overspent`], reserving nothing, when none is left.
+    pub fn reserve_one(&mut self) -> Result<(), AuthorityRefusal> {
+        self.left = self
+            .left
+            .checked_sub(1)
+            .ok_or(AuthorityRefusal::Overspent)?;
+        Ok(())
+    }
 }
 
 /// What a Machine knows when it checks signed versions against one creation.

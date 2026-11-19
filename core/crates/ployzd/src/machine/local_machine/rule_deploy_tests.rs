@@ -494,3 +494,50 @@ async fn a_changed_setting_is_refused_as_the_payload() {
         "a payload"
     );
 }
+
+#[tokio::test]
+async fn a_new_builds_token_is_charged_to_the_same_budget_as_the_rule() {
+    let fixture = fixture().await;
+    let rule = fixture.deploy_rule(3);
+    let claim = fixture.built(&rule, fixture.attest());
+    let proof = fixture.proof(&rule, &claim, token_for(&claim, "built-1"));
+    let attempt = |left: usize| {
+        let mut budget = Budget::default();
+        for _ in left..8 {
+            budget.reserve_one().unwrap();
+        }
+        budget
+    };
+    let mut one_left = attempt(1);
+    let result = fixture
+        .machine
+        .admit_rule_deploy(
+            &want("service_container", "k1", &spec()),
+            &proof,
+            &github(commit()),
+            now(),
+            &mut one_left,
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(Error::RuleDeployRefused(RuleDeployRefusal::Rule(
+                AuthorityRefusal::Overspent
+            )))
+        ),
+        "{result:?}"
+    );
+    let mut two_left = attempt(2);
+    fixture
+        .machine
+        .admit_rule_deploy(
+            &want("service_container", "k1", &spec()),
+            &proof,
+            &github(commit()),
+            now(),
+            &mut two_left,
+        )
+        .await
+        .unwrap();
+}

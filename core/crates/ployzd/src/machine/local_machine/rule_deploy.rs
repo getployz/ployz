@@ -104,6 +104,8 @@ impl LocalMachine {
         self.approvals.mark_rule(&rule, superseded)?;
         let claim = &proof.claim;
         if !self.approvals.accepted(&rule, claim)? {
+            // GitHub's token signature is one more check on the same budget.
+            budget.reserve_one().map_err(refused)?;
             let claims = github
                 .claims(&rule, proof.token.as_str(), now)
                 .await
