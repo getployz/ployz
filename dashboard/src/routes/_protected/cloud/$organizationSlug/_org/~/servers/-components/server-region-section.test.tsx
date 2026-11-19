@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { NamedRegion } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as storeFunctions from "#/modules/config-store/store.functions";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import type { OwnedNamespaces } from "#/modules/machines/server-regions.hooks";
+import { storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { useOwnedNamespaces, type OwnedNamespaces } from "#/modules/machines/server-regions.hooks";
 import * as policyFunctions from "#/modules/machines/server-policy.functions";
 import { ServerRegionSection } from "./server-region-section";
 
@@ -242,6 +243,15 @@ it("leaves out an offline Server as a place a Service can go", async () => {
   ]);
 });
 
+it("leaves out a Server whose membership isn't known as a place a Service can go, as a Deploy does", async () => {
+  const unknown = { ...machine("6", "default"), membership: "unknown" };
+  section(vm3, { services: RUNNING.slice(0, 1), owned: READ, machines: [...fleet, unknown] });
+  await pick("Sydney");
+  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+    "webshop/productionWaits for a server in Default",
+  ]);
+});
+
 it("names the button after clearing a region, not moving the Server", async () => {
   section(vm3, { services: RUNNING, owned: READ, machines: withDefaultPeer });
   await pick("No region");
@@ -326,4 +336,82 @@ it("holds a Move dialog left open when the read of what runs here then fails", a
   fireEvent.click(confirm);
   await settle();
   expect(requestChange).not.toHaveBeenCalled();
+});
+
+/** The Server page reading what runs here from the Store, which answers `SHOP` and `BLOG` once. */
+async function livePage(services: typeof RUNNING) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
+  let answered = false;
+  vi.mocked(storeFunctions.readStoreViewServerFn).mockImplementation(({ data }) => {
+    if (data.query.query !== "namespaces") return Promise.resolve({ ok: true, value: { view: "new_region", key: "sydney-2" } }) as never;
+    if (answered) return new Promise(() => {}) as never;
+    answered = true;
+    return Promise.resolve({ ok: true, value: { view: "namespaces", namespaces: [SHOP, BLOG] } }) as never;
+  });
+  function Page() {
+    return (
+      <ServerRegionSection machine={vm3} machines={withDefaultPeer} services={services} owned={useOwnedNamespaces("acme")}
+        regions={REGIONS} organizationSlug="acme" gate={{ allowed: true, reason: undefined }} />
+    );
+  }
+  render(<QueryClientProvider client={queryClient}><Page /></QueryClientProvider>);
+  await waitFor(() => expect(screen.queryByText("Reading what runs here…")).toBeNull());
+  const filters = { queryKey: storeViewOptions("acme", scope, { query: "namespaces" }).queryKey, exact: true };
+  return {
+    unsettle: (how: "asked again" | "waiting for the network" | "marked out of date") => {
+      if (how === "waiting for the network") onlineManager.setOnline(false);
+      void queryClient.invalidateQueries(how === "marked out of date" ? { ...filters, refetchType: "none" } : filters);
+    },
+  };
+}
+
+const UNSETTLED = ["asked again", "waiting for the network", "marked out of date"] as const;
+
+afterEach(() => onlineManager.setOnline(true));
+
+it.each(UNSETTLED)("changes nothing from a region picked as what runs here is %s, and says it is reading", async (how) => {
+  const page = await livePage([]);
+  fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
+  const option = await screen.findByRole("option", { name: "Sydney" });
+  fireEvent.pointerEnter(option, { pointerType: "mouse" });
+  fireEvent.pointerMove(option, { pointerType: "mouse" });
+  fireEvent.mouseMove(option);
+
+  page.unsettle(how);
+  fireEvent.click(option);
+  expect(requestChange).not.toHaveBeenCalled();
+  expect(await screen.findByText("Reading what runs here…")).toBeTruthy();
+});
+
+it.each(UNSETTLED)("changes nothing from a New region name confirmed as what runs here is %s, and keeps the name", async (how) => {
+  const page = await livePage([]);
+  await pick("New region…");
+  const input = await screen.findByRole("textbox", { name: "New region" });
+  fireEvent.change(input, { target: { value: "Sydney 2" } });
+  await waitFor(() => expect(storeFunctions.readStoreViewServerFn).toHaveBeenCalledWith(
+    expect.objectContaining({ data: expect.objectContaining({ query: expect.objectContaining({ query: "new_region", name: "Sydney 2" }) }) }),
+  ));
+  await act(async () => {});
+
+  page.unsettle(how);
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(requestChange).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
+  expect(await screen.findByText("Reading what runs here…")).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "New region" }) as HTMLInputElement).value).toBe("Sydney 2");
+});
+
+it.each(UNSETTLED)("changes nothing from a Move dialog confirmed as what runs here is %s, and keeps it open", async (how) => {
+  const page = await livePage(RUNNING);
+  await pick("Sydney");
+  const dialog = await screen.findByRole("dialog");
+  const confirm = within(dialog).getByRole("button", { name: "Move server" });
+
+  page.unsettle(how);
+  fireEvent.click(confirm);
+  expect(requestChange).not.toHaveBeenCalled();
+  expect(await within(dialog).findByText("Reading what runs here…")).toBeTruthy();
+  expect(confirm.hasAttribute("disabled")).toBe(true);
 });
