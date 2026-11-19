@@ -771,6 +771,17 @@ pub enum BesideVolume {
     Label,
 }
 
+/// Where Services that share a Volume have to run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SharedHome {
+    /// The region of the Server that writes the Volume.
+    Region(Region),
+    /// The Server that writes the Volume, which is in no region.
+    Server(MachineName),
+    /// The Volume is not made yet, and its Services are kept in different regions.
+    Unmade,
+}
+
 fn volume_outside_region(
     volume: &str,
     machine: &MachineName,
@@ -800,33 +811,35 @@ fn shared_across_regions(
     service: &ServiceName,
     region: &Region,
     sharers: &[(ServiceName, Vec<Region>)],
+    home: &SharedHome,
 ) -> String {
     let names = all_of(
         std::iter::once(service.to_string())
             .chain(sharers.iter().map(|(name, _)| name.to_string())),
     );
-    let facts = all_of(
-        sharers
-            .iter()
-            .map(|(name, regions)| {
-                format!(
-                    "{name} is in {}",
-                    all_of(regions.iter().map(ToString::to_string))
-                )
-            })
-            .chain(std::iter::once(format!("{service} is set to {region}"))),
-    );
-    let theirs = sharers
-        .iter()
-        .flat_map(|(_, regions)| regions)
-        .collect::<BTreeSet<_>>();
-    let advice = match theirs.iter().collect::<Vec<_>>().as_slice() {
-        [only] => format!("Set {service} to {only}"),
-        _ => "Set them all to one region".to_owned(),
+    let why = match home {
+        SharedHome::Region(at) => {
+            format!("{volume} is in {at} and {service} is set to {region}. Set {service} to {at}")
+        }
+        SharedHome::Server(machine) => format!(
+            "{volume} is on {machine}, which has no region. Give {machine} a region, then set them all to it"
+        ),
+        SharedHome::Unmade => {
+            let set = all_of(
+                sharers
+                    .iter()
+                    .map(|(name, regions)| {
+                        format!(
+                            "{name} is set to {}",
+                            all_of(regions.iter().map(ToString::to_string))
+                        )
+                    })
+                    .chain(std::iter::once(format!("{service} is set to {region}"))),
+            );
+            format!("{volume} isn't made yet. {set}. Set them all to one region")
+        }
     };
-    format!(
-        "{names} share the Volume {volume}, so they have to run in the same region. {facts}. {advice}"
-    )
+    format!("{names} share the Volume {volume}, so they have to run in the same region. {why}")
 }
 
 fn all_of(each: impl Iterator<Item = String>) -> String {
@@ -966,7 +979,7 @@ pub enum PlanError {
     },
     /// The Service is kept in a region, and another Service that mounts the Volume is kept
     /// away from it. A Volume is on one Server, so both can't run beside it.
-    #[error("{}", shared_across_regions(volume, service, region, sharers))]
+    #[error("{}", shared_across_regions(volume, service, region, sharers, home))]
     VolumeSharedAcrossRegions {
         /// The Volume, as its owner named it.
         volume: String,
@@ -976,6 +989,8 @@ pub enum PlanError {
         /// Each other Service that mounts it and is kept in a region, with its regions, by
         /// name. Never empty.
         sharers: Vec<(ServiceName, Vec<Region>)>,
+        /// Where they all have to run.
+        home: Box<SharedHome>,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
@@ -1277,6 +1292,7 @@ impl PlanError {
                 ref service,
                 ref region,
                 ref sharers,
+                ref home,
             } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
                 "reason": "volume_shared_across_regions",
                 "volume": volume,
@@ -1286,6 +1302,11 @@ impl PlanError {
                     .iter()
                     .map(|(sharer, regions)| serde_json::json!({ "service": sharer, "regions": regions }))
                     .collect::<Vec<_>>(),
+                "home": match home.as_ref() {
+                    SharedHome::Region(region) => serde_json::json!({ "region": region }),
+                    SharedHome::Server(machine) => serde_json::json!({ "server": machine }),
+                    SharedHome::Unmade => serde_json::json!("unmade"),
+                },
             })),
             error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
                 RpcError::unavailable(error.to_string())

@@ -10,7 +10,7 @@ import { Button } from "#/components/ui/button";
 import { FieldError } from "#/components/ui/field";
 import { REPLICAS_MAX, replicaRows, replicaValue, type ReplicaRow } from "#/modules/config-store/replica-rows";
 import type { Write } from "#/modules/config-store/store-write";
-import type { SharedRegion } from "#/modules/config-store/volume-sharing";
+import type { SharedRegion } from "#/modules/config-store/deploy-waits";
 import { RegionSelect } from "#/modules/machines/RegionSelect";
 import type { RegionOption } from "#/modules/machines/server-regions";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-route-paths";
@@ -19,7 +19,7 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-
  * A Service's replicas as a row per region: how many run where. A bare count is one row in the Environment's region, or
  * in any region when it has none. A Volume that doesn't allow shared writes fixes the count at 1 and leaves the region to
  * pick. A second region is on offer only where the Store takes one: the Environment has a region, and the Service
- * mounts no Volume. A Service that shares a Volume with one kept in a region runs only there. Until the page can act on
+ * mounts no Volume. A Service that shares a Volume runs only in the Volume's region. Until the page can act on
  * a click, every control shows disabled, so none is lost.
  */
 export function StoreReplicasRows({ options, value, deployed, home, capped, oneRegion, sharing, changed, onChange }: {
@@ -34,7 +34,7 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
   capped?: ReactNode;
   /** Whether a Volume the Service mounts keeps it to one region: any Volume does, as the Store rules. */
   oneRegion: boolean;
-  /** The region the Services it shares a Volume with are kept in, which is the only one it can run in. */
+  /** The region the Volume it shares is in, which is the only one it can run in. */
   sharing: SharedRegion | null;
   changed: boolean;
   onChange: (value: JsonValue) => Write;
@@ -53,7 +53,9 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
   const offered = sharing === null ? options : options.filter(({ key }) => key === sharing.region);
   const hint = sharing === null ? capped : (
     <>
-      Runs in {nameOf(sharing.region)} with {allOf(sharing.sharers)}. They share the volume <strong>{sharing.volume}</strong>.
+      Must run in {nameOf(sharing.region)}. It shares the Volume <strong>{sharing.volume}</strong> with {allOf(sharing.sharers)}
+      {sharing.made ? <>, and <strong>{sharing.volume}</strong> is in {nameOf(sharing.region)}.</>
+        : <>, {sharing.sharers.length === 1 ? "which is" : "which are"} set to {nameOf(sharing.region)}.</>}
       {capped === undefined ? null : <> {capped}</>}
     </>
   );

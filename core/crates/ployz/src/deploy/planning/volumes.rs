@@ -16,6 +16,7 @@ use ployz_core::{
 
 use crate::deploy::{
     BesideVolume, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
+    SharedHome,
 };
 
 use super::placement::PlacementReservations;
@@ -1039,8 +1040,9 @@ fn shared_component_anchor(
 }
 
 /// The refusal for `spec`, kept in `region`, when a Volume it mounts is outside the region
-/// and a Service kept elsewhere mounts it too. It names the Services that share the
-/// Volume, where each is kept, and where `spec` could run beside them.
+/// and a Service kept elsewhere mounts it too. The Services that share a Volume run where
+/// the Server that writes it is, so it names that region, or that Server when it has none.
+/// A Volume not made yet is in no region, so it names where each Service is kept.
 /// When its located Volumes share no region, running it in that Volume's region would
 /// fail the same way, so it names them all instead.
 fn shared_elsewhere(
@@ -1057,11 +1059,9 @@ fn shared_elsewhere(
         let name = managed_volume_name(volume)?;
         let (first, others) = match plan.locality(volume) {
             Ok(VolumeLocality::Located { first, others }) => (first, others),
-            // Nothing says which region a Volume not made yet belongs to, so it is held
-            // by none while its Services are kept in different ones.
             Ok(VolumeLocality::Absent) => {
                 if plan.kept_elsewhere(name, region) {
-                    held.get_or_insert(name);
+                    held.get_or_insert((name, SharedHome::Unmade));
                 }
                 continue;
             }
@@ -1071,10 +1071,17 @@ fn shared_elsewhere(
             .chain(&others)
             .filter_map(region_of)
             .collect::<BTreeSet<_>>();
+        let home = match region_of(&first) {
+            Some(at) => SharedHome::Region(at),
+            None => match snapshot.machine(first) {
+                Some(machine) => SharedHome::Server(machine.machine.name.clone()),
+                None => continue,
+            },
+        };
         if !regions.contains(region) && plan.kept_elsewhere(name, region) {
-            held.get_or_insert(name);
+            held.get_or_insert((name, home.clone()));
         }
-        let Some(volume_region) = region_of(&first) else {
+        let SharedHome::Region(volume_region) = home else {
             continue;
         };
         volumes.push((plan.authored(name).to_owned(), volume_region));
@@ -1083,7 +1090,7 @@ fn shared_elsewhere(
             None => regions,
         });
     }
-    let name = held?;
+    let (name, home) = held?;
     if shared.is_some_and(|shared| shared.is_empty()) {
         volumes.sort();
         return Some(PlanError::VolumesApart {
@@ -1106,6 +1113,7 @@ fn shared_elsewhere(
                 Some((service.clone(), kept_in.iter().cloned().collect()))
             })
             .collect(),
+        home: Box::new(home),
     })
 }
 

@@ -13,9 +13,11 @@ import { mountRefusal, volumeWriters, writersText } from "./volume-sharing";
 import { useStoreWriter } from "./store-write";
 
 /** `volumes` is the effective mount projection shared with Scale and the canvas. */
-export function StoreVolumeMounts({ resourceId, organizationSlug, environment, services, volumes, diff, replicasOf }: {
+export function StoreVolumeMounts({ resourceId, organizationSlug, environment, services, volumes, diff, replicasOf, split }: {
   resourceId: string; organizationSlug: string; environment: EnvironmentRef; services: readonly ServiceListing[];
   volumes: readonly VolumeListing[]; diff: DiffView; replicasOf: (service: string) => number;
+  /** Why the Deploy would refuse a Service once it mounts this Volume, for running apart from the Volume's region. */
+  split: (service: string) => string | null;
 }) {
   const writer = useStoreWriter(organizationSlug);
   const [editor, setEditor] = useState<(MountEditing & { trigger: HTMLButtonElement | null }) | null>(null);
@@ -41,7 +43,7 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
   }) ?? [];
   const detached = fixedVolume ? detachedMounts(diff, fixedVolume.name) : [];
   const choices = services.filter((service) => service.change !== "delete").map((service) => ({ id: service.id, name: service.name,
-    refusal: fixedVolume ? mountRefusal(fixedVolume, service.name, replicasOf(service.name)) : "Volume missing", directory: "/data" }));
+    refusal: fixedVolume ? mountRefusal(fixedVolume, service.name, replicasOf(service.name)) ?? split(service.name) : "Volume missing", directory: "/data" }));
   const available = choices.filter((choice) => !rows.some((row) => row.counterpart === choice.id));
 
   function resolve(id: string) {
@@ -116,7 +118,7 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
               if (editor.editing && !current) throw new Error("This mount was removed. Cancel and mount it again.");
               if (!editor.editing && current) throw new Error("This volume is already mounted on that service. Edit its directory instead.");
               if (current?.path === directory) return null;
-              const refusal = mountRefusal(volume, service.name, replicasOf(service.name));
+              const refusal = mountRefusal(volume, service.name, replicasOf(service.name)) ?? (current ? null : split(service.name));
               if (refusal) throw new Error(refusal);
               if (volumes.some((other) => other.id !== volume.id && other.mounts.some((mount) => mount.service === service.name && mount.path === directory))) {
                 throw new Error(`Another volume is already mounted at ${directory}.`);

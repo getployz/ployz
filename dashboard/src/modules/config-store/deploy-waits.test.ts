@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { deployWaits } from "./deploy-waits";
+import { deployWaits, mountSplit, sharedRegion } from "./deploy-waits";
 
 const servers = [{ id: "m1", name: "machine-1", region: "fsn" }, { id: "m2", name: "machine-2", region: "syd" }];
 const volumes = [{ id: "v1", name: "pg-data", mounts: [{ service: "postgres" }] }];
@@ -19,16 +19,44 @@ it("names a Service whose Volume is on a Server outside the region it is kept in
 it("names a Service the Deploy refuses, in the Engine's words, when a Service kept elsewhere shares its Volume", () => {
   const reader = { name: "reader", replicas: { syd: 1 } };
   const shared = [{ id: "v1", name: "pg-data", mounts: [{ service: "postgres" }, { service: "reader" }] }];
+  const head = (service: string, other: string) => `${service} and ${other} share the Volume pg-data, so they have to run in the same region. `;
   const located = deployWaits({ services: [postgres, reader], home: "fsn", volumes: shared, copies: [copy("m1")], servers });
-  const why = (service: string, other: string, at: string, set: string) =>
-    `${service} and ${other} share the Volume pg-data, so they have to run in the same region. ${other} is in ${at} and ${service} is set to ${set}. Set ${service} to ${at}`;
-  expect(located).toEqual([{ service: "reader", why: why("reader", "postgres", "fsn", "syd"), refused: true }]);
-  const unlabelled = deployWaits({ services: [postgres, reader], home: "fsn", volumes: shared, copies: [copy("m1")], servers: [{ id: "m1", name: "machine-1", region: null }, { id: "m2", name: "machine-2", region: "syd" }] });
-  expect(unlabelled).toEqual([{ service: "postgres", why: why("postgres", "reader", "syd", "fsn"), refused: true }, { service: "reader", why: why("reader", "postgres", "fsn", "syd"), refused: true }]);
-  expect(deployWaits({ services: [postgres, reader], home: "fsn", volumes: shared, copies: [], servers })).toEqual(unlabelled);
-  expect(deployWaits({ services: [postgres, { name: "reader", replicas: 1 }], home: "syd", volumes: shared, copies: [copy("m1")], servers }).every(({ refused }) => !refused)).toBe(true);
+  expect(located).toEqual([{ service: "reader", why: `${head("reader", "postgres")}pg-data is in fsn and reader is set to syd. Set reader to fsn`, refused: true }]);
   const split = deployWaits({ services: [{ ...postgres, replicas: { fsn: 1 } }, { name: "reader", replicas: 1 }], home: "syd", volumes: shared, copies: [copy("m1")], servers });
-  expect(split).toEqual([{ service: "reader", why: why("reader", "postgres", "fsn", "syd"), refused: true }]);
+  expect(split).toEqual(located);
+  expect(deployWaits({ services: [postgres, { name: "reader", replicas: 1 }], home: "syd", volumes: shared, copies: [copy("m1")], servers }).every(({ refused }) => !refused)).toBe(true);
+});
+
+it("gives every Service sharing a Volume on a Server with no region the one way out", () => {
+  const unlabelled = deployWaits({ services: [{ ...postgres, replicas: { fsn: 1 } }, { name: "reader", replicas: { syd: 1 } }], home: "fsn",
+    volumes: [{ id: "v1", name: "pg-data", mounts: [{ service: "postgres" }, { service: "reader" }] }], copies: [copy("m1")],
+    servers: [{ id: "m1", name: "machine-1", region: null }, { id: "m2", name: "machine-2", region: "syd" }] });
+  const way = "pg-data is on machine-1, which has no region. Give machine-1 a region, then set them all to it";
+  expect(unlabelled.map(({ service, why }) => [service, why.split(". ").slice(1).join(". ")])).toEqual([["postgres", way], ["reader", way]]);
+});
+
+it("asks Services sharing a Volume not made yet to agree on a region, not to swap", () => {
+  const unmade = deployWaits({ services: [postgres, { name: "reader", replicas: { syd: 1 } }], home: "fsn",
+    volumes: [{ id: "v1", name: "pg-data", mounts: [{ service: "postgres" }, { service: "reader" }] }], copies: [], servers });
+  expect(unmade.map(({ why }) => why.endsWith("Set them all to one region"))).toEqual([true, true]);
+});
+
+it("holds a Service in Scale to the region its Volume is in, even when a sharer is set elsewhere", () => {
+  const shared = [{ id: "v1", name: "pg-data", mounts: [{ service: "extra" }, { service: "postgres" }, { service: "reader" }] }];
+  const services = [{ name: "extra", replicas: { syd: 1 } }, postgres, { name: "reader", replicas: 1 }];
+  expect(sharedRegion("postgres", { services, home: "fsn", volumes: shared, copies: [copy("m1")], servers }))
+    .toEqual({ region: "fsn", volume: "pg-data", sharers: ["extra", "reader"], made: true });
+  expect(sharedRegion("postgres", { services, home: "fsn", volumes: shared, copies: [], servers })).toBeNull();
+  expect(sharedRegion("extra", { services, home: "fsn", volumes: shared, copies: [], servers }))
+    .toEqual({ region: "fsn", volume: "pg-data", sharers: ["postgres", "reader"], made: false });
+  expect(sharedRegion("postgres", { services, home: "fsn", volumes: shared, copies: [copy("m1")], servers: [{ id: "m1", name: "machine-1", region: null }] })).toBeNull();
+});
+
+it("says before a mount that a Service set to another region can't share the Volume, in the Deploy's words", () => {
+  const volume = { id: "v1", name: "pg-data", mounts: [{ service: "postgres" }] };
+  const lens = { services: [postgres, { name: "extra", replicas: { syd: 1 } }, { name: "near", replicas: 1 }], home: "fsn", copies: [copy("m1")], servers };
+  expect(mountSplit("extra", volume, lens)).toBe("extra and postgres share the Volume pg-data, so they have to run in the same region. pg-data is in fsn and extra is set to syd. Set extra to fsn");
+  expect(mountSplit("near", volume, lens)).toBeNull();
 });
 
 it("names a Service whose Volume has only a mirror in its region, as the Deploy looks for the copy it writes to", () => {

@@ -11,7 +11,7 @@ const service = asTestDouble<ServiceListing>()({ id: "service-id", name: "web", 
 const config = asTestDouble<ConfigListing>()({ id: "config-id", name: "app", change: null, files: [], mounts: [{ service: "web", dir: "/etc/app" }] });
 const volume = asTestDouble<VolumeListing>()({ id: "volume-id", name: "data", shared_writes: false, storage: { kind: "docker" }, change: null, mounts: [{ service: "web", path: "/data" }] });
 const common = { organizationSlug: "acme", environment: { project: "shop", environment: "production" }, services: [service],
-  diff: asTestDouble<DiffView>()({ changes: [] }) };
+  diff: asTestDouble<DiffView>()({ changes: [] }), split: () => null };
 
 async function menuAction(name: "Edit directory" | "Unmount") {
   fireEvent.click(screen.getByRole("button", { name: /Actions for .* mount/ }));

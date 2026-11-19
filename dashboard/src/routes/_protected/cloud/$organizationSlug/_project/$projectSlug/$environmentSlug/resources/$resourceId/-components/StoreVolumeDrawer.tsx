@@ -13,6 +13,8 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { DEFAULT_VOLUME_GB, effectiveVolumes, gigabytes, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { replicaCount } from "#/modules/config-store/volume-sharing";
+import { mountSplit } from "#/modules/config-store/deploy-waits";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
@@ -85,6 +87,9 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const data = useVolumeCopies(organizationSlug, environment, volume);
   // Staged counts count: a shared volume warns before the Deploy that would share it.
   const replicasOf = (service: string) => replicaCount(serviceSettingRows(settings, service).get("replicas"));
+  const { machines, volumeCopies } = useRuntimeLens(organizationSlug);
+  const split = (service: string) => mountSplit(service, volume, { home: settings.region ?? null, copies: volumeCopies, servers: machines,
+    services: services.map(({ name }) => { const row = serviceSettingRows(settings, name).get("replicas"); return { name, replicas: row?.value ?? row?.default ?? 1 }; }) });
   const state: StoreVolume = { organizationSlug, environment, volume };
   const removing = volume.change === "delete";
   const shownName = useStorePendingName(organizationSlug, environment, "volume", volume.name);
@@ -142,7 +147,7 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
                 {removing ? <SettingsSection id="mounts" title="Mounts">
                     <SettingsEmpty title="Removed on next deploy." />
                   </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={environment}
-                    services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} />}
+                    services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} split={split} />}
                 <StoreVolumeDanger state={state} params={params} version={diff.version} environmentId={diff.environment.id} volumes={volumes} />
               </div>
             </div>

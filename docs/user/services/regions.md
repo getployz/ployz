@@ -140,7 +140,7 @@ With the count unchanged, nothing is left to deploy.
 **Add region** shows only when the environment has a region and the service has no
 [volume](volumes.md). A service whose volume doesn't allow shared writes also keeps one replica,
 and says **Limited to 1**. You can still pick its region. A service that shares its volume with
-a service in a region runs there too, and its row says so.
+another service can only pick the volume's region, and its row says so.
 
 **Details** lists a change as `fsn 2 → fsn 2 · syd 1`, and so does **Deployments → Versions**.
 
@@ -256,10 +256,11 @@ starts its own.
 - **A service with a volume runs in one region.** Its replicas all write to the volume, which is
   on one server. Ployz refuses counts in two regions for it.
 - **Services that share a volume run in the same region.** A volume is on one server, so every
-  service that mounts it has to run in its region. In Ployz Cloud, **Scale** offers such a service
-  only the region the others run in, and says why: `Runs in fsn with postgres. They share the
-  volume pg-data.` When the environment's region changes and one of them has its own region,
-  **Details** says so before you deploy.
+  service that mounts it has to run in that server's region. In Ployz Cloud, **Scale** offers such
+  a service only that region, and says why: `Must run in fsn. It shares the Volume pg-data with
+  postgres, and pg-data is in fsn.` **Mount on a service** doesn't offer a service set to another
+  region, and says the same as the deploy would. When the environment's region changes and one of
+  them has its own region, **Details** says so before you deploy.
 
   Set apart with `ployz set` or by an agent, the services in the volume's region deploy. Each
   service in another region isn't started, and its line says which region to set. Deploying again
@@ -268,11 +269,18 @@ starts its own.
   wouldn't have the volume.
 
   ```
-  reader: not started (reader and postgres share the Volume pg-data, so they have to run in the same region. postgres is in fsn and reader is set to syd. Set reader to fsn)
+  reader: not started (reader and postgres share the Volume pg-data, so they have to run in the same region. pg-data is in fsn and reader is set to syd. Set reader to fsn)
   ```
 
-  When the volume is on a server in no region, or isn't made yet, none of the services that share
-  it is started, and each line says the same about the others.
+  When the volume is on a server in no region, none of the services that share it is started, and
+  each line gives the same way out:
+
+  ```
+  reader: not started (reader and postgres share the Volume pg-data, so they have to run in the same region. pg-data is on machine-1, which has no region. Give machine-1 a region, then set them all to it)
+  ```
+
+  When the volume isn't made yet, none of them is started either. Each line says where each
+  service is set, and ends with `Set them all to one region`.
 
   A service can run in neither region when it shares one volume with a service in `fsn` and
   another with a service in `syd`. Run the services that share them in one region, or split the

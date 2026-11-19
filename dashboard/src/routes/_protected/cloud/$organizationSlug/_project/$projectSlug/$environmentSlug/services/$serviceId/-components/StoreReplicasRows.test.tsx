@@ -5,7 +5,7 @@ import { useState } from "react";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { replicaRows } from "#/modules/config-store/replica-rows";
-import type { SharedRegion } from "#/modules/config-store/volume-sharing";
+import type { SharedRegion } from "#/modules/config-store/deploy-waits";
 import { regionOptions } from "#/modules/machines/server-regions";
 import { StoreReplicasRows } from "./StoreReplicasRows";
 
@@ -91,16 +91,16 @@ it("never offers Add region while a Volume limits the count", () => {
 });
 
 it("holds a Service to the region the Services it shares a Volume with run in, and says why", () => {
-  const sharing = { region: "fsn", sharers: ["postgres"], volume: "pg-data" };
+  const sharing = { region: "fsn", sharers: ["postgres"], volume: "pg-data", made: true };
   rows(1, "fsn", { sharing });
   expect(regionOf(1).hasAttribute("disabled")).toBe(true);
   expect(shownIn(1)).toBe("fsn");
-  expect(document.body.textContent).toContain("Runs in fsn with postgres. They share the volume pg-data.");
+  expect(document.body.textContent).toContain("Must run in fsn. It shares the Volume pg-data with postgres, and pg-data is in fsn.");
   expect(addRegion()).toBeNull();
 });
 
 it("offers only the sharers' region to a Service set apart from them", async () => {
-  const onChange = rows({ syd: 1 }, "fsn", { sharing: { region: "fsn", sharers: ["postgres"], volume: "pg-data" } });
+  const onChange = rows({ syd: 1 }, "fsn", { sharing: { region: "fsn", sharers: ["postgres"], volume: "pg-data", made: true } });
   await pick(1, "fsn · server-1", (names) => expect(names).toEqual(["fsn · server-1"]));
   expect(onChange).toHaveBeenLastCalledWith({ fsn: 1 });
 });

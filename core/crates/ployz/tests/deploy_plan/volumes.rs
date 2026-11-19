@@ -1177,7 +1177,7 @@ fn a_shared_volume_in_one_region_stops_only_the_service_kept_in_another() {
     assert_eq!(blocked.service, worker.name);
     assert_eq!(
         blocked.error.message,
-        "worker and api share the Volume data, so they have to run in the same region. api is in fsn and worker is set to syd. Set worker to fsn"
+        "worker and api share the Volume data, so they have to run in the same region. data is in fsn and worker is set to syd. Set worker to fsn"
     );
     assert_eq!(blocked.kind, ployz_core::BlockedKind::Refusal);
 }
@@ -1291,7 +1291,7 @@ fn a_shared_docker_volume_stops_only_the_service_kept_outside_its_region() {
         blocked,
         BTreeMap::from([(
             "worker".to_owned(),
-            "worker and api share the Volume data, so they have to run in the same region. api is in fsn and worker is set to syd. Set worker to fsn".to_owned()
+            "worker and api share the Volume data, so they have to run in the same region. data is in fsn and worker is set to syd. Set worker to fsn".to_owned()
         )])
     );
     assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Refusal]);
@@ -1354,7 +1354,7 @@ fn a_service_sharing_a_volume_kept_in_another_region_is_refused_though_its_regio
         blocked,
         BTreeMap::from([(
             "worker".to_owned(),
-            "worker and api share the Volume data, so they have to run in the same region. api is in fsn and worker is set to lhr. Set worker to fsn".to_owned()
+            "worker and api share the Volume data, so they have to run in the same region. data is in fsn and worker is set to lhr. Set worker to fsn".to_owned()
         )])
     );
     assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Refusal]);
@@ -1367,16 +1367,10 @@ fn a_service_sharing_a_volume_kept_in_another_region_is_refused_though_its_regio
 fn services_in_two_regions_sharing_a_volume_not_made_yet_are_both_refused() {
     let api = sharing("api", "fsn", &["data"]);
     let web = spec("web");
-    let api_line = |other: &str| {
+    let line = |first: &str, second: &str, facts: &str| {
         format!(
-            "api and worker share the Volume data, so they have to run in the same region. \
-             worker is in {other} and api is set to fsn. Set api to {other}"
-        )
-    };
-    let worker_line = |other: &str| {
-        format!(
-            "worker and api share the Volume data, so they have to run in the same region. \
-             api is in fsn and worker is set to {other}. Set worker to fsn"
+            "{first} and {second} share the Volume data, so they have to run in the same region. \
+             data isn't made yet. {facts}. Set them all to one region"
         )
     };
     for other in ["lhr", "syd"] {
@@ -1394,8 +1388,22 @@ fn services_in_two_regions_sharing_a_volume_not_made_yet_are_both_refused() {
         assert_eq!(
             blocked,
             BTreeMap::from([
-                ("api".to_owned(), api_line(other)),
-                ("worker".to_owned(), worker_line(other)),
+                (
+                    "api".to_owned(),
+                    line(
+                        "api",
+                        "worker",
+                        &format!("worker is set to {other} and api is set to fsn")
+                    )
+                ),
+                (
+                    "worker".to_owned(),
+                    line(
+                        "worker",
+                        "api",
+                        &format!("api is set to fsn and worker is set to {other}")
+                    )
+                ),
             ]),
             "{other}"
         );
@@ -1448,7 +1456,7 @@ fn the_services_a_stuck_one_tied_together_start_without_it() {
         blocked,
         BTreeMap::from([(
             "worker".to_owned(),
-            "worker and api share the Volume data, so they have to run in the same region. api is in fsn and worker is set to syd. Set worker to fsn".to_owned()
+            "worker and api share the Volume data, so they have to run in the same region. data is in fsn and worker is set to syd. Set worker to fsn".to_owned()
         )])
     );
 }
@@ -1509,7 +1517,7 @@ fn a_service_deployed_by_name_is_refused_the_way_a_full_deploy_refuses_it() {
             "one shared Volume",
             &["data"][..],
             shared_data_snapshot(),
-            "worker and api share the Volume data, so they have to run in the same region. api is in fsn and worker is set to syd. Set worker to fsn",
+            "worker and api share the Volume data, so they have to run in the same region. data is in fsn and worker is set to syd. Set worker to fsn",
         ),
         (
             "Volumes in two regions",
@@ -1573,11 +1581,11 @@ fn a_volume_shared_across_regions_on_a_server_in_neither_is_refused_for_both() {
         BTreeMap::from([
             (
                 "api".to_owned(),
-                "api and worker share the Volume data, so they have to run in the same region. worker is in syd and api is set to fsn. Set api to syd".to_owned()
+                "api and worker share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
             ),
             (
                 "worker".to_owned(),
-                "worker and api share the Volume data, so they have to run in the same region. api is in fsn and worker is set to syd. Set worker to fsn".to_owned()
+                "worker and api share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
             ),
         ])
     );
@@ -1688,11 +1696,11 @@ fn a_refusal_of_a_shared_volume_leaves_out_a_service_naming_no_region() {
         BTreeMap::from([
             (
                 "api".to_owned(),
-                "api and worker share the Volume data, so they have to run in the same region. worker is in syd and api is set to fsn. Set api to syd".to_owned()
+                "api and worker share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
             ),
             (
                 "worker".to_owned(),
-                "worker and api share the Volume data, so they have to run in the same region. api is in fsn and worker is set to syd. Set worker to fsn".to_owned()
+                "worker and api share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
             ),
         ])
     );
@@ -1784,11 +1792,11 @@ fn services_sharing_a_volume_none_can_mount_each_say_their_own_reason() {
         BTreeMap::from([
             (
                 "aaa".to_owned(),
-                "aaa and worker share the Volume data, so they have to run in the same region. worker is in syd and aaa is set to lhr. Set aaa to syd".to_owned()
+                "aaa and worker share the Volume data, so they have to run in the same region. data is in fsn and aaa is set to lhr. Set aaa to fsn".to_owned()
             ),
             (
                 "worker".to_owned(),
-                "worker and aaa share the Volume data, so they have to run in the same region. aaa is in lhr and worker is set to syd. Set worker to lhr".to_owned()
+                "worker and aaa share the Volume data, so they have to run in the same region. data is in fsn and worker is set to syd. Set worker to fsn".to_owned()
             ),
         ])
     );
@@ -1822,11 +1830,11 @@ fn each_service_left_out_of_a_chain_gets_its_own_reason() {
         BTreeMap::from([
             (
                 "aaa".to_owned(),
-                "aaa, api and worker share the Volume data, so they have to run in the same region. api is in fsn, worker is in syd and aaa is set to lhr. Set them all to one region".to_owned()
+                "aaa, api and worker share the Volume data, so they have to run in the same region. data is in fsn and aaa is set to lhr. Set aaa to fsn".to_owned()
             ),
             (
                 "worker".to_owned(),
-                "worker, aaa and api share the Volume data, so they have to run in the same region. aaa is in lhr, api is in fsn and worker is set to syd. Set them all to one region".to_owned()
+                "worker, aaa and api share the Volume data, so they have to run in the same region. data is in fsn and worker is set to syd. Set worker to fsn".to_owned()
             ),
         ])
     );

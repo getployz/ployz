@@ -8,7 +8,9 @@ import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingC
 import { replicaRows } from "#/modules/config-store/replica-rows";
 import { effectiveVolumes } from "#/modules/config-store/store-volumes";
 import { useRegionOptions } from "#/modules/machines/use-region-options";
-import { replicaCap, replicaCount, sharedRegion, type SharedRegion } from "#/modules/config-store/volume-sharing";
+import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
+import { sharedRegion, type SharedRegion } from "#/modules/config-store/deploy-waits";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Badge } from "#/components/ui/badge";
@@ -137,6 +139,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   const asks = useProtectedAsk(organizationSlug, store);
+  const { machines, volumeCopies } = useRuntimeLens(organizationSlug);
   const act = useServiceAct({ organizationSlug, environmentId, service: service?.name ?? "", asks });
   const shownName = useStorePendingName(organizationSlug, store, "service", service?.name ?? "");
   const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === params.serviceId);
@@ -185,7 +188,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     storage: database && !hasVolume ? <SettingsRow label="Volume" commit="none"><RowWarning>No volume. Data is lost on redeploy.</RowWarning></SettingsRow> : null,
     scale: <>
       <StoreReplicas state={state} home={home} oneRegion={hasVolume}
-        sharing={sharedRegion(service.name, volumes, (name) => replicasValue(serviceSettingRows(settings, name).get("replicas")), home)}
+        sharing={sharedRegion(service.name, { home, volumes, copies: volumeCopies, servers: machines,
+          services: services.map(({ name }) => ({ name, replicas: replicasValue(serviceSettingRows(settings, name).get("replicas")) })) })}
         capped={capped ? <CappedHint params={params} volume={capped} /> : undefined} />
       <StoreResourceLimits state={state} />
     </>,
