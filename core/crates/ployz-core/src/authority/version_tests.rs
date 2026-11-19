@@ -86,6 +86,7 @@ fn check(
                 spec,
             },
         },
+        &mut Budget::default(),
     )
 }
 
@@ -250,13 +251,17 @@ fn nine_trusted_passkeys_under_one_credential_cost_nine_verifications() {
 }
 
 #[test]
-fn a_request_carrying_more_than_thirty_two_versions_does_not_parse() {
+fn an_ensure_request_carrying_more_than_thirty_two_versions_does_not_parse() {
     let device = signer(1);
     let version = serde_json::to_value(signed(&device, &body(&device, &requested("a")))).unwrap();
     let parse = |count: usize| {
-        at_most_presented(serde_json::Value::Array(vec![version.clone(); count])).map(|v| v.len())
+        serde_json::from_value::<crate::EnsureContainerRequest>(json!({
+            "want": {"state": "gone", "container": {"id": "a".repeat(64)}, "drain": 0},
+            "versions": vec![version.clone(); count],
+        }))
+        .map(|request| request.versions.len())
     };
 
-    assert_eq!(parse(MAX_PRESENTED).unwrap(), MAX_PRESENTED);
-    assert!(parse(MAX_PRESENTED + 1).is_err());
+    assert_eq!(parse(32).unwrap(), 32);
+    assert!(parse(33).is_err());
 }

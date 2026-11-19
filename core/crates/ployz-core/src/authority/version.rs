@@ -63,8 +63,43 @@ impl StepBody for ServiceVersion {
 
 /// Most signed versions one request may carry.
 pub const MAX_PRESENTED: usize = 32;
-/// Most signature verifications one request may cost, passkey candidates included.
+/// Most signature verifications one admission may cost, passkey candidates included,
+/// across every statement and proof its request carries.
 pub const MAX_CHECKED: usize = 8;
+
+/// The signature verifications one admission has left. Every statement is charged
+/// before it is opened, whichever verifier opens it, so a request that mixes proofs
+/// still costs at most [`MAX_CHECKED`].
+#[derive(Debug)]
+pub struct Budget {
+    left: usize,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self { left: MAX_CHECKED }
+    }
+}
+
+impl Budget {
+    /// Reserve what opening `signed` can cost on a Machine trusting `trusted`.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Overspent`], reserving nothing, when it costs more
+    /// than is left.
+    pub fn reserve<T>(
+        &mut self,
+        signed: &Signed<T>,
+        trusted: &TrustedKeys,
+    ) -> Result<(), AuthorityRefusal> {
+        let cost = verifications(signed, trusted);
+        self.left = self
+            .left
+            .checked_sub(cost)
+            .ok_or(AuthorityRefusal::Overspent)?;
+        Ok(())
+    }
+}
 
 /// What a Machine knows when it checks signed versions against one creation.
 #[derive(Clone, Debug)]
@@ -88,7 +123,7 @@ pub struct VersionAdmitted {
 /// key trusted here made, opened as a proposal step or alone, admits when it names this
 /// Cluster, Namespace and Service and the digest of the requested spec, the spec runs a
 /// content-addressed image, and a hook creation has a hook. Statements are opened in
-/// order until the next would cost more than [`MAX_CHECKED`] verifications in all.
+/// order, each charged to `budget` first, until the next costs more than is left.
 ///
 /// # Errors
 /// Returns the first statement's refusal when none admits,
@@ -97,18 +132,16 @@ pub struct VersionAdmitted {
 pub fn verify(
     versions: &[Signed<ServiceVersion>],
     facts: &VersionFacts<'_>,
+    budget: &mut Budget,
 ) -> Result<VersionAdmitted, AuthorityRefusal> {
     let digest = requested_digest(facts.namespace, facts.creation)?;
-    let mut spent = 0;
     let mut by = Vec::new();
     let mut first = None;
     for version in versions.iter().take(MAX_PRESENTED) {
-        let cost = verifications(version, facts.trusted);
-        if spent + cost > MAX_CHECKED {
-            first.get_or_insert(AuthorityRefusal::Overspent);
+        if let Err(overspent) = budget.reserve(version, facts.trusted) {
+            first.get_or_insert(overspent);
             break;
         }
-        spent += cost;
         match admits(version, facts, digest) {
             Ok(approver) if !by.contains(&approver) => by.push(approver),
             Ok(_) => {}
@@ -162,13 +195,13 @@ fn requested_digest(
         .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })
 }
 
-/// How many signature verifications opening `version` can cost here: one per signature
+/// How many signature verifications opening `signed` can cost here: one per signature
 /// by a trusted Device, and per passkey answer one per trusted passkey under its
 /// credential ID, on the statement and on the bundle it rides in. A signature by a key
 /// this Machine doesn't trust is refused before it is verified, so it costs nothing.
-fn verifications(version: &Signed<ServiceVersion>, trusted: &TrustedKeys) -> usize {
-    envelope_verifications(version, trusted)
-        + version
+fn verifications<T>(signed: &Signed<T>, trusted: &TrustedKeys) -> usize {
+    envelope_verifications(signed, trusted)
+        + signed
             .proposal
             .as_deref()
             .map_or(0, |bundle| envelope_verifications(bundle, trusted))

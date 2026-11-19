@@ -50,4 +50,4 @@ pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,
 };
-pub use version::{ServiceVersion, VersionAdmitted, VersionFacts};
+pub use version::{Budget, ServiceVersion, VersionAdmitted, VersionFacts};
