@@ -59,14 +59,14 @@ it("shows a member their passkeys", async () => {
 });
 
 it.each([
-  ["it was filed", () => Promise.resolve({})],
+  ["it was filed", () => Promise.resolve({ code: "bbbbbbbbbb" })],
   ["its answer was lost on the way back", () => Promise.reject(new Error("network"))],
 ])("lists a passkey added while the list was still loading, when %s", async (_, finish) => {
   stubAuthenticator();
   vi.spyOn(passkeyFunctions, "beginPasskeyServerFn").mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof passkeyFunctions.beginPasskeyServerFn>>>()({
     challenge: "AA", user: { id: "AA", name: "ada@example.com", displayName: "Ada" }, rp: { name: "Ployz" }, pubKeyCredParams: [],
   }));
-  vi.spyOn(passkeyFunctions, "finishPasskeyServerFn").mockImplementation(() => finish() as never);
+  vi.spyOn(passkeyFunctions, "finishPasskeyServerFn").mockImplementation(finish);
   const trusted = (code: string) => ({ code, account: "ada@example.com", createdAt: "2026-11-07T09:00:00.000Z", servers: [{ server: "web-1", approval: { by: "server" as const } }] });
   let answerFirst = () => {};
   await renderAs("member",
