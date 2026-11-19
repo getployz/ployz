@@ -232,7 +232,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0];
   const { noServers } = use(RuntimeLensContext);
   const storage = useStorageSteps(params.organizationSlug);
-  const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
+  const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service), store.region);
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
   const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath, group.discardTarget);
   const draftCount = diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count);

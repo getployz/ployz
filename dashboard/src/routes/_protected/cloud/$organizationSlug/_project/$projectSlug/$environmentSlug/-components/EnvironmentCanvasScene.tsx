@@ -123,6 +123,7 @@ function CanvasWithData() {
     copies,
     live: isBranch(branch) ? liveNodes(branch.value.live, services.services) : [],
     diff,
+    region: settings.region ?? null,
     arriving: arrivingNodes(pending.arriving, [...services.services, ...volumes.volumes, ...configListings]),
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);

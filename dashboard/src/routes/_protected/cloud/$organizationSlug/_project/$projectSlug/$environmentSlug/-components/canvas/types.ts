@@ -80,6 +80,8 @@ export type StoreCanvas = {
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
   diff: DiffView;
+  /** The Environment's region in Working State; null when it runs in any region. */
+  region: string | null;
   /** Each Volume's copies by Volume id, as the Servers and the staged placement have them; empty until they answer. */
   copies: ReadonlyMap<string, VolumeCopies>;
   /** The Services, Volumes and Configs this tab is adding, until the Store's answer draws them. */
