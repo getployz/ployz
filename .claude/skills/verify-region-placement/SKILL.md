@@ -1,17 +1,17 @@
 ---
 name: verify-region-placement
-description: Model-check what a runner's Deploy does to a Service's replicas as Servers change region, join, leave and stop taking new starts, and as the Environment's region, a Service's counts and its version change, with the Stateright model in core/crates/ployz-verify/src/region_placement.rs, which calls the real planner. Use when a change touches region placement in the Deploy planner (`plan_one_service`, `spread_machines`, `eligible_machines`, or `placement_error` in core/crates/ployz/src/deploy/planning.rs; `Spread`, `Quota`, `select_replicated`, `plan_replicated` or `withdraw` in planning/placement.rs; `refuse_kept_apart`, `reserve_shared`, `place`, `constrain_candidates` or the Volume-outside-region checks in planning/volumes.rs; `PlanError::blocked_kind` in deploy.rs), the lowering of `replicas` and the Environment's region (ployz-core config/lowering.rs), or the Store's record of a Deploy that waits (`node_outcomes` in ployz-store deployment/outcomes.rs, `all_waiting` in deployment/mod.rs, `live` in deployment/history.rs, the `VolumeInSeveralRegions` rule in rules.rs).
+description: Model-check what a runner's Deploy does to a Service's replicas as Servers change region, join, leave and stop taking new starts, and as the Environment's region, a Service's counts and its version change, with the Stateright model in core/crates/ployz-verify/src/region_placement.rs, which calls the real planner. Use when a change touches region placement in the Deploy planner (`plan_one_service`, `spread_machines`, `eligible_machines`, or `placement_error` in core/crates/ployz/src/deploy/planning.rs; `Spread`, `Quota`, `select_replicated`, `plan_replicated` or `withdraw` in planning/placement.rs; `refuse_kept_apart`, `reserve_shared`, `place`, `constrain_candidates` or the Volume-outside-region checks in planning/volumes.rs; `PlanError::blocked_kind` in deploy.rs), the lowering of `replicas` and the Environment's region (ployz-core config/lowering.rs), or the Store's record of a Deploy that waits (`node_outcomes` in ployz-store deployment/outcomes.rs, `all_waiting` in deployment/mod.rs, `record` in deployment/record.rs, `live` in deployment/history.rs, `Problem::Regions` in rules.rs `problems`).
 ---
 
 # Verify region placement
 
-The model in `core/crates/ployz-verify/src/region_placement.rs` explores every order of Deploys and changes to a small Cluster, up to a bound. Each Deploy calls the real planner, `ployz::deploy::preview_deploy`, with a runner's options (`block_unmountable: true`), on a `DeploySnapshot` built from the model's world. The world then takes the operations the preview returns, each as a step that completes. So a planner change is checked as written, with no copy to keep in step.
+The model in `core/crates/ployz-verify/src/region_placement.rs` explores every order of Deploys and changes to a small Cluster, up to a bound. Each Deploy calls the real planner, `ployz::deploy::preview_deploy`, with a runner's options (`block_unmountable: true`), on a `DeploySnapshot` built from the model's world. The world then takes the operations the preview returns, each as a step that completes. Each new or changed Container is made from the spec in its operation (`RegionPlacement::made_of`), not from the config, so a planner that sends the wrong image or placement leaves the world on it. `made_of` panics on a spec the model can't hold. Whether a Deploy did anything is read from its operations (`Effects::touched`), so a replacement with the same spec on the same Server counts as work. So a planner change is checked as written, with no copy to keep in step.
 
 Three pieces are hand copies, and drift unless you keep them in step:
 
 - `RegionPlacement::requested` lowers a Service's `replicas` and the Environment's region into its spec, as `lower_snapshot` in ployz-core `config/lowering.rs` does: counts by region set `regions` and no constraint, and one count takes the Environment's region as `node.labels.region==X`.
-- `counts_menu` never offers counts in two regions to a Service with a Volume, because the Store refuses that config at save (`VolumeInSeveralRegions` in ployz-store `rules.rs`).
-- `Verdict::advanced`, `applied`, `all_waiting` and `live` copy the Store's record of the Deploy. A Service's node is Not attempted when blocked, Deployed when the preview planned work for it, and Unchanged otherwise (`node_outcomes`). A Refusal fails the Deployment. `all_waiting` (deployment/mod.rs) reads it as nothing applied, and `live` (deployment/history.rs) skips such a Deployment.
+- `counts_menu` never offers counts in two regions to a Service with a Volume, because the Store refuses that config at save (`Problem::Regions` in `problems`, ployz-store `rules.rs`). The planner's own `PlanError::VolumeInSeveralRegions` is never reached.
+- `Verdict::advanced`, `applied`, `all_waiting` and `live` copy the Store's record of the Deploy. A Service's node is Not attempted when blocked, Deployed when the preview planned work for it, and Unchanged otherwise (`node_outcomes`). A Refusal fails the Deployment (`record` in deployment/record.rs). `all_waiting` (deployment/mod.rs) reads it as nothing applied, and `live` (deployment/history.rs) skips such a Deployment.
 
 ## Run it
 
@@ -19,15 +19,17 @@ Three pieces are hand copies, and drift unless you keep them in step:
 cd core && CARGO_INCREMENTAL=0 cargo test -p ployz-verify region_placement
 ```
 
-About 80 s warm on four threads, plus a few minutes to build `ployz` cold. CI runs it in the workspace nextest, so a red model blocks the PR.
+About 65 s warm on four threads, plus a few minutes to build `ployz` cold. CI runs it in the workspace nextest, so a red model blocks the PR.
 
-It is green when all nine tests pass:
+It is green when all ten tests pass:
 
-- `plain_holds_but_for_its_findings`, `volume_holds_but_for_its_findings` and `shared_holds_but_for_its_findings` check every state of a scenario. Each property holds, except the ones its test names as findings, which must fail. Each outcome in `REACHED` must be reached, except the ones the test names as unreached in that scenario. Each prints its state count: about 122,000, 40,600 and 11,700.
+- `plain_holds_but_for_its_findings`, `volume_holds_but_for_its_findings` and `shared_holds_but_for_its_findings` check every state of a scenario. Each property holds, except the ones its test names as findings, which must fail. Each outcome in `REACHED` must be reached, except the ones the test names as unreached in that scenario. Each prints its state count: about 118,400, 38,500 and 11,450.
 - One test per finding replays a fixed schedule with `follow` and asserts that its last Deploy breaks the property. It prints the schedule as a story.
 - `nothing_applied_needs_the_partial_wait` sets `Broken::all_waiting_needs_unattempted`, the Store's `all_waiting` before R5's fix in 2e3364db24, and expects "a Deploy that changed nothing on the Servers and left a Wait reads nothing applied and does not move Live" to fail.
 
-A finding that gets fixed turns its scenario's `holds` test red, because the property now holds. Take it out of that test's findings, and turn its schedule test into one that asserts the property holds on that path.
+A finding that gets fixed turns its scenario's `holds` test red, because the property now holds, as long as it was that property's last counterexample in the scenario. Take it out of that test's findings, and turn its schedule test into one that asserts the property holds on that path.
+
+The allowance is per property and scenario, so a second bug that breaks a property already listed as a finding in that scenario stays green there. Plain lists "old version counted" and "repeat is a no-op", so a planner that restarts replicas needlessly or sends a stale spec shows only in Volume and Shared. Keep a finding's property as narrow as its cause: "a Service waits only while a region it names is short" is split from "a Wait names only regions still short" for that reason.
 
 ## The world
 
@@ -54,21 +56,22 @@ Each property is a sentence about one Deploy, judged from the world before and a
 - "with no config change and no Server gone, a Deploy removes a running replica only past the counts, from a Server that takes no new starts, or as a spare whose waiting region starts its own". Harm: a healthy replica goes though the user changed nothing. The allowed removals are the documented ones. A replica past the counts goes. One on a Server that takes no services moves at the next Deploy (servers/manage-servers.md). A replica moves when another starts in its region (regions.md, "spreads ... as usual"). A spare, outside the counts or past its own region's count, goes once a region short of its count starts one (regions.md).
 - "after a Deploy, a Service it does not refuse runs no more replicas than its counts add up to". Harm: a smaller count isn't carried out.
 - "while another region waits, a region whose count is met on Servers that take new starts starts nothing new when only labels or new Servers changed". Harm: a relabel starts replicas nobody asked for. The scope is R5's own: "start nothing new in a region whose count is met while another waits". With nothing waiting, a new Server in a region takes a replica as main's spread always did.
-- "a Wait names only regions still short of their count". Harm: the user is told to fix a region that is fine.
+- "a Wait names only regions still short of their count". Harm: the user is told to fix a region that is fine. The regions a Wait names are those in its error's `details.regions` (`RegionUnmatched`, on a whole or a partial Wait) and its partial counts. A region is short while fewer replicas run there on the config's spec than its count, counting a replica on a Server that takes no new starts (R5's S2 ruling). One count with no Environment region covers every region and is short only when the Service is. This property fails when a Wait names a met or uncounted region beside a short one.
+- "a Service waits only while a region it names is short of its count". Harm: a Wait that no change to the world clears, on a Service already running its counts. Fails when every region the Wait names is met.
 - "a Deploy that changed nothing on the Servers and left a Wait reads nothing applied and does not move Live". Harm: Live names a config the Servers don't run.
-- "a Service waits only while a Server or label it needs is missing". Harm: a Wait that no Server or label can clear (`Verdict::can_run`). Each region the config keeps it in needs a present Server there that takes new starts. A Service with the Volume also needs `one` to take new starts and be in its one configured region.
+- "a Service waits only while a Server or label it needs is missing". Harm: a Wait that no Server or label can clear (`RegionPlacement::can_run`). A planner error that fails the whole Deploy also breaks it when every Service has what it needs, so a Wait that turns into a failed Deploy once the Server or label is back is caught. Each region the config keeps it in needs a present Server there that takes new starts. A Service with the Volume also needs `one` to take new starts and be in its one configured region.
 - "a Refusal clears only with a config change". Harm: a Refusal tells the user to change the config when relabelling would do, and the opposite.
 - "a Service is refused only when it shares the Volume with one whose configured regions can never meet its own" (`Config::meet`). Harm: a Service that could run is refused.
 - "a Service with a Volume runs only on the Volume writer's Server".
 - "a Deploy never leaves a Service fewer running replicas, unless a count went down or a Server went away".
 - "a Deploy that leaves replicas on the old version says how many". Harm: replicas run an old release while the Deploy reads as done. Not checked on a refused Service.
-- "a Deploy repeated with nothing changed changes nothing on the Servers". Harm: a Deploy is not a fixed point.
+- "a Deploy repeated with nothing changed changes nothing on the Servers". Harm: a Deploy is not a fixed point. Any start, replacement, update in place or removal breaks it, including a restart on the same spec.
 
 The `sometimes` rows in `REACHED` show the model reaches what it claims to check: a partial wait, a whole wait, a Refusal, a spare kept for a waiting region, a Deploy held back from Live, a whole Deploy the planner refuses, and a Wait that counts a replica on the old version.
 
 ## Findings
 
-The shipped planner breaks five properties. Each has a schedule test, and its scenario's `holds` test lists the property.
+The shipped planner breaks six properties. Each has a schedule test, and its scenario's `holds` test lists the property.
 
 1. **A relabel removes a spare its region still waits for** (#4368, `a_relabel_removes_a_spare_its_region_still_waits_for`). `one` (fsn) stops taking new starts. `two` loses its syd label, so syd waits and `two`'s replica stands in for it. `three` is labelled fsn. The Deploy starts api on `three` and removes `two`'s replica, while syd still waits and `one`'s replica, on a Server that takes no services, stays. The planner's holder-first pass sees only Servers that take new starts, and `Spread::hold` runs after the new start is chosen.
 2. **A whole Wait counts no replica on the old version** (#4369, `a_whole_wait_counts_no_replica_on_the_old_version`). `one` and `two` lose their labels and api moves to v2. The Deploy reads "api waits: no Server in fsn or syd" with no count of the two v1 replicas still running. `plan_one_service` returns `RegionUnmatched` in place of the counts `Spread::hold` computed when no region starts and nothing is planned. The model finds the same gap wherever a Service waits whole: one count in an Environment region with no Server, or a Volume outside the region.
@@ -76,7 +79,9 @@ The shipped planner breaks five properties. Each has a schedule test, and its sc
 4. **A kept spare is updated by the next Deploy** (new, `a_kept_spare_is_updated_by_the_next_deploy`). api counted `{"fsn":1,"syd":2}` runs one fsn and two syd replicas. `one` is relabelled syd and the counts go to `{"fsn":1,"syd":1}`. The Deploy removes the syd surplus and keeps `one`'s replica as fsn's spare, without its new placement. The next Deploy, with nothing changed, updates that spare in place. `Spread::hold` keeps a spare as it is, and the next Deploy picks it as a syd replica.
 5. **Relabelling the Volume's Server moves the Refusal** (new, `relabelling_the_volume_server_moves_the_refusal`). api counted in syd and worker in fsn share `data` on `one` (fsn), so api is refused. Relabelling `one` syd, with no config change, deploys api and refuses worker instead. The two configs can never meet, so one of them is always refused, but which one follows the Volume Server's label. That contradicts `BlockedKind::Refusal`'s own doc ("only a config change deploys it").
 
-A sixth gap is main's behavior, outside the model's properties. A Service with one count and no region, whose every Server takes no services, fails the whole Deploy (`NoEligibleMachines` is not among the errors `assemble_plan` blocks). The `PLAN_FAILS` row reaches it.
+6. **A Service waits on a region its running replica already meets** (new, `a_one_count_waits_on_a_region_its_replica_meets`). In Volume, api runs its one count in fsn on `one`, which holds `data`. `one` stops taking new starts. The Deploy reads "api waits: one takes no services", naming fsn, while fsn's replica runs up to date. Counted `{"fsn":1}`, the same world plans nothing. One count goes through `eligible_machines`, which drops `one`, before `Spread::hold` could keep the replica. Plain reaches it with one count in syd and `two` declining. Shared reaches it with counts by region too, through the shared Volume's reservation.
+
+A seventh gap is main's behavior, outside the model's properties. A Service with one count and no region, whose every Server takes no services, fails the whole Deploy (`NoEligibleMachines` is not among the errors `assemble_plan` blocks). The `PLAN_FAILS` row reaches it.
 
 ## Read a counterexample
 
@@ -123,9 +128,13 @@ Each property that holds on the shipped code was seen failing on a scratch chang
 | `PlanError::blocked_kind` returns Refusal for every error | "refused only when ... can never meet" |
 | `Spread::wait_for` puts every counted region in `waiting` | "waits only while a Server or label it needs is missing" |
 | Both Volume pins removed (above) | "runs only on the Volume writer's Server" |
+| R5's S2 bug restored: `plan_one_service`'s whole Wait names every away region (drop `.filter(\|away\| regions.contains_key(&away.region))`) | "a Wait names only regions still short" (Plain) |
+| A replacement sends the old Container's spec (`spec: old.as_observation().resolved_spec.clone()`) | "repeat is a no-op" (Volume, Shared), as the next Deploy replaces again |
+| `container_fate` replaces an up-to-date Container (`SpecChange::UpToDate => ContainerFate::Replace`) | "repeat is a no-op" (Volume, Shared) |
+| `spread_machines` fails the Deploy for one count of 2 | "waits only on the world" (Plain) |
 | `Broken::all_waiting_needs_unattempted` in the model | "reads nothing applied and does not move Live" |
 
-The other five fail on the shipped code.
+The other six fail on the shipped code.
 
 ## Keep the model in step
 
@@ -156,7 +165,7 @@ The model calls these as they are, so a change to them is checked as written. Re
 These the model copies, and they drift unless you keep them in step:
 
 - `core/crates/ployz-core/src/config/lowering.rs`: the `placement` and `regions` fields `lower_snapshot` builds (`RegionPlacement::requested`).
-- `core/crates/ployz-store/src/rules.rs`: the `VolumeInSeveralRegions` rule (`counts_menu`).
-- `core/crates/ployz-store/src/deployment/outcomes.rs` `node_outcomes`, `deployment/mod.rs` `all_waiting` and `NodeStatus::advances`, `deployment/history.rs` `live` (`Verdict::advanced`, `applied`, `all_waiting`, `live`).
+- `core/crates/ployz-store/src/rules.rs`: `Problem::Regions` in `problems` (`counts_menu`).
+- `core/crates/ployz-store/src/deployment/outcomes.rs` `node_outcomes`, `deployment/record.rs` `record` (a Refusal ends the Deployment Failed), `deployment/mod.rs` `all_waiting` and `NodeStatus::advances`, `deployment/history.rs` `live` (`Verdict::advanced`, `applied`, `all_waiting`, `live`).
 
 Sync commit: `b07db92772ca172331e8b60f74d02c3efd704c1b`, the `main` this model was checked against, with R4 (#4360) and R5 (#4334) in it. Code in the lists above that changed after it has not been rechecked.

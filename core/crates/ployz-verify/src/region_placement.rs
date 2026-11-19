@@ -5,17 +5,18 @@
 //! Each Deploy calls the real planner, `ployz::deploy::preview_deploy`, with the runner's
 //! options (`block_unmountable`), on a `DeploySnapshot` built from the model's world. The
 //! world then takes the operations it returns, each as one completed step, as an executor
-//! that never fails would run them. So `Spread::hold`, `select_replicated`, `withdraw`,
+//! that never fails would run them: each new Container is made from the spec in its
+//! operation, and a replacement counts as work. So `Spread::hold`, `select_replicated`, `withdraw`,
 //! `plan_one_service`, `spread_machines` and the Volume placement in `planning/volumes.rs`
 //! are checked as written. Three pieces are copies, and drift unless kept in step:
 //!
 //! - lowering a Service's counts and the Environment's region into its spec, as
 //!   `lower_snapshot` in ployz-core config/lowering.rs does (its `placement` and `regions`);
 //! - the Store's rule that a Service with a Volume counts replicas in one region
-//!   (ployz-store rules.rs, `VolumeInSeveralRegions`), by never offering such counts;
+//!   (`Problem::Regions` in `problems`, ployz-store rules.rs), by never offering such counts;
 //! - the Store's record of the Deploy: each Service's node outcome (`node_outcomes` in
-//!   ployz-store deployment/outcomes.rs), the Deployment's end (a Refusal fails it, in
-//!   ployz `handlers/deploy`), `all_waiting` (deployment/mod.rs) and `live`
+//!   ployz-store deployment/outcomes.rs), the Deployment's end (a Refusal fails it, `record`
+//!   in deployment/record.rs), `all_waiting` (deployment/mod.rs) and `live`
 //!   (deployment/history.rs), which skips a Deployment that applied nothing.
 //!
 //! Out of scope: execution failures, health checks and rollbacks; Bridge endpoint capacity
@@ -38,9 +39,10 @@ use ployz_core::{
     CopyRole, DockerVolume, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
     HealthObservation, Machine, MachineId, MachineName, MachineObservation, MachinePath,
     MachineStorageObservation, MembershipObservation, Namespace, Placement, PullPolicy, Region,
-    RequestedServiceSpec, ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId,
-    ServiceMode, ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
-    UpdateConfig, UpdateOrder, WireGuardPublicKey, compare_specs, labels,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
+    ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
+    ServiceVolumeReference, SpecChange, UpdateConfig, UpdateOrder, WireGuardPublicKey,
+    compare_specs, labels,
 };
 use stateright::{Model, Property};
 
@@ -319,6 +321,8 @@ pub(crate) const SURPLUS_GOES: &str =
     "after a Deploy, a Service it does not refuse runs no more replicas than its counts add up to";
 pub(crate) const MET_STARTS_NOTHING: &str = "while another region waits, a region whose count is met on Servers that take new starts starts nothing new when only labels or new Servers changed";
 pub(crate) const WAIT_NAMES_SHORT: &str = "a Wait names only regions still short of their count";
+pub(crate) const WAITS_WHILE_SHORT: &str =
+    "a Service waits only while a region it names is short of its count";
 pub(crate) const NOTHING_APPLIED: &str = "a Deploy that changed nothing on the Servers and left a Wait reads nothing applied and does not move Live";
 pub(crate) const WAITS_ON_THE_WORLD: &str =
     "a Service waits only while a Server or label it needs is missing";
@@ -332,11 +336,12 @@ pub(crate) const OLD_COUNTED: &str =
 pub(crate) const REPEAT_IS_NOOP: &str =
     "a Deploy repeated with nothing changed changes nothing on the Servers";
 
-pub(crate) const PROPERTIES: [&str; 12] = [
+pub(crate) const PROPERTIES: [&str; 13] = [
     LABELS_KEEP,
     SURPLUS_GOES,
     MET_STARTS_NOTHING,
     WAIT_NAMES_SHORT,
+    WAITS_WHILE_SHORT,
     NOTHING_APPLIED,
     WAITS_ON_THE_WORLD,
     REFUSAL_STICKS,
@@ -508,8 +513,61 @@ impl RegionPlacement {
         Made {
             version: settings.version,
             replicas: settings.replicas,
-            region: config.region,
+            region: match settings.replicas {
+                Replicas::Count(_) => config.region,
+                Replicas::By { .. } => Label::None,
+            },
         }
+    }
+
+    /// The Service and the [`Made`] of the spec an operation gives a Container, so the world
+    /// runs what the planner sent, not what the config asks for.
+    fn made_of(&self, spec: &ResolvedServiceSpec) -> (usize, Made) {
+        let service = service_of(&spec.name);
+        let version = spec
+            .container
+            .image
+            .rsplit_once(':')
+            .and_then(|(_, version)| version.parse().ok())
+            .expect("an image the model names");
+        let count = |label: Label| {
+            label
+                .region()
+                .and_then(|region| spec.regions.get(&region))
+                .map_or(0, |count| {
+                    u8::try_from(count.get()).expect("a modelled count")
+                })
+        };
+        let replicas = if spec.regions.is_empty() {
+            let ServiceMode::Replicated { replicas } = &spec.mode else {
+                panic!("a replicated Service")
+            };
+            Replicas::Count(u8::try_from(replicas.get()).expect("a modelled count"))
+        } else {
+            Replicas::By {
+                fsn: count(Label::Fsn),
+                syd: count(Label::Syd),
+            }
+        };
+        let region = Label::REGIONS
+            .into_iter()
+            .find(|label| {
+                label
+                    .region()
+                    .is_some_and(|region| spec.placement.constraints.contains(&region.constraint()))
+            })
+            .unwrap_or(Label::None);
+        let made = Made {
+            version,
+            replicas,
+            region,
+        };
+        assert!(
+            compare_specs(spec, &scoped(&self.requested(service, made))) == SpecChange::UpToDate,
+            "the planner sent {} a spec the model holds as {made:?}",
+            spec.name
+        );
+        (service, made)
     }
 
     fn requested_now(&self, config: &Config, service: usize) -> RequestedServiceSpec {
@@ -673,12 +731,6 @@ impl RegionPlacement {
         let mut containers: Vec<Option<Container>> =
             state.containers.iter().copied().map(Some).collect();
         let mut effects = Effects::default();
-        let service_of = |name: &ServiceName| {
-            SERVICE_NAMES
-                .iter()
-                .position(|candidate| *candidate == name.as_str())
-                .expect("a modelled Service")
-        };
         let index_of = |id: &ContainerId| {
             (0..MOST_CONTAINERS)
                 .find(|index| container_id(*index) == *id)
@@ -689,18 +741,17 @@ impl RegionPlacement {
                 .find(|server| machine_id(*server) == *machine)
                 .expect("a modelled Server")
         };
-        let made = |service: usize| Self::made_now(&state.config, service);
         for row in &preview.operations {
             match &row.operation {
                 DeployOperation::RunContainer {
                     machine_id, spec, ..
                 } => {
-                    let service = service_of(&spec.name);
+                    let (service, made) = self.made_of(spec);
                     effects.started.push((service, server_of(machine_id)));
                     containers.push(Some(Container {
                         server: u8::try_from(server_of(machine_id)).unwrap_or(0),
                         service: u8::try_from(service).unwrap_or(0),
-                        made: made(service),
+                        made,
                     }));
                 }
                 DeployOperation::ReplaceContainer(ReplacementOperation {
@@ -709,24 +760,28 @@ impl RegionPlacement {
                     spec,
                     ..
                 }) => {
-                    let service = service_of(&spec.name);
+                    let (service, made) = self.made_of(spec);
                     let old = index_of(old_container_id);
                     *containers.get_mut(old).expect("a running Container") = None;
+                    effects.replaced.push((service, server_of(machine_id)));
                     containers.push(Some(Container {
                         server: u8::try_from(server_of(machine_id)).unwrap_or(0),
                         service: u8::try_from(service).unwrap_or(0),
-                        made: made(service),
+                        made,
                     }));
                 }
                 DeployOperation::UpdateContainer(ContainerUpdateOperation {
-                    container_id, ..
+                    container_id,
+                    spec,
+                    ..
                 }) => {
                     let index = index_of(container_id);
                     let container = containers
                         .get_mut(index)
                         .and_then(Option::as_mut)
                         .expect("a running Container");
-                    container.made = made(usize::from(container.service));
+                    container.made = self.made_of(spec).1;
+                    effects.updated += 1;
                 }
                 DeployOperation::RemoveContainer { container_id, .. } => {
                     let index = index_of(container_id);
@@ -754,6 +809,30 @@ impl RegionPlacement {
         (after, effects)
     }
 
+    /// Whether `service` has every Server and label it needs in `state`: a present Server
+    /// that takes new starts in each region its config keeps it in, and for a Service with
+    /// the Volume, `one` taking new starts in its one configured region.
+    fn can_run(&self, state: &State, service: usize) -> bool {
+        let servers = &state.servers;
+        let accepting = |label: Option<Label>| {
+            servers.iter().any(|server| {
+                server.present && server.accepts && label.is_none_or(|label| server.label == label)
+            })
+        };
+        let regions = state.config.regions(service);
+        let placed = match &regions {
+            None => accepting(None),
+            Some(regions) => regions.iter().all(|label| accepting(Some(*label))),
+        };
+        if !self.mounts_volume(service) {
+            return placed;
+        }
+        let holder = servers[HOLDER];
+        holder.present
+            && holder.accepts
+            && regions.is_none_or(|regions| regions.len() == 1 && regions.contains(&holder.label))
+    }
+
     fn deploy(&self, state: &State) -> State {
         let mut next = state.clone();
         let planned = self.plan(state);
@@ -763,6 +842,9 @@ impl RegionPlacement {
         match &planned {
             Err(_) => {
                 reached |= bit(&REACHED, PLAN_FAILS);
+                if (0..self.scenario.services()).all(|service| self.can_run(state, service)) {
+                    broke |= bit(&PROPERTIES, WAITS_ON_THE_WORLD);
+                }
                 next.refused.clear();
             }
             Ok(preview) => {
@@ -810,6 +892,13 @@ impl RegionPlacement {
 }
 
 const VOLUME_BYTES: u64 = 1_073_741_824;
+
+fn service_of(name: &ServiceName) -> usize {
+    SERVICE_NAMES
+        .iter()
+        .position(|candidate| *candidate == name.as_str())
+        .expect("a modelled Service")
+}
 /// More Containers than any Deploy in the model leaves or makes.
 const MOST_CONTAINERS: usize = 32;
 
@@ -907,6 +996,19 @@ struct Effects {
     started: Vec<(usize, usize)>,
     /// Each removed Container's Service and Server.
     removed: Vec<(usize, usize)>,
+    /// Each replacement's Service and Server: one Container stopped and a new one started.
+    replaced: Vec<(usize, usize)>,
+    /// How many Containers changed in place.
+    updated: usize,
+}
+
+impl Effects {
+    fn touched(&self) -> bool {
+        !self.started.is_empty()
+            || !self.removed.is_empty()
+            || !self.replaced.is_empty()
+            || self.updated > 0
+    }
 }
 
 /// One Service's running replicas: in all, on each region's Servers (by their labels now),
@@ -975,6 +1077,10 @@ impl Counts {
             Some(label) => tally.accepting_in_region.get(&label).copied().unwrap_or(0),
             None => tally.accepting_in_region.values().sum(),
         }
+    }
+
+    fn settled(&self, service: usize) -> usize {
+        self.tally(service).settled_in_region.values().sum()
     }
 
     fn settled_in_region(&self, service: usize, label: Label) -> usize {
@@ -1061,6 +1167,21 @@ impl Verdict<'_> {
         }
     }
 
+    /// Whether `service` is short of its count in `label`'s region after the Deploy, `None`
+    /// when no count covers that region. One count with no Environment region covers
+    /// every region, and is short only when the Service is.
+    fn short_in(&self, service: usize, label: Label) -> Option<bool> {
+        let config = &self.state.config;
+        match (config.service(service).replicas, config.region) {
+            (Replicas::Count(count), Label::None) => {
+                Some(self.after.settled(service) < usize::from(count))
+            }
+            _ => self
+                .count_in(service, label)
+                .map(|count| self.after.settled_in_region(service, label) < count),
+        }
+    }
+
     /// Whether `service`'s label is one its counts or the Environment's region keep it in.
     fn counted(&self, service: usize, label: Label) -> bool {
         self.state
@@ -1107,27 +1228,6 @@ impl Verdict<'_> {
                 });
                 settings.accepts && !moved && !(spare && short_region_starts)
             })
-    }
-
-    fn can_run(&self, service: usize) -> bool {
-        let servers = &self.state.servers;
-        let accepting = |label: Option<Label>| {
-            servers.iter().any(|server| {
-                server.present && server.accepts && label.is_none_or(|label| server.label == label)
-            })
-        };
-        let regions = self.state.config.regions(service);
-        let placed = match &regions {
-            None => accepting(None),
-            Some(regions) => regions.iter().all(|label| accepting(Some(*label))),
-        };
-        if !self.model.mounts_volume(service) {
-            return placed;
-        }
-        let holder = servers[HOLDER];
-        holder.present
-            && holder.accepts
-            && regions.is_none_or(|regions| regions.len() == 1 && regions.contains(&holder.label))
     }
 
     fn judge(&self) -> (u32, u32) {
@@ -1186,18 +1286,19 @@ impl Verdict<'_> {
                 }
             }
             if let Some(wait) = self.waits(service) {
+                let short: Vec<Option<bool>> = named(&wait)
+                    .into_iter()
+                    .map(|label| self.short_in(service, label))
+                    .collect();
+                if short.contains(&None)
+                    || short.contains(&Some(true)) && short.contains(&Some(false))
+                {
+                    fail(WAIT_NAMES_SHORT);
+                } else if short.contains(&Some(false)) {
+                    fail(WAITS_WHILE_SHORT);
+                }
                 if let Some(partial) = wait.partial {
                     reached |= bit(&REACHED, PARTIAL_WAIT);
-                    for region in partial.regions.keys() {
-                        let label = Label::REGIONS
-                            .into_iter()
-                            .find(|label| label.region().as_ref() == Some(region))
-                            .expect("a modelled region");
-                        let count = usize::from(replicas.count_in(label).unwrap_or(0));
-                        if self.after.settled_in_region(service, label) >= count {
-                            fail(WAIT_NAMES_SHORT);
-                        }
-                    }
                     if partial.outdated() > 0 {
                         reached |= bit(&REACHED, OUTDATED_SPARE);
                     }
@@ -1206,7 +1307,7 @@ impl Verdict<'_> {
                 }
                 match wait.kind {
                     BlockedKind::Wait => {
-                        if self.can_run(service) {
+                        if self.model.can_run(self.state, service) {
                             fail(WAITS_ON_THE_WORLD);
                         }
                     }
@@ -1262,7 +1363,7 @@ impl Verdict<'_> {
                 }
             }
         }
-        let unchanged = self.state.containers == self.next.containers;
+        let unchanged = !self.effects.touched();
         if unchanged && self.preview.waits().next().is_some() && self.live().is_some() {
             fail(NOTHING_APPLIED);
         }
@@ -1410,6 +1511,7 @@ impl Model for RegionPlacement {
             always!(SURPLUS_GOES),
             always!(MET_STARTS_NOTHING),
             always!(WAIT_NAMES_SHORT),
+            always!(WAITS_WHILE_SHORT),
             always!(NOTHING_APPLIED),
             always!(WAITS_ON_THE_WORLD),
             always!(REFUSAL_STICKS),
@@ -1555,6 +1657,31 @@ impl RegionPlacement {
     }
 }
 
+/// The regions a Wait tells the user are short: those its error names (`RegionUnmatched`,
+/// whole or partial) and those its partial counts list.
+fn named(wait: &ployz_core::Wait<'_>) -> BTreeSet<Label> {
+    let label = |name: &str| {
+        Label::REGIONS
+            .into_iter()
+            .find(|label| label.region().is_some_and(|region| region.as_str() == name))
+            .expect("a modelled region")
+    };
+    let errored = wait
+        .error
+        .details
+        .get("regions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|region| label(region.as_str().expect("a region name")));
+    let partial = wait
+        .partial
+        .into_iter()
+        .flat_map(|partial| partial.regions.keys())
+        .map(|region| label(region.as_str()));
+    errored.chain(partial).collect()
+}
+
 fn name_of(machine: &MachineId) -> &'static str {
     (0..SERVERS)
         .find(|server| machine_id(*server) == *machine)
@@ -1663,7 +1790,13 @@ mod tests {
     fn plain_holds_but_for_its_findings() {
         holds(
             RegionPlacement::new(Scenario::Plain, 4),
-            &[LABELS_KEEP, SURPLUS_GOES, OLD_COUNTED, REPEAT_IS_NOOP],
+            &[
+                LABELS_KEEP,
+                SURPLUS_GOES,
+                WAITS_WHILE_SHORT,
+                OLD_COUNTED,
+                REPEAT_IS_NOOP,
+            ],
             &[REFUSAL],
         );
     }
@@ -1672,7 +1805,7 @@ mod tests {
     fn volume_holds_but_for_its_findings() {
         holds(
             RegionPlacement::new(Scenario::Volume, 4),
-            &[SURPLUS_GOES, OLD_COUNTED],
+            &[WAITS_WHILE_SHORT, SURPLUS_GOES, OLD_COUNTED],
             &[REFUSAL],
         );
     }
@@ -1681,7 +1814,7 @@ mod tests {
     fn shared_holds_but_for_its_findings() {
         holds(
             RegionPlacement::new(Scenario::Shared, 3),
-            &[SURPLUS_GOES, REFUSAL_STICKS, OLD_COUNTED],
+            &[SURPLUS_GOES, WAITS_WHILE_SHORT, REFUSAL_STICKS, OLD_COUNTED],
             &[PARTIAL_WAIT, OUTDATED_SPARE],
         );
     }
@@ -1767,6 +1900,18 @@ mod tests {
             ],
         );
         assert!(broke(&path, REFUSAL_STICKS));
+    }
+
+    /// api runs its one count in fsn on the Volume's Server, `one`, which stops taking new
+    /// starts. The Deploy waits on fsn, though fsn's replica runs up to date. Counted
+    /// `{"fsn":1}`, the same world plans nothing.
+    #[test]
+    fn a_one_count_waits_on_a_region_its_replica_meets() {
+        let path = follow(
+            RegionPlacement::new(Scenario::Volume, 4),
+            &[Action::ToggleAccepts(0), Action::Deploy],
+        );
+        assert!(broke(&path, WAITS_WHILE_SHORT));
     }
 
     /// The Store's `all_waiting` before R5 read only blocked Services, so a Deploy that
