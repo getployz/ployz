@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { JsonValue } from "@ployz/sdk";
 import { useState } from "react";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { replicaRows } from "#/modules/config-store/replica-rows";
 import { regionOptions } from "#/modules/machines/server-regions";
@@ -25,7 +26,7 @@ afterEach(() => {
 });
 
 /** The rows over a value that takes each write, as the Store hands it back to them. */
-function rows(start: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
+function staged(start: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
   const onChange = vi.fn((_: JsonValue) => Promise.resolve());
   function Staged() {
     const [value, setValue] = useState(start);
@@ -36,6 +37,11 @@ function rows(start: JsonValue, home: string | null, held: { capped?: string; at
         onChange={(next) => { setValue(next); return onChange(next); }} />
     );
   }
+  return { Staged, onChange };
+}
+
+function rows(start: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
+  const { Staged, onChange } = staged(start, home, held);
   render(<Staged />);
   return onChange;
 }
@@ -127,4 +133,18 @@ it("adds a region a Server is in with one replica", () => {
   const onChange = rows(2, "fsn");
   click("Add region");
   expect(onChange).toHaveBeenLastCalledWith({ fsn: 2, syd: 1 });
+});
+
+it("keeps every control disabled until the page hydrates, then takes One more and Add region", () => {
+  const { Staged, onChange } = staged({ fsn: 1, syd: 1 }, "fsn");
+  const container = document.body.appendChild(document.createElement("div"));
+  container.innerHTML = renderToString(<Staged />);
+  const usable = [...within(container).getAllByRole("button"), ...within(container).getAllByRole("combobox")]
+    .filter((control) => !control.hasAttribute("disabled")).map((control) => control.getAttribute("aria-label"));
+  expect(usable).toEqual([]);
+  render(<Staged />, { container, hydrate: true });
+  click("Remove syd");
+  more("Replicas in fsn");
+  click("Add region");
+  expect(onChange.mock.calls.map(([value]) => value)).toEqual([{ fsn: 1 }, { fsn: 2 }, { fsn: 2, syd: 1 }]);
 });
