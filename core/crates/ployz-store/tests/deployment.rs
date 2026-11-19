@@ -8827,6 +8827,37 @@ fn a_plan_names_the_region_each_service_it_ships_runs_in_next_and_any_server_onc
 /// One replica count puts a Service back in the Environment's region, which the
 /// change to its replicas alone doesn't show.
 #[test]
+fn a_plan_lists_the_counts_of_a_service_that_sets_them_by_region_changed_or_not() {
+    let (store, who) = shop();
+    let counts = || {
+        let plan = store.read(&who, &PlanQuery::default()).unwrap();
+        serde_json::to_value(plan.replicas).unwrap()
+    };
+    assert_eq!(counts(), json!({}));
+    let edit = Edit {
+        environment: EnvironmentRef::default(),
+        expect: None,
+        changes: vec![Change::Set {
+            path: SettingPath::parse("web.replicas").unwrap(),
+            value: json!({ "fsn": 2, "syd": 1 }),
+        }],
+    };
+    store.write(&who, &edit).unwrap();
+    assert_eq!(counts(), json!({ "web": { "fsn": 2, "syd": 1 } }));
+
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(counts(), json!({ "web": { "fsn": 2, "syd": 1 } }));
+}
+
+#[test]
 fn a_plan_names_the_region_a_service_runs_in_once_it_leaves_its_counts_by_region() {
     let (store, who) = shop();
     let stage = |path: SettingPath, value: serde_json::Value| {

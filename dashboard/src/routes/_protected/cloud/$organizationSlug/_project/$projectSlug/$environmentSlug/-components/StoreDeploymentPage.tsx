@@ -17,7 +17,7 @@ import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
   admission, canFixOnBranch, deploymentActions, deploymentWarningText, deployWarningNotices, deploymentByline, deploymentLabel, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied,
-  outcomeReason, rollbackConfirm, showCancelling, shownNodeStatus, waitingServices, type DeploymentAction,
+  outcomeReason, rollbackConfirm, showCancelling, shownNodeStatus, unstartedServices, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
@@ -81,7 +81,8 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
     : selected && "node" in selected && selected.node.type === "service" ? selected.node
     : services.find((node) => shownNodeStatus(node) === "failed") ?? services.find((node) => !nodeApplied(node.outcome));
   const reason = outcomeReason(deployment.outcome);
-  const waiting = waitingServices(deployment);
+  // A Service that started in part is in the notices, with its replicas counted.
+  const waiting = unstartedServices(deployment);
   const needsSource = deployment.outcome?.type === "not_executed" ? deployment.outcome.needs_upload : [];
   const fixing = service && canFixOnBranch(deployment, service, noServers) ? service.name : null;
   const { at, started, ended } = admission(deployment);

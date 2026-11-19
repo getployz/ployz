@@ -111,4 +111,7 @@ it("tells a push whose Deploy left Services waiting which ones and why, and whet
   const every = mailed({ all_waiting: true, outcome: { ...outcome, waiting: waiting.slice(0, 1) } });
   expect(every.subject).toBe("db is waiting to deploy to shop / pr 7");
   expect(every.paragraphs.join(" ")).toContain("Nothing was deployed.");
+  const part = mailed({ outcome: { ...outcome, waiting: [{ service: "api", reason: "no Server in syd", regions: { syd: { waiting: 1, outdated: 0 } } }] } });
+  expect(part.subject).toBe("1 replica of api is waiting to deploy to shop / pr 7");
+  expect(part.facts?.at(-1)).toEqual({ label: "api", value: "1 replica waiting, no Server in syd" });
 });

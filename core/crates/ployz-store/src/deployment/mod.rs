@@ -59,8 +59,8 @@ use ployz_core::config::{
 use ployz_core::{
     BlockedKind, ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview,
     DeployWarning, DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace,
-    PruneScope, Region, RpcError, ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals,
-    VolumeRemoval, VolumeRemovalOutcome,
+    PruneScope, Region, RegionWait, RpcError, ServiceAttempt, ServiceName, ServiceOutcome,
+    ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -499,6 +499,11 @@ pub struct WaitingService {
     pub service: ServiceName,
     /// What it waits on, in the planner's words; users read it.
     pub reason: String,
+    /// The replicas the Deploy did not bring to its version, by region, when the
+    /// Service started in its other regions. Empty when none of it started.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(as = "Option<BTreeMap<Region, RegionWait>>", optional)]
+    pub regions: BTreeMap<Region, RegionWait>,
 }
 
 /// What a Deployment's runner recorded at its end.
@@ -527,9 +532,10 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(as = "Option<bool>", optional)]
         cancelled: bool,
-        /// The Services the planner left waiting, however the Deployment ended:
-        /// each reads Not attempted. They fail nothing, so `reason` never names
-        /// one. A Deployment that did all it planned ends Applied with them.
+        /// The Services the planner left waiting, whole or in some regions,
+        /// however the Deployment ended. One left whole reads Not attempted.
+        /// They fail nothing, so `reason` never names one. A Deployment that
+        /// did all it planned ends Applied with them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[ts(as = "Option<Vec<WaitingService>>", optional)]
         waiting: Vec<WaitingService>,
@@ -1026,12 +1032,17 @@ struct Run {
 
 impl Run {
     /// The nodes its Deployment never attempted. On an Applied one, the Services
-    /// the planner left waiting.
+    /// the planner left waiting whole.
     fn unreached(&self) -> impl Iterator<Item = &String> {
         self.nodes
             .iter()
             .filter(|(_, status)| **status == NodeStatus::NotAttempted)
             .map(|(id, _)| id)
+    }
+
+    /// Whether the planner left a Service waiting, whole or in some regions.
+    fn waits(&self) -> bool {
+        matches!(&self.outcome, Some(Outcome::Executed { waiting, .. }) if !waiting.is_empty())
     }
 
     fn summary_warnings(&self) -> Vec<DeploymentWarning> {
@@ -1903,14 +1914,16 @@ fn preparing(status: DeploymentStatus, run: &Run) -> bool {
 }
 
 /// Whether a Deployment in `status` of `nodes` that recorded `run` applied without
-/// deploying or removing a Service. An Unchanged one ran nothing.
+/// deploying or removing a Service, with work left: a node it never attempted, or a
+/// Service that waits in some regions, whatever its node reads. An Unchanged one ran
+/// nothing.
 fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> bool {
     let mut services = nodes
         .iter()
         .filter(|node| node.service().is_some())
         .filter_map(|node| run.nodes.get(node.id()));
     status == DeploymentStatus::Applied
-        && run.unreached().next().is_some()
+        && (run.waits() || run.unreached().next().is_some())
         && !services.any(|outcome| outcome.advances())
 }
 

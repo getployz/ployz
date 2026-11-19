@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, MachineId, Namespace,
-    PortPublication, Region, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, SpecChange,
-    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder,
-    compare_specs,
+    PortPublication, Region, RegionWait, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -482,12 +482,36 @@ fn on_machine(
         .filter(move |container| container.as_observation().machine_id == machine_id)
 }
 
+/// What each waiting region is still short of on its own Servers.
+pub(super) type Shortfall = BTreeMap<Region, RegionWait>;
+
+/// A replicated Service's counts by region: the regions that start replicas, and the ones
+/// `waiting` because no Server of theirs can take one now.
+///
+/// While a region waits, every count is filled by the replicas on its own region's Servers
+/// first. A region that starts starts only what those don't fill. A waiting region still
+/// short takes replicas no other region needs, past their region's count or on a Server in
+/// none of the counted regions, those nearest this Deploy's version first. A replica that
+/// fills no count is removed. So a Server's label alone neither moves nor removes a replica
+/// while a region waits, and a replica kept in a waiting region's place goes once that
+/// region starts its own.
 pub(super) struct Spread<'a> {
     requested: &'a RequestedServiceSpec,
     regions: Vec<RegionShare>,
+    waiting: Vec<RegionShare>,
+}
+
+/// How near a Container in a waiting region is to the replica this Deploy asks for,
+/// from the furthest.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Standing {
+    NotServing,
+    Outdated,
+    Settled,
 }
 
 pub(super) struct RegionShare {
+    pub(super) region: Region,
     pub(super) spec: RequestedServiceSpec,
     count: usize,
     labelled: BTreeSet<MachineId>,
@@ -503,6 +527,7 @@ impl<'a> Spread<'a> {
             .iter()
             .filter(|_| matches!(requested.mode, ServiceMode::Replicated { .. }))
             .map(|(region, count)| RegionShare {
+                region: region.clone(),
                 spec: requested.held_to(region),
                 count: count.get() as usize,
                 labelled: snapshot
@@ -513,13 +538,103 @@ impl<'a> Spread<'a> {
                     .collect(),
             })
             .collect();
-        Self { requested, regions }
+        Self {
+            requested,
+            regions,
+            waiting: Vec::new(),
+        }
     }
 
     fn anywhere(requested: &'a RequestedServiceSpec) -> Self {
         Self {
             requested,
             regions: Vec::new(),
+            waiting: Vec::new(),
+        }
+    }
+
+    pub(super) fn wait_for(&mut self, away: &[super::RegionAway]) {
+        let (waiting, starting) = std::mem::take(&mut self.regions)
+            .into_iter()
+            .partition(|share| away.iter().any(|away| away.region == share.region));
+        self.regions = starting;
+        self.waiting = waiting;
+    }
+
+    /// The waiting regions' part of the rule on [`Spread`], `placed` being the Containers
+    /// the regions that start already keep or stop: the Containers they keep as they are,
+    /// and what each is still short of on its own Servers. A replica it keeps on the old
+    /// version, there or in its place elsewhere, is outdated; the rest of what it is short
+    /// of waits.
+    fn hold(
+        &self,
+        current: &[ServiceContainer],
+        placed: &BTreeSet<ContainerId>,
+    ) -> (BTreeSet<ContainerId>, Shortfall) {
+        let mut nearest = current
+            .iter()
+            .map(ServiceContainer::as_observation)
+            .map(|observation| (self.standing(observation), observation))
+            .collect::<Vec<_>>();
+        nearest.sort_by_key(|(standing, _)| std::cmp::Reverse(*standing));
+        let mut kept = BTreeSet::new();
+        let mut own = Vec::new();
+        for share in &self.waiting {
+            let held = nearest
+                .iter()
+                .filter(|(standing, observation)| {
+                    *standing > Standing::NotServing
+                        && share.labelled.contains(&observation.machine_id)
+                })
+                .take(share.count)
+                .map(|(standing, observation)| (*standing, observation.container_id))
+                .collect::<Vec<_>>();
+            kept.extend(held.iter().map(|(_, container_id)| *container_id));
+            own.push(held);
+        }
+        let mut spare = nearest
+            .iter()
+            .map(|(standing, observation)| (*standing, observation.container_id))
+            .filter(|(_, container_id)| {
+                !placed.contains(container_id) && !kept.contains(container_id)
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
+        let count = |count: usize| u32::try_from(count).unwrap_or(u32::MAX);
+        let mut short = BTreeMap::new();
+        for (share, own) in self.waiting.iter().zip(own) {
+            let in_its_place = spare
+                .by_ref()
+                .take(share.count - own.len())
+                .collect::<Vec<_>>();
+            kept.extend(in_its_place.iter().map(|(_, container_id)| *container_id));
+            let settled = own
+                .iter()
+                .filter(|(standing, _)| *standing == Standing::Settled)
+                .count();
+            let outdated = own
+                .iter()
+                .chain(&in_its_place)
+                .filter(|(standing, _)| *standing == Standing::Outdated)
+                .count();
+            if settled < share.count {
+                let wait = RegionWait {
+                    waiting: count(share.count - settled - outdated),
+                    outdated: count(outdated),
+                };
+                short.insert(share.region.clone(), wait);
+            }
+        }
+        (kept, short)
+    }
+
+    fn standing(&self, observation: &ContainerObservation) -> Standing {
+        if !observation.runtime.may_serve() || !serving_rotation(observation) {
+            return Standing::NotServing;
+        }
+        match compare_specs(&observation.resolved_spec, self.requested) {
+            SpecChange::UpToDate | SpecChange::NeedsPlacementUpdate => Standing::Settled,
+            SpecChange::NeedsUpdate | SpecChange::NeedsRecreate => Standing::Outdated,
         }
     }
 
@@ -652,7 +767,7 @@ pub(super) fn plan_replicated(
     target: ReplicatedPlacement<'_>,
     placement: &mut PlacementState,
     options: &PlanOptions,
-) -> Result<(Vec<DeployOperation>, Option<MachineId>), PlanError> {
+) -> Result<(Vec<DeployOperation>, Option<MachineId>, Shortfall), PlanError> {
     let (requested, machines) = target.volumes.into_parts();
     let reservation = match target.admission {
         CapacityAdmission::Reserved { reservation } => reservation,
@@ -675,6 +790,7 @@ pub(super) fn plan_replicated(
         .map(|container| (container.as_observation().container_id, container))
         .collect::<BTreeMap<_, _>>();
     let mut used = BTreeSet::new();
+    let mut pre_stopped = BTreeSet::new();
     let mut operations = Vec::new();
     let emitter = ReplicaEmitter {
         service_id,
@@ -702,6 +818,7 @@ pub(super) fn plan_replicated(
                 pre_stops,
             } => {
                 used.insert(container_id);
+                pre_stopped.extend(pre_stops.iter().copied());
                 Replica::Replace {
                     old: observed(container_id),
                     pre_stops,
@@ -711,8 +828,25 @@ pub(super) fn plan_replicated(
         };
         emitter.emit(&mut placement.sockets, &mut operations, machine_id, replica)?;
     }
+    let placed = used.union(&pre_stopped).copied().collect();
+    let (kept, short) = target.spread.hold(current, &placed);
+    used.extend(kept);
     remove_unused(&mut operations, requested, current, &used, placement);
-    Ok((operations, reservation.hook_machine))
+    Ok((operations, reservation.hook_machine, short))
+}
+
+/// A replicated Service none of whose regions can start a replica: the removals of the
+/// Containers no count needs, and what each region is still short of.
+pub(super) fn withdraw(
+    spread: &Spread<'_>,
+    current: &[ServiceContainer],
+    requested: &RequestedServiceSpec,
+    placement: &mut PlacementState,
+) -> (Vec<DeployOperation>, Shortfall) {
+    let (kept, short) = spread.hold(current, &BTreeSet::new());
+    let mut operations = Vec::new();
+    remove_unused(&mut operations, requested, current, &kept, placement);
+    (operations, short)
 }
 
 /// What one Machine's copy of a Service becomes, as [`ReplicaEmitter::emit`] writes it.
@@ -884,29 +1018,41 @@ fn select_replicated(
     let mut hook_pending = requested.pre_deploy.is_some();
     let mut hook_machine = None;
     let mut quota = Quota::of(spread);
+    // While a region waits, a replica goes to a Machine that holds one of the Service's
+    // Containers before one that would start it anew.
+    let rounds: &[bool] = if spread.waiting.is_empty() {
+        &[false]
+    } else {
+        &[true, false]
+    };
     for _ in 0..replicas {
         let mut socket_blocked = false;
         let mut selected = None;
-        for _ in 0..machines.len() {
-            let machine_id = *machines
-                .get(cursor % machines.len())
-                .expect("eligible Machines are non-empty");
-            cursor += 1;
-            if !quota.open(&machine_id) {
-                continue;
-            }
-            let remaining = by_machine.get(&machine_id).map_or(&[][..], Vec::as_slice);
-            let existing = remaining.last().copied();
-            let operation = replicated_operation(existing, requested, options, landing);
-            let pre_stops = conflicting_siblings(requested, existing, operation, remaining);
-            if !sockets.fits(machine_id, requested, existing, operation, &pre_stops) {
-                socket_blocked = true;
-                continue;
-            }
-            let demand = EndpointDemand::for_operation(operation, hook_pending);
-            if capacity.reserve(&machine_id, demand) {
-                selected = Some((machine_id, operation, pre_stops, demand));
-                break;
+        'machines: for holders_only in rounds {
+            for _ in 0..machines.len() {
+                let machine_id = *machines
+                    .get(cursor % machines.len())
+                    .expect("eligible Machines are non-empty");
+                cursor += 1;
+                if !quota.open(&machine_id) {
+                    continue;
+                }
+                let remaining = by_machine.get(&machine_id).map_or(&[][..], Vec::as_slice);
+                if *holders_only && remaining.is_empty() {
+                    continue;
+                }
+                let existing = remaining.last().copied();
+                let operation = replicated_operation(existing, requested, options, landing);
+                let pre_stops = conflicting_siblings(requested, existing, operation, remaining);
+                if !sockets.fits(machine_id, requested, existing, operation, &pre_stops) {
+                    socket_blocked = true;
+                    continue;
+                }
+                let demand = EndpointDemand::for_operation(operation, hook_pending);
+                if capacity.reserve(&machine_id, demand) {
+                    selected = Some((machine_id, operation, pre_stops, demand));
+                    break 'machines;
+                }
             }
         }
         let Some((machine_id, operation, pre_stops, demand)) = selected else {

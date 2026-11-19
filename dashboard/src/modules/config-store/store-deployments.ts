@@ -329,6 +329,20 @@ export function deploymentStatusLabel(
 export const waitingServices = ({ outcome }: Pick<DeploymentView, "outcome">) =>
   outcome?.type === "executed" ? outcome.waiting ?? [] : [];
 
+/** The waiting Services the Deployment started nothing of. The others deployed in every region that has a Server. */
+export const unstartedServices = (deployment: Pick<DeploymentView, "outcome">) =>
+  waitingServices(deployment).filter((entry) => Object.keys(entry.regions ?? {}).length === 0);
+
+/** The replicas a Service's waiting regions hold back, in words: the ones that don't run, and the ones on the old version. */
+export function heldBack(regions: Readonly<Record<string, { waiting: number; outdated: number } | undefined>>) {
+  const count = (key: "waiting" | "outdated") => Object.values(regions).reduce((sum, region) => sum + (region?.[key] ?? 0), 0);
+  const [waiting, outdated] = [count("waiting"), count("outdated")];
+  const replicas = (n: number) => `${n} ${n === 1 ? "replica" : "replicas"}`;
+  return outdated === 0 ? `${replicas(waiting)} waiting`
+    : waiting === 0 ? `${replicas(outdated)} still on the old version`
+    : `${replicas(waiting)} waiting and ${outdated} still on the old version`;
+}
+
 /**
  * What a Deployment nobody watched has to tell them: it failed, or it applied and left Services waiting. One that ended
  * any other way says nothing, though it may list waiting Services: a cancelled one didn't deploy the rest.
@@ -404,7 +418,7 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
  */
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome)
-  && !waitingServices(deployment).some((waiting) => waiting.service === node.name);
+  && !unstartedServices(deployment).some((waiting) => waiting.service === node.name);
 
 /**
  * What a Deployment shipped despite, in words: "TOKEN not set", with the variable without a value it reads, a broken
@@ -478,11 +492,16 @@ export function warnedService(deployment: Pick<DeploymentView, "nodes" | "runtim
 export function deployWarningNotices(deployment: Pick<DeploymentView, "nodes" | "runtime_names" | "warnings" | "preview">) {
   const planned = (deployment.preview?.warnings ?? []).filter((warning) => warning.type === "mixed_after_return"
     || ((warning.type === "observation_failed" || warning.type === "observation_omitted") && warning.gap !== undefined));
-  return [...planned.map((warning) => ({ warning })), ...deployment.warnings ?? []].flatMap((warning) => {
+  const found = [...planned.map((warning) => ({ warning })), ...deployment.warnings ?? []].flatMap((warning) => {
     if (!("warning" in warning)) return [];
     const node = warnedService(deployment, warning);
     return [{ node, text: deploymentWarningText(warning, node?.name), port: warning.warning.type === "image_port_mismatch" }];
-  }).filter(({ text }, index, all) => all.findIndex((other) => other.text === text) === index);
+  });
+  const waiting = (deployment.preview?.waiting ?? []).map((entry) => {
+    const node = deployment.nodes.find((candidate) => candidate.type === "service" && (deployment.runtime_names[candidate.name] ?? candidate.name) === entry.service);
+    return { node, text: `${node?.name ?? entry.service}: ${heldBack(entry.regions)}, ${entry.error.message}`, port: false };
+  });
+  return [...found, ...waiting].filter(({ text }, index, all) => all.findIndex((other) => other.text === text) === index);
 }
 
 /** A Service's runtime name from the Engine's `namespace/name`. */

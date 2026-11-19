@@ -126,6 +126,7 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
             })
             .collect(),
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     }
 }
 

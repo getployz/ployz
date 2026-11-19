@@ -792,6 +792,61 @@ pub struct DeployPreview {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<BlockedService>>")]
     pub blocked: Vec<BlockedService>,
+    /// Services this Deploy starts only in part: the replicas counted in a region no Server
+    /// can run them in now wait, and the replicas in every other region deploy. A Service
+    /// whose every region waits is in `blocked` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<WaitingReplicas>>")]
+    pub waiting: Vec<WaitingReplicas>,
+}
+
+/// The replicas of a Service that wait while the rest of it deploys.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct WaitingReplicas {
+    pub service: ServiceName,
+    /// Each region no Server can run the Service in now, with the replicas of its count
+    /// there this Deploy did not bring to its version. Never empty.
+    pub regions: BTreeMap<crate::Region, RegionWait>,
+    /// Why, as the refusal a Service gets when every region of its counts waits, with
+    /// `details.reason` naming it (`region_unmatched`).
+    pub error: RpcError,
+}
+
+/// The replicas of one region's count a Deploy left as they were. At least one.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct RegionWait {
+    /// Replicas that do not run.
+    pub waiting: u32,
+    /// Replicas that run what they ran before this Deploy.
+    pub outdated: u32,
+}
+
+impl WaitingReplicas {
+    /// How many replicas do not run.
+    #[must_use]
+    pub fn waiting(&self) -> u32 {
+        self.regions.values().map(|region| region.waiting).sum()
+    }
+
+    /// How many replicas run what they ran before this Deploy.
+    #[must_use]
+    pub fn outdated(&self) -> u32 {
+        self.regions.values().map(|region| region.outdated).sum()
+    }
+}
+
+/// One Service a Deploy did not start in full, and why: every wait of a
+/// [`DeployPreview`] in one shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wait<'preview> {
+    pub service: &'preview ServiceName,
+    pub error: &'preview RpcError,
+    /// Whether a later Deploy of the same config starts it. Replicas left behind
+    /// always wait: a Server in their region starts them.
+    pub kind: BlockedKind,
+    /// The replicas left behind while the rest of the Service deployed. `None` when the
+    /// Deploy planned nothing for the Service.
+    pub partial: Option<&'preview WaitingReplicas>,
 }
 
 /// A Service a Deploy could not plan, and why.
@@ -898,6 +953,7 @@ impl DeployPreview {
             dependencies: Vec::new(),
             placed_on: BTreeMap::new(),
             blocked: Vec::new(),
+            waiting: Vec::new(),
         }
     }
 
@@ -909,12 +965,38 @@ impl DeployPreview {
             .any(|warning| warning.observation_gap().is_some())
     }
 
-    /// Whether this Deploy has nothing to do: no operations and no blocked Service.
-    /// Planned stops and removals are operations; `warnings`, `would_remove` and
-    /// `volumes_to_create` do not count on their own.
+    /// Every Service this Deploy did not start in full: the ones it planned nothing for
+    /// (`blocked`), then the ones with replicas left behind (`waiting`).
+    pub fn waits(&self) -> impl Iterator<Item = Wait<'_>> {
+        let whole = self.blocked.iter().map(|blocked| Wait {
+            service: &blocked.service,
+            error: &blocked.error,
+            kind: blocked.kind,
+            partial: None,
+        });
+        let partial = self.waiting.iter().map(|waiting| Wait {
+            service: &waiting.service,
+            error: &waiting.error,
+            kind: BlockedKind::Wait,
+            partial: Some(waiting),
+        });
+        whole.chain(partial)
+    }
+
+    /// The replicas `service` has left behind while the rest of it deployed.
+    #[must_use]
+    pub fn waiting_replicas(&self, service: &ServiceName) -> Option<&WaitingReplicas> {
+        self.waits()
+            .filter(|wait| wait.service == service)
+            .find_map(|wait| wait.partial)
+    }
+
+    /// Whether this Deploy has nothing to do: no operations, no blocked Service and no
+    /// replicas waiting. Planned stops and removals are operations; `warnings`,
+    /// `would_remove` and `volumes_to_create` do not count on their own.
     #[must_use]
     pub fn noop(&self) -> bool {
-        self.operations.is_empty() && self.blocked.is_empty()
+        self.operations.is_empty() && self.blocked.is_empty() && self.waiting.is_empty()
     }
 }
 

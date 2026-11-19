@@ -950,10 +950,14 @@ fn automatic_provisioned_volume_keeps_its_existing_machine_pin() {
 }
 
 fn provisioned_row(machine: char) -> DockerVolume {
-    let mut existing = observed_volume(machine_id(machine), "data");
+    provisioned_row_of(machine, "data")
+}
+
+fn provisioned_row_of(machine: char, volume: &str) -> DockerVolume {
+    let mut existing = observed_volume(machine_id(machine), volume);
     existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
-        mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
+        mountpoint: MachinePath::parse(format!("/var/lib/ployz-volumes/app_{volume}")).unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
         used_bytes: 0,
         role: None,
@@ -1127,9 +1131,675 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
     );
     assert_eq!(rpc.details.get("volume"), Some(&serde_json::json!("data")));
     assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("first")));
+    assert_eq!(
+        rpc.details.get("volume_region"),
+        Some(&serde_json::json!("syd"))
+    );
     assert!(preview.volumes_to_create.is_empty());
 
     preview_deploy(&intent, &snapshot).unwrap_err();
+}
+
+#[test]
+fn a_shared_volume_in_one_region_stops_only_the_service_kept_in_another() {
+    let mut api = kept_in(spec("api"), "fsn");
+    let mut worker = kept_in(spec("worker"), "syd");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "data");
+        make_provisioned(spec, "data", 1_073_741_824);
+    }
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot.machines = snapshot
+        .machines
+        .into_iter()
+        .zip(["syd", "fsn"])
+        .map(|(machine, region)| in_region(machine, region))
+        .collect();
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let planned: BTreeSet<_> = operations(&preview)
+        .iter()
+        .filter_map(|operation| operation.service_name().cloned())
+        .collect();
+    assert_eq!(planned, BTreeSet::from([api.name]));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, worker.name);
+    assert_eq!(
+        blocked.error.message,
+        "data is in fsn, and worker runs in syd. Run worker in fsn instead"
+    );
+    assert_eq!(blocked.kind, ployz_core::BlockedKind::Refusal);
+}
+
+/// No Server suits a Volume that Services kept in two regions share, so the one left out
+/// is refused, and so is a Service that depends on it.
+#[test]
+fn a_service_left_out_of_a_shared_volume_is_refused_with_its_dependent() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "syd", &["data"]);
+    let web = spec("web");
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker, &web],
+        PlanOptions::default(),
+    )
+    .with_dependencies(BTreeMap::from([(
+        web.name.clone(),
+        vec![ServiceDependency {
+            service: worker.name.clone(),
+            condition: DependencyCondition::ServiceHealthy,
+        }],
+    )]));
+
+    let preview = runner_preview(&intent, &shared_data_snapshot()).unwrap();
+
+    let blocked: BTreeMap<_, _> = preview
+        .blocked
+        .iter()
+        .map(|blocked| (blocked.service.as_str(), blocked.kind))
+        .collect();
+    assert_eq!(
+        blocked,
+        BTreeMap::from([
+            ("web", ployz_core::BlockedKind::Refusal),
+            ("worker", ployz_core::BlockedKind::Refusal)
+        ])
+    );
+}
+
+/// A Volume outside the region that only that region's Services mount is no shared-Volume
+/// refusal: its Service waits as it would alone, and the Service it shares another
+/// Volume with starts.
+#[test]
+fn a_volume_only_one_region_mounts_keeps_its_service_waiting_beside_a_shared_one() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "fsn", &["data", "scratch"]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker],
+        PlanOptions::default(),
+    );
+    let mut snapshot = shared_data_snapshot();
+    snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(vec![
+        provisioned_row('2'),
+        provisioned_row_of('1', "scratch"),
+    ])
+    .unwrap();
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let (planned, _) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["api"]));
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.service, worker.name);
+    assert_eq!(blocked.error.message, "scratch is on first");
+    assert_eq!(
+        blocked.error.details.get("reason"),
+        Some(&serde_json::json!("volume_outside_region"))
+    );
+    assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
+}
+
+/// A shared Docker volume is refused as a managed one is: the Service kept in its region
+/// still starts.
+#[test]
+fn a_shared_docker_volume_stops_only_the_service_kept_outside_its_region() {
+    let mut api = kept_in(spec("api"), "fsn");
+    let mut worker = kept_in(spec("worker"), "syd");
+    for spec in [&mut api, &mut worker] {
+        add_named_volume(spec, "data");
+    }
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker],
+        PlanOptions::default(),
+    );
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "syd"),
+            in_region(machine('2', "second"), "fsn"),
+        ],
+        volume_snapshot: VolumeSnapshot::try_from_observations(vec![observed_volume(
+            machine_id('2'),
+            "data",
+        )])
+        .unwrap(),
+        ..storage_snapshot()
+    };
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["api"]));
+    assert_eq!(
+        blocked,
+        BTreeMap::from([(
+            "worker".to_owned(),
+            "data is in fsn, and worker runs in syd. Run worker in fsn instead".to_owned()
+        )])
+    );
+    assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Refusal]);
+}
+
+fn shared_data_snapshot() -> DeploySnapshot {
+    let mut snapshot = copies_snapshot(&[('2', CopyRole::Writer)], vec![provisioned_row('2')]);
+    snapshot.machines = snapshot
+        .machines
+        .into_iter()
+        .zip(["syd", "fsn"])
+        .map(|(machine, region)| in_region(machine, region))
+        .collect();
+    snapshot
+}
+
+/// [`shared_data_snapshot`] before any Server holds `data`.
+fn no_data_snapshot() -> DeploySnapshot {
+    let mut snapshot = copies_snapshot(&[], vec![]);
+    snapshot.machines = snapshot
+        .machines
+        .into_iter()
+        .zip(["syd", "fsn"])
+        .map(|(machine, region)| in_region(machine, region))
+        .collect();
+    snapshot
+}
+
+fn sharing(name: &str, region: &str, volumes: &[&str]) -> RequestedServiceSpec {
+    kept_in(sharing_anywhere(name, volumes), region)
+}
+
+/// A Service that names no region, so a Server in any region will do.
+fn sharing_anywhere(name: &str, volumes: &[&str]) -> RequestedServiceSpec {
+    let mut service = spec(name);
+    for volume in volumes {
+        add_named_volume(&mut service, volume);
+        make_provisioned(&mut service, volume, 1_073_741_824);
+    }
+    service
+}
+
+/// No Server joining lhr brings `data` there: api keeps it in fsn. So worker is refused
+/// now and never told to wait for a Server.
+#[test]
+fn a_service_sharing_a_volume_kept_in_another_region_is_refused_though_its_region_has_no_server() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "lhr", &["data"]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &shared_data_snapshot()).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["api"]));
+    assert_eq!(
+        blocked,
+        BTreeMap::from([(
+            "worker".to_owned(),
+            "data is in fsn, and worker runs in lhr. Run worker in fsn instead".to_owned()
+        )])
+    );
+    assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Refusal]);
+}
+
+/// A Volume no Server holds yet is made where its first Service starts, so which of two
+/// Services kept in different regions got it would turn on which region has a Server. Both
+/// are refused, whichever does, and the rest of the Deploy goes ahead.
+#[test]
+fn services_in_two_regions_sharing_a_volume_not_made_yet_are_both_refused() {
+    let api = sharing("api", "fsn", &["data"]);
+    let web = spec("web");
+    let line = |other: &str| {
+        format!(
+            "data is shared by api in fsn and worker in {other}. Run them in one region, or \
+             give each its own Volume"
+        )
+    };
+    for other in ["lhr", "syd"] {
+        let worker = sharing("worker", other, &["data"]);
+        let intent = DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&api, &worker, &web],
+            PlanOptions::default(),
+        );
+
+        let preview = runner_preview(&intent, &no_data_snapshot()).unwrap();
+
+        let (planned, blocked) = planned_and_blocked(&preview);
+        assert_eq!(planned, names(&["web"]), "{other}");
+        assert_eq!(
+            blocked,
+            BTreeMap::from([
+                ("api".to_owned(), line(other)),
+                ("worker".to_owned(), line(other)),
+            ]),
+            "{other}"
+        );
+        assert_eq!(
+            kinds(&preview),
+            [
+                ployz_core::BlockedKind::Refusal,
+                ployz_core::BlockedKind::Refusal
+            ],
+            "{other}"
+        );
+    }
+}
+
+/// What `preview` planned and what it blocked, by Service, with each blocked one's message.
+fn planned_and_blocked(preview: &DeployPreview) -> (BTreeSet<String>, BTreeMap<String, String>) {
+    let planned = operations(preview)
+        .iter()
+        .filter_map(|operation| operation.service_name())
+        .map(ToString::to_string)
+        .collect();
+    let blocked = preview
+        .blocked
+        .iter()
+        .map(|entry| (entry.service.to_string(), entry.error.message.clone()))
+        .collect();
+    (planned, blocked)
+}
+
+fn names(services: &[&str]) -> BTreeSet<String> {
+    services.iter().map(ToString::to_string).collect()
+}
+
+#[test]
+fn the_services_a_stuck_one_tied_together_start_without_it() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "syd", &["data", "logs"]);
+    let cron = sharing("cron", "syd", &["logs"]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker, &cron],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &shared_data_snapshot()).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["api", "cron"]));
+    assert_eq!(
+        blocked,
+        BTreeMap::from([(
+            "worker".to_owned(),
+            "data is in fsn, and worker runs in syd. Run worker in fsn instead".to_owned()
+        )])
+    );
+}
+
+#[test]
+fn a_service_whose_volumes_are_in_two_regions_is_told_so_and_not_to_run_in_either() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "syd", &["data", "logs"]);
+    let cron = sharing("cron", "syd", &["logs"]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker, &cron],
+        PlanOptions::default(),
+    );
+    let mut snapshot = shared_data_snapshot();
+    snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(vec![
+        provisioned_row('2'),
+        provisioned_row_of('1', "logs"),
+    ])
+    .unwrap();
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["api", "cron"]));
+    assert_eq!(
+        blocked,
+        BTreeMap::from([(
+            "worker".to_owned(),
+            "data is in fsn and logs is in syd, and worker runs in one region. Run the Services \
+             that share them in one region, or split worker"
+                .to_owned()
+        )])
+    );
+    let [entry] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(entry.kind, ployz_core::BlockedKind::Refusal);
+    assert_eq!(
+        entry.error.details.get("reason"),
+        Some(&serde_json::json!("volumes_apart"))
+    );
+    assert_eq!(entry.error.details.get("to"), None);
+}
+
+/// A Deploy of one Service by name leaves the Services it shares a Volume with where they
+/// are, so no later Deploy starts it either.
+#[test]
+fn a_service_deployed_by_name_is_refused_the_way_a_full_deploy_refuses_it() {
+    let mut two_volumes = shared_data_snapshot();
+    two_volumes.volume_snapshot = VolumeSnapshot::try_from_observations(vec![
+        provisioned_row('2'),
+        provisioned_row_of('1', "logs"),
+    ])
+    .unwrap();
+    for (case, mounts, snapshot, line) in [
+        (
+            "one shared Volume",
+            &["data"][..],
+            shared_data_snapshot(),
+            "data is in fsn, and worker runs in syd. Run worker in fsn instead",
+        ),
+        (
+            "Volumes in two regions",
+            &["data", "logs"][..],
+            two_volumes,
+            "data is in fsn and logs is in syd, and worker runs in one region. Run the Services \
+             that share them in one region, or split worker",
+        ),
+    ] {
+        let api = sharing("api", "fsn", &["data"]);
+        let worker = sharing("worker", "syd", mounts);
+        let cron = sharing("cron", "syd", &["logs"]);
+        let full = DeployIntent::apply_all(
+            Namespace::parse("app").unwrap(),
+            [&api, &worker, &cron],
+            PlanOptions::default(),
+        );
+        let mut by_name = full.clone();
+        by_name.options.selected = vec![ServiceAttempt {
+            name: worker.name.clone(),
+        }];
+        let left_out = |intent: &DeployIntent| {
+            let preview = runner_preview(intent, &snapshot).unwrap();
+            preview
+                .blocked
+                .into_iter()
+                .find(|blocked| blocked.service == worker.name)
+                .map(|blocked| (blocked.error.message, blocked.kind))
+        };
+
+        let refused = Some((line.to_owned(), ployz_core::BlockedKind::Refusal));
+        assert_eq!(left_out(&full), refused, "{case}, full");
+        assert_eq!(left_out(&by_name), refused, "{case}, by name");
+    }
+}
+
+/// A Volume is on one Server, so it suits neither of two Services kept in different
+/// regions, whichever Server holds it.
+#[test]
+fn a_volume_shared_across_regions_on_a_server_in_neither_is_refused_for_both() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "syd", &["data"]);
+    let mut snapshot = shared_data_snapshot();
+    let holder = snapshot.machines.last_mut().unwrap();
+    holder.machine.labels.clear();
+    let mut third = in_region(machine('3', "third"), "fsn");
+    third.storage = Some(MachineStorageObservation::Ready);
+    snapshot.machines.push(third);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, BTreeSet::new());
+    let line = "data is shared by api in fsn and worker in syd. Run them in one region, or give \
+                each its own Volume";
+    assert_eq!(
+        blocked,
+        BTreeMap::from([
+            ("api".to_owned(), line.to_owned()),
+            ("worker".to_owned(), line.to_owned()),
+        ])
+    );
+    assert_eq!(
+        kinds(&preview),
+        [
+            ployz_core::BlockedKind::Refusal,
+            ployz_core::BlockedKind::Refusal
+        ]
+    );
+    for entry in &preview.blocked {
+        assert_eq!(entry.error.details.get("to"), None, "{}", entry.service);
+    }
+}
+
+/// A Service that names no region can run beside one kept in fsn, so a Volume they share is
+/// never refused for that. Where its Server sits is down to the Servers' labels, which a
+/// label command changes without touching the config: the Service kept in fsn waits.
+#[test]
+fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
+    let free = sharing_anywhere("free", &["data"]);
+    let solo = sharing("solo", "fsn", &["data"]);
+    let full = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&free, &solo],
+        PlanOptions::default(),
+    );
+    let mut by_name = full.clone();
+    by_name.options.selected = vec![ServiceAttempt { name: solo.name }];
+
+    for (case, regions, holder_has_region) in [
+        ("holder in no region", ["syd", "fsn"], false),
+        ("holder in syd", ["fsn", "syd"], true),
+    ] {
+        let mut snapshot = shared_data_snapshot();
+        snapshot.machines = snapshot
+            .machines
+            .into_iter()
+            .zip(regions)
+            .map(|(machine, region)| in_region(machine, region))
+            .collect();
+        if !holder_has_region {
+            snapshot.machines.last_mut().unwrap().machine.labels.clear();
+        }
+        let mut third = in_region(machine('3', "third"), "fsn");
+        third.storage = Some(MachineStorageObservation::Ready);
+        snapshot.machines.push(third);
+        for (scope, intent, started) in [
+            ("full", &full, names(&["free"])),
+            ("by name", &by_name, names(&[])),
+        ] {
+            let preview = runner_preview(intent, &snapshot).unwrap();
+
+            let (planned, blocked) = planned_and_blocked(&preview);
+            assert_eq!(planned, started, "{case}, {scope}");
+            assert_eq!(
+                blocked,
+                BTreeMap::from([("solo".to_owned(), "data is on second".to_owned())]),
+                "{case}, {scope}"
+            );
+            let [entry] = preview.blocked.as_slice() else {
+                panic!("{case}, {scope}: {:?}", preview.blocked)
+            };
+            assert_eq!(entry.kind, ployz_core::BlockedKind::Wait, "{case}, {scope}");
+            assert_eq!(
+                entry.error.details.get("reason"),
+                Some(&serde_json::json!("volume_outside_region")),
+                "{case}, {scope}"
+            );
+        }
+    }
+}
+
+/// `free` can run in either region, so it is no reason the Volume can't be in one. The
+/// line names the Services that are.
+#[test]
+fn a_refusal_of_a_shared_volume_leaves_out_a_service_naming_no_region() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "syd", &["data"]);
+    let free = sharing_anywhere("free", &["data"]);
+    let mut snapshot = shared_data_snapshot();
+    snapshot.machines.last_mut().unwrap().machine.labels.clear();
+    let mut third = in_region(machine('3', "third"), "fsn");
+    third.storage = Some(MachineStorageObservation::Ready);
+    snapshot.machines.push(third);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker, &free],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["free"]));
+    let line = "data is shared by api in fsn and worker in syd. Run them in one region, or give \
+                each its own Volume";
+    assert_eq!(
+        blocked,
+        BTreeMap::from([
+            ("api".to_owned(), line.to_owned()),
+            ("worker".to_owned(), line.to_owned()),
+        ])
+    );
+    assert_eq!(
+        kinds(&preview),
+        [
+            ployz_core::BlockedKind::Refusal,
+            ployz_core::BlockedKind::Refusal
+        ]
+    );
+}
+
+/// Two Services kept in different regions hold `data` and `logs` apart, so no region can
+/// run a Service that mounts both. A Server joining the region it asks for changes
+/// nothing, so it is refused now and never told to wait.
+#[test]
+fn a_service_whose_volumes_are_held_apart_is_refused_though_its_region_has_no_server() {
+    let api = sharing("api", "fsn", &["data"]);
+    let cron = sharing("cron", "syd", &["logs"]);
+    let worker = sharing("worker", "lhr", &["data", "logs"]);
+    let mut snapshot = shared_data_snapshot();
+    snapshot.volume_snapshot = VolumeSnapshot::try_from_observations(vec![
+        provisioned_row('2'),
+        provisioned_row_of('1', "logs"),
+    ])
+    .unwrap();
+    let full = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &cron, &worker],
+        PlanOptions::default(),
+    );
+    let mut by_name = full.clone();
+    by_name.options.selected = vec![ServiceAttempt { name: worker.name }];
+    let line = "data is in fsn and logs is in syd, and worker runs in one region. Run the \
+                Services that share them in one region, or split worker";
+
+    for (case, intent) in [("full", &full), ("by name", &by_name)] {
+        let preview = runner_preview(intent, &snapshot).unwrap();
+
+        let (_, blocked) = planned_and_blocked(&preview);
+        assert_eq!(
+            blocked,
+            BTreeMap::from([("worker".to_owned(), line.to_owned())]),
+            "{case}"
+        );
+        assert_eq!(
+            kinds(&preview),
+            [ployz_core::BlockedKind::Refusal],
+            "{case}"
+        );
+    }
+    let (planned, _) = planned_and_blocked(&runner_preview(&full, &snapshot).unwrap());
+    assert_eq!(planned, names(&["api", "cron"]));
+}
+
+/// Nothing else mounts this Service's Volume, so an empty region is still a Wait: a
+/// Server joining it says where the Volume is.
+#[test]
+fn a_service_alone_on_its_volume_still_waits_for_a_server_in_its_region() {
+    let worker = sharing("worker", "lhr", &["data"]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&worker],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &shared_data_snapshot()).unwrap();
+
+    assert_eq!(only_blocked(&preview).message, "no Server in lhr");
+    assert_eq!(kinds(&preview), [ployz_core::BlockedKind::Wait]);
+}
+
+#[test]
+fn services_sharing_a_volume_none_can_mount_each_say_their_own_reason() {
+    let aaa = sharing("aaa", "lhr", &["data"]);
+    let worker = sharing("worker", "syd", &["data"]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&aaa, &worker],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &shared_data_snapshot()).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, BTreeSet::new());
+    assert_eq!(
+        blocked,
+        BTreeMap::from([
+            (
+                "aaa".to_owned(),
+                "data is in fsn, and aaa runs in lhr. Run aaa in fsn instead".to_owned()
+            ),
+            (
+                "worker".to_owned(),
+                "data is in fsn, and worker runs in syd. Run worker in fsn instead".to_owned()
+            ),
+        ])
+    );
+    assert_eq!(
+        kinds(&preview),
+        [
+            ployz_core::BlockedKind::Refusal,
+            ployz_core::BlockedKind::Refusal
+        ]
+    );
+}
+
+#[test]
+fn each_service_left_out_of_a_chain_gets_its_own_reason() {
+    let api = sharing("api", "fsn", &["data"]);
+    let aaa = sharing("aaa", "lhr", &["data"]);
+    let worker = sharing("worker", "syd", &["data", "logs"]);
+    let cron = sharing("cron", "syd", &["logs"]);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &aaa, &worker, &cron],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &shared_data_snapshot()).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["api", "cron"]));
+    assert_eq!(
+        blocked,
+        BTreeMap::from([
+            (
+                "aaa".to_owned(),
+                "data is in fsn, and aaa runs in lhr. Run aaa in fsn instead".to_owned()
+            ),
+            (
+                "worker".to_owned(),
+                "data is in fsn, and worker runs in syd. Run worker in fsn instead".to_owned()
+            ),
+        ])
+    );
 }
 
 #[test]
@@ -1156,6 +1826,11 @@ fn a_region_no_server_is_in_stops_a_service_with_a_volume_and_not_the_deploy() {
         Some(&serde_json::json!("region_unmatched"))
     );
     assert_eq!(preview.placed_on.keys().collect::<Vec<_>>(), [&web.name]);
+}
+
+/// Whether each Service `preview` blocked waits or is refused, in the order it lists them.
+fn kinds(preview: &DeployPreview) -> Vec<ployz_core::BlockedKind> {
+    preview.blocked.iter().map(|blocked| blocked.kind).collect()
 }
 
 /// The one Service `preview` blocked, and why. Fails when it planned work instead.

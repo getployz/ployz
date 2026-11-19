@@ -6,7 +6,8 @@ use ployz_core::{
     MembershipObservation, Namespace, ObservedDataLoss, PlanMode, PreservedVolume, PruneRefusal,
     QualifiedService, Region, RequestedServiceSpec, RpcError, ServiceContainer, ServiceId,
     ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, UpdateOrder,
-    VolumeToCreate, explicit_ingress_hosts, hostname_owners, same_service_mode_kind,
+    VolumeToCreate, WaitingReplicas, explicit_ingress_hosts, hostname_owners,
+    same_service_mode_kind,
 };
 
 use super::{
@@ -28,7 +29,8 @@ mod volumes;
 use candidates::{Candidates, Exclusion};
 use placement::{
     CapacityAdmission, GlobalPlacement, Landing, PlacementReservations, PlacementState,
-    ReplicatedPlacement, ReplicatedReservation, Spread, TrialStep, plan_global, plan_replicated,
+    ReplicatedPlacement, ReplicatedReservation, Shortfall, Spread, TrialStep, plan_global,
+    plan_replicated,
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
@@ -69,6 +71,7 @@ struct Planned {
     prune_refusal: Option<PruneRefusal>,
     warnings: Vec<DeployWarning>,
     blocked: Vec<BlockedService>,
+    waiting: Vec<WaitingReplicas>,
     strays: BTreeMap<usize, ServiceName>,
 }
 
@@ -678,6 +681,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         dependencies: super::report::dependencies(&planned.groups),
         placed_on,
         blocked: planned.blocked,
+        waiting: planned.waiting,
     };
     DeployPlan {
         operations: planned.operations,
@@ -1090,6 +1094,7 @@ fn assemble_plan(
         placement: reservations.into_placement(snapshot),
     };
     let mut service_operations = Vec::new();
+    let mut waiting = Vec::new();
     let mut ranges = Vec::new();
     // `requested` places every dependency before its dependents and a hostname's gainer
     // before its dropper, so a Service whose dependency or gainer is blocked is seen after it.
@@ -1141,7 +1146,7 @@ fn assemble_plan(
         // Placement spends capacity and host ports as it goes, so a Service blocked once
         // it is placed puts back the budget it found.
         let before = blocks_unmountable.then(|| budget.clone());
-        let operations = match plan_one_service(
+        let (operations, waits) = match plan_one_service(
             spec,
             &intent.namespace,
             snapshot,
@@ -1159,13 +1164,17 @@ fn assemble_plan(
                 | PlanError::VolumeServerTakesNoServices { .. }
                 | PlanError::RegionUnmatched { .. }
                 | PlanError::VolumeInSeveralRegions { .. }
-                | PlanError::VolumeOutsideRegion { .. }),
+                | PlanError::VolumeOutsideRegion { .. }
+                | PlanError::VolumeInOtherRegion { .. }
+                | PlanError::VolumesApart { .. }
+                | PlanError::VolumeSharedAcrossRegions { .. }),
             ) if blocks_unmountable => {
+                let kind = error.blocked_kind();
                 block_service(
                     &mut blocked,
                     &mut budget,
                     &spec.name,
-                    (error.into_rpc_error(), BlockedKind::Wait),
+                    (error.into_rpc_error(), kind),
                     Reservation::Release,
                 );
                 continue;
@@ -1202,6 +1211,7 @@ fn assemble_plan(
             );
             continue;
         }
+        waiting.extend(waits);
         if let Some(machine_id) = operations.iter().find_map(|operation| match operation {
             DeployOperation::RunContainer { machine_id, .. }
             | DeployOperation::ReplaceContainer(ReplacementOperation { machine_id, .. }) => {
@@ -1294,6 +1304,7 @@ fn assemble_plan(
         prune_refusal,
         warnings,
         blocked,
+        waiting,
         strays: BTreeMap::new(),
     })
 }
@@ -1615,10 +1626,12 @@ fn plan_one_service<'snapshot>(
     services: &[ServiceObservation],
     budget: &mut ServiceBudget<'snapshot>,
     options: &PlanOptions,
-) -> Result<Vec<DeployOperation>, PlanError> {
+) -> Result<(Vec<DeployOperation>, Option<WaitingReplicas>), PlanError> {
     refuse_volume_in_several_regions(requested)?;
-    let spread = Spread::of(requested, snapshot);
-    let mut machines = spread_machines(&spread, namespace, snapshot, options)?;
+    budget.volumes.refuse_kept_apart(requested)?;
+    let mut spread = Spread::of(requested, snapshot);
+    let (mut machines, away) = spread_machines(&spread, namespace, snapshot, options)?;
+    spread.wait_for(&away);
     let identity = QualifiedService::new(namespace.clone(), requested.name.clone());
     let existing = services.iter().find(|service| service.identity == identity);
     let (service_id, current, hooks) = match existing {
@@ -1639,36 +1652,58 @@ fn plan_one_service<'snapshot>(
             )
         }
     };
-    let reservation = budget.placement.take_reservation(&requested.name);
-    if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
-        budget
-            .volumes
-            .constrain_candidates(requested, &mut machines)?;
-    }
-    let target = ServiceTarget {
-        spread: &spread,
-        service_id,
-        current,
-        hooks,
-        machines,
-    };
-    match reservation {
-        // The reservation fixed each copy's action when it was made.
-        Some(reservation) => place_service(
-            &target,
-            Some(reservation),
-            budget,
-            options,
-            Landing::Replace,
-        ),
-        None => Landing::decide(
+    let starts = !machines.is_empty();
+    let (operations, regions) = if starts {
+        let reservation = budget.placement.take_reservation(&requested.name);
+        if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
             budget
-                .placement
-                .can_update_in_place(service_id, current, requested, options),
-            budget,
-            |budget, landing| place_service(&target, None, budget, options, landing),
-            |operations| Landing::stands(operations.iter().filter_map(TrialStep::of)),
-        ),
+                .volumes
+                .constrain_candidates(requested, &mut machines)?;
+        }
+        let target = ServiceTarget {
+            spread: &spread,
+            service_id,
+            current,
+            hooks,
+            machines,
+        };
+        match reservation {
+            // The reservation fixed each copy's action when it was made.
+            Some(reservation) => place_service(
+                &target,
+                Some(reservation),
+                budget,
+                options,
+                Landing::Replace,
+            )?,
+            None => Landing::decide(
+                budget
+                    .placement
+                    .can_update_in_place(service_id, current, requested, options),
+                budget,
+                |budget, landing| place_service(&target, None, budget, options, landing),
+                |(operations, _)| Landing::stands(operations.iter().filter_map(TrialStep::of)),
+            )?,
+        }
+    } else {
+        // Every region the counts name is away, so nothing starts. A replica past a
+        // region's count still goes, since a Server that takes no services can give one up.
+        placement::withdraw(&spread, current, requested, &mut budget.placement)
+    };
+    let short = PlanError::RegionUnmatched {
+        regions: away
+            .into_iter()
+            .filter(|away| regions.contains_key(&away.region))
+            .collect(),
+    };
+    let waiting = (!regions.is_empty()).then(|| WaitingReplicas {
+        service: requested.name.clone(),
+        regions,
+        error: short.clone().into_rpc_error(),
+    });
+    match waiting {
+        Some(_) if !starts && operations.is_empty() => Err(short),
+        waiting => Ok((operations, waiting)),
     }
 }
 
@@ -1679,7 +1714,7 @@ fn place_service<'snapshot>(
     budget: &mut ServiceBudget<'snapshot>,
     options: &PlanOptions,
     landing: Landing,
-) -> Result<Vec<DeployOperation>, PlanError> {
+) -> Result<(Vec<DeployOperation>, Shortfall), PlanError> {
     let ServiceTarget {
         spread,
         service_id,
@@ -1722,7 +1757,7 @@ fn place_service<'snapshot>(
         }
     }
     let volumes = volume_plan.place(requested, machines)?;
-    let (service_operations, hook_machine) = match requested.mode {
+    let (service_operations, hook_machine, short) = match requested.mode {
         ServiceMode::Replicated { .. } => plan_replicated(
             service_id,
             current,
@@ -1740,22 +1775,25 @@ fn place_service<'snapshot>(
             placement,
             options,
         )?,
-        ServiceMode::Global => plan_global(
-            GlobalPlacement {
-                service_id,
-                current,
-                hooks,
-                volumes,
-                landing,
-            },
-            placement,
-            options,
-        )?,
+        ServiceMode::Global => {
+            let (operations, hook_machine) = plan_global(
+                GlobalPlacement {
+                    service_id,
+                    current,
+                    hooks,
+                    volumes,
+                    landing,
+                },
+                placement,
+                options,
+            )?;
+            (operations, hook_machine, BTreeMap::new())
+        }
     };
     let mut operations =
         pre_deploy_operations(requested, hooks, &service_operations, hook_machine.as_ref());
     operations.extend(service_operations);
-    Ok(operations)
+    Ok((operations, short))
 }
 
 fn service_error(name_errors_with_service: bool, service: &str, source: PlanError) -> PlanError {
@@ -1769,14 +1807,18 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
     }
 }
 
+/// The Machines a Service's replicas may run on, and the regions among its counts that no
+/// Server can run a replica in now. Those regions wait when the Deploy starts what it can,
+/// whether or not another region has a Server, and otherwise the Service is refused.
 fn spread_machines<'snapshot>(
     spread: &Spread<'_>,
     namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
     options: &PlanOptions,
-) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
+) -> Result<(Vec<&'snapshot MachineObservation>, Vec<RegionAway>), PlanError> {
     if spread.regions().is_empty() {
-        return eligible_machines(spread.requested(), namespace, snapshot, options);
+        let machines = eligible_machines(spread.requested(), namespace, snapshot, options)?;
+        return Ok((machines, Vec::new()));
     }
     let mut machines = Vec::new();
     let mut unmatched = Vec::new();
@@ -1787,8 +1829,8 @@ fn spread_machines<'snapshot>(
             Err(error) => return Err(error),
         }
     }
-    if unmatched.is_empty() {
-        Ok(machines)
+    if unmatched.is_empty() || options.mode().blocks_unmountable() {
+        Ok((machines, unmatched))
     } else {
         Err(PlanError::RegionUnmatched { regions: unmatched })
     }
@@ -1874,6 +1916,25 @@ pub(crate) fn place_one(
     }
 }
 
+/// Whether `region` waits for a Server: none there can run `requested` now, so a Deploy
+/// leaves the region's replicas as they are.
+pub(crate) fn region_waits(
+    requested: &RequestedServiceSpec,
+    region: &Region,
+    namespace: &Namespace,
+    snapshot: &DeploySnapshot,
+) -> bool {
+    matches!(
+        eligible_machines(
+            &requested.held_to(region),
+            namespace,
+            snapshot,
+            &PlanOptions::default()
+        ),
+        Err(PlanError::RegionUnmatched { .. })
+    )
+}
+
 /// The Machines that may take `requested`'s Containers, each with its storage eligibility.
 fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
@@ -1920,17 +1981,28 @@ fn storage_eligibility_warnings(
         .collect()
 }
 
-fn region(spec: &RequestedServiceSpec) -> Option<Region> {
-    let mut by_count = spec.regions.keys();
-    let only = match (by_count.next(), by_count.next()) {
-        (Some(region), None) => Some(region.clone()),
-        _ => None,
-    };
-    spec.placement
+/// The regions the configuration keeps `spec` in: the one its placement names, else those
+/// its counts name. `None` when it names none, so a Server in any region will do.
+fn configured_regions(spec: &RequestedServiceSpec) -> Option<BTreeSet<Region>> {
+    match spec
+        .placement
         .constraints
         .iter()
         .find_map(Region::required_by)
-        .or(only)
+    {
+        Some(region) => Some(BTreeSet::from([region])),
+        None => (!spec.regions.is_empty()).then(|| spec.regions.keys().cloned().collect()),
+    }
+}
+
+/// The one region the configuration keeps `spec` in.
+fn region(spec: &RequestedServiceSpec) -> Option<Region> {
+    only_region(&configured_regions(spec)?)
+}
+
+fn only_region(regions: &BTreeSet<Region>) -> Option<Region> {
+    let mut regions = regions.iter();
+    regions.next().filter(|_| regions.next().is_none()).cloned()
 }
 
 fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> PlanError {

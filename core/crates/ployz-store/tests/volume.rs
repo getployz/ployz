@@ -1776,13 +1776,13 @@ fn claim_planning(
     runner
 }
 
-/// Record that Deployment 1 succeeded without running an operation.
-fn succeed_at_nothing(store: &ConfigStore, runner: &RunnerId) {
+/// Record that Deployment `n` succeeded without running an operation.
+fn succeed_at_nothing(store: &ConfigStore, n: u8, runner: &RunnerId) {
     let outcome: DeployOutcome<ployz_core::ExecutionError> =
         serde_json::from_value(json!({ "type": "success", "completed": [] })).unwrap();
     store
         .record(
-            &id(1),
+            &id(n),
             runner,
             RunEvidence::Executed {
                 progress: Vec::new(),
@@ -1797,6 +1797,7 @@ fn waiting_web() -> Vec<ployz_store::WaitingService> {
     vec![ployz_store::WaitingService {
         service: ServiceName::parse("web").unwrap(),
         reason: NO_WRITER.to_owned(),
+        regions: Default::default(),
     }]
 }
 
@@ -1852,7 +1853,7 @@ fn a_deploy_that_leaves_every_service_waiting_says_so_and_is_not_what_runs() {
         &who,
         vec![blocked("web", "wait"), blocked("api", "wait")],
     );
-    succeed_at_nothing(&store, &runner);
+    succeed_at_nothing(&store, 1, &runner);
 
     let view = store.read(&who, &DeploymentQuery { id: id(1) }).unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Applied);
@@ -1864,7 +1865,7 @@ fn a_deploy_that_leaves_every_service_waiting_says_so_and_is_not_what_runs() {
 fn a_deploy_whose_only_change_waits_beside_an_unchanged_service_deployed_nothing() {
     let (store, who) = shop();
     let runner = claim_planning(&store, &who, false, vec![blocked("web", "wait")]);
-    succeed_at_nothing(&store, &runner);
+    succeed_at_nothing(&store, 1, &runner);
 
     let view = store.read(&who, &DeploymentQuery { id: id(1) }).unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Applied);
@@ -1875,6 +1876,56 @@ fn a_deploy_whose_only_change_waits_beside_an_unchanged_service_deployed_nothing
     );
     assert!(view.deployment.all_waiting);
     assert_eq!(live(&store, &who), None);
+}
+
+#[test]
+fn a_deploy_that_starts_nothing_while_a_replica_stays_on_the_old_version_deployed_nothing() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    let ran = live(&store, &who);
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("web.image"),
+            value: json!("postgres:18"),
+        },
+    )
+    .unwrap();
+    admit(&store, &who, 2, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(2), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production", "operations": [],
+        "warnings": [], "would_remove": [], "preserved_volumes": [],
+        "waiting": [{
+            "service": "web",
+            "regions": {"syd": {"waiting": 0, "outdated": 1}},
+            "error": {
+                "code": "conflict", "message": "syd-1 takes no services",
+                "details": {"reason": "region_unmatched", "regions": ["syd"]}
+            }
+        }]
+    }))
+    .unwrap();
+    store
+        .record(&id(2), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    succeed_at_nothing(&store, 2, &runner);
+
+    let view = store.read(&who, &DeploymentQuery { id: id(2) }).unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+    assert_eq!(
+        outcomes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Unchanged),
+            ("data".to_owned(), NodeStatus::Unchanged),
+        ]
+    );
+    assert!(view.deployment.all_waiting);
+    assert!(ran.is_some_and(|ran| ran != view.deployment.saved));
+    assert_eq!(live(&store, &who), ran);
 }
 
 #[test]

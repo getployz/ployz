@@ -48,6 +48,7 @@ fn frame(state: State) -> Frame {
             timing: Timing::Unavailable,
         }],
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     }
 }
 
@@ -122,6 +123,7 @@ fn a_removed_service_counts_as_removed_in_the_summary() {
         title: "Deploying shop".into(),
         rows: vec![row],
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     };
     let text = plain(
         frame(removal(&ployz_store::RowState::Pending)),
@@ -164,6 +166,7 @@ fn a_removal_that_has_begun_reads_as_removing_not_starting() {
             title: "Deploying shop".into(),
             rows: vec![row],
             notices: Vec::new(),
+            held_back: ployz_core::RegionWait::default(),
         }
     };
     let removing = RowState::Running {
@@ -995,6 +998,7 @@ fn live_rows_each_keep_their_own_line_on_an_80_column_terminal() {
             service("web", 1, 2, &ployz_store::RowState::Pending),
         ],
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     };
     backend.draw(&frame, 0, false);
     let visible = terminal.contents();
@@ -1048,6 +1052,7 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
         title: "Deploying shop".into(),
         rows,
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     };
     let lines = live_lines(&frame, 0, 80, 8, false);
     assert_eq!(
@@ -1092,6 +1097,7 @@ fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
         title: "Deploying shop".into(),
         rows,
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     };
     let lines = live_lines(&frame, 0, 80, 8, false);
     assert_eq!(
@@ -1117,6 +1123,7 @@ fn a_retained_row_fits_the_terminal_with_its_count_whole() {
         title: "Deploying shop".into(),
         rows: vec![service(&name, 0, 10, &ployz_store::RowState::Completed)],
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     };
     let backend = Backend::new(
         Mode::Interactive,
@@ -1225,6 +1232,7 @@ fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the
         title: "Deploying shop".into(),
         rows: vec![service("web", 0, 3, &ployz_store::RowState::Completed)],
         notices: vec![left('a', "interrupted"), left('b', "interrupted")],
+        held_back: ployz_core::RegionWait::default(),
     };
     let mut written = Vec::new();
     finish(

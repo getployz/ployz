@@ -29,11 +29,11 @@ mod schedule;
 
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
-pub(crate) use planning::place_one;
 pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
     plan_ingress_repairs, plan_namespace_removal, preview_deploy, without_departed,
 };
+pub(crate) use planning::{place_one, region_waits};
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
@@ -636,7 +636,8 @@ impl EliminatingConstraints {
     }
 }
 
-fn any_of(regions: &[&Region]) -> String {
+/// `fsn`, `fsn or syd`, `fsn, lhr or syd`.
+pub(crate) fn any_of(regions: &[&Region]) -> String {
     match regions {
         [rest @ .., last] if !rest.is_empty() => {
             let rest = rest
@@ -756,6 +757,42 @@ pub struct RegionAway {
     pub servers: Vec<(MachineName, ServerAway)>,
 }
 
+/// How a Service kept away from its Volume's Server can run beside the Volume, which
+/// stays where it is.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BesideVolume {
+    /// In the region the Volume's Server is in, with the replicas the Service asks for.
+    RunIn {
+        region: Region,
+        replicas: Option<std::num::NonZeroU32>,
+    },
+    /// By giving the Volume's Server, which is in no region, the region the Service is
+    /// kept in.
+    Label { region: Region },
+}
+
+fn volumes_apart(volumes: &[(String, Region)]) -> String {
+    all_of(
+        volumes
+            .iter()
+            .map(|(volume, region)| format!("{volume} is in {region}")),
+    )
+}
+
+fn shared_by(services: &[(ServiceName, Option<Region>)]) -> String {
+    all_of(services.iter().map(|(service, region)| match region {
+        Some(region) => format!("{service} in {region}"),
+        None => format!("{service} in no one region"),
+    }))
+}
+
+fn all_of(each: impl Iterator<Item = String>) -> String {
+    match each.collect::<Vec<_>>().as_slice() {
+        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        each => each.concat(),
+    }
+}
+
 fn region_unmatched(regions: &[RegionAway]) -> String {
     let (empty, away): (Vec<_>, Vec<_>) =
         regions.iter().partition(|region| region.servers.is_empty());
@@ -771,6 +808,8 @@ fn region_unmatched(regions: &[RegionAway]) -> String {
     clauses.join("; ")
 }
 
+/// Each Server of `region` a refusal names, with why it can't run the Service. The
+/// Servers it doesn't name are covered by one closing clause.
 fn servers_away(region: &Region, servers: &[(MachineName, ServerAway)]) -> String {
     let mut clauses = servers
         .iter()
@@ -778,7 +817,7 @@ fn servers_away(region: &Region, servers: &[(MachineName, ServerAway)]) -> Strin
             let why = match away {
                 ServerAway::Down => "is down",
                 ServerAway::Silent => "did not answer",
-                ServerAway::TakesNoServices => "doesn't run services",
+                ServerAway::TakesNoServices => "takes no services",
                 ServerAway::Unreached => return None,
             };
             Some(format!("{name} {why}"))
@@ -787,7 +826,9 @@ fn servers_away(region: &Region, servers: &[(MachineName, ServerAway)]) -> Strin
     if clauses.is_empty() {
         return format!("no Server in {region} is up");
     }
-    clauses.push(format!("and no other Server in {region} is up"));
+    if clauses.len() < servers.len() {
+        clauses.push(format!("and no other Server in {region} is up"));
+    }
     clauses.join(", ")
 }
 
@@ -866,6 +907,42 @@ pub enum PlanError {
         machine: MachineName,
         /// A Server in the region the Service can run on.
         to: MachineName,
+        beside: BesideVolume,
+    },
+    #[error(
+        "{volume} is in {volume_region}, and {service} runs in {region}. Run {service} in {volume_region} instead"
+    )]
+    VolumeInOtherRegion {
+        /// The Volume, as its owner named it.
+        volume: String,
+        service: ServiceName,
+        /// The region the Service is kept in.
+        region: Region,
+        volume_region: Region,
+    },
+    /// The Service mounts Volumes that no one region holds, one of them shared with a
+    /// Service kept elsewhere, so it can run in none.
+    #[error(
+        "{}, and {service} runs in one region. Run the Services that share them in one region, or split {service}",
+        volumes_apart(volumes)
+    )]
+    VolumesApart {
+        service: ServiceName,
+        /// Each located Volume it mounts, as its owner named it, with its region, by
+        /// name. Two or more, in more than one region.
+        volumes: Vec<(String, Region)>,
+    },
+    /// Services kept in different regions mount the Volume, and it is on a Server in no
+    /// region or not made yet, so no region is its own.
+    #[error(
+        "{volume} is shared by {}. Run them in one region, or give each its own Volume",
+        shared_by(services)
+    )]
+    VolumeSharedAcrossRegions {
+        /// The Volume, as its owner named it.
+        volume: String,
+        /// Every Service that mounts it, with the one region it is kept in, by name.
+        services: Vec<(ServiceName, Option<Region>)>,
     },
     /// No observed copy is a writer, and a silent Machine may hold it.
     #[error(
@@ -1040,6 +1117,24 @@ impl PlanError {
         .then_some(*machine_id)
     }
 
+    /// Whether a Service this stops waits or is refused. It is refused when no later
+    /// Deploy of the same config starts it: it shares a Volume with a Service kept in
+    /// another region. Every other reason here waits, since a Server coming back or a
+    /// Volume on a Server in the region starts it.
+    #[must_use]
+    pub fn blocked_kind(&self) -> ployz_core::BlockedKind {
+        if matches!(
+            self,
+            Self::VolumeInOtherRegion { .. }
+                | Self::VolumesApart { .. }
+                | Self::VolumeSharedAcrossRegions { .. }
+        ) {
+            ployz_core::BlockedKind::Refusal
+        } else {
+            ployz_core::BlockedKind::Wait
+        }
+    }
+
     /// Deploying the same thing again is refused this way again: the refusal was
     /// decided from this Deploy's intent alone, so it holds until something staged
     /// changes. A refusal the snapshot, placement or a Server's labels take part in
@@ -1071,6 +1166,9 @@ impl PlanError {
             | Self::VolumeServerTakesNoServices { .. }
             | Self::RegionUnmatched { .. }
             | Self::VolumeOutsideRegion { .. }
+            | Self::VolumeInOtherRegion { .. }
+            | Self::VolumesApart { .. }
+            | Self::VolumeSharedAcrossRegions { .. }
             | Self::CopiesUnknown { .. }
             | Self::VolumeHolderUnknown { .. }
             | Self::ProvisionedVolumeStorageRequired { .. }
@@ -1121,11 +1219,51 @@ impl PlanError {
                 ref volume,
                 ref machine,
                 ref to,
+                ref beside,
+            } => {
+                let (region, volume_region, replicas) = match beside {
+                    BesideVolume::RunIn { region, replicas } => (None, Some(region), *replicas),
+                    BesideVolume::Label { region } => (Some(region), None, None),
+                };
+                RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                    "reason": "volume_outside_region",
+                    "volume": volume,
+                    "server": machine,
+                    "to": to,
+                    "region": region,
+                    "volume_region": volume_region,
+                    "replicas": replicas,
+                }))
+            }
+            Self::VolumeInOtherRegion {
+                ref volume,
+                ref region,
+                ref volume_region,
+                ..
             } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
-                "reason": "volume_outside_region",
+                "reason": "volume_in_other_region",
                 "volume": volume,
-                "server": machine,
-                "to": to,
+                "region": region,
+                "volume_region": volume_region,
+            })),
+            Self::VolumesApart { ref volumes, .. } => RpcError::conflict(self.to_string())
+                .with_details(serde_json::json!({
+                    "reason": "volumes_apart",
+                    "volumes": volumes
+                        .iter()
+                        .map(|(volume, region)| serde_json::json!({ "volume": volume, "region": region }))
+                        .collect::<Vec<_>>(),
+                })),
+            Self::VolumeSharedAcrossRegions {
+                ref volume,
+                ref services,
+            } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                "reason": "volume_shared_across_regions",
+                "volume": volume,
+                "services": services
+                    .iter()
+                    .map(|(service, region)| serde_json::json!({ "service": service, "region": region }))
+                    .collect::<Vec<_>>(),
             })),
             error @ (Self::CopiesUnknown { .. } | Self::VolumeHolderUnknown { .. }) => {
                 RpcError::unavailable(error.to_string())

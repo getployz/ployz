@@ -422,7 +422,10 @@ drain.
 A service stays running where it is, and is reported with the reason, when:
 
 - it mounts a volume or a bind mount on the server (tmpfs mounts don't count);
-- its containers run different versions, because a deploy hasn't finished: deploy it first;
+- its containers run different versions, because a deploy hasn't finished: deploy it first. A
+  replica a deploy left on its old version in a
+  [region with no server that can run it](../services/regions.md#when-no-server-is-in-the-region)
+  doesn't count;
 - a server it involves can't be checked right now;
 - no other server can take it;
 - you stopped it with `ployz service stop`: start or remove it first;

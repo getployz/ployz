@@ -458,6 +458,7 @@ pub(crate) async fn follow_globals(
         title: format!("Starting Globals on {}", assigned.name),
         rows: Vec::new(),
         notices: Vec::new(),
+        held_back: ployz_core::RegionWait::default(),
     };
     let mut progress = Progress::start(frame.clone());
     let mut not_arrived = ServerNames::default();
