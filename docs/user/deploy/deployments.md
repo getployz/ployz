@@ -191,9 +191,10 @@ variables and sealed values, mounts, config files, ports, privileges and hook. P
 carries the approval but can't change what it covers. A server logs each one, such as
 `deploy 0f8fad5b… approved by device 3KQ7-M2XD for web digest=cb8d3c6ef656`.
 
-A server remembers each version it ran under a signature. Restarting it, running more or
-fewer copies of it, or rolling back to it on that server needs no new signature, from the
-dashboard or the CLI. A version stops counting when you remove the device that signed it.
+A server remembers the last 32 versions of each service it ran under a signature.
+Restarting one, running more or fewer copies of it, or rolling back to it on that server
+needs no new signature, from the dashboard or the CLI. A version stops counting when you
+remove every device that signed it.
 
 Every image runs by digest, since a tag names whatever the registry holds under it now. For
 a tag on a public registry, `ployz deploy` reads the digest from the registry itself and

@@ -65,18 +65,27 @@ impl Images {
     /// Make `image` one this Machine pulled itself with no login, for a Container of a
     /// spec nothing signed. An image here under that name counts only when such a pull
     /// placed it, so a private image is never run for a caller who only knows its name.
+    /// `policy` pulls again under `Always`, and under `Never` runs only what is here.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::UnsignedImage`] when the registry is not public or the pull
-    /// fails, and [`Error::DiskFull`] when it fails on a full disk.
-    pub(crate) async fn pull_free(&self, image: &str) -> Result<(), Error> {
+    /// Returns [`Error::UnsignedImage`] when the registry is not public, the pull fails,
+    /// or `policy` is `Never` and no such pull placed the image, and [`Error::DiskFull`]
+    /// when the pull fails on a full disk.
+    pub(crate) async fn pull_free(&self, image: &str, policy: PullPolicy) -> Result<(), Error> {
         let docker = &self.docker.client;
-        match docker.inspect_image(image).await {
-            Ok(local) if local.id.as_deref().is_some_and(|id| self.is_free(id)) => return Ok(()),
-            Ok(_) => {}
-            Err(error) if crate::docker_image::is_not_found(&error) => {}
-            Err(error) => return Err(Error::Docker(error)),
+        if policy != PullPolicy::Always {
+            match docker.inspect_image(image).await {
+                Ok(local) if local.id.as_deref().is_some_and(|id| self.is_free(id)) => {
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(error) if crate::docker_image::is_not_found(&error) => {}
+                Err(error) => return Err(Error::Docker(error)),
+            }
+        }
+        if policy == PullPolicy::Never {
+            return Err(Error::UnsignedImage(UnsignedImage::NeverPulled));
         }
         match crate::docker_image::pull_public(docker, image).await {
             Ok(id) => {

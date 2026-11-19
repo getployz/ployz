@@ -92,6 +92,8 @@ pub enum UnsignedImage {
     NoDigest,
     #[error("the image changed while its Container was created")]
     Moved,
+    #[error("this Server has not pulled it, and its pull policy is never")]
+    NeverPulled,
 }
 
 /// Pull `image` from a public registry with no login, whatever is here under its name,
@@ -117,9 +119,12 @@ pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, 
 }
 
 /// The host and port of the registry Docker pulls `image` from, or `None` for Docker Hub.
+/// Docker takes the first part for a host when it holds a dot, a colon or a capital
+/// letter, or is `localhost`.
 fn registry(image: &str) -> Option<&str> {
     let (first, _) = image.split_once('/')?;
-    (first.contains('.') || first.contains(':') || first == "localhost").then_some(first)
+    (first == "localhost" || first.contains(['.', ':']) || first.to_lowercase() != first)
+        .then_some(first)
 }
 
 /// Refuse a registry on this Machine or its private networks: reaching one proves
@@ -209,6 +214,21 @@ mod tests {
                 ),
                 "{image}"
             );
+        }
+    }
+
+    #[test]
+    fn an_image_names_its_registry_as_docker_reads_it() {
+        for (image, host) in [
+            ("nginx", None),
+            ("library/nginx:1.29", None),
+            ("ghcr.io/acme/api:1", Some("ghcr.io")),
+            ("localhost/api", Some("localhost")),
+            ("registry:5000/api", Some("registry:5000")),
+            // A first part with a capital letter is a host to Docker, not a Hub account.
+            ("Registry/api:1", Some("Registry")),
+        ] {
+            assert_eq!(registry(image), host, "{image}");
         }
     }
 

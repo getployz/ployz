@@ -5,8 +5,8 @@
 //! served, except a start of a hook: a hook runs once, when it is created.
 
 use ployz_core::{
-    ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Namespace, NewContainer,
-    ResolvedServiceSpec, RunTarget, Sealing, Start,
+    ClientKey, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Namespace,
+    NewContainer, ResolvedServiceSpec, RunTarget, Sealing, Start,
     authority::{
         AuthorityRefusal, DeployApproval, DeployFacts, PayloadDigest, RuleProof, Signed,
         deploy::{self, Creation, content_addressed},
@@ -14,7 +14,9 @@ use ployz_core::{
     },
 };
 
-use super::{Error, LocalMachine, consumption::SpecSigner};
+use sha2::{Digest as _, Sha256};
+
+use super::{Caller, Error, LocalMachine, consumption::SpecSigner};
 
 /// A spec this Machine admitted for a new Container, and whether a signature stands
 /// behind it. A Container opens Sealed values, and runs an image this Machine did not
@@ -24,7 +26,9 @@ use super::{Error, LocalMachine, consumption::SpecSigner};
 /// for a caller's spec.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AdmittedSpec {
-    digest: PayloadDigest,
+    /// A hash of the namespace and the whole spec. Every spec has one, where a spec
+    /// holding a negative number has no [`PayloadDigest`].
+    spec: [u8; 32],
     signed: bool,
 }
 
@@ -34,15 +38,18 @@ impl AdmittedSpec {
         spec: &ResolvedServiceSpec,
         signed: bool,
     ) -> Result<Self, AuthorityRefusal> {
-        let digest = PayloadDigest::of(&spec.to_requested(), namespace)
+        let body = serde_json::to_vec(&(namespace, spec))
             .map_err(|_| AuthorityRefusal::Mismatch { field: "a payload" })?;
-        Ok(Self { digest, signed })
+        Ok(Self {
+            spec: Sha256::digest(&body).into(),
+            signed,
+        })
     }
 
     /// A reserved spec this daemon built itself, which no caller chose.
     ///
     /// # Errors
-    /// Returns [`Error::DeployRefused`] when the spec has no digest.
+    /// Returns [`Error::DeployRefused`] when the spec cannot be written as JSON.
     pub(super) fn own(namespace: &Namespace, spec: &ResolvedServiceSpec) -> Result<Self, Error> {
         Self::of(namespace, spec, true).map_err(Error::DeployRefused)
     }
@@ -54,7 +61,7 @@ impl AdmittedSpec {
 
     /// Whether this is the admission of `spec` in `namespace`.
     pub(crate) fn covers(self, namespace: &Namespace, spec: &ResolvedServiceSpec) -> bool {
-        PayloadDigest::of(&spec.to_requested(), namespace).is_ok_and(|digest| digest == self.digest)
+        Self::of(namespace, spec, self.signed) == Ok(self)
     }
 
     #[cfg(test)]
@@ -66,7 +73,7 @@ impl AdmittedSpec {
     #[cfg(test)]
     pub(crate) fn test_unbound(signed: bool) -> Self {
         Self {
-            digest: PayloadDigest::from_bytes([0; 32]),
+            spec: [0; 32],
             signed,
         }
     }
@@ -76,7 +83,9 @@ impl AdmittedSpec {
 #[derive(Clone, Copy)]
 pub(crate) enum Presented<'a> {
     /// A call at Full access: this Server's own socket, or a Device's own connection.
-    FullAccess,
+    FullAccess {
+        deploy: Option<&'a Signed<DeployApproval>>,
+    },
     /// An Operator's call, with the statements it carries.
     Operator {
         deploy: Option<&'a Signed<DeployApproval>>,
@@ -123,57 +132,88 @@ impl LocalMachine {
         };
         let signed =
             AdmittedSpec::of(&new.slot.namespace, &new.resolved_spec, true).map_err(refused)?;
-        let (deploy, rule) = match presented {
-            Presented::FullAccess => {
-                self.remember(new, signed, SpecSigner::FullAccess)?;
+        // A spec holding a negative number has no digest: no key can sign it, and this
+        // Machine remembers nothing of it.
+        let digest = PayloadDigest::of(&new.resolved_spec.to_requested(), &new.slot.namespace).ok();
+        let (full_access, deploy, rule) = match presented {
+            Presented::FullAccess { deploy } => (true, deploy, None),
+            Presented::Operator { deploy, rule } => (false, deploy, rule),
+        };
+        // A signature presented is checked and kept whatever else would admit the spec,
+        // so the spec stays admitted for as long as any key that signed it is trusted.
+        let unapproved = match deploy.map(|approval| self.approved_deploy(new, approval)) {
+            Some(Ok(by)) => {
+                self.remember(new, digest, by)?;
                 return Ok(Some(signed));
             }
-            Presented::Operator { deploy, rule } => (deploy, rule),
+            Some(Err(refusal)) => Some(refusal),
+            None => None,
         };
-        if self.admitted_before(new, signed)? {
+        if full_access {
+            self.remember(new, digest, self.full_access_signer())?;
             return Ok(Some(signed));
         }
-        let reach = needs_signature(creation(new), new.registry_auth.is_some());
-        if let Some(approval) = deploy {
-            let record = self.record();
-            let approved = deploy::verify(
-                approval,
-                &DeployFacts {
-                    cluster: self.cluster_key(record.phase()),
-                    trusted: &record.trusted_keys(),
-                    namespace: &new.slot.namespace,
-                    creation: creation(new),
-                },
-            );
-            match approved {
-                Ok(approved) => {
-                    tracing::info!(
-                        kind = %new.slot.kind,
-                        proposal = ?approved.body.proposal,
-                        "deploy {} approved by {} for {} digest={}",
-                        approved.body.operation,
-                        approved.by,
-                        new.slot.service,
-                        approved.digest.short(),
-                    );
-                    self.remember(new, signed, approved.by.into())?;
-                    return Ok(Some(signed));
-                }
-                Err(refusal) if reach.is_some() => return Err(refused(refusal)),
-                // A spec that reaches no data runs whatever came with it.
-                Err(_) => {}
-            }
-        } else if let Some(rule) = rule {
+        if self.admitted_before(new, digest)? {
+            return Ok(Some(signed));
+        }
+        if deploy.is_none()
+            && let Some(rule) = rule
+        {
             self.admit_rule_deploy_online(want, rule).await?;
             return Ok(Some(signed));
         }
-        match reach {
-            Some(reach) => Err(refused(AuthorityRefusal::NeedsSignature { reach })),
+        match needs_signature(creation(new), new.registry_auth.is_some()) {
+            Some(reach) => Err(refused(
+                unapproved.unwrap_or(AuthorityRefusal::NeedsSignature { reach }),
+            )),
+            // A spec that reaches no data runs whatever came with it.
             None => Ok(Some(AdmittedSpec {
                 signed: false,
                 ..signed
             })),
         }
+    }
+
+    /// Who signed `approval` for `new`'s spec, when a key this Machine trusts did.
+    fn approved_deploy(
+        &self,
+        new: &NewContainer,
+        approval: &Signed<DeployApproval>,
+    ) -> Result<SpecSigner, AuthorityRefusal> {
+        let record = self.record();
+        let approved = deploy::verify(
+            approval,
+            &DeployFacts {
+                cluster: self.cluster_key(record.phase()),
+                trusted: &record.trusted_keys(),
+                namespace: &new.slot.namespace,
+                creation: creation(new),
+            },
+        )?;
+        tracing::info!(
+            kind = %new.slot.kind,
+            proposal = ?approved.body.proposal,
+            "deploy {} approved by {} for {} digest={}",
+            approved.body.operation,
+            approved.by,
+            new.slot.service,
+            approved.digest.short(),
+        );
+        Ok(approved.by.into())
+    }
+
+    /// Who a Full access creation is kept under: the Device whose own connection asked,
+    /// so removing that Device ends it, or Full access for this Server's own socket.
+    fn full_access_signer(&self) -> SpecSigner {
+        let Caller::Management(remote) = self.caller else {
+            return SpecSigner::FullAccess;
+        };
+        self.record()
+            .devices()
+            .find(|device| ClientKey::from(*device) == remote)
+            .map_or(SpecSigner::FullAccess, |device| {
+                SpecSigner::Device(device.into())
+            })
     }
 
     /// Let a Writer's start through. Starting a Container the Machine already holds is
@@ -229,14 +269,21 @@ impl LocalMachine {
 
     /// Whether this Machine admitted `new`'s spec signed before, for the Service its slot
     /// names, by a key it still trusts.
-    fn admitted_before(&self, new: &NewContainer, admitted: AdmittedSpec) -> Result<bool, Error> {
+    fn admitted_before(
+        &self,
+        new: &NewContainer,
+        digest: Option<PayloadDigest>,
+    ) -> Result<bool, Error> {
+        let Some(digest) = digest else {
+            return Ok(false);
+        };
         if new.resolved_spec.name != new.slot.service {
             return Ok(false);
         }
         self.approvals.spec_admitted(
             &new.slot.namespace,
             &new.slot.service,
-            admitted.digest,
+            digest,
             &self.record().trusted_keys(),
         )
     }
@@ -247,16 +294,19 @@ impl LocalMachine {
     fn remember(
         &self,
         new: &NewContainer,
-        admitted: AdmittedSpec,
+        digest: Option<PayloadDigest>,
         by: SpecSigner,
     ) -> Result<(), Error> {
+        let Some(digest) = digest else {
+            return Ok(());
+        };
         if new.resolved_spec.name != new.slot.service
             || !content_addressed(&new.resolved_spec.container.image)
         {
             return Ok(());
         }
         self.approvals
-            .admit_spec(&new.slot.namespace, &new.slot.service, admitted.digest, by)
+            .admit_spec(&new.slot.namespace, &new.slot.service, digest, by)
     }
 
     pub(super) fn cluster_key(
@@ -274,7 +324,9 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<ployz_core::EnsuredContainer, Error> {
-        let admitted = self.admit_spec(&want, Presented::FullAccess).await?;
+        let admitted = self
+            .admit_spec(&want, Presented::FullAccess { deploy: None })
+            .await?;
         self.ensure_container(want, admitted).await
     }
 }

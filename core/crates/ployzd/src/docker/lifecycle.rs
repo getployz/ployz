@@ -369,7 +369,9 @@ impl Lifecycle {
         let mut body = self.build_body(&creating).await?;
         if !creating.admitted.signed() {
             // The caller's word that the image is here, and its login, count for nothing.
-            self.images.pull_free(&spec.container.image).await?;
+            self.images
+                .pull_free(&spec.container.image, spec.container.pull_policy)
+                .await?;
         } else if let ImagePull::Policy(registry_auth) = creating.image
             && let Err(error) = prepare_image(
                 &self.docker.client,

@@ -551,7 +551,9 @@ impl MachineRpc for MachineService {
                 rule: request.rule.as_deref(),
             }
         } else {
-            Presented::FullAccess
+            Presented::FullAccess {
+                deploy: request.deploy.as_ref(),
+            }
         };
         let admitted = match self.local.admit_spec(&request.want, presented).await {
             Ok(admitted) => admitted,

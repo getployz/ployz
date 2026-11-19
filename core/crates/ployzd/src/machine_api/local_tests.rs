@@ -5528,6 +5528,142 @@ mod ensure_container {
         }
 
         #[tokio::test]
+        async fn what_a_device_made_on_its_own_connection_runs_again_until_the_device_is_removed() {
+            let fixture = enforced("ployzd-device-connection-spec").await;
+            let service = &fixture.service;
+            let pinned = reaching(PINNED);
+            let device = DeviceKey::from(fixture.signer.public());
+            let direct = service
+                .clone()
+                .with_management_client(ployz_core::ClientKey::from(device));
+
+            ensure(&direct, run_new("k1", pinned.clone())).await;
+            deploy_ensure(service, new_want("service_container", "k2", &pinned), None)
+                .await
+                .unwrap();
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.remove_device(device.code()).unwrap();
+                })
+                .await
+                .unwrap();
+            deploy_refused(
+                deploy_ensure(service, new_want("service_container", "k3", &pinned), None).await,
+                "reaches its server",
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_spec_two_devices_signed_runs_again_while_either_is_trusted() {
+            let fixture = enforced("ployzd-two-signers-spec").await;
+            let service = &fixture.service;
+            let approved = reaching(PINNED);
+            let second = Signer::from_seed(&[8; 32]);
+            let second_device = DeviceKey::from(second.public());
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.approve_device(second_device).unwrap();
+                })
+                .await
+                .unwrap();
+            let by_second = Signed::sign(
+                &fixture.deploy_body(
+                    &[&approved],
+                    ployz_core::authority::SignerKey::Device(second.public().into()),
+                ),
+                &second,
+            )
+            .unwrap();
+
+            for (key, signed) in [("k1", fixture.deploy(&approved)), ("k2", by_second)] {
+                deploy_ensure(
+                    service,
+                    new_want("service_container", key, &approved),
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
+            }
+            let first = DeviceKey::from(fixture.signer.public()).code();
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.remove_device(first).unwrap();
+                })
+                .await
+                .unwrap();
+            deploy_ensure(
+                service,
+                new_want("service_container", "k3", &approved),
+                None,
+            )
+            .await
+            .unwrap();
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn full_access_runs_a_spec_no_key_can_sign() {
+            let fixture = enforced("ployzd-unsignable-spec").await;
+            // A negative number, Docker's "no limit", has no place in a signed body.
+            let mut unlimited = spec(PINNED);
+            unlimited["container"]["resources"]["ulimits"] =
+                json!({"nofile": {"soft": -1, "hard": -1}});
+
+            present(&ensure(&fixture.service, run_new("k1", unlimited)).await);
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn an_unsigned_creation_follows_its_pull_policy() {
+            let fixture = enforced("ployzd-free-pull-policy").await;
+            let service = &fixture.service;
+            let with_policy = |image: &str, policy: &str| {
+                let mut spec = spec(image);
+                spec["container"]["pull_policy"] = json!(policy);
+                spec
+            };
+            let seen = requests(&fixture.fake).len();
+
+            // `always` asks the registry each time: a tag may have moved.
+            for key in ["k1", "k2"] {
+                let always = with_policy(PUBLIC, "always");
+                deploy_ensure(service, new_want("service_container", key, &always), None)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(pulls(&fixture.fake, seen), 2);
+
+            // `never` runs only an image this Machine already pulled itself.
+            let here = with_policy(PUBLIC, "never");
+            deploy_ensure(service, new_want("service_container", "k3", &here), None)
+                .await
+                .unwrap();
+            let elsewhere = with_policy(
+                "203.0.113.7/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc",
+                "never",
+            );
+            let refused = deploy_ensure(
+                service,
+                new_want("service_container", "k4", &elsewhere),
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(
+                format!("{refused:?}").contains("its pull policy is never"),
+                "{refused:?}"
+            );
+            assert_eq!(pulls(&fixture.fake, seen), 2);
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
         async fn a_deploy_approval_never_starts_a_hook_again_but_adopts_a_resent_one() {
             let fixture = enforced("ployzd-deploy-hook-start").await;
             let approved = spec(PINNED);
