@@ -11,7 +11,7 @@ import { FieldError } from "#/components/ui/field";
 import { REPLICAS_MAX, replicaRows, replicaValue, type ReplicaRow } from "#/modules/config-store/replica-rows";
 import type { Write } from "#/modules/config-store/store-write";
 import { RegionSelect } from "#/modules/machines/RegionSelect";
-import { useRegionOptions } from "#/modules/machines/use-region-options";
+import type { RegionOption } from "#/modules/machines/server-regions";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-route-paths";
 
 /**
@@ -20,23 +20,24 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-
  * pick. A second region is on offer only where the Store takes one: the Environment has a region, and the Service
  * mounts no Volume.
  */
-export function StoreReplicasRows({ organizationSlug, params, value, home, volume, oneRegion, changed, onChange }: {
-  organizationSlug: string;
-  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
+export function StoreReplicasRows({ options, value, deployed, home, capped, oneRegion, changed, onChange }: {
+  /** The regions a row can be in. */
+  options: readonly RegionOption[];
   /** The `replicas` value as the next Deploy has it. */
   value: JsonValue;
+  /** The value the Service last ran with. */
+  deployed: JsonValue;
   /** The Environment's region, which a bare count runs in. */
   home: string | null;
-  /** The Volume that holds the count to 1. */
-  volume: VolumeListing | null;
+  /** What says why the count is held to 1, when a Volume holds it. */
+  capped?: ReactNode;
   /** Whether a Volume the Service mounts keeps it to one region: any Volume does, as the Store rules. */
   oneRegion: boolean;
   changed: boolean;
   onChange: (value: JsonValue) => Write;
 }) {
   const [rows, hold, commit] = useCommitHold<readonly ReplicaRow[]>(replicaRows(value, home));
-  const options = useRegionOptions(organizationSlug, rows.flatMap(({ region }) => region ?? []));
-  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home, value)));
+  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home, value, deployed)));
   const update = (index: number, change: Partial<ReplicaRow>) => save(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
   const unused = options.find(({ key, servers }) => key !== null && servers.length > 0 && !rows.some(({ region }) => region === key));
   const total = rows.reduce((sum, { count }) => sum + count, 0);
@@ -45,7 +46,7 @@ export function StoreReplicasRows({ organizationSlug, params, value, home, volum
   const taken = rows.flatMap(({ region }) => region ?? []);
   const nameOf = (region: string | null) => options.find(({ key }) => key === region)?.name ?? region;
   return (
-    <SettingsRow label="Replicas" commit="change" hint={volume ? <CappedHint params={params} volume={volume} /> : undefined}
+    <SettingsRow label="Replicas" commit="change" hint={capped}
       control={(
         <div className="flex flex-col items-end gap-2">
           {rows.map((row, index) => {
@@ -56,7 +57,7 @@ export function StoreReplicasRows({ organizationSlug, params, value, home, volum
                   allowAny={rows.length === 1 && home === null} changed={changed}
                   onChange={(region) => update(index, { region })} />
                 <Stepper label={where === null ? "Replicas" : `Replicas in ${where}`} count={row.count} changed={changed}
-                  canAdd={!full} disabled={volume !== null}
+                  canAdd={!full} disabled={capped !== undefined}
                   onChange={(count) => update(index, { count })} />
                 {rows.length > 1 ? (
                   <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${where ?? "region"}`}
@@ -80,7 +81,8 @@ export function StoreReplicasRows({ organizationSlug, params, value, home, volum
   );
 }
 
-function CappedHint({ params, volume }: {
+/** Why a Volume holds a Service to one replica, with the way out. */
+export function CappedHint({ params, volume }: {
   params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
   volume: VolumeListing;
 }): ReactNode {

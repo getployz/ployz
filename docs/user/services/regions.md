@@ -129,9 +129,12 @@ region, with a count you raise and lower. A service with one number shows one ro
 environment's region, or in **Any region** when the environment has none. **Add region** adds a row
 in a region that has none yet, and the **×** on a row takes it out. The counts add up to at most 50.
 
-A service with counts by region keeps them through every change here, also with one row left, as
-`{"fsn":3}`. It stays in `fsn` when the environment's region changes. To make it follow the
-environment again, set one number with `ployz set api.replicas=3`.
+A service deployed with counts by region keeps them through every change here, also with one row
+left, as `{"fsn":3}`. It stays in `fsn` when the environment's region changes. To make it follow
+the environment again, set one number with `ployz set api.replicas=3`.
+
+A service deployed with one number goes back to one number when you remove the regions you added.
+With the count unchanged, nothing is left to deploy.
 
 **Add region** shows only when the environment has a region and the service has no
 [volume](volumes.md). A service whose volume doesn't allow shared writes also keeps one replica,

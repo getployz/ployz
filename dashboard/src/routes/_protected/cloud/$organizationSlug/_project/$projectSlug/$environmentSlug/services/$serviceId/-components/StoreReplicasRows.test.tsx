@@ -1,19 +1,14 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import type { JsonValue, VolumeListing } from "@ployz/sdk";
+import type { JsonValue } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { asTestDouble } from "#/lib/test-double";
+import { replicaRows } from "#/modules/config-store/replica-rows";
 import { regionOptions } from "#/modules/machines/server-regions";
 import { StoreReplicasRows } from "./StoreReplicasRows";
 
 let servers: { name: string; region: string }[] = [];
-vi.mock("#/modules/machines/use-region-options", () => ({
-  useRegionOptions: (_: string, kept: readonly string[]) => regionOptions(servers, [], kept),
-}));
-vi.mock("@tanstack/react-router", async (original) => ({ ...await original(), Link: ({ children }: { children: unknown }) => children }));
 
 const two = [{ name: "server-1", region: "fsn" }, { name: "server-2", region: "syd" }];
-const pgData = asTestDouble<VolumeListing>()({ id: "v1", name: "pg-data" });
 
 beforeEach(() => {
   servers = two;
@@ -28,10 +23,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function rows(value: JsonValue, home: string | null, volume: { capped?: VolumeListing; attached?: boolean; saved?: JsonValue } = {}) {
+function rows(value: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
   const onChange = vi.fn(() => Promise.resolve());
-  render(<StoreReplicasRows organizationSlug="acme" params={{ organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" }}
-    value={value} saved={volume.saved ?? value} home={home} volume={volume.capped ?? null} oneRegion={volume.attached ?? volume.capped !== undefined} changed={false} onChange={onChange} />);
+  const kept = replicaRows(value, home).flatMap(({ region }) => region ?? []);
+  render(<StoreReplicasRows options={regionOptions(servers, [], kept)} value={value} deployed={held.deployed ?? value} home={home}
+    capped={held.capped} oneRegion={held.attached ?? held.capped !== undefined} changed={false} onChange={onChange} />);
   return onChange;
 }
 
@@ -69,7 +65,7 @@ it("reads Any region with no default region, whatever the Servers' regions, and 
 });
 
 it("never offers Add region while a Volume limits the count", () => {
-  rows(1, "fsn", { capped: pgData });
+  rows(1, "fsn", { capped: "Limited to 1 while pg-data is attached." });
   expect(screen.getByText(/Limited to 1 while/).textContent).toContain("pg-data");
   expect(addRegion()).toBeNull();
 });
@@ -95,7 +91,7 @@ it("keeps both counts when a row moves to a region whose key is any", async () =
 });
 
 it("stages nothing when the region just added is removed again", () => {
-  const onChange = rows({ fsn: 2, syd: 1 }, "fsn", { saved: 2 });
+  const onChange = rows({ fsn: 2, syd: 1 }, "fsn", { deployed: 2 });
   fireEvent.click(screen.getByRole("button", { name: "Remove syd" }));
   expect(onChange).toHaveBeenLastCalledWith(2);
 });

@@ -5,7 +5,9 @@ import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { EllipsisIcon, PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
+import { replicaRows } from "#/modules/config-store/replica-rows";
 import { effectiveVolumes } from "#/modules/config-store/store-volumes";
+import { useRegionOptions } from "#/modules/machines/use-region-options";
 import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
@@ -44,7 +46,7 @@ import { useRemoveStoreService } from "./useDeleteService";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
-import { StoreReplicasRows } from "./StoreReplicasRows";
+import { CappedHint, StoreReplicasRows } from "./StoreReplicasRows";
 import { useServiceRuntime } from "./useServiceRuntime";
 import { ServiceActAlert, ServiceActions, useServiceAct } from "./ServiceActions";
 import { ContainerLogs } from "#/components/container-logs";
@@ -181,9 +183,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     ),
     storage: database && !hasVolume ? <SettingsRow label="Volume" commit="none"><RowWarning>No volume. Data is lost on redeploy.</RowWarning></SettingsRow> : null,
     scale: <>
-      <StoreReplicasRows organizationSlug={organizationSlug} params={params} home={settings.region ?? null} volume={capped} oneRegion={hasVolume}
-        value={state.rows.get("replicas")?.value ?? state.rows.get("replicas")?.default ?? 1} changed={state.changes.has("replicas")}
-        onChange={(value) => state.set("replicas", value)} />
+      <StoreReplicas state={state} home={settings.region ?? null} oneRegion={hasVolume}
+        capped={capped ? <CappedHint params={params} volume={capped} /> : undefined} />
       <StoreResourceLimits state={state} />
     </>,
     build: state.source === "git" ? <>
@@ -454,6 +455,20 @@ function StoreOptionalField({ state, name, addLabel, unset }: { state: StoreServ
 }
 
 /** CPU and memory limits: one setting most Services never set, both off by one X. */
+function StoreReplicas({ state, home, capped, oneRegion }: { state: StoreService; home: string | null; capped: ReactNode; oneRegion: boolean }) {
+  const row = state.rows.get("replicas");
+  const change = state.changes.get("replicas");
+  const unset = row?.default ?? 1;
+  const value = row?.value ?? unset;
+  const options = useRegionOptions(state.organizationSlug, replicaRows(value, home).flatMap(({ region }) => region ?? []));
+  return (
+    <StoreReplicasRows options={options} home={home} capped={capped} oneRegion={oneRegion}
+      value={value} deployed={change ? change.before ?? unset : value} changed={change !== undefined}
+      // Back at the default of a Setting deployed unset, it is unset again, and no change is left.
+      onChange={(next) => state.set("replicas", change?.before === null && next === unset ? null : next)} />
+  );
+}
+
 function StoreResourceLimits({ state }: { state: StoreService }) {
   const configured = isSet(state, "cpuLimit") || isSet(state, "memLimit");
   return (
