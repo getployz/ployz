@@ -261,9 +261,9 @@ starts its own.
   postgres, and pg-data is in fsn.` While the volume has no region, because it isn't made yet or
   its server has none, **Scale** holds them to the region they're all set to. When they're set to
   different regions, **Details** says what to change. In **Mount on a service**, a service set to
-  another region reads `Must run in fsn`. Pick it to read why and what to set, in the deploy's
-  words. When the environment's region changes and one of them has its own region, **Details**
-  says so before you deploy.
+  another region reads `Must run in fsn`. Pick it to read what to change first: `To mount pg-data,
+  set extra to fsn`. Once extra is set to fsn, the form lets you mount it. When the environment's
+  region changes and one of them has its own region, **Details** says so before you deploy.
 
   Set apart with `ployz set` or by an agent, the services in the volume's region deploy. Each
   service in another region isn't started, and its line says which region to set. Deploying again

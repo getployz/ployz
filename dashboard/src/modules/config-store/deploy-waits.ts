@@ -46,7 +46,8 @@ function read({ services, home, copies, servers }: Lens) {
 /**
  * Why the Deploy refuses `name`, kept in `region`, when `volume` is not written there and another Service sharing it is
  * kept away from that region, since no one Server could ever suit both, in a few words and in full. Null when it
- * doesn't. It says so as the Engine's planner does (`shared_elsewhere` in core/crates/ployz/src/deploy/planning/volumes.rs).
+ * doesn't. `why` says so as the Engine's planner does (`shared_elsewhere` in core/crates/ployz/src/deploy/planning/volumes.rs),
+ * and `mount` as the way to a mount of `volume` on `name` not saved yet.
  */
 function splitRefusal(name: string, region: string, volume: SharedVolume, lens: ReturnType<typeof read>) {
   const { regionOf, keptIn, writersOf, homeOf } = lens;
@@ -64,7 +65,13 @@ function splitRefusal(name: string, region: string, volume: SharedVolume, lens: 
     ? `${volume.name} isn't made yet. ${allOf([...kept.map(({ sharer, regions }) => `${sharer} is set to ${allOf(regions)}`), `${name} is set to ${region}`])}. Set them all to one region`
     : "region" in home ? `${volume.name} is in ${home.region} and ${name} is set to ${region}. Set ${name} to ${home.region}`
     : `${volume.name} is on ${home.server}, which has no region. Give ${home.server} a region, then set them all to it`;
-  return { short, why: `${allOf([name, ...kept.map(({ sharer }) => sharer)])} share the Volume ${volume.name}, so they have to run in the same region. ${why}` };
+  const together = allOf([name, ...kept.map(({ sharer }) => sharer)]);
+  const [agreed, ...apart] = new Set(kept.flatMap(({ regions }) => regions));
+  const mount = home === null
+    ? `To mount ${volume.name}, ${agreed !== undefined && apart.length === 0 ? `set ${name} to ${agreed}` : `set ${together} to one region`}`
+    : "region" in home ? `To mount ${volume.name}, set ${name} to ${home.region}`
+    : `${volume.name} is on ${home.server}, which has no region. To mount it, give ${home.server} a region and set ${together} to it`;
+  return { short, why: `${together} share the Volume ${volume.name}, so they have to run in the same region. ${why}`, mount };
 }
 
 /**
@@ -108,13 +115,14 @@ export function deployWaits(lens: Lens): DeployWait[] {
   });
 }
 
-/** Why the Deploy would refuse `service` once it mounts `volume`, in a few words and in the Deploy's. Null when it wouldn't. */
+/** Why the Deploy would refuse `service` once it mounts `volume`, in a few words and as the way to the mount. Null when it wouldn't. */
 export function mountSplit(service: string, volume: SharedVolume, lens: Omit<Lens, "volumes">) {
   if (lens.servers.length === 0) return null;
   const seen = read({ ...lens, volumes: [] });
   const [region, ...others] = seen.keptIn.get(service) ?? [];
   if (region === undefined || others.length > 0) return null;
-  return splitRefusal(service, region, { ...volume, mounts: [...volume.mounts, { service }] }, seen);
+  const refusal = splitRefusal(service, region, { ...volume, mounts: [...volume.mounts, { service }] }, seen);
+  return refusal && { short: refusal.short, why: refusal.mount };
 }
 
 /** The region a Service has to run in because it shares a Volume, which Volume, who with, and whether the Volume is in it. */

@@ -65,9 +65,12 @@ it("holds Services sharing a Volume with no region to the region they are all se
 it("says before a mount that a Service set to another region can't share the Volume, in the Deploy's words", () => {
   const volume = { id: "v1", name: "pg-data", mounts: [{ service: "postgres" }] };
   const lens = { services: [postgres, { name: "extra", replicas: { syd: 1 } }, { name: "near", replicas: 1 }], home: "fsn", copies: [copy("m1")], servers };
-  expect(mountSplit("extra", volume, lens)).toEqual({ short: "Must run in fsn",
-    why: "extra and postgres share the Volume pg-data, so they have to run in the same region. pg-data is in fsn and extra is set to syd. Set extra to fsn" });
+  expect(mountSplit("extra", volume, lens)).toEqual({ short: "Must run in fsn", why: "To mount pg-data, set extra to fsn" });
   expect(mountSplit("near", volume, lens)).toBeNull();
+  const unlabelled = [{ id: "m1", name: "machine-1", region: null }, { id: "m2", name: "machine-2", region: "syd" }];
+  expect(mountSplit("extra", volume, { ...lens, home: "fsn", servers: unlabelled })?.why)
+    .toBe("pg-data is on machine-1, which has no region. To mount it, give machine-1 a region and set extra and postgres to it");
+  expect(mountSplit("extra", volume, { ...lens, copies: [] })?.why).toBe("To mount pg-data, set extra to fsn");
 });
 
 it("names a Service whose Volume has only a mirror in its region, as the Deploy looks for the copy it writes to", () => {

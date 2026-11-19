@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { BoxIcon, MoreVerticalIcon } from "lucide-react";
-import type { DiffView, EnvironmentRef, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, EnvironmentRef, JsonValue, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { FieldError } from "#/components/ui/field";
@@ -8,18 +8,22 @@ import { RowWarning, SHARED_VOLUME_WHY } from "#/components/settings/row-warning
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsAddButton, SettingsFoot, SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import { MountEditor, mountFailure, type MountEditing } from "./MountEditor";
+import { desiredReplicas, oneReplica } from "./replica-rows";
 import { detachedMounts, mountChange } from "./store-volumes";
 import { mountRefusal, volumeWriters, writersText } from "./volume-sharing";
 import { useStoreWriter } from "./store-write";
 
 /** `volumes` is the effective mount projection shared with Scale and the canvas. */
-export function StoreVolumeMounts({ resourceId, organizationSlug, environment, services, volumes, diff, replicasOf, split }: {
+export function StoreVolumeMounts({ resourceId, organizationSlug, environment, services, volumes, diff, replicas, split }: {
   resourceId: string; organizationSlug: string; environment: EnvironmentRef; services: readonly ServiceListing[];
-  volumes: readonly VolumeListing[]; diff: DiffView; replicasOf: (service: string) => number;
+  volumes: readonly VolumeListing[]; diff: DiffView;
+  /** Each Service's `replicas` as the next Deploy has it. */
+  replicas: (service: string) => JsonValue;
   /** Why the Deploy would refuse a Service once it mounts this Volume, for running apart from the Volume's region. */
   split: (service: string) => { short: string; why: string } | null;
 }) {
   const writer = useStoreWriter(organizationSlug);
+  const replicasOf = (service: string) => desiredReplicas(replicas(service)) ?? 1;
   const [editor, setEditor] = useState<(MountEditing & { trigger: HTMLButtonElement | null }) | null>(null);
   const [unmount, setUnmount] = useState<{ pending: ReadonlySet<string>; error: string | null }>({ pending: new Set(), error: null });
   const pending = useRef(new Set<string>());
@@ -72,9 +76,10 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
   function warning(volume: VolumeListing) {
     const { shared, writers, total } = volumeWriters(volume, replicasOf);
     if (!shared) return null;
-    const correction = writers.length === 1 ? writers[0]?.service : null;
-    return <SettingsRow label="Several writers" commit="none"><RowWarning why={SHARED_VOLUME_WHY} action={correction ? (
-      <Button type="button" variant="outline" size="xs" onClick={() => writer.edit({ environment, changes: [{ op: "set", path: `${correction}.replicas`, value: 1 }] })}>Use 1 replica</Button>
+    const correction = writers.length === 1 ? writers[0]?.service : undefined;
+    const one = correction === undefined ? null : oneReplica(replicas(correction));
+    return <SettingsRow label="Several writers" commit="none"><RowWarning why={SHARED_VOLUME_WHY} action={correction !== undefined && one !== null ? (
+      <Button type="button" variant="outline" size="xs" onClick={() => writer.edit({ environment, changes: [{ op: "set", path: `${correction}.replicas`, value: one }] })}>Use 1 replica</Button>
     ) : null}>
       {total} containers write here: {writersText(writers)}. Can corrupt data.
     </RowWarning></SettingsRow>;

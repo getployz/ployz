@@ -43,6 +43,14 @@ export function replicaValue(rows: readonly ReplicaRow[], home: string | null, o
   return Object.fromEntries(rows.flatMap(({ region, count }) => (region === null ? [] : [[region, count]])));
 }
 
+/** `value` lowered to one replica, in the region it names so it doesn't come to follow the Environment's. Null when it names other than one. */
+export function oneReplica(value: JsonValue): JsonValue {
+  const regions = namedRows(value)?.flatMap(({ region, count }) => (region !== null && count > 0 ? [region] : []));
+  if (regions === undefined) return 1;
+  const [only, ...others] = regions;
+  return only !== undefined && others.length === 0 ? { [only]: 1 } : null;
+}
+
 /** How many replicas a Service's `replicas` asks for across its regions. Null when it doesn't say. */
 export function desiredReplicas(value: JsonValue | undefined): number | null {
   if (value === undefined) return null;

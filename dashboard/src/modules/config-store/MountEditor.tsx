@@ -28,8 +28,9 @@ export function MountEditor({ choices, initial, submit, onClose }: {
   useEffect(() => () => { attempt.current++; }, []);
   const pending = status.kind === "saving";
   // An optimistic Add filters its choice out before persistence completes.
-  const shown = selected && !choices.some((choice) => choice.id === selected.id) ? [...choices, selected] : choices;
-  const refused = initial.editing ? null : selected?.refusal?.why ?? null;
+  const current = choices.find((choice) => choice.id === selected?.id) ?? selected;
+  const shown = current && !choices.includes(current) ? [...choices, current] : choices;
+  const refused = initial.editing ? null : current?.refusal?.why ?? null;
 
   function save() {
     if (pending || refused) return;
