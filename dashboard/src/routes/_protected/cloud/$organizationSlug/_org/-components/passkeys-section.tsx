@@ -1,8 +1,9 @@
 import { startRegistration } from "@simplewebauthn/browser";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
+import { useMutation, useQueryClient, useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
+import { CatchBoundary, getRouteApi, type ErrorComponentProps } from "@tanstack/react-router";
 import { KeyRoundIcon } from "lucide-react";
 import { Suspense, useState } from "react";
+import { RouteErrorAlert } from "#/components/route-error-alert";
 import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsSection } from "#/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -36,7 +37,11 @@ function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
     },
     onMutate: () => setFailure(null),
     onError: (error) => setFailure(error instanceof Error && error.name === "PasskeyRefused" ? error.message : "browser"),
-    onSettled: () => queryClient.invalidateQueries(passkeysQueryOptions(organizationSlug)),
+    // A read still out was asked before this passkey existed, so drop it and read again.
+    onSuccess: () => {
+      const list = passkeysQueryOptions(organizationSlug);
+      void queryClient.cancelQueries({ queryKey: list.queryKey }).then(() => queryClient.prefetchQuery(list));
+    },
   });
   return (
     <SettingsSection id="passkeys" title="Passkeys"
@@ -48,9 +53,11 @@ function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
       )}>
       {failure === null ? null : <AddFailed message={failure} />}
       {/* Each Server is asked live what it says of a passkey, so the list lands after the page. */}
-      <Suspense fallback={<Skeleton className="h-12 w-full" />}>
-        <MemberPasskeyList organizationSlug={organizationSlug} />
-      </Suspense>
+      <CatchBoundary getResetKey={() => organizationSlug} errorComponent={PasskeyListError}>
+        <Suspense fallback={<Skeleton className="h-12 w-full" />}>
+          <MemberPasskeyList organizationSlug={organizationSlug} />
+        </Suspense>
+      </CatchBoundary>
     </SettingsSection>
   );
 }
@@ -58,6 +65,14 @@ function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
 function MemberPasskeyList({ organizationSlug }: { organizationSlug: string }) {
   const { data } = useSuspenseQuery(passkeysQueryOptions(organizationSlug));
   return <PasskeyList view={data} />;
+}
+
+function PasskeyListError({ reset }: ErrorComponentProps) {
+  const queries = useQueryErrorResetBoundary();
+  return (
+    <RouteErrorAlert title="Passkeys couldn’t load" description="Your passkeys are unavailable right now. Try loading them again."
+      onRetry={() => { queries.reset(); reset(); }} />
+  );
 }
 
 function AddFailed({ message }: { message: string }) {

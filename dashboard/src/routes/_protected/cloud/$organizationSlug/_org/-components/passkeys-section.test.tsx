@@ -1,19 +1,33 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Suspense } from "react";
 import { afterEach, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
 import * as passkeyFunctions from "#/modules/passkeys/passkeys.functions";
+import type { PasskeysView } from "#/modules/passkeys/passkeys.queries";
 import { PasskeyList, PasskeysSection } from "./passkeys-section";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-async function renderAs(access: "member" | "support") {
+/** A browser whose authenticator makes a passkey at once. */
+function stubAuthenticator() {
+  const bytes = new ArrayBuffer(1);
+  vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+  vi.stubGlobal("navigator", Object.assign(Object.create(navigator), { credentials: { create: async () => ({
+    id: "new", rawId: bytes, type: "public-key", response: { attestationObject: bytes, clientDataJSON: bytes }, getClientExtensionResults: () => ({}),
+  }) } }));
+}
+
+/** `reads` answer the list's reads in turn; later ones find no passkeys. */
+async function renderAs(access: "member" | "support", ...reads: Promise<PasskeysView>[]) {
   const list = vi.spyOn(passkeyFunctions, "listPasskeysServerFn").mockResolvedValue({ observed: true, passkeys: [] });
+  for (const read of reads) list.mockReturnValueOnce(read);
   const root = createRootRoute();
   const signedIn = createRoute({ getParentRoute: () => root, id: "_protected" });
   const organization = createRoute({
@@ -42,6 +56,27 @@ it("shows a member their passkeys", async () => {
   const list = await renderAs("member");
   expect(await screen.findByRole("heading", { name: "Passkeys" })).toBeDefined();
   expect(list).toHaveBeenCalled();
+});
+
+it("lists a passkey added while the list was still loading", async () => {
+  stubAuthenticator();
+  vi.spyOn(passkeyFunctions, "beginPasskeyServerFn").mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof passkeyFunctions.beginPasskeyServerFn>>>()({
+    challenge: "AA", user: { id: "AA", name: "ada@example.com", displayName: "Ada" }, rp: { name: "Ployz" }, pubKeyCredParams: [],
+  }));
+  vi.spyOn(passkeyFunctions, "finishPasskeyServerFn").mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof passkeyFunctions.finishPasskeyServerFn>>>()({}));
+  const trusted = (code: string) => ({ code, account: "ada@example.com", createdAt: "2026-11-07T09:00:00.000Z", servers: [{ server: "web-1", approval: { by: "server" as const } }] });
+  let answerFirst = () => {};
+  const list = await renderAs("member",
+    // The page's first read, still waiting on a Server when the new passkey is filed.
+    new Promise((resolve) => { answerFirst = () => resolve({ observed: true, passkeys: [trusted("aaaaaaaaaa")] }); }),
+    Promise.resolve({ observed: true, passkeys: [trusted("aaaaaaaaaa"), trusted("bbbbbbbbbb")] }));
+
+  fireEvent.click(await screen.findByRole("button", { name: "Add passkey" }));
+  await waitFor(() => expect(passkeyFunctions.finishPasskeyServerFn).toHaveBeenCalled());
+  await act(async () => answerFirst());
+
+  expect(await screen.findByText("bbbbbbbbbb")).toBeDefined();
+  expect(list).toHaveBeenCalledTimes(2);
 });
 
 it("hides passkeys from a support visit without asking for them", async () => {
