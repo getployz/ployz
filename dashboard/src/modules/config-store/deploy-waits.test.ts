@@ -20,12 +20,15 @@ it("names a Service the Deploy refuses, in the Engine's words, when a Service ke
   const reader = { name: "reader", replicas: { syd: 1 } };
   const shared = [{ id: "v1", name: "pg-data", mounts: [{ service: "postgres" }, { service: "reader" }] }];
   const located = deployWaits({ services: [postgres, reader], home: "fsn", volumes: shared, copies: [copy("m1")], servers });
-  expect(located).toEqual([{ service: "reader", why: "pg-data is in fsn, and reader runs in syd. Run reader in fsn instead", refused: true }]);
+  const why = (service: string, other: string, at: string, set: string) =>
+    `${service} and ${other} share the Volume pg-data, so they have to run in the same region. ${other} is in ${at} and ${service} is set to ${set}. Set ${service} to ${at}`;
+  expect(located).toEqual([{ service: "reader", why: why("reader", "postgres", "fsn", "syd"), refused: true }]);
   const unlabelled = deployWaits({ services: [postgres, reader], home: "fsn", volumes: shared, copies: [copy("m1")], servers: [{ id: "m1", name: "machine-1", region: null }, { id: "m2", name: "machine-2", region: "syd" }] });
-  const apart = "pg-data is shared by postgres in fsn and reader in syd. Run them in one region, or give each its own Volume";
-  expect(unlabelled).toEqual([{ service: "postgres", why: apart, refused: true }, { service: "reader", why: apart, refused: true }]);
+  expect(unlabelled).toEqual([{ service: "postgres", why: why("postgres", "reader", "syd", "fsn"), refused: true }, { service: "reader", why: why("reader", "postgres", "fsn", "syd"), refused: true }]);
   expect(deployWaits({ services: [postgres, reader], home: "fsn", volumes: shared, copies: [], servers })).toEqual(unlabelled);
   expect(deployWaits({ services: [postgres, { name: "reader", replicas: 1 }], home: "syd", volumes: shared, copies: [copy("m1")], servers }).every(({ refused }) => !refused)).toBe(true);
+  const split = deployWaits({ services: [{ ...postgres, replicas: { fsn: 1 } }, { name: "reader", replicas: 1 }], home: "syd", volumes: shared, copies: [copy("m1")], servers });
+  expect(split).toEqual([{ service: "reader", why: why("reader", "postgres", "fsn", "syd"), refused: true }]);
 });
 
 it("names a Service whose Volume has only a mirror in its region, as the Deploy looks for the copy it writes to", () => {

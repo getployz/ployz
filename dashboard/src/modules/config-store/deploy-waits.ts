@@ -49,12 +49,14 @@ export function deployWaits({ services, home, volumes, copies, servers }: {
         if (!sharers.some((sharer) => keptIn.get(sharer)?.includes(region) === false)) continue;
         const writers = writersOf(volume.id);
         if (writers.some(({ machineId }) => regionOf.get(machineId) === region)) continue;
-        const at = writers[0] === undefined ? null : regionOf.get(writers[0].machineId);
-        const why = at ? `${volume.name} is in ${at}, and ${name} runs in ${region}. Run ${name} in ${at} instead`
-          : `${volume.name} is shared by ${allOf(sharers.flatMap((sharer) => {
-            const kept = keptIn.get(sharer);
-            return kept ? [`${sharer} in ${kept.length === 1 ? kept[0] : "no one region"}`] : [];
-          }))}. Run them in one region, or give each its own Volume`;
+        const kept = sharers.flatMap((sharer) => {
+          const regions = keptIn.get(sharer);
+          return sharer !== name && regions?.length ? [{ sharer, regions }] : [];
+        });
+        const theirs = [...new Set(kept.flatMap(({ regions }) => regions))];
+        const facts = [...kept.map(({ sharer, regions }) => `${sharer} is in ${allOf(regions)}`), `${name} is set to ${region}`];
+        const why = `${allOf([name, ...kept.map(({ sharer }) => sharer)])} share the Volume ${volume.name}, so they have to run in the same region. `
+          + `${allOf(facts)}. ${theirs.length === 1 ? `Set ${name} to ${theirs[0]}` : "Set them all to one region"}`;
         return [{ service: name, why, refused: true }];
       }
     }

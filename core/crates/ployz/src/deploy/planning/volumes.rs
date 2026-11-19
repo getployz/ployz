@@ -543,7 +543,6 @@ impl VolumePlan<'_> {
                     | PlanError::VolumeServerTakesNoServices { .. }
                     | PlanError::RegionUnmatched { .. }
                     | PlanError::VolumeOutsideRegion { .. }
-                    | PlanError::VolumeInOtherRegion { .. }
                     | PlanError::VolumesApart { .. }
                     | PlanError::VolumeSharedAcrossRegions { .. },
                 ) => {}
@@ -915,7 +914,6 @@ fn unmountable(
             | PlanError::VolumeHolderUnknown { .. }
             | PlanError::RegionUnmatched { .. }
             | PlanError::VolumeOutsideRegion { .. }
-            | PlanError::VolumeInOtherRegion { .. }
             | PlanError::VolumesApart { .. }
             | PlanError::VolumeSharedAcrossRegions { .. }
     ) || requested
@@ -959,7 +957,6 @@ fn left_out(
                     error,
                     PlanError::RegionUnmatched { .. }
                         | PlanError::VolumeOutsideRegion { .. }
-                        | PlanError::VolumeInOtherRegion { .. }
                         | PlanError::VolumesApart { .. }
                         | PlanError::VolumeSharedAcrossRegions { .. }
                 )
@@ -1042,12 +1039,10 @@ fn shared_component_anchor(
 }
 
 /// The refusal for `spec`, kept in `region`, when a Volume it mounts is outside the region
-/// and a Service kept elsewhere mounts it too. It says where the Volume is and where `spec`
-/// could run instead.
+/// and a Service kept elsewhere mounts it too. It names the Services that share the
+/// Volume, where each is kept, and where `spec` could run beside them.
 /// When its located Volumes share no region, running it in that Volume's region would
-/// fail the same way, so it names them all. When the Volume's Server is in no region, or
-/// the Volume is not made yet and its Services are kept in different regions, it names
-/// the Services that share it.
+/// fail the same way, so it names them all instead.
 fn shared_elsewhere(
     spec: &RequestedServiceSpec,
     region: &Region,
@@ -1066,7 +1061,7 @@ fn shared_elsewhere(
             // by none while its Services are kept in different ones.
             Ok(VolumeLocality::Absent) => {
                 if plan.kept_elsewhere(name, region) {
-                    held.get_or_insert((name, None));
+                    held.get_or_insert(name);
                 }
                 continue;
             }
@@ -1076,11 +1071,10 @@ fn shared_elsewhere(
             .chain(&others)
             .filter_map(region_of)
             .collect::<BTreeSet<_>>();
-        let volume_region = region_of(&first);
         if !regions.contains(region) && plan.kept_elsewhere(name, region) {
-            held.get_or_insert_with(|| (name, volume_region.clone()));
+            held.get_or_insert(name);
         }
-        let Some(volume_region) = volume_region else {
+        let Some(volume_region) = region_of(&first) else {
             continue;
         };
         volumes.push((plan.authored(name).to_owned(), volume_region));
@@ -1089,22 +1083,7 @@ fn shared_elsewhere(
             None => regions,
         });
     }
-    let (name, volume_region) = held?;
-    let volume = plan.authored(name).to_owned();
-    let Some(volume_region) = volume_region else {
-        return Some(PlanError::VolumeSharedAcrossRegions {
-            volume,
-            services: plan
-                .mounted_by
-                .get(name)
-                .into_iter()
-                .flatten()
-                .filter_map(|(service, kept_in)| {
-                    Some((service.clone(), super::only_region(kept_in.as_ref()?)))
-                })
-                .collect(),
-        });
-    };
+    let name = held?;
     if shared.is_some_and(|shared| shared.is_empty()) {
         volumes.sort();
         return Some(PlanError::VolumesApart {
@@ -1112,11 +1091,21 @@ fn shared_elsewhere(
             volumes,
         });
     }
-    Some(PlanError::VolumeInOtherRegion {
-        volume,
+    Some(PlanError::VolumeSharedAcrossRegions {
+        volume: plan.authored(name).to_owned(),
         service: spec.name.clone(),
         region: region.clone(),
-        volume_region,
+        sharers: plan
+            .mounted_by
+            .get(name)
+            .into_iter()
+            .flatten()
+            .filter(|(service, _)| *service != spec.name)
+            .filter_map(|(service, kept_in)| {
+                let kept_in = kept_in.as_ref().filter(|kept_in| !kept_in.is_empty())?;
+                Some((service.clone(), kept_in.iter().cloned().collect()))
+            })
+            .collect(),
     })
 }
 
