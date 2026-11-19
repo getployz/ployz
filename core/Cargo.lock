@@ -4216,6 +4216,7 @@ dependencies = [
 name = "ployz-verify"
 version = "0.4.0-beta.2"
 dependencies = [
+ "ployz",
  "ployz-core",
  "ployz-decide",
  "serde_json",
