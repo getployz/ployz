@@ -45,7 +45,6 @@ type BottomBarProps = {
   totalChanges: number;
   /** What the bar counts as changes: edits not yet saved. Defaults to `totalChanges`. */
   stagedChanges?: number;
-  /** The Services the next Deploy leaves waiting, and why: Details says so before the Deploy does. */
   waits?: ReviewProps["waits"];
   /** The latest Save when it is all there is to deploy: part of it is neither applied nor shipped by a Deploy in flight, which may ship the rest. */
   undeployedSave?: number | null;

@@ -22,7 +22,6 @@ export type EnvironmentChangesReviewProps = {
   totalChanges: number;
   /** How many of them no Save holds yet. Left out, all of them while there is something to save. */
   unsavedChanges?: number;
-  /** The Services the Deploy leaves waiting, and why. */
   waits?: readonly DeployWait[];
   canDeploy: boolean;
   /** Deploy asks an owner or admin first. */
@@ -98,7 +97,6 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
   );
 }
 
-/** The Services the Deploy leaves waiting, each with the reason `ployz deploy` gives. Nothing renders for none. */
 function WaitList({ waits }: { waits: readonly DeployWait[] }) {
   if (!waits.length) return null;
   return (

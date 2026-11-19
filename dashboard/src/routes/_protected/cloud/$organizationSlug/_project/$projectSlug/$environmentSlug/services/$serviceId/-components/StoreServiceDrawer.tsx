@@ -460,12 +460,12 @@ function StoreReplicas({ state, home, capped, oneRegion }: { state: StoreService
   const change = state.changes.get("replicas");
   const unset = row?.default ?? 1;
   const value = row?.value ?? unset;
+  const deployedUnset = change?.before === null;
   const options = useRegionOptions(state.organizationSlug, replicaRows(value, home).flatMap(({ region }) => region ?? []));
   return (
     <StoreReplicasRows options={options} home={home} capped={capped} oneRegion={oneRegion}
       value={value} deployed={change ? change.before ?? unset : value} changed={change !== undefined}
-      // Back at the default of a Setting deployed unset, it is unset again, and no change is left.
-      onChange={(next) => state.set("replicas", change?.before === null && next === unset ? null : next)} />
+      onChange={(next) => state.set("replicas", deployedUnset && next === unset ? null : next)} />
   );
 }
 

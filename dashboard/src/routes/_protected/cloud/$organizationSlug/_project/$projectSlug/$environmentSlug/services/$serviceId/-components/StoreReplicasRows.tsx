@@ -21,7 +21,6 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-
  * mounts no Volume.
  */
 export function StoreReplicasRows({ options, value, deployed, home, capped, oneRegion, changed, onChange }: {
-  /** The regions a row can be in. */
   options: readonly RegionOption[];
   /** The `replicas` value as the next Deploy has it. */
   value: JsonValue;
@@ -81,7 +80,6 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
   );
 }
 
-/** Why a Volume holds a Service to one replica, with the way out. */
 export function CappedHint({ params, volume }: {
   params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
   volume: VolumeListing;
