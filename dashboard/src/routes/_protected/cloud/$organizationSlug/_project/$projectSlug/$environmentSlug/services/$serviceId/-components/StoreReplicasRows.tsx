@@ -1,0 +1,119 @@
+import type { ReactNode } from "react";
+import { Link } from "@tanstack/react-router";
+import { MinusIcon, PlusIcon, XIcon } from "lucide-react";
+import type { JsonValue, VolumeListing } from "@ployz/sdk";
+import { InfoHint } from "#/components/info-hint";
+import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { SettingsRow } from "#/components/settings/settings-section";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { Button } from "#/components/ui/button";
+import { FieldError } from "#/components/ui/field";
+import { REPLICAS_MAX, replicaRows, replicaValue, type ReplicaRow } from "#/modules/config-store/replica-rows";
+import type { Write } from "#/modules/config-store/store-write";
+import { RegionSelect } from "#/modules/machines/RegionSelect";
+import { useRegionOptions } from "#/modules/machines/use-region-options";
+import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-route-paths";
+
+/**
+ * A Service's replicas as a row per region: how many run where. A bare count is one row in the Environment's region, or
+ * in any region when it has none. A Volume that doesn't allow shared writes fixes the count at 1 and leaves the region to
+ * pick, and no region can be added while it holds the count.
+ */
+export function StoreReplicasRows({ organizationSlug, params, value, home, volume, changed, onChange }: {
+  organizationSlug: string;
+  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
+  /** The `replicas` value as the next Deploy has it. */
+  value: JsonValue;
+  /** The Environment's region, which a bare count runs in. */
+  home: string | null;
+  /** The Volume that holds the count to 1. */
+  volume: VolumeListing | null;
+  changed: boolean;
+  onChange: (value: JsonValue) => Write;
+}) {
+  const [rows, hold, commit] = useCommitHold<readonly ReplicaRow[]>(replicaRows(value, home));
+  const options = useRegionOptions(organizationSlug, rows.flatMap(({ region }) => region ?? []));
+  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home)));
+  const update = (index: number, change: Partial<ReplicaRow>) => save(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
+  const unused = options.find(({ key }) => key !== null && !rows.some(({ region }) => region === key));
+  const total = rows.reduce((sum, { count }) => sum + count, 0);
+  const full = total >= REPLICAS_MAX;
+  const canAdd = volume === null && !full && unused !== undefined && rows.every(({ region }) => region !== null);
+  const named = options.length > 1;
+  const taken = rows.flatMap(({ region }) => region ?? []);
+  const nameOf = (region: string | null) => options.find(({ key }) => key === region)?.name ?? region;
+  return (
+    <SettingsRow label="Replicas" commit="change" hint={volume ? <CappedHint params={params} volume={volume} /> : undefined}
+      control={(
+        <div className="flex flex-col items-end gap-2">
+          {rows.map((row, index) => {
+            const where = nameOf(row.region);
+            return (
+              <div key={row.region ?? "any"} className="flex items-center gap-2">
+                {named || row.region !== null ? (
+                  <RegionSelect label={`Region of row ${index + 1}`} options={options} value={row.region} taken={taken}
+                    allowAny={rows.length === 1 && home === null} changed={changed}
+                    onChange={(region) => update(index, { region })} />
+                ) : null}
+                <Stepper label={where === null ? "Replicas" : `Replicas in ${where}`} count={row.count} changed={changed}
+                  canAdd={!full} disabled={volume !== null}
+                  onChange={(count) => update(index, { count })} />
+                {rows.length > 1 ? (
+                  <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${where ?? "region"}`}
+                    onClick={() => save(rows.filter((_, at) => at !== index))}>
+                    <XIcon />
+                  </Button>
+                ) : null}
+              </div>
+            );
+          })}
+          {canAdd ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => save([...rows, { region: unused.key, count: 1 }])}>
+              <PlusIcon data-icon="inline-start" />
+              Add region
+            </Button>
+          ) : null}
+        </div>
+      )}>
+      {commit.phase === "failed" ? <FieldError>{commit.reason}</FieldError> : null}
+    </SettingsRow>
+  );
+}
+
+function CappedHint({ params, volume }: {
+  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
+  volume: VolumeListing;
+}): ReactNode {
+  return (
+    <>
+      Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
+      <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
+      <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
+    </>
+  );
+}
+
+function Stepper({ label, count, canAdd, changed, disabled, onChange }: {
+  label: string;
+  count: number;
+  /** Whether one more would stay within the most a Service runs. */
+  canAdd: boolean;
+  changed: boolean;
+  disabled: boolean;
+  onChange: (count: number) => void;
+}) {
+  return (
+    <div role="group" aria-label={label} className="flex items-center gap-1">
+      <Button type="button" variant="outline" size="icon" aria-label="One fewer" disabled={disabled || count <= 1} onClick={() => onChange(count - 1)}>
+        <MinusIcon />
+      </Button>
+      <output data-changed={changed || undefined}
+        className="flex h-8 min-w-10 items-center justify-center rounded-lg border border-input px-2 text-sm tabular-nums data-[changed=true]:border-changed-border data-[changed=true]:bg-changed-soft">
+        {count}
+      </output>
+      <Button type="button" variant="outline" size="icon" aria-label="One more" disabled={disabled || !canAdd} onClick={() => onChange(count + 1)}>
+        <PlusIcon />
+      </Button>
+    </div>
+  );
+}
