@@ -65,3 +65,19 @@ it("lets the picker handle Escape and closes only on an unmodified Escape inside
   fireEvent.keyDown(directory, { key: "Escape" });
   expect(closed).toHaveBeenCalledOnce();
 });
+
+it("names a refused Service's reason in its option and gives the whole of it under the field once picked", async () => {
+  const submit = vi.fn();
+  const refused = { id: "extra-id", name: "extra", directory: "/data",
+    refusal: { short: "Must run in fsn", why: "extra and postgres share the Volume pg-data, so they have to run in the same region. Set extra to fsn" } };
+  render(<MountEditor choices={[choice, refused]} initial={{ counterpart: "", directory: "/data", editing: false }} submit={submit} onClose={() => {}} />);
+  fireEvent.click(screen.getByRole("combobox", { name: "Service" }));
+  const option = await screen.findByRole("option", { name: "extra · Must run in fsn" });
+  fireEvent.pointerEnter(option, { pointerType: "mouse" });
+  fireEvent.pointerMove(option, { pointerType: "mouse" });
+  fireEvent.mouseMove(option);
+  fireEvent.click(option);
+  expect(screen.getByRole("alert").textContent).toBe(refused.refusal.why);
+  fireEvent.click(screen.getByRole("button", { name: "Mount" }));
+  expect(submit).not.toHaveBeenCalled();
+});

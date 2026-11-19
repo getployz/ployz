@@ -54,8 +54,7 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
   const hint = sharing === null ? capped : (
     <>
       Must run in {nameOf(sharing.region)}. It shares the Volume <strong>{sharing.volume}</strong> with {allOf(sharing.sharers)}
-      {sharing.made ? <>, and <strong>{sharing.volume}</strong> is in {nameOf(sharing.region)}.</>
-        : <>, {sharing.sharers.length === 1 ? "which is" : "which are"} set to {nameOf(sharing.region)}.</>}
+      {sharing.located ? <>, and <strong>{sharing.volume}</strong> is in {nameOf(sharing.region)}.</> : <>, so they have to run in one region.</>}
       {capped === undefined ? null : <> {capped}</>}
     </>
   );

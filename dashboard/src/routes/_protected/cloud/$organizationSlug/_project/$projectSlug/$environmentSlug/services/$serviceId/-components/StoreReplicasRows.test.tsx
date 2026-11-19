@@ -91,7 +91,7 @@ it("never offers Add region while a Volume limits the count", () => {
 });
 
 it("holds a Service to the region the Services it shares a Volume with run in, and says why", () => {
-  const sharing = { region: "fsn", sharers: ["postgres"], volume: "pg-data", made: true };
+  const sharing = { region: "fsn", sharers: ["postgres"], volume: "pg-data", located: true };
   rows(1, "fsn", { sharing });
   expect(regionOf(1).hasAttribute("disabled")).toBe(true);
   expect(shownIn(1)).toBe("fsn");
@@ -100,7 +100,7 @@ it("holds a Service to the region the Services it shares a Volume with run in, a
 });
 
 it("offers only the sharers' region to a Service set apart from them", async () => {
-  const onChange = rows({ syd: 1 }, "fsn", { sharing: { region: "fsn", sharers: ["postgres"], volume: "pg-data", made: true } });
+  const onChange = rows({ syd: 1 }, "fsn", { sharing: { region: "fsn", sharers: ["postgres"], volume: "pg-data", located: true } });
   await pick(1, "fsn · server-1", (names) => expect(names).toEqual(["fsn · server-1"]));
   expect(onChange).toHaveBeenLastCalledWith({ fsn: 1 });
 });

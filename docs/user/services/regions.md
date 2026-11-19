@@ -258,9 +258,12 @@ starts its own.
 - **Services that share a volume run in the same region.** A volume is on one server, so every
   service that mounts it has to run in that server's region. In Ployz Cloud, **Scale** offers such
   a service only that region, and says why: `Must run in fsn. It shares the Volume pg-data with
-  postgres, and pg-data is in fsn.` **Mount on a service** doesn't offer a service set to another
-  region, and says the same as the deploy would. When the environment's region changes and one of
-  them has its own region, **Details** says so before you deploy.
+  postgres, and pg-data is in fsn.` While the volume has no region, because it isn't made yet or
+  its server has none, **Scale** holds them to the region they're all set to. When they're set to
+  different regions, **Details** says what to change. In **Mount on a service**, a service set to
+  another region reads `Must run in fsn`. Pick it to read why and what to set, in the deploy's
+  words. When the environment's region changes and one of them has its own region, **Details**
+  says so before you deploy.
 
   Set apart with `ployz set` or by an agent, the services in the volume's region deploy. Each
   service in another region isn't started, and its line says which region to set. Deploying again
