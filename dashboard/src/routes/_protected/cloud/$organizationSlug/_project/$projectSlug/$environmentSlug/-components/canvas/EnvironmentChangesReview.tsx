@@ -97,12 +97,23 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
   );
 }
 
+/** What the next Deploy refuses, said as its Deployment will say it, then what it leaves waiting. */
 function WaitList({ waits }: { waits: readonly DeployWait[] }) {
-  if (!waits.length) return null;
+  const refused = waits.filter((wait) => wait.refused);
+  const waiting = waits.filter((wait) => !wait.refused);
   return (
-    <ul aria-label="Waiting" className="text-warning">
-      {waits.map(({ service, why }) => <li key={service}>{service} waits: {why}</li>)}
-    </ul>
+    <>
+      {refused.length ? (
+        <ul aria-label="Refused" className="text-destructive">
+          {refused.map(({ service, why }) => <li key={service}>{service}: {why}</li>)}
+        </ul>
+      ) : null}
+      {waiting.length ? (
+        <ul aria-label="Waiting" className="text-warning">
+          {waiting.map(({ service, why }) => <li key={service}>{service} waits: {why}</li>)}
+        </ul>
+      ) : null}
+    </>
   );
 }
 
