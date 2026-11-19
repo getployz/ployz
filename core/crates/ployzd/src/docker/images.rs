@@ -65,29 +65,35 @@ impl Images {
     /// Make `image` one this Machine pulled itself with no login, for a Container of a
     /// spec nothing signed. An image here under that name counts only when such a pull
     /// placed it, so a private image is never run for a caller who only knows its name.
-    /// `policy` pulls again under `Always`, and under `Never` runs only what is here.
+    /// `policy` pulls again under `Always`. Under `Never` it runs only the image already
+    /// here under that name, and only once that image's own digest pulls from a public
+    /// registry with no login, as a drain's copy of an image a peer placed here needs.
     ///
     /// # Errors
     ///
     /// Returns [`Error::UnsignedImage`] when the registry is not public, the pull fails,
-    /// or `policy` is `Never` and no such pull placed the image, and [`Error::DiskFull`]
-    /// when the pull fails on a full disk.
+    /// or `policy` is `Never` and no image is here under that name, and
+    /// [`Error::DiskFull`] when the pull fails on a full disk.
     pub(crate) async fn pull_free(&self, image: &str, policy: PullPolicy) -> Result<(), Error> {
         let docker = &self.docker.client;
+        let mut held = None;
         if policy != PullPolicy::Always {
             match docker.inspect_image(image).await {
                 Ok(local) if local.id.as_deref().is_some_and(|id| self.is_free(id)) => {
                     return Ok(());
                 }
-                Ok(_) => {}
+                Ok(local) => held = local.id,
                 Err(error) if crate::docker_image::is_not_found(&error) => {}
                 Err(error) => return Err(Error::Docker(error)),
             }
         }
-        if policy == PullPolicy::Never {
-            return Err(Error::UnsignedImage(UnsignedImage::NeverPulled));
-        }
-        match crate::docker_image::pull_public(docker, image).await {
+        let target = if policy == PullPolicy::Never {
+            let id = held.ok_or(Error::UnsignedImage(UnsignedImage::NeverPulled))?;
+            format!("{}@{id}", crate::docker_image::repository(image))
+        } else {
+            image.to_owned()
+        };
+        match crate::docker_image::pull_public(docker, &target).await {
             Ok(id) => {
                 self.free_ids().insert(id);
                 Ok(())

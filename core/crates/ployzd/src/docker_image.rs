@@ -75,6 +75,15 @@ async fn pull_image(
         .await
 }
 
+/// `image` with its tag and digest dropped.
+pub(crate) fn repository(image: &str) -> &str {
+    let name = image.split_once('@').map_or(image, |(name, _)| name);
+    match last_part(name).rsplit_once(':') {
+        Some((_, tag)) => &name[..name.len() - tag.len() - 1],
+        None => name,
+    }
+}
+
 fn last_part(image: &str) -> &str {
     image.rsplit('/').next().unwrap_or(image)
 }
@@ -105,13 +114,8 @@ pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, 
         .await
         .map_err(UnsignedImage::Pull)?
         .ok_or(UnsignedImage::NoDigest)?;
-    let name = image.split_once('@').map_or(image, |(name, _)| name);
-    let repository = match last_part(name).rsplit_once(':') {
-        Some((_, tag)) => &name[..name.len() - tag.len() - 1],
-        None => name,
-    };
     docker
-        .inspect_image(&format!("{repository}@{pulled}"))
+        .inspect_image(&format!("{}@{pulled}", repository(image)))
         .await
         .map_err(UnsignedImage::Pull)?
         .id
