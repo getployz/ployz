@@ -8,7 +8,7 @@ import { SettingsRow } from "#/components/settings/settings-section";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { FieldError } from "#/components/ui/field";
-import { REPLICAS_MAX, replicaRows, replicaValue, type ReplicaRow } from "#/modules/config-store/replica-rows";
+import { REPLICAS_MAX, replicaKey, replicaRows, replicaValue, type ReplicaRow } from "#/modules/config-store/replica-rows";
 import type { Write } from "#/modules/config-store/store-write";
 import type { SharedRegion } from "#/modules/config-store/deploy-waits";
 import { RegionSelect } from "#/modules/machines/RegionSelect";
@@ -19,8 +19,9 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-
  * A Service's replicas as a row per region: how many run where. A bare count is one row in the Environment's region, or
  * in any region when it has none. A Volume that doesn't allow shared writes fixes the count at 1 and leaves the region to
  * pick. A second region is on offer only where the Store takes one: the Environment has a region, and the Service
- * mounts no Volume. A Service that shares a Volume runs only in the Volume's region. Until the page can act on
- * a click, every control shows disabled, so none is lost.
+ * mounts no Volume. A Service that shares a Volume runs only in the Volume's region. Whether a count names its region
+ * follows the value as last set anywhere but here, such as a pin from `ployz set` while the page is open. Until the page
+ * can act on a click, every control shows disabled, so none is lost.
  */
 export function StoreReplicasRows({ options, value, deployed, home, capped, oneRegion, sharing, changed, onChange }: {
   options: readonly RegionOption[];
@@ -39,10 +40,16 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
   changed: boolean;
   onChange: (value: JsonValue) => Write;
 }) {
-  const [opened] = useState(value);
+  const [theirs, setTheirs] = useState(value);
+  const [written, setWritten] = useState<ReadonlySet<string>>(new Set());
+  if (replicaKey(value) !== replicaKey(theirs) && !written.has(replicaKey(value))) setTheirs(value);
   const live = useHydrated();
   const [rows, hold, commit] = useCommitHold<readonly ReplicaRow[]>(replicaRows(value, home));
-  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home, opened, deployed)));
+  const save = (next: readonly ReplicaRow[]) => {
+    const to = replicaValue(next, home, theirs, deployed);
+    setWritten((before) => new Set(before).add(replicaKey(to)));
+    hold(next, onChange(to));
+  };
   const update = (index: number, change: Partial<ReplicaRow>) => save(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
   const unused = options.find(({ key, servers }) => key !== null && servers.length > 0 && !rows.some(({ region }) => region === key));
   const total = rows.reduce((sum, { count }) => sum + count, 0);

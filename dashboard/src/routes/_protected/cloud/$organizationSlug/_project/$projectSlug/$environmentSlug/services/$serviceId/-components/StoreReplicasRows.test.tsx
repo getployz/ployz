@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { JsonValue } from "@ployz/sdk";
 import { useState } from "react";
 import { renderToString } from "react-dom/server";
@@ -31,8 +31,10 @@ type Held = { capped?: string; attached?: boolean; deployed?: JsonValue; sharing
 /** The rows over a value that takes each write, as the Store hands it back to them. */
 function staged(start: JsonValue, home: string | null, held: Held = {}) {
   const onChange = vi.fn((_: JsonValue) => Promise.resolve());
+  const elsewhere = { set: (_: JsonValue) => {} };
   function Staged() {
     const [value, setValue] = useState(start);
+    elsewhere.set = setValue;
     const kept = replicaRows(value, home).flatMap(({ region }) => region ?? []);
     return (
       <StoreReplicasRows options={regionOptions(servers, [], kept)} value={value} deployed={held.deployed ?? start} home={home}
@@ -41,7 +43,7 @@ function staged(start: JsonValue, home: string | null, held: Held = {}) {
         onChange={(next) => { setValue(next); return onChange(next); }} />
     );
   }
-  return { Staged, onChange };
+  return { Staged, onChange, setElsewhere: (next: JsonValue) => act(() => elsewhere.set(next)) };
 }
 
 function rows(start: JsonValue, home: string | null, held: Held = {}) {
@@ -138,6 +140,17 @@ it("stages nothing when the region just added is removed again", () => {
 it("keeps a region named with ployz set through a count change and a region added and removed", () => {
   const onChange = rows({ fsn: 2 }, "fsn", { deployed: 1 });
   more("Replicas in fsn");
+  click("Add region");
+  click("Remove syd");
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 3 });
+});
+
+it("keeps a region named with ployz set while the page is open through a count change and a region added and removed", () => {
+  const { Staged, onChange, setElsewhere } = staged(2, "fsn");
+  render(<Staged />);
+  setElsewhere({ fsn: 2 });
+  more("Replicas in fsn");
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 3 });
   click("Add region");
   click("Remove syd");
   expect(onChange).toHaveBeenLastCalledWith({ fsn: 3 });
