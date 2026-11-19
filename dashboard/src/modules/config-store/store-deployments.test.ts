@@ -271,6 +271,9 @@ it("offers a fix for a Service the planner refused, and none for one left waitin
   expect(canFixOnBranch(failed, node("cron", "not_attempted"), false)).toBe(true);
   expect(canFixOnBranch(failed, node("api", "failed"), false)).toBe(true);
   expect(waitingServices(failed)).toEqual([{ service: "worker", reason: NO_WRITER }]);
+  // A Service that started in every region with a Server failed on its own: a Branch can fix it.
+  const part = deployment({ nodes, outcome: { ...executed, reason: "api: failed", waiting: [{ service: "api", reason: "no Server in syd", regions: { syd: { waiting: 1, outdated: 0 } } }] } });
+  expect(canFixOnBranch(part, node("api", "failed"), false)).toBe(true);
 });
 
 it("never reads a Deployment that left every Service waiting as deployed", () => {
@@ -577,6 +580,20 @@ it("lists each Server the plan couldn't check, then each run finding, once, and 
     ["extra copy dddddddddddd left running on machine-3 (interrupted). The next full deploy cleans it up", false, "id-extra"],
   ]);
   expect(deployWarningNotices({ nodes: [], runtime_names: {}, preview: null, warnings: [] })).toEqual([]);
+});
+
+it("lists the replicas a Service has waiting, under the Service", () => {
+  const preview = asTestDouble<NonNullable<DeploymentView["preview"]>>()({
+    warnings: [], waiting: [
+      { service: "web", regions: { syd: { waiting: 2, outdated: 0 } }, error: { code: "conflict", message: "no Server in syd", details: {} } },
+      { service: "api", regions: { lhr: { waiting: 1, outdated: 0 }, syd: { waiting: 0, outdated: 1 } }, error: { code: "conflict", message: "no Server in lhr; syd-1 takes no services", details: {} } },
+    ],
+  });
+  const notices = deployWarningNotices({ nodes: [node("web", "deployed")], runtime_names: { web: "web" }, preview, warnings: [] });
+  expect(notices.map(({ text, port, node }) => [text, port, node?.id])).toEqual([
+    ["web: 2 replicas waiting, no Server in syd", false, "id-web"],
+    ["api: 1 replica waiting and 1 still on the old version, no Server in lhr; syd-1 takes no services", false, undefined],
+  ]);
 });
 
 it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and leaves an ended one alone", () => {

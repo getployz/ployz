@@ -1,5 +1,5 @@
 import type { DeploymentView, GitSource } from "@ployz/sdk";
-import { buildInterrupted, buildNodeId, outcomeReason, waitingServices } from "#/modules/config-store/store-deployments";
+import { buildInterrupted, buildNodeId, heldBack, outcomeReason, waitingServices } from "#/modules/config-store/store-deployments";
 import type { MailContent, MailFact } from "#/modules/mail/layout";
 
 export type DeployFailedMail = {
@@ -50,14 +50,18 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
 }
 
 /**
- * The mail for a Deploy GitHub started that left Services waiting on something outside their config: nobody watched it
- * end, and the waiting Services still run what they ran before.
+ * The mail for a Deploy GitHub started that left Services waiting on something outside their config, whole or in some
+ * regions: nobody watched it end, and what waits still runs what it ran before.
  */
 export function deployWaitingMail({ origin, organization, deployment, sources }: DeployFailedMail): Omit<MailContent, "unsubscribe"> {
   const { project, name: environment } = deployment.environment;
   const place = `${project} / ${environment}`;
   const waiting = waitingServices(deployment);
-  const named = waiting.length === 1 ? `${waiting[0]?.service} is` : `${waiting.length} services are`;
+  const [only] = waiting;
+  const held = Object.values(only?.regions ?? {}).reduce((sum, region) => sum + (region?.waiting ?? 0) + (region?.outdated ?? 0), 0);
+  const named = waiting.length !== 1 ? `${waiting.length} services are`
+    : held === 0 ? `${only?.service} is`
+    : held === 1 ? `1 replica of ${only?.service} is` : `${held} replicas of ${only?.service} are`;
   const source = sources.length === 1 ? sources[0] : undefined;
   const commit = source?.commit?.slice(0, 7);
   const segment = (value: string) => encodeURIComponent(value);
@@ -65,7 +69,8 @@ export function deployWaitingMail({ origin, organization, deployment, sources }:
   if (source) facts.push({ label: "Repository", value: source.repository, mono: true });
   if (source?.branch) facts.push({ label: "Branch", value: source.branch, mono: true });
   if (commit) facts.push({ label: "Commit", value: commit, mono: true });
-  facts.push({ label: "Environment", value: place }, ...waiting.map(({ service, reason }) => ({ label: service, value: reason })));
+  facts.push({ label: "Environment", value: place }, ...waiting.map(({ service, reason, regions }) =>
+    ({ label: service, value: regions && Object.keys(regions).length > 0 ? `${heldBack(regions)}, ${reason}` : reason })));
   const rest = deployment.all_waiting ? "Nothing was deployed." : "The rest of the deploy went through.";
   return {
     subject: `${named} waiting to deploy to ${place}`,
