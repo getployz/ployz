@@ -1315,7 +1315,12 @@ fn no_data_snapshot() -> DeploySnapshot {
 }
 
 fn sharing(name: &str, region: &str, volumes: &[&str]) -> RequestedServiceSpec {
-    let mut service = kept_in(spec(name), region);
+    kept_in(sharing_anywhere(name, volumes), region)
+}
+
+/// A Service that names no region, so a Server in any region will do.
+fn sharing_anywhere(name: &str, volumes: &[&str]) -> RequestedServiceSpec {
+    let mut service = spec(name);
     for volume in volumes {
         add_named_volume(&mut service, volume);
         make_provisioned(&mut service, volume, 1_073_741_824);
@@ -1570,6 +1575,106 @@ fn a_volume_shared_across_regions_on_a_server_in_neither_is_refused_for_both() {
     for entry in &preview.blocked {
         assert_eq!(entry.error.details.get("to"), None, "{}", entry.service);
     }
+}
+
+/// A Service that names no region can run beside one kept in fsn, so a Volume they share is
+/// never refused for that. Where its Server sits is down to the Servers' labels, which a
+/// label command changes without touching the config: the Service kept in fsn waits.
+#[test]
+fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
+    let free = sharing_anywhere("free", &["data"]);
+    let solo = sharing("solo", "fsn", &["data"]);
+    let full = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&free, &solo],
+        PlanOptions::default(),
+    );
+    let mut by_name = full.clone();
+    by_name.options.selected = vec![ServiceAttempt {
+        name: solo.name.clone(),
+    }];
+
+    for (case, regions, holder_has_region) in [
+        ("holder in no region", ["syd", "fsn"], false),
+        ("holder in syd", ["fsn", "syd"], true),
+    ] {
+        let mut snapshot = shared_data_snapshot();
+        snapshot.machines = snapshot
+            .machines
+            .into_iter()
+            .zip(regions)
+            .map(|(machine, region)| in_region(machine, region))
+            .collect();
+        let mut third = in_region(machine('3', "third"), "fsn");
+        third.storage = Some(MachineStorageObservation::Ready);
+        snapshot.machines.push(third);
+        if !holder_has_region {
+            snapshot.machines[1].machine.labels.clear();
+        }
+        for (scope, intent, started) in [
+            ("full", &full, names(&["free"])),
+            ("by name", &by_name, names(&[])),
+        ] {
+            let preview = runner_preview(intent, &snapshot).unwrap();
+
+            let (planned, blocked) = planned_and_blocked(&preview);
+            assert_eq!(planned, started, "{case}, {scope}");
+            assert_eq!(
+                blocked,
+                BTreeMap::from([("solo".to_owned(), "data is on second".to_owned())]),
+                "{case}, {scope}"
+            );
+            let [entry] = preview.blocked.as_slice() else {
+                panic!("{case}, {scope}: {:?}", preview.blocked)
+            };
+            assert_eq!(entry.kind, ployz_core::BlockedKind::Wait, "{case}, {scope}");
+            assert_eq!(
+                entry.error.details.get("reason"),
+                Some(&serde_json::json!("volume_outside_region")),
+                "{case}, {scope}"
+            );
+        }
+    }
+}
+
+/// `free` can run in either region, so it is no reason the Volume can't be in one. The
+/// line names the Services that are.
+#[test]
+fn a_refusal_of_a_shared_volume_leaves_out_a_service_naming_no_region() {
+    let api = sharing("api", "fsn", &["data"]);
+    let worker = sharing("worker", "syd", &["data"]);
+    let free = sharing_anywhere("free", &["data"]);
+    let mut snapshot = shared_data_snapshot();
+    snapshot.machines[1].machine.labels.clear();
+    let mut third = in_region(machine('3', "third"), "fsn");
+    third.storage = Some(MachineStorageObservation::Ready);
+    snapshot.machines.push(third);
+    let intent = DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&api, &worker, &free],
+        PlanOptions::default(),
+    );
+
+    let preview = runner_preview(&intent, &snapshot).unwrap();
+
+    let (planned, blocked) = planned_and_blocked(&preview);
+    assert_eq!(planned, names(&["free"]));
+    let line = "data is shared by api in fsn and worker in syd. Run them in one region, or give \
+                each its own Volume";
+    assert_eq!(
+        blocked,
+        BTreeMap::from([
+            ("api".to_owned(), line.to_owned()),
+            ("worker".to_owned(), line.to_owned()),
+        ])
+    );
+    assert_eq!(
+        kinds(&preview),
+        [
+            ployz_core::BlockedKind::Refusal,
+            ployz_core::BlockedKind::Refusal
+        ]
+    );
 }
 
 /// Two Services kept in different regions hold `data` and `logs` apart, so no region can

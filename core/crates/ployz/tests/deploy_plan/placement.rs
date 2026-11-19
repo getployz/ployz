@@ -1959,6 +1959,101 @@ fn the_extra_replica_removed_from_a_waiting_region_is_the_one_on_the_old_version
     assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
 }
 
+/// The only region a Service counts has no Server that takes services. A smaller count
+/// still removes the replica it no longer asks for, and the one left is no reason to wait.
+#[test]
+fn a_smaller_count_removes_the_extra_replica_when_every_counted_region_waits() {
+    let was = by_region(replicated("api", 1), &[("syd", 2)]);
+    let api = by_region(replicated("api", 1), &[("syd", 1)]);
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![drained],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '1', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert_eq!(
+        removed_from(&preview, '1').len(),
+        1,
+        "{:?} {:?}",
+        operations(&preview),
+        preview.blocked
+    );
+    assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+
+    let unchanged = plan_deploy(
+        [&api],
+        &DeploySnapshot {
+            containers: vec![container('c', '1', &api, &service_id('a'))],
+            ..snapshot
+        },
+        runner_options(),
+    )
+    .unwrap();
+    assert!(unchanged.noop(), "{:?}", operations(&unchanged));
+    assert!(unchanged.waiting.is_empty(), "{:?}", unchanged.waiting);
+    assert!(unchanged.blocked.is_empty(), "{:?}", unchanged.blocked);
+}
+
+/// With every counted region waiting, the replica on the old version goes first.
+#[test]
+fn the_replica_on_the_old_version_is_removed_when_every_counted_region_waits() {
+    let was = by_region(replicated("api", 1), &[("syd", 2)]);
+    let mut api = by_region(replicated("api", 1), &[("syd", 1)]);
+    api.container.image = "ghcr.io/getployz/api:new".into();
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![drained],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '1', &api, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert_eq!(removed_from(&preview, '1'), [container_id('b')]);
+    assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+}
+
+/// A Service that never started has nothing to remove, so it still waits for a Server.
+#[test]
+fn a_service_never_started_in_a_region_that_takes_no_services_still_waits() {
+    let api = by_region(replicated("api", 1), &[("syd", 1)]);
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![drained],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
+    assert_eq!(blocked.error.message, "first takes no services");
+    assert!(operations(&preview).is_empty(), "{:?}", operations(&preview));
+}
+
+fn runner_options() -> PlanOptions {
+    PlanOptions {
+        block_unmountable: true,
+        ..Default::default()
+    }
+}
+
 /// The Containers `preview` removes from the Machine `hex` names.
 fn removed_from(preview: &DeployPreview, hex: char) -> Vec<ContainerId> {
     operations(preview)
