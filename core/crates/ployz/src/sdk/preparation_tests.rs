@@ -73,6 +73,7 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
         build_receipts: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
+        pins: BTreeMap::new(),
     }
 }
 
@@ -1138,6 +1139,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
             .collect(),
         build_index: 0,
         preferred_machine: None,
+        pins: BTreeMap::new(),
     };
     let first = session
         .prepare(input(deployment.clone(), BTreeMap::new(), "a".repeat(40)))
@@ -1340,6 +1342,7 @@ fn uploaded(root: &Path, with_source: bool) -> crate::sdk::PreparationInput {
         build_receipts: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
+        pins: BTreeMap::new(),
     }
 }
 

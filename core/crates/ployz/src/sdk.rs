@@ -405,28 +405,26 @@ pub async fn connect_expecting(
     Ok(dial(connections, connector, expect).await?)
 }
 
-/// [`connect_connections`] to nonempty `connections`, keeping the connection error.
 /// Drain `machine` within `scope` on one of `connections`, as
 /// [`Session::drain_machine`], handing each Server, with each copy it moves there, the
 /// signed versions `store` keeps in `organization` for that copy's own spec. With
 /// `expect`, only a Server whose Cluster holds that Sealing public key answers.
 ///
 /// # Errors
-/// Returns the connection's error when no Server can be reached, or what
-/// [`Session::drain_machine`] returns.
+/// Returns `invalid_argument` for no `connections`, the connection's error when no
+/// Server can be reached, or what [`Session::drain_machine`] returns.
 pub async fn drain_machine_kept(
     connections: Vec<Connection>,
     expect: Option<crate::connect::ClusterExpectation>,
     (store, organization): (Arc<ployz_store::ConfigStore>, ployz_store::OrganizationId),
     (machine, scope): (&str, &crate::drain::DrainScope),
 ) -> Result<crate::drain::DrainReport, RpcError> {
-    let session = dial(
+    let session = connect_expecting(
         connections,
         Arc::new(crate::connect::SystemConnector::default()),
         expect,
     )
-    .await
-    .map_err(RpcError::from)?;
+    .await?;
     let kept = crate::cluster::KeptVersions::new(store, organization);
     let client = session
         .client()
@@ -439,6 +437,7 @@ pub async fn drain_machine_kept(
     report
 }
 
+/// [`connect_connections`] to nonempty `connections`, keeping the connection error.
 async fn dial(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,

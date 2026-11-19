@@ -39,9 +39,9 @@ struct Approvals {
 enum Versions {
     #[default]
     None,
-    /// A Deploy's: the versions of each Service it creates, every copy of which runs one
-    /// spec.
-    ByService(BTreeMap<ServiceName, Vec<Signed<ServiceVersion>>>),
+    /// A Deploy's: the versions of each Service it creates, by the digest each signs. A
+    /// copy carries those of its own spec's digest.
+    ByService(BTreeMap<ServiceName, Vec<(PayloadDigest, Signed<ServiceVersion>)>>),
     /// A drain's: each moved copy runs its own spec, so its versions are read from the
     /// Config Store when the drain reaches it.
     Kept(KeptVersions),
@@ -128,12 +128,15 @@ impl DeployContext {
         Arc::make_mut(&mut self.approvals).proofs = proofs;
     }
 
-    /// Hand each Service's creations the versions signed for it, newest last.
+    /// Hand each Service's creations the versions signed for their spec, newest last.
     pub(super) fn set_versions(&mut self, versions: Vec<Signed<ServiceVersion>>) {
         let mut by_service: BTreeMap<ServiceName, Vec<_>> = BTreeMap::new();
         for version in versions {
             if let Ok(body) = version.open() {
-                by_service.entry(body.service).or_default().push(version);
+                by_service
+                    .entry(body.service)
+                    .or_default()
+                    .push((body.digest, version));
             }
         }
         Arc::make_mut(&mut self.approvals).versions = Versions::ByService(by_service);
@@ -154,13 +157,19 @@ impl DeployContext {
                     ..
                 },
                 Versions::ByService(by_service),
-            ) => by_service
-                .get(&new.slot.service)
-                .map(|versions| {
-                    let skip = versions.len().saturating_sub(MAX_PRESENTED);
-                    versions.iter().skip(skip).cloned().collect()
-                })
-                .unwrap_or_default(),
+            ) => {
+                let digest =
+                    PayloadDigest::of(&new.resolved_spec.to_requested(), &new.slot.namespace).ok();
+                let signed: Vec<_> = by_service
+                    .get(&new.slot.service)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(signs, _)| Some(*signs) == digest)
+                    .map(|(_, version)| version.clone())
+                    .collect();
+                let skip = signed.len().saturating_sub(MAX_PRESENTED);
+                signed.into_iter().skip(skip).collect()
+            }
             (
                 ContainerWant::Running {
                     container: RunTarget::New(new),
@@ -215,3 +224,7 @@ fn proof_for(
         .cloned()
         .map(Box::new)
 }
+
+#[cfg(test)]
+#[path = "deploy_context_tests.rs"]
+mod tests;

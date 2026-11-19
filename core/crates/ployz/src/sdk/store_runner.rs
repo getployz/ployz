@@ -633,11 +633,17 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let approval = claimed.approval.clone();
-        let versions = pin_ran(
-            &mut claimed.intent.target,
-            &claimed.intent.namespace,
-            &claimed.ran,
-        );
+        let pins = pins(&claimed.ran);
+        for spec in &mut claimed.intent.target {
+            if let Some(image) = pins.get(&spec.name) {
+                spec.container.image.clone_from(image);
+            }
+        }
+        let versions = claimed
+            .ran
+            .values()
+            .flat_map(|pinned| pinned.versions.iter().cloned())
+            .collect();
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let mut rules = crate::cluster::RuleProofs::default();
@@ -651,7 +657,8 @@ impl Run {
                 Ok(mut receipts) => {
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self.reader.as_ref()).await;
-                    self.prepare(session, claimed, targets, receipts).await
+                    self.prepare(session, claimed, targets, (receipts, pins))
+                        .await
                 }
                 Err(unbuilt) => return self.unbuilt(unbuilt).await,
             }
@@ -937,7 +944,10 @@ impl Run {
         session: &Session,
         claimed: Claimed,
         targets: Vec<Target>,
-        receipts: BTreeMap<ServiceName, BuildReceipt>,
+        (receipts, pins): (
+            BTreeMap<ServiceName, BuildReceipt>,
+            BTreeMap<ServiceName, String>,
+        ),
     ) -> Result<PreparedDeploy, Unprepared> {
         let mut input = PreparationInput {
             deployment: claimed.input,
@@ -945,6 +955,7 @@ impl Run {
                 .into_iter()
                 .map(|(service, receipt)| (service, vec![receipt]))
                 .collect(),
+            pins,
             ..PreparationInput::default()
         };
         for target in &targets {
@@ -1568,29 +1579,15 @@ async fn rule_proofs(
     proofs
 }
 
-/// Write the image each Service ran into its spec, so the Servers are asked to create
-/// the spec a person signed, and return the signed versions of each spec whose digest is
-/// still the one it ran. The Saved State keeps the tag. A spec whose signed settings
-/// changed since carries none, and a Server that needs one refuses it.
-fn pin_ran(
-    target: &mut [ployz_core::RequestedServiceSpec],
-    namespace: &ployz_core::Namespace,
-    ran: &BTreeMap<ServiceName, ployz_store::Pinned>,
-) -> Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>> {
-    let mut versions = Vec::new();
-    for spec in target {
-        let Some(pinned) = ran.get(&spec.name) else {
-            continue;
-        };
-        if let Some(pin) = &pinned.ran.pin {
-            spec.container.image.clone_from(&pin.image);
-        }
-        let digest = ployz_core::authority::PayloadDigest::of(spec, namespace);
-        if digest.ok() == Some(pinned.ran.digest) {
-            versions.extend(pinned.versions.iter().cloned());
-        }
-    }
-    versions
+/// The image each Service's tag runs as, which the runner writes into its spec so the
+/// Servers are asked to create the spec a person signed. The Saved State keeps the tag.
+fn pins(ran: &BTreeMap<ServiceName, ployz_store::Pinned>) -> BTreeMap<ServiceName, String> {
+    ran.iter()
+        .filter_map(|(service, pinned)| {
+            let pin = pinned.ran.pin.as_ref()?;
+            Some((service.clone(), pin.image.clone()))
+        })
+        .collect()
 }
 
 /// The uploaded Services among `targets` that build from an earlier upload than
