@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, MachineId, Namespace,
-    PortPublication, Region, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig,
-    ServiceContainer, ServiceId, ServiceMode, ServiceName, ServiceObservation, SpecChange,
-    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder,
-    compare_specs,
+    PortPublication, Region, RegionWait, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -485,9 +485,20 @@ fn on_machine(
 pub(super) struct Spread<'a> {
     requested: &'a RequestedServiceSpec,
     regions: Vec<RegionShare>,
+    waiting: Vec<RegionShare>,
+}
+
+/// How near a Container in a waiting region is to the replica this Deploy asks for,
+/// from the furthest.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum Standing {
+    NotServing,
+    Outdated,
+    Settled,
 }
 
 pub(super) struct RegionShare {
+    pub(super) region: Region,
     pub(super) spec: RequestedServiceSpec,
     count: usize,
     labelled: BTreeSet<MachineId>,
@@ -503,6 +514,7 @@ impl<'a> Spread<'a> {
             .iter()
             .filter(|_| matches!(requested.mode, ServiceMode::Replicated { .. }))
             .map(|(region, count)| RegionShare {
+                region: region.clone(),
                 spec: requested.held_to(region),
                 count: count.get() as usize,
                 labelled: snapshot
@@ -513,13 +525,85 @@ impl<'a> Spread<'a> {
                     .collect(),
             })
             .collect();
-        Self { requested, regions }
+        Self {
+            requested,
+            regions,
+            waiting: Vec::new(),
+        }
     }
 
     fn anywhere(requested: &'a RequestedServiceSpec) -> Self {
         Self {
             requested,
             regions: Vec::new(),
+            waiting: Vec::new(),
+        }
+    }
+
+    pub(super) fn wait_for(&mut self, away: &[super::RegionAway]) {
+        let (waiting, starting) = std::mem::take(&mut self.regions)
+            .into_iter()
+            .partition(|share| away.iter().any(|away| away.region == share.region));
+        self.regions = starting;
+        self.waiting = waiting;
+    }
+
+    /// What each waiting region holds back of its count, given the Service's `current`
+    /// Containers: a replica there that already runs this Deploy's version waits for
+    /// nothing.
+    pub(super) fn held_back(&self, current: &[ServiceContainer]) -> BTreeMap<Region, RegionWait> {
+        self.waiting
+            .iter()
+            .filter_map(|share| {
+                let standing = |standing| {
+                    current
+                        .iter()
+                        .map(ServiceContainer::as_observation)
+                        .filter(|observation| share.labelled.contains(&observation.machine_id))
+                        .filter(|observation| self.standing(observation) == standing)
+                        .count()
+                };
+                let short = share.count.saturating_sub(standing(Standing::Settled));
+                let outdated = standing(Standing::Outdated).min(short);
+                let count = |count: usize| u32::try_from(count).unwrap_or(u32::MAX);
+                (short > 0).then(|| {
+                    let wait = RegionWait {
+                        waiting: count(short - outdated),
+                        outdated: count(outdated),
+                    };
+                    (share.region.clone(), wait)
+                })
+            })
+            .collect()
+    }
+
+    /// The Containers the waiting regions keep as they are: in each, as many as its count,
+    /// those nearest this Deploy's version first. A Server that can't start a replica can
+    /// still give one up, so a Container past the count is removed like any other.
+    fn left_running(&self, current: &[ServiceContainer]) -> Vec<ContainerId> {
+        self.waiting
+            .iter()
+            .flat_map(|share| {
+                let mut held = current
+                    .iter()
+                    .map(ServiceContainer::as_observation)
+                    .filter(|observation| share.labelled.contains(&observation.machine_id))
+                    .collect::<Vec<_>>();
+                held.sort_by_key(|observation| std::cmp::Reverse(self.standing(observation)));
+                held.into_iter()
+                    .take(share.count)
+                    .map(|observation| observation.container_id)
+            })
+            .collect()
+    }
+
+    fn standing(&self, observation: &ContainerObservation) -> Standing {
+        if !observation.runtime.may_serve() || !serving_rotation(observation) {
+            return Standing::NotServing;
+        }
+        match compare_specs(&observation.resolved_spec, self.requested) {
+            SpecChange::UpToDate | SpecChange::NeedsPlacementUpdate => Standing::Settled,
+            SpecChange::NeedsUpdate | SpecChange::NeedsRecreate => Standing::Outdated,
         }
     }
 
@@ -711,6 +795,7 @@ pub(super) fn plan_replicated(
         };
         emitter.emit(&mut placement.sockets, &mut operations, machine_id, replica)?;
     }
+    used.extend(target.spread.left_running(current));
     remove_unused(&mut operations, requested, current, &used, placement);
     Ok((operations, reservation.hook_machine))
 }

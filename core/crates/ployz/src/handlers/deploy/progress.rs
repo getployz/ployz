@@ -21,6 +21,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 pub(super) fn frame(view: &DeploymentView) -> Frame {
     let mut rows = Vec::new();
+    let mut held_back = ployz_core::RegionWait::default();
     let pulling = pulling(view);
     for (index, node) in view.nodes.iter().enumerate() {
         let DeployedNode::Service { name, .. } = &node.node else {
@@ -81,6 +82,19 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                         _ => word.to_owned(),
                     }
                 })
+            });
+        }
+        if let Some(waiting) = view
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.waiting_replicas(runtime))
+        {
+            held_back.waiting += waiting.waiting();
+            held_back.outdated += waiting.outdated();
+            let waiting = waiting_detail(waiting);
+            row.detail = Some(match row.detail.take() {
+                Some(detail) => format!("{detail}; {waiting}"),
+                None => waiting,
             });
         }
         rows.push(row);
@@ -147,6 +161,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
                 }
                 notices
             }),
+        held_back,
     }
 }
 
@@ -234,6 +249,35 @@ fn runtime_row(
             },
         }),
     )
+}
+
+/// What a Service's waiting regions hold back, with why: the replicas that do not run,
+/// and the ones that run what they ran before the Deploy.
+pub(super) fn waiting_detail(waiting: &ployz_core::WaitingReplicas) -> String {
+    format!(
+        "{}, {}",
+        held_back(waiting.waiting(), waiting.outdated()),
+        crate::ui::escaped(&waiting.error.message)
+    )
+}
+
+fn held_back(waiting: u32, outdated: u32) -> String {
+    match (waiting, outdated) {
+        (waiting, 0) => format!("{} waiting", replicas(waiting)),
+        (0, outdated) => format!("{} still on the old version", replicas(outdated)),
+        (waiting, outdated) => format!(
+            "{} waiting and {outdated} still on the old version",
+            replicas(waiting)
+        ),
+    }
+}
+
+fn replicas(count: u32) -> String {
+    if count == 1 {
+        "1 replica".to_owned()
+    } else {
+        format!("{count} replicas")
+    }
 }
 
 /// A node's state from its outcome. One still Pending reads as its build when that
@@ -342,18 +386,33 @@ pub(super) fn builders(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
-/// One line for each Service the planner left waiting, with what it waits on.
+/// One line for each Service the planner left waiting, whole or in some regions, with
+/// what it waits on.
 pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
     let Some(ployz_store::Outcome::Executed { waiting, .. }) = &view.deployment.outcome else {
         return Vec::new();
     };
     waiting
         .iter()
-        .map(|waiting| {
+        .map(|entry| {
+            let held = |count: fn(&ployz_core::RegionWait) -> u32| -> u32 {
+                entry.regions.values().map(count).sum()
+            };
+            let what = if entry.regions.is_empty() {
+                "is waiting".to_owned()
+            } else {
+                format!(
+                    "has {}",
+                    held_back(
+                        held(|region| region.waiting),
+                        held(|region| region.outdated)
+                    )
+                )
+            };
             format!(
-                "{} is waiting: {}",
-                waiting.service,
-                crate::ui::escaped(&waiting.reason)
+                "{} {what}: {}",
+                entry.service,
+                crate::ui::escaped(&entry.reason)
             )
         })
         .collect()
@@ -1037,6 +1096,64 @@ mod tests {
     /// A Volume outside its Service's region leaves the Service waiting. The Deploy
     /// names the move into the region when that is all it left, and when something
     /// else failed beside it.
+    #[test]
+    fn a_settled_deployment_says_which_replicas_of_a_service_are_still_waiting() {
+        let mut view = view();
+        view.runtime_names.clear();
+        view.nodes = serde_json::from_value(serde_json::json!([
+            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "deployed", "rows": []}
+        ]))
+        .unwrap();
+        view.preview = Some(
+            serde_json::from_value(serde_json::json!({
+                "namespace": "shop-production", "warnings": [], "operations": [],
+                "waiting": [{"service": "web", "regions": {"syd": {"waiting": 2, "outdated": 0}}, "error": {"code": "conflict", "message": "no Server in syd"}}]
+            }))
+            .unwrap(),
+        );
+
+        assert_eq!(
+            super::super::node_line(&view, view.nodes.first().unwrap()),
+            "  web: deployed (2 replicas waiting, no Server in syd)"
+        );
+    }
+
+    #[test]
+    fn a_service_with_replicas_waiting_reads_what_they_wait_for() {
+        let mut view = view();
+        view.runtime_names.clear();
+        view.nodes = serde_json::from_value(json!([
+            {"type": "service", "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "name": "web", "outcome": "deployed", "rows": [
+                {"machine_id": "a".repeat(32), "server": "edge", "state": "completed", "started_at": 1, "finished_at": 2}
+            ]}
+        ]))
+        .unwrap();
+        view.preview = Some(
+            serde_json::from_value(json!({
+                "namespace": "shop-production", "warnings": [], "operations": [],
+                "waiting": [{
+                    "service": "web",
+                    "regions": {"lhr": {"waiting": 1, "outdated": 0}, "syd": {"waiting": 0, "outdated": 1}},
+                    "error": {"code": "conflict", "message": "no Server in lhr; syd-1 takes no services"}
+                }]
+            }))
+            .unwrap(),
+        );
+
+        let text = crate::ui::progress::settled_text(&frame(&view));
+
+        assert!(
+            text.contains(
+                "(1 replica waiting and 1 still on the old version, no Server in lhr; syd-1 takes no services)"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("1 replica waiting · 1 replica on the old version · across 1 server\n"),
+            "{text}"
+        );
+    }
+
     #[test]
     fn a_volume_outside_its_services_region_names_the_move_into_it() {
         let mut view = view();
@@ -1962,6 +2079,7 @@ mod tests {
             waiting: vec![ployz_store::WaitingService {
                 service: "web".parse().unwrap(),
                 reason: "Volume data has no writer; fsn-2 holds its only copy".to_owned(),
+                regions: Default::default(),
             }],
         });
         assert_eq!(
@@ -1970,6 +2088,35 @@ mod tests {
         );
         let failure = completion(&view, None, &[], command).unwrap_err();
         assert!(!failure.is_outcome());
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
+    fn an_applied_deploy_that_left_replicas_waiting_counts_them_and_is_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.outcome = Some(
+            serde_json::from_value(json!({
+                "type": "executed", "summary": {}, "cause": [],
+                "waiting": [{
+                    "service": "api",
+                    "reason": "no Server in lhr; syd-1 takes no services",
+                    "regions": {
+                        "lhr": {"waiting": 1, "outdated": 0},
+                        "syd": {"waiting": 0, "outdated": 1}
+                    }
+                }]
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            waiting(&view),
+            [
+                "api has 1 replica waiting and 1 still on the old version: no Server in lhr; \
+                 syd-1 takes no services"
+            ]
+        );
+        let failure = completion(&view, None, &[], command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }
 

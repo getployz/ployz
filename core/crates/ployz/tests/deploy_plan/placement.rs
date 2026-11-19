@@ -1,7 +1,10 @@
-use std::{collections::BTreeSet, num::NonZeroU64};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU64,
+};
 
 use super::support::*;
-use ployz_core::MachineStorageObservation;
+use ployz_core::{MachineStorageObservation, Region, RegionWait};
 #[test]
 fn new_replicated_service_runs_the_requested_count_across_available_machines() {
     let requested = requested(ServiceMode::Replicated {
@@ -1227,7 +1230,7 @@ fn a_region_whose_servers_cannot_run_services_stops_only_the_services_kept_in_it
     assert_eq!(blocked.service, api.name);
     assert_eq!(
         blocked.error.message,
-        "first is down, third doesn't run services, and no other Server in fsn is up"
+        "first is down, third takes no services"
     );
     assert_eq!(
         blocked.error.details.get("reason"),
@@ -1669,7 +1672,7 @@ fn a_region_that_loses_a_replica_keeps_its_other_one_running() {
 }
 
 #[test]
-fn a_region_no_server_is_in_stops_every_replica_of_a_service_counted_in_it() {
+fn a_region_with_no_server_waits_while_the_service_starts_in_the_others() {
     let was = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1)]);
     let mut api = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1), ("nrt", 1)]);
     api.container.image = "ghcr.io/getployz/api:new".into();
@@ -1693,24 +1696,120 @@ fn a_region_no_server_is_in_stops_every_replica_of_a_service_counted_in_it() {
     )
     .unwrap();
 
-    let [blocked] = preview.blocked.as_slice() else {
-        panic!("{:?}", preview.blocked)
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
     };
-    assert_eq!(blocked.service, api.name);
-    assert_eq!(blocked.error.message, "no Server in lhr or nrt");
+    assert_eq!(waiting.service, api.name);
+    let region = |name: &str| Region::parse(name).unwrap();
+    assert_eq!(
+        waiting.regions,
+        BTreeMap::from([
+            (region("lhr"), not_running(1)),
+            (region("nrt"), not_running(1))
+        ])
+    );
+    assert_eq!(waiting.error.message, "no Server in lhr or nrt");
+    assert_eq!(
+        waiting.error.details.get("reason"),
+        Some(&serde_json::json!("region_unmatched"))
+    );
+    let operations = operations(&preview);
     assert!(
-        matches!(
-            operations(&preview).as_slice(),
-            [DeployOperation::RunContainer { machine_id: on, spec, .. }]
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::ReplaceContainer(replacement)
+                if replacement.machine_id == machine_id('2') && replacement.spec.name == api.name
+        )),
+        "{operations:?}"
+    );
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { machine_id: on, spec, .. }
                 if on == &machine_id('2') && spec.name == web.name
-        ),
-        "{:?}",
-        operations(&preview)
+        )),
+        "{operations:?}"
     );
 }
 
 #[test]
-fn a_region_whose_servers_are_down_stops_a_service_counted_in_it_and_names_them() {
+fn a_replica_running_in_a_region_with_no_server_up_keeps_running_while_it_waits() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1), ("lhr", 1)]);
+    let mut down = in_region(machine('1', "first"), "syd");
+    down.membership = MembershipObservation::Down;
+    let snapshot = DeploySnapshot {
+        machines: vec![down, in_region(machine('2', "second"), "fsn")],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '2', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let operations = operations(&preview);
+    assert!(
+        !operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::StopContainer { .. } | DeployOperation::RemoveContainer { .. }
+        )),
+        "{operations:?}"
+    );
+    assert_eq!(preview.waiting.len(), 1, "{:?}", preview.waiting);
+}
+
+#[test]
+fn a_replica_in_a_region_the_counts_dropped_still_stops_while_another_region_waits() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("nrt", 1)]);
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "nrt"),
+            in_region(machine('2', "second"), "fsn"),
+        ],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '2', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(preview.waiting.len(), 1, "{:?}", preview.waiting);
+    let operations = operations(&preview);
+    assert!(
+        operations.iter().any(|operation| matches!(
+            operation,
+            DeployOperation::StopContainer { machine_id: on, .. }
+                | DeployOperation::RemoveContainer { machine_id: on, .. }
+                if on == &machine_id('1')
+        )),
+        "{operations:?}"
+    );
+}
+
+#[test]
+fn a_region_whose_servers_are_down_waits_and_names_them() {
     let api = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1), ("syd", 1)]);
     let mut down = in_region(machine('1', "first"), "syd");
     down.membership = MembershipObservation::Down;
@@ -1729,22 +1828,187 @@ fn a_region_whose_servers_are_down_stops_a_service_counted_in_it_and_names_them(
     )
     .unwrap();
 
-    let [blocked] = preview.blocked.as_slice() else {
-        panic!("{:?}", preview.blocked)
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
+    };
+    assert_eq!(waiting.waiting(), 2);
+    assert_eq!(waiting.error.message, "no Server in lhr; first is down");
+    assert_eq!(run_machine_ids(&preview), [machine_id('2')]);
+}
+
+#[test]
+fn a_replica_on_a_server_that_takes_no_services_is_reported_on_the_old_version() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let mut api = was.clone();
+    api.container.image = "ghcr.io/getployz/api:new".into();
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![drained, in_region(machine('2', "second"), "fsn")],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '2', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+    let runner = || PlanOptions {
+        block_unmountable: true,
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner()).unwrap();
+
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
     };
     assert_eq!(
-        blocked.error.message,
-        "no Server in lhr; first is down, and no other Server in syd is up"
+        waiting.regions,
+        BTreeMap::from([(
+            Region::parse("syd").unwrap(),
+            RegionWait {
+                waiting: 0,
+                outdated: 1
+            }
+        )])
     );
-    assert_eq!(
-        blocked.error.details.get("regions"),
-        Some(&serde_json::json!(["lhr", "syd"]))
-    );
+    assert_eq!(waiting.error.message, "first takes no services");
     assert!(
-        operations(&preview).is_empty(),
+        matches!(
+            operations(&preview).as_slice(),
+            [DeployOperation::ReplaceContainer(replacement)] if replacement.machine_id == machine_id('2')
+        ),
         "{:?}",
         operations(&preview)
     );
+
+    let unchanged = plan_deploy([&was], &snapshot, runner()).unwrap();
+    assert!(unchanged.waiting.is_empty(), "{:?}", unchanged.waiting);
+    assert!(unchanged.noop(), "{:?}", operations(&unchanged));
+}
+
+/// A Server that takes no services starts nothing new. It still gives up a replica its
+/// region no longer counts.
+#[test]
+fn a_smaller_count_removes_the_extra_replica_from_a_server_that_takes_no_services() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 2)]);
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![drained, in_region(machine('2', "second"), "fsn")],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '1', &was, &service_id('a')),
+            container('d', '2', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        removed_from(&preview, '1').len(),
+        1,
+        "{:?}",
+        operations(&preview)
+    );
+    assert_eq!(removed_from(&preview, '2'), []);
+    assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
+    assert!(preview.blocked.is_empty(), "{:?}", preview.blocked);
+}
+
+/// The replica a waiting region keeps is one already on this Deploy's version, so the
+/// count the user asked for is met there and nothing is left on the old one.
+#[test]
+fn the_extra_replica_removed_from_a_waiting_region_is_the_one_on_the_old_version() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 2)]);
+    let mut api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    api.container.image = "ghcr.io/getployz/api:new".into();
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![drained, in_region(machine('2', "second"), "fsn")],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '1', &api, &service_id('a')),
+            container('d', '2', &api, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(removed_from(&preview, '1'), [container_id('b')]);
+    assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
+}
+
+/// The Containers `preview` removes from the Machine `hex` names.
+fn removed_from(preview: &DeployPreview, hex: char) -> Vec<ContainerId> {
+    operations(preview)
+        .into_iter()
+        .filter_map(|operation| {
+            if let DeployOperation::RemoveContainer {
+                machine_id: on,
+                container_id,
+                ..
+            } = operation
+                && on == machine_id(hex)
+            {
+                Some(container_id)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn not_running(waiting: u32) -> RegionWait {
+    RegionWait {
+        waiting,
+        outdated: 0,
+    }
+}
+
+#[test]
+fn a_service_counted_only_in_regions_with_no_server_is_blocked_not_waiting() {
+    let api = by_region(replicated("api", 1), &[("lhr", 1), ("syd", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![in_region(machine('2', "second"), "fsn")],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy(
+        [&api],
+        &snapshot,
+        PlanOptions {
+            block_unmountable: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.error.message, "no Server in lhr or syd");
 }
 
 fn replicated(name: &str, replicas: u32) -> RequestedServiceSpec {

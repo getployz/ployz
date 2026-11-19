@@ -59,8 +59,8 @@ use ployz_core::config::{
 use ployz_core::{
     BlockedKind, ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview,
     DeployWarning, DockerVolumeId, ExecutionError, FailedOperation, MachineId, Namespace,
-    PruneScope, Region, RpcError, ServiceAttempt, ServiceName, ServiceOutcome, ServiceRemovals,
-    VolumeRemoval, VolumeRemovalOutcome,
+    PruneScope, Region, RegionWait, RpcError, ServiceAttempt, ServiceName, ServiceOutcome,
+    ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -499,6 +499,11 @@ pub struct WaitingService {
     pub service: ServiceName,
     /// What it waits on, in the planner's words; users read it.
     pub reason: String,
+    /// The replicas the Deploy did not bring to its version, by region, when the
+    /// Service started in its other regions. Empty when none of it started.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(as = "Option<BTreeMap<Region, RegionWait>>", optional)]
+    pub regions: BTreeMap<Region, RegionWait>,
 }
 
 /// What a Deployment's runner recorded at its end.
@@ -527,9 +532,10 @@ pub enum Outcome {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(as = "Option<bool>", optional)]
         cancelled: bool,
-        /// The Services the planner left waiting, however the Deployment ended:
-        /// each reads Not attempted. They fail nothing, so `reason` never names
-        /// one. A Deployment that did all it planned ends Applied with them.
+        /// The Services the planner left waiting, whole or in some regions,
+        /// however the Deployment ended. One left whole reads Not attempted.
+        /// They fail nothing, so `reason` never names one. A Deployment that
+        /// did all it planned ends Applied with them.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[ts(as = "Option<Vec<WaitingService>>", optional)]
         waiting: Vec<WaitingService>,

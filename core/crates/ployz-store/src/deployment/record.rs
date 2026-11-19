@@ -246,16 +246,18 @@ pub(crate) fn record(
                 End::Failed
             };
             let mut waiting: Vec<WaitingService> = preview
-                .blocked
-                .iter()
-                .filter(|entry| entry.kind == BlockedKind::Wait)
-                .map(|entry| WaitingService {
-                    service: current_service(&stored.nodes, &entry.service).clone(),
-                    reason: entry.error.message.chars().take(500).collect(),
+                .waits()
+                .filter(|wait| wait.kind == BlockedKind::Wait)
+                .map(|wait| WaitingService {
+                    service: current_service(&stored.nodes, wait.service).clone(),
+                    reason: wait.error.message.chars().take(500).collect(),
+                    regions: wait
+                        .partial
+                        .map(|partial| partial.regions.clone())
+                        .unwrap_or_default(),
                 })
                 .collect();
             waiting.sort_by(|a, b| a.service.cmp(&b.service));
-            waiting.dedup_by(|a, b| a.service == b.service);
             let outcome = Outcome::Executed {
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,

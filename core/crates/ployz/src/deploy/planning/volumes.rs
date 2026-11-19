@@ -7,11 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    BlockedKind, BlockedService, CopyRole, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, KnownCopy, MachineId, MachineObservation, Namespace, Operator,
-    PlacementConstraint, PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    ServiceStorageSpec, ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
+    BlockedService, CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
+    KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
+    PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
+    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServiceStorageSpec,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
 };
 
 use crate::deploy::{
@@ -33,6 +33,10 @@ pub(super) struct VolumePlan<'snapshot> {
     /// Deployed Volumes the applied Services mount. A lost one an unselected Service
     /// mounts leaves this Deploy alone.
     deployed_volumes: BTreeSet<DockerVolumeName>,
+    /// Every Service of the target that mounts each Volume, with the one region it is
+    /// kept in, by name. A Deploy of some Services leaves the rest where they are, so
+    /// they still decide where a Volume they mount can be.
+    mounted_by: BTreeMap<DockerVolumeName, Vec<(ServiceName, Option<Region>)>>,
     operator: Operator,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
@@ -88,6 +92,20 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 .into_keys()
                 .filter(|name| deployed_volumes.contains(name))
                 .collect(),
+            mounted_by: managed_volume_uses(target)
+                .into_iter()
+                .map(|(name, uses)| {
+                    let mut services = uses
+                        .iter()
+                        .map(|volume_use| {
+                            let service = volume_use.service;
+                            (service.name.clone(), super::region(service))
+                        })
+                        .collect::<Vec<_>>();
+                    services.sort();
+                    (name, services)
+                })
+                .collect(),
             operator,
             assignments: BTreeMap::new(),
         };
@@ -140,6 +158,41 @@ impl<'snapshot> VolumePlan<'snapshot> {
                 ServiceStorageSpec::try_from(spec)
                     .expect("assigned Volume graph is Namespace-scoped")
             });
+    }
+
+    /// Whether a Service kept outside `region`, or in no one region, mounts `volume` too.
+    /// No one Server suits such a Volume: wherever it is, one of its Services can't mount it.
+    fn kept_elsewhere(&self, volume: &DockerVolumeName, region: &Region) -> bool {
+        self.mounted_by.get(volume).is_some_and(|services| {
+            services
+                .iter()
+                .any(|(_, kept_in)| kept_in.as_ref() != Some(region))
+        })
+    }
+
+    /// Whether a Service kept in one region other than `region` mounts `volume` too.
+    fn kept_in_another_region(&self, volume: &DockerVolumeName, region: &Region) -> bool {
+        self.mounted_by.get(volume).is_some_and(|services| {
+            services
+                .iter()
+                .any(|(_, kept_in)| kept_in.as_ref().is_some_and(|kept_in| kept_in != region))
+        })
+    }
+
+    /// Refuse `spec` when a Volume it mounts is shared with a Service kept in another
+    /// region and can't be in both. A Server joining or coming back changes none of
+    /// that, so this is settled before anything asks whether its region has one.
+    ///
+    /// # Errors
+    /// Returns the Volume's refusal.
+    pub(super) fn refuse_kept_apart(&self, spec: &RequestedServiceSpec) -> Result<(), PlanError> {
+        if !matches!(spec.mode, ServiceMode::Replicated { .. }) {
+            return Ok(());
+        }
+        let Some(region) = super::region(spec) else {
+            return Ok(());
+        };
+        shared_elsewhere(spec, &region, self.snapshot, self).map_or(Ok(()), Err)
     }
 
     fn incompatible_on(&self, machine_id: MachineId, volume: &ServiceVolume) -> bool {
@@ -489,7 +542,10 @@ impl VolumePlan<'_> {
                     | PlanError::VolumeHolderUnknown { .. }
                     | PlanError::VolumeServerTakesNoServices { .. }
                     | PlanError::RegionUnmatched { .. }
-                    | PlanError::VolumeOutsideRegion { .. },
+                    | PlanError::VolumeOutsideRegion { .. }
+                    | PlanError::VolumeInOtherRegion { .. }
+                    | PlanError::VolumesApart { .. }
+                    | PlanError::VolumeSharedAcrossRegions { .. },
                 ) => {}
                 Err(error) if super::volume_server_away(&error, snapshot, spec) => {}
                 result => result.map_err(|source| {
@@ -721,15 +777,14 @@ struct SharedVolumeComponent<'volume_use> {
     )>,
 }
 
-impl SharedVolumeComponent<'_> {
-    /// Each Service of the component once, in name order.
-    fn service_names(&self) -> impl Iterator<Item = &ServiceName> {
+impl<'volume_use> SharedVolumeComponent<'volume_use> {
+    /// Each Service of the component once, by name.
+    fn services(&self) -> BTreeMap<&'volume_use str, &'volume_use RequestedServiceSpec> {
         self.volumes
             .iter()
             .flat_map(|(_, uses)| uses.iter())
-            .map(|volume_use| &volume_use.service.name)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
+            .map(|volume_use| (volume_use.service_name, volume_use.service))
+            .collect()
     }
 }
 
@@ -783,10 +838,24 @@ impl VolumePlan<'_> {
         options: &PlanOptions,
     ) -> Result<Vec<BlockedService>, PlanError> {
         let snapshot = self.snapshot;
-        let volume_uses = managed_volume_uses(requested);
+        let mut volume_uses = managed_volume_uses(requested);
         let mut blocked = Vec::new();
+        if options.mode().blocks_unmountable() {
+            for component in shared_volume_components(&volume_uses) {
+                blocked.extend(left_out(&component, snapshot, self, options));
+            }
+            // The Services a left-out one tied together are grouped again without it:
+            // they share a Server only where they still share a Volume.
+            for uses in volume_uses.values_mut() {
+                uses.retain(|volume_use| {
+                    blocked
+                        .iter()
+                        .all(|entry| entry.service != volume_use.service.name)
+                });
+            }
+        }
         for component in shared_volume_components(&volume_uses) {
-            let anchor = match shared_component_anchor(
+            let machine = match shared_component_anchor(
                 &component,
                 snapshot,
                 requested,
@@ -795,19 +864,32 @@ impl VolumePlan<'_> {
                 placement,
                 options,
             ) {
-                Ok(anchor) => anchor,
+                Ok(machine) => machine,
                 Err(error) if options.mode().blocks_unmountable() => {
-                    let error = unmountable(error, snapshot, requested)?.into_rpc_error();
-                    blocked.extend(component.service_names().map(|service| BlockedService {
-                        service: service.clone(),
-                        error: error.clone(),
-                        kind: BlockedKind::Wait,
+                    let shared = unmountable(error, snapshot, requested)?;
+                    // A Service that cannot run on its own either says why in its own
+                    // words; the rest are stopped by the one that holds them back.
+                    blocked.extend(component.services().into_iter().map(|(name, service)| {
+                        let own = volume_eligible_machine_ids(service, snapshot, self, options)
+                            .err()
+                            .map(|source| super::service_error(true, name, source))
+                            .and_then(|error| unmountable(error, snapshot, requested).ok());
+                        let error = own.unwrap_or_else(|| shared.clone());
+                        BlockedService {
+                            service: service.name.clone(),
+                            kind: error.blocked_kind(),
+                            error: error.into_rpc_error(),
+                        }
                     }));
                     continue;
                 }
                 Err(error) => return Err(error),
             };
-            assign_shared_component(&component, anchor, self);
+            for (_, uses) in &component.volumes {
+                for volume_use in uses.iter() {
+                    self.assign(machine, volume_use.service);
+                }
+            }
         }
         Ok(blocked)
     }
@@ -833,6 +915,9 @@ fn unmountable(
             | PlanError::VolumeHolderUnknown { .. }
             | PlanError::RegionUnmatched { .. }
             | PlanError::VolumeOutsideRegion { .. }
+            | PlanError::VolumeInOtherRegion { .. }
+            | PlanError::VolumesApart { .. }
+            | PlanError::VolumeSharedAcrossRegions { .. }
     ) || requested
         .iter()
         .find(|spec| spec.name.as_str() == service)
@@ -844,6 +929,51 @@ fn unmountable(
     }
 }
 
+/// The Services of `component` this Deploy leaves out so the rest can start: those with a
+/// Volume outside the region they are kept in, and those whose own region has no Server.
+/// Empty when no Service of the component can run.
+fn left_out(
+    component: &SharedVolumeComponent<'_>,
+    snapshot: &DeploySnapshot,
+    plan: &VolumePlan<'_>,
+    options: &PlanOptions,
+) -> Vec<BlockedService> {
+    let results = component
+        .services()
+        .into_values()
+        .map(|service| {
+            (
+                service,
+                volume_eligible_machine_ids(service, snapshot, plan, options),
+            )
+        })
+        .collect::<Vec<_>>();
+    if results.iter().all(|(_, result)| result.is_err()) {
+        return Vec::new();
+    }
+    results
+        .into_iter()
+        .filter_map(|(service, result)| {
+            let error = result.err().filter(|error| {
+                matches!(
+                    error,
+                    PlanError::RegionUnmatched { .. }
+                        | PlanError::VolumeOutsideRegion { .. }
+                        | PlanError::VolumeInOtherRegion { .. }
+                        | PlanError::VolumesApart { .. }
+                        | PlanError::VolumeSharedAcrossRegions { .. }
+                )
+            })?;
+            Some(BlockedService {
+                service: service.name.clone(),
+                kind: error.blocked_kind(),
+                error: error.into_rpc_error(),
+            })
+        })
+        .collect()
+}
+
+/// The Server a shared component's Services all run on.
 fn shared_component_anchor(
     component: &SharedVolumeComponent<'_>,
     snapshot: &DeploySnapshot,
@@ -853,23 +983,21 @@ fn shared_component_anchor(
     placement: &mut PlacementReservations,
     options: &PlanOptions,
 ) -> Result<MachineId, PlanError> {
-    let services = component
-        .volumes
-        .iter()
-        .flat_map(|(_, uses)| uses.iter())
-        .map(|volume_use| (volume_use.service_name, volume_use.service))
-        .collect::<BTreeMap<_, _>>();
-    let mut service_iter = services.iter();
-    let (&first_service_name, &first_service) = service_iter
-        .next()
-        .expect("shared Volume component has at least two services");
-    let mut eligible = volume_eligible_machine_ids(first_service, snapshot, plan, options)
-        .map_err(|source| super::service_error(true, first_service_name, source))?;
-    for (&service_name, &service) in service_iter {
-        let other_eligible = volume_eligible_machine_ids(service, snapshot, plan, options)
-            .map_err(|source| super::service_error(true, service_name, source))?;
-        eligible.retain(|machine_id| other_eligible.contains(machine_id));
+    let services = component.services();
+    let mut eligible: Option<Vec<MachineId>> = None;
+    for (name, service) in &services {
+        let machines = volume_eligible_machine_ids(service, snapshot, plan, options)
+            .map_err(|source| super::service_error(true, name, source))?;
+        match &mut eligible {
+            Some(eligible) => eligible.retain(|machine_id| machines.contains(machine_id)),
+            None => eligible = Some(machines),
+        }
     }
+    let eligible = eligible.expect("shared Volume component has a Service");
+    let first_service_name = *services
+        .keys()
+        .next()
+        .expect("shared Volume component has a Service");
     if eligible.is_empty() {
         return Err(super::service_error(
             true,
@@ -913,16 +1041,75 @@ fn shared_component_anchor(
     ))
 }
 
-fn assign_shared_component(
-    component: &SharedVolumeComponent<'_>,
-    machine_id: MachineId,
-    plan: &mut VolumePlan<'_>,
-) {
-    for (_, uses) in &component.volumes {
-        for volume_use in uses.iter() {
-            plan.assign(machine_id, volume_use.service);
+/// The refusal for `spec`, kept in `region`, when a Volume it mounts is outside the region
+/// and a Service kept elsewhere mounts it too. It says where the Volume is and where `spec`
+/// could run instead.
+/// When its located Volumes share no region, running it in that Volume's region would
+/// fail the same way, so it names them all. When the Volume's Server is in no region, or
+/// the Volume is not made yet and its Services are kept in different regions, it names
+/// the Services that share it.
+fn shared_elsewhere(
+    spec: &RequestedServiceSpec,
+    region: &Region,
+    snapshot: &DeploySnapshot,
+    plan: &VolumePlan<'_>,
+) -> Option<PlanError> {
+    let region_of = |id: &MachineId| Region::of(&snapshot.machine(*id)?.machine);
+    let mut volumes = Vec::new();
+    let mut held = None;
+    let mut shared: Option<BTreeSet<Region>> = None;
+    for volume in mounted_managed_volumes(spec.volume_graph()) {
+        let name = managed_volume_name(volume)?;
+        let (first, others) = match plan.locality(volume) {
+            Ok(VolumeLocality::Located { first, others }) => (first, others),
+            // Nothing says which region a Volume not made yet belongs to, so it is held
+            // by none while its Services are kept in different ones.
+            Ok(VolumeLocality::Absent) => {
+                if plan.kept_in_another_region(name, region) {
+                    held.get_or_insert((name, None));
+                }
+                continue;
+            }
+            Err(_) => continue,
+        };
+        let regions = std::iter::once(&first)
+            .chain(&others)
+            .filter_map(region_of)
+            .collect::<BTreeSet<_>>();
+        let volume_region = region_of(&first);
+        if !regions.contains(region) && plan.kept_elsewhere(name, region) {
+            held.get_or_insert_with(|| (name, volume_region.clone()));
         }
+        let Some(volume_region) = volume_region else {
+            continue;
+        };
+        volumes.push((plan.authored(name).to_owned(), volume_region));
+        shared = Some(match shared {
+            Some(shared) => shared.intersection(&regions).cloned().collect(),
+            None => regions,
+        });
     }
+    let (name, volume_region) = held?;
+    let volume = plan.authored(name).to_owned();
+    let Some(volume_region) = volume_region else {
+        return Some(PlanError::VolumeSharedAcrossRegions {
+            volume,
+            services: plan.mounted_by.get(name).cloned().unwrap_or_default(),
+        });
+    };
+    if shared.is_some_and(|shared| shared.is_empty()) {
+        volumes.sort();
+        return Some(PlanError::VolumesApart {
+            service: spec.name.clone(),
+            volumes,
+        });
+    }
+    Some(PlanError::VolumeInOtherRegion {
+        volume,
+        service: spec.name.clone(),
+        region: region.clone(),
+        volume_region,
+    })
 }
 
 fn volume_eligible_machine_ids(
@@ -931,6 +1118,7 @@ fn volume_eligible_machine_ids(
     plan: &VolumePlan<'_>,
     options: &PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
+    plan.refuse_kept_apart(spec)?;
     let mut machines = super::eligible_machines(spec, &plan.namespace, snapshot, options)?;
     planned_volume_constraints(spec, snapshot, plan, &mut machines)?;
     Ok(machines
@@ -1153,7 +1341,9 @@ fn refused_location(
 }
 
 /// The refusal for a Volume none of whose Servers is in the region `spec` is kept in,
-/// while a Server in the region could run it. Nothing moves the Volume for it yet.
+/// while a Server in the region could run it. Nothing moves the Volume for it yet. A Volume
+/// that a Service kept elsewhere mounts too is refused as shared instead, since no one
+/// region suits every Service that mounts it.
 fn outside_region(
     spec: &RequestedServiceSpec,
     snapshot: &DeploySnapshot,
@@ -1172,10 +1362,14 @@ fn outside_region(
     if holders.any(|machine| Region::of(&machine.machine).as_ref() == Some(&region)) {
         return None;
     }
+    let to = candidates.first()?.machine.name.clone();
+    if let Some(refusal) = shared_elsewhere(spec, &region, snapshot, plan) {
+        return Some(refusal);
+    }
     Some(PlanError::VolumeOutsideRegion {
         volume: plan.authored(managed_volume_name(volume)?).to_owned(),
         machine: holder,
-        to: candidates.first()?.machine.name.clone(),
+        to,
     })
 }
 

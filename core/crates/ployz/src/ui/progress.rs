@@ -307,6 +307,8 @@ pub(crate) struct Frame {
     pub title: String,
     pub rows: Vec<Row>,
     pub notices: Vec<DeployWarning>,
+    /// The replicas the Deploy left as they were, over every Service.
+    pub held_back: ployz_core::RegionWait,
 }
 
 impl Frame {
@@ -314,6 +316,7 @@ impl Frame {
         self.run == other.run
             && self.title == other.title
             && self.notices == other.notices
+            && self.held_back == other.held_back
             && self.rows.len() == other.rows.len()
             && self
                 .rows
@@ -1371,6 +1374,16 @@ fn finish(
                 1 => counts.push("1 copy left running".into()),
                 left => counts.push(format!("{left} copies left running")),
             }
+        }
+    }
+    for (count, state) in [
+        (frame.held_back.waiting, "waiting"),
+        (frame.held_back.outdated, "on the old version"),
+    ] {
+        match count {
+            0 => {}
+            1 => counts.push(format!("1 replica {state}")),
+            count => counts.push(format!("{count} replicas {state}")),
         }
     }
     let servers: BTreeSet<_> = frame

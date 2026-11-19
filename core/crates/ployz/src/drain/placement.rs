@@ -11,6 +11,7 @@
 
 use crate::cluster::{Call, Deadline};
 use ployz_core::error_chain;
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -31,7 +32,7 @@ use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
 use crate::deploy::{
     DeploySnapshot, MachineOperations, MoveEnd, MoveError, health_error, is_active_runtime,
-    move_container, place_one,
+    move_container, place_one, region_waits,
 };
 
 /// A Server as a move names it.
@@ -396,23 +397,21 @@ fn refusal(
     if let Some(reason) = unobserved(snapshot) {
         return Some(reason);
     }
-    let active = snapshot
-        .containers
-        .iter()
-        .filter(|container| {
-            is_service_container(container, service) && *container.rotation() != CopyRotation::Out
-        })
-        .collect::<Vec<_>>();
-    let spec = &active.first()?.resolved_spec;
-    if active
-        .iter()
-        .any(|container| container.resolved_spec.serving_shape() != spec.serving_shape())
-    {
+    let spec = newest(snapshot, service)?;
+    if in_rotation(snapshot, service).any(|container| {
+        container.resolved_spec.serving_shape() != spec.serving_shape()
+            && !left_behind(snapshot, service, spec, container)
+    }) {
         return Some(StayReason::MidRollout);
     }
+    let first = match stranded.first() {
+        Some(first) => *first,
+        None => self::stranded(snapshot, service)
+            .into_iter()
+            .find(|container| left_behind(snapshot, service, spec, container))?,
+    };
     // The snapshot carries no storage evidence: `stays` pins every storage-dependent spec
     // first. Observe storage once Volumes can move.
-    let first = stranded.first()?;
     if let Some(reason) = stays(spec, &machine_ref(snapshot, &first.machine_id)) {
         return Some(reason);
     }
@@ -430,6 +429,43 @@ fn kept_in_region(spec: &ResolvedServiceSpec, source: &Machine) -> RequestedServ
         Some(region) => requested.held_to(&region),
         None => requested,
     }
+}
+
+fn in_rotation<'a>(
+    snapshot: &'a DeploySnapshot,
+    service: &'a QualifiedService,
+) -> impl Iterator<Item = &'a ContainerObservation> {
+    snapshot.containers.iter().filter(|container| {
+        is_service_container(container, service) && *container.rotation() != CopyRotation::Out
+    })
+}
+
+/// The spec the Service's last Deploy gave it, read off its newest copy.
+fn newest<'a>(
+    snapshot: &'a DeploySnapshot,
+    service: &'a QualifiedService,
+) -> Option<&'a ResolvedServiceSpec> {
+    in_rotation(snapshot, service)
+        .min_by_key(|container| Reverse(container.copy_gen()))
+        .map(|container| &container.resolved_spec)
+}
+
+/// Whether the last Deploy left `copy` as it was: it runs an older Serving Shape in a region
+/// of the Service's counts where no Server can run the Service now. No Deploy replaces it
+/// and no move has a destination until one can, so it holds nothing else.
+fn left_behind(
+    snapshot: &DeploySnapshot,
+    service: &QualifiedService,
+    newest: &ResolvedServiceSpec,
+    copy: &ContainerObservation,
+) -> bool {
+    if copy.resolved_spec.serving_shape() == newest.serving_shape() {
+        return false;
+    }
+    let requested = newest.to_requested();
+    Region::of(machine(snapshot, &copy.machine_id))
+        .filter(|region| requested.regions.contains_key(region))
+        .is_some_and(|region| region_waits(&requested, &region, &service.namespace, snapshot))
 }
 
 /// The first Server whose Containers the snapshot could not list, if any.
@@ -527,12 +563,13 @@ fn movable<'a>(
     snapshot: &'a DeploySnapshot,
     service: &QualifiedService,
 ) -> Vec<&'a ContainerObservation> {
+    let newest = newest(snapshot, service);
     let mut movable = stranded(snapshot, service);
     movable.retain(|container| {
         !matches!(
             container.rotation(),
             CopyRotation::Held(_) | CopyRotation::Out
-        )
+        ) && !newest.is_some_and(|spec| left_behind(snapshot, service, spec, container))
     });
     movable
 }
@@ -772,8 +809,8 @@ async fn image_id(
 mod tests {
     use ployz_core::{
         ContainerId, ContainerKind, ContainerObservation, ContainerObservationParts,
-        ContainerRuntimeObservation, CopyRotation, DeploymentLogId, HealthObservation, Machine,
-        MachineId, MachineName, MachineObservation, MembershipObservation, Namespace,
+        ContainerRuntimeObservation, CopyRotation, DeploymentLogId, Gen, HealthObservation,
+        Machine, MachineId, MachineName, MachineObservation, MembershipObservation, Namespace,
         QualifiedService, ResolvedServiceSpec, WireGuardPublicKey,
     };
     use serde_json::json;
@@ -992,14 +1029,6 @@ mod tests {
         let service = QualifiedService::parse("app/api").unwrap();
         let mut by_region = stateless();
         by_region.regions = serde_json::from_value(json!({ "fsn": 1, "syd": 1 })).unwrap();
-        let in_region = |hex, accepts_services, region: &str| {
-            let mut server = machine(hex, accepts_services);
-            server
-                .machine
-                .labels
-                .insert("region".parse().unwrap(), region.parse().unwrap());
-            server
-        };
         let refused = |recorded: &ResolvedServiceSpec, free_server_region| {
             let snapshot = DeploySnapshot {
                 machines: vec![
@@ -1021,6 +1050,76 @@ mod tests {
             refused(&by_region, "fsn")
         );
         assert_eq!(refused(&stateless(), "fsn"), None);
+    }
+
+    #[tokio::test]
+    async fn an_old_copy_no_deploy_can_reach_does_not_hold_the_others_moves() {
+        let service = QualifiedService::parse("app/api").unwrap();
+        let mut newer = stateless();
+        newer.regions = serde_json::from_value(json!({ "fsn": 2, "syd": 1 })).unwrap();
+        let mut older = newer.clone();
+        older.container.image = "alpine:3.22.0".into();
+        let deployed = |id, server, spec: &ResolvedServiceSpec, deploy| {
+            let parts = ContainerObservationParts::from(container(id, server, spec.clone()));
+            ContainerObservation::try_from(ContainerObservationParts {
+                r#gen: Some(Gen::new(deploy)),
+                ..parts
+            })
+            .unwrap()
+        };
+        let snapshot = DeploySnapshot {
+            machines: vec![
+                in_region('a', false, "syd"),
+                in_region('b', false, "fsn"),
+                in_region('c', true, "fsn"),
+            ],
+            containers: vec![
+                deployed('1', 'a', &older, 1),
+                deployed('2', 'b', &newer, 2),
+                deployed('3', 'c', &newer, 2),
+            ],
+            ..DeploySnapshot::default()
+        };
+
+        let mut client = Scripted::new([Ok(snapshot.clone())]);
+        let converged = converge(&mut client, &service, &CancellationToken::new()).await;
+        let Converged::Moved { moves } = &converged else {
+            panic!("{converged:?}");
+        };
+        assert_eq!(
+            moves.iter().map(|moved| &moved.from).collect::<Vec<_>>(),
+            [&MachineRef::from(&machine('b', false).machine)]
+        );
+
+        let mut alone = snapshot.clone();
+        alone
+            .machines
+            .retain(|server| server.machine.id != machine('b', false).machine.id);
+        alone.containers.retain(|copy| copy.container_id != id('2'));
+        assert!(
+            matches!(
+                refusal(&alone, &service, &movable(&alone, &service)),
+                Some(super::StayReason::NoDestination { .. })
+            ),
+            "a Drain of its own Server says why nothing takes it"
+        );
+
+        let mut reachable = snapshot;
+        reachable.machines.push(in_region('d', true, "syd"));
+        assert_eq!(
+            refusal(&reachable, &service, &movable(&reachable, &service)),
+            Some(super::StayReason::MidRollout),
+            "a Server in syd that can run it lets a Deploy replace the old copy"
+        );
+    }
+
+    fn in_region(hex: char, accepts_services: bool, region: &str) -> MachineObservation {
+        let mut server = machine(hex, accepts_services);
+        server
+            .machine
+            .labels
+            .insert("region".parse().unwrap(), region.parse().unwrap());
+        server
     }
 
     fn rotating(hex: char, rotation: CopyRotation) -> ContainerObservation {

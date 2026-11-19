@@ -1031,6 +1031,10 @@ struct Planned<'p> {
     /// The Services whose region no Server is in: the Deploy won't start them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unplaced: Vec<&'p ServiceName>,
+    /// The regions of each Service's counts that no Server is in: the Deploy leaves the
+    /// replicas there waiting.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    waiting: BTreeMap<&'p ServiceName, Vec<&'p Region>>,
     /// Whether it also removes every other Service running in the Environment,
     /// which only the Servers can name.
     prunes: bool,
@@ -1050,17 +1054,28 @@ fn plan(
         deployment: None,
     })?;
     let hint = store.again(&["--expect-version", plan.version.as_str()]);
-    let (ingress, ingress_unchecked, regions) =
-        match ingress_check(matches, plan.regions.values().any(Option::is_some)) {
-            Ok((check, regions)) => (Some(check.repairs), check.unchecked, regions),
-            Err(Unchecked { cause, silent }) => {
-                if let Some(silent) = silent {
-                    ui::warn(cant_run(&silent));
-                }
-                (None, vec![cause], None)
+    let placed = plan.regions.values().any(Option::is_some) || !plan.replicas.is_empty();
+    let (ingress, ingress_unchecked, regions) = match ingress_check(matches, placed) {
+        Ok((check, regions)) => (Some(check.repairs), check.unchecked, regions),
+        Err(Unchecked { cause, silent }) => {
+            if let Some(silent) = silent {
+                ui::warn(cant_run(&silent));
             }
-        };
+            (None, vec![cause], None)
+        }
+    };
     let unplaced = |region: &Region| regions.as_ref().is_some_and(|seen| !seen.contains(region));
+    let waiting: BTreeMap<_, Vec<_>> = plan
+        .replicas
+        .iter()
+        .map(|(service, counts)| {
+            (
+                service,
+                counts.keys().filter(|region| unplaced(region)).collect(),
+            )
+        })
+        .filter(|(_, empty): &(_, Vec<_>)| !empty.is_empty())
+        .collect();
     let shown = Planned {
         domain_changes: super::store::domain_changes(
             plan.changes.iter().flat_map(|change| &change.settings),
@@ -1073,7 +1088,16 @@ fn plan(
             .iter()
             .filter(|(_, region)| region.as_ref().is_some_and(&unplaced))
             .map(|(service, _)| service)
+            .chain(
+                waiting
+                    .iter()
+                    .filter(|(service, empty)| {
+                        plan.replicas.get(**service).map(BTreeMap::len) == Some(empty.len())
+                    })
+                    .map(|(service, _)| *service),
+            )
             .collect(),
+        waiting,
         prunes,
     };
     let followed = Next::new(&shown, Some(hint));
@@ -1102,6 +1126,11 @@ fn plan(
                 )),
                 Some(region) => crate::ui::stream(format_args!("{service} → {region}")),
                 None => crate::ui::stream(format_args!("{service} → any region")),
+            }
+        }
+        for (service, empty) in &shown.waiting {
+            if let Some(counts) = plan.replicas.get(*service) {
+                crate::ui::stream(format_args!("{}", waits(service, counts, empty)));
             }
         }
         if prunes {
@@ -1135,6 +1164,34 @@ fn plan(
         }
         followed.say();
     })
+}
+
+/// The plan's line for a Service whose counts name `empty`, regions no Server is in:
+/// `api → fsn 2 · syd 1: 1 replica waits (no Server in syd)`.
+fn waits(
+    service: &ServiceName,
+    counts: &BTreeMap<Region, std::num::NonZeroU8>,
+    empty: &[&Region],
+) -> String {
+    let each = counts
+        .iter()
+        .map(|(region, count)| format!("{region} {count}"))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let held: u32 = empty
+        .iter()
+        .filter_map(|region| counts.get(*region))
+        .map(|count| u32::from(count.get()))
+        .sum();
+    let what = match held {
+        _ if empty.len() == counts.len() => "won't start".to_owned(),
+        1 => "1 replica waits".to_owned(),
+        held => format!("{held} replicas wait"),
+    };
+    format!(
+        "{service} → {each}: {what} (no Server in {})",
+        crate::deploy::any_of(empty)
+    )
 }
 
 /// The plan's line for what only the Servers decide, as people read it. A plan
@@ -1626,12 +1683,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         ));
     }
     for node in &view.nodes {
-        let outcome = if node.outcome == ployz_store::NodeStatus::Failed && node.cancelled {
-            "cancelled".to_owned()
-        } else {
-            super::store::word(&node.outcome)
-        };
-        crate::ui::stream(format_args!("  {}: {outcome}", node.node.name()));
+        crate::ui::stream(format_args!("{}", node_line(view, node)));
     }
     for line in untargeted_lines(&view.untargeted) {
         crate::ui::stream(format_args!("{line}"));
@@ -1659,6 +1711,28 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
         }
     }
+}
+
+/// One node's outcome, with the replicas of a Service the Deploy left waiting.
+fn node_line(view: &DeploymentView, node: &ployz_store::NodeOutcome) -> String {
+    let outcome = if node.outcome == ployz_store::NodeStatus::Failed && node.cancelled {
+        "cancelled".to_owned()
+    } else {
+        super::store::word(&node.outcome)
+    };
+    let waiting = view
+        .preview
+        .as_ref()
+        .zip(match &node.node {
+            DeployedNode::Service { name, .. } => Some(name),
+            DeployedNode::Volume { .. } | DeployedNode::Config { .. } => None,
+        })
+        .and_then(|(preview, name)| {
+            preview.waiting_replicas(view.runtime_names.get(name).unwrap_or(name))
+        })
+        .map(|entry| format!(" ({})", progress::waiting_detail(entry)))
+        .unwrap_or_default();
+    format!("  {}: {outcome}{waiting}", node.node.name())
 }
 
 /// How many Servers removed each Service the Deployment's Store doesn't hold.

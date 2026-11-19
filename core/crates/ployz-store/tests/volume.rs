@@ -1797,6 +1797,7 @@ fn waiting_web() -> Vec<ployz_store::WaitingService> {
     vec![ployz_store::WaitingService {
         service: ServiceName::parse("web").unwrap(),
         reason: NO_WRITER.to_owned(),
+        regions: Default::default(),
     }]
 }
 
