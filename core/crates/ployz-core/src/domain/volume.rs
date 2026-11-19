@@ -194,6 +194,16 @@ impl VolumeSource {
         });
     }
 
+    /// This source with a Provisioned Volume's maximum set to one fixed value.
+    #[must_use]
+    pub(crate) fn with_bound_cleared(&self) -> Self {
+        let mut cleared = self.clone();
+        if let RawVolumeSource::Provisioned { maximum_bytes, .. } = &mut cleared.source {
+            *maximum_bytes = ProvisionedVolumeMaximumBytes::new(NonZeroU64::MIN);
+        }
+        cleared
+    }
+
     pub(crate) fn is_resolved(&self) -> bool {
         !matches!(
             self.source,

@@ -298,15 +298,15 @@ fn each_payload_field_changed_alone_is_refused() {
 }
 
 #[test]
-#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
 fn derived_fields_change_nothing() {
     let signer = signer(1);
     let base = requested(requested_json());
     let signed = Signed::sign(&approval(&signer, &base), &signer).unwrap();
     let machine = Machine::new(&[&signer]);
-    let mut counted = with(&["mode"], json!({"mode": "replicated", "replicas": 7}));
-    counted["regions"] = json!({"fsn": 5, "syd": 2});
-    let counted = requested(counted);
+    let counted = requested(with(
+        &["mode"],
+        json!({"mode": "replicated", "replicas": 7}),
+    ));
     let shown = |spec| ApprovedChange::of(&[spec], &namespace(), &BTreeMap::new()).unwrap();
     assert_eq!(
         shown(counted.clone()),
@@ -327,6 +327,130 @@ fn derived_fields_change_nothing() {
         verify(&signed, &machine.facts(service(&wire))).is_ok(),
         "the resolved wire keeps the scoped names the digest was taken over"
     );
+}
+
+/// Verify a creation of `changed` against an approval of `base`.
+fn verify_from(base: Value, changed: Value) -> Result<DeployApproved, AuthorityRefusal> {
+    let signer = signer(1);
+    let signed = Signed::sign(&approval(&signer, &requested(base)), &signer).unwrap();
+    let spec = resolved(&requested(changed));
+    verify(&signed, &Machine::new(&[&signer]).facts(service(&spec)))
+}
+
+/// `spec` with `value` written at `path`, which may be new.
+fn set(mut spec: Value, path: &[&str], value: Value) -> Value {
+    let mut at = &mut spec;
+    for key in path {
+        at = match key.parse::<usize>() {
+            Ok(index) => &mut at[index],
+            Err(_) => &mut at[*key],
+        };
+    }
+    *at = value;
+    spec
+}
+
+#[test]
+fn cloud_changes_what_it_picks_per_run_without_a_new_signature() {
+    let base = set(
+        contained_json(),
+        &["volumes", "0", "source"],
+        json!({"kind": "provisioned", "name": "data", "maximum_bytes": 1000}),
+    );
+    for (what, path, value) in [
+        (
+            "pull policy",
+            &["container", "pull_policy"][..],
+            json!("never"),
+        ),
+        (
+            "cpu",
+            &["container", "resources", "cpu_nanos"],
+            json!(500_000_000_u64),
+        ),
+        (
+            "memory",
+            &["container", "resources", "memory_bytes"],
+            json!(1 << 30),
+        ),
+        (
+            "memory reservation",
+            &["container", "resources", "memory_reservation_bytes"],
+            json!(1 << 29),
+        ),
+        (
+            "replicas",
+            &["mode"],
+            json!({"mode": "replicated", "replicas": 9}),
+        ),
+        ("regions", &["regions"], json!({"fsn": 3})),
+        ("rollout order", &["update"], json!({"order": "stop_first"})),
+        (
+            "where it runs",
+            &["placement"],
+            json!({"constraints": ["node.labels.zone==b"]}),
+        ),
+        (
+            "Volume bound",
+            &["volumes", "0", "source", "maximum_bytes"],
+            json!(5000),
+        ),
+    ] {
+        assert!(
+            verify_from(base.clone(), set(base.clone(), path, value)).is_ok(),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn a_spec_that_reads_host_data_keeps_where_it_runs_signed() {
+    let regional = set(
+        set(
+            requested_json(),
+            &["placement"],
+            json!({"constraints": ["node.labels.zone==a"]}),
+        ),
+        &["regions"],
+        json!({"fsn": 2}),
+    );
+    assert!(
+        verify_from(
+            regional.clone(),
+            set(regional.clone(), &["regions"], json!({"fsn": 7}))
+        )
+        .is_ok(),
+        "a count within the signed regions moves freely"
+    );
+    for (what, changed) in [
+        (
+            "another region",
+            set(regional.clone(), &["regions"], json!({"syd": 2})),
+        ),
+        (
+            "one more region",
+            set(regional.clone(), &["regions"], json!({"fsn": 2, "syd": 1})),
+        ),
+        ("no region", set(regional.clone(), &["regions"], json!({}))),
+        (
+            "another placement",
+            set(
+                regional.clone(),
+                &["placement"],
+                json!({"constraints": ["node.labels.zone==b"]}),
+            ),
+        ),
+        (
+            "no placement",
+            set(regional.clone(), &["placement"], json!({})),
+        ),
+    ] {
+        assert_eq!(
+            verify_from(regional.clone(), changed).unwrap_err(),
+            AuthorityRefusal::Mismatch { field: "a payload" },
+            "{what}"
+        );
+    }
 }
 
 #[test]
@@ -578,7 +702,7 @@ fn the_fixture_digest_is_golden() {
         PayloadDigest::of(&requested(requested_json()), &namespace())
             .unwrap()
             .to_string(),
-        "cb8d3c6ef656772fbe9764188fc4ff7b7059e682de60a7686263ab386cd4ffa5"
+        "1fe8b7a6721d43a138fd0f39e4297782933a84441b68b24db6e9ea133839b4c6"
     );
 }
 
@@ -887,10 +1011,6 @@ fn every_field_cloud_could_plant_shows_before_signing() {
             with(&["container", "restart"], json!({"name": "always"})),
         ),
         (
-            "pull policy",
-            with(&["container", "pull_policy"], json!("always")),
-        ),
-        (
             "Bind Mount source",
             with(&["volumes", "0", "source", "machine_path"], json!("/")),
         ),
@@ -986,7 +1106,6 @@ fn an_approval_lists_its_settings_under_the_service_line() {
             r#"  command ["nginx","-g","daemon off;"]"#,
             r#"  config_mounts [{"config_name":"site","mode":420,"target":"/etc/site.conf"}]"#,
             r#"  entrypoint ["/docker-entrypoint.sh"]"#,
-            r#"  pull_policy "missing""#,
             r#"  resources {"device_reservations":[],"devices":[{"cgroup_permissions":"rwm","container_path":"/dev/null","machine_path":"/dev/null"}],"ulimits":{}}"#,
             r#"  sysctls {"net.core.somaxconn":"1024"}"#,
             "  pre-deploy privileged false",

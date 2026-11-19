@@ -4,11 +4,13 @@
 //! The approval names one [`PayloadDigest`] per Service. A Machine recomputes the digest
 //! from the spec it is asked to create, so Cloud can carry the approval but cannot change
 //! the image, command, environment, Sealed values, mounts, Config bytes, ports,
-//! privileges or hook it approves. The image must also be content-addressed, since a tag
-//! names whatever Cloud last wrote under it.
+//! privileges or hook it approves. The digest leaves out the run fields, which Cloud picks
+//! per run: see [`run_fields_cleared`]. The image must also be content-addressed, since a
+//! tag names whatever Cloud last wrote under it.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,14 +23,15 @@ use super::{
     open::open_approval,
     proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
-    rule_draft::{Signs, settings},
+    rule_draft::settings,
     shown::Shown,
     trusted_key::TrustedKeys,
 };
 use crate::value::hex_newtype;
 use crate::{
-    ContainerKind, MachineId, Namespace, OperationId, PortPublication, RawVolumeSource,
-    RequestedServiceSpec, ResolvedServiceSpec, SealingPublicKey, ServiceName, ServiceNetwork,
+    ContainerKind, ContainerResources, MachineId, Namespace, OperationId, Placement,
+    PortPublication, PullPolicy, RawVolumeSource, RequestedServiceSpec, ResolvedServiceSpec,
+    SealingPublicKey, ServiceContainerSpec, ServiceMode, ServiceName, ServiceNetwork, UpdateConfig,
     VolumeDriver,
 };
 
@@ -38,16 +41,136 @@ hex_newtype!(
     PayloadDigest, "payload digest", 32, "", "64 lowercase hex digits"
 );
 
-/// The fields of a spec no [`PayloadDigest`] covers: they change how many copies run, in
-/// which regions and in what order, never what one runs. `regions` is out so a `ployz` and
-/// a Machine from before it, which drop the field, take the digest the others take.
-pub(super) const UNSIGNED: [&str; 3] = ["mode", "regions", "update"];
+/// `spec` with every run field set to one fixed value. A run field is one Cloud picks per
+/// run: where, how many, in what order, from which cache and within what limits. It never
+/// changes what runs, what it reads or what it reaches.
+///
+/// Every field is named, so a new one fails to compile until it is filed as signed or run.
+pub(super) fn run_fields_cleared(spec: &RequestedServiceSpec) -> RequestedServiceSpec {
+    let RequestedServiceSpec {
+        name,
+        mode: _,
+        container,
+        placement,
+        regions,
+        ports,
+        mount_graph,
+        pre_deploy,
+        update: _,
+    } = spec;
+    let host_data = reads_host_data(spec);
+    let ServiceContainerSpec {
+        image,
+        command,
+        entrypoint,
+        environment,
+        sealed_identity,
+        labels,
+        hostname,
+        extra_hosts,
+        cap_add,
+        cap_drop,
+        healthcheck,
+        pull_policy: _,
+        init,
+        user,
+        working_directory,
+        tty,
+        open_stdin,
+        privileged,
+        pid_mode,
+        resources,
+        stop_timeout_secs,
+        sysctls,
+        restart,
+        network,
+    } = container;
+    let ContainerResources {
+        cpu_nanos: _,
+        memory_bytes: _,
+        memory_reservation_bytes: _,
+        shared_memory_bytes,
+        devices,
+        device_reservations,
+        ulimits,
+    } = resources;
+    RequestedServiceSpec {
+        name: name.clone(),
+        mode: ServiceMode::Global,
+        container: ServiceContainerSpec {
+            image: image.clone(),
+            command: command.clone(),
+            entrypoint: entrypoint.clone(),
+            environment: environment.clone(),
+            sealed_identity: sealed_identity.clone(),
+            labels: labels.clone(),
+            hostname: hostname.clone(),
+            extra_hosts: extra_hosts.clone(),
+            cap_add: cap_add.clone(),
+            cap_drop: cap_drop.clone(),
+            healthcheck: healthcheck.clone(),
+            pull_policy: PullPolicy::Missing,
+            init: *init,
+            user: user.clone(),
+            working_directory: working_directory.clone(),
+            tty: *tty,
+            open_stdin: *open_stdin,
+            privileged: *privileged,
+            pid_mode: pid_mode.clone(),
+            resources: ContainerResources {
+                cpu_nanos: None,
+                memory_bytes: None,
+                memory_reservation_bytes: None,
+                shared_memory_bytes: *shared_memory_bytes,
+                devices: devices.clone(),
+                device_reservations: device_reservations.clone(),
+                ulimits: ulimits.clone(),
+            },
+            stop_timeout_secs: *stop_timeout_secs,
+            sysctls: sysctls.clone(),
+            restart: *restart,
+            network: *network,
+        },
+        placement: if host_data {
+            placement.clone()
+        } else {
+            Placement::default()
+        },
+        // An empty map means every region, so for a spec that reads host data the
+        // region keys stay signed and only the counts are cleared.
+        regions: if host_data {
+            regions
+                .keys()
+                .map(|region| (region.clone(), NonZeroU32::MIN))
+                .collect()
+        } else {
+            BTreeMap::new()
+        },
+        ports: ports.clone(),
+        mount_graph: mount_graph.with_bounds_cleared(),
+        pre_deploy: pre_deploy.clone(),
+        update: UpdateConfig::default(),
+    }
+}
+
+/// Whether `spec` mounts a Bind Mount, an External Volume or an Ordinary Volume whose
+/// driver can reach a host path. Each Server's folder or volume of that name can hold
+/// different files, so where such a spec runs is a signed choice.
+fn reads_host_data(spec: &RequestedServiceSpec) -> bool {
+    spec.volume_graph()
+        .volumes()
+        .iter()
+        .any(|volume| match volume.source.kind() {
+            RawVolumeSource::Bind { .. } | RawVolumeSource::External { .. } => true,
+            RawVolumeSource::Ordinary { driver, .. } => !plain_local(driver),
+            RawVolumeSource::Provisioned { .. } | RawVolumeSource::Tmpfs { .. } => false,
+        })
+}
 
 impl PayloadDigest {
     /// The digest of `spec` as it runs in `namespace`. Managed Volumes are scoped to
-    /// `namespace` first, as the Machine's resolved spec carries them, and the
-    /// [`UNSIGNED`] fields are left out. A field serde writes as `null` is left out, as
-    /// absent.
+    /// `namespace` first, as the Machine's resolved spec carries them, and the run fields
+    /// are cleared. A field serde writes as `null` is left out, as absent.
     ///
     /// # Errors
     /// Returns a [`CanonicalError`] when the spec has no canonical form, or when scoping
@@ -70,13 +193,8 @@ impl PayloadDigest {
         spec: &RequestedServiceSpec,
         edit: impl FnOnce(&mut Value),
     ) -> Result<Self, CanonicalError> {
-        let mut value =
-            serde_json::to_value(spec).map_err(|error| CanonicalError::Parse(error.to_string()))?;
-        if let Value::Object(fields) = &mut value {
-            for unsigned in UNSIGNED {
-                fields.remove(unsigned);
-            }
-        }
+        let mut value = serde_json::to_value(run_fields_cleared(spec))
+            .map_err(|error| CanonicalError::Parse(error.to_string()))?;
         drop_nulls(&mut value);
         edit(&mut value);
         let body = canonical::to_canonical(&value)?;
@@ -170,10 +288,7 @@ impl ApprovedChange {
                     image: pinned.container.image,
                     tag,
                     host: host_sensitive(spec).into_iter().map(String::from).collect(),
-                    settings: settings(spec, Signs::Deploy)
-                        .into_iter()
-                        .map(String::from)
-                        .collect(),
+                    settings: settings(spec).into_iter().map(String::from).collect(),
                 })
             })
             .collect::<Result<Vec<_>, CanonicalError>>()?;

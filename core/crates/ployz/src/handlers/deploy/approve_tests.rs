@@ -82,7 +82,6 @@ fn the_approved_lines_name_the_whole_digest_what_the_host_gives_and_every_settin
             r#"  volumes [{"reference":"root","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv"}}]"#,
             r#"  cap_add ["NET_ADMIN"]"#,
             r#"  privileged true"#,
-            r#"  pull_policy "missing""#,
             r#"  resources {"device_reservations":[],"devices":[{"cgroup_permissions":"rwm","container_path":"/dev/fuse","machine_path":"/dev/fuse"}],"ulimits":{}}"#,
         ]
     );

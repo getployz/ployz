@@ -14,7 +14,7 @@ const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFB
 
 /// The digest of the body [`golden`] drafts. The dashboard's `autoDeployRuleBody` test
 /// pins the same digest: a browser that drafts other bytes than the CLI fails there.
-const GOLDEN: &str = "5fe1b138faa40462100905f967e762cae20eec664bf4a2c9e8e40066ec9fcd20";
+const GOLDEN: &str = "820cfcdda3b2f3d7455a10ba99ec03028861f1eb3a3b63bdd812dded47aa97f7";
 
 /// What the dashboard's test passes as the rule view: one Git Service and one image
 /// Service, as the Store's `rule` view writes them.
@@ -431,7 +431,7 @@ fn a_value_cant_pass_for_two_entries() {
     let variables = |environment: Value| {
         let mut spec = spec_json("web", "one");
         spec["container"]["environment"] = environment;
-        settings(&serde_json::from_value(spec).unwrap(), Signs::Template)[0].clone()
+        settings(&serde_json::from_value(spec).unwrap())[0].clone()
     };
     let one = variables(json!({"X": "a, Y=b"}));
     let two = variables(json!({"X": "a", "Y": "b"}));
@@ -453,7 +453,7 @@ fn a_planted_control_character_in_a_setting_shows_escaped() {
     ] {
         let mut spec = spec_json("web", "one");
         spec.pointer_mut(parent).unwrap()[field] = value;
-        let lines = settings(&serde_json::from_value(spec).unwrap(), Signs::Template);
+        let lines = settings(&serde_json::from_value(spec).unwrap());
         assert!(
             lines.iter().all(|line| printable(line.as_str())),
             "{parent}/{field}: {lines:?}"
@@ -495,10 +495,7 @@ fn a_planted_control_character_in_the_source_shows_escaped() {
 /// template signs it too.
 #[test]
 fn every_signed_setting_shows() {
-    let base = settings(
-        &serde_json::from_value(spec_json("web", "one")).unwrap(),
-        Signs::Template,
-    );
+    let base = settings(&serde_json::from_value(spec_json("web", "one")).unwrap());
     for (path, value, shown) in [
         (
             "/container/command",
@@ -546,7 +543,7 @@ fn every_signed_setting_shows() {
         let (parent, field) = path.rsplit_once('/').unwrap();
         let mut spec = spec_json("web", "one");
         spec.pointer_mut(parent).unwrap()[field] = value;
-        let lines = settings(&serde_json::from_value(spec).unwrap(), Signs::Template);
+        let lines = settings(&serde_json::from_value(spec).unwrap());
         assert!(
             lines.iter().any(|line| line.as_str() == shown),
             "{path}: {lines:?}"
@@ -562,12 +559,7 @@ fn every_signed_setting_shows() {
 fn specs_that_sign_differently_read_differently() {
     let sealed = json!({"sealed": SEALED_A, "scope": "shared", "key": "PASSWORD"});
     let base = spec_json("web", "one");
-    let read = |spec: &Value| {
-        settings(
-            &serde_json::from_value(spec.clone()).unwrap(),
-            Signs::Template,
-        )
-    };
+    let read = |spec: &Value| settings(&serde_json::from_value(spec.clone()).unwrap());
     for (parent, field, value) in [
         ("/pre_deploy", "privileged", json!(false)),
         ("/pre_deploy", "user", json!("")),

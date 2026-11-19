@@ -6,7 +6,7 @@ const authority = import("../authority.mjs");
 
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 // `AutoDeployRule::draft`'s golden fixture in ployz-core's authority/rule_draft_tests.rs, and the digest of its body there.
-const RULE_GOLDEN = "5fe1b138faa40462100905f967e762cae20eec664bf4a2c9e8e40066ec9fcd20";
+const RULE_GOLDEN = "820cfcdda3b2f3d7455a10ba99ec03028861f1eb3a3b63bdd812dded47aa97f7";
 const BUILDER_SHA = "39e1f488e492c0641e520777e481e8f5b266985b";
 const ruleSpec = (name, plain) => ({
   name,
