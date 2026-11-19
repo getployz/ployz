@@ -187,6 +187,10 @@ deploy of another environment from it builds on your servers.
   after you [add a server](../servers/add-a-server.md).
 - **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
   longer deploy on those servers.
+- **An older approval stops starting containers.** Once a server has seen a newer approval of
+  the rule, or the rule turned off, it won't start a stopped container an older approval made,
+  from the dashboard or the CLI. One that's running keeps running, and the next push deploys a
+  new one.
 - **A rule deploys only the branch's head.** This version of Ployz can't redeploy or roll back
   a service a rule built to an older commit. Push a revert to the branch instead; see
   [Roll back a service a rule built](history-and-rollback.md#roll-back-a-service-a-rule-built).
