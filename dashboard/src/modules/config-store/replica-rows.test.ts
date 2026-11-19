@@ -12,25 +12,38 @@ describe("replica rows", () => {
   });
 
   it("keeps a Service that never named a region following the Environment while it has one row there", () => {
-    expect(replicaValue([{ region: "fsn", count: 3 }], "fsn", 2)).toBe(3);
-    expect(replicaValue([{ region: null, count: 2 }], null, 1)).toBe(2);
-    expect(replicaValue([{ region: "fsn", count: 2 }, { region: "syd", count: 1 }], "fsn", 2)).toEqual({ fsn: 2, syd: 1 });
-    expect(replicaValue([{ region: "syd", count: 1 }], "fsn", 1)).toEqual({ syd: 1 });
+    expect(replicaValue([{ region: "fsn", count: 3 }], "fsn", 2, 2)).toBe(3);
+    expect(replicaValue([{ region: null, count: 2 }], null, 1, 1)).toBe(2);
+    expect(replicaValue([{ region: "fsn", count: 2 }, { region: "syd", count: 1 }], "fsn", 2, 2)).toEqual({ fsn: 2, syd: 1 });
+    expect(replicaValue([{ region: "syd", count: 1 }], "fsn", 1, 1)).toEqual({ syd: 1 });
   });
 
   it("keeps the regions a Service names through a count edit, so a later default region doesn't move it", () => {
     const more = replicaRows({ fsn: 2 }, "fsn").map((row) => ({ ...row, count: 3 }));
-    const saved = replicaValue(more, "fsn", { fsn: 2 });
-    expect(replicaRows(saved, "syd")).toEqual([{ region: "fsn", count: 3 }]);
+    expect(replicaRows(replicaValue(more, "fsn", { fsn: 2 }, { fsn: 2 }), "syd")).toEqual([{ region: "fsn", count: 3 }]);
+    // Named with `ployz set` and not yet deployed: the count it last ran with was bare.
+    expect(replicaValue(more, "fsn", { fsn: 2 }, 2)).toEqual({ fsn: 3 });
   });
 
   it("keeps the last region named when another is removed", () => {
     const rows = replicaRows({ fsn: 2, syd: 1 }, "fsn").filter(({ region }) => region !== "syd");
-    expect(replicaValue(rows, "fsn", { fsn: 2, syd: 1 })).toEqual({ fsn: 2 });
+    expect(replicaValue(rows, "fsn", { fsn: 2, syd: 1 }, { fsn: 2, syd: 1 })).toEqual({ fsn: 2 });
+  });
+
+  it("puts a Service deployed with a bare count back to one when its rows return to one row in the Environment's region", () => {
+    // Deployed 2. Add region, then remove that row: nothing is left to deploy.
+    const rows = replicaRows({ fsn: 2, syd: 1 }, "fsn").filter(({ region }) => region !== "syd");
+    expect(replicaValue(rows, "fsn", { fsn: 2, syd: 1 }, 2)).toBe(2);
+    // With another count on the way, the count is all that changed.
+    expect(replicaValue([{ region: "fsn", count: 3 }], "fsn", { fsn: 3, syd: 1 }, 2)).toBe(3);
+    // To another region and back.
+    expect(replicaValue([{ region: "fsn", count: 2 }], "fsn", { syd: 2 }, 2)).toBe(2);
+    // A row outside the Environment's region is no bare count, whatever was deployed.
+    expect(replicaValue([{ region: "syd", count: 2 }], "fsn", { fsn: 2, syd: 2 }, 2)).toEqual({ syd: 2 });
   });
 
   it("goes back to a bare count for any region, which no map can name", () => {
-    expect(replicaValue([{ region: null, count: 2 }], null, { fsn: 2 })).toBe(2);
+    expect(replicaValue([{ region: null, count: 2 }], null, { fsn: 2 }, { fsn: 2 })).toBe(2);
   });
 
   it("totals every region, which a Volume's writers count by", () => {

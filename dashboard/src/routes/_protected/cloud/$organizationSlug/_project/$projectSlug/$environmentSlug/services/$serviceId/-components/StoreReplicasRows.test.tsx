@@ -28,10 +28,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function rows(value: JsonValue, home: string | null, volume: { capped?: VolumeListing; attached?: boolean } = {}) {
+function rows(value: JsonValue, home: string | null, volume: { capped?: VolumeListing; attached?: boolean; saved?: JsonValue } = {}) {
   const onChange = vi.fn(() => Promise.resolve());
   render(<StoreReplicasRows organizationSlug="acme" params={{ organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" }}
-    value={value} home={home} volume={volume.capped ?? null} oneRegion={volume.attached ?? volume.capped !== undefined} changed={false} onChange={onChange} />);
+    value={value} saved={volume.saved ?? value} home={home} volume={volume.capped ?? null} oneRegion={volume.attached ?? volume.capped !== undefined} changed={false} onChange={onChange} />);
   return onChange;
 }
 
@@ -92,6 +92,12 @@ it("keeps both counts when a row moves to a region whose key is any", async () =
   const onChange = rows({ fsn: 2, syd: 1 }, "fsn");
   await pick(1, "any · server-3");
   expect(onChange).toHaveBeenLastCalledWith({ any: 2, syd: 1 });
+});
+
+it("stages nothing when the region just added is removed again", () => {
+  const onChange = rows({ fsn: 2, syd: 1 }, "fsn", { saved: 2 });
+  fireEvent.click(screen.getByRole("button", { name: "Remove syd" }));
+  expect(onChange).toHaveBeenLastCalledWith(2);
 });
 
 it("adds a region a Server is in with one replica", () => {
