@@ -120,8 +120,8 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
 }
 
 /** Reads `query`'s view: the Store answers each query kind with the view of the same name. */
-async function readView<Q extends ConfigQuery>(organizationSlug: string, query: Q): Promise<StoreResult<StoreViewOf<Q>>> {
-  const result = await readStoreViewServerFn({ data: { organizationSlug, query } });
+async function readView<Q extends ConfigQuery>(organizationSlug: string, query: Q, signal?: AbortSignal): Promise<StoreResult<StoreViewOf<Q>>> {
+  const result = await readStoreViewServerFn({ data: { organizationSlug, query }, signal });
   if (!result.ok) return result;
   const view = viewOf<Q["query"]>(result.value, query);
   if (view === undefined) throw new Error(`The Store answered a ${query.query} query with a ${result.value.view} view.`);
@@ -395,8 +395,9 @@ export function storeDeploymentsOptions(organizationSlug: string, scope: Collect
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, deploymentsPage(environment, null)] as const,
     staleTime: Infinity,
     initialPageParam: FIRST_PAGE,
-    queryFn: async ({ pageParam }) => {
-      return requireView(await readView(organizationSlug, deploymentsPage(environment, pageParam)));
+    // No loader awaits these pages, so leaving cancels the rest of a refetch.
+    queryFn: async ({ pageParam, signal }) => {
+      return requireView(await readView(organizationSlug, deploymentsPage(environment, pageParam), signal));
     },
     getNextPageParam: (page) => page.next_cursor,
   });
