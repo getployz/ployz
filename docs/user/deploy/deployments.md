@@ -207,6 +207,14 @@ needs no new signature, from the dashboard or the CLI. A version stops counting 
 remove every device that signed it. One deployed from the server's own terminal keeps
 counting.
 
+Ployz Cloud keeps every version you sign, and each deployment records the image each service
+ran. **Roll back** or **Redeploy** runs the images that deployment ran and sends their
+signatures, so every server runs them, even one that never ran that version, and even after
+the tag moved. A deploy that changes only how many copies run, where they run or their CPU and
+memory limits runs the image the service last ran, with its signature, as long as your
+settings still name the same tag. Ployz Cloud can replay a version you signed, but it can't
+sign one.
+
 A server also keeps which devices approved each container it made, and checks they're still
 approved before it creates the container and each time the dashboard starts it again. Once
 you remove all of them, that container won't start from the dashboard. It keeps running if
@@ -240,18 +248,19 @@ without signing, and the servers refuse it.
 
 ### Deploy from the dashboard
 
-**Deploy** at the bottom of an environment sends no signature in this version of Ployz. A
-server runs it for two kinds of service:
+**Deploy** at the bottom of an environment signs nothing. A server runs it for three kinds of
+service:
 
 - One that reaches no data: no sealed value, no volume, no login for its image, and nothing of
   its server beyond a plain container. The server pulls the image itself with no login, so the
   registry has to be public.
-- A version the server already ran under a signature, as above. The dashboard sends the image
-  as your settings name it, and a signed deploy of a tag runs its digest, so a service whose
-  settings name a tag never matches. Write the digest with
-  `ployz set 'web.image=nginx@sha256:…'`, then deploy once from an approved device. Writing
-  the digest isn't enough by itself: the server has to have run that version signed.
-  Restarting needs neither.
+- A version a device signed, which Ployz Cloud sends with its signature: a rollback or
+  redeploy of a signed deployment, or a change of only replicas, placement or limits while
+  your settings name the tag your last signed deploy ran.
+- A version the server already ran under a signature, as above.
+
+A deploy that changes the tag, or any setting the signature covers, has no signature to send,
+even when nothing else changed. Run `ployz deploy` on an approved device to sign it.
 
 A server refuses any other container the deployment would start there, and says what the
 service reaches:
@@ -264,11 +273,9 @@ The deployment page shows why, and what already runs keeps running. Run `ployz d
 approved device, or push under an
 [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push).
 
-The same goes for every deploy nobody signed: **Create and deploy** on a new branch,
-**Redeploy** and **Roll back** on a deployment's page, an organization token, `ployz up`, a
-restore, and a redeploy or rollback by [the agent](../account/agent-sidebar.md). A server that
-never ran a version has no record of its signature, so a service that reaches data doesn't
-start there until you run `ployz deploy` again. Running
+The same goes for every deploy of a version nobody signed: **Create and deploy** on a new
+branch, an organization token, `ployz up`, a restore, and a redeploy or rollback of a
+deployment nobody signed, from its page or by [the agent](../account/agent-sidebar.md). Running
 `ployz deploy` with a device key in a script approves whatever is saved in Ployz Cloud at that
 moment, without anyone looking.
 

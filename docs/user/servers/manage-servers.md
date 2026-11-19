@@ -326,8 +326,10 @@ A server checks these itself, whoever asks. Ployz Cloud carries a signature but 
   [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push).
   `ployz deploy` from an approved device signs what it deploys; see
   [Deploy from an approved device](../deploy/deployments.md#deploy-from-an-approved-device).
-  The dashboard's **Deploy** sends no signature in this version of Ployz. A server runs it for
-  a service that reaches none of those, and for a version it already ran under a signature.
+  The dashboard's **Deploy** signs nothing. It sends the signature of a version a device
+  signed, for a rollback or a change of only replicas, placement or limits. A server runs any
+  other for a service that reaches none of those, and for a version it already ran under a
+  signature.
   It refuses any other container with `ployz.container.deploy-approval.v1` and names
   `ployz deploy from an approved device`.
 - **Builds.** A server refuses a build Ployz Cloud starts with
@@ -385,11 +387,12 @@ the server. What already runs there stays until you drain it, or until your next
 to your other servers. If no other server runs services, deploys fail until you turn the switch
 back on or add a server.
 
-In this version of Ployz a drain carries no signature. It moves a service that
-[reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). It reports any other
-service as failed and leaves it where it runs, even one the other server already runs. Turn
-off **Run services here**, then run `ployz deploy` from an approved device to move those off.
-A volume stays on its server; see [Move a volume](../services/move-a-volume.md).
+A drain sends each copy it moves with the signatures Ployz Cloud keeps for that copy's version,
+so the other server runs it even if it never ran that version. A copy of a version nobody signed
+moves only if it [reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). The drain
+reports any other as failed and leaves it where it runs. Turn off **Run services here**, then
+run `ployz deploy` from an approved device to move those off. A volume stays on its server; see
+[Move a volume](../services/move-a-volume.md).
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
