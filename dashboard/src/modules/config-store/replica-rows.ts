@@ -29,20 +29,19 @@ export function replicaRows(value: JsonValue, home: string | null): ReplicaRow[]
   return namedRows(value) ?? [{ region: home, count: 1 }];
 }
 
-/** Equal for two `replicas` values that say the same, whatever the order of their regions. */
-export const replicaKey = (value: JsonValue) => JSON.stringify(namedRows(value) ?? value);
+const sameRows = (a: readonly ReplicaRow[], b: readonly ReplicaRow[]) =>
+  a.length === b.length && a.every((row, at) => row.region === b[at]?.region && row.count === b[at]?.count);
 
 /**
- * The `replicas` value that says `rows`, for a Service whose value was `theirs` as last set by anything but this
- * edit, and `deployed` the one it last ran with. A Service that named its regions in either keeps naming them, whatever the edit, so a later
- * change of the Environment's region doesn't move it. One that named none in both is a bare count while its one row
- * is in the Environment's region, and follows the Environment: a region added and removed again leaves nothing to
- * deploy. Any region is a bare count, which no map can say.
+ * The `replicas` value that says `rows`, from what is true now: `current` as the next Deploy has it, `deployed` as the
+ * Service last ran with it. Rows that say what was deployed write the deployed value as it was, which stages nothing.
+ * Otherwise a value that names its regions keeps naming them, so a later change of the Environment's region doesn't move
+ * it. A bare count stays bare while its one row is in the Environment's region. Any region is a bare count, which no map can say.
  */
-export function replicaValue(rows: readonly ReplicaRow[], home: string | null, theirs: JsonValue, deployed: JsonValue): JsonValue {
+export function replicaValue(rows: readonly ReplicaRow[], home: string | null, current: JsonValue, deployed: JsonValue): JsonValue {
+  if ((isCount(deployed) || namedRows(deployed) !== null) && sameRows(rows, replicaRows(deployed, home))) return deployed;
   const [only] = rows;
-  const keeps = namedRows(theirs) !== null || namedRows(deployed) !== null;
-  if (rows.length === 1 && only !== undefined && (only.region === null || (only.region === home && !keeps))) return only.count;
+  if (rows.length === 1 && only !== undefined && (only.region === null || (only.region === home && namedRows(current) === null))) return only.count;
   return Object.fromEntries(rows.flatMap(({ region, count }) => (region === null ? [] : [[region, count]])));
 }
 

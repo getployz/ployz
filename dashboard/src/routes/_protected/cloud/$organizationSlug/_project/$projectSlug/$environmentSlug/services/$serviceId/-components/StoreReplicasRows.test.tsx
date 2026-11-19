@@ -156,6 +156,27 @@ it("keeps a region named with ployz set while the page is open through a count c
   expect(onChange).toHaveBeenLastCalledWith({ fsn: 3 });
 });
 
+it("keeps a pin set elsewhere again after a bare count in between, through a count change", () => {
+  const { Staged, onChange, setElsewhere } = staged({ fsn: 1 }, "fsn", { deployed: 1 });
+  render(<Staged />);
+  more("Replicas in fsn");
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 2 });
+  setElsewhere(4);
+  setElsewhere({ fsn: 2 });
+  more("Replicas in fsn");
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 3 });
+});
+
+it("names the region after One more then Add region in quick succession, and is bare again once back where it was deployed", () => {
+  const onChange = rows(1, "fsn");
+  more("Replicas in fsn");
+  click("Add region");
+  expect(onChange.mock.calls.map(([value]) => value)).toEqual([2, { fsn: 2, syd: 1 }]);
+  click("Remove syd");
+  click("One fewer");
+  expect(onChange).toHaveBeenLastCalledWith(1);
+});
+
 it("names the region left when it opens on two and can't know the Service ever had a bare count", () => {
   const onChange = rows({ fsn: 3, syd: 1 }, "fsn", { deployed: 1 });
   click("Remove syd");
