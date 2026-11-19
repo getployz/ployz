@@ -320,7 +320,8 @@ impl ConsumptionLog {
     }
 
     /// Record that `by` stood behind `digest` for `service`, as the newest of the
-    /// [`SPECS_KEPT`] this Machine remembers for it. Written before the Container is made.
+    /// [`SPECS_KEPT`] this Machine remembers for it, each with the `trusted` keys that
+    /// signed it. Written before the Container is made.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -330,6 +331,7 @@ impl ConsumptionLog {
         service: &ServiceName,
         digest: PayloadDigest,
         by: SpecSigner,
+        trusted: &TrustedKeys,
     ) -> Result<(), Error> {
         self.transact(Error::ApprovalRecord, |log| {
             let admitted = log.specs.entry(spec_key(namespace, service)).or_default();
@@ -337,7 +339,8 @@ impl ConsumptionLog {
             if admitted.last() == Some(&entry) {
                 return Ok(Edit::Keep(()));
             }
-            admitted.retain(|kept| kept != &entry);
+            // What a removed key signed counts for nothing, so it is dropped here.
+            admitted.retain(|kept| kept != &entry && kept.by.trusted(trusted));
             admitted.push(entry);
             // A version several keys signed is one version, kept with every signer.
             let mut newest = Vec::new();

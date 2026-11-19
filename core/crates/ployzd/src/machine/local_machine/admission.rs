@@ -332,7 +332,13 @@ impl LocalMachine {
         if spec.name != *service || !content_addressed(&spec.container.image) {
             return Ok(());
         }
-        self.approvals.admit_spec(namespace, service, digest, by)
+        self.approvals.admit_spec(
+            namespace,
+            service,
+            digest,
+            by,
+            &self.record().trusted_keys(),
+        )
     }
 
     pub(super) fn cluster_key(
