@@ -12,12 +12,13 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 /**
  * The Organization's regions with their names: those the Servers' `labels` hold and those given a name. Undefined
- * until the Store first answers; empty after a refusal or a failed read.
+ * until the Store first answers, and unread while `labels` is undefined; empty after a refusal or a failed read.
  */
-export function useRegions(organizationSlug: string, labels: readonly string[]): readonly NamedRegion[] | undefined {
+export function useRegions(organizationSlug: string, labels: readonly string[] | undefined): readonly NamedRegion[] | undefined {
   const scope = useCollectionScope();
   const [read] = useQueries({ queries: [{
-    ...storeViewOptions(organizationSlug, scope, { query: "regions", labels: [...labels] }),
+    ...storeViewOptions(organizationSlug, scope, { query: "regions", labels: [...labels ?? []] }),
+    enabled: labels !== undefined,
     // The labels are in the query key; keep the names shown while the new key loads.
     placeholderData: keepPreviousData,
   }] });
