@@ -321,7 +321,8 @@ impl ConsumptionLog {
 
     /// Record that `by` stood behind `digest` for `service`, as the newest of the
     /// [`SPECS_KEPT`] this Machine remembers for it, each with the `trusted` keys that
-    /// signed it. Written before the Container is made.
+    /// signed it. `trusted` is called under the log's lock, so it is never older than the
+    /// keys an earlier write was checked against. Written before the Container is made.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -331,7 +332,7 @@ impl ConsumptionLog {
         service: &ServiceName,
         digest: PayloadDigest,
         by: SpecSigner,
-        trusted: &TrustedKeys,
+        trusted: impl FnOnce() -> TrustedKeys,
     ) -> Result<(), Error> {
         self.transact(Error::ApprovalRecord, |log| {
             let admitted = log.specs.entry(spec_key(namespace, service)).or_default();
@@ -339,19 +340,27 @@ impl ConsumptionLog {
             if admitted.last() == Some(&entry) {
                 return Ok(Edit::Keep(()));
             }
-            // What a removed key signed counts for nothing, so it is dropped here.
-            admitted.retain(|kept| kept != &entry && kept.by.trusted(trusted));
+            admitted.retain(|kept| kept != &entry);
             admitted.push(entry);
-            // A version several keys signed is one version, kept with every signer.
+            // A version several keys signed is one version, as new as its newest signature
+            // whoever made it.
             let mut newest = Vec::new();
             for kept in admitted.iter().rev() {
                 if !newest.contains(&kept.digest) {
                     newest.push(kept.digest);
                 }
             }
-            if let Some(older) = newest.get(SPECS_KEPT..) {
-                admitted.retain(|kept| !older.contains(&kept.digest));
-            }
+            newest.truncate(SPECS_KEPT);
+            // What a removed key signed counts for nothing, so it is dropped. The entries
+            // are kept version by version, so the version keeps its place without it.
+            let trusted = trusted();
+            *admitted = newest
+                .iter()
+                .rev()
+                .flat_map(|version| admitted.iter().filter(move |kept| kept.digest == *version))
+                .filter(|kept| kept.by.trusted(&trusted))
+                .copied()
+                .collect();
             Ok(Edit::Write(()))
         })
     }

@@ -232,9 +232,11 @@ server runs it for two kinds of service:
   its server beyond a plain container. The server pulls the image itself with no login, so the
   registry has to be public.
 - A version the server already ran under a signature, as above. The dashboard sends the image
-  as your settings name it, and the server ran the digest, so the settings have to name that
-  digest. For a service whose settings name a tag, deploy from an approved device, or write
-  the digest: `ployz set 'web.image=nginx@sha256:…'`. Restarting needs neither.
+  as your settings name it, and a signed deploy of a tag runs its digest, so a service whose
+  settings name a tag never matches. Write the digest with
+  `ployz set 'web.image=nginx@sha256:…'`, then deploy once from an approved device. Writing
+  the digest isn't enough by itself: the server has to have run that version signed.
+  Restarting needs neither.
 
 A server refuses any other container the deployment would start there, and says what the
 service reaches:
