@@ -21,6 +21,7 @@ import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { StoreAutomaticDeploys } from "./store-automatic-deploys";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
@@ -33,6 +34,7 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
   const { environments } = listing.value;
   const environment = environments.find((row) => row.name === environmentSlug);
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
+  const defaultEnvironment = environments.find((row) => row.default)?.name;
   const disabledReason = environment?.default
     ? `${environmentSlug} is ${projectSlug}'s default environment. Make another the default to delete it, or delete the project.`
     : environment?.protected ? `${environmentSlug} is Protected. Unprotect it first.`
@@ -58,8 +60,10 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
       actionLabel="Delete environment"
       disabledReason={disabledReason}
       headingId="environment-teardown-heading"
-      // The project opens its Default Environment, which this isn't.
-      onCompleted={() => void navigate({ to: "/cloud/$organizationSlug/$projectSlug", params: { organizationSlug, projectSlug }, replace: true })}
+      // The project's Default Environment, which this isn't.
+      onCompleted={() => void navigate(defaultEnvironment === undefined
+        ? { to: "/cloud/$organizationSlug/~", params: { organizationSlug }, replace: true }
+        : { to: ENVIRONMENT_INDEX_ROUTE_TO, params: { organizationSlug, projectSlug, environmentSlug: defaultEnvironment }, replace: true })}
     />
     </>
   );
