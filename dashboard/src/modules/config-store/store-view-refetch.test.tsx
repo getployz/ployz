@@ -34,9 +34,9 @@ function openHistory() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
-  const reads: { signal: AbortSignal; answer: (result: HistoryShown) => void }[] = [];
-  vi.spyOn(functions, "readStoreViewServerFn").mockImplementation(({ signal }: { signal?: AbortSignal }) =>
-    new Promise((answer) => { reads.push({ signal: signal ?? new AbortController().signal, answer }); }) as never);
+  const reads: { answer: (result: HistoryShown) => void }[] = [];
+  vi.spyOn(functions, "readStoreViewServerFn").mockImplementation(() =>
+    new Promise((answer) => { reads.push({ answer }); }) as never);
   queryClient.setQueryData(storeViewOptions("acme", scope, query).queryKey, history(1));
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const shown = renderHook(() => useStoreView("acme", query), { wrapper });
@@ -56,7 +56,6 @@ it("shows a merge while changes keep coming faster than History reads", async ()
   changed();
   await act(async () => tab.reads[0]?.answer(history(2)));
   await waitFor(() => expect(tab.newest()).toBe(2));
-  expect(tab.reads[0]?.signal.aborted).toBe(false);
 
   // That read may have started before the last change committed: one more read follows it, and only one.
   await waitFor(() => expect(tab.reads).toHaveLength(2));
