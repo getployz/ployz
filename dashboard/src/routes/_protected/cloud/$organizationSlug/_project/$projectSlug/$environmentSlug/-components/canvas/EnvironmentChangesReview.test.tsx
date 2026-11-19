@@ -178,13 +178,13 @@ describe("Details", () => {
   it("names each Service the Deploy refuses or leaves waiting and why, before the changes", () => {
     review({ groups: [api([row("api.env.A")])], waits: [
       { service: "postgres", why: "its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead", refused: false },
-      { service: "reader", why: "pg-data is in fsn, and reader runs in syd. Run reader in fsn instead", refused: true },
+      { service: "reader", why: "reader and postgres share the Volume pg-data, so they have to run in the same region. pg-data is in fsn and reader is set to syd. Set reader to fsn", refused: true },
     ] });
     const waits = within(screen.getByRole("list", { name: "Waiting" }));
     expect(waits.getByText("postgres waits: its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead")).toBeTruthy();
     expect(waits.queryByText(/reader/)).toBeNull();
     const refused = within(screen.getByRole("list", { name: "Refused" }));
-    expect(refused.getByText("reader: pg-data is in fsn, and reader runs in syd. Run reader in fsn instead")).toBeTruthy();
+    expect(refused.getByText("reader: reader and postgres share the Volume pg-data, so they have to run in the same region. pg-data is in fsn and reader is set to syd. Set reader to fsn")).toBeTruthy();
   });
 
   it("keeps file Discard and Discard all of the Config reachable with the exact file path", async () => {

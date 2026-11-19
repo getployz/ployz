@@ -8,7 +8,8 @@ import type { Write } from "#/modules/config-store/store-write";
 import { StoreRefused } from "./store.contract";
 import { mountPathError } from "./store-volumes";
 
-export type MountChoice = { id: string; name: string; refusal: string | null; directory: string };
+/** A refused choice can still be picked, to read in full why under the field: its option has room only for a few words. */
+export type MountChoice = { id: string; name: string; refusal: { short: string; why: string } | null; directory: string };
 export type MountEditing = { counterpart: string; directory: string; editing: boolean };
 
 export const mountFailure = (error: Error) => error instanceof StoreRefused ? error.message : "Couldn't save the mount. Try again.";
@@ -27,10 +28,12 @@ export function MountEditor({ choices, initial, submit, onClose }: {
   useEffect(() => () => { attempt.current++; }, []);
   const pending = status.kind === "saving";
   // An optimistic Add filters its choice out before persistence completes.
-  const shown = selected && !choices.some((choice) => choice.id === selected.id) ? [...choices, selected] : choices;
+  const current = choices.find((choice) => choice.id === selected?.id) ?? selected;
+  const shown = current && !choices.includes(current) ? [...choices, current] : choices;
+  const refused = initial.editing ? null : current?.refusal?.why ?? null;
 
   function save() {
-    if (pending) return;
+    if (pending || refused) return;
     const error = !selected ? "Select a service." : mountPathError(directory);
     if (error) return setStatus({ kind: "idle", error });
     const identity = ++attempt.current;
@@ -63,11 +66,12 @@ export function MountEditor({ choices, initial, submit, onClose }: {
         }}>
           <SelectTrigger id={serviceId} className="w-full" autoFocus={!initial.editing}><SelectValue placeholder="Select a service" /></SelectTrigger>
           <SelectContent><SelectGroup>{shown.map((choice) => (
-            <SelectItem key={choice.id} value={choice.id} disabled={choice.refusal !== null} label={choice.name}>
-              {choice.name}{choice.refusal ? ` · ${choice.refusal}` : ""}
+            <SelectItem key={choice.id} value={choice.id} label={choice.name}>
+              {choice.name}{choice.refusal ? ` · ${choice.refusal.short}` : ""}
             </SelectItem>
           ))}</SelectGroup></SelectContent>
         </Select>
+        {refused ? <FieldError role="alert">{refused}</FieldError> : null}
       </SettingsFormField>
       <SettingsFormField label="Directory" htmlFor={directoryId}>
         <Input id={directoryId} className="font-mono" value={directory} disabled={pending} autoFocus={initial.editing}
@@ -77,7 +81,7 @@ export function MountEditor({ choices, initial, submit, onClose }: {
       </SettingsFormField>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={() => { attempt.current++; onClose(); }}>Cancel</Button>
-        <Button type="submit" disabled={pending}>{pending ? "Saving…" : initial.editing ? "Save directory" : "Mount"}</Button>
+        <Button type="submit" disabled={pending || refused !== null}>{pending ? "Saving…" : initial.editing ? "Save directory" : "Mount"}</Button>
       </div>
     </form>
   );
