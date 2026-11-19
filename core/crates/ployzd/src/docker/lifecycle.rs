@@ -22,7 +22,8 @@ use ployz_core::{
 use ployz_core::MachineGateway;
 
 use crate::{
-    docker_image::{ImagePull, prepare_image},
+    docker_image::{ImagePull, UnsignedImage, prepare_image},
+    machine::AdmittedSpec,
     network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME},
 };
 
@@ -89,6 +90,8 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     pub(crate) namespace: &'spec Namespace,
     /// Fully resolved Service specification to persist and execute.
     pub(crate) spec: &'spec ResolvedServiceSpec,
+    /// This Machine's admission of `spec`.
+    pub(crate) admitted: AdmittedSpec,
     /// Deferred Machine-local admission, awaited only after volume admission.
     pub(crate) admission: Admission,
     /// Fresh local storage observation deferred to final container admission.
@@ -105,6 +108,7 @@ struct Creating<'a> {
     kind: ContainerKind,
     namespace: &'a Namespace,
     spec: &'a ResolvedServiceSpec,
+    admitted: AdmittedSpec,
 }
 
 /// Creating, starting, stopping and removing the managed Containers, and the marks and
@@ -273,6 +277,7 @@ impl Lifecycle {
                 kind,
                 namespace,
                 spec,
+                admitted: AdmittedSpec::test_signed(namespace, spec),
                 admission: std::future::ready(Ok::<_, Error>(())),
                 storage: std::future::ready(None),
             },
@@ -303,6 +308,7 @@ impl Lifecycle {
             kind,
             namespace,
             spec,
+            admitted,
             admission,
             storage,
         } = request;
@@ -343,6 +349,7 @@ impl Lifecycle {
             kind,
             namespace,
             spec,
+            admitted,
         }))
         .await
         .map_err(E::from)
@@ -360,7 +367,10 @@ impl Lifecycle {
             ..
         } = creating;
         let mut body = self.build_body(&creating).await?;
-        if let ImagePull::Policy(registry_auth) = creating.image
+        if !creating.admitted.signed() {
+            // The caller's word that the image is here, and its login, count for nothing.
+            self.images.pull_free(&spec.container.image).await?;
+        } else if let ImagePull::Policy(registry_auth) = creating.image
             && let Err(error) = prepare_image(
                 &self.docker.client,
                 &spec.container.image,
@@ -450,6 +460,7 @@ impl Lifecycle {
             spec,
             &network,
             self.observation.sealing_key_dir(),
+            creating.admitted,
         )?;
         create::ingress_sysctls(
             &mut body,
@@ -508,6 +519,10 @@ impl Lifecycle {
                 field: "container ID",
                 source,
             })?;
+        if !creating.admitted.signed() && !self.runs_free_image(&container_id).await? {
+            self.remove_if_present(&container_id).await?;
+            return Err(Error::UnsignedImage(UnsignedImage::Moved));
+        }
         // A daemon killed here leaves a Container no spec describes.
         crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
         let slot = super::spec_store::CreationSlot::new(namespace, kind, creation_key);
@@ -519,6 +534,22 @@ impl Lifecycle {
             container_id,
             display_name,
         })
+    }
+
+    /// Whether the Container just made runs an image [`Images::pull_free`] placed. Its
+    /// image was resolved by name when Docker made it, after the pull, so a name another
+    /// caller moved in between is caught here, before the Container starts.
+    async fn runs_free_image(&self, container_id: &ContainerId) -> Result<bool, Error> {
+        let made = self
+            .docker
+            .client
+            .inspect_container(
+                container_id.as_str(),
+                None::<bollard::query_parameters::InspectContainerOptions>,
+            )
+            .await
+            .map_err(Error::Docker)?;
+        Ok(made.image.is_some_and(|image| self.images.is_free(&image)))
     }
 
     /// The Container an earlier create under `key` left behind, so a resend adopts it

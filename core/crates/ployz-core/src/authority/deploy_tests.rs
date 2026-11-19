@@ -123,7 +123,6 @@ fn approval(signer: &Signer, spec: &RequestedServiceSpec) -> DeployApproval {
 }
 
 struct Machine {
-    id: MachineId,
     trusted: TrustedKeys,
     namespace: Namespace,
 }
@@ -131,7 +130,6 @@ struct Machine {
 impl Machine {
     fn new(devices: &[&Signer]) -> Self {
         Self {
-            id: machine_id('2'),
             trusted: TrustedKeys {
                 devices: devices
                     .iter()
@@ -143,14 +141,12 @@ impl Machine {
         }
     }
 
-    fn facts<'a>(&'a self, creation: Option<Creation<'a>>) -> DeployFacts<'a> {
+    fn facts<'a>(&'a self, creation: Creation<'a>) -> DeployFacts<'a> {
         DeployFacts {
             cluster: Some(SealingPublicKey::from_bytes([9; 32])),
-            machine: &self.id,
             trusted: &self.trusted,
             namespace: &self.namespace,
             creation,
-            now: Timestamp::from_millis(500_000).unwrap(),
         }
     }
 }
@@ -175,10 +171,7 @@ fn verify_changed(changed: Value) -> Result<DeployApproved, AuthorityRefusal> {
     let signer = signer(1);
     let signed = Signed::sign(&approval(&signer, &requested(requested_json())), &signer).unwrap();
     let spec = resolved(&requested(changed));
-    verify(
-        &signed,
-        &Machine::new(&[&signer]).facts(Some(service(&spec))),
-    )
+    verify(&signed, &Machine::new(&[&signer]).facts(service(&spec)))
 }
 
 fn with(path: &[&str], value: Value) -> Value {
@@ -200,7 +193,7 @@ fn the_approved_spec_verifies_with_its_digest() {
     let approved = verify_changed(requested_json()).unwrap();
     assert_eq!(
         approved.digest,
-        Some(PayloadDigest::of(&requested(requested_json()), &namespace()).unwrap())
+        PayloadDigest::of(&requested(requested_json()), &namespace()).unwrap()
     );
     assert_eq!(approved.by, Approver::Device(signer(1).public()));
 }
@@ -326,12 +319,12 @@ fn derived_fields_change_nothing() {
         order: crate::UpdateOrder::StopFirst,
         monitor_millis: Some(5),
     };
-    assert!(verify(&signed, &machine.facts(Some(service(&spec)))).is_ok());
-    assert!(verify(&signed, &machine.facts(Some(hook(&spec)))).is_ok());
+    assert!(verify(&signed, &machine.facts(service(&spec))).is_ok());
+    assert!(verify(&signed, &machine.facts(hook(&spec))).is_ok());
     let wire: ResolvedServiceSpec =
         serde_json::from_value(serde_json::to_value(&spec).unwrap()).unwrap();
     assert!(
-        verify(&signed, &machine.facts(Some(service(&wire)))).is_ok(),
+        verify(&signed, &machine.facts(service(&wire))).is_ok(),
         "the resolved wire keeps the scoped names the digest was taken over"
     );
 }
@@ -343,11 +336,7 @@ fn a_tag_image_is_refused_even_when_approved() {
     let signed = Signed::sign(&approval(&signer, &tagged), &signer).unwrap();
     let spec = resolved(&tagged);
     assert_eq!(
-        verify(
-            &signed,
-            &Machine::new(&[&signer]).facts(Some(service(&spec)))
-        )
-        .unwrap_err(),
+        verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::Mismatch { field: "an image" }
     );
     for (image, pinned) in [
@@ -396,10 +385,7 @@ fn pinned_creation(image: &str) -> Result<DeployApproved, AuthorityRefusal> {
     let signer = signer(1);
     let signed = pinned_approval(&signer);
     let spec = resolved(&requested(with(&["container", "image"], json!(image))));
-    verify(
-        &signed,
-        &Machine::new(&[&signer]).facts(Some(service(&spec))),
-    )
+    verify(&signed, &Machine::new(&[&signer]).facts(service(&spec)))
 }
 
 #[test]
@@ -470,13 +456,7 @@ fn a_drafted_pin_is_in_the_body_and_its_digest_and_the_pinned_spec_creates() {
     body.pin(&mut sent);
     let sent = resolved(&sent);
     let signed = Signed::sign(&body, &signer).unwrap();
-    assert!(
-        verify(
-            &signed,
-            &Machine::new(&[&signer]).facts(Some(service(&sent)))
-        )
-        .is_ok()
-    );
+    assert!(verify(&signed, &Machine::new(&[&signer]).facts(service(&sent))).is_ok());
 }
 
 #[test]
@@ -497,18 +477,11 @@ fn the_envelope_must_match_this_machine_and_request() {
     let mut machine = Machine::new(&[&signer]);
     let signed = Signed::sign(&approval(&signer, &base), &signer).unwrap();
 
-    let mut facts = machine.facts(Some(service(&spec)));
+    let mut facts = machine.facts(service(&spec));
     facts.cluster = Some(SealingPublicKey::from_bytes([8; 32]));
     assert_eq!(
         verify(&signed, &facts).unwrap_err(),
         AuthorityRefusal::Mismatch { field: "a Cluster" }
-    );
-    facts.now =
-        Timestamp::from_millis(1_000_001 + super::super::validity::CLOCK_SKEW_MILLIS).unwrap();
-    facts.cluster = Some(SealingPublicKey::from_bytes([9; 32]));
-    assert_eq!(
-        verify(&signed, &facts).unwrap_err(),
-        AuthorityRefusal::Expired
     );
 
     let no_hook = requested({
@@ -519,7 +492,7 @@ fn the_envelope_must_match_this_machine_and_request() {
     let hookless = Signed::sign(&approval(&signer, &no_hook), &signer).unwrap();
     let hookless_spec = resolved(&no_hook);
     assert_eq!(
-        verify(&hookless, &machine.facts(Some(hook(&hookless_spec)))).unwrap_err(),
+        verify(&hookless, &machine.facts(hook(&hookless_spec))).unwrap_err(),
         AuthorityRefusal::Mismatch { field: "a hook" }
     );
 
@@ -529,37 +502,35 @@ fn the_envelope_must_match_this_machine_and_request() {
         ..service(&spec)
     };
     assert_eq!(
-        verify(&signed, &machine.facts(Some(creation))).unwrap_err(),
+        verify(&signed, &machine.facts(creation)).unwrap_err(),
         AuthorityRefusal::Mismatch { field: "a Service" }
     );
 
     machine.namespace = Namespace::parse("other").unwrap();
     assert_eq!(
-        verify(&signed, &machine.facts(None)).unwrap_err(),
+        verify(&signed, &machine.facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::Mismatch {
             field: "an Environment"
         }
     );
-    machine.namespace = namespace();
-    machine.id = machine_id('3');
-    assert_eq!(
-        verify(&signed, &machine.facts(None)).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "Machines" }
-    );
 }
 
+/// A signature is a standing fact about a spec: the approval's window and Machine list
+/// don't bound it, so Cloud can send it again for a restart or to another Machine.
 #[test]
-fn a_lifetime_past_fifteen_minutes_is_refused() {
+fn an_approval_admits_its_spec_after_its_window_and_on_a_machine_it_does_not_name() {
     let signer = signer(1);
     let base = requested(requested_json());
+    let spec = resolved(&base);
     let mut body = approval(&signer, &base);
-    body.expires_at = body.issued_at.plus(16 * 60 * 1000);
+    body.machines = vec![machine_id('7')];
+    body.issued_at = Timestamp::from_millis(1).unwrap();
+    body.expires_at = Timestamp::from_millis(2).unwrap();
     let signed = Signed::sign(&body, &signer).unwrap();
+    let approved = verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap();
     assert_eq!(
-        verify(&signed, &Machine::new(&[&signer]).facts(None)).unwrap_err(),
-        AuthorityRefusal::Mismatch {
-            field: "a lifetime"
-        }
+        approved.digest,
+        PayloadDigest::of(&base, &namespace()).unwrap()
     );
 }
 
@@ -567,10 +538,11 @@ fn a_lifetime_past_fifteen_minutes_is_refused() {
 fn a_stranger_or_a_missing_signature_is_refused() {
     let signer = signer(1);
     let base = requested(requested_json());
+    let spec = resolved(&base);
     let stranger = self::signer(2);
     let signed = Signed::sign(&approval(&stranger, &base), &stranger).unwrap();
     assert_eq!(
-        verify(&signed, &Machine::new(&[&signer]).facts(None)).unwrap_err(),
+        verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::UnknownKey {
             key: stranger.public()
         }
@@ -578,7 +550,7 @@ fn a_stranger_or_a_missing_signature_is_refused() {
     let mut unsigned = Signed::sign(&approval(&signer, &base), &signer).unwrap();
     unsigned.signatures.clear();
     assert_eq!(
-        verify(&unsigned, &Machine::new(&[&signer]).facts(None)).unwrap_err(),
+        verify(&unsigned, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::Unsigned {
             purpose: Purpose::Workflow
         }
@@ -728,14 +700,16 @@ fn each_reach_past_the_environment_is_named_and_a_contained_spec_names_none() {
 #[test]
 fn a_signed_approval_that_names_a_proposal_is_refused() {
     let signer = signer(1);
-    let mut body = approval(&signer, &requested(requested_json()));
+    let base = requested(requested_json());
+    let spec = resolved(&base);
+    let mut body = approval(&signer, &base);
     body.proposal = Some(ProposalRef {
         operation: proposal_operation(),
         index: 0,
     });
     let signed = Signed::sign(&body, &signer).unwrap();
     assert_eq!(
-        verify(&signed, &Machine::new(&[&signer]).facts(None)).unwrap_err(),
+        verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::Mismatch {
             field: "a proposal"
         }
@@ -790,10 +764,7 @@ fn verify_step(
 ) -> Result<DeployApproved, AuthorityRefusal> {
     let envelope = Signed::proposed(step, bundle.clone()).unwrap();
     let spec = resolved(&requested(requested_json()));
-    verify(
-        &envelope,
-        &Machine::new(&[signer]).facts(Some(service(&spec))),
-    )
+    verify(&envelope, &Machine::new(&[signer]).facts(service(&spec)))
 }
 
 #[test]
@@ -833,11 +804,7 @@ fn a_deploy_step_still_checks_the_spec_it_creates() {
     let envelope = Signed::proposed(&step, bundle).unwrap();
     let spec = resolved(&requested(with(&["container", "privileged"], json!(true))));
     assert_eq!(
-        verify(
-            &envelope,
-            &Machine::new(&[&signer]).facts(Some(service(&spec)))
-        )
-        .unwrap_err(),
+        verify(&envelope, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::Mismatch { field: "a payload" }
     );
 }
@@ -1065,7 +1032,7 @@ fn a_deploy_approval_is_checked_in_one_fixed_order() {
         }),
         ..approval(&approver, &base)
     };
-    let mut facts = host.facts(Some(service(&spec)));
+    let mut facts = host.facts(service(&spec));
     facts.cluster = None;
     assert_eq!(
         verify(&sign(&body), &facts).unwrap_err(),
@@ -1080,7 +1047,6 @@ fn a_deploy_approval_is_checked_in_one_fixed_order() {
     );
     body.proposal = None;
     body.cluster = SealingPublicKey::from_bytes([8; 32]);
-    body.machines = vec![machine_id('3')];
     assert_eq!(
         verify(&sign(&body), &facts).unwrap_err(),
         AuthorityRefusal::Mismatch {
@@ -1093,14 +1059,5 @@ fn a_deploy_approval_is_checked_in_one_fixed_order() {
         AuthorityRefusal::Mismatch { field: "a Cluster" }
     );
     body.cluster = SealingPublicKey::from_bytes([9; 32]);
-    facts.now = Timestamp::from_millis(2_000_000).unwrap();
-    assert_eq!(
-        verify(&sign(&body), &facts).unwrap_err(),
-        AuthorityRefusal::Mismatch { field: "Machines" }
-    );
-    body.machines = vec![machine_id('1'), machine_id('2')];
-    assert_eq!(
-        verify(&sign(&body), &facts).unwrap_err(),
-        AuthorityRefusal::Expired
-    );
+    assert!(verify(&sign(&body), &facts).is_ok());
 }

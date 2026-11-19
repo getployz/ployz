@@ -710,6 +710,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
         "gen": 1,
     }))
     .unwrap();
+    let admitted = super::AdmittedSpec::test_signed(&new.slot.namespace, &new.resolved_spec);
     let starts = || {
         fake.requests
             .lock()
@@ -720,7 +721,10 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     };
 
     assert_eq!(
-        local.create_and_start(new.clone(), None).await.unwrap(),
+        local
+            .create_and_start(new.clone(), None, admitted)
+            .await
+            .unwrap(),
         None
     );
     assert_eq!(starts(), 1);
@@ -736,7 +740,10 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     {
         container["State"] = json!({"Status":"exited", "ExitCode":0});
     }
-    assert_eq!(local.create_and_start(new, None).await.unwrap(), None);
+    assert_eq!(
+        local.create_and_start(new, None, admitted).await.unwrap(),
+        None
+    );
     assert_eq!(starts(), 1, "the adopted hook is not run again");
     std::fs::remove_dir_all(data_dir).unwrap();
 }
@@ -873,7 +880,7 @@ mod settled {
         let started = std::time::Instant::now();
         let ensure = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(want).await }
+            async move { local.ensure_full_access(want).await }
         });
         report_once_started(&fake, state).await;
         let reply = tokio::time::timeout(Duration::from_secs(10), ensure)
@@ -914,10 +921,11 @@ mod settled {
         let mut new = new_container("started");
         new.resolved_spec.update.monitor_millis = Some(60_000);
 
-        let reply = tokio::time::timeout(Duration::from_secs(5), local.ensure_container(run(new)))
-            .await
-            .expect("a Started ensure answers without waiting out the monitor")
-            .unwrap();
+        let reply =
+            tokio::time::timeout(Duration::from_secs(5), local.ensure_full_access(run(new)))
+                .await
+                .expect("a Started ensure answers without waiting out the monitor")
+                .unwrap();
 
         assert!(
             matches!(
@@ -964,10 +972,11 @@ mod settled {
         let mut new = new_container("settled");
         new.resolved_spec.container.healthcheck = Some(HealthcheckSpec::Disabled);
 
-        let reply = tokio::time::timeout(Duration::from_secs(20), local.ensure_container(run(new)))
-            .await
-            .expect("a Settled ensure answers")
-            .unwrap();
+        let reply =
+            tokio::time::timeout(Duration::from_secs(20), local.ensure_full_access(run(new)))
+                .await
+                .expect("a Settled ensure answers")
+                .unwrap();
 
         assert!(
             matches!(
@@ -999,7 +1008,11 @@ mod settled {
         started.notified().await;
         let create = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(run(new_container("started"))).await }
+            async move {
+                local
+                    .ensure_full_access(run(new_container("started")))
+                    .await
+            }
         });
         let_requests_land().await;
         let new = new_container("started");
@@ -1007,7 +1020,7 @@ mod settled {
             let local = local.clone();
             async move {
                 local
-                    .ensure_container(ContainerWant::Gone {
+                    .ensure_full_access(ContainerWant::Gone {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
                         anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
@@ -1064,7 +1077,11 @@ mod settled {
         started.notified().await;
         let create = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(run(new_container("started"))).await }
+            async move {
+                local
+                    .ensure_full_access(run(new_container("started")))
+                    .await
+            }
         });
         let_requests_land().await;
         let new = new_container("started");
@@ -1072,7 +1089,7 @@ mod settled {
             let local = local.clone();
             async move {
                 local
-                    .ensure_container(ContainerWant::Gone {
+                    .ensure_full_access(ContainerWant::Gone {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
                         anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
@@ -1162,7 +1179,7 @@ mod settled {
         fake.stall_after_oom.store(true, Ordering::SeqCst);
         let ensure = tokio::spawn({
             let local = local.clone();
-            async move { local.ensure_container(want).await }
+            async move { local.ensure_full_access(want).await }
         });
         let starting = json!({"Status":"running", "Health":{"Status":"starting"}});
         report_once_started(&fake, starting).await;
@@ -1471,7 +1488,7 @@ mod stopped_on_request {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             ..
-        } = Box::pin(local.ensure_container(want)).await.unwrap()
+        } = Box::pin(local.ensure_full_access(want)).await.unwrap()
         else {
             panic!("the want was refused");
         };
@@ -1956,7 +1973,7 @@ mod reserved_lifecycle {
         async fn under_the_lock(&self, want: ContainerWant) -> (bool, EnsuredContainer) {
             let held = self.runtime.doors().hold().await;
             let local = self.local.clone();
-            let ensuring = tokio::spawn(async move { local.ensure_container(want).await });
+            let ensuring = tokio::spawn(async move { local.ensure_full_access(want).await });
             // real-wait: the want reaches the lock through the fake Docker's TCP socket,
             // which emits no event.
             tokio::time::sleep(Duration::from_millis(300)).await;

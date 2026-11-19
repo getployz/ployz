@@ -26,7 +26,7 @@ use ployz_core::{
 
 use self::rotation::RotationWant;
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
-use super::{Error, LocalMachine};
+use super::{AdmittedSpec, Error, LocalMachine};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
     same_creation,
@@ -255,6 +255,7 @@ impl LocalMachine {
                     deployment_id,
                     r#gen: Gen::FIRST,
                     image: ImagePull::Policy(registry_auth.as_ref()),
+                    admitted: AdmittedSpec::test_signed(&namespace, &spec),
                 })
                 .await
         })
@@ -289,6 +290,7 @@ impl LocalMachine {
         start: Start,
         name: DockerVolumeName,
         r#gen: VolumeGen,
+        admitted: Option<AdmittedSpec>,
     ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
@@ -319,6 +321,7 @@ impl LocalMachine {
                             deployment_id: None,
                             r#gen: copy_gen,
                             image: ImagePull::Policy(None),
+                            admitted: admitted.ok_or_else(unadmitted)?,
                         })
                         .await?
                         .container_id
@@ -849,6 +852,7 @@ impl LocalMachine {
     pub(crate) async fn ensure_container(
         &self,
         want: ContainerWant,
+        admitted: Option<AdmittedSpec>,
     ) -> Result<EnsuredContainer, Error> {
         let runs = matches!(want, ContainerWant::Running { .. });
         #[cfg(test)]
@@ -885,13 +889,13 @@ impl LocalMachine {
             ContainerWant::Running {
                 container,
                 rotation: RunRotation::In { run, expect },
-            } => self.route_in(container, run, expect).await,
+            } => self.route_in(container, run, expect, admitted).await,
             want @ (ContainerWant::Running {
                 rotation: RunRotation::Pending,
                 ..
             }
             | ContainerWant::Stopped { .. }
-            | ContainerWant::Gone { .. }) => self.ensure_docker(want).await,
+            | ContainerWant::Gone { .. }) => self.ensure_docker(want, admitted).await,
         };
         if runs
             && self
@@ -1040,10 +1044,14 @@ impl LocalMachine {
     }
 
     /// Moves no rotation. An In want only re-checks itself before a start.
-    async fn ensure_docker(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+    async fn ensure_docker(
+        &self,
+        want: ContainerWant,
+        admitted: Option<AdmittedSpec>,
+    ) -> Result<EnsuredContainer, Error> {
         if !self.wants_reserved(&want).await? {
             // Boxed so the reserved check keeps every ensure's future the size it was.
-            return Box::pin(self.ensure_unlocked(want)).await;
+            return Box::pin(self.ensure_unlocked(want, admitted)).await;
         }
         // A stop or remove of a door or the router waits for its route under way, so the
         // route never finds the Container it just started gone under it. The work is detached
@@ -1054,12 +1062,16 @@ impl LocalMachine {
         let local = self.clone();
         tokio::spawn(async move {
             let _doors = doors;
-            local.ensure_unlocked(want).await
+            local.ensure_unlocked(want, admitted).await
         })
         .await?
     }
 
-    async fn ensure_unlocked(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+    async fn ensure_unlocked(
+        &self,
+        want: ContainerWant,
+        admitted: Option<AdmittedSpec>,
+    ) -> Result<EnsuredContainer, Error> {
         let settled_spec = if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
@@ -1070,7 +1082,7 @@ impl LocalMachine {
         } else {
             None
         };
-        let ensured = self.converge_container(want).await?;
+        let ensured = self.converge_container(want, admitted).await?;
         let Some((spec, deploy)) = settled_spec else {
             return Ok(ensured);
         };
@@ -1241,7 +1253,11 @@ impl LocalMachine {
         }
     }
 
-    async fn converge_container(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+    async fn converge_container(
+        &self,
+        want: ContainerWant,
+        admitted: Option<AdmittedSpec>,
+    ) -> Result<EnsuredContainer, Error> {
         if matches!(
             want,
             ContainerWant::Gone {
@@ -1254,14 +1270,18 @@ impl LocalMachine {
             let local = self.clone();
             return tokio::spawn(async move {
                 local.wait_for_admitted_work().await;
-                local.converge_now(want).await
+                local.converge_now(want, admitted).await
             })
             .await?;
         }
-        self.converge_now(want).await
+        self.converge_now(want, admitted).await
     }
 
-    async fn converge_now(&self, want: ContainerWant) -> Result<EnsuredContainer, Error> {
+    async fn converge_now(
+        &self,
+        want: ContainerWant,
+        admitted: Option<AdmittedSpec>,
+    ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
         let now = self.container_now(&locator).await?;
@@ -1278,7 +1298,10 @@ impl LocalMachine {
                     refusal,
                 });
             }
-            ContainerStep::CreateAndStart(new) => self.create_and_start(new, fence).await?,
+            ContainerStep::CreateAndStart(new) => {
+                self.create_and_start(new, fence, admitted.ok_or_else(unadmitted)?)
+                    .await?
+            }
             ContainerStep::Start(id) => match fence {
                 Some((run, expect)) => self.start_routed(id, run, expect).await?,
                 None => {
@@ -1412,6 +1435,7 @@ impl LocalMachine {
         &self,
         new: NewContainer,
         fence: Option<StartFence>,
+        admitted: AdmittedSpec,
     ) -> Result<Option<ContainerRefusal>, Error> {
         let outcome = self
             .finish_mutation(move |local| async move {
@@ -1428,6 +1452,7 @@ impl LocalMachine {
                         } else {
                             ImagePull::Policy(new.registry_auth.as_ref())
                         },
+                        admitted,
                     })
                     .await;
                 let created = match created {
@@ -1476,6 +1501,7 @@ impl LocalMachine {
             deployment_id,
             r#gen,
             image,
+            admitted,
         } = facts;
         let containers = self.docker()?;
         let record = self.record();
@@ -1495,6 +1521,7 @@ impl LocalMachine {
                     kind,
                     namespace,
                     spec,
+                    admitted,
                     admission: async {
                         let identity = QualifiedService::new(namespace.clone(), spec.name.clone());
                         match identity.reserved() {
@@ -1633,6 +1660,7 @@ pub(super) struct CreationFacts<'a> {
     pub(super) deployment_id: Option<DeploymentLogId>,
     pub(super) r#gen: Gen,
     pub(super) image: ImagePull<'a>,
+    pub(super) admitted: AdmittedSpec,
 }
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as
@@ -1925,6 +1953,12 @@ fn want_locator(want: &ContainerWant) -> ContainerLocator {
     }
 }
 
+/// A creation reached Docker with no admission of its spec. Every caller's spec passes
+/// [`LocalMachine::admit_spec`] first, so this is a path that skipped it.
+fn unadmitted() -> Error {
+    Error::Docker(crate::docker::Error::NotAdmitted)
+}
+
 fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     use crate::{docker::Error as Docker, sealed_env::OpenError};
     #[expect(
@@ -1952,9 +1986,9 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | Docker::StorageUnobservable,
         ) => ContainerRefusalReason::NotEligible,
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
-        Error::Docker(Docker::ImagePull(_) | Docker::DiskFull { .. }) => {
-            ContainerRefusalReason::ImagePullFailed
-        }
+        Error::Docker(
+            Docker::ImagePull(_) | Docker::UnsignedImage(_) | Docker::DiskFull { .. },
+        ) => ContainerRefusalReason::ImagePullFailed,
         Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
             ContainerRefusalReason::VolumesNotPrepared
         }
@@ -1968,7 +2002,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::Unopenable(_)
             | OpenError::TunnelToken
             | OpenError::PrivateAccessKey
-            | OpenError::ShortLine(_) => ContainerRefusalReason::SealedValueUnopenable,
+            | OpenError::ShortLine(_)
+            | OpenError::Unsigned(_) => ContainerRefusalReason::SealedValueUnopenable,
         },
         _ => return Err(error),
     };

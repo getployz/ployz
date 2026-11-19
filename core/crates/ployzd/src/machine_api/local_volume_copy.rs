@@ -14,7 +14,7 @@ use super::{MachineService, local_error, respond};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Want},
-    machine::{CutRefusal, LocalMachineError},
+    machine::{AdmittedSpec, CutRefusal, LocalMachineError},
     volume_copy::{
         CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
         INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, WRITER_ROUTE,
@@ -33,9 +33,12 @@ enum StartState {
 }
 
 impl MachineService {
+    /// `admitted` is the spec of the Container this request's start creates, when it
+    /// creates one.
     pub(super) async fn set_copy(
         &self,
         request: SetVolumeCopyRequest,
+        admitted: Option<AdmittedSpec>,
     ) -> Result<Response<OpaquePayload>, Status> {
         if request.want == WantedCopy::Floor {
             return match self.floor_copy(&request.name, request.r#gen).await {
@@ -59,14 +62,14 @@ impl MachineService {
         // one transition and ends when ZFS or Docker answers; it never retries or starts
         // other work.
         let service = self.clone();
-        let admitted = tokio::spawn(async move {
+        let planned = tokio::spawn(async move {
             let _guard = guard;
-            service.set_copy_planned(request).await
+            service.set_copy_planned(request, admitted).await
         })
         .await
         .map_err(LocalMachineError::from)
         .and_then(|copy| copy);
-        match admitted {
+        match planned {
             Ok(copy) => respond(SetVolumeCopyReply { copy }),
             Err(error) => local_error(error),
         }
@@ -75,6 +78,7 @@ impl MachineService {
     async fn set_copy_planned(
         &self,
         request: SetVolumeCopyRequest,
+        admitted: Option<AdmittedSpec>,
     ) -> Result<Copy, LocalMachineError> {
         let SetVolumeCopyRequest {
             name,
@@ -146,7 +150,10 @@ impl MachineService {
                         StartState::Gone => {
                             return Err(refused(CopyRefusal::NoTransition, copy, &name));
                         }
-                        StartState::Stopped => self.run_start(start.clone(), &name, r#gen).await?,
+                        StartState::Stopped => {
+                            self.run_start(start.clone(), &name, r#gen, admitted)
+                                .await?;
+                        }
                     }
                     self.route_created(&start, &name).await?;
                 }
@@ -169,7 +176,8 @@ impl MachineService {
                     }),
                 );
                 if let Some(start) = start {
-                    self.run_start(start.clone(), &name, r#gen).await?;
+                    self.run_start(start.clone(), &name, r#gen, admitted)
+                        .await?;
                     self.route_created(&start, &name).await?;
                 }
                 Ok(copy)
@@ -427,10 +435,13 @@ impl MachineService {
             )));
         };
         // Boxed: the In future is large, and inline it overflows the SetVolumeCopy task's stack.
-        let ensured = Box::pin(self.local.ensure_container(ContainerWant::Running {
-            container: RunTarget::Existing(ContainerLocator::Id(created.container_id)),
-            rotation: rotation.clone(),
-        }))
+        let ensured = Box::pin(self.local.ensure_container(
+            ContainerWant::Running {
+                container: RunTarget::Existing(ContainerLocator::Id(created.container_id)),
+                rotation: rotation.clone(),
+            },
+            None,
+        ))
         .await?;
         let error = match ensured {
             EnsuredContainer::Ensured {
@@ -461,10 +472,11 @@ impl MachineService {
         start: Start,
         name: &DockerVolumeName,
         r#gen: VolumeGen,
+        admitted: Option<AdmittedSpec>,
     ) -> Result<(), LocalMachineError> {
         match self
             .local
-            .start_volume_holder(start, name.clone(), r#gen)
+            .start_volume_holder(start, name.clone(), r#gen, admitted)
             .await?
         {
             Ok(()) => Ok(()),

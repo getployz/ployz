@@ -100,11 +100,12 @@ pub(crate) type PeerInspect = std::sync::Arc<
         + Sync,
 >;
 
+mod admission;
 mod consumption;
 mod container;
-mod deploy_approval;
 mod ingress_doors;
 mod private_access;
+pub(crate) use admission::{AdmittedSpec, Presented};
 pub(crate) use consumption::ConsumptionLog;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
@@ -212,7 +213,7 @@ pub enum Error {
     InvalidPushTarget(&'static str),
     /// Device enforcement refused an Operator's creation, or its step under a deploy
     /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
-    #[error("{}", deploy_approval::refusal_text(.0))]
+    #[error("{}", admission::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
     /// A rule build's grant failed a check before anything opened. The refusal names
     /// [`ployz_core::BUILD_GRANT_RULE_CAPABILITY`] in its details.

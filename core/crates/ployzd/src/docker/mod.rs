@@ -1456,6 +1456,12 @@ pub enum Error {
     ForeignTunnelNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
+    /// A spec nothing signed names an image this Machine cannot pull itself with no login.
+    #[error("nothing signed this Service, so its image must be public")]
+    UnsignedImage(#[source] crate::docker_image::UnsignedImage),
+    /// A Container was about to be made from a spec nothing admitted.
+    #[error("this Server did not admit the spec")]
+    NotAdmitted,
     /// A registry or peer pull failed while the Docker root had almost no free space.
     #[error("{full}")]
     DiskFull {
@@ -1539,6 +1545,8 @@ impl Error {
             | Self::IngressHolderNotRunning
             | Self::TunnelOriginNotRunning
             | Self::UnrecognizedNetwork
+            | Self::UnsignedImage(_)
+            | Self::NotAdmitted
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
@@ -1742,6 +1750,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
+            crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
         )
         .unwrap();
         assert!(
@@ -1751,6 +1760,21 @@ mod tests {
                 .unwrap()
                 .contains(&format!("PLOYZ_MACHINE_ID={machine_id}"))
         );
+        let mut other = spec.clone();
+        other.container.privileged = true;
+        assert!(matches!(
+            create::container_create_body(
+                &machine_id,
+                gateway,
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &other,
+                &create::CreationNetwork::Bridge,
+                None,
+                crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
+            ),
+            Err(Error::NotAdmitted)
+        ));
         assert_eq!(regular.cmd, Some(vec!["serve".into()]));
         assert_eq!(regular.hostname.as_deref(), Some("shared-host"));
         let regular_host = regular.host_config.unwrap();
@@ -1799,6 +1823,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
+            crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
@@ -1871,6 +1896,10 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
+            crate::machine::AdmittedSpec::test_signed(
+                &ployz_core::Namespace::parse("app").unwrap(),
+                &spec,
+            ),
         )
         .unwrap();
         assert_eq!(body.stop_timeout, Some(1));
@@ -1905,6 +1934,7 @@ mod tests {
                 &spec,
                 &create::CreationNetwork::Bridge,
                 None,
+                crate::machine::AdmittedSpec::test_signed(namespace, &spec),
             )
             .unwrap();
             create::ingress_sysctls(
@@ -1969,6 +1999,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Holder(holder),
             None,
+            crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &spec),
         )
         .unwrap();
         let host = body.host_config.unwrap();
@@ -1990,6 +2021,7 @@ mod tests {
             &specs.holder,
             &create::CreationNetwork::Bridge,
             None,
+            crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &specs.holder),
         )
         .unwrap();
         let host = holder_body.host_config.unwrap();
@@ -2021,6 +2053,7 @@ mod tests {
                 &caddy,
                 &create::CreationNetwork::Bridge,
                 None,
+                crate::machine::AdmittedSpec::test_signed(namespace, &caddy),
             )
             .unwrap();
             assert!(
@@ -2052,6 +2085,7 @@ mod tests {
             &holder,
             &create::CreationNetwork::Bridge,
             None,
+            crate::machine::AdmittedSpec::test_signed(&ingress.namespace, &holder),
         )
         .unwrap();
         assert!(takes_bridge_ipv6(body.labels.as_ref().unwrap()));
@@ -2109,6 +2143,7 @@ mod tests {
                     &spec(ports.clone()),
                     &create::CreationNetwork::Bridge,
                     None,
+                    crate::machine::AdmittedSpec::test_signed(&namespace, &spec(ports.clone())),
                 )
                 .unwrap();
                 assert_eq!(
@@ -2174,6 +2209,10 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
+            crate::machine::AdmittedSpec::test_signed(
+                &ployz_core::Namespace::parse("app").unwrap(),
+                &spec,
+            ),
         )
         .unwrap();
         let host = body.host_config.unwrap();

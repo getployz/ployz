@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use super::admission::DataReach;
 use super::keys::{Purpose, SigningPublicKey};
 use crate::DeviceCode;
 
@@ -19,6 +20,8 @@ pub enum AuthorityRefusal {
     UnknownPasskey,
     #[error("passkey {code} may approve workflows and rules only, not a {purpose} statement")]
     ApproveOnly { code: DeviceCode, purpose: Purpose },
+    #[error("the spec {reach}, and nothing signed it")]
+    NeedsSignature { reach: DataReach },
     #[error("the approval names {field} this request does not match")]
     Mismatch { field: &'static str },
     #[error(
@@ -50,6 +53,5 @@ pub(super) fn first_mismatch<const N: usize>(
 pub(super) mod field {
     pub const CLUSTER: &str = "a Cluster";
     pub const ENVIRONMENT: &str = "an Environment";
-    pub const MACHINES: &str = "Machines";
     pub const WINDOW: &str = "a window";
 }

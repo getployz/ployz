@@ -29,8 +29,8 @@
 //!   [`ployz_core::plan`];
 //! - A's daemon restarting halfway through the cut's flip;
 //! - each Machine refusing, on arrival, an Operator's `SetVolumeCopy` whose start would
-//!   create a Container (`admit_operator_volume_start` in
-//!   `ployzd/src/machine/local_machine/deploy_approval.rs`). The gate may close at any
+//!   create a Container (`admit_volume_start` in
+//!   `ployzd/src/machine/local_machine/admission.rs`). The gate may close at any
 //!   moment of the Move, which covers a Machine that refuses from the first step. A start
 //!   of a Container the Machine kept is served.
 //!

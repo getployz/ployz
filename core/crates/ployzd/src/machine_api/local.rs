@@ -22,8 +22,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        LocalMachine, LocalMachineError, LocalMachineRecord, RecoveryError, SealingError,
-        StoreError,
+        LocalMachine, LocalMachineError, LocalMachineRecord, Presented, RecoveryError,
+        SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -545,19 +545,19 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::EnsureContainer>(request)?;
-        if operator
-            && let Err(error) = self
-                .local
-                .admit_operator_change(
-                    &request.want,
-                    request.deploy.as_ref(),
-                    request.rule.as_deref(),
-                )
-                .await
-        {
-            return local_error(error);
-        }
-        finish(self.local.ensure_container(request.want).await)
+        let presented = if operator {
+            Presented::Operator {
+                deploy: request.deploy.as_ref(),
+                rule: request.rule.as_deref(),
+            }
+        } else {
+            Presented::FullAccess
+        };
+        let admitted = match self.local.admit_spec(&request.want, presented).await {
+            Ok(admitted) => admitted,
+            Err(error) => return local_error(error),
+        };
+        finish(self.local.ensure_container(request.want, admitted).await)
     }
 
     async fn update_container_limits(
@@ -651,15 +651,20 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::SetVolumeCopy>(request)?;
-        if operator
-            && let ployz_core::WantedCopy::Writer {
+        let admitted = match &request.want {
+            ployz_core::WantedCopy::Writer {
                 start: Some(start), ..
-            } = &request.want
-            && let Err(error) = self.local.admit_operator_volume_start(start).await
-        {
-            return local_error(error);
-        }
-        self.set_copy(request).await
+            } => match self.local.admit_volume_start(start, operator).await {
+                Ok(admitted) => admitted,
+                Err(error) => return local_error(error),
+            },
+            ployz_core::WantedCopy::Writer { start: None, .. }
+            | ployz_core::WantedCopy::Mirror { .. }
+            | ployz_core::WantedCopy::Snapshot { .. }
+            | ployz_core::WantedCopy::Forget
+            | ployz_core::WantedCopy::Floor => None,
+        };
+        self.set_copy(request, admitted).await
     }
 
     async fn seed_volume(

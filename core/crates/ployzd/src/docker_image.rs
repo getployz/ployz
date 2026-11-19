@@ -32,31 +32,144 @@ pub(crate) async fn prepare_image(
         },
     };
     if pull {
-        // Docker pulls every tag when the reference has no tag or digest.
-        let image =
-            if !image.contains('@') && !image.rsplit('/').next().unwrap_or(image).contains(':') {
-                std::borrow::Cow::Owned(format!("{image}:latest"))
-            } else {
-                std::borrow::Cow::Borrowed(image)
-            };
-        docker
-            .create_image(
-                Some(
-                    CreateImageOptionsBuilder::default()
-                        .from_image(image.as_ref())
-                        .build(),
-                ),
-                None,
-                auth.map(|auth| DockerCredentials {
-                    username: auth.username.clone(),
-                    password: Some(auth.password.clone()),
-                    ..Default::default()
-                }),
-            )
-            .try_for_each(|_| async { Ok(()) })
-            .await?;
+        pull_image(docker, image, auth).await?;
     }
     Ok(())
+}
+
+/// Pull `image` from its registry and answer the manifest digest Docker reports for it,
+/// when it reports one.
+async fn pull_image(
+    docker: &Docker,
+    image: &str,
+    auth: Option<&RegistryAuth>,
+) -> Result<Option<String>, Error> {
+    // Docker pulls every tag when the reference has no tag or digest.
+    let image = if !image.contains('@') && !last_part(image).contains(':') {
+        std::borrow::Cow::Owned(format!("{image}:latest"))
+    } else {
+        std::borrow::Cow::Borrowed(image)
+    };
+    docker
+        .create_image(
+            Some(
+                CreateImageOptionsBuilder::default()
+                    .from_image(image.as_ref())
+                    .build(),
+            ),
+            None,
+            auth.map(|auth| DockerCredentials {
+                username: auth.username.clone(),
+                password: Some(auth.password.clone()),
+                ..Default::default()
+            }),
+        )
+        .try_fold(None, |digest, progress| async move {
+            let reported = progress
+                .status
+                .as_deref()
+                .and_then(|status| status.strip_prefix("Digest: "))
+                .map(str::to_owned);
+            Ok(reported.or(digest))
+        })
+        .await
+}
+
+fn last_part(image: &str) -> &str {
+    image.rsplit('/').next().unwrap_or(image)
+}
+
+/// Why this Machine does not run an image under a spec nothing signed.
+#[derive(Debug, thiserror::Error)]
+pub enum UnsignedImage {
+    #[error("this Server could not pull the image with no login")]
+    Pull(#[source] Error),
+    #[error("the image's registry {0} could not be found")]
+    Unresolved(String, #[source] std::io::Error),
+    #[error("the image's registry {0} answers on a local or private address")]
+    Private(String),
+    #[error("the registry named no digest for the image")]
+    NoDigest,
+    #[error("the image changed while its Container was created")]
+    Moved,
+}
+
+/// Pull `image` from a public registry with no login, whatever is here under its name,
+/// and answer the ID of the image that pull placed. The ID is read by the digest the
+/// pull reported, so a tag another caller moves meanwhile changes nothing.
+pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, UnsignedImage> {
+    require_public_registry(image).await?;
+    let pulled = pull_image(docker, image, None)
+        .await
+        .map_err(UnsignedImage::Pull)?
+        .ok_or(UnsignedImage::NoDigest)?;
+    let name = image.split_once('@').map_or(image, |(name, _)| name);
+    let repository = match last_part(name).rsplit_once(':') {
+        Some((_, tag)) => &name[..name.len() - tag.len() - 1],
+        None => name,
+    };
+    docker
+        .inspect_image(&format!("{repository}@{pulled}"))
+        .await
+        .map_err(UnsignedImage::Pull)?
+        .id
+        .ok_or(UnsignedImage::NoDigest)
+}
+
+/// The host and port of the registry Docker pulls `image` from, or `None` for Docker Hub.
+fn registry(image: &str) -> Option<&str> {
+    let (first, _) = image.split_once('/')?;
+    (first.contains('.') || first.contains(':') || first == "localhost").then_some(first)
+}
+
+/// Refuse a registry on this Machine or its private networks: reaching one proves
+/// nothing about who else can.
+async fn require_public_registry(image: &str) -> Result<(), UnsignedImage> {
+    let Some(registry) = registry(image) else {
+        return Ok(());
+    };
+    let target = if registry
+        .rsplit(']')
+        .next()
+        .unwrap_or(registry)
+        .contains(':')
+    {
+        registry.to_owned()
+    } else {
+        format!("{registry}:443")
+    };
+    let mut addresses = tokio::net::lookup_host(&target)
+        .await
+        .map_err(|error| UnsignedImage::Unresolved(registry.to_owned(), error))?
+        .peekable();
+    if addresses.peek().is_none() || addresses.any(|address| !public(address.ip())) {
+        return Err(UnsignedImage::Private(registry.to_owned()));
+    }
+    Ok(())
+}
+
+fn public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            // 100.64.0.0/10, the shared range tailnets use.
+            let shared = ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64;
+            !(ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || shared)
+        }
+        std::net::IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(mapped) => public(std::net::IpAddr::V4(mapped)),
+            None => {
+                !(ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local())
+            }
+        },
+    }
 }
 
 pub(crate) fn is_not_found(error: &Error) -> bool {
@@ -73,6 +186,31 @@ mod tests {
     use base64::Engine as _;
 
     use super::*;
+
+    #[tokio::test]
+    async fn an_unsigned_image_comes_only_from_a_registry_at_a_public_address() {
+        for image in ["nginx:1.29", "library/nginx", "203.0.113.7/api:1"] {
+            require_public_registry(image).await.unwrap();
+        }
+        for image in [
+            "127.0.0.1:5000/api:1",
+            "10.0.0.5/api:1",
+            "192.168.1.5:5000/api@sha256:aa",
+            "100.64.0.9/api",
+            "169.254.169.254/api",
+            "[::1]:5000/api",
+            "[fd00::1]:7572/api",
+            "[::ffff:10.0.0.5]:5000/api",
+        ] {
+            assert!(
+                matches!(
+                    require_public_registry(image).await,
+                    Err(UnsignedImage::Private(_))
+                ),
+                "{image}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn pulls_only_the_requested_tag_or_digest() {
