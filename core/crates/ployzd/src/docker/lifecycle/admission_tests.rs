@@ -27,6 +27,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
                 kind: ContainerKind::ServiceContainer,
                 namespace: &namespace,
                 spec: &ineligible,
+                admitted: AdmittedSpec::test_signed(&namespace, &ineligible),
                 admission: async { Err(Error::EndpointCapacity) },
                 storage: std::future::ready(None),
             },

@@ -23,7 +23,7 @@ use ployz_core::{
     RunRotation, RunTarget,
 };
 
-use super::{Error, LocalMachine, not_found_refusal, redacted, refuse};
+use super::{AdmittedSpec, Error, LocalMachine, not_found_refusal, redacted, refuse};
 use crate::docker::{ContainerRuntime, published_spec};
 use crate::mesh_peer::{confirmed_row, supersedes};
 use crate::route_acks::{Ackers, Membership, routed};
@@ -155,6 +155,7 @@ impl LocalMachine {
         container: RunTarget,
         run: Option<DeploymentLogId>,
         expect: Option<CopyRotation>,
+        admitted: Option<AdmittedSpec>,
     ) -> Result<EnsuredContainer, Error> {
         let want = RotationWant::In { run: run.clone() };
         let locator = match &container {
@@ -192,13 +193,16 @@ impl LocalMachine {
         };
         // A copy already In still runs: Met only skips the rotation write.
         let started = self
-            .ensure_docker(ContainerWant::Running {
-                container,
-                rotation: RunRotation::In {
-                    run: run.clone(),
-                    expect: expect.clone(),
+            .ensure_docker(
+                ContainerWant::Running {
+                    container,
+                    rotation: RunRotation::In {
+                        run: run.clone(),
+                        expect: expect.clone(),
+                    },
                 },
-            })
+                admitted,
+            )
             .await?;
         if met {
             return Ok(started);

@@ -20,7 +20,7 @@ use ployz_core::{
 use super::{Error, doors::Door};
 
 mod healthcheck;
-use crate::sealed_env;
+use crate::{machine::AdmittedSpec, sealed_env};
 pub(super) use healthcheck::{docker_healthcheck, effective_healthcheck};
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
@@ -93,6 +93,10 @@ pub(super) enum CreationNetwork {
     Tunnel,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a separate fact of one creation, and the callers hold them apart"
+)]
 pub(super) fn container_create_body(
     machine_id: &MachineId,
     gateway: MachineGateway,
@@ -101,7 +105,11 @@ pub(super) fn container_create_body(
     spec: &ResolvedServiceSpec,
     network: &CreationNetwork,
     sealing_key_dir: Option<&Path>,
+    admitted: AdmittedSpec,
 ) -> Result<ContainerCreateBody, Error> {
+    if !admitted.covers(namespace, spec) {
+        return Err(Error::NotAdmitted);
+    }
     let hook = match kind {
         ContainerKind::ServiceContainer => None,
         ContainerKind::PreDeployHook => Some(
@@ -121,6 +129,7 @@ pub(super) fn container_create_body(
         environment,
         container.sealed_identity.as_ref(),
         sealing_key_dir,
+        admitted,
     )?;
     let mut labels: HashMap<_, _> = container
         .labels

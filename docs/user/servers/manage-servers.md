@@ -320,12 +320,15 @@ their devices.
 
 A server checks these itself, whoever asks. Ployz Cloud carries a signature but can't make one.
 
-- **Deploys.** A server starts a new container only from a spec an approved device signed, or
-  under an [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push).
+- **Deploys.** A server runs a service that opens a sealed value, mounts a volume, pulls its
+  image with a login, or asks for more of its server than a plain container gets only from a
+  spec an approved device signed, or under an
+  [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push).
   `ployz deploy` from an approved device signs what it deploys; see
   [Deploy from an approved device](../deploy/deployments.md#deploy-from-an-approved-device).
-  The dashboard's **Deploy** sends no signature in this version of Ployz. A server refuses the
-  containers it would start with `ployz.container.deploy-approval.v1` and names
+  The dashboard's **Deploy** sends no signature in this version of Ployz. A server runs it for
+  a service that reaches none of those, and for a version it already ran under a signature.
+  It refuses any other container with `ployz.container.deploy-approval.v1` and names
   `ployz deploy from an approved device`.
 - **Builds.** A server refuses a build Ployz Cloud starts with
   `This server runs only builds an approved device starts.`, before the build opens any
@@ -382,11 +385,11 @@ the server. What already runs there stays until you drain it, or until your next
 to your other servers. If no other server runs services, deploys fail until you turn the switch
 back on or add a server.
 
-In this version of Ployz a drain can't start the replacement containers: a server starts a new
-container only for a deploy an approved device signed, and Ployz Cloud's drain carries no
-signature. The drain reports each service as failed and leaves it where it runs. Turn off **Run
-services here**, then run `ployz deploy` from an approved device to move services off. A volume
-stays on its server; see [Move a volume](../services/move-a-volume.md).
+In this version of Ployz a drain carries no signature. It moves a service that
+[reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). It reports any other
+service as failed and leaves it where it runs, even one the other server already runs. Turn
+off **Run services here**, then run `ployz deploy` from an approved device to move those off.
+A volume stays on its server; see [Move a volume](../services/move-a-volume.md).
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,

@@ -19,6 +19,7 @@ use ployz_core::{
 };
 
 use super::{Error, LocalDocker, Status, classify, containerd_store, project_image};
+use crate::docker_image::UnsignedImage;
 
 /// What follows a repository in the tag that keeps a pinned image from being pruned. A
 /// daemon of another version reads these tags, so the text does not change.
@@ -48,11 +49,70 @@ const DISK_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 #[derive(Clone)]
 pub struct Images {
     docker: LocalDocker,
+    /// The IDs of the images this Machine pulled itself, from a public registry with no
+    /// login, since this daemon started.
+    free: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 impl Images {
     pub(super) fn new(docker: LocalDocker) -> Self {
-        Self { docker }
+        Self {
+            docker,
+            free: std::sync::Arc::default(),
+        }
+    }
+
+    /// Make `image` one this Machine pulled itself with no login, for a Container of a
+    /// spec nothing signed. An image here under that name counts only when such a pull
+    /// placed it, so a private image is never run for a caller who only knows its name.
+    /// `policy` pulls again under `Always`, and under `Never` runs only what is here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::UnsignedImage`] when the registry is not public, the pull fails,
+    /// or `policy` is `Never` and no such pull placed the image, and [`Error::DiskFull`]
+    /// when the pull fails on a full disk.
+    pub(crate) async fn pull_free(&self, image: &str, policy: PullPolicy) -> Result<(), Error> {
+        let docker = &self.docker.client;
+        if policy != PullPolicy::Always {
+            match docker.inspect_image(image).await {
+                Ok(local) if local.id.as_deref().is_some_and(|id| self.is_free(id)) => {
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(error) if crate::docker_image::is_not_found(&error) => {}
+                Err(error) => return Err(Error::Docker(error)),
+            }
+        }
+        if policy == PullPolicy::Never {
+            return Err(Error::UnsignedImage(UnsignedImage::NeverPulled));
+        }
+        match crate::docker_image::pull_public(docker, image).await {
+            Ok(id) => {
+                self.free_ids().insert(id);
+                Ok(())
+            }
+            Err(UnsignedImage::Pull(error)) => {
+                let failure = self.pull_failure(Error::ImagePull(error)).await;
+                Err(if let Error::ImagePull(error) = failure {
+                    Error::UnsignedImage(UnsignedImage::Pull(error))
+                } else {
+                    failure
+                })
+            }
+            Err(refusal) => Err(Error::UnsignedImage(refusal)),
+        }
+    }
+
+    /// Whether `image_id` is an image [`Self::pull_free`] placed.
+    pub(crate) fn is_free(&self, image_id: &str) -> bool {
+        self.free_ids().contains(image_id)
+    }
+
+    fn free_ids(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.free
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Make `image` present as `policy` asks, confirm Docker holds it, and answer

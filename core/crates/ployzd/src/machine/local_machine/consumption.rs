@@ -1,5 +1,6 @@
 //! The record of what this Machine has consumed, kept in `restart-approvals.json`: joins,
-//! GitHub tokens, rule marks, the build each rule's Service last ran and its hook. Every
+//! GitHub tokens, rule marks, the build each rule's Service last ran and its hook, and the
+//! specs it admitted signed. Every
 //! verb goes through [`ConsumptionLog::transact`] or [`ConsumptionLog::read`], so the
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
@@ -12,10 +13,10 @@ use std::{
 };
 
 use ployz_core::{
-    ServiceName,
+    DeviceCode, Namespace, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, RuleId, RuleIdentity,
-        Signed, Timestamp,
+        Approver, AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule,
+        PayloadDigest, RuleId, RuleIdentity, Signed, SigningPublicKey, Timestamp, TrustedKeys,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,9 @@ struct Consumption {
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
+    /// The specs this Machine admitted signed, by Namespace and Service, oldest first.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    specs: BTreeMap<String, Vec<AdmittedDigest>>,
 }
 
 impl Consumption {
@@ -98,6 +102,53 @@ impl Consumption {
 /// record grows with rules, not with pushes.
 fn rule_service_key(rule: RuleId, service: &ServiceName) -> String {
     format!("{rule}/{service}")
+}
+
+/// How many signed specs this Machine remembers for one Service. A rollback further back
+/// than this needs its signature again.
+const SPECS_KEPT: usize = 32;
+
+fn spec_key(namespace: &Namespace, service: &ServiceName) -> String {
+    format!("{namespace}/{service}")
+}
+
+/// Who stood behind a spec this Machine admitted.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::machine::local_machine) enum SpecSigner {
+    /// A call at Full access: this Server's own socket, or a Device's own connection.
+    FullAccess,
+    Device(SigningPublicKey),
+    Passkey(DeviceCode),
+}
+
+impl SpecSigner {
+    /// Whether this Machine still trusts the key. Full access names no key to remove.
+    fn trusted(self, trusted: &TrustedKeys) -> bool {
+        match self {
+            Self::FullAccess => true,
+            Self::Device(key) => trusted.signing_keys().any(|trusted| trusted == key),
+            Self::Passkey(code) => trusted
+                .passkeys
+                .iter()
+                .any(|trusted| trusted.passkey.code() == code),
+        }
+    }
+}
+
+impl From<Approver> for SpecSigner {
+    fn from(approver: Approver) -> Self {
+        match approver {
+            Approver::Device(key) => Self::Device(key),
+            Approver::Passkey(code) => Self::Passkey(code),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct AdmittedDigest {
+    digest: PayloadDigest,
+    by: SpecSigner,
 }
 
 /// The build this Machine last admitted a creation for under a rule's Service. A later
@@ -243,6 +294,74 @@ impl ConsumptionLog {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Consumption::default()),
             Err(error) => Err(error),
         }
+    }
+
+    /// Whether this Machine admitted `digest` signed for `service` before, by a key it
+    /// still trusts or at Full access.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(in crate::machine::local_machine) fn spec_admitted(
+        &self,
+        namespace: &Namespace,
+        service: &ServiceName,
+        digest: PayloadDigest,
+        trusted: &TrustedKeys,
+    ) -> Result<bool, Error> {
+        self.read(Error::ApprovalRecord, |log| {
+            log.specs
+                .get(&spec_key(namespace, service))
+                .is_some_and(|admitted| {
+                    admitted
+                        .iter()
+                        .any(|entry| entry.digest == digest && entry.by.trusted(trusted))
+                })
+        })
+    }
+
+    /// Record that `by` stood behind `digest` for `service`, as the newest of the
+    /// [`SPECS_KEPT`] this Machine remembers for it, each with the `trusted` keys that
+    /// signed it. `trusted` is called under the log's lock, so it is never older than the
+    /// keys an earlier write was checked against. Written before the Container is made.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(in crate::machine::local_machine) fn admit_spec(
+        &self,
+        namespace: &Namespace,
+        service: &ServiceName,
+        digest: PayloadDigest,
+        by: SpecSigner,
+        trusted: impl FnOnce() -> TrustedKeys,
+    ) -> Result<(), Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let admitted = log.specs.entry(spec_key(namespace, service)).or_default();
+            let entry = AdmittedDigest { digest, by };
+            if admitted.last() == Some(&entry) {
+                return Ok(Edit::Keep(()));
+            }
+            admitted.retain(|kept| kept != &entry);
+            admitted.push(entry);
+            // What a removed key signed counts for nothing, so it neither takes a place nor
+            // stays. A version several keys signed is one version, as new as its newest
+            // signature a trusted key made.
+            let trusted = trusted();
+            let mut newest = Vec::new();
+            for kept in admitted.iter().rev() {
+                if kept.by.trusted(&trusted) && !newest.contains(&kept.digest) {
+                    newest.push(kept.digest);
+                }
+            }
+            newest.truncate(SPECS_KEPT);
+            *admitted = newest
+                .iter()
+                .rev()
+                .flat_map(|version| admitted.iter().filter(move |kept| kept.digest == *version))
+                .filter(|kept| kept.by.trusted(&trusted))
+                .copied()
+                .collect();
+            Ok(Edit::Write(()))
+        })
     }
 
     /// Whether a rule deploy's hook was already made in the slot `key` names.

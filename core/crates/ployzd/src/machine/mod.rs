@@ -32,7 +32,7 @@ pub(crate) use store::{InterruptedReset, Opened};
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Caller, CutRefusal, RecoveryError, RuntimeWatchTelemetry, SealingError,
+    AdmittedSpec, Caller, CutRefusal, Presented, RecoveryError, RuntimeWatchTelemetry, SealingError,
 };
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};

@@ -357,8 +357,8 @@ fn plain_local(driver: &VolumeDriver) -> bool {
                 })))
 }
 
-/// A Device approves one Deploy: the Services it
-/// may create in one Cluster and Namespace, on named Machines, for a bounded lifetime.
+/// A Device approves one Deploy: the Services it may create in one Cluster and Namespace.
+/// A Machine checks neither `machines` nor the window when it creates a Container.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct DeployApproval {
@@ -500,27 +500,24 @@ pub struct Creation<'a> {
     pub spec: &'a ResolvedServiceSpec,
 }
 
-/// What a Machine knows when it checks a deploy approval against one request.
+/// What a Machine knows when it checks a deploy approval against one creation.
 #[derive(Clone, Debug)]
 pub struct DeployFacts<'a> {
     /// The Sealing public key this Machine holds, or `None` while it holds none.
     pub cluster: Option<SealingPublicKey>,
-    pub machine: &'a MachineId,
     pub trusted: &'a TrustedKeys,
-    /// The Namespace of the Container the request creates or acts on.
+    /// The Namespace of the Container the request creates.
     pub namespace: &'a Namespace,
-    /// The creation asked for, or `None` for a step on a Container that exists.
-    pub creation: Option<Creation<'a>>,
-    pub now: Timestamp,
+    pub creation: Creation<'a>,
 }
 
 /// A deploy approval a Machine checked, who approved it, and the digest of the creation
-/// it admitted, if any.
+/// it admitted.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeployApproved {
     pub body: DeployApproval,
     pub by: Approver,
-    pub digest: Option<PayloadDigest>,
+    pub digest: PayloadDigest,
 }
 
 /// Check `approval` approves this creation, signed by one of this Machine's Devices, or
@@ -528,7 +525,9 @@ pub struct DeployApproved {
 ///
 /// It recomputes the [`PayloadDigest`] of the requested spec and requires the one the
 /// approval names for that Service, a hook in that spec for a hook creation, and a
-/// content-addressed image.
+/// content-addressed image. An approval is a standing fact about a spec: neither its
+/// window nor its Machine list is checked, so the same approval admits the spec later
+/// and on another Machine of the Cluster.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found, a [`AuthorityRefusal::Mismatch`] naming
@@ -540,17 +539,9 @@ pub fn verify(
     let (body, by, cluster) = open_approval(approval, facts.trusted, facts.cluster)?;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),
-        (
-            field::MACHINES,
-            body.machines.binary_search(facts.machine).is_ok(),
-        ),
         (field::ENVIRONMENT, &body.namespace == facts.namespace),
     ])?;
-    super::validity::verify(body.issued_at, body.expires_at, facts.now)?;
-    let digest = facts
-        .creation
-        .map(|creation| creation_digest(&body, creation))
-        .transpose()?;
+    let digest = creation_digest(&body, facts.creation)?;
     Ok(DeployApproved { body, by, digest })
 }
 

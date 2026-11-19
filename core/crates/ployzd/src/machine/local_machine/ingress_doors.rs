@@ -21,7 +21,7 @@ use ployz_core::{
 use zeroize::Zeroizing;
 
 use super::container::CreationFacts;
-use super::{Error, LocalMachine};
+use super::{AdmittedSpec, Error, LocalMachine};
 use crate::docker::{ContainerRuntime, Door, DoorEntry, same_creation};
 use crate::docker_image::ImagePull;
 use crate::images::{DoorSpecs, TunnelSpecs};
@@ -871,6 +871,7 @@ impl LocalMachine {
                 deployment_id: None,
                 r#gen: Gen::FIRST,
                 image: ImagePull::Prepared,
+                admitted: AdmittedSpec::own(&Namespace::system(), spec)?,
             })
             .await?;
         effects.created.push(created.container_id);

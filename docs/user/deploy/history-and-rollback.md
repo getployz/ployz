@@ -85,9 +85,10 @@ An accepted deployment and its redeploys keep their original snapshot while you 
 
 ## Roll back a service a rule built
 
-A redeploy or rollback starts new containers, so your servers take it only when an
-[approved device](../servers/manage-servers.md#what-needs-an-approved-device) signed it or an
-[automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) covers it.
+A redeploy or rollback starts new containers. For a service that
+[reaches your data](deployments.md#deploy-from-an-approved-device), a server takes it only when an
+[approved device](../servers/manage-servers.md#what-needs-an-approved-device) signed that
+version or an [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) covers it.
 
 - **A service that runs from an image:** run `ployz deploy` on an approved device with the
   image you want back, as in
@@ -96,5 +97,6 @@ A redeploy or rollback starts new containers, so your servers take it only when 
   version of Ployz can't run an older commit under it. Revert the commit on the branch and push;
   the push deploys like any other.
 - **Redeploy** and **Roll back** in the dashboard, `ployz deployment redeploy` and a redeploy by
-  [the agent](../account/agent-sidebar.md) send no signature. Each server refuses the
-  containers they would start, and the deployment fails without changing what runs.
+  [the agent](../account/agent-sidebar.md) send no signature. A server runs them for a service
+  that reaches no data, and for a version it already ran under a signature. It refuses any
+  other container, and the deployment fails without changing what runs.

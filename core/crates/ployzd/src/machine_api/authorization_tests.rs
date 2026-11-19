@@ -438,7 +438,10 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::FORGET_MACHINE_CAPABILITY, _) => {
             unary::<op::Forget>(json!({"machine_id": peer}))
         }
-        (ployz_core::ENSURE_CONTAINER_CAPABILITY, "create") => {
+        (ployz_core::ENSURE_CONTAINER_CAPABILITY, "create, reaches data") => {
+            unary::<op::EnsureContainer>(json!({"want": mounting_want()}))
+        }
+        (ployz_core::ENSURE_CONTAINER_CAPABILITY, "create, reaches no data") => {
             unary::<op::EnsureContainer>(json!({"want": new_want("api", "nginx:1.29-alpine")}))
         }
         (ployz_core::ENSURE_CONTAINER_CAPABILITY, branch) => {
@@ -623,10 +626,48 @@ fn spec(name: &str, image: &str) -> Value {
 }
 
 fn new_want(name: &str, image: &str) -> Value {
+    want_of(name, spec(name, image), false)
+}
+
+/// A new Container of `resolved_spec`, with `image_prepared` as Cloud's runner sets it
+/// after its own pull.
+fn want_of(name: &str, resolved_spec: Value, image_prepared: bool) -> Value {
     json!({"state":"running", "rotation":"pending", "container":{"new":{
         "slot": {"namespace": "app", "service": name, "kind": "service_container",
                  "creation_key": "attacker-0001"},
-        "resolved_spec": spec(name, image), "gen": 1}}})
+        "resolved_spec": resolved_spec, "gen": 1, "image_prepared": image_prepared}}})
+}
+
+/// The image pulls Docker was asked for.
+fn pulls(machine: &Enforcing) -> usize {
+    machine
+        .fake
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(method, path)| {
+            *method == axum::http::Method::POST && path.ends_with("/images/create")
+        })
+        .count()
+}
+
+/// A new Container whose spec mounts a Volume.
+fn mounting_want() -> Value {
+    let mounting = crate::docker::test_support::spec_with_sources(vec![
+        crate::docker::test_support::provisioned_source("data", 1_073_741_824),
+    ]);
+    let volumes = serde_json::to_value(mounting)
+        .unwrap()
+        .pointer("/volumes")
+        .cloned()
+        .unwrap();
+    let mut resolved = spec("db", "postgres:18");
+    resolved
+        .as_object_mut()
+        .unwrap()
+        .insert("volumes".into(), volumes);
+    want_of("db", resolved, false)
 }
 
 /// One call to the Machine at `address`, owned, so a test can leave it waiting. `operator`
@@ -685,23 +726,38 @@ async fn send(machine: &Enforcing, sample: &Sample) -> Answer {
         Sample::Unary(path, request) => machine.unary(path, request).await,
         Sample::Exec => machine.stream(true).await,
         Sample::Build => machine.stream(false).await,
-        Sample::Elsewhere | Sample::Unparsed(_) => unreachable!("never sent"),
+        Sample::Elsewhere => unreachable!("never sent"),
+        Sample::Unparsed(error) => panic!("{error}"),
     }
 }
 
 /// The check a `Bounded` case names, run after its request was served.
 async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
     match check {
-        "a following unsigned EnsureContainer create that uses it is refused" => {
-            let create = unary::<op::EnsureContainer>(json!({
-                "want": new_want("api", "nginx:1.29-alpine"),
-            }));
+        "a following unsigned EnsureContainer create that mounts it is refused" => {
+            let create = unary::<op::EnsureContainer>(json!({"want": mounting_want()}));
             let answer = send(machine, &create).await;
             assert!(
                 matches!(&answer, Answer::Refused { capability: Some(name), .. }
                     if name == ployz_core::DEPLOY_APPROVAL_CAPABILITY),
                 "{case:?}: the create after it was not refused: {answer:?}"
             );
+        }
+        "a following unsigned EnsureContainer create that uses it pulls the image again itself" => {
+            let seen = pulls(machine);
+            let want = want_of("api", spec("api", "nginx:1.29-alpine"), true);
+            let answer = send(
+                machine,
+                &unary::<op::EnsureContainer>(json!({"want": want})),
+            )
+            .await;
+            assert!(
+                !answer.for_authority() && pulls(machine) == seen + 1,
+                "{case:?}: the create after it did not pull: {answer:?}"
+            );
+        }
+        "the Machine pulls the image itself" => {
+            assert_eq!(pulls(machine), 1, "{case:?}");
         }
         "the key stays on the Machine" | "the key installed is the one the Cluster publishes" => {
             let held = SealingKey::load(&machine.data_dir)

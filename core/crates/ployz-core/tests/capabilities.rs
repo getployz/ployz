@@ -613,7 +613,15 @@ mod coverage {
         ),
         (
             "ployz.container.ensure.v1",
-            &["create", "start", "stop", "held", "out", "remove"],
+            &[
+                "create, reaches data",
+                "create, reaches no data",
+                "start",
+                "stop",
+                "held",
+                "out",
+                "remove",
+            ],
         ),
         (
             "ployz.machine.upgrade.request.v1",

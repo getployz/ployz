@@ -242,6 +242,7 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::ApproveOnly { .. }
         | AuthorityRefusal::Mismatch { .. }
         | AuthorityRefusal::Unsigned { .. }
+        | AuthorityRefusal::NeedsSignature { .. }
         | AuthorityRefusal::NoClusterIdentity
         | AuthorityRefusal::Expired
         | AuthorityRefusal::ProofReplayed => {

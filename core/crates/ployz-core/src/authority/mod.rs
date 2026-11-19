@@ -6,6 +6,7 @@
 //! each have a statement type here. A proposal signs an ordered plan of deploys once, and
 //! each step travels unsigned with the bundle in its envelope.
 
+pub mod admission;
 pub mod canonical;
 pub mod coverage;
 pub mod deploy;
@@ -21,6 +22,7 @@ pub mod shown;
 pub mod trusted_key;
 pub mod validity;
 
+pub use admission::{DataReach, needs_signature};
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{
     ApprovedChange, ApprovedService, DeployApproval, DeployApproved, DeployFacts, DeployTerms,

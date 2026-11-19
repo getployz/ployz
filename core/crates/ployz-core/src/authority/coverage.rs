@@ -80,7 +80,7 @@ pub enum Authorization {
 use Authorization::{Bound, Full, Read, Signed};
 use Statement::{Deploy, Join, PrivateAccess, Proposal, Rule};
 
-const IMAGE_BOUND: &str = "content-addressed; checked at creation by C";
+const IMAGE_BOUND: &str = "a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
 
 /// Every catalog route's class, in catalog order.
 pub const AUTHORIZATION: &[(&str, Authorization)] = &[
@@ -267,7 +267,11 @@ const fn case(
     }
 }
 
-const STARTS_NOTHING: &str = "a following unsigned EnsureContainer create that uses it is refused";
+const MOUNTS_NOTHING: &str =
+    "a following unsigned EnsureContainer create that mounts it is refused";
+const PULLS_AGAIN: &str =
+    "a following unsigned EnsureContainer create that uses it pulls the image again itself";
+const PULLS_ITS_OWN: &str = "the Machine pulls the image itself";
 const PINNED_DOORS: &str = "only pinned images run";
 
 /// Every case an enforcing Machine is held to, in catalog order.
@@ -430,9 +434,15 @@ pub const CASES: &[Case] = &[
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
-        "create",
-        "an EnsureContainer creating a Container from a new spec",
+        "create, reaches data",
+        "an EnsureContainer creating a Container from a new spec that mounts a Volume",
         Expected::Refused(&[DEPLOY_APPROVAL_CAPABILITY]),
+    ),
+    case(
+        ENSURE_CONTAINER_CAPABILITY,
+        "create, reaches no data",
+        "an EnsureContainer creating a Container from a new spec that opens no secret, mounts no Volume and reaches no host",
+        Expected::Bounded(PULLS_ITS_OWN),
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
@@ -480,7 +490,7 @@ pub const CASES: &[Case] = &[
         PREPARE_VOLUMES_CAPABILITY,
         "any Volume",
         "a PrepareVolumes of a new Volume",
-        Expected::Bounded(STARTS_NOTHING),
+        Expected::Bounded(MOUNTS_NOTHING),
     ),
     case(
         REMOVE_VOLUME_CAPABILITY,
@@ -552,19 +562,19 @@ pub const CASES: &[Case] = &[
         ENSURE_IMAGE_INGEST_CAPABILITY,
         "any image",
         "an EnsureImageIngest opening an image push",
-        Expected::Bounded(STARTS_NOTHING),
+        Expected::Bounded(PULLS_AGAIN),
     ),
     case(
         PULL_IMAGE_CAPABILITY,
         "any image",
         "a PullImage of a public image",
-        Expected::Bounded(STARTS_NOTHING),
+        Expected::Bounded(PULLS_AGAIN),
     ),
     case(
         PULL_IMAGE_FROM_MACHINE_CAPABILITY,
         "any image",
         "a PullImageFromMachine of another Machine's image",
-        Expected::Bounded(STARTS_NOTHING),
+        Expected::Bounded(PULLS_AGAIN),
     ),
     case(
         MINT_BUILD_GRANT_CAPABILITY,

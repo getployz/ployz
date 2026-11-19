@@ -2403,7 +2403,7 @@ fn held_creation(
         });
     let creating = tokio::spawn(async move {
         local
-            .ensure_container(ContainerWant::Running {
+            .ensure_full_access(ContainerWant::Running {
                 container: RunTarget::New(new),
                 rotation: RunRotation::Pending,
             })
@@ -2494,7 +2494,7 @@ async fn takes_creations_again(node: &Node, what: &str) {
     let reply = node
         .service
         .local
-        .ensure_container(ContainerWant::Running {
+        .ensure_full_access(ContainerWant::Running {
             container: RunTarget::New(again),
             rotation: RunRotation::Pending,
         })
@@ -2576,11 +2576,11 @@ async fn stops_removes_and_creations_run_while_a_leave_is_under_way() {
     node.runtime.lifecycle().remove_all_managed().await.unwrap();
     assert!(node.container(a).is_none());
 
-    let reply = node.service.local.ensure_container(stopped(a)).await;
+    let reply = node.service.local.ensure_full_access(stopped(a)).await;
     let reply = reply.unwrap_or_else(|error| panic!("a stop during a Leave runs: {error}"));
     refused(&reply, ContainerRefusalReason::NotFound);
 
-    let reply = node.service.local.ensure_container(gone(a)).await;
+    let reply = node.service.local.ensure_full_access(gone(a)).await;
     let reply = reply.unwrap_or_else(|error| panic!("a remove during a Leave runs: {error}"));
     ensured(&reply);
 
@@ -2589,7 +2589,7 @@ async fn stops_removes_and_creations_run_while_a_leave_is_under_way() {
     let reply = node
         .service
         .local
-        .ensure_container(ContainerWant::Running {
+        .ensure_full_access(ContainerWant::Running {
             container: RunTarget::New(new),
             rotation: RunRotation::Pending,
         })

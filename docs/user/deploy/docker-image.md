@@ -32,7 +32,8 @@ Write the image the way `docker pull` takes it. Without a tag, Ployz uses `lates
 | Any other registry | `quay.io/acme/web:1.4.0`, `registry.gitlab.com/acme/web:1.4.0` |
 | A pinned digest | `ghcr.io/acme/web@sha256:…` |
 
-Your servers run only an image pinned by digest, deployed with `ployz deploy` from an
+For a service that [reaches your data](deployments.md#deploy-from-an-approved-device), your
+servers run only an image pinned by digest, deployed with `ployz deploy` from an
 [approved device](../servers/manage-servers.md#what-needs-an-approved-device). For a tag on a public
 registry, such as `nginx:1.27`, `ployz deploy` asks the registry for the
 tag's digest and pins it for you. An image the registry won't show without credentials needs

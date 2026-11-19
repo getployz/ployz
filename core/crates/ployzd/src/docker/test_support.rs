@@ -228,7 +228,11 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             }
             // Docker answers the host config beside the config, not inside it.
             let host_config = config.get("HostConfig").cloned().unwrap_or_default();
-            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));
+            let image = config
+                .get("Image")
+                .and_then(serde_json::Value::as_str)
+                .map(image_id);
+            containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Image": image, "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));
             return (
                 StatusCode::CREATED,
                 Json(serde_json::json!({"Id":id,"Warnings":[]})),
@@ -497,13 +501,35 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 |container| (StatusCode::OK, container),
             )
     } else if method == Method::POST && path.ends_with("/images/create") {
-        (StatusCode::OK, serde_json::json!({}))
+        let pulled = uri
+            .query()
+            .and_then(|query| {
+                query
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("fromImage="))
+            })
+            .map(|image| {
+                image
+                    .replace("%2F", "/")
+                    .replace("%3A", ":")
+                    .replace("%40", "@")
+            })
+            .unwrap_or_default();
+        (
+            StatusCode::OK,
+            serde_json::json!({"status": format!("Digest: {}", image_id(&pulled))}),
+        )
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {
             barrier.wait().await;
             barrier.wait().await;
         }
-        (StatusCode::OK, serde_json::json!({}))
+        let image = path
+            .split("/images/")
+            .nth(1)
+            .unwrap_or_default()
+            .trim_end_matches("/json");
+        (StatusCode::OK, serde_json::json!({"Id": image_id(image)}))
     } else if method == Method::GET
         && path.ends_with("/volumes")
         && fake.reject_list.load(Ordering::Relaxed)
@@ -833,6 +859,17 @@ pub(super) fn machine() -> Machine {
     )
 }
 
+/// The ID this fake gives `image`: the digest it names, or one made from its name, so a
+/// pull, an inspect and a Container of one reference agree.
+fn image_id(image: &str) -> String {
+    use sha2::Digest as _;
+
+    match image.split_once('@') {
+        Some((_, digest)) => digest.to_owned(),
+        None => format!("sha256:{}", hex::encode(sha2::Sha256::digest(image))),
+    }
+}
+
 pub(super) fn container_request<'spec, Storage>(
     kind: ContainerKind,
     namespace: &'spec Namespace,
@@ -847,6 +884,7 @@ pub(super) fn container_request<'spec, Storage>(
         kind,
         namespace,
         spec,
+        admitted: crate::machine::AdmittedSpec::test_signed(namespace, spec),
         admission: std::future::ready(Ok(())),
         storage,
     }

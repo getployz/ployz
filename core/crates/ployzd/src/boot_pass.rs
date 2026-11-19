@@ -525,7 +525,7 @@ impl BootHost for DaemonHost {
     }
 
     async fn ensure(&self, want: ContainerWant) -> Result<EnsuredContainer, LocalMachineError> {
-        self.machine.ensure_container(want).await
+        self.machine.ensure_container(want, None).await
     }
 }
 

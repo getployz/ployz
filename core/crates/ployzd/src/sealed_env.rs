@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     logs::{LogLineStream, LogSource, RawLogEntry, RpcStream},
+    machine::AdmittedSpec,
     sealing_key::SealingKey,
 };
 
@@ -49,6 +50,8 @@ pub enum OpenError {
     PrivateAccessKey,
     #[error("env {0} holds a multiline Sealed value with a line too short to scrub from logs")]
     ShortLine(String),
+    #[error("env {0} is Sealed, and nothing signed the spec")]
+    Unsigned(String),
 }
 
 pub(crate) struct OpenedEnv {
@@ -56,10 +59,17 @@ pub(crate) struct OpenedEnv {
     pub(crate) record: Option<SealedRecord>,
 }
 
+/// Open `environment` for a Container of the spec `admitted` stands for. A Sealed value
+/// opens only for a spec a signature stands behind.
+///
+/// # Errors
+/// Returns [`OpenError::Unsigned`] for a Sealed value under an unsigned spec, and the
+/// other [`OpenError`]s when a value does not open.
 pub(crate) fn open(
     environment: BTreeMap<String, EnvValue>,
     identity: Option<&SealedIdentity>,
     key_dir: Option<&Path>,
+    admitted: AdmittedSpec,
 ) -> Result<OpenedEnv, OpenError> {
     let (sealed, text): (BTreeMap<_, _>, BTreeMap<_, _>) = environment
         .into_iter()
@@ -74,6 +84,9 @@ pub(crate) fn open(
             record: None,
         });
     };
+    if !admitted.signed() {
+        return Err(OpenError::Unsigned(first.clone()));
+    }
     let identity = identity.ok_or_else(|| OpenError::MissingIdentity(first.clone()))?;
     let record = SealedRecord::new(identity.clone(), sealed);
     check_bindings(&record)?;
@@ -466,7 +479,12 @@ pub(crate) mod test_support {
         }
 
         pub(crate) fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
-            open(env, Some(&self.identity), Some(&self.dir.0))
+            open(
+                env,
+                Some(&self.identity),
+                Some(&self.dir.0),
+                AdmittedSpec::test_unbound(true),
+            )
         }
 
         /// `plaintext` sealed to this Cluster for `purpose`, as a client seals it.
@@ -544,6 +562,7 @@ mod tests {
             BTreeMap::from([("A".to_owned(), EnvValue::from("b"))]),
             None,
             None,
+            AdmittedSpec::test_unbound(true),
         )
         .unwrap();
         assert_eq!(opened.values.get("A").map(String::as_str), Some("b"));
@@ -616,7 +635,7 @@ mod tests {
             Some("postgres://app:pa55@db")
         );
         assert!(matches!(
-            open(url(), Some(&elsewhere), Some(&cluster.dir.0)),
+            open(url(), Some(&elsewhere), Some(&cluster.dir.0), AdmittedSpec::test_unbound(true)),
             Err(OpenError::Unopenable(key)) if key == "URL"
         ));
     }
@@ -664,8 +683,26 @@ mod tests {
         };
         let env = BTreeMap::from([("TOKEN".to_owned(), EnvValue::Sealed(value))]);
         assert!(matches!(
-            open(env, Some(&elsewhere), Some(&cluster.dir.0)),
+            open(env, Some(&elsewhere), Some(&cluster.dir.0), AdmittedSpec::test_unbound(true)),
             Err(OpenError::Unopenable(key)) if key == "TOKEN"
+        ));
+    }
+
+    #[test]
+    fn a_sealed_value_opens_only_for_a_spec_something_signed() {
+        let cluster = Cluster::new();
+        let token = BTreeMap::from([(
+            "TOKEN".to_owned(),
+            EnvValue::Sealed(cluster.seal("TOKEN", own(), "x")),
+        )]);
+        assert!(matches!(
+            open(
+                token,
+                Some(&cluster.identity),
+                Some(&cluster.dir.0),
+                AdmittedSpec::test_unbound(false),
+            ),
+            Err(OpenError::Unsigned(key)) if key == "TOKEN"
         ));
     }
 
@@ -679,17 +716,32 @@ mod tests {
             )])
         };
         assert!(matches!(
-            open(token(), Some(&cluster.identity), None),
+            open(
+                token(),
+                Some(&cluster.identity),
+                None,
+                AdmittedSpec::test_unbound(true)
+            ),
             Err(OpenError::KeyMissing)
         ));
         let empty = TestDir::new("sealed-env-no-key");
         std::fs::create_dir_all(&empty.0).unwrap();
         assert!(matches!(
-            open(token(), Some(&cluster.identity), Some(&empty.0)),
+            open(
+                token(),
+                Some(&cluster.identity),
+                Some(&empty.0),
+                AdmittedSpec::test_unbound(true)
+            ),
             Err(OpenError::KeyMissing)
         ));
         assert!(matches!(
-            open(token(), None, Some(&cluster.dir.0)),
+            open(
+                token(),
+                None,
+                Some(&cluster.dir.0),
+                AdmittedSpec::test_unbound(true)
+            ),
             Err(OpenError::MissingIdentity(_))
         ));
         let port = BTreeMap::from([(
