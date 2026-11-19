@@ -321,6 +321,7 @@ pub(crate) const SURPLUS_GOES: &str =
     "after a Deploy, a Service it does not refuse runs no more replicas than its counts add up to";
 pub(crate) const MET_STARTS_NOTHING: &str = "while another region waits, a region whose count is met on Servers that take new starts starts nothing new when only labels or new Servers changed";
 pub(crate) const WAIT_NAMES_SHORT: &str = "a Wait names only regions still short of their count";
+pub(crate) const SHORT_IS_NAMED: &str = "after a Deploy, a Service short of its counts waits, and a Wait about regions names each region still short";
 pub(crate) const WAITS_WHILE_SHORT: &str =
     "a Service waits only while a region it names is short of its count";
 pub(crate) const NOTHING_APPLIED: &str = "a Deploy that changed nothing on the Servers and left a Wait reads nothing applied and does not move Live";
@@ -336,11 +337,12 @@ pub(crate) const OLD_COUNTED: &str =
 pub(crate) const REPEAT_IS_NOOP: &str =
     "a Deploy repeated with nothing changed changes nothing on the Servers";
 
-pub(crate) const PROPERTIES: [&str; 13] = [
+pub(crate) const PROPERTIES: [&str; 14] = [
     LABELS_KEEP,
     SURPLUS_GOES,
     MET_STARTS_NOTHING,
     WAIT_NAMES_SHORT,
+    SHORT_IS_NAMED,
     WAITS_WHILE_SHORT,
     NOTHING_APPLIED,
     WAITS_ON_THE_WORLD,
@@ -1092,6 +1094,31 @@ impl Counts {
     }
 }
 
+/// Where a Service is short of its counts after a Deploy.
+enum Short {
+    /// One count with no Environment region: short or not, in no region in particular.
+    Anywhere(bool),
+    /// The counted regions short of their count.
+    In(BTreeSet<Label>),
+}
+
+impl Short {
+    fn any(&self) -> bool {
+        match self {
+            Self::Anywhere(short) => *short,
+            Self::In(regions) => !regions.is_empty(),
+        }
+    }
+
+    /// Whether a Service that `waits` with `named` regions is told about each shortfall.
+    fn is_named(&self, named: &BTreeSet<Label>, waits: bool) -> bool {
+        match self {
+            Self::Anywhere(short) => !short || waits,
+            Self::In(regions) => regions.is_subset(named),
+        }
+    }
+}
+
 /// One Deploy judged against every property, from the world before and after it.
 struct Verdict<'a> {
     model: &'a RegionPlacement,
@@ -1179,6 +1206,23 @@ impl Verdict<'_> {
             _ => self
                 .count_in(service, label)
                 .map(|count| self.after.settled_in_region(service, label) < count),
+        }
+    }
+
+    /// Where `service` is short of its counts after the Deploy, from the config and the
+    /// world alone, whatever the planner said.
+    fn short(&self, service: usize) -> Short {
+        let config = &self.state.config;
+        match (config.service(service).replicas, config.region) {
+            (Replicas::Count(count), Label::None) => {
+                Short::Anywhere(self.after.settled(service) < usize::from(count))
+            }
+            _ => Short::In(
+                Label::REGIONS
+                    .into_iter()
+                    .filter(|label| self.short_in(service, *label) == Some(true))
+                    .collect(),
+            ),
         }
     }
 
@@ -1285,16 +1329,29 @@ impl Verdict<'_> {
                     }
                 }
             }
+            let short = self.short(service);
+            let named = self
+                .waits(service)
+                .map(|wait| named(&wait))
+                .unwrap_or_default();
+            let whole = self
+                .waits(service)
+                .is_some_and(|wait| wait.kind == BlockedKind::Wait && !about_regions(&wait));
+            if !refused && !whole && !short.is_named(&named, waits) {
+                fail(SHORT_IS_NAMED);
+            }
             if let Some(wait) = self.waits(service) {
-                let short: Vec<Option<bool>> = named(&wait)
-                    .into_iter()
-                    .map(|label| self.short_in(service, label))
-                    .collect();
-                if short.contains(&None)
-                    || short.contains(&Some(true)) && short.contains(&Some(false))
+                let met = named
+                    .iter()
+                    .map(|label| self.short_in(service, *label))
+                    .any(|short| short == Some(false));
+                if named
+                    .iter()
+                    .any(|label| self.short_in(service, *label).is_none())
+                    || met && short.any()
                 {
                     fail(WAIT_NAMES_SHORT);
-                } else if short.contains(&Some(false)) {
+                } else if met {
                     fail(WAITS_WHILE_SHORT);
                 }
                 if let Some(partial) = wait.partial {
@@ -1511,6 +1568,7 @@ impl Model for RegionPlacement {
             always!(SURPLUS_GOES),
             always!(MET_STARTS_NOTHING),
             always!(WAIT_NAMES_SHORT),
+            always!(SHORT_IS_NAMED),
             always!(WAITS_WHILE_SHORT),
             always!(NOTHING_APPLIED),
             always!(WAITS_ON_THE_WORLD),
@@ -1657,8 +1715,23 @@ impl RegionPlacement {
     }
 }
 
+/// Whether a Wait's reason is about regions, so it must name each region short of its
+/// count. Any other Wait (a Volume's Server that takes no services) waits whole and names
+/// what to fix in place of a region.
+fn about_regions(wait: &ployz_core::Wait<'_>) -> bool {
+    wait.partial.is_some()
+        || matches!(
+            wait.error
+                .details
+                .get("reason")
+                .and_then(serde_json::Value::as_str),
+            Some("region_unmatched" | "volume_outside_region")
+        )
+}
+
 /// The regions a Wait tells the user are short: those its error names (`RegionUnmatched`,
-/// whole or partial) and those its partial counts list.
+/// whole or partial, and the region of `VolumeOutsideRegion`) and those its partial
+/// counts list.
 fn named(wait: &ployz_core::Wait<'_>) -> BTreeSet<Label> {
     let label = |name: &str| {
         Label::REGIONS
@@ -1674,12 +1747,17 @@ fn named(wait: &ployz_core::Wait<'_>) -> BTreeSet<Label> {
         .into_iter()
         .flatten()
         .map(|region| label(region.as_str().expect("a region name")));
+    let outside = (wait.error.details.get("reason")
+        == Some(&serde_json::json!("volume_outside_region")))
+    .then(|| wait.error.details.get("region"))
+    .flatten()
+    .map(|region| label(region.as_str().expect("a region name")));
     let partial = wait
         .partial
         .into_iter()
         .flat_map(|partial| partial.regions.keys())
         .map(|region| label(region.as_str()));
-    errored.chain(partial).collect()
+    errored.chain(outside).chain(partial).collect()
 }
 
 fn name_of(machine: &MachineId) -> &'static str {

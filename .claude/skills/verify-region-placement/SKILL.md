@@ -19,7 +19,7 @@ Three pieces are hand copies, and drift unless you keep them in step:
 cd core && CARGO_INCREMENTAL=0 cargo test -p ployz-verify region_placement
 ```
 
-About 65 s warm on four threads, plus a few minutes to build `ployz` cold. CI runs it in the workspace nextest, so a red model blocks the PR.
+About 75 s warm on four threads, plus a few minutes to build `ployz` cold. CI runs it in the workspace nextest, so a red model blocks the PR.
 
 It is green when all ten tests pass:
 
@@ -29,7 +29,7 @@ It is green when all ten tests pass:
 
 A finding that gets fixed turns its scenario's `holds` test red, because the property now holds, as long as it was that property's last counterexample in the scenario. Take it out of that test's findings, and turn its schedule test into one that asserts the property holds on that path.
 
-The allowance is per property and scenario, so a second bug that breaks a property already listed as a finding in that scenario stays green there. Plain lists "old version counted" and "repeat is a no-op", so a planner that restarts replicas needlessly or sends a stale spec shows only in Volume and Shared. Keep a finding's property as narrow as its cause: "a Service waits only while a region it names is short" is split from "a Wait names only regions still short" for that reason.
+The allowance is per property and scenario, so a second bug that breaks a property already listed as a finding in that scenario stays green there. No scenario lists "a Wait names only regions still short" or the shortfall property, so both are a full gate. Plain lists "old version counted" and "repeat is a no-op", so a planner that restarts replicas needlessly or sends a stale spec shows only in Volume and Shared. Keep a finding's property as narrow as its cause: "a Service waits only while a region it names is short" is split from "a Wait names only regions still short" for that reason.
 
 ## The world
 
@@ -56,8 +56,9 @@ Each property is a sentence about one Deploy, judged from the world before and a
 - "with no config change and no Server gone, a Deploy removes a running replica only past the counts, from a Server that takes no new starts, or as a spare whose waiting region starts its own". Harm: a healthy replica goes though the user changed nothing. The allowed removals are the documented ones. A replica past the counts goes. One on a Server that takes no services moves at the next Deploy (servers/manage-servers.md). A replica moves when another starts in its region (regions.md, "spreads ... as usual"). A spare, outside the counts or past its own region's count, goes once a region short of its count starts one (regions.md).
 - "after a Deploy, a Service it does not refuse runs no more replicas than its counts add up to". Harm: a smaller count isn't carried out.
 - "while another region waits, a region whose count is met on Servers that take new starts starts nothing new when only labels or new Servers changed". Harm: a relabel starts replicas nobody asked for. The scope is R5's own: "start nothing new in a region whose count is met while another waits". With nothing waiting, a new Server in a region takes a replica as main's spread always did.
-- "a Wait names only regions still short of their count". Harm: the user is told to fix a region that is fine. The regions a Wait names are those in its error's `details.regions` (`RegionUnmatched`, on a whole or a partial Wait) and its partial counts. A region is short while fewer replicas run there on the config's spec than its count, counting a replica on a Server that takes no new starts (R5's S2 ruling). One count with no Environment region covers every region and is short only when the Service is. This property fails when a Wait names a met or uncounted region beside a short one.
-- "a Service waits only while a region it names is short of its count". Harm: a Wait that no change to the world clears, on a Service already running its counts. Fails when every region the Wait names is met.
+- "a Wait names only regions still short of their count". Harm: the user is told to fix a region that is fine. The regions a Wait names are those in its error's `details.regions` (`RegionUnmatched`, on a whole or a partial Wait) and its partial counts. A region is short while fewer replicas run there on the config's spec than its count, counting a replica on a Server that takes no new starts (R5's S2 ruling). One count with no Environment region covers every region and is short only when the Service is. A Wait about a Volume outside the region names the region in its `details.region`. This property fails when a Wait names an uncounted region, or names a met region while any counted region is short. Shortfall is computed from the config and the world after the Deploy (`Verdict::short`), not from what the Wait names, so a Wait that names only the healthy region while another is short fails here.
+- "after a Deploy, a Service short of its counts waits, and a Wait about regions names each region still short". Harm: a Deploy reads as done, or points the user at the wrong region, while a region the world can fill stays short. Every counted region short after the Deploy must be in the Wait's named regions, so a Deploy that succeeds with no Wait leaves every region at its count. One count with no Environment region must wait while the Service is short. A whole Wait whose reason is not about regions (`about_regions`: a Volume's Server that takes no services) names what to fix in place of a region and is exempt. Not checked on a refused Service.
+- "a Service waits only while a region it names is short of its count". Harm: a Wait that no change to the world clears, on a Service already running its counts. Fails when a Wait names a met region and no counted region is short, which is #4382's shape and nothing wider.
 - "a Deploy that changed nothing on the Servers and left a Wait reads nothing applied and does not move Live". Harm: Live names a config the Servers don't run.
 - "a Service waits only while a Server or label it needs is missing". Harm: a Wait that no Server or label can clear (`RegionPlacement::can_run`). A planner error that fails the whole Deploy also breaks it when every Service has what it needs, so a Wait that turns into a failed Deploy once the Server or label is back is caught. Each region the config keeps it in needs a present Server there that takes new starts. A Service with the Volume also needs `one` to take new starts and be in its one configured region.
 - "a Refusal clears only with a config change". Harm: a Refusal tells the user to change the config when relabelling would do, and the opposite.
@@ -132,9 +133,11 @@ Each property that holds on the shipped code was seen failing on a scratch chang
 | A replacement sends the old Container's spec (`spec: old.as_observation().resolved_spec.clone()`) | "repeat is a no-op" (Volume, Shared), as the next Deploy replaces again |
 | `container_fate` replaces an up-to-date Container (`SpecChange::UpToDate => ContainerFate::Replace`) | "repeat is a no-op" (Volume, Shared) |
 | `spread_machines` fails the Deploy for one count of 2 | "waits only on the world" (Plain) |
+| A whole Wait with a met and a short region names only the met one (`plan_one_service`'s filter keeps the away regions not in `regions`) | "a Wait names only regions still short" and the shortfall property (Plain) |
+| `plan_one_service` returns an empty plan for one count of 2 with a constraint and 2 running | the shortfall property (Plain), as fsn stays at 1 of 2 with no Wait |
 | `Broken::all_waiting_needs_unattempted` in the model | "reads nothing applied and does not move Live" |
 
-The other six fail on the shipped code.
+The other six fail on the shipped code. The stale-spec break now also fails the shortfall property in Volume, since a replacement left on the old version leaves its region short.
 
 ## Keep the model in step
 
