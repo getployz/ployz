@@ -82,6 +82,9 @@ describe("drain-server", () => {
   let namespaces: string[];
   /** Whether the Config Store fails its read. */
   let storeDown: boolean;
+  /** Whether the Config Store's next open after it reads the owned Namespaces fails, once. */
+  let failAfterRead: boolean;
+  let failNextOpen: boolean;
   let drainCalls: Array<[string, DrainScope]>;
   /** What the Engine answers a Drain with. */
   let drainAnswer: () => Promise<DrainReport>;
@@ -101,16 +104,22 @@ describe("drain-server", () => {
     harness.runEffect(operation.pipe(
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(CloudStore, {
-        open: Effect.succeed(asTestDouble<ConfigStore>()({
+        open: Effect.suspend(() => {
+          if (!failNextOpen) return Effect.void;
+          failNextOpen = false;
+          return Effect.die(new Error("config store unavailable"));
+        }).pipe(Effect.as(asTestDouble<ConfigStore>()({
           read: async () => {
             if (storeDown) throw new Error("config store unavailable");
+            failNextOpen = failAfterRead;
+            failAfterRead = false;
             return { namespaces: namespaces.map((namespace) => ({ namespace })) };
           },
           drainMachine: (_organization: string, machine: string, scope: DrainScope) => {
             drainCalls.push([machine, scope]);
             return drainAnswer();
           },
-        })),
+        }))),
       }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
@@ -185,6 +194,8 @@ describe("drain-server", () => {
   beforeEach(async () => {
     namespaces = ["shop-production"];
     storeDown = false;
+    failAfterRead = false;
+    failNextOpen = false;
     frame = frameOf("replicated");
     silentOpens = 0;
     unpaired = false;
@@ -555,6 +566,27 @@ describe("drain-server", () => {
     expect(sleeps(output)).toEqual([]);
     expect(drainCalls).toHaveLength(1);
     expect(await rows()).toMatchObject([{ state: "failed", end_code: "refused", refusal_message: "connection reset" }]);
+  });
+
+  it("keeps the row pending when the Store doesn't open before the Engine is asked, so the retry drains", async () => {
+    await request();
+    await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
+    failAfterRead = true;
+    await expect(runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).rejects.toThrow();
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ state: "pending" }]);
+
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "finished" });
+    expect(drainCalls).toHaveLength(1);
+  });
+
+  it("ends the row refused with the words of a rejection that isn't the Engine's own error", async () => {
+    drainAnswer = () => Promise.reject(new TypeError("scope is not a DrainScope"));
+    await request();
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
+    expect(await rows()).toMatchObject([{ state: "failed", end_code: "refused", refusal_message: "scope is not a DrainScope" }]);
   });
 
   it("a waiting run and the sweep end the row once: the run that wakes after the sweep finds it ended", async () => {

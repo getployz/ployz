@@ -26,8 +26,7 @@ import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { deployDialOf } from "#/modules/config-store/config-store.server";
-import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import type { StoreRefused } from "#/modules/config-store/store.contract";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { clusterRead, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -301,8 +300,9 @@ const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizati
 });
 
 /** What the Engine said when it refused, within the row's limit. */
-function refusalMessage(error: StoreRefused) {
-  const text = error.message.trim().length > 0 ? error.message.trim() : "The drain was refused.";
+function refusalMessage(cause: unknown) {
+  const message = cause instanceof Error ? cause.message.trim() : "";
+  const text = message.length > 0 ? message : "The drain was refused.";
   return text.length > MESSAGE_LIMIT ? `${text.slice(0, MESSAGE_LIMIT - 1)}…` : text;
 }
 
@@ -401,15 +401,19 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   const scope: DrainScope = targets === null
     ? { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) }
     : { scope: "services", services: targets };
+  // The Store sends each copy it moves with the signed versions it keeps for that copy's spec. Both are read while the
+  // row is pending, so a failure here is retried rather than ending a drain the Engine was never asked for.
+  const store = yield* cloudStore;
+  const { connections, expect } = yield* deployDialOf(request.organizationId);
   const [claimed] = yield* drizzle.update(serverDrainAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"))).returning({ id: serverDrainAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
-  // The Store sends each copy it moves with the signed versions it keeps for that copy's spec.
-  const store = yield* cloudStore;
-  const { connections, expect } = yield* deployDialOf(request.organizationId);
-  const end = yield* storeTry(() => store.drainMachine(request.organizationId, request.machineId, scope, connections, expect)).pipe(
+  const end = yield* Effect.tryPromise({
+    try: () => store.drainMachine(request.organizationId, request.machineId, scope, connections, expect),
+    catch: (cause) => cause,
+  }).pipe(
     Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), endCode: null, refusalMessage: null }) as const),
-    Effect.catch((error) => Effect.succeed(refused(refusalMessage(error)))),
+    Effect.catch((cause) => Effect.succeed(refused(refusalMessage(cause)))),
     Effect.timeoutOrElse({ duration: DRAIN_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),
   );
   // The answer is in hand: the write is retried here rather than by asking the Engine again.
