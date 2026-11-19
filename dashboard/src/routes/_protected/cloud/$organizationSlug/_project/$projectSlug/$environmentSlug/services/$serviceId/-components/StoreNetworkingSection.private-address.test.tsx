@@ -15,15 +15,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it.each([false, true])("keeps a private address being typed when the domains land (database first: %s)", async (privateFirst) => {
-  let land = () => {};
-  const domains = new Promise<void>((resolve) => { land = resolve; });
-  let landed = false;
-  vi.spyOn(views, "useStoreView").mockImplementation(() => {
-    // As `useSuspenseQuery` does while the Cluster hasn't answered.
-    if (!landed) throw domains;
-    return asTestDouble<ReturnType<typeof views.useStoreView>>()({ ok: true, value: { domains: [] } });
-  });
+function renderSection(read: () => ReturnType<typeof views.useStoreView>) {
+  vi.spyOn(views, "useStoreView").mockImplementation(read);
   vi.spyOn(pending, "useStorePendingNodes").mockReturnValue(
     asTestDouble<ReturnType<typeof pending.useStorePendingNodes>>()({ leaving: { domain: new Set<string>() } }));
   vi.spyOn(pending, "useStorePendingDomains").mockReturnValue([]);
@@ -37,11 +30,22 @@ it.each([false, true])("keeps a private address being typed when the domains lan
     path: (name: string) => `web.${name}`,
     set: vi.fn(),
   });
-  const address = () => screen.getByLabelText<HTMLInputElement>("Private address");
+  render(<StoreNetworkingSection state={state} validatePrivateDns={() => null} />);
+  const address = screen.getByLabelText<HTMLInputElement>("Private address");
+  address.focus();
+  fireEvent.change(address, { target: { value: "web-v2" } });
+  return () => screen.getByLabelText<HTMLInputElement>("Private address");
+}
 
-  render(<StoreNetworkingSection state={state} privateFirst={privateFirst} validatePrivateDns={() => null} />);
-  address().focus();
-  fireEvent.change(address(), { target: { value: "web-v2" } });
+it("keeps a private address being typed when the domains land", async () => {
+  let land = () => {};
+  const domains = new Promise<void>((resolve) => { land = resolve; });
+  let landed = false;
+  const address = renderSection(() => {
+    // As `useSuspenseQuery` does while the Cluster hasn't answered.
+    if (!landed) throw domains;
+    return asTestDouble<ReturnType<typeof views.useStoreView>>()({ ok: true, value: { domains: [] } });
+  });
   await act(async () => {
     landed = true;
     land();
@@ -49,5 +53,25 @@ it.each([false, true])("keeps a private address being typed when the domains lan
   });
 
   expect(await screen.findByText("No public domains")).toBeTruthy();
+  expect(address().value).toBe("web-v2");
+});
+
+it("keeps a private address being typed when the domains fail", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  let fail = () => {};
+  const domains = new Promise<void>((resolve) => { fail = resolve; });
+  let failed = false;
+  const address = renderSection(() => {
+    // As `useSuspenseQuery` does once the Cluster's read rejects.
+    if (failed) throw new Error("The Cluster didn't answer");
+    throw domains;
+  });
+  await act(async () => {
+    failed = true;
+    fail();
+    await domains;
+  });
+
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
   expect(address().value).toBe("web-v2");
 });

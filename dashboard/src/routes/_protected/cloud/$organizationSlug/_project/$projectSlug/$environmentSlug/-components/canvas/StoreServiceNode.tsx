@@ -1,7 +1,7 @@
-import { type MouseEvent, Suspense, use } from "react";
+import { type MouseEvent, type ReactNode, Suspense, use, useId } from "react";
 import type { DomainRow } from "@ployz/sdk";
 import { Handle, Position } from "@xyflow/react";
-import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
+import { CatchBoundary, Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { LockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
@@ -20,7 +20,7 @@ import { CopyHang } from "./MirrorNode";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
-import { deploymentQuery, domainsQuery, useCachedStoreRead, useInFlightDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
+import { deploymentQuery, domainsQuery, useCachedStoreRead, useCachedStoreView, useInFlightDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
 import { useContainerTrouble } from "./use-container-trouble";
@@ -30,28 +30,8 @@ import { usePendingNode } from "./usePendingNode";
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
  * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function StoreServiceCard(props: CardProps) {
-  // Domain statuses wait on the Cluster, so the card shows without them until they land.
-  return (
-    <Suspense fallback={<ServiceCard {...props} domains={[]} />}>
-      <ServiceCardWithDomains {...props} />
-    </Suspense>
-  );
-}
-
-type CardProps = StoreCanvasService & { selected: boolean; compact?: boolean; className: string };
-
-function ServiceCardWithDomains(props: CardProps) {
-  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const result = useStoreView(organizationSlug, domainsQuery(store));
-  // A closed Branch's views refuse as it leaves; the canvas stops drawing, and meanwhile the card shows no domains.
-  const domains = result.ok ? result.value.domains.filter((domain) => domain.service === props.service.name) : [];
-  return <ServiceCard {...props} domains={domains} />;
-}
-
-function ServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, notSet, selected, compact = false, className }:
-  CardProps & { domains: readonly DomainRow[] }) {
+export function StoreServiceCard({ service, changeCount, runtimeIdentity, desiredReplicas, notSet, selected, compact = false, className }:
+  StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);
@@ -67,12 +47,17 @@ function ServiceCard({ service, domains, changeCount, runtimeIdentity, desiredRe
   const scope = { organizationSlug: params.organizationSlug, environmentId };
   const unreachable = useUnreachableHost(scope, service.id);
   const trouble = useContainerTrouble(scope, service.name);
-  const issues = nodeIssues(status, domains, { unreachable, trouble });
-  const domain = publicDomain(domains);
   const surface = stagedSurface(service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
   const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>;
-  const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
+  const subtitle = (
+    <ServiceDomains service={service.name}>
+      {(domains) => {
+        const domain = publicDomain(domains);
+        return domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
+      }}
+    </ServiceDomains>
+  );
   // A Deploy in flight takes the chip, so staged work beside it keeps its own word on the pink card.
   const staged = service.change === null || chip?.kind === "staged" ? null : stagedChip(service.change, changeCount);
   const chips = chip === null && staged === null ? null : <><DeployChip chip={chip} /><DeployChip chip={staged} /></>;
@@ -91,11 +76,26 @@ function ServiceCard({ service, domains, changeCount, runtimeIdentity, desiredRe
   );
 
   // An open uptime incident, or an OOM kill or restart: the ⚠ opens Monitoring, where the evidence and the fix are.
-  const openMonitoring = issues?.monitoring ? (event: MouseEvent) => {
+  const openMonitoring = (event: MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     void navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: service.id }, search: { tab: "monitoring" } });
-  } : undefined;
+  };
+  // The card's name says its domain and the issues they add, so it's written where the domains land.
+  const labelId = useId();
+  const statusLine = (lineClassName?: string) => (
+    <ServiceDomains service={service.name}>
+      {(domains) => {
+        const issues = nodeIssues(status, domains, { unreachable, trouble });
+        return <>
+          <span id={labelId} hidden>
+            {nodeLabel(name, publicDomain(domains)?.hostname, chipWord(chip), chipWord(staged), statusWord(status), issues && issuesLabel(issues), unset)}
+          </span>
+          <StatusLine status={status} issues={issues} onIssues={issues?.monitoring ? openMonitoring : undefined} className={lineClassName} />
+        </>;
+      }}
+    </ServiceDomains>
+  );
 
   return (
     <ServiceContextMenu serviceId={service.id} onDelete={remove}>
@@ -104,7 +104,7 @@ function ServiceCard({ service, domains, changeCount, runtimeIdentity, desiredRe
         params={{ ...params, serviceId: service.id }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
-        aria-label={nodeLabel(name, domain?.hostname, chipWord(chip), chipWord(staged), statusWord(status), issues && issuesLabel(issues), unset)}
+        aria-labelledby={labelId}
         aria-current={selected ? "page" : undefined}
         draggable={false}
         className={cn("relative z-10 rounded-xl", className)}
@@ -117,7 +117,7 @@ function ServiceCard({ service, domains, changeCount, runtimeIdentity, desiredRe
               {title}
               <div className="flex flex-col items-end gap-1 justify-self-end">{chips}</div>
               <div className="min-w-0">{subtitle}</div>
-              <StatusLine status={status} issues={issues} onIssues={openMonitoring} className="justify-self-end" />
+              {statusLine("justify-self-end")}
             </CardContent>
           ) : <>
             <CardHeader>
@@ -128,12 +128,44 @@ function ServiceCard({ service, domains, changeCount, runtimeIdentity, desiredRe
               {/* A row of their own, so a running Deploy's clock never squeezes a long name. */}
               {chips === null ? null : <div className="flex flex-wrap gap-1">{chips}</div>}
             </CardHeader>
-            <CardContent className="flex items-center justify-between gap-2"><StatusLine status={status} issues={issues} onIssues={openMonitoring} />{notSetChip}</CardContent>
+            <CardContent className="flex items-center justify-between gap-2">{statusLine()}{notSetChip}</CardContent>
           </>}
         </Card>
       </Link>
     </ServiceContextMenu>
   );
+}
+
+type DomainsProps = { service: string; children: (domains: readonly DomainRow[]) => ReactNode };
+
+/**
+ * Draws the parts of a Service's card that show its domains. Domains wait on the Cluster, so only these parts suspend
+ * and draw without them meanwhile; the card, its link and its menu stay put when they land.
+ */
+function ServiceDomains({ service, children }: DomainsProps) {
+  return (
+    <CatchBoundary getResetKey={() => service} errorComponent={() => <CachedDomains service={service}>{children}</CachedDomains>}>
+      <Suspense fallback={children([])}>
+        <LiveDomains service={service}>{children}</LiveDomains>
+      </Suspense>
+    </CatchBoundary>
+  );
+}
+
+function LiveDomains({ service, children }: DomainsProps) {
+  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const result = useStoreView(organizationSlug, domainsQuery(store));
+  // A closed Branch's views refuse as it leaves; the canvas stops drawing, and meanwhile the card shows no domains.
+  return children(result.ok ? result.value.domains.filter((domain) => domain.service === service) : []);
+}
+
+/** After a failed read the card shows no domains, and shows them again once a later read of the cache answers. */
+function CachedDomains({ service, children }: DomainsProps) {
+  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const result = useCachedStoreView(organizationSlug, domainsQuery(store));
+  return children(result?.ok ? result.value.domains.filter((domain) => domain.service === service) : []);
 }
 
 export function StoreServiceNode({ data }: { data: StoreCanvasService & { hang: readonly VolumeCopies[] } }) {

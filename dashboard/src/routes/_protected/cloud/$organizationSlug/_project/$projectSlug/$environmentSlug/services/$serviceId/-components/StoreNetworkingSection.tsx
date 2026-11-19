@@ -1,7 +1,9 @@
 import { Suspense, useState } from "react";
 import { ZapIcon } from "lucide-react";
 import type { DomainRow, JsonValue, ServiceSettingChange } from "@ployz/sdk";
-import { Link } from "@tanstack/react-router";
+import { useQueryErrorResetBoundary } from "@tanstack/react-query";
+import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
+import { RouteErrorAlert } from "#/components/route-error-alert";
 import { PLATFORM_HTTP_PORT } from "#/modules/variables/managed-service-exports";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import { useStorePendingDomains, useStorePendingNodes } from "#/modules/config-store/store-pending";
@@ -105,12 +107,22 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   return (
     <>
       {privateFirst ? privateRow : null}
-      {/* Domain statuses wait on the Cluster, so the rest of the drawer doesn't wait for them. */}
-      <Suspense fallback={<Skeleton className="h-12 w-full" />}>
-        <NetworkingDomains state={state} />
-      </Suspense>
+      {/* Domain statuses wait on the Cluster, so the rest of the drawer neither waits for them nor fails with them. */}
+      <CatchBoundary getResetKey={() => service.id} errorComponent={DomainsError}>
+        <Suspense fallback={<Skeleton className="h-12 w-full" />}>
+          <NetworkingDomains state={state} />
+        </Suspense>
+      </CatchBoundary>
       {privateFirst ? null : privateRow}
     </>
+  );
+}
+
+function DomainsError({ reset }: ErrorComponentProps) {
+  const queries = useQueryErrorResetBoundary();
+  return (
+    <RouteErrorAlert title="Domains couldn’t load" description="This service’s domains are unavailable right now. Try loading them again."
+      onRetry={() => { queries.reset(); reset(); }} />
   );
 }
 
