@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { DrainReport, DrainScope, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { Clock, Data, Effect, Option, Schedule, Schema } from "effect";
+import { Clock, Data, Effect, Option, Schedule } from "effect";
 import type { MachineId } from "#/db/tables";
 import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
@@ -25,8 +25,10 @@ import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
+import { deployDialOf } from "#/modules/config-store/config-store.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import type { StoreRefused } from "#/modules/config-store/store.contract";
 import { clusterRead, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
@@ -283,7 +285,7 @@ export const bindDrainRun = Effect.fn("ServerDrain.bind")(function* (request: Dr
   return { kind: "settled", state: row.state } as const;
 });
 
-/** The Cluster as the Drain finds it when its turn comes: the session it drains through, and the frame it plans from. */
+/** The Cluster as the Drain finds it when its turn comes: the frame it plans from. */
 const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   // No Cluster paired is nothing to wait for.
@@ -295,16 +297,12 @@ const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizati
     clusterRead,
     Effect.mapError((cause) => new ServerDrainUnreachable({ operation: "read the cluster", cause })),
   );
-  return { session: session.connected, frame };
+  return { frame };
 });
 
-const decodeMessage = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }));
-
 /** What the Engine said when it refused, within the row's limit. */
-function refusalMessage(error: PloyzSdkError) {
-  const rpc = decodeMessage("cause" in error ? error.cause : undefined);
-  const message = Option.isSome(rpc) ? rpc.value.message : error.message;
-  const text = message.trim().length > 0 ? message.trim() : "The drain was refused.";
+function refusalMessage(error: StoreRefused) {
+  const text = error.message.trim().length > 0 ? error.message.trim() : "The drain was refused.";
   return text.length > MESSAGE_LIMIT ? `${text.slice(0, MESSAGE_LIMIT - 1)}…` : text;
 }
 
@@ -380,7 +378,7 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
     yield* drizzle.update(serverDrainAttempt).set({ serversSilent: true }).where(and(owned, eq(serverDrainAttempt.state, "pending")));
     return current;
   }
-  const { session, frame } = reached.value;
+  const { frame } = reached.value;
   yield* drizzle.update(serverDrainAttempt).set({ serversSilent: false })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"), eq(serverDrainAttempt.serversSilent, true)));
   const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
@@ -406,7 +404,10 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   const [claimed] = yield* drizzle.update(serverDrainAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"))).returning({ id: serverDrainAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
-  const end = yield* session.drainMachine(request.machineId, scope).pipe(
+  // The Store sends each copy it moves with the signed versions it keeps for that copy's spec.
+  const store = yield* cloudStore;
+  const { connections, expect } = yield* deployDialOf(request.organizationId);
+  const end = yield* storeTry(() => store.drainMachine(request.organizationId, request.machineId, scope, connections, expect)).pipe(
     Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), endCode: null, refusalMessage: null }) as const),
     Effect.catch((error) => Effect.succeed(refused(refusalMessage(error)))),
     Effect.timeoutOrElse({ duration: DRAIN_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),

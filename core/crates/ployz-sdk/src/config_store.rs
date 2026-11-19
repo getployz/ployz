@@ -287,6 +287,33 @@ impl ConfigStore {
         )
     }
 
+    /// Drain the Organization's Server `machine` within `scope` (`DrainScope`) on one of
+    /// `connections`, and resolve to its report, partial or not. Each copy it moves
+    /// carries the signed versions this Store keeps for that copy's own spec, so a
+    /// Server that never ran the version admits it. Only Cloud's worker calls this. With
+    /// `expect`, it runs only through a Server whose Cluster holds that Sealing public
+    /// key, as `connect`'s `expect` does.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for malformed input, the connection's error when no
+    /// Server can be reached, or the Drain's refusal before anything moved.
+    #[napi(ts_return_type = "Promise<DrainReport>")]
+    pub async fn drain_machine(
+        &self,
+        organization: String,
+        machine: String,
+        #[napi(ts_arg_type = "DrainScope")] scope: serde_json::Value,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let scope: ployz::drain::DrainScope = from_js(scope).map_err(invalid_argument)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
+        let kept = (Arc::clone(&self.store), who.organization);
+        to_json(ployz::sdk::drain_machine_kept(connections, expect, kept, (&machine, &scope)).await)
+    }
+
     /// Claim the Organization's queued Deployment `deployment` as `runner`, and
     /// resolve to its summary. Its upload is the one it builds from now that the
     /// Deployment ahead of it settled: the one Cloud extracts before `runDeployment`

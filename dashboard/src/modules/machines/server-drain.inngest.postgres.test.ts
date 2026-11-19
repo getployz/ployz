@@ -1,4 +1,4 @@
-import type { ConfigStore, DrainReport, DrainScope, RuntimeWatchView } from "@ployz/sdk";
+import { type ConfigStore, type DrainReport, type DrainScope, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
@@ -16,7 +16,7 @@ import {
 import { applyServerPolicyChangeActivity, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
-import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -84,7 +84,7 @@ describe("drain-server", () => {
   let storeDown: boolean;
   let drainCalls: Array<[string, DrainScope]>;
   /** What the Engine answers a Drain with. */
-  let drainAnswer: () => Effect.Effect<DrainReport, PloyzSdkError>;
+  let drainAnswer: () => Promise<DrainReport>;
   let updates: unknown[][];
   /** What the Engine shows Cloud of the cluster when a Drain plans. */
   let frame: RuntimeWatchView;
@@ -106,6 +106,10 @@ describe("drain-server", () => {
             if (storeDown) throw new Error("config store unavailable");
             return { namespaces: namespaces.map((namespace) => ({ namespace })) };
           },
+          drainMachine: (_organization: string, machine: string, scope: DrainScope) => {
+            drainCalls.push([machine, scope]);
+            return drainAnswer();
+          },
         })),
       }),
       Effect.provideService(OrganizationRuntime, {
@@ -115,10 +119,6 @@ describe("drain-server", () => {
           whileSilent();
           return { status: "unreachable" as const, error: null };
         }) : Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
-          drainMachine: (machine: string, scope: DrainScope) => {
-            drainCalls.push([machine, scope]);
-            return drainAnswer();
-          },
           updateMachine: (...args: unknown[]) => Effect.sync(() => void updates.push(args)),
           watchFirstFrame: () => Effect.succeed(frame),
         }) }),
@@ -191,7 +191,7 @@ describe("drain-server", () => {
     whileWaiting = async () => {};
     whileSilent = () => {};
     drainCalls = [];
-    drainAnswer = () => Effect.succeed(partialReport);
+    drainAnswer = async () => partialReport;
     updates = [];
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
@@ -363,7 +363,7 @@ describe("drain-server", () => {
 
   it("passes a plan with nothing owned as no services, so the Engine selects nothing rather than everything", async () => {
     namespaces = [];
-    drainAnswer = () => Effect.succeed({ ...partialReport, services: [], stopped: null });
+    drainAnswer = async () => ({ ...partialReport, services: [], stopped: null });
     await request();
     await drain();
 
@@ -372,9 +372,7 @@ describe("drain-server", () => {
   });
 
   it("ends failed with the Engine's words when it refuses, and never asks again", async () => {
-    drainAnswer = () => Effect.fail(new PloyzProviderError({
-      operation: "drain machine", cause: { code: "not_found", message: "no server named web-2" },
-    }));
+    drainAnswer = () => Promise.reject(new RpcError({ code: "not_found", message: "no server named web-2", details: null }));
     await request();
     const output = await drain();
 
@@ -410,10 +408,10 @@ describe("drain-server", () => {
     silentOpens = 1;
     const seen: unknown[] = [];
     whileWaiting = async () => { seen.push(await viewOf()); };
-    drainAnswer = () => Effect.promise(async () => {
+    drainAnswer = async () => {
       seen.push(await viewOf());
       return partialReport;
-    });
+    };
     await drain();
 
     expect(seen).toEqual([{ kind: "waiting" }, { kind: "running", since: expect.any(String) }]);
@@ -549,7 +547,7 @@ describe("drain-server", () => {
   });
 
   it("never waits once it asked the Engine: a Server lost mid-drain ends the row refused, as before", async () => {
-    drainAnswer = () => Effect.fail(new PloyzProviderError({ operation: "drain machine", cause: { message: "connection reset" } }));
+    drainAnswer = () => Promise.reject(new RpcError({ code: "unavailable", message: "connection reset", details: null }));
     await request();
     const output = await drain();
 
@@ -602,12 +600,12 @@ describe("drain-server", () => {
 
   it("a cancel while the Engine works ends the row unknown, and the report that arrives after replaces it", async () => {
     await request();
-    drainAnswer = () => Effect.promise(async () => {
+    drainAnswer = async () => {
       const [{ inngest_run_id: runId } = { inngest_run_id: null }] = await rows();
       expect((await cancel(String(runId))).result).toEqual({ closed: 1 });
       expect(await rows()).toMatchObject([{ state: "unknown", end_code: "interrupted" }]);
       return partialReport;
-    });
+    };
 
     expect((await drain()).result).toEqual({ attemptId: requestId, state: "finished" });
     expect(await rows()).toMatchObject([{ state: "finished", end_code: null, refusal_message: null, report: partialReport }]);
@@ -642,10 +640,10 @@ describe("drain-server", () => {
   it("ends the row unknown inside the step when the Engine gives no answer in a day", async () => {
     let asked: () => void = () => {};
     const engineAsked = new Promise<void>((resolve) => { asked = resolve; });
-    drainAnswer = () => Effect.suspend(() => {
+    drainAnswer = () => {
       asked();
-      return Effect.never;
-    });
+      return new Promise<never>(() => {});
+    };
     await request();
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
 

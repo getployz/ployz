@@ -406,6 +406,39 @@ pub async fn connect_expecting(
 }
 
 /// [`connect_connections`] to nonempty `connections`, keeping the connection error.
+/// Drain `machine` within `scope` on one of `connections`, as
+/// [`Session::drain_machine`], handing each Server, with each copy it moves there, the
+/// signed versions `store` keeps in `organization` for that copy's own spec. With
+/// `expect`, only a Server whose Cluster holds that Sealing public key answers.
+///
+/// # Errors
+/// Returns the connection's error when no Server can be reached, or what
+/// [`Session::drain_machine`] returns.
+pub async fn drain_machine_kept(
+    connections: Vec<Connection>,
+    expect: Option<crate::connect::ClusterExpectation>,
+    (store, organization): (Arc<ployz_store::ConfigStore>, ployz_store::OrganizationId),
+    (machine, scope): (&str, &crate::drain::DrainScope),
+) -> Result<crate::drain::DrainReport, RpcError> {
+    let session = dial(
+        connections,
+        Arc::new(crate::connect::SystemConnector::default()),
+        expect,
+    )
+    .await
+    .map_err(RpcError::from)?;
+    let kept = crate::cluster::KeptVersions::new(store, organization);
+    let client = session
+        .client()
+        .map(|client| client.with_kept_versions(kept));
+    let report = match client {
+        Ok(client) => session.drain_with(machine, scope, client).await,
+        Err(error) => Err(error),
+    };
+    session.close().await;
+    report
+}
+
 async fn dial(
     connections: Vec<Connection>,
     connector: Arc<dyn Connector>,
@@ -1126,8 +1159,16 @@ impl Session {
         machine: &str,
         scope: &crate::drain::DrainScope,
     ) -> Result<crate::drain::DrainReport, RpcError> {
+        self.drain_with(machine, scope, self.client()?).await
+    }
+
+    async fn drain_with(
+        &self,
+        machine: &str,
+        scope: &crate::drain::DrainScope,
+        mut client: Client,
+    ) -> Result<crate::drain::DrainReport, RpcError> {
         let target = resolve_target(machine)?;
-        let mut client = self.client()?;
         client
             .drain(&target, scope, &self.inner.cancel, &mut |_| {})
             .await
