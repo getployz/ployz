@@ -129,10 +129,14 @@ region, with a count you raise and lower. A service with one number shows one ro
 environment's region, or in **Any region** when the environment has none. **Add region** adds a row
 in a region that has none yet, and the **×** on a row takes it out. The counts add up to at most 50.
 
-A service with counts by region keeps them through every change here, also with one row left, as
+A service with counts by region keeps them when you change a count, also with one row left, as
 `{"fsn":3}`. That holds when it was deployed with them, and when they were set with `ployz set`
 before you opened it. It stays in `fsn` when the environment's region changes. To make it follow
 the environment again, set one number with `ployz set api.replicas=3`.
+
+Setting the counts back to what's deployed puts back what's deployed. A service deployed with one
+number, then set to `{"fsn":3}` with `ployz set`, goes back to one number when you lower it to the
+deployed count. It then follows the environment's region again.
 
 A service deployed with one number goes back to one number when you remove the regions you added.
 With the count unchanged, nothing is left to deploy.
@@ -260,9 +264,10 @@ starts its own.
   a service only that region, and says why: `Must run in fsn. It shares the Volume pg-data with
   postgres, and pg-data is in fsn.` While the volume has no region, because it isn't made yet or
   its server has none, **Scale** holds them to the region they're all set to. When they're set to
-  different regions, **Details** says what to change. In **Mount on a service**, a service set to
-  another region reads `Must run in fsn`. Pick it to read what to change first: `To mount pg-data,
-  set extra to fsn`. Once extra is set to fsn, the form lets you mount it. When the environment's
+  different regions, **Details** says what to change. In **Mount on a service**, a service set to a
+  region other than the volume's reads `Must run in fsn`, whatever the others are set to. Pick it
+  to read what to change first: `To mount pg-data, set extra to fsn`. Once extra is set to fsn,
+  the form lets you mount it. When the environment's
   region changes and one of them has its own region, **Details** says so before you deploy.
 
   Set apart with `ployz set` or by an agent, the services in the volume's region deploy. Each

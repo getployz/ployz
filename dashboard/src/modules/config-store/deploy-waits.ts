@@ -47,18 +47,20 @@ function read({ services, home, copies, servers }: Lens) {
  * Why the Deploy refuses `name`, kept in `region`, when `volume` is not written there and another Service sharing it is
  * kept away from that region, since no one Server could ever suit both, in a few words and in full. Null when it
  * doesn't. `why` says so as the Engine's planner does (`shared_elsewhere` in core/crates/ployz/src/deploy/planning/volumes.rs),
- * and `mount` as the way to a mount of `volume` on `name` not saved yet.
+ * and `mount` as the way to a mount of `volume` on `name` not saved yet. A mount on a made Volume outside its region is
+ * refused whatever the other sharers are set to, since the mounting Service could never start.
  */
-function splitRefusal(name: string, region: string, volume: SharedVolume, lens: ReturnType<typeof read>) {
+function splitRefusal(name: string, region: string, volume: SharedVolume, lens: ReturnType<typeof read>, mounting = false) {
   const { regionOf, keptIn, writersOf, homeOf } = lens;
   const sharers = [...new Set(volume.mounts.map(({ service }) => service))].sort();
-  if (!sharers.some((sharer) => keptIn.get(sharer)?.includes(region) === false)) return null;
+  const home = homeOf(volume.id);
+  const located = home !== null && "region" in home;
+  if (!(mounting && located) && !sharers.some((sharer) => keptIn.get(sharer)?.includes(region) === false)) return null;
   if (writersOf(volume.id).some(({ machineId }) => regionOf.get(machineId) === region)) return null;
   const kept = sharers.flatMap((sharer) => {
     const regions = keptIn.get(sharer);
     return sharer !== name && regions?.length ? [{ sharer, regions }] : [];
   });
-  const home = homeOf(volume.id);
   const each = [{ sharer: name, regions: [region] }, ...kept];
   if (home === null || !("region" in home)) each.sort((a, b) => a.sharer.localeCompare(b.sharer));
   const short = home === null ? `Must run with ${allOf(kept.map(({ sharer }) => sharer))}`
@@ -123,7 +125,7 @@ export function mountSplit(service: string, volume: SharedVolume, lens: Omit<Len
   const seen = read({ ...lens, volumes: [] });
   const [region, ...others] = seen.keptIn.get(service) ?? [];
   if (region === undefined || others.length > 0) return null;
-  const refusal = splitRefusal(service, region, { ...volume, mounts: [...volume.mounts, { service }] }, seen);
+  const refusal = splitRefusal(service, region, { ...volume, mounts: [...volume.mounts, { service }] }, seen, true);
   return refusal && { short: refusal.short, why: refusal.mount };
 }
 

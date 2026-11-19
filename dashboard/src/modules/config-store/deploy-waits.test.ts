@@ -75,6 +75,13 @@ it("says before a mount that a Service set to another region can't share the Vol
   expect(mountSplit("extra", volume, { ...lens, copies: [] })?.why).toBe("To mount pg-data, set extra to fsn");
 });
 
+it("holds a Service mounting a made Volume to the Volume's region, even when its sharers run in any region", () => {
+  const volume = { id: "v1", name: "pg-data", mounts: [{ service: "postgres" }] };
+  const lens = { services: [postgres, { name: "visitor", replicas: { syd: 1 } }], home: null, copies: [copy("m1")], servers };
+  expect(mountSplit("visitor", volume, lens)).toEqual({ short: "Must run in fsn", why: "To mount pg-data, set visitor to fsn" });
+  expect(mountSplit("visitor", volume, { ...lens, services: [postgres, { name: "visitor", replicas: { fsn: 1 } }] })).toBeNull();
+});
+
 it("names a Service whose Volume has only a mirror in its region, as the Deploy looks for the copy it writes to", () => {
   const waits = deployWaits({ services: [postgres], home: "syd", volumes, copies: [copy("m1"), copy("m2", "slot")], servers });
   expect(waits).toEqual([{ service: "postgres", why: "its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead", refused: false }]);
