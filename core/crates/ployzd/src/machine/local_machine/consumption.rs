@@ -339,8 +339,16 @@ impl ConsumptionLog {
             }
             admitted.retain(|kept| kept != &entry);
             admitted.push(entry);
-            let extra = admitted.len().saturating_sub(SPECS_KEPT);
-            admitted.drain(..extra);
+            // A version several keys signed is one version, kept with every signer.
+            let mut newest = Vec::new();
+            for kept in admitted.iter().rev() {
+                if !newest.contains(&kept.digest) {
+                    newest.push(kept.digest);
+                }
+            }
+            if let Some(older) = newest.get(SPECS_KEPT..) {
+                admitted.retain(|kept| !older.contains(&kept.digest));
+            }
             Ok(Edit::Write(()))
         })
     }

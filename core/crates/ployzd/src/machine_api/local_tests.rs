@@ -5359,7 +5359,8 @@ mod ensure_container {
 
         /// A pinned image on a registry at a public address. A Machine pulls the image of
         /// a creation nothing signed itself, and only from such an address.
-        const PUBLIC: &str = "203.0.113.7/api@sha256:00000000000000000000000000000000000000000000000000000000000000bb";
+        const PUBLIC: &str =
+            "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000bb";
 
         fn pulls(fake: &crate::docker::test_support::FakeDocker, since: usize) -> usize {
             ends_with(&requests_since(fake, since), Method::POST, "/images/create").count()
@@ -5548,10 +5549,77 @@ mod ensure_container {
                 })
                 .await
                 .unwrap();
+            // A call the Device sent before it was removed is not kept as Full access.
+            let late = direct
+                .ensure_container(Request::new(
+                    op::EnsureContainer::into_request(
+                        serde_json::from_value(run_new("k3", pinned.clone())).unwrap(),
+                    )
+                    .encode()
+                    .unwrap(),
+                ))
+                .await;
+            assert_eq!(late.unwrap_err().code(), Code::PermissionDenied);
             deploy_refused(
-                deploy_ensure(service, new_want("service_container", "k3", &pinned), None).await,
+                deploy_ensure(service, new_want("service_container", "k4", &pinned), None).await,
                 "reaches its server",
             );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn a_version_two_devices_signed_is_one_of_the_versions_kept() {
+            let fixture = enforced("ployzd-two-signers-history").await;
+            let service = &fixture.service;
+            let version = |number: usize| {
+                let mut spec = reaching(PINNED);
+                spec["container"]["command"] = json!(["serve", number.to_string()]);
+                spec
+            };
+            let second = Signer::from_seed(&[8; 32]);
+            let second_device = DeviceKey::from(second.public());
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.approve_device(second_device).unwrap();
+                })
+                .await
+                .unwrap();
+            for number in 0..32 {
+                let spec = version(number);
+                deploy_ensure(
+                    service,
+                    new_want("service_container", &format!("k{number}"), &spec),
+                    Some(&fixture.deploy(&spec)),
+                )
+                .await
+                .unwrap();
+            }
+            let newest = version(31);
+            let by_second = Signed::sign(
+                &fixture.deploy_body(
+                    &[&newest],
+                    ployz_core::authority::SignerKey::Device(second.public().into()),
+                ),
+                &second,
+            )
+            .unwrap();
+            deploy_ensure(
+                service,
+                new_want("service_container", "second", &newest),
+                Some(&by_second),
+            )
+            .await
+            .unwrap();
+
+            deploy_ensure(
+                service,
+                new_want("service_container", "oldest", &version(0)),
+                None,
+            )
+            .await
+            .unwrap();
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
@@ -5645,7 +5713,7 @@ mod ensure_container {
                 .await
                 .unwrap();
             let elsewhere = with_policy(
-                "203.0.113.7/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc",
+                "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc",
                 "never",
             );
             let refused = deploy_ensure(

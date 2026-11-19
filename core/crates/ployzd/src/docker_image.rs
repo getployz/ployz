@@ -100,7 +100,14 @@ pub enum UnsignedImage {
 /// and answer the ID of the image that pull placed. The ID is read by the digest the
 /// pull reported, so a tag another caller moves meanwhile changes nothing.
 pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, UnsignedImage> {
-    require_public_registry(image).await?;
+    let mirrors = docker
+        .info()
+        .await
+        .map_err(UnsignedImage::Pull)?
+        .registry_config
+        .and_then(|registries| registries.mirrors)
+        .unwrap_or_default();
+    require_public_registry(image, &mirrors).await?;
     let pulled = pull_image(docker, image, None)
         .await
         .map_err(UnsignedImage::Pull)?
@@ -127,12 +134,21 @@ fn registry(image: &str) -> Option<&str> {
         .then_some(first)
 }
 
-/// Refuse a registry on this Machine or its private networks: reaching one proves
-/// nothing about who else can.
-async fn require_public_registry(image: &str) -> Result<(), UnsignedImage> {
+/// Refuse an image Docker would fetch from this Machine or its private networks: reaching
+/// a registry there proves nothing about who else can. Docker asks each of `mirrors`, the
+/// URLs it is set up with, for a Docker Hub image before Docker Hub itself.
+async fn require_public_registry(image: &str, mirrors: &[String]) -> Result<(), UnsignedImage> {
     let Some(registry) = registry(image) else {
+        for mirror in mirrors {
+            let host = mirror.split_once("://").map_or(&**mirror, |(_, host)| host);
+            require_public_address(host.split('/').next().unwrap_or(host)).await?;
+        }
         return Ok(());
     };
+    require_public_address(registry).await
+}
+
+async fn require_public_address(registry: &str) -> Result<(), UnsignedImage> {
     let target = if registry
         .rsplit(']')
         .next()
@@ -186,9 +202,12 @@ fn public(ip: std::net::IpAddr) -> bool {
                 (None, [0x64, 0xff9b, 0, 0, 0, 0, high, low] | [0x2002, high, low, ..]) => {
                     embedded(high, low)
                 }
-                // Every public IPv6 address is in 2000::/3. 2001:db8::/32 is for documents.
+                // Every public IPv6 address is in 2000::/3. 2001:db8::/32 and 3fff::/20
+                // are for documents.
                 (None, [first, second, ..]) => {
-                    first & 0xe000 == 0x2000 && (first, second) != (0x2001, 0xdb8)
+                    first & 0xe000 == 0x2000
+                        && (first, second) != (0x2001, 0xdb8)
+                        && (first, second & 0xf000) != (0x3fff, 0)
                 }
             }
         }
@@ -219,7 +238,7 @@ mod tests {
             "[2606:4700::1111]:5000/api",
             "[64:ff9b::808:808]:5000/api",
         ] {
-            require_public_registry(image).await.unwrap();
+            require_public_registry(image, &[]).await.unwrap();
         }
         for image in [
             "127.0.0.1:5000/api:1",
@@ -241,14 +260,44 @@ mod tests {
             "[fec0::1]:5000/api",
             "[ff02::1]:5000/api",
             "[::10.0.0.5]:5000/api",
+            "[3fff::1]:5000/api",
         ] {
             assert!(
                 matches!(
-                    require_public_registry(image).await,
+                    require_public_registry(image, &[]).await,
                     Err(UnsignedImage::Private(_))
                 ),
                 "{image}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_docker_hub_image_is_unsigned_only_when_every_mirror_is_public() {
+        let public = [
+            "https://8.8.8.8".to_owned(),
+            "https://8.8.4.4:5000/".to_owned(),
+        ];
+        require_public_registry("nginx:1.29", &public)
+            .await
+            .unwrap();
+        for mirror in [
+            "http://10.0.0.5:5000",
+            "https://[fd00::1]/",
+            "192.168.1.5:5000",
+        ] {
+            let mirrors = [public[0].clone(), mirror.to_owned()];
+            assert!(
+                matches!(
+                    require_public_registry("acme/api", &mirrors).await,
+                    Err(UnsignedImage::Private(_))
+                ),
+                "{mirror}"
+            );
+            // Docker asks a mirror only for a Docker Hub image.
+            require_public_registry("8.8.8.8/api:1", &mirrors)
+                .await
+                .unwrap();
         }
     }
 

@@ -230,7 +230,7 @@ server runs it for two kinds of service:
 
 - One that reaches no data: no sealed value, no volume, no login for its image, and nothing of
   its server beyond a plain container. The server pulls the image itself with no login, so the
-  registry has to be public.
+  registry has to be public. So does any registry mirror Docker on that server is set up with.
 - A version the server already ran under a signature, as above.
 
 A server refuses any other container the deployment would start there, and says what the

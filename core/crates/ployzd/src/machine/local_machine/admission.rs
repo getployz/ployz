@@ -6,7 +6,7 @@
 
 use ployz_core::{
     ClientKey, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Namespace,
-    NewContainer, ResolvedServiceSpec, RunTarget, Sealing, Start,
+    NewContainer, ResolvedServiceSpec, RunTarget, Sealing, ServiceName, Start,
     authority::{
         AuthorityRefusal, DeployApproval, DeployFacts, PayloadDigest, RuleProof, Signed,
         deploy::{self, Creation, content_addressed},
@@ -150,7 +150,7 @@ impl LocalMachine {
             None => None,
         };
         if full_access {
-            self.remember(new, digest, self.full_access_signer())?;
+            self.remember(new, digest, self.full_access_signer()?)?;
             return Ok(Some(signed));
         }
         if self.admitted_before(new, digest)? {
@@ -204,16 +204,19 @@ impl LocalMachine {
 
     /// Who a Full access creation is kept under: the Device whose own connection asked,
     /// so removing that Device ends it, or Full access for this Server's own socket.
-    fn full_access_signer(&self) -> SpecSigner {
+    ///
+    /// # Errors
+    /// Returns [`Error::NeedsFullScope`] when the connection's key is no longer a Device
+    /// here: it was removed after the call arrived.
+    fn full_access_signer(&self) -> Result<SpecSigner, Error> {
         let Caller::Management(remote) = self.caller else {
-            return SpecSigner::FullAccess;
+            return Ok(SpecSigner::FullAccess);
         };
         self.record()
             .devices()
             .find(|device| ClientKey::from(*device) == remote)
-            .map_or(SpecSigner::FullAccess, |device| {
-                SpecSigner::Device(device.into())
-            })
+            .map(|device| SpecSigner::Device(device.into()))
+            .ok_or(Error::NeedsFullScope)
     }
 
     /// Let a Writer's start through. Starting a Container the Machine already holds is
@@ -249,9 +252,18 @@ impl LocalMachine {
                 namespace,
                 resolved_spec,
                 ..
-            } => AdmittedSpec::of(namespace, resolved_spec, true)
-                .map(Some)
-                .map_err(Error::DeployRefused),
+            } => {
+                let signed = AdmittedSpec::of(namespace, resolved_spec, true)
+                    .map_err(Error::DeployRefused)?;
+                self.remember_spec(
+                    namespace,
+                    &resolved_spec.name,
+                    resolved_spec,
+                    PayloadDigest::of(&resolved_spec.to_requested(), namespace).ok(),
+                    self.full_access_signer()?,
+                )?;
+                Ok(Some(signed))
+            }
         }
     }
 
@@ -288,25 +300,39 @@ impl LocalMachine {
         )
     }
 
-    /// Keep `new`'s spec as one this Machine admitted signed, so a later creation of it
-    /// needs nothing presented. A spec whose image is a tag is not kept: whoever writes
-    /// the image store chooses what a tag runs.
     fn remember(
         &self,
         new: &NewContainer,
         digest: Option<PayloadDigest>,
         by: SpecSigner,
     ) -> Result<(), Error> {
+        self.remember_spec(
+            &new.slot.namespace,
+            &new.slot.service,
+            &new.resolved_spec,
+            digest,
+            by,
+        )
+    }
+
+    /// Keep `spec` as one this Machine admitted signed for `service`, so a later creation
+    /// of it needs nothing presented. A spec whose image is a tag is not kept: whoever
+    /// writes the image store chooses what a tag runs.
+    fn remember_spec(
+        &self,
+        namespace: &Namespace,
+        service: &ServiceName,
+        spec: &ResolvedServiceSpec,
+        digest: Option<PayloadDigest>,
+        by: SpecSigner,
+    ) -> Result<(), Error> {
         let Some(digest) = digest else {
             return Ok(());
         };
-        if new.resolved_spec.name != new.slot.service
-            || !content_addressed(&new.resolved_spec.container.image)
-        {
+        if spec.name != *service || !content_addressed(&spec.container.image) {
             return Ok(());
         }
-        self.approvals
-            .admit_spec(&new.slot.namespace, &new.slot.service, digest, by)
+        self.approvals.admit_spec(namespace, service, digest, by)
     }
 
     pub(super) fn cluster_key(
