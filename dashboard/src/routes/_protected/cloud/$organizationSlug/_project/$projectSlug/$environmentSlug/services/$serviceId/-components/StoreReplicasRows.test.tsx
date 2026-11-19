@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { JsonValue } from "@ployz/sdk";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { replicaRows } from "#/modules/config-store/replica-rows";
 import { regionOptions } from "#/modules/machines/server-regions";
@@ -23,11 +24,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function rows(value: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
-  const onChange = vi.fn(() => Promise.resolve());
-  const kept = replicaRows(value, home).flatMap(({ region }) => region ?? []);
-  render(<StoreReplicasRows options={regionOptions(servers, [], kept)} value={value} deployed={held.deployed ?? value} home={home}
-    capped={held.capped} oneRegion={held.attached ?? held.capped !== undefined} changed={false} onChange={onChange} />);
+/** The rows over a value that takes each write, as the Store hands it back to them. */
+function rows(start: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
+  const onChange = vi.fn((_: JsonValue) => Promise.resolve());
+  function Staged() {
+    const [value, setValue] = useState(start);
+    const kept = replicaRows(value, home).flatMap(({ region }) => region ?? []);
+    return (
+      <StoreReplicasRows options={regionOptions(servers, [], kept)} value={value} deployed={held.deployed ?? start} home={home}
+        capped={held.capped} oneRegion={held.attached ?? held.capped !== undefined} changed={false}
+        onChange={(next) => { setValue(next); return onChange(next); }} />
+    );
+  }
+  render(<Staged />);
   return onChange;
 }
 
@@ -90,14 +99,32 @@ it("keeps both counts when a row moves to a region whose key is any", async () =
   expect(onChange).toHaveBeenLastCalledWith({ any: 2, syd: 1 });
 });
 
+const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+
 it("stages nothing when the region just added is removed again", () => {
-  const onChange = rows({ fsn: 2, syd: 1 }, "fsn", { deployed: 2 });
-  fireEvent.click(screen.getByRole("button", { name: "Remove syd" }));
+  const onChange = rows(2, "fsn");
+  click("Add region");
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 2, syd: 1 });
+  click("Remove syd");
   expect(onChange).toHaveBeenLastCalledWith(2);
+});
+
+it("keeps a region named with ployz set through a count change and a region added and removed", () => {
+  const onChange = rows({ fsn: 2 }, "fsn", { deployed: 1 });
+  more("Replicas in fsn");
+  click("Add region");
+  click("Remove syd");
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 3 });
+});
+
+it("names the region left when it opens on two and can't know the Service ever had a bare count", () => {
+  const onChange = rows({ fsn: 3, syd: 1 }, "fsn", { deployed: 1 });
+  click("Remove syd");
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 3 });
 });
 
 it("adds a region a Server is in with one replica", () => {
   const onChange = rows(2, "fsn");
-  fireEvent.click(screen.getByRole("button", { name: "Add region" }));
+  click("Add region");
   expect(onChange).toHaveBeenLastCalledWith({ fsn: 2, syd: 1 });
 });

@@ -33,13 +33,11 @@ describe("replica rows", () => {
   it("puts a Service deployed with a bare count back to one when its rows return to one row in the Environment's region", () => {
     // Deployed 2. Add region, then remove that row: nothing is left to deploy.
     const rows = replicaRows({ fsn: 2, syd: 1 }, "fsn").filter(({ region }) => region !== "syd");
-    expect(replicaValue(rows, "fsn", { fsn: 2, syd: 1 }, 2)).toBe(2);
+    expect(replicaValue(rows, "fsn", 2, 2)).toBe(2);
     // With another count on the way, the count is all that changed.
-    expect(replicaValue([{ region: "fsn", count: 3 }], "fsn", { fsn: 3, syd: 1 }, 2)).toBe(3);
-    // To another region and back.
-    expect(replicaValue([{ region: "fsn", count: 2 }], "fsn", { syd: 2 }, 2)).toBe(2);
+    expect(replicaValue([{ region: "fsn", count: 3 }], "fsn", 2, 2)).toBe(3);
     // A row outside the Environment's region is no bare count, whatever was deployed.
-    expect(replicaValue([{ region: "syd", count: 2 }], "fsn", { fsn: 2, syd: 2 }, 2)).toEqual({ syd: 2 });
+    expect(replicaValue([{ region: "syd", count: 2 }], "fsn", 2, 2)).toEqual({ syd: 2 });
   });
 
   it("goes back to a bare count for any region, which no map can name", () => {
