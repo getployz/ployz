@@ -103,8 +103,9 @@ export const storeViewPrefix = (organizationSlug: string) => ["store-view", orga
  * view and an in-flight Deployment poll.
  */
 export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
-  const queryFn = async ({ signal }: { signal: AbortSignal }) => {
-    const result = await readView(organizationSlug, query, signal);
+  // No abort signal: a page's loader awaits this same read, and a signal lets any unmounting watcher cancel it under the loader.
+  const queryFn = async () => {
+    const result = await readView(organizationSlug, query);
     // A busy Store is a failed read, retried; the view keeps its last answer.
     if (!result.ok && result.refusal.code === "unavailable") throw new Error(result.refusal.message);
     return result;
@@ -119,8 +120,8 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
 }
 
 /** Reads `query`'s view: the Store answers each query kind with the view of the same name. */
-async function readView<Q extends ConfigQuery>(organizationSlug: string, query: Q, signal: AbortSignal): Promise<StoreResult<StoreViewOf<Q>>> {
-  const result = await readStoreViewServerFn({ data: { organizationSlug, query }, signal });
+async function readView<Q extends ConfigQuery>(organizationSlug: string, query: Q): Promise<StoreResult<StoreViewOf<Q>>> {
+  const result = await readStoreViewServerFn({ data: { organizationSlug, query } });
   if (!result.ok) return result;
   const view = viewOf<Q["query"]>(result.value, query);
   if (view === undefined) throw new Error(`The Store answered a ${query.query} query with a ${result.value.view} view.`);
@@ -394,8 +395,8 @@ export function storeDeploymentsOptions(organizationSlug: string, scope: Collect
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, deploymentsPage(environment, null)] as const,
     staleTime: Infinity,
     initialPageParam: FIRST_PAGE,
-    queryFn: async ({ pageParam, signal }) => {
-      return requireView(await readView(organizationSlug, deploymentsPage(environment, pageParam), signal));
+    queryFn: async ({ pageParam }) => {
+      return requireView(await readView(organizationSlug, deploymentsPage(environment, pageParam)));
     },
     getNextPageParam: (page) => page.next_cursor,
   });
