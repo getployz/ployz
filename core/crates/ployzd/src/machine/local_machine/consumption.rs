@@ -342,18 +342,17 @@ impl ConsumptionLog {
             }
             admitted.retain(|kept| kept != &entry);
             admitted.push(entry);
-            // A version several keys signed is one version, as new as its newest signature
-            // whoever made it.
+            // What a removed key signed counts for nothing, so it neither takes a place nor
+            // stays. A version several keys signed is one version, as new as its newest
+            // signature a trusted key made.
+            let trusted = trusted();
             let mut newest = Vec::new();
             for kept in admitted.iter().rev() {
-                if !newest.contains(&kept.digest) {
+                if kept.by.trusted(&trusted) && !newest.contains(&kept.digest) {
                     newest.push(kept.digest);
                 }
             }
             newest.truncate(SPECS_KEPT);
-            // What a removed key signed counts for nothing, so it is dropped. The entries
-            // are kept version by version, so the version keeps its place without it.
-            let trusted = trusted();
             *admitted = newest
                 .iter()
                 .rev()

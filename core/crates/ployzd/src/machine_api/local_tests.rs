@@ -5703,6 +5703,73 @@ mod ensure_container {
         }
 
         #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn a_version_only_a_removed_device_signed_takes_no_place_from_older_ones() {
+            let fixture = enforced("ployzd-removed-signer-place").await;
+            let service = &fixture.service;
+            let version = |number: usize| {
+                let mut spec = reaching(PINNED);
+                spec["container"]["command"] = json!(["serve", number.to_string()]);
+                spec
+            };
+            let deploy = async |number: usize| {
+                let spec = version(number);
+                deploy_ensure(
+                    service,
+                    new_want("service_container", &format!("k{number}"), &spec),
+                    Some(&fixture.deploy(&spec)),
+                )
+                .await
+                .unwrap();
+            };
+            let second = Signer::from_seed(&[8; 32]);
+            let second_device = DeviceKey::from(second.public());
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.approve_device(second_device).unwrap();
+                })
+                .await
+                .unwrap();
+            for number in 0..31 {
+                deploy(number).await;
+            }
+            let only_second = version(31);
+            let by_second = Signed::sign(
+                &fixture.deploy_body(
+                    &[&only_second],
+                    ployz_core::authority::SignerKey::Device(second.public().into()),
+                ),
+                &second,
+            )
+            .unwrap();
+            deploy_ensure(
+                service,
+                new_want("service_container", "second", &only_second),
+                Some(&by_second),
+            )
+            .await
+            .unwrap();
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.remove_device(second_device.code()).unwrap();
+                })
+                .await
+                .unwrap();
+            deploy(32).await;
+
+            deploy_ensure(
+                service,
+                new_want("service_container", "oldest", &version(0)),
+                None,
+            )
+            .await
+            .unwrap();
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
         async fn a_spec_two_devices_signed_runs_again_while_either_is_trusted() {
             let fixture = enforced("ployzd-two-signers-spec").await;
             let service = &fixture.service;
