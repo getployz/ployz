@@ -141,7 +141,7 @@ update services that typed the old name in the same deploy. See
 
 ## Scale
 
-![Settings → Scale: Replicas, CPU limit and Memory limit](../images/service-settings-scale.png)
+![Settings → Scale: Replicas with a region and a count on each row, and Resource limits](../images/service-settings-scale.png)
 
 ### Replicas
 
