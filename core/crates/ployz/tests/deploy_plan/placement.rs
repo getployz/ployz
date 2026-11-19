@@ -2293,6 +2293,82 @@ fn a_wait_names_only_the_regions_still_short_of_a_replica() {
     );
 }
 
+#[test]
+fn a_server_joining_a_region_whose_count_is_met_moves_no_replica_while_another_region_waits() {
+    let api = by_region(replicated("api", 1), &[("fsn", 2), ("syd", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "fsn"),
+            in_region(machine('2', "second"), "fsn"),
+            machine('3', "third"),
+        ],
+        containers: vec![
+            container('b', '1', &api, &service_id('a')),
+            container('c', '1', &api, &service_id('a')),
+            container('d', '3', &api, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
+    };
+    assert_eq!(
+        waiting.regions,
+        BTreeMap::from([(Region::parse("syd").unwrap(), not_running(1))])
+    );
+}
+
+#[test]
+fn a_replica_kept_in_place_of_one_that_waits_is_reported_on_the_old_version() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let mut api = was.clone();
+    api.container.image = "ghcr.io/getployz/api:new".into();
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "fsn"),
+            machine('3', "third"),
+        ],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('d', '3', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
+    };
+    assert_eq!(
+        waiting.regions,
+        BTreeMap::from([(
+            Region::parse("syd").unwrap(),
+            RegionWait {
+                waiting: 0,
+                outdated: 1
+            }
+        )])
+    );
+    assert_eq!(waiting.error.message, "no Server in syd");
+    assert!(
+        matches!(
+            operations(&preview).as_slice(),
+            [DeployOperation::ReplaceContainer(replacement)] if replacement.machine_id == machine_id('1')
+        ),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
 fn runner_options() -> PlanOptions {
     PlanOptions {
         block_unmountable: true,
