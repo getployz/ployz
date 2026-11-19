@@ -243,6 +243,19 @@ pub(super) fn pinned(
     let recorded = record_of(tx, id)?;
     let mut record = recorded.clone();
     let own = super::device_approval(tx, id)?;
+    let replays = match &record.origin {
+        Origin::Replay { source } => {
+            let pending: Vec<&RequestedServiceSpec> = target
+                .iter()
+                .filter(|spec| {
+                    !record.services.contains_key(&spec.name)
+                        && approved(own.as_ref(), spec).is_none()
+                })
+                .collect();
+            replayed(tx, source.clone(), pending)?
+        }
+        Origin::Own | Origin::Legacy => BTreeMap::new(),
+    };
     for spec in target {
         if record.services.contains_key(&spec.name) {
             continue;
@@ -252,7 +265,7 @@ pub(super) fn pinned(
             None => match &record.origin {
                 Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
                 Origin::Legacy => None,
-                Origin::Replay { source } => replayed(tx, source.clone(), spec)?,
+                Origin::Replay { .. } => replays.get(&spec.name).cloned(),
             },
         };
         let ran = from.or_else(|| {
@@ -327,27 +340,41 @@ fn reused(
     Ok(same.then_some(last))
 }
 
-/// What `source` ran for `spec`'s Service: its record, else its own approval, else what
-/// the Deployment it replays ran. None when none of them names it: before the Store kept
-/// what each Deployment ran, a Service no approval named ran its Saved image as written.
+/// What `source` ran for each of `pending`'s Services: its record, else its own approval,
+/// else what the Deployment it replays ran, read in one walk back through the chain. A
+/// Service none of them names is left out: before the Store kept what each Deployment
+/// ran, a Service no approval named ran its Saved image as written.
+///
+/// # Errors
+/// Returns a storage error, or `corrupt` for a chain that reaches a Deployment twice.
 fn replayed(
     tx: &mut dyn Tx,
     mut source: DeploymentId,
-    spec: &RequestedServiceSpec,
-) -> Result<Option<RanService>, RpcError> {
-    loop {
+    mut pending: Vec<&RequestedServiceSpec>,
+) -> Result<BTreeMap<ServiceName, RanService>, RpcError> {
+    let mut found = BTreeMap::new();
+    let mut walked = BTreeSet::new();
+    while !pending.is_empty() {
+        if !walked.insert(source.as_str().to_owned()) {
+            return Err(error::corrupt("Deployment ran"));
+        }
         let record = record_of(tx, &source)?;
-        if let Some(ran) = record.services.get(&spec.name) {
-            return Ok(Some(ran.clone()));
-        }
-        if let Some(ran) = approved(super::device_approval(tx, &source)?.as_ref(), spec) {
-            return Ok(Some(ran));
-        }
+        let approval = super::device_approval(tx, &source)?;
+        pending.retain(|spec| {
+            let ran = record
+                .services
+                .get(&spec.name)
+                .cloned()
+                .or_else(|| approved(approval.as_ref(), spec));
+            ran.map(|ran| found.insert(spec.name.clone(), ran))
+                .is_none()
+        });
         match record.origin {
-            Origin::Own | Origin::Legacy => return Ok(None),
             Origin::Replay { source: earlier } => source = earlier,
+            Origin::Own | Origin::Legacy => break,
         }
     }
+    Ok(found)
 }
 
 /// What `service` ran in the Deployment that last applied Service node `node`.

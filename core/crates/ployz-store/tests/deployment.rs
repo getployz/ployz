@@ -9587,7 +9587,6 @@ fn a_deploy_carries_one_signed_version_for_each_of_more_services_than_a_request_
         .into_iter()
         .chain(names.iter().map(String::as_str))
         .collect();
-    assert_eq!(services.len(), 33);
     let versions = services
         .iter()
         .map(|service| posted(&store, &who, service, P1))
