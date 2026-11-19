@@ -7,6 +7,7 @@ export const Route = createFileRoute(
 )({
   // A typed or bookmarked Project URL; in-app links name the Environment. `beforeLoad` decides before the Organization's
   // loader reads for a page that never renders. Access comes first, so a removed member reads "no longer a member".
+  // No in-app link may target this URL: on a client navigation this `beforeLoad` reads over the network.
   beforeLoad: async ({ params, context }) => {
     await requireOrganization(context, params.organizationSlug);
     const environmentSlug = (await requireStoreProjects(context, params.organizationSlug))

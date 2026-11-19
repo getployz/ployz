@@ -12,7 +12,7 @@ export type RequestScopeService = {
   readonly once: <A, E, R>(key: string, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 };
 
-/** The request being served. Outside one (Inngest, API routes, tests) nothing is remembered. */
+/** The request being served. Outside `runActor` (Inngest, API routes, tests) nothing is remembered. */
 export const RequestScope = Context.Reference<RequestScopeService>("ployz/RequestScope", {
   defaultValue: () => ({ once: (_key, effect) => effect }),
 });

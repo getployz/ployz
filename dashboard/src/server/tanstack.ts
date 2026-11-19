@@ -31,6 +31,10 @@ export function strictValidator<S extends Schema.ConstraintDecoder<unknown>>(
   return Schema.toStandardSchemaV1(schema, { parseOptions: strictParseOptions });
 }
 
+/**
+ * Runs a server function's `effect` with its Request's `RequestScope`, so the session and access are looked up once per
+ * request. A response that outlives its request (SSE, log streams) re-checks with `runAppEffect`, never `runActor`.
+ */
 export const runActor = createServerOnlyFn(function runActor<A, E>(
   context: { readonly signal: AbortSignal },
   effect: Effect.Effect<A, E, AppServices>,
