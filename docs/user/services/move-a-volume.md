@@ -4,8 +4,9 @@ description: Move a volume and the service that mounts it to another server.
 ---
 
 A volume lives on one server. Moving it, and the service that mounts it, to another server is
-turned off in this version of Ployz. A server starts a new container only for a deploy an approved
-device signed or a rule approved, and a move has to start the service on the new server. Ployz
+turned off in this version of Ployz. A server starts a service that mounts a volume only for a
+deploy an approved device signed or a rule approved, and a move has to start the service on the
+new server. Ployz
 Cloud refuses a move before anything stops:
 
 ```
