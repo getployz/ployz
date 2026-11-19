@@ -34,7 +34,7 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
   const [draft, setDraft] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [moving, setMoving] = useState<Move | null>(null);
-  const [waiting, setWaiting] = useState<Move | null>(null);
+  const [refused, setRefused] = useState(false);
   const labels = regionLabels(machines);
   const check = useNewRegions(organizationSlug, naming ? [draft] : [], labels)(draft);
   const choices = regions ?? [];
@@ -50,6 +50,10 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
     const placed = placedServices(services, namespaces);
     return { rows: leavingServer(machine.id, region, placed, servers), unread: unreadEnvironments(placed) };
   };
+  const said = (told: ReturnType<typeof leaving>) => JSON.stringify([
+    told.rows.map((row) => [row.key, row.name, row.environment, row.next === "moves" ? [row.to, row.searched] : row.empty]),
+    told.unread,
+  ]);
   /** What runs here as the read holds it when called, which a render can be behind. Null unless that answer is current. */
   const current = () => {
     const now = owned.now();
@@ -70,18 +74,18 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
   const confirmMove = () => {
     const namespaces = current();
     if (moving === null || namespaces === null || shown === null) return;
-    if (JSON.stringify(leaving(namespaces, moving.region)) !== JSON.stringify(leaving(shown, moving.region))) return;
+    if (said(leaving(namespaces, moving.region)) !== said(leaving(shown, moving.region))) return;
     send(moving);
     setMoving(null);
   };
   const choose = (value: string | null) => {
     if (value === NEW_REGION) {
+      setRefused(false);
       setNaming(true);
       return;
     }
     const region = value === NO_REGION ? null : value;
-    const move = { region, created: null };
-    if (region !== label && !change(move)) setWaiting(move);
+    setRefused(region !== label && !change({ region, created: null }));
   };
   const stopNaming = () => {
     setNaming(false);
@@ -96,11 +100,6 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
   const told = moving === null || shown === null ? null : leaving(shown, moving.region);
 
   useEffect(() => {
-    if (waiting === null) return;
-    if (owned.shown.kind === "failed") setWaiting(null);
-    else if (owned.shown.kind === "read" && change(waiting)) setWaiting(null);
-  }, [owned.shown, waiting]);
-  useEffect(() => {
     if (confirming && create !== null) createIn(create);
   }, [confirming, create?.key]);
 
@@ -108,7 +107,7 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
     <SettingsSection id="server-region" title="Placement">
       <SettingsRow
         label="Region"
-        hint={held ?? (policy.regionQueued ? "Queued" : undefined)}
+        hint={held ?? (refused ? "What runs here was being read. Pick the region again." : policy.regionQueued ? "Queued" : undefined)}
         commit={naming ? "confirm" : "change"}
         control={naming ? (
           <ConfirmableInput

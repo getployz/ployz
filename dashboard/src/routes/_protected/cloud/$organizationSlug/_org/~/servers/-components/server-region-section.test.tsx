@@ -457,7 +457,7 @@ it("sends a Move dialog confirmed over a newer answer that says the same", async
   }));
 });
 
-it("asks about a region picked while what runs here is read again once that read lands", async () => {
+it("asks to pick again when a region was picked as what runs here was read again, then takes the next pick", async () => {
   const page = section(vm3, { services: RUNNING, owned: READ, machines: withDefaultPeer });
   fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
   const option = await screen.findByRole("option", { name: "Sydney" });
@@ -467,8 +467,23 @@ it("asks about a region picked while what runs here is read again once that read
 
   page.unsettleBeforeRender("asked again");
   fireEvent.click(option);
-  expect(requestChange).not.toHaveBeenCalled();
   page.reads(READ);
-  expect(await screen.findByRole("dialog")).toBeTruthy();
+  expect(await screen.findByText("What runs here was being read. Pick the region again.")).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(requestChange).not.toHaveBeenCalled();
+
+  await pick("Sydney");
+  expect(await screen.findByRole("dialog")).toBeTruthy();
+});
+
+it("sends a Move dialog confirmed over a newer answer that changes nothing it shows", async () => {
+  const page = section(vm3, { services: RUNNING, owned: { kind: "read", namespaces: [SHOP] }, machines: withDefaultPeer });
+  await pick("Sydney");
+  const dialog = await screen.findByRole("dialog");
+
+  page.answerBeforeRender([{ ...SHOP, replica_regions: { web: ["default"] } }]);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Move server" }));
+  await waitFor(() => expect(requestChange).toHaveBeenCalledWith({
+    data: { organizationSlug: "acme", machineId: "3".repeat(32), change: { region: "syd" } },
+  }));
 });
