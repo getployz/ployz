@@ -1184,7 +1184,7 @@ mod tests {
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
                 "type": "executed", "summary": {}, "cause": [],
-                "waiting": [{"service": "db", "reason": "its Volume pg-data is in syd and can't move to fsn yet. Run db in syd instead"}]
+                "waiting": [{"service": "db", "reason": "its Volume pg-data is in syd and can't move to fsn yet. Run it in syd instead"}]
             }))
             .unwrap(),
         );
@@ -1204,7 +1204,7 @@ mod tests {
                 "namespace": "shop-production", "warnings": [], "operations": [],
                 "blocked": [{
                     "service": "shop-db",
-                    "error": {"code": "conflict", "message": "its Volume pg-data is in syd and can't move to fsn yet. Run db in syd instead", "details": details}
+                    "error": {"code": "conflict", "message": "its Volume pg-data is in syd and can't move to fsn yet. Run it in syd instead", "details": details}
                 }]
             }))
             .unwrap()
@@ -1216,13 +1216,13 @@ mod tests {
 
         let text = crate::ui::progress::settled_text(&frame(&view));
         assert!(
-            text.contains("db: not started (its Volume pg-data is in syd and can't move to fsn yet. Run db in syd instead)"),
+            text.contains("db: not started (its Volume pg-data is in syd and can't move to fsn yet. Run it in syd instead)"),
             "{text}"
         );
         assert_eq!(
             waiting(&view),
             [
-                "db is waiting: its Volume pg-data is in syd and can't move to fsn yet. Run db in syd instead"
+                "db is waiting: its Volume pg-data is in syd and can't move to fsn yet. Run it in syd instead"
             ]
         );
         assert_eq!(beside_volumes(&view, command), beside);
@@ -1233,7 +1233,7 @@ mod tests {
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
                 "type": "executed", "summary": {}, "reason": "web: CreateContainer failed", "cause": [],
-                "waiting": [{"service": "db", "reason": "its Volume pg-data is in syd and can't move to fsn yet. Run db in syd instead"}]
+                "waiting": [{"service": "db", "reason": "its Volume pg-data is in syd and can't move to fsn yet. Run it in syd instead"}]
             }))
             .unwrap(),
         );

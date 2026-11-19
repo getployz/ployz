@@ -38,7 +38,7 @@ export function deployWaits({ services, home, volumes, copies, servers }: {
       const server = servers.find(({ id }) => id === writers[0]?.machineId);
       if (server === undefined) continue;
       const at = regionOf.get(server.id);
-      const why = at ? `its Volume ${volume.name} is in ${at} and can't move to ${region} yet. Run ${name} in ${at} instead`
+      const why = at ? `its Volume ${volume.name} is in ${at} and can't move to ${region} yet. Run it in ${at} instead`
         : `its Volume ${volume.name} is on ${server.name}, a Server in no region, and can't move to ${region} yet. Give ${server.name} the region ${region} instead`;
       return [{ service: name, why }];
     }

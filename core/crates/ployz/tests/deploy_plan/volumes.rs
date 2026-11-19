@@ -1126,7 +1126,7 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
     let rpc = &blocked.error;
     assert_eq!(
         rpc.message,
-        "its Volume data is in syd and can't move to fsn yet. Run db in syd instead"
+        "its Volume data is in syd and can't move to fsn yet. Run it in syd instead"
     );
     assert_eq!(
         rpc.details.get("reason"),
@@ -1247,7 +1247,7 @@ fn a_volume_only_one_region_mounts_keeps_its_service_waiting_beside_a_shared_one
     assert_eq!(blocked.service, worker.name);
     assert_eq!(
         blocked.error.message,
-        "its Volume scratch is in syd and can't move to fsn yet. Run worker in syd instead"
+        "its Volume scratch is in syd and can't move to fsn yet. Run it in syd instead"
     );
     assert_eq!(
         blocked.error.details.get("reason"),
@@ -1609,7 +1609,7 @@ fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
             "holder in syd",
             ["fsn", "syd"],
             true,
-            "its Volume data is in syd and can't move to fsn yet. Run solo in syd instead",
+            "its Volume data is in syd and can't move to fsn yet. Run it in syd instead",
         ),
     ] {
         let mut snapshot = shared_data_snapshot();

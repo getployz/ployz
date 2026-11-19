@@ -151,7 +151,7 @@ this version of Ployz, so a service whose volume is outside its region waits. Wi
 the environment moved to `syd` and `pg-data` on a server in `fsn`:
 
 ```
-postgres: not started (its Volume pg-data is in fsn and can't move to syd yet. Run postgres in fsn instead)
+postgres: not started (its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead)
 ```
 
 The rest of the deploy goes ahead. If `postgres` already ran, it keeps running in `fsn`. A new

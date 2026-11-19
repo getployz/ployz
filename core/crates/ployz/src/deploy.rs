@@ -773,14 +773,13 @@ pub enum BesideVolume {
 
 fn volume_outside_region(
     volume: &str,
-    service: &ServiceName,
     machine: &MachineName,
     region: &Region,
     beside: &BesideVolume,
 ) -> String {
     match beside {
         BesideVolume::RunIn { region: at, .. } => format!(
-            "its Volume {volume} is in {at} and can't move to {region} yet. Run {service} in {at} instead"
+            "its Volume {volume} is in {at} and can't move to {region} yet. Run it in {at} instead"
         ),
         BesideVolume::Label => format!(
             "its Volume {volume} is on {machine}, a Server in no region, and can't move to {region} yet. Give {machine} the region {region} instead"
@@ -917,16 +916,14 @@ pub enum PlanError {
     #[error("{service} has a Volume, so its replicas run in one region")]
     VolumeInSeveralRegions { service: ServiceName },
     /// The Service is kept in a region, and its Volume is on a Server outside it.
-    #[error("{}", volume_outside_region(volume, service, machine, region, beside))]
+    #[error("{}", volume_outside_region(volume, machine, region, beside))]
     VolumeOutsideRegion {
         /// The Volume, as its owner named it.
         volume: String,
-        service: ServiceName,
         machine: MachineName,
         /// The region the Service is kept in.
         region: Region,
-        /// Boxed to keep `PlanError` small.
-        beside: Box<BesideVolume>,
+        beside: BesideVolume,
     },
     #[error(
         "{volume} is in {volume_region}, and {service} runs in {region}. Run {service} in {volume_region} instead"
@@ -1239,9 +1236,8 @@ impl PlanError {
                 ref machine,
                 ref region,
                 ref beside,
-                ..
             } => {
-                let (volume_region, replicas) = match beside.as_ref() {
+                let (volume_region, replicas) = match beside {
                     BesideVolume::RunIn { region, replicas } => (Some(region), *replicas),
                     BesideVolume::Label => (None, None),
                 };
