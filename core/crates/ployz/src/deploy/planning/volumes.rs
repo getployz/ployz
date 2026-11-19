@@ -15,7 +15,7 @@ use ployz_core::{
 };
 
 use crate::deploy::{
-    DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
+    BesideVolume, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
 };
 
 use super::placement::PlacementReservations;
@@ -1358,7 +1358,9 @@ fn outside_region(
         .iter()
         .filter(|machine| located(machine.machine.id))
         .peekable();
-    let holder = holders.peek()?.machine.name.clone();
+    let first = &holders.peek()?.machine;
+    let holder = first.name.clone();
+    let volume_region = Region::of(first);
     if holders.any(|machine| Region::of(&machine.machine).as_ref() == Some(&region)) {
         return None;
     }
@@ -1370,6 +1372,16 @@ fn outside_region(
         volume: plan.authored(managed_volume_name(volume)?).to_owned(),
         machine: holder,
         to,
+        beside: match volume_region {
+            Some(region) => BesideVolume::RunIn {
+                region,
+                replicas: match spec.mode {
+                    ServiceMode::Replicated { replicas } => Some(replicas),
+                    ServiceMode::Global => None,
+                },
+            },
+            None => BesideVolume::Label { region },
+        },
     })
 }
 

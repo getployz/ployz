@@ -566,7 +566,7 @@ pub(super) fn execute(
     }
     // A Deploy that failed carries these on its failure instead.
     if followed.view.deployment.status == DeploymentStatus::Applied {
-        for hint in progress::moves(&followed.view, |args| super::rerun(matches, args)) {
+        for hint in progress::beside_volumes(&followed.view, |args| super::rerun(matches, args)) {
             ui::hint(&hint);
         }
     }

@@ -124,18 +124,26 @@ postgres: not started (pg-data is on db-1)
 ```
 
 The rest of the deploy goes ahead, and the service keeps running where it was. The deployment
-reads **Deployed, 1 waiting**, and `ployz deploy` exits 3. Move the volume with the command the
-deploy prints, then deploy again:
+reads **Deployed, 1 waiting**, and `ployz deploy` exits 3.
+
+The volume stays on its server, so run the service in the volume's region. The deploy prints the
+command that does it. With the environment in `fsn` and `db-1` in `syd`:
 
 ```sh
-ployz volume move pg-data --to web-1
+ployz set postgres.replicas='{"syd":1}'
 ployz deploy
 ```
 
-See [Move a volume](move-a-volume.md) for what a move does to the service while it runs.
+The count puts `postgres` alone in `syd`. To run every service there instead, change the
+environment's region with `ployz env region syd`.
 
-Moving a volume needs Ployz Cloud. Without it, give the volume's server the region, or change the
-environment's region.
+If the volume's server is in no region, the deploy prints the command that gives it the service's
+region:
+
+```sh
+ployz server set db-1 --label-add region=fsn
+ployz deploy
+```
 
 ## When no server is in the region
 

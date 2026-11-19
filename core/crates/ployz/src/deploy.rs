@@ -757,6 +757,20 @@ pub struct RegionAway {
     pub servers: Vec<(MachineName, ServerAway)>,
 }
 
+/// How a Service kept away from its Volume's Server can run beside the Volume, which
+/// stays where it is.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BesideVolume {
+    /// In the region the Volume's Server is in, with the replicas the Service asks for.
+    RunIn {
+        region: Region,
+        replicas: Option<std::num::NonZeroU32>,
+    },
+    /// By giving the Volume's Server, which is in no region, the region the Service is
+    /// kept in.
+    Label { region: Region },
+}
+
 fn volumes_apart(volumes: &[(String, Region)]) -> String {
     all_of(
         volumes
@@ -893,6 +907,7 @@ pub enum PlanError {
         machine: MachineName,
         /// A Server in the region the Service can run on.
         to: MachineName,
+        beside: BesideVolume,
     },
     #[error(
         "{volume} is in {volume_region}, and {service} runs in {region}. Run {service} in {volume_region} instead"
@@ -1204,12 +1219,22 @@ impl PlanError {
                 ref volume,
                 ref machine,
                 ref to,
-            } => RpcError::conflict(self.to_string()).with_details(serde_json::json!({
-                "reason": "volume_outside_region",
-                "volume": volume,
-                "server": machine,
-                "to": to,
-            })),
+                ref beside,
+            } => {
+                let (region, volume_region, replicas) = match beside {
+                    BesideVolume::RunIn { region, replicas } => (None, Some(region), *replicas),
+                    BesideVolume::Label { region } => (Some(region), None, None),
+                };
+                RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                    "reason": "volume_outside_region",
+                    "volume": volume,
+                    "server": machine,
+                    "to": to,
+                    "region": region,
+                    "volume_region": volume_region,
+                    "replicas": replicas,
+                }))
+            }
             Self::VolumeInOtherRegion {
                 ref volume,
                 ref region,

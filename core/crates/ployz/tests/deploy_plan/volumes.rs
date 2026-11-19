@@ -1131,6 +1131,10 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
     );
     assert_eq!(rpc.details.get("volume"), Some(&serde_json::json!("data")));
     assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("first")));
+    assert_eq!(
+        rpc.details.get("volume_region"),
+        Some(&serde_json::json!("syd"))
+    );
     assert!(preview.volumes_to_create.is_empty());
 
     preview_deploy(&intent, &snapshot).unwrap_err();

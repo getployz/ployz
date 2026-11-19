@@ -418,9 +418,13 @@ pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
         .collect()
 }
 
-/// The command that moves each Volume a Service waits on into the region the
-/// Service is kept in.
-pub(super) fn moves(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Vec<Hint> {
+/// The command that lets each Service waiting on a Volume outside its region run beside
+/// the Volume: counts that put the Service in the Volume's region, or the Service's region
+/// on a Volume's Server that is in none.
+pub(super) fn beside_volumes(
+    view: &DeploymentView,
+    command: impl Fn(&[&str]) -> String,
+) -> Vec<Hint> {
     let scope = [
         "--project",
         view.environment.project.as_str(),
@@ -438,13 +442,31 @@ pub(super) fn moves(view: &DeploymentView, command: impl Fn(&[&str]) -> String) 
                     .get(key)
                     .and_then(|value| value.as_str())
             };
-            let (Some("volume_outside_region"), Some(volume), Some(to)) =
-                (detail("reason"), detail("volume"), detail("to"))
-            else {
+            if detail("reason") != Some("volume_outside_region") {
                 return None;
+            }
+            let Some(volume_region) = detail("volume_region") else {
+                let label = format!("region={}", detail("region")?);
+                return Some(Hint::Next(command(&[
+                    "server",
+                    "set",
+                    detail("server")?,
+                    "--label-add",
+                    label.as_str(),
+                ])));
             };
+            let replicas = entry.error.details.get("replicas")?.as_u64()?;
+            let service = view
+                .runtime_names
+                .iter()
+                .find(|(_, runtime)| **runtime == entry.service)
+                .map_or(&entry.service, |(name, _)| name);
+            let counts = format!(
+                "{service}.replicas={}",
+                serde_json::json!({ volume_region: replicas })
+            );
             Some(Hint::Next(command(
-                &[&["volume", "move", volume, "--to", to][..], &scope].concat(),
+                &[&["set", counts.as_str()][..], &scope].concat(),
             )))
         })
         .collect()
@@ -874,7 +896,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // failure the inspect hint above reads.
         bad_image |= pulled && !build_failed && built.is_none();
     }
-    hints.extend(moves(view, &command));
+    hints.extend(beside_volumes(view, &command));
     let mut failure = Failure::from(
         RpcError::new(
             if lost_to_newer {
@@ -1155,9 +1177,9 @@ mod tests {
     }
 
     #[test]
-    fn a_volume_outside_its_services_region_names_the_move_into_it() {
+    fn a_volume_outside_its_services_region_names_the_command_that_runs_the_service_beside_it() {
         let mut view = view();
-        view.runtime_names.clear();
+        view.runtime_names = serde_json::from_value(json!({"db": "shop-db"})).unwrap();
         view.deployment.status = DeploymentStatus::Applied;
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
@@ -1170,20 +1192,26 @@ mod tests {
             {"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "db", "outcome": "not_attempted", "rows": []}
         ]))
         .unwrap();
-        view.preview = Some(
+        let outside = |beside: serde_json::Value| {
+            let mut details = json!({
+                "reason": "volume_outside_region", "volume": "pg-data", "server": "syd-1", "to": "fsn-1"
+            });
+            details
+                .as_object_mut()
+                .unwrap()
+                .extend(beside.as_object().unwrap().clone());
             serde_json::from_value(json!({
                 "namespace": "shop-production", "warnings": [], "operations": [],
                 "blocked": [{
-                    "service": "db",
-                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": {
-                        "reason": "volume_outside_region", "volume": "pg-data", "server": "syd-1", "to": "fsn-1"
-                    }}
+                    "service": "shop-db",
+                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": details}
                 }]
             }))
-            .unwrap(),
-        );
-        let moved = [Hint::Next(
-            "ployz volume move pg-data --to fsn-1 --project shop --env production".to_owned(),
+            .unwrap()
+        };
+        view.preview = Some(outside(json!({"volume_region": "syd", "replicas": 1})));
+        let beside = [Hint::Next(
+            r#"ployz set 'db.replicas={"syd":1}' --project shop --env production"#.to_owned(),
         )];
 
         let text = crate::ui::progress::settled_text(&frame(&view));
@@ -1192,7 +1220,7 @@ mod tests {
             "{text}"
         );
         assert_eq!(waiting(&view), ["db is waiting: pg-data is on syd-1"]);
-        assert_eq!(moves(&view, command), moved);
+        assert_eq!(beside_volumes(&view, command), beside);
         let partial = completion(&view, None, &[], command).unwrap_err();
         assert_eq!(crate::ui::after_result(&partial), 3);
 
@@ -1205,8 +1233,16 @@ mod tests {
             .unwrap(),
         );
         let failure = completion(&view, None, &[], command).unwrap_err();
-        assert_eq!(failure.hints(), moved);
+        assert_eq!(failure.hints(), beside);
         assert_eq!(crate::ui::after_result(&failure), 1);
+
+        view.preview = Some(outside(json!({"region": "fsn"})));
+        assert_eq!(
+            beside_volumes(&view, command),
+            [Hint::Next(
+                "ployz server set syd-1 --label-add 'region=fsn'".to_owned()
+            )]
+        );
     }
 
     #[test]
