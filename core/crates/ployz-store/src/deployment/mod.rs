@@ -1032,12 +1032,17 @@ struct Run {
 
 impl Run {
     /// The nodes its Deployment never attempted. On an Applied one, the Services
-    /// the planner left waiting.
+    /// the planner left waiting whole.
     fn unreached(&self) -> impl Iterator<Item = &String> {
         self.nodes
             .iter()
             .filter(|(_, status)| **status == NodeStatus::NotAttempted)
             .map(|(id, _)| id)
+    }
+
+    /// Whether the planner left a Service waiting, whole or in some regions.
+    fn waits(&self) -> bool {
+        matches!(&self.outcome, Some(Outcome::Executed { waiting, .. }) if !waiting.is_empty())
     }
 
     fn summary_warnings(&self) -> Vec<DeploymentWarning> {
@@ -1909,14 +1914,16 @@ fn preparing(status: DeploymentStatus, run: &Run) -> bool {
 }
 
 /// Whether a Deployment in `status` of `nodes` that recorded `run` applied without
-/// deploying or removing a Service. An Unchanged one ran nothing.
+/// deploying or removing a Service, with work left: a node it never attempted, or a
+/// Service that waits in some regions, whatever its node reads. An Unchanged one ran
+/// nothing.
 fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> bool {
     let mut services = nodes
         .iter()
         .filter(|node| node.service().is_some())
         .filter_map(|node| run.nodes.get(node.id()));
     status == DeploymentStatus::Applied
-        && run.unreached().next().is_some()
+        && (run.waits() || run.unreached().next().is_some())
         && !services.any(|outcome| outcome.advances())
 }
 

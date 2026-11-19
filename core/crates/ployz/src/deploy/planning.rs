@@ -29,7 +29,8 @@ mod volumes;
 use candidates::{Candidates, Exclusion};
 use placement::{
     CapacityAdmission, GlobalPlacement, Landing, PlacementReservations, PlacementState,
-    ReplicatedPlacement, ReplicatedReservation, Spread, TrialStep, plan_global, plan_replicated,
+    ReplicatedPlacement, ReplicatedReservation, Shortfall, Spread, TrialStep, plan_global,
+    plan_replicated,
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
@@ -1651,7 +1652,44 @@ fn plan_one_service<'snapshot>(
             )
         }
     };
-    let regions = spread.held_back(current);
+    let starts = !machines.is_empty();
+    let (operations, regions) = if starts {
+        let reservation = budget.placement.take_reservation(&requested.name);
+        if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
+            budget
+                .volumes
+                .constrain_candidates(requested, &mut machines)?;
+        }
+        let target = ServiceTarget {
+            spread: &spread,
+            service_id,
+            current,
+            hooks,
+            machines,
+        };
+        match reservation {
+            // The reservation fixed each copy's action when it was made.
+            Some(reservation) => place_service(
+                &target,
+                Some(reservation),
+                budget,
+                options,
+                Landing::Replace,
+            )?,
+            None => Landing::decide(
+                budget
+                    .placement
+                    .can_update_in_place(service_id, current, requested, options),
+                budget,
+                |budget, landing| place_service(&target, None, budget, options, landing),
+                |(operations, _)| Landing::stands(operations.iter().filter_map(TrialStep::of)),
+            )?,
+        }
+    } else {
+        // Every region the counts name is away, so nothing starts. A replica past a
+        // region's count still goes, since a Server that takes no services can give one up.
+        placement::withdraw(&spread, current, requested, &mut budget.placement)
+    };
     let short = PlanError::RegionUnmatched {
         regions: away
             .into_iter()
@@ -1663,47 +1701,10 @@ fn plan_one_service<'snapshot>(
         regions,
         error: short.clone().into_rpc_error(),
     });
-    if machines.is_empty() {
-        // Every region the counts name is away, so nothing starts. A replica past a
-        // region's count still goes, since a Server that takes no services can give one up.
-        let operations = placement::withdraw(&spread, current, requested, &mut budget.placement);
-        return match (operations.is_empty(), waiting) {
-            (true, Some(_)) => Err(short),
-            (_, waiting) => Ok((operations, waiting)),
-        };
+    match waiting {
+        Some(_) if !starts && operations.is_empty() => Err(short),
+        waiting => Ok((operations, waiting)),
     }
-    let reservation = budget.placement.take_reservation(&requested.name);
-    if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
-        budget
-            .volumes
-            .constrain_candidates(requested, &mut machines)?;
-    }
-    let target = ServiceTarget {
-        spread: &spread,
-        service_id,
-        current,
-        hooks,
-        machines,
-    };
-    let operations = match reservation {
-        // The reservation fixed each copy's action when it was made.
-        Some(reservation) => place_service(
-            &target,
-            Some(reservation),
-            budget,
-            options,
-            Landing::Replace,
-        )?,
-        None => Landing::decide(
-            budget
-                .placement
-                .can_update_in_place(service_id, current, requested, options),
-            budget,
-            |budget, landing| place_service(&target, None, budget, options, landing),
-            |operations| Landing::stands(operations.iter().filter_map(TrialStep::of)),
-        )?,
-    };
-    Ok((operations, waiting))
 }
 
 /// Place one Service under one way of landing a change its copies can take in place.
@@ -1713,7 +1714,7 @@ fn place_service<'snapshot>(
     budget: &mut ServiceBudget<'snapshot>,
     options: &PlanOptions,
     landing: Landing,
-) -> Result<Vec<DeployOperation>, PlanError> {
+) -> Result<(Vec<DeployOperation>, Shortfall), PlanError> {
     let ServiceTarget {
         spread,
         service_id,
@@ -1756,7 +1757,7 @@ fn place_service<'snapshot>(
         }
     }
     let volumes = volume_plan.place(requested, machines)?;
-    let (service_operations, hook_machine) = match requested.mode {
+    let (service_operations, hook_machine, short) = match requested.mode {
         ServiceMode::Replicated { .. } => plan_replicated(
             service_id,
             current,
@@ -1774,22 +1775,25 @@ fn place_service<'snapshot>(
             placement,
             options,
         )?,
-        ServiceMode::Global => plan_global(
-            GlobalPlacement {
-                service_id,
-                current,
-                hooks,
-                volumes,
-                landing,
-            },
-            placement,
-            options,
-        )?,
+        ServiceMode::Global => {
+            let (operations, hook_machine) = plan_global(
+                GlobalPlacement {
+                    service_id,
+                    current,
+                    hooks,
+                    volumes,
+                    landing,
+                },
+                placement,
+                options,
+            )?;
+            (operations, hook_machine, BTreeMap::new())
+        }
     };
     let mut operations =
         pre_deploy_operations(requested, hooks, &service_operations, hook_machine.as_ref());
     operations.extend(service_operations);
-    Ok(operations)
+    Ok((operations, short))
 }
 
 fn service_error(name_errors_with_service: bool, service: &str, source: PlanError) -> PlanError {
