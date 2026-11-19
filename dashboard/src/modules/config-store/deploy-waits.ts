@@ -9,8 +9,9 @@ const anyOf = (names: readonly string[]) => (names.length < 2 ? names.join("") :
 
 /**
  * The Services the next Deploy leaves waiting for where they are kept, as far as the Servers seen say. A Service kept
- * in a region no Server is in waits for one. A Service kept in one region waits when a Volume it mounts is only on
- * Servers outside it, since Ployz moves no Volume between Servers. A Service in any region is kept nowhere. Nothing
+ * in a region no Server is in waits for one. A Service kept in one region waits when a Volume it mounts is written on
+ * a Server outside it, since the Deploy runs it where its Volume is written and moves no Volume. A mirror is no copy it
+ * can run on. A Service in any region is kept nowhere. Nothing
  * waits before the Servers are known.
  */
 export function deployWaits({ services, home, volumes, copies, servers }: {
@@ -33,10 +34,9 @@ export function deployWaits({ services, home, volumes, copies, servers }: {
     const [region, ...others] = regions;
     if (region === undefined || others.length > 0) return [];
     for (const volume of volumes.filter(({ mounts }) => mounts.some(({ service }) => service === name))) {
-      const held = copies.filter((copy) => parseDockerVolumeName(copy.name)?.volumeId === volume.id && regionOf.has(copy.machineId));
-      if (held.length === 0 || held.some(({ machineId }) => regionOf.get(machineId) === region)) continue;
-      const holder = held.find(({ role }) => role === "writer") ?? held[0];
-      const server = servers.find(({ id }) => id === holder?.machineId);
+      const writers = copies.filter((copy) => copy.role === "writer" && parseDockerVolumeName(copy.name)?.volumeId === volume.id && regionOf.has(copy.machineId));
+      if (writers.length === 0 || writers.some(({ machineId }) => regionOf.get(machineId) === region)) continue;
+      const server = servers.find(({ id }) => id === writers[0]?.machineId);
       if (server !== undefined) return [{ service: name, why: `${volume.name} is on ${server.name}` }];
     }
     return [];

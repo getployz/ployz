@@ -129,8 +129,9 @@ region, with a count you raise and lower. A service with one number shows one ro
 environment's region, or in **Any region** when the environment has none. **Add region** adds a row
 in a region that has none yet, and the **×** on a row takes it out. The counts add up to at most 50.
 
-A service deployed with counts by region keeps them through every change here, also with one row
-left, as `{"fsn":3}`. It stays in `fsn` when the environment's region changes. To make it follow
+A service with counts by region keeps them through every change here, also with one row left, as
+`{"fsn":3}`. That holds when it was deployed with them, and when they were set with `ployz set`
+before you opened it. It stays in `fsn` when the environment's region changes. To make it follow
 the environment again, set one number with `ployz set api.replicas=3`.
 
 A service deployed with one number goes back to one number when you remove the regions you added.
@@ -144,8 +145,8 @@ and says **Limited to 1**. You can still pick its region.
 
 ## When a volume is outside the region
 
-A service with a [volume](volumes.md) runs on the volume's server. If that server is outside the
-region, the deploy doesn't start the service, and names the volume and where it is:
+A service with a [volume](volumes.md) runs on the server that writes the volume. A
+[mirror](mirror-a-volume.md) in the region doesn't count. If that server is outside the region, the deploy doesn't start the service, and names the volume and where it is:
 
 ```
 postgres: not started (pg-data is on db-1)

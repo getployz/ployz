@@ -30,16 +30,15 @@ export function replicaRows(value: JsonValue, home: string | null): ReplicaRow[]
 }
 
 /**
- * The `replicas` value that says `rows`, for a Service whose value `was`, and `deployed` the one it last ran with. A
- * Service deployed with its regions named keeps naming them, whatever the edit, so a later change of the Environment's
- * region doesn't move it. So does one whose value names the Environment's region alone, as `ployz set` can leave it.
- * Any other is a bare count while its one row is in the Environment's region, and follows the Environment: a region
- * added and removed again leaves nothing to deploy. Any region is a bare count, which no map can say.
+ * The `replicas` value that says `rows`, for a Service whose value was `opened` when the edit began and `deployed` the
+ * one it last ran with. A Service that named its regions in either keeps naming them, whatever the edit, so a later
+ * change of the Environment's region doesn't move it. One that named none in both is a bare count while its one row
+ * is in the Environment's region, and follows the Environment: a region added and removed again leaves nothing to
+ * deploy. Any region is a bare count, which no map can say.
  */
-export function replicaValue(rows: readonly ReplicaRow[], home: string | null, was: JsonValue, deployed: JsonValue): JsonValue {
+export function replicaValue(rows: readonly ReplicaRow[], home: string | null, opened: JsonValue, deployed: JsonValue): JsonValue {
   const [only] = rows;
-  const named = namedRows(was);
-  const keeps = named !== null && (namedRows(deployed) !== null || (named.length === 1 && named[0]?.region === home));
+  const keeps = namedRows(opened) !== null || namedRows(deployed) !== null;
   if (rows.length === 1 && only !== undefined && (only.region === null || (only.region === home && !keeps))) return only.count;
   return Object.fromEntries(rows.flatMap(({ region, count }) => (region === null ? [] : [[region, count]])));
 }

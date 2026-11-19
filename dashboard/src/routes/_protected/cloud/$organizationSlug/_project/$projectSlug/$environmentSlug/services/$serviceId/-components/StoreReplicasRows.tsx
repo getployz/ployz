@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import type { JsonValue, VolumeListing } from "@ployz/sdk";
@@ -35,8 +35,9 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
   changed: boolean;
   onChange: (value: JsonValue) => Write;
 }) {
+  const [opened] = useState(value);
   const [rows, hold, commit] = useCommitHold<readonly ReplicaRow[]>(replicaRows(value, home));
-  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home, value, deployed)));
+  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home, opened, deployed)));
   const update = (index: number, change: Partial<ReplicaRow>) => save(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
   const unused = options.find(({ key, servers }) => key !== null && servers.length > 0 && !rows.some(({ region }) => region === key));
   const total = rows.reduce((sum, { count }) => sum + count, 0);
