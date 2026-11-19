@@ -555,7 +555,12 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::EnsureContainer>(request)?;
-        let local = self.local_at(operator);
+        let mut local = self.local_at(operator);
+        if operator {
+            // An Operator's start of a Provisioned Volume's holder waits out a switch of
+            // that Volume, as a Writer's start does.
+            local = local.with_switch(Arc::clone(&self.switch_mutation));
+        }
         let presented = if operator {
             Presented::Operator {
                 deploy: request.deploy.as_ref(),
@@ -569,13 +574,6 @@ impl MachineRpc for MachineService {
         };
         let admitted = match local.admit_spec(&request.want, presented).await {
             Ok(admitted) => admitted,
-            Err(error) => return local_error(error),
-        };
-        // An Operator's start of a Provisioned Volume's holder waits out a switch of that
-        // Volume, as a Writer's start does.
-        let _switch = match local.starts_provisioned_holder(&request.want).await {
-            Ok(true) if operator => Some(self.switch_mutation.lock().await),
-            Ok(_) => None,
             Err(error) => return local_error(error),
         };
         finish(local.ensure_container(request.want, admitted).await)

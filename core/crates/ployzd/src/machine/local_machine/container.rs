@@ -262,14 +262,20 @@ impl LocalMachine {
         .await
     }
 
-    /// Start one local container while holding Machine mutation admission.
+    /// Start one local container while holding Machine mutation admission, and `switch`
+    /// until the start ends, even when the caller stops waiting.
     ///
     /// # Errors
     ///
     /// Returns when Docker is unavailable, admission is busy, or Docker cannot start the
     /// container.
-    pub(crate) async fn start_container(&self, container_id: ContainerId) -> Result<(), Error> {
+    pub(crate) async fn start_container(
+        &self,
+        container_id: ContainerId,
+        switch: Option<SwitchGuard>,
+    ) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
+            let _switch = switch;
             local.start_checked(local.docker()?, &container_id).await
         })
         .await
@@ -658,37 +664,6 @@ impl LocalMachine {
             }
         }
         Ok(false)
-    }
-
-    /// Whether `want` starts an existing Container that mounts a Provisioned Volume.
-    ///
-    /// # Errors
-    /// Returns when the Container cannot be read.
-    pub(crate) async fn starts_provisioned_holder(
-        &self,
-        want: &ContainerWant,
-    ) -> Result<bool, Error> {
-        let ContainerWant::Running {
-            container: RunTarget::Existing(locator),
-            ..
-        } = want
-        else {
-            return Ok(false);
-        };
-        Ok(match self.container_now(locator).await? {
-            ContainerNow::Present(observed) => observed
-                .resolved_spec
-                .to_requested()
-                .volume_graph()
-                .mounted_volumes()
-                .any(|volume| {
-                    matches!(
-                        volume.source.kind(),
-                        ployz_core::RawVolumeSource::Provisioned { .. }
-                    )
-                }),
-            ContainerNow::Absent { .. } => false,
-        })
     }
 
     /// Remove one local Docker Volume while holding Machine mutation admission.
@@ -1314,8 +1289,24 @@ impl LocalMachine {
     ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
-        let now = self.container_now(&locator).await?;
-        let refusal = match plan_container(want, &now, &self.record().phase()) {
+        let replan = self
+            .switch
+            .as_ref()
+            .map(|lock| (Arc::clone(lock), want.clone()));
+        let mut now = self.container_now(&locator).await?;
+        let mut step = plan_container(want, &now, &self.record().phase());
+        // Planned again under the switch lock, which the start keeps until it ends, so an
+        // Operator never starts a Volume's holder inside a switch of that Volume.
+        let switch = match replan {
+            Some((lock, want)) if starts_provisioned_holder(&step, &now) => {
+                let guard = lock.lock_owned().await;
+                now = self.container_now(&locator).await?;
+                step = plan_container(want, &now, &self.record().phase());
+                Some(guard)
+            }
+            Some(_) | None => None,
+        };
+        let refusal = match step {
             ContainerStep::Done => {
                 return Ok(EnsuredContainer::Ensured {
                     now: redacted(now),
@@ -1333,9 +1324,9 @@ impl LocalMachine {
                     .await?
             }
             ContainerStep::Start(id) => match fence {
-                Some((run, expect)) => self.start_routed(id, run, expect).await?,
+                Some((run, expect)) => self.start_routed(id, run, expect, switch).await?,
                 None => {
-                    self.start_container(id).await?;
+                    self.start_container(id, switch).await?;
                     None
                 }
             },
@@ -1761,6 +1752,28 @@ enum ContainerStep {
         anonymous_volumes: AnonymousVolumes,
     },
     Remove(ContainerId, AnonymousVolumes),
+}
+
+/// What [`LocalMachine::start_container`] holds of the switch lock.
+pub(super) type SwitchGuard = tokio::sync::OwnedMutexGuard<()>;
+
+/// Whether `step` starts a Container, the one `now` observes, that mounts a Provisioned
+/// Volume.
+fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
+    let (ContainerStep::Start(_), ContainerNow::Present(observed)) = (step, now) else {
+        return false;
+    };
+    observed
+        .resolved_spec
+        .to_requested()
+        .volume_graph()
+        .mounted_volumes()
+        .any(|volume| {
+            matches!(
+                volume.source.kind(),
+                ployz_core::RawVolumeSource::Provisioned { .. }
+            )
+        })
 }
 
 fn plan_container(

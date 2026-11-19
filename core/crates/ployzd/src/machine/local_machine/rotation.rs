@@ -249,14 +249,17 @@ impl LocalMachine {
         self.write(copy, want, expect, Some(health)).await
     }
 
-    /// Starts an existing copy for an In want, as [`start_fenced`] does.
+    /// Starts an existing copy for an In want, as [`start_fenced`] does, holding
+    /// `switch` until the start ends.
     pub(super) async fn start_routed(
         &self,
         id: ContainerId,
         run: Option<DeploymentLogId>,
         expect: Option<CopyRotation>,
+        switch: Option<super::SwitchGuard>,
     ) -> Result<Option<ContainerRefusal>, Error> {
         self.finish_mutation(move |local| async move {
+            let _switch = switch;
             let containers = local.docker()?;
             start_fenced(&local, containers, &id, run, expect.as_ref()).await
         })

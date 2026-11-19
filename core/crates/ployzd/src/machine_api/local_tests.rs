@@ -825,7 +825,8 @@ async fn fake_docker_service_keeping_runtime(
     crate::docker::test_support::FakeDocker,
     crate::docker::ContainerRuntime,
 ) {
-    let (data_dir, store, service, fake, runtime) = fake_docker_service_built(prefix, None).await;
+    let (data_dir, store, service, fake, runtime) =
+        fake_docker_service_built(prefix, None, None).await;
     (data_dir, store, service, fake, runtime)
 }
 
@@ -843,13 +844,16 @@ async fn fake_docker_service_sealing(
 ) {
     let cluster = crate::sealed_env::test_support::Cluster::new();
     let (data_dir, store, service, fake, runtime) =
-        fake_docker_service_built(prefix, Some(cluster.dir.0.clone())).await;
+        fake_docker_service_built(prefix, Some(cluster.dir.0.clone()), None).await;
     (data_dir, store, service, fake, runtime, cluster)
 }
 
+/// With `start_barrier`, every start waits there twice: once to announce it began, once
+/// to be released.
 async fn fake_docker_service_built(
     prefix: &str,
     sealing_key_dir: Option<std::path::PathBuf>,
+    start_barrier: Option<Arc<tokio::sync::Barrier>>,
 ) -> (
     std::path::PathBuf,
     RecordOwner,
@@ -881,6 +885,7 @@ async fn fake_docker_service_built(
     let (runtime, fake) = fake_runtime_with(FakeDocker {
         named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
         list_named: true,
+        start_barrier,
         ..Default::default()
     })
     .await;
@@ -2984,6 +2989,58 @@ mod set_volume_copy {
         create_service_container(service, serde_json::from_value(spec()).unwrap())
             .await
             .container_id
+    }
+
+    #[tokio::test]
+    async fn an_operator_start_of_a_holder_keeps_the_switch_lock_after_its_caller_hangs_up() {
+        let started = Arc::new(tokio::sync::Barrier::new(2));
+        let (data_dir, _store, service, fake, _) =
+            fake_docker_service_built("ployzd-holder-start-dropped", None, Some(started.clone()))
+                .await;
+        let kept = kept_holder(&service, &fake).await;
+        for container in fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            container["State"] = json!({"Status":"exited", "Running":false});
+        }
+        let mut request = Request::new(
+            op::EnsureContainer::into_request(
+                serde_json::from_value(json!({"want": {"state":"running", "rotation":"pending",
+                    "container":{"existing":{"id":kept}}}}))
+                .unwrap(),
+            )
+            .encode()
+            .unwrap(),
+        );
+        request
+            .metadata_mut()
+            .insert(ployz_core::OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        let ensuring = tokio::spawn({
+            let service = service.clone();
+            async move { service.ensure_container(request).await }
+        });
+
+        started.wait().await;
+        ensuring.abort();
+        assert!(ensuring.await.unwrap_err().is_cancelled());
+        assert!(
+            service.switch_mutation.try_lock().is_err(),
+            "the caller hung up and freed the switch lock while the holder's start still ran"
+        );
+
+        started.wait().await;
+        let _freed = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            service.switch_mutation.lock(),
+        )
+        .await
+        .expect("the start ended and freed the switch lock");
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     fn running(fake: &crate::docker::test_support::FakeDocker) -> usize {
