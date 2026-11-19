@@ -800,6 +800,21 @@ pub(super) fn plan_replicated(
     Ok((operations, reservation.hook_machine))
 }
 
+/// The removals of a replicated Service none of whose regions can start a replica: every
+/// Container past its region's count, and every Container outside the regions its counts
+/// name.
+pub(super) fn withdraw(
+    spread: &Spread<'_>,
+    current: &[ServiceContainer],
+    requested: &RequestedServiceSpec,
+    placement: &mut PlacementState,
+) -> Vec<DeployOperation> {
+    let used = spread.left_running(current).into_iter().collect();
+    let mut operations = Vec::new();
+    remove_unused(&mut operations, requested, current, &used, placement);
+    operations
+}
+
 /// What one Machine's copy of a Service becomes, as [`ReplicaEmitter::emit`] writes it.
 enum Replica<'a> {
     /// The Container stays and takes the requested change in place.

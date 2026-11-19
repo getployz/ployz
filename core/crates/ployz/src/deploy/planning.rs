@@ -1653,7 +1653,7 @@ fn plan_one_service<'snapshot>(
     };
     let regions = spread.held_back(current);
     let waiting = (!regions.is_empty()).then(|| {
-        let mut away = away;
+        let mut away = away.clone();
         away.retain(|away| regions.contains_key(&away.region));
         WaitingReplicas {
             service: requested.name.clone(),
@@ -1661,6 +1661,15 @@ fn plan_one_service<'snapshot>(
             error: PlanError::RegionUnmatched { regions: away }.into_rpc_error(),
         }
     });
+    if machines.is_empty() {
+        // Every region the counts name is away, so nothing starts. A replica past a
+        // region's count still goes, since a Server that takes no services can give one up.
+        let operations = placement::withdraw(&spread, current, requested, &mut budget.placement);
+        return match (operations.is_empty(), waiting) {
+            (true, Some(_)) => Err(PlanError::RegionUnmatched { regions: away }),
+            (_, waiting) => Ok((operations, waiting)),
+        };
+    }
     let reservation = budget.placement.take_reservation(&requested.name);
     if matches!(requested.mode, ServiceMode::Replicated { .. }) && reservation.is_none() {
         budget
@@ -1793,8 +1802,8 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
 }
 
 /// The Machines a Service's replicas may run on, and the regions among its counts that no
-/// Server can run a replica in now. Those regions wait only when the Deploy starts what it
-/// can and some other region has a Server; otherwise the Service is refused.
+/// Server can run a replica in now. Those regions wait when the Deploy starts what it can,
+/// whether or not another region has a Server, and otherwise the Service is refused.
 fn spread_machines<'snapshot>(
     spread: &Spread<'_>,
     namespace: &Namespace,
@@ -1814,7 +1823,7 @@ fn spread_machines<'snapshot>(
             Err(error) => return Err(error),
         }
     }
-    if unmatched.is_empty() || (options.mode().blocks_unmountable() && !machines.is_empty()) {
+    if unmatched.is_empty() || options.mode().blocks_unmountable() {
         Ok((machines, unmatched))
     } else {
         Err(PlanError::RegionUnmatched { regions: unmatched })
@@ -1966,17 +1975,28 @@ fn storage_eligibility_warnings(
         .collect()
 }
 
-fn region(spec: &RequestedServiceSpec) -> Option<Region> {
-    let mut by_count = spec.regions.keys();
-    let only = match (by_count.next(), by_count.next()) {
-        (Some(region), None) => Some(region.clone()),
-        _ => None,
-    };
-    spec.placement
+/// The regions the configuration keeps `spec` in: the one its placement names, else those
+/// its counts name. `None` when it names none, so a Server in any region will do.
+fn configured_regions(spec: &RequestedServiceSpec) -> Option<BTreeSet<Region>> {
+    match spec
+        .placement
         .constraints
         .iter()
         .find_map(Region::required_by)
-        .or(only)
+    {
+        Some(region) => Some(BTreeSet::from([region])),
+        None => (!spec.regions.is_empty()).then(|| spec.regions.keys().cloned().collect()),
+    }
+}
+
+/// The one region the configuration keeps `spec` in.
+fn region(spec: &RequestedServiceSpec) -> Option<Region> {
+    only_region(&configured_regions(spec)?)
+}
+
+fn only_region(regions: &BTreeSet<Region>) -> Option<Region> {
+    let mut regions = regions.iter();
+    regions.next().filter(|_| regions.next().is_none()).cloned()
 }
 
 fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> PlanError {

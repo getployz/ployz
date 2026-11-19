@@ -1590,9 +1590,7 @@ fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
         PlanOptions::default(),
     );
     let mut by_name = full.clone();
-    by_name.options.selected = vec![ServiceAttempt {
-        name: solo.name.clone(),
-    }];
+    by_name.options.selected = vec![ServiceAttempt { name: solo.name }];
 
     for (case, regions, holder_has_region) in [
         ("holder in no region", ["syd", "fsn"], false),
@@ -1605,12 +1603,12 @@ fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
             .zip(regions)
             .map(|(machine, region)| in_region(machine, region))
             .collect();
+        if !holder_has_region {
+            snapshot.machines.last_mut().unwrap().machine.labels.clear();
+        }
         let mut third = in_region(machine('3', "third"), "fsn");
         third.storage = Some(MachineStorageObservation::Ready);
         snapshot.machines.push(third);
-        if !holder_has_region {
-            snapshot.machines[1].machine.labels.clear();
-        }
         for (scope, intent, started) in [
             ("full", &full, names(&["free"])),
             ("by name", &by_name, names(&[])),
@@ -1645,7 +1643,7 @@ fn a_refusal_of_a_shared_volume_leaves_out_a_service_naming_no_region() {
     let worker = sharing("worker", "syd", &["data"]);
     let free = sharing_anywhere("free", &["data"]);
     let mut snapshot = shared_data_snapshot();
-    snapshot.machines[1].machine.labels.clear();
+    snapshot.machines.last_mut().unwrap().machine.labels.clear();
     let mut third = in_region(machine('3', "third"), "fsn");
     third.storage = Some(MachineStorageObservation::Ready);
     snapshot.machines.push(third);

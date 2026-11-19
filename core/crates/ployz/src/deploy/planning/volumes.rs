@@ -20,6 +20,10 @@ use crate::deploy::{
 
 use super::placement::PlacementReservations;
 
+/// A Service that mounts a Volume, with the regions its configuration keeps it in. None
+/// when it names no region.
+type Mounter = (ServiceName, Option<BTreeSet<Region>>);
+
 /// Owns volume evidence and assignments for one observer-relative Deploy.
 ///
 /// Every selected location carries its full Volume definition. Locality, budget
@@ -33,10 +37,10 @@ pub(super) struct VolumePlan<'snapshot> {
     /// Deployed Volumes the applied Services mount. A lost one an unselected Service
     /// mounts leaves this Deploy alone.
     deployed_volumes: BTreeSet<DockerVolumeName>,
-    /// Every Service of the target that mounts each Volume, with the one region it is
-    /// kept in, by name. A Deploy of some Services leaves the rest where they are, so
-    /// they still decide where a Volume they mount can be.
-    mounted_by: BTreeMap<DockerVolumeName, Vec<(ServiceName, Option<Region>)>>,
+    /// Every Service of the target that mounts each Volume, by name. A Deploy of some
+    /// Services leaves the rest where they are, so they still decide where a Volume they
+    /// mount can be.
+    mounted_by: BTreeMap<DockerVolumeName, Vec<Mounter>>,
     operator: Operator,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
@@ -99,7 +103,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                         .iter()
                         .map(|volume_use| {
                             let service = volume_use.service;
-                            (service.name.clone(), super::region(service))
+                            (service.name.clone(), super::configured_regions(service))
                         })
                         .collect::<Vec<_>>();
                     services.sort();
@@ -160,28 +164,24 @@ impl<'snapshot> VolumePlan<'snapshot> {
             });
     }
 
-    /// Whether a Service kept outside `region`, or in no one region, mounts `volume` too.
-    /// No one Server suits such a Volume: wherever it is, one of its Services can't mount it.
+    /// Whether a Service whose configuration leaves `region` out mounts `volume` too. It
+    /// and a Service kept in `region` can never share a Server, so no one Server suits the
+    /// Volume. A Service that names no region, or `region` among others, can share one, and
+    /// only the Servers' labels stand in the way.
     fn kept_elsewhere(&self, volume: &DockerVolumeName, region: &Region) -> bool {
         self.mounted_by.get(volume).is_some_and(|services| {
-            services
-                .iter()
-                .any(|(_, kept_in)| kept_in.as_ref() != Some(region))
+            services.iter().any(|(_, kept_in)| {
+                kept_in
+                    .as_ref()
+                    .is_some_and(|kept_in| !kept_in.contains(region))
+            })
         })
     }
 
-    /// Whether a Service kept in one region other than `region` mounts `volume` too.
-    fn kept_in_another_region(&self, volume: &DockerVolumeName, region: &Region) -> bool {
-        self.mounted_by.get(volume).is_some_and(|services| {
-            services
-                .iter()
-                .any(|(_, kept_in)| kept_in.as_ref().is_some_and(|kept_in| kept_in != region))
-        })
-    }
-
-    /// Refuse `spec` when a Volume it mounts is shared with a Service kept in another
-    /// region and can't be in both. A Server joining or coming back changes none of
-    /// that, so this is settled before anything asks whether its region has one.
+    /// Refuse `spec` when a Volume it mounts is shared with a Service whose configuration
+    /// keeps it away from `spec`'s region. A Server joining, coming back or taking a label
+    /// changes none of that, so this is settled before anything asks whether its region has
+    /// one.
     ///
     /// # Errors
     /// Returns the Volume's refusal.
@@ -1065,7 +1065,7 @@ fn shared_elsewhere(
             // Nothing says which region a Volume not made yet belongs to, so it is held
             // by none while its Services are kept in different ones.
             Ok(VolumeLocality::Absent) => {
-                if plan.kept_in_another_region(name, region) {
+                if plan.kept_elsewhere(name, region) {
                     held.get_or_insert((name, None));
                 }
                 continue;
@@ -1094,7 +1094,15 @@ fn shared_elsewhere(
     let Some(volume_region) = volume_region else {
         return Some(PlanError::VolumeSharedAcrossRegions {
             volume,
-            services: plan.mounted_by.get(name).cloned().unwrap_or_default(),
+            services: plan
+                .mounted_by
+                .get(name)
+                .into_iter()
+                .flatten()
+                .filter_map(|(service, kept_in)| {
+                    Some((service.clone(), super::only_region(kept_in.as_ref()?)))
+                })
+                .collect(),
         });
     };
     if shared.is_some_and(|shared| shared.is_empty()) {

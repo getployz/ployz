@@ -2044,7 +2044,11 @@ fn a_service_never_started_in_a_region_that_takes_no_services_still_waits() {
     };
     assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
     assert_eq!(blocked.error.message, "first takes no services");
-    assert!(operations(&preview).is_empty(), "{:?}", operations(&preview));
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
 }
 
 fn runner_options() -> PlanOptions {
