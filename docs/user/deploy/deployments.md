@@ -194,7 +194,8 @@ carries the approval but can't change what it covers. A server logs each one, su
 A server remembers the last 32 versions of each service it ran under a signature.
 Restarting one, running more or fewer copies of it, or rolling back to it on that server
 needs no new signature, from the dashboard or the CLI. A version stops counting when you
-remove every device that signed it.
+remove every device that signed it. One deployed from the server's own terminal keeps
+counting.
 
 Every image runs by digest, since a tag names whatever the registry holds under it now. For
 a tag on a public registry, `ployz deploy` reads the digest from the registry itself and

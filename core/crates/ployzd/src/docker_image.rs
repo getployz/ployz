@@ -153,27 +153,45 @@ async fn require_public_registry(image: &str) -> Result<(), UnsignedImage> {
     Ok(())
 }
 
+/// Whether `ip` is an address anyone on the internet reaches. Anything this cannot
+/// place there counts as private.
 fn public(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ip) => {
+            let [first, second, third, _] = ip.octets();
             // 100.64.0.0/10, the shared range tailnets use.
-            let shared = ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 64;
-            !(ip.is_loopback()
+            let shared = first == 100 && second & 0xc0 == 64;
+            // 192.0.0.0/24 for protocol use, and 198.18.0.0/15 for benchmarks.
+            let reserved =
+                (first, second, third) == (192, 0, 0) || (first == 198 && second & 0xfe == 18);
+            // 0.0.0.0/8 is this network; 224.0.0.0/3 is multicast and what follows it.
+            !(first == 0
+                || first >= 224
+                || ip.is_loopback()
                 || ip.is_private()
                 || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || shared)
+                || ip.is_documentation()
+                || shared
+                || reserved)
         }
-        std::net::IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
-            Some(mapped) => public(std::net::IpAddr::V4(mapped)),
-            None => {
-                !(ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_unique_local()
-                    || ip.is_unicast_link_local())
+        std::net::IpAddr::V6(ip) => {
+            let embedded = |high: u16, low: u16| {
+                let [a, b] = high.to_be_bytes();
+                let [c, d] = low.to_be_bytes();
+                public(std::net::Ipv4Addr::new(a, b, c, d).into())
+            };
+            match (ip.to_ipv4_mapped(), ip.segments()) {
+                (Some(mapped), _) => public(mapped.into()),
+                // NAT64 and 6to4 carry the IPv4 address the packet ends up at.
+                (None, [0x64, 0xff9b, 0, 0, 0, 0, high, low] | [0x2002, high, low, ..]) => {
+                    embedded(high, low)
+                }
+                // Every public IPv6 address is in 2000::/3. 2001:db8::/32 is for documents.
+                (None, [first, second, ..]) => {
+                    first & 0xe000 == 0x2000 && (first, second) != (0x2001, 0xdb8)
+                }
             }
-        },
+        }
     }
 }
 
@@ -194,7 +212,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_unsigned_image_comes_only_from_a_registry_at_a_public_address() {
-        for image in ["nginx:1.29", "library/nginx", "203.0.113.7/api:1"] {
+        for image in [
+            "nginx:1.29",
+            "library/nginx",
+            "8.8.8.8/api:1",
+            "[2606:4700::1111]:5000/api",
+            "[64:ff9b::808:808]:5000/api",
+        ] {
             require_public_registry(image).await.unwrap();
         }
         for image in [
@@ -206,6 +230,17 @@ mod tests {
             "[::1]:5000/api",
             "[fd00::1]:7572/api",
             "[::ffff:10.0.0.5]:5000/api",
+            "0.1.2.3/api",
+            "192.0.0.8/api",
+            "198.18.0.1/api",
+            "203.0.113.7/api",
+            "240.0.0.1/api",
+            "[64:ff9b::a00:5]:5000/api",
+            "[64:ff9b:1::a00:5]:5000/api",
+            "[2002:a00:5::1]:5000/api",
+            "[fec0::1]:5000/api",
+            "[ff02::1]:5000/api",
+            "[::10.0.0.5]:5000/api",
         ] {
             assert!(
                 matches!(
