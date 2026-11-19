@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { desiredReplicas, replicaChange, replicaRows, replicaTotal, replicaValue } from "./replica-rows";
+import { desiredReplicas, replicaChange, replicaRows, replicaValue } from "./replica-rows";
 
 describe("replica rows", () => {
   it("starts a bare count in the Environment's region, and in any region with none", () => {
@@ -45,8 +45,8 @@ describe("replica rows", () => {
   });
 
   it("totals every region, which a Volume's writers count by", () => {
-    expect(replicaTotal({ fsn: 2, syd: 1 })).toBe(3);
-    expect(replicaTotal(2)).toBe(2);
+    expect(desiredReplicas({ fsn: 2, syd: 1 })).toBe(3);
+    expect(desiredReplicas(2)).toBe(2);
   });
 
   it("words a change for Details with the regions it runs in on both sides", () => {

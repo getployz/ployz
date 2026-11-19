@@ -78,7 +78,7 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
 /** The Environment's region on each side of a comparison: before it, then after. A bare replica count runs in them. */
 export type Homes = readonly [before: string | null, after: string | null];
 
-const homesOf = (change: DiffView["region"], home: string | null): Homes => (change ? [change.before, change.after] : [home, home]);
+export const homesOf = (change: DiffView["region"], home: string | null): Homes => (change ? [change.before, change.after] : [home, home]);
 
 /**
  * The Store's changes as the bottom bar's Details groups them: one group per changed node, one row per changed Setting.

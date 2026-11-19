@@ -43,9 +43,6 @@ export function replicaValue(rows: readonly ReplicaRow[], home: string | null, o
   return Object.fromEntries(rows.flatMap(({ region, count }) => (region === null ? [] : [[region, count]])));
 }
 
-/** How many replicas a value runs in all. */
-export const replicaTotal = (value: JsonValue, home: string | null = null) => replicaRows(value, home).reduce((sum, row) => sum + row.count, 0);
-
 /** How many replicas a Service's `replicas` asks for across its regions. Null when it doesn't say. */
 export function desiredReplicas(value: JsonValue | undefined): number | null {
   if (value === undefined) return null;

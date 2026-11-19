@@ -52,7 +52,7 @@ export function regionName(label: string | null, regions: readonly NamedRegion[]
 /** A region an Environment or a Service can run in: `key` null is any region, the one that names none. */
 export type RegionOption = { readonly key: string | null; readonly name: string; readonly servers: readonly string[] };
 
-export const ANY_REGION = "Any region";
+const ANY_REGION = "Any region";
 
 /**
  * Any region, then every region there is with its Servers: each a Server is in, each given a name, and each of `kept`.

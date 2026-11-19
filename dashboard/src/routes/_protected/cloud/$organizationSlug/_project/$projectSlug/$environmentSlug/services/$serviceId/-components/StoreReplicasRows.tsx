@@ -85,7 +85,7 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
 export function CappedHint({ params, volume }: {
   params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
   volume: VolumeListing;
-}): ReactNode {
+}) {
   return (
     <>
       Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}

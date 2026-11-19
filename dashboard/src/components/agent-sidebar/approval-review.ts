@@ -1,6 +1,6 @@
 import type { DiffView } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
-import { changeGroups, regionName, type Homes } from "#/modules/config-store/store-deployments";
+import { changeGroups, homesOf, regionName, type Homes } from "#/modules/config-store/store-deployments";
 
 /** `name` is a Setting, a variable key when `variable`, or what happened to the node; `values` its machine values. */
 export type ChangeLine = { key: string; mark: "+" | "~" | "−"; node: string; name: string; variable: boolean; values: string };
@@ -26,12 +26,6 @@ function changeLines(changes: DiffView["changes"], homes: Homes, effects: Approv
   });
 }
 
-/**
- * The Environment's region on each side of a comparison the review holds. The review doesn't say the region where
- * neither side changed it, so a bare replica count then reads without one.
- */
-const homesOf = (change: DiffView["region"]): Homes => (change ? [change.before, change.after] : [null, null]);
-
 /** The region change, which no node of `changes` holds. */
 function regionLine(diff: DiffView): ChangeLine[] {
   if (!diff.region) return [];
@@ -49,7 +43,7 @@ export function reviewedChanges(command: string, review: ApprovalReview) {
   if (!("diff" in review)) return { region: [], asked: [], others: [] };
   const { effects, diff } = review;
   const saves = command === "publish" || command === "admit";
-  const asked = saves ? changeLines(diff.draft_changes ?? [], homesOf(diff.draft_region), effects) : [];
+  const asked = saves ? changeLines(diff.draft_changes ?? [], homesOf(diff.draft_region, null), effects) : [];
   const keys = new Set(asked.map((line) => line.key));
-  return { region: regionLine(diff), asked, others: changeLines(diff.changes, homesOf(diff.region), effects).filter((line) => !keys.has(line.key)) };
+  return { region: regionLine(diff), asked, others: changeLines(diff.changes, homesOf(diff.region, null), effects).filter((line) => !keys.has(line.key)) };
 }

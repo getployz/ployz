@@ -1,5 +1,5 @@
 import type { SettingRow, VolumeListing } from "@ployz/sdk";
-import { replicaTotal } from "./replica-rows";
+import { desiredReplicas } from "./replica-rows";
 
 // The Store refuses a second writer unless the Volume allows shared writes; these say so before the user asks, and warn
 // where a Volume allows it, or where writers predate the rule.
@@ -22,7 +22,7 @@ export function mountRefusal(volume: Pick<VolumeListing, "mounts" | "shared_writ
 
 /** A Service's replica count as the next Deploy runs it, across regions: a staged value counts; unknown reads as 1. */
 export function replicaCount(row: Pick<SettingRow, "value" | "default"> | undefined) {
-  return replicaTotal(row?.value ?? row?.default ?? 1);
+  return desiredReplicas(row?.value ?? row?.default ?? 1) ?? 1;
 }
 
 export type VolumeWriter = { service: string; replicas: number };

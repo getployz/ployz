@@ -454,7 +454,6 @@ function StoreOptionalField({ state, name, addLabel, unset }: { state: StoreServ
   );
 }
 
-/** CPU and memory limits: one setting most Services never set, both off by one X. */
 function StoreReplicas({ state, home, capped, oneRegion }: { state: StoreService; home: string | null; capped: ReactNode; oneRegion: boolean }) {
   const row = state.rows.get("replicas");
   const change = state.changes.get("replicas");
@@ -469,6 +468,7 @@ function StoreReplicas({ state, home, capped, oneRegion }: { state: StoreService
   );
 }
 
+/** CPU and memory limits: one setting most Services never set, both off by one X. */
 function StoreResourceLimits({ state }: { state: StoreService }) {
   const configured = isSet(state, "cpuLimit") || isSet(state, "memLimit");
   return (
