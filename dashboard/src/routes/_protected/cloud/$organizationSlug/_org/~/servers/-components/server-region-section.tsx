@@ -1,4 +1,4 @@
-import type { NamedRegion } from "@ployz/sdk";
+import type { NamedRegion, OwnedNamespace } from "@ployz/sdk";
 import { useEffect, useState } from "react";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
@@ -6,8 +6,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, Select
 import { leavingServer, placedServices, unreadEnvironments } from "#/modules/machines/server-move";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 import { regionLabels, regionName, regionOf } from "#/modules/machines/server-regions";
-import { nameNotSaved, useNameRegion, useNewRegions, type OwnedNamespaces } from "#/modules/machines/server-regions.hooks";
-import { serverStatus } from "#/modules/machines/server-status";
+import { nameNotSaved, useNameRegion, useNewRegions, useOwnedNamespaces } from "#/modules/machines/server-regions.hooks";
+import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { RoleGate } from "#/modules/organization/members.queries";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { MoveServerDialog } from "./move-server-dialog";
@@ -17,13 +17,11 @@ const NEW_REGION = "new region";
 
 type Move = { readonly region: string | null; readonly created: NamedRegion | null };
 
-export function ServerRegionSection({ machine, machines, services, owned, regions, organizationSlug, gate }: {
+export function ServerRegionSection({ machine, machines, services, regions, organizationSlug, gate }: {
   machine: RuntimeMachineRecord;
   machines: readonly RuntimeMachineRecord[];
   /** What runs on this Server. */
   services: readonly { readonly identity: string; readonly name: string; readonly namespace: string | null }[];
-  /** The Environments' Namespaces, which say where `services` run: no region change is told before they are read. */
-  owned: OwnedNamespaces;
   /** Undefined until the region names arrive. */
   regions: readonly NamedRegion[] | undefined;
   organizationSlug: string;
@@ -31,6 +29,8 @@ export function ServerRegionSection({ machine, machines, services, owned, region
 }) {
   const policy = useServerPolicy(machine, organizationSlug, "region");
   const nameRegion = useNameRegion(organizationSlug);
+  /** The Environments' Namespaces, which say where `services` run: no region change is told before they are read. */
+  const owned = useOwnedNamespaces(organizationSlug);
   const [naming, setNaming] = useState(false);
   const [draft, setDraft] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -39,22 +39,33 @@ export function ServerRegionSection({ machine, machines, services, owned, region
   const check = useNewRegions(organizationSlug, naming ? [draft] : [], labels)(draft);
   const choices = regions ?? [];
   const label = policy.region;
-  const held = owned.kind === "reading" ? "Reading what runs here…"
-    : owned.kind === "failed" ? "Couldn’t read what runs here. Reload to change the region." : null;
+  const held = owned.shown.kind === "reading" ? "Reading what runs here…"
+    : owned.shown.kind === "failed" ? "Couldn’t read what runs here. Reload to change the region." : null;
+  const shown = owned.shown.kind === "read" ? owned.shown.namespaces : null;
 
-  const placed = owned.kind === "read" ? placedServices(services, owned.namespaces) : [];
-  const unread = unreadEnvironments(placed);
-  const leaving = (region: string | null) => leavingServer(machine.id, region, placed, machines.map((other) => ({
-    id: other.id, name: other.name, region: other.region, acceptsServices: other.acceptsServices, offline: serverStatus(other) === "offline",
-  })));
-  const apply = ({ region, created }: Move) => {
-    if (held !== null) return;
+  const servers = machines.map((other) => ({
+    id: other.id, name: other.name, region: other.region, acceptsServices: other.acceptsServices, reachable: !needsAttention(serverStatus(other)),
+  }));
+  const leaving = (namespaces: readonly OwnedNamespace[], region: string | null) => {
+    const placed = placedServices(services, namespaces);
+    return { rows: leavingServer(machine.id, region, placed, servers), unread: unreadEnvironments(placed) };
+  };
+  /**
+   * Sends a region change, or asks first when it takes Services off the Server and the Move dialog hasn't `confirmed`
+   * it. It goes by what runs here as the read holds it when this runs, since a render can be behind: unless that is a
+   * current answer, and the one a confirmed dialog showed, it sends nothing and answers false.
+   */
+  const submit = ({ region, created }: Move, confirmed: boolean) => {
+    const now = owned.now();
+    if (now.kind !== "read" || (confirmed && now.namespaces !== shown)) return false;
+    const told = leaving(now.namespaces, region);
+    if (!confirmed && told.rows.length + told.unread.length > 0) {
+      setMoving({ region, created });
+      return true;
+    }
     policy.request({ region });
     if (created !== null) nameRegion(created, labels, true).catch((error) => nameNotSaved(created, error));
-  };
-  const move = (asked: Move) => {
-    if (leaving(asked.region).length === 0 && unread.length === 0) apply(asked);
-    else setMoving(asked);
+    return true;
   };
   const choose = (value: string | null) => {
     if (value === NEW_REGION) {
@@ -62,7 +73,7 @@ export function ServerRegionSection({ machine, machines, services, owned, region
       return;
     }
     const region = value === NO_REGION ? null : value;
-    if (region !== label) move({ region, created: null });
+    if (region !== label) submit({ region, created: null }, false);
   };
   const stopNaming = () => {
     setNaming(false);
@@ -71,13 +82,10 @@ export function ServerRegionSection({ machine, machines, services, owned, region
   };
   const create = check.kind === "new" ? { key: check.key, name: draft.trim() } : null;
   const createIn = (region: NamedRegion) => {
-    if (held !== null) {
-      setConfirming(false);
-      return;
-    }
-    move({ region: region.key, created: region });
-    stopNaming();
+    if (submit({ region: region.key, created: region }, false)) stopNaming();
+    else setConfirming(false);
   };
+  const told = moving === null || shown === null ? null : leaving(shown, moving.region);
 
   useEffect(() => {
     if (confirming && create !== null) createIn(create);
@@ -127,15 +135,14 @@ export function ServerRegionSection({ machine, machines, services, owned, region
       <MoveServerDialog
         serverName={machine.name}
         regionName={moving === null ? null : moving.created?.name ?? regionName(moving.region, regions)}
-        rows={moving === null ? [] : leaving(moving.region)}
-        unread={unread}
+        rows={told?.rows ?? []}
+        unread={told?.unread ?? []}
         holdReason={held}
         regions={regions}
         open={moving !== null}
         onOpenChange={(open) => { if (!open) setMoving(null); }}
         onConfirm={() => {
-          if (moving !== null) apply(moving);
-          setMoving(null);
+          if (moving !== null && submit(moving, true)) setMoving(null);
         }}
       />
     </SettingsSection>

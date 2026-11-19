@@ -1,14 +1,14 @@
 import type { ConfigView, OwnedNamespace, NamedRegion } from "@ployz/sdk";
-import { keepPreviousData, useQueries } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, type QueryState } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import type { StoreResult } from "#/modules/config-store/store.contract";
+import type { StoreResult, StoreViewOf } from "#/modules/config-store/store.contract";
 import { queryOf, storeViewOptions, storeViewPrefix } from "#/modules/config-store/store-view.queries";
 import { toast } from "sonner";
 import { isUnauthorized, toErrorMessage } from "#/lib/error-message";
 import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
 import { firstServerRegion } from "#/modules/machines/server-regions";
-import { useServerList } from "#/modules/machines/use-servers";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 /**
  * The Organization's regions with their names: those the Servers' `labels` hold and those given a name. Undefined
@@ -31,30 +31,51 @@ export type OwnedNamespaces =
   | { readonly kind: "failed" }
   | { readonly kind: "read"; readonly namespaces: readonly OwnedNamespace[] };
 
+type NamespacesRead = QueryState<StoreResult<StoreViewOf<{ readonly query: "namespaces" }>>>;
+
 /**
- * The Namespaces the Organization's Environments own, each with the regions its Services run in. Only an answer known to
- * be current is `read`: an unanswered read, one asked again, whether sent or waiting for the network, and one that failed
- * after an earlier answer are not, since what that answer showed may have changed. Each is its own state, never an empty list.
+ * Only an answer known to be current is `read`: an unanswered read, one asked again, whether sent, waiting for the
+ * network or only marked out of date, and one that failed after an earlier answer are not, since what that answer
+ * showed may have changed. Each is its own state, never an empty list.
  */
-export function useOwnedNamespaces(organizationSlug: string): OwnedNamespaces {
-  const scope = useCollectionScope();
-  const [read] = useQueries({ queries: [storeViewOptions(organizationSlug, scope, { query: "namespaces" })] });
-  if (read.isError) return { kind: "failed" };
-  if (read.fetchStatus !== "idle") return { kind: "reading" };
-  if (read.data?.ok && read.data.value.view === "namespaces") return { kind: "read", namespaces: read.data.value.namespaces };
+function ownedNamespaces(read: NamespacesRead | undefined): OwnedNamespaces {
+  if (read?.status === "error") return { kind: "failed" };
+  if (read === undefined || read.fetchStatus !== "idle" || read.isInvalidated) return { kind: "reading" };
+  if (read.data?.ok) return { kind: "read", namespaces: read.data.value.namespaces };
   return read.data !== undefined ? { kind: "failed" } : { kind: "reading" };
 }
 
 /**
+ * The read of the Namespaces the Organization's Environments own. `shown` is the read as this render found it, for what
+ * the page says. `now` asks the read itself when called, for what a write goes by: a read can be asked again between a
+ * render and the click it drew.
+ */
+export type OwnedNamespacesRead = { readonly shown: OwnedNamespaces; readonly now: () => OwnedNamespaces };
+
+export function useOwnedNamespaces(organizationSlug: string): OwnedNamespacesRead {
+  const scope = useCollectionScope();
+  const options = storeViewOptions(organizationSlug, scope, { query: "namespaces" });
+  // `now` reads the query's own state, so every change to it renders, not only the ones in a field this reads.
+  useQueries({ queries: [{ ...options, notifyOnChangeProps: "all" as const }] });
+  const now = () => ownedNamespaces(scope.queryClient.getQueryState(options.queryKey));
+  return { shown: now(), now };
+}
+
+/**
  * The region a new Environment runs in, by the Engine's one rule: the Cluster's first Server's. `settled` waits for the
- * Servers to be read; a list that isn't live is partial, so it pins nothing (null, any region).
+ * first observation. Only a current one pins a region, and a Machine it couldn't read counts as a Server whose region
+ * isn't known, as the Engine counts it. An unread Container changes nothing: the rule reads Machines.
  */
 export type NewEnvironmentRegion = { readonly settled: boolean; readonly region: string | null };
 
+const UNREAD_MACHINE = { subnet: null, joinedAt: null, region: null };
+
 export function useNewEnvironmentRegion(organizationSlug: string): NewEnvironmentRegion {
-  const { state, servers } = useServerList(organizationSlug);
-  if (state === "loading") return { settled: false, region: null };
-  return { settled: true, region: state === "live" ? firstServerRegion(servers.map(({ machine }) => machine)) : null };
+  const runtime = useRuntimeLens(organizationSlug);
+  if (runtime.status === "connecting") return { settled: false, region: null };
+  if (runtime.status !== "observed") return { settled: true, region: null };
+  const unread = Array.from({ length: runtime.unreadMachines }, () => UNREAD_MACHINE);
+  return { settled: true, region: firstServerRegion([...runtime.machines, ...unread]) };
 }
 
 export type NewRegion =

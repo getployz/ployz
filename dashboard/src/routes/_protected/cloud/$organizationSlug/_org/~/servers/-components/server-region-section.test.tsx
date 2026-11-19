@@ -1,25 +1,36 @@
 // @vitest-environment jsdom
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { NamedRegion } from "@ployz/sdk";
+import type { NamedRegion, OwnedNamespace } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
+import type { StoreResult, StoreViewOf } from "#/modules/config-store/store.contract";
 import * as storeFunctions from "#/modules/config-store/store.functions";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { storeViewOptions } from "#/modules/config-store/store-view.queries";
-import { useOwnedNamespaces, type OwnedNamespaces } from "#/modules/machines/server-regions.hooks";
+import type { OwnedNamespaces } from "#/modules/machines/server-regions.hooks";
 import * as policyFunctions from "#/modules/machines/server-policy.functions";
 import { ServerRegionSection } from "./server-region-section";
 
 let requestChange: ReturnType<typeof vi.spyOn>;
 let write: ReturnType<typeof vi.spyOn>;
+/** How the Store answers the page's next read of what runs here. */
+let store: OwnedNamespaces;
+
+const answer = (namespaces: readonly OwnedNamespace[]): StoreResult<StoreViewOf<{ query: "namespaces" }>> =>
+  ({ ok: true, value: { view: "namespaces", namespaces: [...namespaces] } });
+
+const namespacesRead = (owned: OwnedNamespaces) =>
+  owned.kind === "read" ? Promise.resolve(answer(owned.namespaces))
+    : owned.kind === "failed" ? Promise.reject(new Error("offline")) : new Promise(() => {});
 
 beforeEach(() => {
   requestChange = vi.spyOn(policyFunctions, "requestServerPolicyChangeServerFn").mockResolvedValue(undefined);
   write = vi.spyOn(storeFunctions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "region_named", key: "sydney-2", name: "Sydney 2" } } as never);
-  vi.spyOn(storeFunctions, "readStoreViewServerFn").mockImplementation(async ({ data }) => (data.query.query === "new_region" && data.query.name === "FSN"
-    ? { ok: false, refusal: { code: "conflict", message: "Region Falkenstein (fsn) already exists.", details: null } }
-    : { ok: true, value: { view: "new_region", key: "sydney-2" } }) as never);
+  vi.spyOn(storeFunctions, "readStoreViewServerFn").mockImplementation(({ data }) => (data.query.query === "namespaces" ? namespacesRead(store)
+    : Promise.resolve(data.query.query === "new_region" && data.query.name === "FSN"
+      ? { ok: false, refusal: { code: "conflict", message: "Region Falkenstein (fsn) already exists.", details: null } }
+      : { ok: true, value: { view: "new_region", key: "sydney-2" } })) as never);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   Element.prototype.scrollIntoView = () => {};
   Element.prototype.hasPointerCapture = () => false;
@@ -28,6 +39,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  onlineManager.setOnline(true);
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -57,6 +69,10 @@ async function pick(name: string) {
 
 const NONE: OwnedNamespaces = { kind: "read", namespaces: [] };
 
+/**
+ * The Server page's Placement section over a Store that answers `owned` when asked what runs here. An answer is on the
+ * page from the start; a read still out or failed shows as the page first reads.
+ */
 function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS, services = [], owned = NONE }: {
   allowed?: boolean;
   machines?: RuntimeMachineRecord[];
@@ -65,23 +81,44 @@ function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet
   owned?: OwnedNamespaces;
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
-  const view = (read: OwnedNamespaces) => (
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
+  const read = { queryKey: storeViewOptions("acme", scope, { query: "namespaces" }).queryKey, exact: true };
+  store = owned;
+  if (owned.kind === "read") queryClient.setQueryData(read.queryKey, answer(owned.namespaces));
+  render(
     <QueryClientProvider client={queryClient}>
       <ServerRegionSection
         machine={shown}
         machines={machines}
         services={services}
-        owned={read}
         regions={regions}
         organizationSlug="acme"
         gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
       />
-    </QueryClientProvider>
+    </QueryClientProvider>,
   );
-  const page = render(view(owned));
-  return { reads: (read: OwnedNamespaces) => page.rerender(view(read)) };
+  return {
+    /** The Store's answer changes and the page has read it again. */
+    reads: (next: OwnedNamespaces) => {
+      store = next;
+      act(() => { void queryClient.invalidateQueries(read); });
+    },
+    /** The read stops being current, with no render before the next event. */
+    unsettle: (how: Unsettled) => {
+      store = { kind: "reading" };
+      if (how === "waiting for the network") onlineManager.setOnline(false);
+      void queryClient.invalidateQueries(how === "marked out of date" ? { ...read, refetchType: "none" } : read);
+    },
+    /** The Store's newer answer is in hand, with no render before the next event. */
+    answers: (next: readonly OwnedNamespace[]) => {
+      queryClient.setQueryData(read.queryKey, answer(next));
+    },
+  };
 }
+
+const UNSETTLED = ["asked again", "waiting for the network", "marked out of date"] as const;
+type Unsettled = typeof UNSETTLED[number];
 
 it("shows the Server's region by its name, then every region by name, then a way to clear or add one", async () => {
   section(fsn);
@@ -263,13 +300,13 @@ it("names the button after clearing a region, not moving the Server", async () =
   }));
 });
 
-it("holds the region while what runs here is being read, and says when it can't be", () => {
+it("holds the region while what runs here is being read, and says when it can't be", async () => {
   section(vm3, { services: RUNNING, owned: { kind: "reading" } });
   expect(screen.getByText("Reading what runs here…")).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "Region" }).hasAttribute("disabled")).toBe(true);
   cleanup();
   section(vm3, { services: RUNNING, owned: { kind: "failed" } });
-  expect(screen.getByText("Couldn’t read what runs here. Reload to change the region.")).toBeTruthy();
+  expect(await screen.findByText("Couldn’t read what runs here. Reload to change the region.")).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "Region" }).hasAttribute("disabled")).toBe(true);
 });
 
@@ -302,6 +339,7 @@ it("changes nothing from a New region field left open when the read of what runs
   await pick("New region…");
   await screen.findByRole("textbox", { name: "New region" });
   page.reads({ kind: "failed" });
+  await screen.findByText("Couldn’t read what runs here. Reload to change the region.");
   await nameRegion("Sydney 2");
   expect(requestChange).not.toHaveBeenCalled();
   expect(write).not.toHaveBeenCalled();
@@ -319,6 +357,7 @@ it("changes nothing from a New region field while what runs here is read again, 
   expect(requestChange).not.toHaveBeenCalled();
 
   page.reads(READ);
+  await waitFor(() => expect(screen.queryByText("Reading what runs here…")).toBeNull());
   fireEvent.keyDown(screen.getByRole("textbox", { name: "New region" }), { key: "Enter" });
   expect(within(await screen.findByRole("dialog")).getByRole("heading").textContent).toBe("Move server-3 to Sydney 2");
   expect(requestChange).not.toHaveBeenCalled();
@@ -330,7 +369,7 @@ it("holds a Move dialog left open when the read of what runs here then fails", a
   await pick("Sydney");
   const dialog = await screen.findByRole("dialog");
   page.reads({ kind: "failed" });
-  expect(within(dialog).getByText("Couldn’t read what runs here. Reload to change the region.")).toBeTruthy();
+  expect(await within(dialog).findByText("Couldn’t read what runs here. Reload to change the region.")).toBeTruthy();
   const confirm = within(dialog).getByRole("button", { name: "Move server" });
   expect(confirm.hasAttribute("disabled")).toBe(true);
   fireEvent.click(confirm);
@@ -338,41 +377,8 @@ it("holds a Move dialog left open when the read of what runs here then fails", a
   expect(requestChange).not.toHaveBeenCalled();
 });
 
-/** The Server page reading what runs here from the Store, which answers `SHOP` and `BLOG` once. */
-async function livePage(services: typeof RUNNING) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const scope = { queryClient, sessionId: "session", userId: "user" };
-  vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
-  let answered = false;
-  vi.mocked(storeFunctions.readStoreViewServerFn).mockImplementation(({ data }) => {
-    if (data.query.query !== "namespaces") return Promise.resolve({ ok: true, value: { view: "new_region", key: "sydney-2" } }) as never;
-    if (answered) return new Promise(() => {}) as never;
-    answered = true;
-    return Promise.resolve({ ok: true, value: { view: "namespaces", namespaces: [SHOP, BLOG] } }) as never;
-  });
-  function Page() {
-    return (
-      <ServerRegionSection machine={vm3} machines={withDefaultPeer} services={services} owned={useOwnedNamespaces("acme")}
-        regions={REGIONS} organizationSlug="acme" gate={{ allowed: true, reason: undefined }} />
-    );
-  }
-  render(<QueryClientProvider client={queryClient}><Page /></QueryClientProvider>);
-  await waitFor(() => expect(screen.queryByText("Reading what runs here…")).toBeNull());
-  const filters = { queryKey: storeViewOptions("acme", scope, { query: "namespaces" }).queryKey, exact: true };
-  return {
-    unsettle: (how: "asked again" | "waiting for the network" | "marked out of date") => {
-      if (how === "waiting for the network") onlineManager.setOnline(false);
-      void queryClient.invalidateQueries(how === "marked out of date" ? { ...filters, refetchType: "none" } : filters);
-    },
-  };
-}
-
-const UNSETTLED = ["asked again", "waiting for the network", "marked out of date"] as const;
-
-afterEach(() => onlineManager.setOnline(true));
-
 it.each(UNSETTLED)("changes nothing from a region picked as what runs here is %s, and says it is reading", async (how) => {
-  const page = await livePage([]);
+  const page = section(vm3, { owned: READ, machines: withDefaultPeer });
   fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
   const option = await screen.findByRole("option", { name: "Sydney" });
   fireEvent.pointerEnter(option, { pointerType: "mouse" });
@@ -386,7 +392,7 @@ it.each(UNSETTLED)("changes nothing from a region picked as what runs here is %s
 });
 
 it.each(UNSETTLED)("changes nothing from a New region name confirmed as what runs here is %s, and keeps the name", async (how) => {
-  const page = await livePage([]);
+  const page = section(vm3, { owned: READ, machines: withDefaultPeer });
   await pick("New region…");
   const input = await screen.findByRole("textbox", { name: "New region" });
   fireEvent.change(input, { target: { value: "Sydney 2" } });
@@ -404,7 +410,7 @@ it.each(UNSETTLED)("changes nothing from a New region name confirmed as what run
 });
 
 it.each(UNSETTLED)("changes nothing from a Move dialog confirmed as what runs here is %s, and keeps it open", async (how) => {
-  const page = await livePage(RUNNING);
+  const page = section(vm3, { services: RUNNING, owned: READ, machines: withDefaultPeer });
   await pick("Sydney");
   const dialog = await screen.findByRole("dialog");
   const confirm = within(dialog).getByRole("button", { name: "Move server" });
@@ -414,4 +420,35 @@ it.each(UNSETTLED)("changes nothing from a Move dialog confirmed as what runs he
   expect(requestChange).not.toHaveBeenCalled();
   expect(await within(dialog).findByText("Reading what runs here…")).toBeTruthy();
   expect(confirm.hasAttribute("disabled")).toBe(true);
+});
+
+it("asks before a move by the answer in hand when the region is picked, though the page still shows an older one", async () => {
+  const page = section(vm3, { services: RUNNING.slice(0, 1), owned: { kind: "read", namespaces: [{ ...SHOP, region: "syd" }] }, machines: withDefaultPeer });
+  fireEvent.click(screen.getByRole("combobox", { name: "Region" }));
+  const option = await screen.findByRole("option", { name: "Sydney" });
+  fireEvent.pointerEnter(option, { pointerType: "mouse" });
+  fireEvent.pointerMove(option, { pointerType: "mouse" });
+  fireEvent.mouseMove(option);
+
+  page.answers([SHOP]);
+  fireEvent.click(option);
+  expect(requestChange).not.toHaveBeenCalled();
+  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/production→ server-6"]);
+});
+
+it("changes nothing from a Move dialog confirmed over an answer newer than the one it shows, and shows the newer one", async () => {
+  const page = section(vm3, { services: RUNNING, owned: { kind: "read", namespaces: [SHOP] }, machines: withDefaultPeer });
+  await pick("Sydney");
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getAllByRole("listitem")).toHaveLength(2);
+
+  page.answers([SHOP, BLOG]);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Move server" }));
+  expect(requestChange).not.toHaveBeenCalled();
+  await waitFor(() => expect(within(dialog).getAllByRole("listitem")).toHaveLength(3));
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Move server" }));
+  await waitFor(() => expect(requestChange).toHaveBeenCalledWith({
+    data: { organizationSlug: "acme", machineId: "3".repeat(32), change: { region: "syd" } },
+  }));
 });

@@ -67,7 +67,7 @@ export function unreadEnvironments(placed: readonly Placed[]): string[] {
  * region leaves when `to` isn't it. A Service that counts replicas by region leaves too when the Server holds the
  * replica of the region it is in now, which it stops doing once `to` is another, though `to` is counted as well. Region
  * keys compare without case. A Deploy places a Service only when each of its regions has a Server that takes Services
- * and is not offline, this Server counting in `to`: then it moves to the other such Servers, else it waits.
+ * and is `reachable`, this Server counting in `to`: then it moves to the other such Servers, else it waits.
  */
 export function leavingServer(
   serverId: string,
@@ -78,13 +78,14 @@ export function leavingServer(
     readonly name: string;
     readonly region: string | null;
     readonly acceptsServices: boolean;
-    readonly offline: boolean;
+    /** A Deploy asks it: it reads up or suspect and its daemon answers. The planner places nothing on the rest. */
+    readonly reachable: boolean;
   }[],
 ): Leaving[] {
   const here = to?.toLowerCase();
   const from = servers.find(({ id }) => id === serverId)?.region?.toLowerCase();
   const after = servers
-    .filter((server) => server.acceptsServices && !server.offline)
+    .filter((server) => server.acceptsServices && server.reachable)
     .map(({ id, name, region }) => ({ id, name, region: id === serverId ? here : region?.toLowerCase() }));
   return placed.flatMap((item): Leaving[] => {
     const regions = item.regions.map((region) => region.toLowerCase());

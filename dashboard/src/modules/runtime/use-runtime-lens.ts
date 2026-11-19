@@ -29,6 +29,8 @@ export function useRuntimeLens(organizationSlug: string) {
     status,
     error,
     incomplete: statusRows[0] ? isIncompleteObservation(statusRows[0].incompleteIds) : false,
+    /** How many Machines the observation named and couldn't read, whatever else went unread. */
+    unreadMachines: statusRows[0]?.incompleteIds.machines.length ?? 0,
     /** When the evidence shown was current; kept when the connection drops, null before any. */
     observedAt: statusRows[0]?.observedAt ?? null,
     /** Each managed Volume copy the Servers reported, with its role. */

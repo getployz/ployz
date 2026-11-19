@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
 import { leavingServer, placedServices, unreadEnvironments } from "./server-move";
 
-const server = (id: string, name: string, region: string, extra: { acceptsServices?: boolean; offline?: boolean } = {}) =>
-  ({ id, name, region, acceptsServices: true, offline: false, ...extra });
+const server = (id: string, name: string, region: string, extra: { acceptsServices?: boolean; reachable?: boolean } = {}) =>
+  ({ id, name, region, acceptsServices: true, reachable: true, ...extra });
 const servers = [
   server("1", "np1-vm-1", "default"),
   server("2", "np1-vm-2", "default"),
@@ -102,7 +102,7 @@ it("lists a Service that counts replicas in both the region a Server leaves and 
 });
 
 it("leaves out an offline Server as a place a Service can go", () => {
-  const down = [server("1", "np1-vm-1", "default", { offline: true }), server("2", "np1-vm-2", "default"), server("6", "np1-vm-3", "default")];
+  const down = [server("1", "np1-vm-1", "default", { reachable: false }), server("2", "np1-vm-2", "default"), server("6", "np1-vm-3", "default")];
   expect(leavingServer("2", "syd", [service("web", "default")], down)).toEqual([{ ...service("web", "default"), next: "moves", to: ["np1-vm-3"], searched: ["default"] }]);
   expect(leavingServer("2", "syd", [service("web", "default")], down.slice(0, 2))).toEqual([{ ...service("web", "default"), next: "waits", empty: ["default"] }]);
 });

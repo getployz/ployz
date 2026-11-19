@@ -28,7 +28,7 @@ function openServerPage() {
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const shown = renderHook(() => useOwnedNamespaces("acme"), { wrapper });
   const refresh = () => act(() => { void queryClient.invalidateQueries({ queryKey: storeViewPrefix("acme") }); });
-  return { reads, kind: () => shown.result.current.kind, refresh };
+  return { reads, kind: () => shown.result.current.shown.kind, now: () => shown.result.current.now().kind, refresh };
 }
 
 it("holds the picker while Environments' Namespaces are read again, and when that read fails", async () => {
