@@ -1320,7 +1320,7 @@ impl LocalMachine {
                 });
             }
             ContainerStep::CreateAndStart(new) => {
-                self.create_and_start(new, fence, admitted.ok_or_else(unadmitted)?)
+                self.create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
                     .await?
             }
             ContainerStep::Start(id) => match fence {
@@ -1457,9 +1457,11 @@ impl LocalMachine {
         new: NewContainer,
         fence: Option<StartFence>,
         admitted: AdmittedSpec,
+        switch: Option<SwitchGuard>,
     ) -> Result<Option<ContainerRefusal>, Error> {
         let outcome = self
             .finish_mutation(move |local| async move {
+                let _switch = switch;
                 let created = local
                     .create_container_admitted(CreationFacts {
                         kind: new.slot.kind,
@@ -1760,20 +1762,19 @@ pub(super) type SwitchGuard = tokio::sync::OwnedMutexGuard<()>;
 /// Whether `step` starts a Container, the one `now` observes, that mounts a Provisioned
 /// Volume.
 fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
-    let (ContainerStep::Start(_), ContainerNow::Present(observed)) = (step, now) else {
-        return false;
+    let spec = match (step, now) {
+        (ContainerStep::Start(_), ContainerNow::Present(observed)) => {
+            observed.resolved_spec.to_requested()
+        }
+        (ContainerStep::CreateAndStart(new), _) => new.resolved_spec.to_requested(),
+        _ => return false,
     };
-    observed
-        .resolved_spec
-        .to_requested()
-        .volume_graph()
-        .mounted_volumes()
-        .any(|volume| {
-            matches!(
-                volume.source.kind(),
-                ployz_core::RawVolumeSource::Provisioned { .. }
-            )
-        })
+    spec.volume_graph().mounted_volumes().any(|volume| {
+        matches!(
+            volume.source.kind(),
+            ployz_core::RawVolumeSource::Provisioned { .. }
+        )
+    })
 }
 
 fn plan_container(
