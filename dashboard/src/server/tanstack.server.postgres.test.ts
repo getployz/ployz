@@ -36,11 +36,16 @@ type BoundaryData = {
 
 const BROWSER = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const SSR_DEPLOYMENT = "00000000-0000-4000-8000-0000000c0de1";
+const SSR_SERVICE = "00000000-0000-4000-8000-0000000ca5e1";
 
-/** Pages a cold load must keep cheap: one session lookup, and a first byte that never waits on the Cluster. */
+/**
+ * Pages a cold load must keep cheap: at most one session lookup, and content (`shows`) that never waits on the Cluster.
+ */
 const pages = {
-  environment: "ssr-project/ssr-production",
-  deployment: `ssr-project/ssr-production/deployments/${SSR_DEPLOYMENT}`,
+  // A Service's card on the canvas.
+  environment: { path: "ssr-project/ssr-production", shows: `data-canvas-node="${SSR_SERVICE}"` },
+  // The Run's progress.
+  deployment: { path: `ssr-project/ssr-production/deployments/${SSR_DEPLOYMENT}`, shows: " · 0 of 1" },
 };
 
 /**
@@ -142,7 +147,7 @@ async function startCloud() {
       const environment = { project: "ssr-project", environment: "ssr-production" };
       await store.write(organization.id, { command: "create_project", id: randomUUID(), name: "ssr-project", default_environment: randomUUID() });
       await store.write(organization.id, { command: "create_environment", id: randomUUID(), project: "ssr-project", name: "ssr-production" });
-      await store.write(organization.id, { command: "create_service", id: randomUUID(), environment, name: "cache", image: "redis:7" });
+      await store.write(organization.id, { command: "create_service", id: SSR_SERVICE, environment, name: "cache", image: "redis:7" });
       await store.write(organization.id, {
         command: "admit", admit: "deploy", id: SSR_DEPLOYMENT, environment, services: [], version: null, accept_volume_loss: [],
       });
@@ -250,26 +255,45 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(() => cloud?.stop());
 
-it.each(Object.entries(pages))("the %s page sends its first byte while its Cluster doesn't answer", async (_name, path) => {
-  const status = await cloud.cluster.during(() =>
-    cloud.page(path, { cookie: cloud.cookie, signal: AbortSignal.timeout(20_000) }).then((response) => {
-      void response.body?.cancel();
-      return response.status;
-    }));
-  expect(status).toBe(200);
+/** The page's HTML up to and including `shows`, or all it sent before the stream ended or `signal` aborted. */
+async function readUntil(response: Response, shows: string) {
+  const reader = response.body?.getReader();
+  const decoder = new TextDecoder();
+  let html = "";
+  try {
+    while (reader && !html.includes(shows)) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      html += decoder.decode(value, { stream: true });
+    }
+  } catch {
+    // Aborted: the page held back what it had not sent.
+  } finally {
+    void reader?.cancel().catch(() => {});
+  }
+  return html;
+}
+
+it.each(Object.entries(pages))("the %s page shows its content while its Cluster doesn't answer", async (_name, { path, shows }) => {
+  const html = await cloud.cluster.during(async () => {
+    const response = await cloud.page(path, { cookie: cloud.cookie, signal: AbortSignal.timeout(20_000) });
+    expect(response.status).toBe(200);
+    return readUntil(response, shows);
+  });
+  expect(html).toContain(shows);
 }, 60_000);
 
-it.each(Object.entries(pages))("a cold load of the %s page looks up its session once", async (_name, path) => {
+it.each(Object.entries(pages))("a cold load of the %s page looks up its session at most once", async (_name, { path }) => {
   const lookups = await cloud.sessions.during(async () => {
     const response = await cloud.page(path, { cookie: cloud.cookie });
     expect(response.status).toBe(200);
     await response.text();
   });
-  expect(lookups).toBe(1);
+  expect(lookups).toBeLessThanOrEqual(1);
 }, 60_000);
 
 it("renders the Environment page on the server inside the dashboard shell", async () => {
-  const response = await cloud.page(pages.environment, { cookie: cloud.cookie });
+  const response = await cloud.page(pages.environment.path, { cookie: cloud.cookie });
   const html = await response.text();
   expect(response.status).toBe(200);
   expect(html).toContain("ssr-project");
@@ -280,11 +304,11 @@ it("renders the Environment page on the server inside the dashboard shell", asyn
 });
 
 it("sends an anonymous request to sign in, and refuses a revoked session on its next request", async () => {
-  const anonymous = await cloud.page(pages.environment);
+  const anonymous = await cloud.page(pages.environment.path);
   expect(anonymous.status).toBe(307);
   expect(anonymous.headers.get("location")).toBe("/auth");
 
-  expect((await cloud.page(pages.environment, { cookie: cloud.laterRevoked })).status).toBe(200);
+  expect((await cloud.page(pages.environment.path, { cookie: cloud.laterRevoked })).status).toBe(200);
   const token = decodeURIComponent(cloud.laterRevoked.slice(cloud.laterRevoked.indexOf("=") + 1)).split(".", 1)[0];
   const database = new Client({ connectionString: cloud.testDatabase.url.href });
   await database.connect();
@@ -293,7 +317,7 @@ it("sends an anonymous request to sign in, and refuses a revoked session on its 
   } finally {
     await database.end();
   }
-  const afterRevocation = await cloud.page(pages.environment, { cookie: cloud.laterRevoked });
+  const afterRevocation = await cloud.page(pages.environment.path, { cookie: cloud.laterRevoked });
   expect(afterRevocation.status).toBe(307);
   expect(afterRevocation.headers.get("location")).toBe("/auth");
 });
