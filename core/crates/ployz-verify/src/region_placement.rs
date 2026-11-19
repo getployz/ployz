@@ -10,7 +10,7 @@
 //! are checked as written. Three pieces are copies, and drift unless kept in step:
 //!
 //! - lowering a Service's counts and the Environment's region into its spec, as
-//!   `ployz_core::config::lowering` does (lowering.rs, the `placement` and `regions` fields);
+//!   `lower_snapshot` in ployz-core config/lowering.rs does (its `placement` and `regions`);
 //! - the Store's rule that a Service with a Volume counts replicas in one region
 //!   (ployz-store rules.rs, `VolumeInSeveralRegions`), by never offering such counts;
 //! - the Store's record of the Deploy: each Service's node outcome (`node_outcomes` in
