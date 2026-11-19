@@ -199,6 +199,10 @@ A smaller count still removes replicas there: going from `{"fsn":1,"syd":2}` to
 `{"fsn":1,"syd":1}` removes one `syd` replica while `syd-1` takes no services. A replica on the
 old version goes first.
 
+A server that loses its `region` label keeps its replicas while its region waits, up to the
+region's count. Put the label back and the next deploy changes nothing. Replicas in a region you
+took out of the counts stay the same way, until the waiting region starts.
+
 ## Good to know
 
 - **One server in a region holds every replica.** Ployz spreads replicas over the region's

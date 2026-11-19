@@ -578,23 +578,42 @@ impl<'a> Spread<'a> {
     }
 
     /// The Containers the waiting regions keep as they are: in each, as many as its count,
-    /// those nearest this Deploy's version first. A Server that can't start a replica can
-    /// still give one up, so a Container past the count is removed like any other.
+    /// those nearest this Deploy's version first. A Container on a Server in none of the
+    /// counted regions counts toward a waiting region, after that region's own, so a
+    /// Server that loses its label gives up no replica. A Container past the count is
+    /// removed like any other.
     fn left_running(&self, current: &[ServiceContainer]) -> Vec<ContainerId> {
-        self.waiting
+        let counted = |machine: &MachineId| {
+            self.regions
+                .iter()
+                .chain(&self.waiting)
+                .any(|share| share.labelled.contains(machine))
+        };
+        let mut spare = current
             .iter()
-            .flat_map(|share| {
-                let mut held = current
-                    .iter()
-                    .map(ServiceContainer::as_observation)
-                    .filter(|observation| share.labelled.contains(&observation.machine_id))
-                    .collect::<Vec<_>>();
-                held.sort_by_key(|observation| std::cmp::Reverse(self.standing(observation)));
-                held.into_iter()
-                    .take(share.count)
-                    .map(|observation| observation.container_id)
-            })
-            .collect()
+            .map(ServiceContainer::as_observation)
+            .filter(|observation| !counted(&observation.machine_id))
+            .collect::<Vec<_>>();
+        let mut kept = Vec::new();
+        for share in &self.waiting {
+            let mut held = current
+                .iter()
+                .map(ServiceContainer::as_observation)
+                .filter(|observation| share.labelled.contains(&observation.machine_id))
+                .map(|observation| (observation, true))
+                .chain(spare.iter().map(|observation| (*observation, false)))
+                .collect::<Vec<_>>();
+            held.sort_by_key(|(observation, own)| {
+                std::cmp::Reverse((self.standing(observation), *own))
+            });
+            held.truncate(share.count);
+            spare.retain(|observation| {
+                held.iter()
+                    .all(|(held, _)| held.container_id != observation.container_id)
+            });
+            kept.extend(held.into_iter().map(|(held, _)| held.container_id));
+        }
+        kept
     }
 
     fn standing(&self, observation: &ContainerObservation) -> Standing {
@@ -801,8 +820,7 @@ pub(super) fn plan_replicated(
 }
 
 /// The removals of a replicated Service none of whose regions can start a replica: every
-/// Container past its region's count, and every Container outside the regions its counts
-/// name.
+/// Container past the count of the region it counts toward.
 pub(super) fn withdraw(
     spread: &Spread<'_>,
     current: &[ServiceContainer],

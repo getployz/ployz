@@ -1652,21 +1652,23 @@ fn plan_one_service<'snapshot>(
         }
     };
     let regions = spread.held_back(current);
-    let waiting = (!regions.is_empty()).then(|| {
-        let mut away = away.clone();
-        away.retain(|away| regions.contains_key(&away.region));
-        WaitingReplicas {
-            service: requested.name.clone(),
-            regions,
-            error: PlanError::RegionUnmatched { regions: away }.into_rpc_error(),
-        }
+    let short = PlanError::RegionUnmatched {
+        regions: away
+            .into_iter()
+            .filter(|away| regions.contains_key(&away.region))
+            .collect(),
+    };
+    let waiting = (!regions.is_empty()).then(|| WaitingReplicas {
+        service: requested.name.clone(),
+        regions,
+        error: short.clone().into_rpc_error(),
     });
     if machines.is_empty() {
         // Every region the counts name is away, so nothing starts. A replica past a
         // region's count still goes, since a Server that takes no services can give one up.
         let operations = placement::withdraw(&spread, current, requested, &mut budget.placement);
         return match (operations.is_empty(), waiting) {
-            (true, Some(_)) => Err(PlanError::RegionUnmatched { regions: away }),
+            (true, Some(_)) => Err(short),
             (_, waiting) => Ok((operations, waiting)),
         };
     }
