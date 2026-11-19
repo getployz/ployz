@@ -167,6 +167,20 @@ describe("Details", () => {
     expect(lineOf("app.conf").getByText("Mode 0555").className).toContain("text-changed-deep");
   });
 
+  it("counts the changes not yet saved apart from those a Save already holds", () => {
+    review({ groups: [api([row("api.env.A"), row("api.env.B")])], totalChanges: 2, unsavedChanges: 1 });
+    expect(screen.getByText("2 changes in fix-api, 1 not yet saved.")).toBeTruthy();
+    cleanup();
+    review({ groups: [api([row("api.env.A"), row("api.env.B")])], totalChanges: 2, unsavedChanges: 0, canSave: false });
+    expect(screen.getByText("2 changes in fix-api, saved, not deployed.")).toBeTruthy();
+  });
+
+  it("names each Service the Deploy leaves waiting and why, before the changes", () => {
+    review({ groups: [api([row("api.env.A")])], waits: [{ service: "postgres", why: "pg-data is on machine-1" }] });
+    const waits = within(screen.getByRole("list", { name: "Waiting" }));
+    expect(waits.getByText("postgres waits: pg-data is on machine-1")).toBeTruthy();
+  });
+
   it("keeps file Discard and Discard all of the Config reachable with the exact file path", async () => {
     const value = { content: "test", mode: "0444", uid: 0, gid: 0 };
     const group = config([file("nested/app.conf", { before: value, after: value }), file("app.conf.bak", { before: null, after: value })]);
