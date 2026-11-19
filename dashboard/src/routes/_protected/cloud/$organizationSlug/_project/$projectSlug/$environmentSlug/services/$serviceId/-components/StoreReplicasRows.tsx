@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, useHydrated } from "@tanstack/react-router";
 import { MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import type { JsonValue, VolumeListing } from "@ployz/sdk";
 import { InfoHint } from "#/components/info-hint";
@@ -18,7 +18,7 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-
  * A Service's replicas as a row per region: how many run where. A bare count is one row in the Environment's region, or
  * in any region when it has none. A Volume that doesn't allow shared writes fixes the count at 1 and leaves the region to
  * pick. A second region is on offer only where the Store takes one: the Environment has a region, and the Service
- * mounts no Volume.
+ * mounts no Volume. Until the page can act on a click, every control shows disabled, so none is lost.
  */
 export function StoreReplicasRows({ options, value, deployed, home, capped, oneRegion, changed, onChange }: {
   options: readonly RegionOption[];
@@ -36,6 +36,7 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
   onChange: (value: JsonValue) => Write;
 }) {
   const [opened] = useState(value);
+  const live = useHydrated();
   const [rows, hold, commit] = useCommitHold<readonly ReplicaRow[]>(replicaRows(value, home));
   const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home, opened, deployed)));
   const update = (index: number, change: Partial<ReplicaRow>) => save(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
@@ -54,13 +55,13 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
             return (
               <div key={index} className="flex items-center gap-2">
                 <RegionSelect label={`Region of row ${index + 1}`} options={options} value={row.region} taken={taken}
-                  allowAny={rows.length === 1 && home === null} changed={changed}
+                  allowAny={rows.length === 1 && home === null} changed={changed} disabled={!live}
                   onChange={(region) => update(index, { region })} />
                 <Stepper label={where === null ? "Replicas" : `Replicas in ${where}`} count={row.count} changed={changed}
-                  canAdd={!full} disabled={capped !== undefined}
+                  canAdd={!full} disabled={!live || capped !== undefined}
                   onChange={(count) => update(index, { count })} />
                 {rows.length > 1 ? (
-                  <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${where ?? "region"}`}
+                  <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${where ?? "region"}`} disabled={!live}
                     onClick={() => save(rows.filter((_, at) => at !== index))}>
                     <XIcon />
                   </Button>
@@ -69,7 +70,7 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
             );
           })}
           {canAdd ? (
-            <Button type="button" variant="outline" size="sm" onClick={() => save([...rows, { region: unused.key, count: 1 }])}>
+            <Button type="button" variant="outline" size="sm" disabled={!live} onClick={() => save([...rows, { region: unused.key, count: 1 }])}>
               <PlusIcon data-icon="inline-start" />
               Add region
             </Button>
