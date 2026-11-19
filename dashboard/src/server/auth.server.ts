@@ -63,6 +63,7 @@ import { asString } from "#/lib/json";
 import { type ConsentChoice, hostedMcpPlugins, MCP_SCOPES, mcpEndpoints, withConsentChoice } from "#/server/auth-mcp.server";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
+import { RequestScope } from "#/server/request-scope.server";
 import { runRedactedLog } from "#/server/log-redaction";
 import { Unauthorized } from "#/server/public-error";
 
@@ -542,9 +543,7 @@ const makeAuth = Effect.gen(function* () {
     }
     : null;
 
-  const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers, accepts?: { readonly bearer: true }) {
-    const signedIn = new Headers(headers);
-    if (accepts?.bearer !== true) signedIn.delete("authorization");
+  const lookUpSession = Effect.fn("Auth.getSession")(function* (signedIn: Headers) {
     const authSession = yield* Effect.tryPromise({
       try: () => isolated(() => instance.api.getSession({ headers: signedIn })),
       catch: (cause) => new AuthenticationUnavailable({ cause }),
@@ -552,6 +551,14 @@ const makeAuth = Effect.gen(function* () {
     if (authSession === null) return null;
     return yield* Schema.decodeUnknownEffect(AuthSession)(authSession);
   });
+
+  /** Looked up once per request for the same credentials (`RequestScope`), never across requests. */
+  const getSession = (headers: Headers, accepts?: { readonly bearer: true }) => {
+    const signedIn = new Headers(headers);
+    if (accepts?.bearer !== true) signedIn.delete("authorization");
+    const credentials = `session\n${signedIn.get("cookie") ?? ""}\n${signedIn.get("authorization") ?? ""}`;
+    return Effect.flatMap(RequestScope, (scope) => scope.once(credentials, lookUpSession(signedIn)));
+  };
 
   return {
     handler: (request) => Effect.tryPromise({

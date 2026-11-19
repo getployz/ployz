@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, type SQL } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
 import { type Actor, type Caller, callerEnvironments, callerOrSupportCan } from "#/modules/identity/actor";
 import { FULL_GRANT, granted, outsideEnvironments, type TokenGrant } from "#/modules/identity/token-grant";
@@ -10,6 +10,7 @@ import { Auth } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
+import { RequestScope } from "#/server/request-scope.server";
 import { can, type Permission, permissionsOf, reads } from "./permissions";
 import { organization } from "./tables";
 
@@ -136,35 +137,44 @@ export const SupportStaffLive = Layer.effect(
   Effect.map(AppConfig, (config) => supportStaffOf(config.supportStaffUserIds)),
 );
 
-const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: SQL, permission: Permission, lands?: Lands) {
+/** The Organization a gate names: by its URL slug or by id. */
+type Which = { readonly slug: string } | { readonly id: string };
+
+/** What the gate reads about `which` for `userId`, once per request (`RequestScope`); `admit` still decides per use. */
+const readFacts = (userId: string, which: Which) => Effect.flatMap(RequestScope, (scope) => scope.once(
+  "slug" in which ? `access\n${userId}\nslug\n${which.slug}` : `access\n${userId}\nid\n${which.id}`,
+  Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle
+      .select({
+        id: organization.id,
+        slug: organization.slug,
+        role: member.role,
+        supportAllowed: organizationSupportAccess.allowed,
+        variables: organizationSupportAccess.variables,
+        configs: organizationSupportAccess.configs,
+        logs: organizationSupportAccess.logs,
+      })
+      .from(organization)
+      .leftJoin(member, and(eq(member.organizationId, organization.id), eq(member.userId, userId)))
+      .leftJoin(organizationSupportAccess, eq(organizationSupportAccess.organizationId, organization.id))
+      .where("slug" in which ? eq(organization.slug, which.slug) : eq(organization.id, which.id))
+      .limit(1);
+    if (row === undefined) return null;
+    return {
+      organization: { id: row.id, slug: row.slug },
+      role: row.role,
+      supportAllowed: row.supportAllowed ?? false,
+      supportShows: { variables: row.variables ?? false, configs: row.configs ?? false, logs: row.logs ?? false },
+    };
+  }),
+));
+
+const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: Which, permission: Permission, lands?: Lands) {
   const staff = yield* SupportStaff;
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle
-    .select({
-      id: organization.id,
-      slug: organization.slug,
-      role: member.role,
-      supportAllowed: organizationSupportAccess.allowed,
-      variables: organizationSupportAccess.variables,
-      configs: organizationSupportAccess.configs,
-      logs: organizationSupportAccess.logs,
-    })
-    .from(organization)
-    .leftJoin(member, and(eq(member.organizationId, organization.id), eq(member.userId, actor.userId)))
-    .leftJoin(organizationSupportAccess, eq(organizationSupportAccess.organizationId, organization.id))
-    .where(which)
-    .limit(1);
   const decision = admit({
     userId: actor.userId,
-    facts:
-      row === undefined
-        ? null
-        : {
-            organization: { id: row.id, slug: row.slug },
-            role: row.role,
-            supportAllowed: row.supportAllowed ?? false,
-            supportShows: { variables: row.variables ?? false, configs: row.configs ?? false, logs: row.logs ?? false },
-          },
+    facts: yield* readFacts(actor.userId, which),
     isStaff: staff.isStaff(actor.userId),
     permission,
     grant: actor.credential?.kind === "token" ? actor.credential.grant : FULL_GRANT,
@@ -186,11 +196,11 @@ const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: SQL, permi
  * lands in the Organization unless `lands` says otherwise.
  */
 export const requireAccess = Effect.fn("Access.require")(function* (actor: Actor, organizationSlug: string, permission: Permission, lands?: Lands) {
-  return yield* gate(actor, eq(organization.slug, organizationSlug), permission, lands);
+  return yield* gate(actor, { slug: organizationSlug }, permission, lands);
 });
 
 export const requireAccessById = Effect.fn("Access.requireById")(function* (actor: Actor, organizationId: string, permission: Permission, lands?: Lands) {
-  return yield* gate(actor, eq(organization.id, organizationId), permission, lands);
+  return yield* gate(actor, { id: organizationId }, permission, lands);
 });
 
 /** A route's signed-in user, gated on the Organization its URL names. */

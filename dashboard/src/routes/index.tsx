@@ -9,7 +9,7 @@ export const Route = createFileRoute('/')({
   server: {
     handlers: {
       GET: async ({ request, next }) => {
-        const session = await getRequestAuthSession(request.headers)
+        const session = await getRequestAuthSession()
         if (session?.session && session.user) return next()
         return (await proxyMarketing(request)) ?? next()
       },

@@ -1,18 +1,18 @@
 import "@tanstack/react-start/server-only";
-import { getRequestHeaders } from "@tanstack/react-start/server";
+import { getRequest } from "@tanstack/react-start/server";
 import { Effect } from "effect";
 import { Auth, type AuthSession } from "#/server/auth.server";
 export type { AuthSession } from "#/server/auth.server";
-import { runAppEffect } from "#/server/run.server";
+import { runActor } from "#/server/tanstack";
 
 export const getAuthSessionEffect = Effect.fn("Auth.getSessionForRequest")(
   (headers: Headers) => Effect.flatMap(Auth, (auth) => auth.getSession(headers)),
 );
 
-export function getAuthSession(
-  headers: Headers = getRequestHeaders(),
-): Promise<AuthSession | null> {
-  return runAppEffect(getAuthSessionEffect(headers));
+/** The session of the request being served, shared with every server function inside it. */
+export function getAuthSession(): Promise<AuthSession | null> {
+  const request = getRequest();
+  return runActor(request, getAuthSessionEffect(request.headers));
 }
 
 export const signInGithubEffect = Effect.fn("Auth.signInGithub")(

@@ -3,6 +3,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { Auth } from "#/server/auth.server";
 import { encodePublicBoundaryError } from "#/server/public-error";
+import { currentRequestScope, RequestScope } from "#/server/request-scope.server";
 import { runAppEffect } from "#/server/run.server";
 import type { AppServices } from "#/server/runtime.server";
 
@@ -18,10 +19,7 @@ export const publicErrorMiddleware = createMiddleware({ type: "function" })
 export const actorMiddleware = createMiddleware({ type: "function" })
   .server(async ({ next }) => {
     const request = getRequest();
-    const actor = await runAppEffect(
-      Effect.flatMap(Auth, (auth) => auth.resolveActor(request.headers)),
-      { signal: request.signal },
-    );
+    const actor = await runActor(request, Effect.flatMap(Auth, (auth) => auth.resolveActor(request.headers)));
     return next({ context: { actor, signal: request.signal } });
   });
 
@@ -37,5 +35,5 @@ export const runActor = createServerOnlyFn(function runActor<A, E>(
   context: { readonly signal: AbortSignal },
   effect: Effect.Effect<A, E, AppServices>,
 ) {
-  return runAppEffect(effect, { signal: context.signal });
+  return runAppEffect(Effect.provideService(effect, RequestScope, currentRequestScope()), { signal: context.signal });
 });
