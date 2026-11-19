@@ -768,7 +768,23 @@ pub enum BesideVolume {
     },
     /// By giving the Volume's Server, which is in no region, the region the Service is
     /// kept in.
-    Label { region: Region },
+    Label,
+}
+
+fn volume_outside_region(
+    volume: &str,
+    machine: &MachineName,
+    region: &Region,
+    beside: &BesideVolume,
+) -> String {
+    match beside {
+        BesideVolume::RunIn { region: at, .. } => {
+            format!("it stays in {at} with its Volume {volume}, which can't move to {region} yet")
+        }
+        BesideVolume::Label => format!(
+            "it stays on {machine}, a Server in no region, with its Volume {volume}, which can't move to {region} yet"
+        ),
+    }
 }
 
 fn volumes_apart(volumes: &[(String, Region)]) -> String {
@@ -900,13 +916,13 @@ pub enum PlanError {
     #[error("{service} has a Volume, so its replicas run in one region")]
     VolumeInSeveralRegions { service: ServiceName },
     /// The Service is kept in a region, and its Volume is on a Server outside it.
-    #[error("{volume} is on {machine}")]
+    #[error("{}", volume_outside_region(volume, machine, region, beside))]
     VolumeOutsideRegion {
         /// The Volume, as its owner named it.
         volume: String,
         machine: MachineName,
-        /// A Server in the region the Service can run on.
-        to: MachineName,
+        /// The region the Service is kept in.
+        region: Region,
         beside: BesideVolume,
     },
     #[error(
@@ -1218,18 +1234,17 @@ impl PlanError {
             Self::VolumeOutsideRegion {
                 ref volume,
                 ref machine,
-                ref to,
+                ref region,
                 ref beside,
             } => {
-                let (region, volume_region, replicas) = match beside {
-                    BesideVolume::RunIn { region, replicas } => (None, Some(region), *replicas),
-                    BesideVolume::Label { region } => (Some(region), None, None),
+                let (volume_region, replicas) = match beside {
+                    BesideVolume::RunIn { region, replicas } => (Some(region), *replicas),
+                    BesideVolume::Label => (None, None),
                 };
                 RpcError::conflict(self.to_string()).with_details(serde_json::json!({
                     "reason": "volume_outside_region",
                     "volume": volume,
                     "server": machine,
-                    "to": to,
                     "region": region,
                     "volume_region": volume_region,
                     "replicas": replicas,

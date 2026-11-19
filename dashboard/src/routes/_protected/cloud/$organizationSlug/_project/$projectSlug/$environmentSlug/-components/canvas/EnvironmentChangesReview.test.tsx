@@ -176,9 +176,9 @@ describe("Details", () => {
   });
 
   it("names each Service the Deploy leaves waiting and why, before the changes", () => {
-    review({ groups: [api([row("api.env.A")])], waits: [{ service: "postgres", why: "pg-data is on machine-1" }] });
+    review({ groups: [api([row("api.env.A")])], waits: [{ service: "postgres", why: "it stays in fsn with its Volume pg-data, which can't move to syd yet" }] });
     const waits = within(screen.getByRole("list", { name: "Waiting" }));
-    expect(waits.getByText("postgres waits: pg-data is on machine-1")).toBeTruthy();
+    expect(waits.getByText("postgres waits: it stays in fsn with its Volume pg-data, which can't move to syd yet")).toBeTruthy();
   });
 
   it("keeps file Discard and Discard all of the Config reachable with the exact file path", async () => {

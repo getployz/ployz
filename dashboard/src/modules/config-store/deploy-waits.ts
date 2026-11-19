@@ -2,7 +2,7 @@ import type { JsonValue } from "@ployz/sdk";
 import { parseDockerVolumeName } from "#/modules/volume-run/volume-run";
 import { replicaRows } from "./replica-rows";
 
-/** A Service the next Deploy leaves waiting, and why, in the reason `ployz deploy` then gives: `pg-data is on machine-1`. */
+/** A Service the next Deploy leaves waiting, and why, in the reason `ployz deploy` then gives. */
 export type DeployWait = { readonly service: string; readonly why: string };
 
 const anyOf = (names: readonly string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`);
@@ -11,8 +11,7 @@ const anyOf = (names: readonly string[]) => (names.length < 2 ? names.join("") :
  * The Services the next Deploy leaves waiting for where they are kept, as far as the Servers seen say. A Service kept
  * in a region no Server is in waits for one. A Service kept in one region waits when a Volume it mounts is written on
  * a Server outside it, since the Deploy runs it where its Volume is written and moves no Volume. A mirror is no copy it
- * can run on. A Service in any region is kept nowhere. Nothing
- * waits before the Servers are known.
+ * can run on. A Service in any region is kept nowhere. Nothing waits before the Servers are known.
  */
 export function deployWaits({ services, home, volumes, copies, servers }: {
   /** Each Service with its `replicas` as the next Deploy has it. */
@@ -37,7 +36,11 @@ export function deployWaits({ services, home, volumes, copies, servers }: {
       const writers = copies.filter((copy) => copy.role === "writer" && parseDockerVolumeName(copy.name)?.volumeId === volume.id && regionOf.has(copy.machineId));
       if (writers.length === 0 || writers.some(({ machineId }) => regionOf.get(machineId) === region)) continue;
       const server = servers.find(({ id }) => id === writers[0]?.machineId);
-      if (server !== undefined) return [{ service: name, why: `${volume.name} is on ${server.name}` }];
+      if (server === undefined) continue;
+      const at = regionOf.get(server.id);
+      const where = at ? `in ${at}` : `on ${server.name}, a Server in no region,`;
+      const why = `it stays ${where} with its Volume ${volume.name}, which can't move to ${region} yet`;
+      return [{ service: name, why }];
     }
     return [];
   });

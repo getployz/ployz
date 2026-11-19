@@ -146,33 +146,43 @@ and says **Limited to 1**. You can still pick its region.
 ## When a volume is outside the region
 
 A service with a [volume](volumes.md) runs on the server that writes the volume. A
-[mirror](mirror-a-volume.md) in the region doesn't count. If that server is outside the region, the deploy doesn't start the service, and names the volume and where it is:
+[mirror](mirror-a-volume.md) in the region doesn't count. A volume can't move to another region in
+this version of Ployz, so a service whose volume is outside its region stays with the volume. With
+the environment moved to `syd` and `pg-data` on a server in `fsn`:
 
 ```
-postgres: not started (pg-data is on db-1)
+postgres: not started (it stays in fsn with its Volume pg-data, which can't move to syd yet)
 ```
 
-The rest of the deploy goes ahead, and the service keeps running where it was. The deployment
-reads **Deployed, 1 waiting**, and `ployz deploy` exits 3.
+The rest of the deploy goes ahead, and `postgres` keeps running in `fsn`. The deployment reads
+**Deployed, 1 waiting**, or **Nothing deployed, 1 waiting** when no other service had a change,
+and `ployz deploy` exits 3. In Ployz Cloud the Deployment page says the same under the
+deployment's title, and **Details** says it before you deploy.
 
-The volume stays on its server, so run the service in the volume's region. The deploy prints the
-command that does it. With the environment in `fsn` and `db-1` in `syd`:
+To stop the wait, run the service in the volume's region. The deploy prints the command that does
+it:
 
 ```sh
-ployz set postgres.replicas='{"syd":1}'
+ployz set postgres.replicas='{"fsn":1}'
 ployz deploy
 ```
 
-The count puts `postgres` alone in `syd`. To move the services that use the environment's region
-there too, run `ployz env region syd`. A service with its own counts stays where they put it.
+The count keeps `postgres` alone in `fsn`, while the environment's other services run in `syd`.
+To move the environment back as well, run `ployz env region fsn`.
 
-If the volume's server is in no region, the deploy prints the command that gives it the service's
-region:
+If the volume's server is in no region, the line names the server, and the deploy prints the
+command that gives it the service's region:
+
+```
+postgres: not started (it stays on db-1, a Server in no region, with its Volume pg-data, which can't move to syd yet)
+```
 
 ```sh
-ployz server set db-1 --label-add region=fsn
+ployz server set db-1 --label-add region=syd
 ployz deploy
 ```
+
+**Details** names a service in a region no server is in the same way: `web waits: no Server in fsn`.
 
 ## When no server is in the region
 

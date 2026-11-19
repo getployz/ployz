@@ -1372,24 +1372,26 @@ fn outside_region(
     if holders.any(|machine| Region::of(&machine.machine).as_ref() == Some(&region)) {
         return None;
     }
-    let to = candidates.first()?.machine.name.clone();
+    if candidates.is_empty() {
+        return None;
+    }
     if let Some(refusal) = shared_elsewhere(spec, &region, snapshot, plan) {
         return Some(refusal);
     }
     Some(PlanError::VolumeOutsideRegion {
         volume: plan.authored(managed_volume_name(volume)?).to_owned(),
         machine: holder,
-        to,
         beside: match volume_region {
-            Some(region) => BesideVolume::RunIn {
-                region,
+            Some(at) => BesideVolume::RunIn {
+                region: at,
                 replicas: match spec.mode {
                     ServiceMode::Replicated { replicas } => Some(replicas),
                     ServiceMode::Global => None,
                 },
             },
-            None => BesideVolume::Label { region },
+            None => BesideVolume::Label,
         },
+        region,
     })
 }
 

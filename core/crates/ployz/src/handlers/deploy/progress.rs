@@ -1184,7 +1184,7 @@ mod tests {
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
                 "type": "executed", "summary": {}, "cause": [],
-                "waiting": [{"service": "db", "reason": "pg-data is on syd-1"}]
+                "waiting": [{"service": "db", "reason": "it stays in syd with its Volume pg-data, which can't move to fsn yet"}]
             }))
             .unwrap(),
         );
@@ -1194,7 +1194,7 @@ mod tests {
         .unwrap();
         let outside = |beside: serde_json::Value| {
             let mut details = json!({
-                "reason": "volume_outside_region", "volume": "pg-data", "server": "syd-1", "to": "fsn-1"
+                "reason": "volume_outside_region", "volume": "pg-data", "server": "syd-1", "region": "fsn"
             });
             details
                 .as_object_mut()
@@ -1204,7 +1204,7 @@ mod tests {
                 "namespace": "shop-production", "warnings": [], "operations": [],
                 "blocked": [{
                     "service": "shop-db",
-                    "error": {"code": "conflict", "message": "pg-data is on syd-1", "details": details}
+                    "error": {"code": "conflict", "message": "it stays in syd with its Volume pg-data, which can't move to fsn yet", "details": details}
                 }]
             }))
             .unwrap()
@@ -1216,10 +1216,13 @@ mod tests {
 
         let text = crate::ui::progress::settled_text(&frame(&view));
         assert!(
-            text.contains("db: not started (pg-data is on syd-1)"),
+            text.contains("db: not started (it stays in syd with its Volume pg-data, which can't move to fsn yet)"),
             "{text}"
         );
-        assert_eq!(waiting(&view), ["db is waiting: pg-data is on syd-1"]);
+        assert_eq!(
+            waiting(&view),
+            ["db is waiting: it stays in syd with its Volume pg-data, which can't move to fsn yet"]
+        );
         assert_eq!(beside_volumes(&view, command), beside);
         let partial = completion(&view, None, &[], command).unwrap_err();
         assert_eq!(crate::ui::after_result(&partial), 3);
@@ -1228,7 +1231,7 @@ mod tests {
         view.deployment.outcome = Some(
             serde_json::from_value(json!({
                 "type": "executed", "summary": {}, "reason": "web: CreateContainer failed", "cause": [],
-                "waiting": [{"service": "db", "reason": "pg-data is on syd-1"}]
+                "waiting": [{"service": "db", "reason": "it stays in syd with its Volume pg-data, which can't move to fsn yet"}]
             }))
             .unwrap(),
         );
