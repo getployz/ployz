@@ -2,8 +2,7 @@ import { useEffect } from "react";
 import { createFileRoute, Outlet, retainSearchParams, useNavigate, useParams } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { useOrganizationChanges } from "#/collections/org-changes.stream";
-import { prefetchOrgStore, prefetchRemote, requireOrganization } from "#/collections/route-data";
-import { githubWebQueryOptions } from "#/modules/github/github.queries";
+import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
 import { DashboardShell } from "#/components/dashboard-shell";
 import type { DashboardScope } from "#/components/dashboard-navigation-model";
 import { rememberSelectedOrganization, useOrganizationName } from "#/modules/organization/organization-state.queries";
@@ -20,7 +19,6 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
   loader: async ({ params, context }) => {
     const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchOrgStore(context, params.organizationSlug);
-    await prefetchRemote(context, githubWebQueryOptions());
     return { organizationId: organization.id, access: organization.access };
   },
   component: RouteComponent,

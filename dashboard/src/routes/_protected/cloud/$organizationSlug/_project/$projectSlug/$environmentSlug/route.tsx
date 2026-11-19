@@ -1,9 +1,8 @@
 import { Suspense } from "react";
 import { createFileRoute, Outlet } from "@tanstack/react-router";
-import { prefetchStoreEnvironment, requireStoreEnvironment, streamRemote, streamStoreViews } from "#/collections/route-data";
-import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
+import { prefetchStoreViews, requireStoreEnvironment } from "#/collections/route-data";
 import { LeaveWhenClosed } from "./-components/sync/branch-close";
-import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery } from "#/modules/config-store/store-view.queries";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug",
@@ -12,13 +11,8 @@ export const Route = createFileRoute(
     // The route names the Project and the Environment as the Config Store does.
     const store = { project: params.projectSlug, environment: params.environmentSlug };
     const environment = await requireStoreEnvironment(context, params);
-    // Only the Sealed controls read it, and they show as off until it lands.
-    streamRemote(context, sealingQueryOptions(params.organizationSlug));
-    streamStoreViews(context, params.organizationSlug, domainsQuery(store));
-    await prefetchStoreEnvironment(context, params.organizationSlug, store,
-      environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), configsQuery(store), namespaceQuery(store),
-      // A Branch's Live Nodes and Sync button; refused elsewhere.
-      branchQuery(store));
+    // Every page of a Branch leaves when it closes; refused elsewhere. Each page's own loader reads what it shows.
+    await prefetchStoreViews(context, params.organizationSlug, branchQuery(store));
     return { environmentId: environment.id, store };
   },
   component: EnvironmentLayout,

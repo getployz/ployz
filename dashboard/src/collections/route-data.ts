@@ -105,13 +105,13 @@ export function streamStoreViews(context: RouteDataContext, organizationSlug: st
 }
 
 /**
- * An Environment page's Store reads, started together: `queries`, and the first page of its Deployments (the bottom
- * bar's in-flight one, the Deployments list).
+ * An Environment page's reads, started together: Store `queries`, the first page of its Deployments (the canvas's
+ * in-flight ones, the Deployments list), and its other Remote Reads.
  */
 export async function prefetchStoreEnvironment(context: RouteDataContext, organizationSlug: string, environment: EnvironmentRef,
-  ...queries: AwaitableQuery[]) {
+  queries: AwaitableQuery[], ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
   await Promise.all([
-    prefetchStoreViews(context, organizationSlug, ...queries),
+    prefetchRemoteWithStoreViews(context, organizationSlug, queries, ...reads),
     prefetchRemotePages(context, storeDeploymentsOptions(organizationSlug, scopeOf(context), environment)),
   ]);
 }

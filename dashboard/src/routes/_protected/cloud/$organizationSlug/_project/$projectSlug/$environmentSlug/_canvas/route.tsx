@@ -1,7 +1,10 @@
 import { Suspense } from "react";
 import { createFileRoute, type ErrorComponentProps } from "@tanstack/react-router";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { requireStoreEnvironment, prefetchRemoteUptime } from "#/collections/route-data";
+import { prefetchRemoteUptime, prefetchStoreEnvironment, requireStoreEnvironment, streamRemote, streamStoreViews } from "#/collections/route-data";
+import { configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { githubWebQueryOptions } from "#/modules/github/github.queries";
+import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { environmentUptimeQueryOptions } from "#/modules/uptime/uptime.queries";
 import { toErrorMessage } from "#/lib/error-message";
 import {
@@ -12,10 +15,18 @@ import {
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
-  // Open uptime incidents add to the canvas ⚠ counts. A failed read leaves them as they were.
   loader: async ({ params, context }) => {
+    const store = { project: params.projectSlug, environment: params.environmentSlug };
     const environment = await requireStoreEnvironment(context, params);
+    streamStoreViews(context, params.organizationSlug, domainsQuery(store));
+    // Only the Sealed controls read it, and they show as off until it lands.
+    streamRemote(context, sealingQueryOptions(params.organizationSlug));
+    // Open uptime incidents add to the canvas ⚠ counts. A failed read leaves them as they were.
     await prefetchRemoteUptime(context, params.organizationSlug, environmentUptimeQueryOptions({ organizationSlug: params.organizationSlug, environmentId: environment.id }));
+    // GitHub's origin links a Git Service's repository and a merged pull request.
+    await prefetchStoreEnvironment(context, params.organizationSlug, store,
+      [environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), configsQuery(store), namespaceQuery(store)],
+      githubWebQueryOptions());
   },
   errorComponent: CanvasError,
   component: CanvasLayout,

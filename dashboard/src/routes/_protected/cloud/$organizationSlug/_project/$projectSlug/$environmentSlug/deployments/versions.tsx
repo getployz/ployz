@@ -1,5 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
+import { prefetchStoreViews } from "#/collections/route-data";
+import { diffQuery } from "#/modules/config-store/store-view.queries";
 import { EnvironmentHistory } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory";
 import { DeploymentsPageError, DeploymentsPagePending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/DeploymentsPageStates";
 
@@ -8,6 +10,9 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_proje
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
     revision: Schema.optional(Schema.Number.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
   })),
+  // The saved revision bounds how many versions a picked one needs.
+  loader: ({ params, context }) =>
+    prefetchStoreViews(context, params.organizationSlug, diffQuery({ project: params.projectSlug, environment: params.environmentSlug })),
   pendingComponent: DeploymentsPagePending,
   errorComponent: () => <DeploymentsPageError noun="Versions" />,
   component: RouteComponent,
