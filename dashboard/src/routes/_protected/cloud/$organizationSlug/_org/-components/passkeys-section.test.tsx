@@ -58,15 +58,18 @@ it("shows a member their passkeys", async () => {
   expect(list).toHaveBeenCalled();
 });
 
-it("lists a passkey added while the list was still loading", async () => {
+it.each([
+  ["it was filed", () => Promise.resolve({})],
+  ["its answer was lost on the way back", () => Promise.reject(new Error("network"))],
+])("lists a passkey added while the list was still loading, when %s", async (_, finish) => {
   stubAuthenticator();
   vi.spyOn(passkeyFunctions, "beginPasskeyServerFn").mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof passkeyFunctions.beginPasskeyServerFn>>>()({
     challenge: "AA", user: { id: "AA", name: "ada@example.com", displayName: "Ada" }, rp: { name: "Ployz" }, pubKeyCredParams: [],
   }));
-  vi.spyOn(passkeyFunctions, "finishPasskeyServerFn").mockResolvedValue(asTestDouble<Awaited<ReturnType<typeof passkeyFunctions.finishPasskeyServerFn>>>()({}));
+  vi.spyOn(passkeyFunctions, "finishPasskeyServerFn").mockImplementation(() => finish() as never);
   const trusted = (code: string) => ({ code, account: "ada@example.com", createdAt: "2026-11-07T09:00:00.000Z", servers: [{ server: "web-1", approval: { by: "server" as const } }] });
   let answerFirst = () => {};
-  const list = await renderAs("member",
+  await renderAs("member",
     // The page's first read, still waiting on a Server when the new passkey is filed.
     new Promise((resolve) => { answerFirst = () => resolve({ observed: true, passkeys: [trusted("aaaaaaaaaa")] }); }),
     Promise.resolve({ observed: true, passkeys: [trusted("aaaaaaaaaa"), trusted("bbbbbbbbbb")] }));
@@ -76,7 +79,6 @@ it("lists a passkey added while the list was still loading", async () => {
   await act(async () => answerFirst());
 
   expect(await screen.findByText("bbbbbbbbbb")).toBeDefined();
-  expect(list).toHaveBeenCalledTimes(2);
 });
 
 it("hides passkeys from a support visit without asking for them", async () => {

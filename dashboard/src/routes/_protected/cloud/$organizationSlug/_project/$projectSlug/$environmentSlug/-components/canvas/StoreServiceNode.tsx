@@ -1,7 +1,7 @@
 import { type MouseEvent, type ReactNode, Suspense, use, useId } from "react";
 import type { DomainRow } from "@ployz/sdk";
 import { Handle, Position } from "@xyflow/react";
-import { CatchBoundary, Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
+import { CatchBoundary, Link, useHydrated, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { LockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
@@ -45,7 +45,10 @@ export function StoreServiceCard({ service, changeCount, runtimeIdentity, desire
   const chip = deployChip(service, changeCount, inFlight, deploy);
   const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploy });
   const scope = { organizationSlug: params.organizationSlug, environmentId };
-  const unreachable = useUnreachableHost(scope, service.id);
+  // Uptime streams too: the server rendered this card before it landed, so the render that hydrates it shows none either.
+  const hydrated = useHydrated();
+  const incident = useUnreachableHost(scope, service.id);
+  const unreachable = hydrated ? incident : null;
   const trouble = useContainerTrouble(scope, service.name);
   const surface = stagedSurface(service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;

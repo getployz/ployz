@@ -37,8 +37,9 @@ function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
     },
     onMutate: () => setFailure(null),
     onError: (error) => setFailure(error instanceof Error && error.name === "PasskeyRefused" ? error.message : "browser"),
-    // A read still out was asked before this passkey existed, so drop it and read again.
-    onSuccess: () => {
+    // A read still out was asked before this passkey existed, so drop it and read again; also after a failure, since
+    // Cloud may have filed the passkey and lost only its answer.
+    onSettled: () => {
       const list = passkeysQueryOptions(organizationSlug);
       void queryClient.cancelQueries({ queryKey: list.queryKey }).then(() => queryClient.prefetchQuery(list));
     },
