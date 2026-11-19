@@ -83,8 +83,9 @@ pub use deployment::loss::{RemovedVolume, VolumeLoss, docker_volume};
 pub use deployment::{
     CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
-    NodeOutcome, NodeStatus, Outcome, RowPhase, RowState, RowTracker, RowTransition, RunEvidence,
-    ServerProgress, ServerRow, StoppedBy, Unclaimed, UploadBase, UploadedSource, WaitingService,
+    NodeOutcome, NodeStatus, Outcome, Pinned, PostedVersion, RanService, RowPhase, RowState,
+    RowTracker, RowTransition, RunEvidence, ServerProgress, ServerRow, StoppedBy, TagPin,
+    Unclaimed, UploadBase, UploadedSource, WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
@@ -375,6 +376,29 @@ impl ConfigStore {
             deployment::Taken::Claimed(claimed) => Ok(*claimed),
             deployment::Taken::Refused(refusal) => Err(refusal.into_error()),
         }
+    }
+
+    /// Every signed version of `service` in `namespace` that `organization` keeps for
+    /// `digest`, newest first and at most as many as one request carries: what a drain
+    /// sends a Server with the copy it moves there. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn versions_for(
+        &self,
+        organization: &OrganizationId,
+        (namespace, service): (&ployz_core::Namespace, &ployz_core::ServiceName),
+        digest: ployz_core::authority::PayloadDigest,
+    ) -> Result<Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>, RpcError>
+    {
+        self.storage.read(|tx| {
+            deployment::versions::versions_for(
+                tx,
+                organization.as_str(),
+                (namespace, service),
+                digest,
+            )
+        })
     }
 
     /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes

@@ -12,8 +12,7 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
     HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
-    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, RunnerOptions,
-    ServiceName,
+    RemoveContainerPurpose, RpcError, RpcErrorCode, RunnerOptions, ServiceName,
 };
 use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::tools::{LogText, SealedValues, Withheld};
@@ -64,9 +63,6 @@ pub struct Sources {
     /// builds, which each Server reads before it creates under the rule. None reads a
     /// public repository.
     pub reader: Option<ployz_core::GithubToken>,
-    /// Signed versions of the Deployment's Services that this runner's own Device made,
-    /// handed to every Server with a new Container of their Service.
-    pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// Why a Deployment's builds didn't all succeed.
@@ -190,10 +186,6 @@ pub async fn run_deployment_expecting(
             .as_ref()
             .ok()
             .and_then(|sources| sources.reader.clone()),
-        versions: checkouts
-            .as_ref()
-            .map(|sources| sources.versions.clone())
-            .unwrap_or_default(),
     };
     let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
@@ -574,7 +566,6 @@ struct Run {
     over: Latch,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
-    versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// What `read`, the store's answer to one of this run's records, says about the Deployment.
@@ -642,7 +633,11 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let approval = claimed.approval.clone();
-        pin_approved(&mut claimed.intent.target, approval.as_ref());
+        let versions = pin_ran(
+            &mut claimed.intent.target,
+            &claimed.intent.namespace,
+            &claimed.ran,
+        );
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let mut rules = crate::cluster::RuleProofs::default();
@@ -683,7 +678,7 @@ impl Run {
             ImageCleanup::Auto,
             approval,
             rules,
-            self.versions.clone(),
+            versions,
         ) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
@@ -1573,19 +1568,29 @@ async fn rule_proofs(
     proofs
 }
 
-/// Write the image each Service's approval pinned into its spec, so the Servers are asked
-/// to create the spec the approval's digest covers. The Saved State keeps the tag. A
-/// Server refuses a spec the approval doesn't match, so a runner can't choose the image.
-fn pin_approved(
-    target: &mut [RequestedServiceSpec],
-    approval: Option<&ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-) {
-    let Some(approved) = approval.and_then(|approval| approval.open().ok()) else {
-        return;
-    };
+/// Write the image each Service ran into its spec, so the Servers are asked to create
+/// the spec a person signed, and return the signed versions of each spec whose digest is
+/// still the one it ran. The Saved State keeps the tag. A spec whose signed settings
+/// changed since carries none, and a Server that needs one refuses it.
+fn pin_ran(
+    target: &mut [ployz_core::RequestedServiceSpec],
+    namespace: &ployz_core::Namespace,
+    ran: &BTreeMap<ServiceName, ployz_store::Pinned>,
+) -> Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>> {
+    let mut versions = Vec::new();
     for spec in target {
-        approved.pin(spec);
+        let Some(pinned) = ran.get(&spec.name) else {
+            continue;
+        };
+        if let Some(pin) = &pinned.ran.pin {
+            spec.container.image.clone_from(&pin.image);
+        }
+        let digest = ployz_core::authority::PayloadDigest::of(spec, namespace);
+        if digest.ok() == Some(pinned.ran.digest) {
+            versions.extend(pinned.versions.iter().cloned());
+        }
     }
+    versions
 }
 
 /// The uploaded Services among `targets` that build from an earlier upload than

@@ -261,15 +261,15 @@ pub(crate) fn retry(
     queue(tx, &stored.summary.environment_id, false, |tx, number| {
         let listed = next_listed(tx, &stored.summary.environment_id)?;
         // Every other frozen column comes from the source, so a retry never re-reads
-        // authored state.
+        // authored state, and runs the images its source ran.
         tx.execute(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed, service_uploads) \
+              message, listed, service_uploads, ran) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10 \
+              ?10, ran \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),

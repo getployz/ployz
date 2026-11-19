@@ -12,7 +12,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::automation::Shipped;
-use crate::deployment::{self, DeploymentSummary, TargetNode, UploadedSource};
+use crate::deployment::{self, DeploymentSummary, PostedVersion, TargetNode, UploadedSource};
 use crate::domain;
 use crate::error;
 use crate::followup::{FollowUp, Place};
@@ -105,6 +105,12 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, as = "Option<Signed<DeployApproval>>")]
     pub approval: Option<Box<Signed<DeployApproval>>>,
+    /// A signed version of each Service a client signed for this Deploy, with the image
+    /// it pinned the Service's tag to. The Store keeps each for later runs and drains, and
+    /// this Deployment runs those pins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<PostedVersion>>")]
+    pub versions: Vec<PostedVersion>,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
@@ -138,6 +144,10 @@ pub struct Retry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, as = "Option<Signed<DeployApproval>>")]
     pub approval: Option<Box<Signed<DeployApproval>>>,
+    /// As [`Deploy::versions`], over what its source ran.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<PostedVersion>>")]
+    pub versions: Vec<PostedVersion>,
 }
 
 /// Take an Environment off the Servers under the `remove` that marked it, or its
@@ -221,6 +231,7 @@ pub(crate) fn admit(
             if let Some(approval) = &retry.approval {
                 deployment::approved_by_device(tx, &retried.id, approval)?;
             }
+            deployment::versions::post(tx, &retried.id, &retry.versions)?;
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
                 false => None,
@@ -527,6 +538,7 @@ fn deploy(
     if let Some(approval) = &admit.approval {
         deployment::approved_by_device(tx, &summary.id, approval)?;
     }
+    deployment::versions::post(tx, &summary.id, &admit.versions)?;
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = match admit.services.is_empty() {
         true => Shipped::All(&saved_intent),

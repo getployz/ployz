@@ -65,6 +65,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -78,7 +79,6 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             runner,
             over: Latch::new(),
             reader: None,
-            versions: Vec::new(),
         },
         actor,
     )
@@ -103,6 +103,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -154,7 +155,6 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         runner: RunnerId::parse("other").unwrap(),
         over: Latch::new(),
         reader: None,
-        versions: Vec::new(),
     };
 
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -1082,6 +1082,7 @@ fn separately_uploaded() -> Claimed {
                     prune: false,
                     no_prune: false,
                     approval: None,
+                    versions: Vec::new(),
                 }),
                 &ployz_store::Trusted::default(),
             )
@@ -1128,7 +1129,6 @@ fn a_build_with_no_server_in_its_walk_fails_with_the_reason_github_gave() {
             checkouts: BTreeMap::new(),
             upload: Some(PathBuf::from("/extracted")),
             reader: None,
-            versions: Vec::new(),
         },
     ) else {
         panic!("a build no Server takes fails");
@@ -1150,7 +1150,6 @@ fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
             checkouts: BTreeMap::new(),
             upload: Some(extracted.clone()),
             reader: None,
-            versions: Vec::new(),
         },
     ) {
         Ok(targets) => targets,
@@ -1624,7 +1623,7 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
     }
 }
 
-fn service(name: &str, image: &str) -> RequestedServiceSpec {
+fn service(name: &str, image: &str) -> ployz_core::RequestedServiceSpec {
     serde_json::from_value(serde_json::json!({
         "name": name,
         "mode": {"mode": "replicated", "replicas": 1},
@@ -1634,56 +1633,51 @@ fn service(name: &str, image: &str) -> RequestedServiceSpec {
 }
 
 #[test]
-fn the_runner_writes_each_approved_image_into_its_spec_before_planning() {
+fn the_runner_runs_each_pin_and_sends_versions_only_for_the_spec_that_ran() {
     use ployz_core::authority::{
-        ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, SignerKey, Timestamp,
+        PayloadDigest, ServiceVersion, Signed, Signer, SignerKey, Timestamp,
     };
     const PINNED: &str =
-        "nginx:1.29-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000001";
-    const BY_HAND: &str =
-        "api@sha256:0000000000000000000000000000000000000000000000000000000000000002";
+        "nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001";
     let namespace = ployz_core::Namespace::parse("app").unwrap();
     let signer = Signer::from_seed(&[1; 32]);
+    let web = ServiceName::parse("web").unwrap();
     let digest = PayloadDigest::of(&service("web", PINNED), &namespace).unwrap();
-    let issued_at = Timestamp::now();
-    let body = DeployApproval {
-        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
-        operation: ployz_core::OperationId::random(),
-        namespace,
-        machines: vec![ployz_core::MachineId::parse("1".repeat(32)).unwrap()],
-        services: vec![
-            ApprovedService {
-                name: ServiceName::parse("api").unwrap(),
+    let version = Signed::sign(
+        &ServiceVersion {
+            cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+            namespace: namespace.clone(),
+            service: web.clone(),
+            digest,
+            signed_at: Timestamp::now(),
+            signer: SignerKey::Device(signer.public().into()),
+            proposal: None,
+        },
+        &signer,
+    )
+    .unwrap();
+    let ran = BTreeMap::from([(
+        web,
+        ployz_store::Pinned {
+            ran: ployz_store::RanService {
                 digest,
-                image: None,
+                pin: Some(ployz_store::TagPin {
+                    tag: "nginx:1.29".to_owned(),
+                    image: PINNED.to_owned(),
+                }),
             },
-            ApprovedService {
-                name: ServiceName::parse("web").unwrap(),
-                digest,
-                image: Some(PINNED.to_owned()),
-            },
-        ],
-        issued_at,
-        expires_at: issued_at.plus(60_000),
-        signer: SignerKey::Device(signer.public().into()),
-        proposal: None,
-    };
-    let approval = Signed::sign(&body, &signer).unwrap();
-    let mut target = vec![
-        service("api", BY_HAND),
-        service("web", "nginx:1.29-alpine"),
-        service("worker", "busybox:1"),
-    ];
-    pin_approved(&mut target, Some(&approval));
-    let images: Vec<_> = target
+            versions: vec![version.clone()],
+        },
+    )]);
+    let mut same = vec![service("web", "nginx:1.29"), service("api", "api:1")];
+    assert_eq!(pin_ran(&mut same, &namespace, &ran), vec![version]);
+    let images: Vec<_> = same
         .iter()
         .map(|spec| spec.container.image.as_str())
         .collect();
-    assert_eq!(images, [BY_HAND, PINNED, "busybox:1"]);
-    let mut unsigned = vec![service("web", "nginx:1.29-alpine")];
-    pin_approved(&mut unsigned, None);
-    assert_eq!(
-        unsigned.first().unwrap().container.image,
-        "nginx:1.29-alpine"
-    );
+    assert_eq!(images, [PINNED, "api:1"]);
+    let mut edited = service("web", "nginx:1.29");
+    edited.container.hostname = Some(ployz_core::ContainerHostname::parse("planted").unwrap());
+    let mut edited = vec![edited];
+    assert!(pin_ran(&mut edited, &namespace, &ran).is_empty());
 }

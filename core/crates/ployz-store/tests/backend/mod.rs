@@ -214,6 +214,7 @@ pub fn admit(
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
