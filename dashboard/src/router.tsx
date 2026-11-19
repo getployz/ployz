@@ -80,7 +80,7 @@ export function getRouter() {
       initializeAuthSession(data.authSession);
       startPostHog(data.posthog, data.authSession, router);
     },
-    defaultPreload: "viewport",
+    defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
     defaultPendingMs: 220,
     defaultPendingMinMs: 180,

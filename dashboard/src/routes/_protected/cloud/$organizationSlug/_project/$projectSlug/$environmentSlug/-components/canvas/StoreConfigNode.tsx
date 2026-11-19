@@ -25,7 +25,6 @@ export function StoreConfigCard({ config, selected, className }: { config: Confi
       aria-label={nodeLabel(name, chipWord(chip), NO_MOUNTS_CONFIGURED.word)}
       aria-current={selected ? "page" : undefined}
       draggable={false}
-      preload="intent"
       className={cn("rounded-xl", className)}
     >
       <Card size="node" state={surface}
