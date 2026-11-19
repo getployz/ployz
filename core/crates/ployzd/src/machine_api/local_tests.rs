@@ -5858,10 +5858,14 @@ mod ensure_container {
             deploy_ensure(service, new_want("service_container", "k3", &here), None)
                 .await
                 .unwrap();
-            let elsewhere = with_policy(
-                "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc",
-                "never",
-            );
+            let absent = "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc";
+            fixture
+                .fake
+                .images
+                .lock()
+                .unwrap()
+                .insert(absent.into(), None);
+            let elsewhere = with_policy(absent, "never");
             let refused = deploy_ensure(
                 service,
                 new_want("service_container", "k4", &elsewhere),
@@ -5874,6 +5878,87 @@ mod ensure_container {
                 "{refused:?}"
             );
             assert_eq!(pulls(&fixture.fake, seen), 2);
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn a_drains_unsigned_copy_runs_the_image_its_source_ran() {
+            let fixture = enforced("ployzd-free-drain-copy").await;
+            let service = &fixture.service;
+            let tag = "8.8.8.8/api:1";
+            let digest = |last: char| format!("sha256:{}{last}", "0".repeat(63));
+            let (source, moved, absent) = (digest('1'), digest('2'), digest('3'));
+            let copy = |image: &str, ran: &str| {
+                let container: ployz_core::ServiceContainerSpec =
+                    serde_json::from_value(spec(image)["container"].clone()).unwrap();
+                let mut copy = spec(image);
+                copy["container"] = serde_json::to_value(container.pinned_to(ran)).unwrap();
+                copy
+            };
+            let hold = |image: &str, id: Option<&str>| {
+                let held = id.map(str::to_owned);
+                fixture
+                    .fake
+                    .images
+                    .lock()
+                    .unwrap()
+                    .insert(image.into(), held);
+            };
+            let ran = || -> Vec<String> {
+                let containers = fixture
+                    .fake
+                    .named_containers
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap();
+                containers
+                    .values()
+                    .map(|container| container["Image"].as_str().unwrap().to_owned())
+                    .collect()
+            };
+            let seen = requests(&fixture.fake).len();
+
+            // The source's image is on no peer: a copy sent for it fetches nothing.
+            hold(&format!("8.8.8.8/api@{absent}"), None);
+            let refused = deploy_ensure(
+                service,
+                new_want("service_container", "k1", &copy(tag, &absent)),
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(
+                format!("{refused:?}").contains("its pull policy is never"),
+                "{refused:?}"
+            );
+            assert_eq!(
+                (pulls(&fixture.fake, seen), creates(&fixture.fake, seen)),
+                (0, 0)
+            );
+
+            // A peer placed the image under the tag, which no Server pulled itself.
+            hold(tag, Some(&source));
+            deploy_ensure(
+                service,
+                new_want("service_container", "k2", &copy(tag, &source)),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(ran(), std::slice::from_ref(&source));
+
+            // Another deploy moves the tag before the copy is made.
+            hold(tag, Some(&moved));
+            deploy_ensure(
+                service,
+                new_want("service_container", "k3", &copy(tag, &source)),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(ran(), [source.as_str(), source.as_str()]);
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 

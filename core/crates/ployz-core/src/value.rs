@@ -414,6 +414,17 @@ pub fn is_image_reference(value: &str) -> bool {
     value.parse::<oci_spec::distribution::Reference>().is_ok()
 }
 
+/// `image` with its tag and digest dropped, its registry kept.
+#[must_use]
+pub fn image_repository(image: &str) -> &str {
+    let name = image.split_once('@').map_or(image, |(name, _)| name);
+    let last = name.rsplit('/').next().unwrap_or(name);
+    match last.rsplit_once(':') {
+        Some((_, tag)) => &name[..name.len() - tag.len() - 1],
+        None => name,
+    }
+}
+
 validated_string_newtype!(
     /// An image reference pinned to a SHA-256 digest, preserving its raw repository path.
     ImageDigestReference, "image digest reference", "an image repository pinned to a SHA-256 digest",

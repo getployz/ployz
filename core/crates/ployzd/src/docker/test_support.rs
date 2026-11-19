@@ -99,6 +99,19 @@ pub(crate) struct FakeDocker {
     pub(crate) logs: Arc<Mutex<Vec<u8>>>,
     /// What a network inspect answers in place of an empty Ployz bridge.
     pub(crate) network: Arc<Mutex<Option<serde_json::Value>>>,
+    /// The images this Docker holds by reference: `Some(id)` is the image a tag names,
+    /// `None` one it does not hold. A reference listed nowhere answers an ID of its own,
+    /// the digest it names or one made from its name. A digest never follows a tag.
+    pub(crate) images: Arc<Mutex<BTreeMap<String, Option<String>>>>,
+}
+
+impl FakeDocker {
+    fn image(&self, reference: &str) -> Option<String> {
+        match self.images.lock().unwrap().get(reference) {
+            Some(held) => held.clone(),
+            None => Some(image_id(reference)),
+        }
+    }
 }
 
 async fn fake_docker(
@@ -231,7 +244,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             let image = config
                 .get("Image")
                 .and_then(serde_json::Value::as_str)
-                .map(image_id);
+                .and_then(|image| fake.image(image));
             containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Image": image, "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));
             return (
                 StatusCode::CREATED,
@@ -529,7 +542,13 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             .nth(1)
             .unwrap_or_default()
             .trim_end_matches("/json");
-        (StatusCode::OK, serde_json::json!({"Id": image_id(image)}))
+        match fake.image(image) {
+            Some(id) => (StatusCode::OK, serde_json::json!({"Id": id})),
+            None => (
+                StatusCode::NOT_FOUND,
+                serde_json::json!({"message": format!("No such image: {image}")}),
+            ),
+        }
     } else if method == Method::GET
         && path.ends_with("/volumes")
         && fake.reject_list.load(Ordering::Relaxed)

@@ -20,7 +20,7 @@ use futures_util::future::{BoxFuture, ready};
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerObservation, ContainerRefusalReason,
     CopyRotation, InspectContainerRequest, Machine, MachineId, MachineName, MachineTarget,
-    Namespace, PullPolicy, QualifiedService, RawVolumeSource, Region, RequestedServiceSpec,
+    Namespace, QualifiedService, RawVolumeSource, Region, RequestedServiceSpec,
     ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
 };
 use serde::{Deserialize, Serialize};
@@ -725,9 +725,10 @@ async fn move_one(
             to: to.clone(),
             detail: error_chain::row(&error),
         })?;
-    // The image is on `dest` by now; a registry pull could fetch a different one.
+    // The image is on `dest` by now. Its name may move there before the copy starts, and a
+    // registry pull could fetch another, so the copy asks for the image the source ran.
     let mut spec = spec.clone();
-    spec.container.pull_policy = PullPolicy::Never;
+    spec.container = spec.container.pinned_to(&image_id);
     let old = Copy::observed(container);
     let known = snapshot
         .machines

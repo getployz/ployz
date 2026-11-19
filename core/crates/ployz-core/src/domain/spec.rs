@@ -530,6 +530,20 @@ pub struct ServiceContainerSpec {
     pub network: Option<ServiceNetwork>,
 }
 
+impl ServiceContainerSpec {
+    /// This spec for a copy that must run exactly `image_id`, an image another Machine
+    /// placed here: the image named by that content, and a pull policy that fetches
+    /// nothing else. A tag here may move before the Container is made.
+    #[must_use]
+    pub fn pinned_to(&self, image_id: &str) -> Self {
+        Self {
+            image: format!("{}@{image_id}", crate::image_repository(&self.image)),
+            pull_policy: PullPolicy::Never,
+            ..self.clone()
+        }
+    }
+}
+
 /// A network namespace a Container joins instead of the ployz bridge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
