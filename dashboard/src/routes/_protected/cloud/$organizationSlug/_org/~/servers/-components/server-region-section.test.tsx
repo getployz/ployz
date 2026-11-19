@@ -14,8 +14,7 @@ import { ServerRegionSection } from "./server-region-section";
 
 let requestChange: ReturnType<typeof vi.spyOn>;
 let write: ReturnType<typeof vi.spyOn>;
-/** How the Store answers the page's next read of what runs here. */
-let store: OwnedNamespaces;
+let storeAnswer: OwnedNamespaces;
 
 const answer = (namespaces: readonly OwnedNamespace[]): StoreResult<StoreViewOf<{ query: "namespaces" }>> =>
   ({ ok: true, value: { view: "namespaces", namespaces: [...namespaces] } });
@@ -27,7 +26,7 @@ const namespacesRead = (owned: OwnedNamespaces) =>
 beforeEach(() => {
   requestChange = vi.spyOn(policyFunctions, "requestServerPolicyChangeServerFn").mockResolvedValue(undefined);
   write = vi.spyOn(storeFunctions, "writeStoreServerFn").mockResolvedValue({ ok: true, value: { written: "region_named", key: "sydney-2", name: "Sydney 2" } } as never);
-  vi.spyOn(storeFunctions, "readStoreViewServerFn").mockImplementation(({ data }) => (data.query.query === "namespaces" ? namespacesRead(store)
+  vi.spyOn(storeFunctions, "readStoreViewServerFn").mockImplementation(({ data }) => (data.query.query === "namespaces" ? namespacesRead(storeAnswer)
     : Promise.resolve(data.query.query === "new_region" && data.query.name === "FSN"
       ? { ok: false, refusal: { code: "conflict", message: "Region Falkenstein (fsn) already exists.", details: null } }
       : { ok: true, value: { view: "new_region", key: "sydney-2" } })) as never);
@@ -69,10 +68,6 @@ async function pick(name: string) {
 
 const NONE: OwnedNamespaces = { kind: "read", namespaces: [] };
 
-/**
- * The Server page's Placement section over a Store that answers `owned` when asked what runs here. An answer is on the
- * page from the start; a read still out or failed shows as the page first reads.
- */
 function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet, regions = REGIONS, services = [], owned = NONE }: {
   allowed?: boolean;
   machines?: RuntimeMachineRecord[];
@@ -84,7 +79,7 @@ function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet
   const scope = { queryClient, sessionId: "session", userId: "user" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
   const read = { queryKey: storeViewOptions("acme", scope, { query: "namespaces" }).queryKey, exact: true };
-  store = owned;
+  storeAnswer = owned;
   if (owned.kind === "read") queryClient.setQueryData(read.queryKey, answer(owned.namespaces));
   render(
     <QueryClientProvider client={queryClient}>
@@ -99,19 +94,16 @@ function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet
     </QueryClientProvider>,
   );
   return {
-    /** The Store's answer changes and the page has read it again. */
     reads: (next: OwnedNamespaces) => {
-      store = next;
+      storeAnswer = next;
       act(() => { void queryClient.invalidateQueries(read); });
     },
-    /** The read stops being current, with no render before the next event. */
-    unsettle: (how: Unsettled) => {
-      store = { kind: "reading" };
+    unsettleBeforeRender: (how: Unsettled) => {
+      storeAnswer = { kind: "reading" };
       if (how === "waiting for the network") onlineManager.setOnline(false);
       void queryClient.invalidateQueries(how === "marked out of date" ? { ...read, refetchType: "none" } : read);
     },
-    /** The Store's newer answer is in hand, with no render before the next event. */
-    answers: (next: readonly OwnedNamespace[]) => {
+    answerBeforeRender: (next: readonly OwnedNamespace[]) => {
       queryClient.setQueryData(read.queryKey, answer(next));
     },
   };
@@ -385,7 +377,7 @@ it.each(UNSETTLED)("changes nothing from a region picked as what runs here is %s
   fireEvent.pointerMove(option, { pointerType: "mouse" });
   fireEvent.mouseMove(option);
 
-  page.unsettle(how);
+  page.unsettleBeforeRender(how);
   fireEvent.click(option);
   expect(requestChange).not.toHaveBeenCalled();
   expect(await screen.findByText("Reading what runs here…")).toBeTruthy();
@@ -401,7 +393,7 @@ it.each(UNSETTLED)("changes nothing from a New region name confirmed as what run
   ));
   await act(async () => {});
 
-  page.unsettle(how);
+  page.unsettleBeforeRender(how);
   fireEvent.keyDown(input, { key: "Enter" });
   expect(requestChange).not.toHaveBeenCalled();
   expect(write).not.toHaveBeenCalled();
@@ -415,7 +407,7 @@ it.each(UNSETTLED)("changes nothing from a Move dialog confirmed as what runs he
   const dialog = await screen.findByRole("dialog");
   const confirm = within(dialog).getByRole("button", { name: "Move server" });
 
-  page.unsettle(how);
+  page.unsettleBeforeRender(how);
   fireEvent.click(confirm);
   expect(requestChange).not.toHaveBeenCalled();
   expect(await within(dialog).findByText("Reading what runs here…")).toBeTruthy();
@@ -430,7 +422,7 @@ it("asks before a move by the answer in hand when the region is picked, though t
   fireEvent.pointerMove(option, { pointerType: "mouse" });
   fireEvent.mouseMove(option);
 
-  page.answers([SHOP]);
+  page.answerBeforeRender([SHOP]);
   fireEvent.click(option);
   expect(requestChange).not.toHaveBeenCalled();
   expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/production→ server-6"]);
@@ -442,7 +434,7 @@ it("changes nothing from a Move dialog confirmed over an answer newer than the o
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getAllByRole("listitem")).toHaveLength(2);
 
-  page.answers([SHOP, BLOG]);
+  page.answerBeforeRender([SHOP, BLOG]);
   fireEvent.click(within(dialog).getByRole("button", { name: "Move server" }));
   expect(requestChange).not.toHaveBeenCalled();
   await waitFor(() => expect(within(dialog).getAllByRole("listitem")).toHaveLength(3));

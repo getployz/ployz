@@ -33,11 +33,6 @@ export type OwnedNamespaces =
 
 type NamespacesRead = QueryState<StoreResult<StoreViewOf<{ readonly query: "namespaces" }>>>;
 
-/**
- * Only an answer known to be current is `read`: an unanswered read, one asked again, whether sent, waiting for the
- * network or only marked out of date, and one that failed after an earlier answer are not, since what that answer
- * showed may have changed. Each is its own state, never an empty list.
- */
 function ownedNamespaces(read: NamespacesRead | undefined): OwnedNamespaces {
   if (read?.status === "error") return { kind: "failed" };
   if (read === undefined || read.fetchStatus !== "idle" || read.isInvalidated) return { kind: "reading" };
@@ -64,18 +59,15 @@ export function useOwnedNamespaces(organizationSlug: string): OwnedNamespacesRea
 /**
  * The region a new Environment runs in, by the Engine's one rule: the Cluster's first Server's. `settled` waits for the
  * first observation. Only a current one pins a region, and a Machine it couldn't read counts as a Server whose region
- * isn't known, as the Engine counts it. An unread Container changes nothing: the rule reads Machines.
+ * isn't known, as the Engine counts it.
  */
 export type NewEnvironmentRegion = { readonly settled: boolean; readonly region: string | null };
-
-const UNREAD_MACHINE = { subnet: null, joinedAt: null, region: null };
 
 export function useNewEnvironmentRegion(organizationSlug: string): NewEnvironmentRegion {
   const runtime = useRuntimeLens(organizationSlug);
   if (runtime.status === "connecting") return { settled: false, region: null };
   if (runtime.status !== "observed") return { settled: true, region: null };
-  const unread = Array.from({ length: runtime.unreadMachines }, () => UNREAD_MACHINE);
-  return { settled: true, region: firstServerRegion([...runtime.machines, ...unread]) };
+  return { settled: true, region: runtime.unreadMachines > 0 ? null : firstServerRegion(runtime.machines) };
 }
 
 export type NewRegion =

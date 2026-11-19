@@ -29,7 +29,6 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
 }) {
   const policy = useServerPolicy(machine, organizationSlug, "region");
   const nameRegion = useNameRegion(organizationSlug);
-  /** The Environments' Namespaces, which say where `services` run: no region change is told before they are read. */
   const owned = useOwnedNamespaces(organizationSlug);
   const [naming, setNaming] = useState(false);
   const [draft, setDraft] = useState("");
@@ -50,22 +49,28 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
     const placed = placedServices(services, namespaces);
     return { rows: leavingServer(machine.id, region, placed, servers), unread: unreadEnvironments(placed) };
   };
-  /**
-   * Sends a region change, or asks first when it takes Services off the Server and the Move dialog hasn't `confirmed`
-   * it. It goes by what runs here as the read holds it when this runs, since a render can be behind: unless that is a
-   * current answer, and the one a confirmed dialog showed, it sends nothing and answers false.
-   */
-  const submit = ({ region, created }: Move, confirmed: boolean) => {
+  /** What runs here as the read holds it when called, which a render can be behind. Null unless that answer is current. */
+  const current = () => {
     const now = owned.now();
-    if (now.kind !== "read" || (confirmed && now.namespaces !== shown)) return false;
-    const told = leaving(now.namespaces, region);
-    if (!confirmed && told.rows.length + told.unread.length > 0) {
-      setMoving({ region, created });
-      return true;
-    }
+    return now.kind === "read" ? now.namespaces : null;
+  };
+  const send = ({ region, created }: Move) => {
     policy.request({ region });
     if (created !== null) nameRegion(created, labels, true).catch((error) => nameNotSaved(created, error));
+  };
+  const change = (move: Move) => {
+    const namespaces = current();
+    if (namespaces === null) return false;
+    const told = leaving(namespaces, move.region);
+    if (told.rows.length + told.unread.length > 0) setMoving(move);
+    else send(move);
     return true;
+  };
+  const confirmMove = () => {
+    const namespaces = current();
+    if (moving === null || namespaces === null || namespaces !== shown) return;
+    send(moving);
+    setMoving(null);
   };
   const choose = (value: string | null) => {
     if (value === NEW_REGION) {
@@ -73,7 +78,7 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
       return;
     }
     const region = value === NO_REGION ? null : value;
-    if (region !== label) submit({ region, created: null }, false);
+    if (region !== label) change({ region, created: null });
   };
   const stopNaming = () => {
     setNaming(false);
@@ -82,7 +87,7 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
   };
   const create = check.kind === "new" ? { key: check.key, name: draft.trim() } : null;
   const createIn = (region: NamedRegion) => {
-    if (submit({ region: region.key, created: region }, false)) stopNaming();
+    if (change({ region: region.key, created: region })) stopNaming();
     else setConfirming(false);
   };
   const told = moving === null || shown === null ? null : leaving(shown, moving.region);
@@ -141,9 +146,7 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
         regions={regions}
         open={moving !== null}
         onOpenChange={(open) => { if (!open) setMoving(null); }}
-        onConfirm={() => {
-          if (moving !== null && submit(moving, true)) setMoving(null);
-        }}
+        onConfirm={confirmMove}
       />
     </SettingsSection>
   );

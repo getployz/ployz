@@ -82,7 +82,6 @@ const founder: RuntimeMachineRecord = {
   observedContainerCount: 0, observedAt: "2026-11-19T00:00:00Z",
 };
 
-/** The region a new Environment gets from a Runtime Watch frame that shows the founder and left `unread` IDs unread. */
 async function newEnvironmentRegion(unread: Partial<RuntimeIncompleteIds>) {
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
