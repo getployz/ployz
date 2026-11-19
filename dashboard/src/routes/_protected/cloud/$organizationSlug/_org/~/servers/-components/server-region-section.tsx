@@ -34,6 +34,7 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
   const [draft, setDraft] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [moving, setMoving] = useState<Move | null>(null);
+  const [waiting, setWaiting] = useState<Move | null>(null);
   const labels = regionLabels(machines);
   const check = useNewRegions(organizationSlug, naming ? [draft] : [], labels)(draft);
   const choices = regions ?? [];
@@ -68,7 +69,8 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
   };
   const confirmMove = () => {
     const namespaces = current();
-    if (moving === null || namespaces === null || namespaces !== shown) return;
+    if (moving === null || namespaces === null || shown === null) return;
+    if (JSON.stringify(leaving(namespaces, moving.region)) !== JSON.stringify(leaving(shown, moving.region))) return;
     send(moving);
     setMoving(null);
   };
@@ -78,7 +80,8 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
       return;
     }
     const region = value === NO_REGION ? null : value;
-    if (region !== label) change({ region, created: null });
+    const move = { region, created: null };
+    if (region !== label && !change(move)) setWaiting(move);
   };
   const stopNaming = () => {
     setNaming(false);
@@ -92,6 +95,11 @@ export function ServerRegionSection({ machine, machines, services, regions, orga
   };
   const told = moving === null || shown === null ? null : leaving(shown, moving.region);
 
+  useEffect(() => {
+    if (waiting === null) return;
+    if (owned.shown.kind === "failed") setWaiting(null);
+    else if (owned.shown.kind === "read" && change(waiting)) setWaiting(null);
+  }, [owned.shown, waiting]);
   useEffect(() => {
     if (confirming && create !== null) createIn(create);
   }, [confirming, create?.key]);

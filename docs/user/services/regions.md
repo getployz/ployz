@@ -24,9 +24,10 @@ same, so `FSN` is `fsn`.
 
 ## A new environment's region
 
-A new environment runs in the region of the server that has been in the cluster longest. That is
-the server that started the cluster, or else the one you approved to join first. When two servers
-tie, the one with the lowest subnet counts. `ployz get @environment.region` shows the region.
+A new environment runs in the region of the first server. A server with no join approval on
+record, such as the one that started the cluster, comes first. The others follow in the order you
+approved them to join, which can differ from the order they finished joining. When two servers tie, the one with the lowest subnet comes first.
+`ployz get @environment.region` shows the region.
 
 This holds however you make the environment: in Ployz Cloud, with `ployz env new` or `ployz up`,
 as a new project's first environment, or through the [Ployz agent](../account/agent-sidebar.md).
