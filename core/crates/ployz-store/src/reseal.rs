@@ -393,6 +393,7 @@ mod tests {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: environment(),
+                    region: None,
                 },
             )
             .unwrap();

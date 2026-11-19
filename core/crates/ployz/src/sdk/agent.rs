@@ -140,13 +140,26 @@ async fn servers(
                     .filter_map(|machine| Region::of(&machine.machine))
                     .collect()
             });
+            let new_environment_region = match only {
+                Some(_) => None,
+                None => new_environment_region(&client).await,
+            };
             Ok(ServersAnswer {
                 servers,
                 seen: seen(&machines, &unanswered),
                 regions,
+                new_environment_region,
             })
         })
         .await
+}
+
+async fn new_environment_region(client: &crate::connect::Client) -> Option<Region> {
+    let frame = tokio::time::timeout(crate::connect::TARGET_RPC_TIMEOUT, client.runtime_frame())
+        .await
+        .ok()?
+        .ok()?;
+    Region::of_first_server(ployz_core::JoinedServer::all(&frame))
 }
 
 fn server(
@@ -168,6 +181,11 @@ fn server(
         // The newest release on a channel is Cloud's to know, not the Server's.
         upgrade: None,
         draining: !machine.accepts_services,
+        region: machine
+            .labels
+            .iter()
+            .find(|(key, _)| key.as_str() == ployz_store::REGION_LABEL)
+            .map(|(_, value)| value.as_str().to_owned()),
         disk: match observed.storage {
             Some(MachineStorageObservation::Pool {
                 size_bytes,

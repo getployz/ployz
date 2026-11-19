@@ -203,6 +203,7 @@ fn found_project(
         id: ProjectId::parse(mint())?,
         name: ProjectName::parse(name.as_str().to_owned())?,
         default_environment: EnvironmentId::parse(mint())?,
+        region: store.new_environment_region(),
     };
     let created = store.try_write(&create).map_err(|error| {
         store.fail(super::store::with_next(

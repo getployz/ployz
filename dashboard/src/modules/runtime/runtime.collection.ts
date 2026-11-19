@@ -51,6 +51,10 @@ export const runtimeSealingSchema = Schema.Union([
 export const runtimeMachineRecordSchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
+  /** The Machine Subnet, which orders Servers by when they joined; null from a frame that predates it. */
+  subnet: Schema.NullOr(Schema.String),
+  /** When the join that admitted it was approved, in milliseconds; null for the founder and a Server whose record keeps none. */
+  joinedAt: Schema.NullOr(Schema.Number),
   publicIp: Schema.NullOr(Schema.String),
   acceptsIngress: Schema.Boolean,
   endpoints: Schema.Array(Schema.String),

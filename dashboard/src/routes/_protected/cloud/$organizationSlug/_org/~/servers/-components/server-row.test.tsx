@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { NamedRegion } from "@ployz/sdk";
 import { serverStatus } from "#/modules/machines/server-status";
 import type { Server } from "#/modules/machines/use-servers";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
@@ -25,7 +26,7 @@ afterEach(() => {
 
 function server(input: { membership?: RuntimeMachineRecord["membership"]; services?: string[]; storage?: RuntimeMachineRecord["storage"]; acceptsBuilds?: boolean; acceptsServices?: boolean; sealing?: RuntimeMachineRecord["sealing"]; region?: string | null } = {}): Server {
   const machine: RuntimeMachineRecord = {
-    id: "1".repeat(32), name: "fsn-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
+    id: "1".repeat(32), name: "fsn-1", subnet: null, joinedAt: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: input.acceptsBuilds ?? false,
     acceptsServices: input.acceptsServices ?? true, storage: input.storage === undefined ? "pool" : input.storage, buildConcurrency: null, region: input.region ?? null, effectiveBuildConcurrency: 1, runningBuilds: 0,
     daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, sealing: input.sealing ?? null, membership: input.membership ?? "up", unanswered: false, observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
@@ -35,8 +36,8 @@ function server(input: { membership?: RuntimeMachineRecord["membership"]; servic
   return { machine, name: machine.name, status: serverStatus(machine), services };
 }
 
-async function row(shown: Server, upgrade: ServerUpgradeLine = null) {
-  const root = createRootRoute({ component: () => <ServerRow organizationSlug="acme" server={shown} upgrade={upgrade} stale={false} /> });
+async function row(shown: Server, upgrade: ServerUpgradeLine = null, regions: readonly NamedRegion[] = []) {
+  const root = createRootRoute({ component: () => <ServerRow organizationSlug="acme" server={shown} regions={regions} upgrade={upgrade} stale={false} /> });
   const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
   const queryClient = new QueryClient();
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
@@ -50,10 +51,15 @@ it("shows nothing about a healthy Server beyond its name and what runs there, an
   expect(link.getAttribute("href")).toBe(`/cloud/acme/~/servers/${"1".repeat(32)}`);
 });
 
-it("shows the region a Server is labelled with, and nothing when it has none", async () => {
-  expect((await row(server({ services: ["api"], region: "fsn" }))).textContent).toBe("fsn-1apifsnOnline");
+it("shows a Server's region by its name, in any case, its label where no region has it, and nothing without one", async () => {
+  const regions = [{ key: "default", name: "Falkenstein" }, { key: "syd", name: "Sydney" }];
+  expect((await row(server({ services: ["api"], region: "default" }), null, regions)).textContent).toBe("fsn-1apiFalkensteinOnline");
   cleanup();
-  expect((await row(server({ services: ["api"] }))).textContent).toBe("fsn-1apiOnline");
+  expect((await row(server({ services: ["api"], region: "SYD" }), null, regions)).textContent).toBe("fsn-1apiSydneyOnline");
+  cleanup();
+  expect((await row(server({ services: ["api"], region: "eu_west" }), null, regions)).textContent).toBe("fsn-1apieu_westOnline");
+  cleanup();
+  expect((await row(server({ services: ["api"] }), null, regions)).textContent).toBe("fsn-1apiOnline");
 });
 
 it("shows three Services and counts the rest", async () => {

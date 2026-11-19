@@ -19,6 +19,7 @@ use ployz_core::{
     UpdateMachineRequest, op,
 };
 
+use ployz_store::{REGION_LABEL, RegionKey};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -32,6 +33,7 @@ use crate::{
 use super::{Error, leaf_matches, route, string_values, with_client};
 
 mod add;
+mod asked_policy;
 pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
@@ -51,6 +53,7 @@ pub(super) mod upgrade_policy;
 mod waiting;
 
 use add::add;
+pub(super) use asked_policy::AskedPolicy;
 #[cfg(test)]
 pub(crate) use enroll::engine_view;
 pub(super) use enroll::{enroll_token, founding_cluster_name, joined_open, joined_unnamed};
@@ -753,10 +756,15 @@ fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
 }
 
 pub(super) fn parse_policy(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
-    let mut label_changes = parse_label_add(matches)?
-        .into_iter()
-        .map(|(key, value)| (key, Some(value)))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut label_changes = std::collections::BTreeMap::new();
+    for (key, value) in parse_label_add(matches)? {
+        let value = if key.as_str() == REGION_LABEL {
+            RegionKey::parse(value.as_str())?.as_str().parse()?
+        } else {
+            value
+        };
+        label_changes.insert(key, Some(value));
+    }
     for key in string_values(matches, "label-rm") {
         let key = ployz_core::MachineLabelKey::parse(key)?;
         match label_changes.entry(key) {
@@ -808,31 +816,16 @@ fn parse_labels(
     Ok(labels)
 }
 
-pub(super) fn enrollment_policy(
-    matches: &ArgMatches,
-) -> Result<ployz_core::InitialMachinePolicy, Error> {
-    initial_policy(
+pub(super) fn enrollment_policy(matches: &ArgMatches) -> Result<AskedPolicy, Error> {
+    AskedPolicy::parse(
         &string_values(matches, "label-add"),
+        matches.get_one::<String>("region").map(String::as_str),
         [
             matches.get_one::<bool>("accepts-builds").copied(),
             matches.get_one::<bool>("accepts-services").copied(),
             matches.get_one::<bool>("accepts-ingress").copied(),
         ],
     )
-}
-
-/// The policy a Server starts with from the labels and the `--accepts-builds`,
-/// `--accepts-services` and `--accepts-ingress` values given, each on unless said off.
-fn initial_policy(
-    labels: &[String],
-    accepts: [Option<bool>; 3],
-) -> Result<ployz_core::InitialMachinePolicy, Error> {
-    Ok(ployz_core::InitialMachinePolicy {
-        labels: parse_labels(labels)?,
-        accepts_builds: accepts[0].unwrap_or(true),
-        accepts_services: accepts[1].unwrap_or(true),
-        accepts_ingress: accepts[2].unwrap_or(true),
-    })
 }
 
 pub(super) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoint>, Error> {
@@ -949,6 +942,11 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("name", None)
                 .help("Name the Server; it takes its hostname when omitted"),
+        )
+        .arg(
+            value("region", None)
+                .value_name("KEY")
+                .help("Put the Server in region KEY; it starts in default when omitted"),
         )
         .arg(switch("no-install", None).help("Skip installing Ployz; the Server runs it already"))
         .arg(
@@ -1663,6 +1661,24 @@ mod tests {
         ] {
             assert!(parse(&flags).is_err(), "{flags:?}");
         }
+        for value in ["eu/west", "a:b", "*"] {
+            let refused = parse(&["--label-add", &format!("region={value}")])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("A region is the value of a Server's region label"),
+                "{value}: {refused}"
+            );
+        }
+        let patch = parse(&["--label-add", "region=Fsn"]).unwrap();
+        assert_eq!(
+            patch
+                .label_changes
+                .get("region")
+                .and_then(Option::as_ref)
+                .map(ployz_core::MachineLabelValue::as_str),
+            Some("fsn")
+        );
     }
 
     #[test]

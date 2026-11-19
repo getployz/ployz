@@ -124,6 +124,7 @@ fn a_setting_of_the_wrong_shape_names_its_reason_never_its_value() {
                 id: ProjectId::parse(uuid("project")).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid("env")).unwrap(),
+                region: None,
             },
         )
         .unwrap();

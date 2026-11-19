@@ -22,9 +22,9 @@ use ployz_store::tools::{
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject,
     CreateService, CreateVolume, Deploy, DeploymentId, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentsQuery, NamespacesQuery, OrganizationId, ProjectId, ProjectName,
-    RowTracker, RunEvidence, RunnerId, SealingRecipient, ServiceLineageId, SettingPath, Trusted,
-    VolumeId, VolumeName,
+    EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespacesQuery, OrganizationId,
+    ProjectId, ProjectName, RowTracker, RunEvidence, RunnerId, SealingRecipient, ServiceLineageId,
+    SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -45,6 +45,7 @@ fn shop_in(store: ConfigStore) -> ConfigStore {
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
                     .unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -270,6 +271,8 @@ fn the_catalog_has_the_agreed_tools() {
             "github_ls",
             "github_connect",
             "server_show",
+            "server_add",
+            "region_list",
             "server_logs",
             "server_metrics",
             "service_status",
@@ -280,6 +283,7 @@ fn the_catalog_has_the_agreed_tools() {
             "service_start",
             "service_stop",
             "server_set",
+            "region_rename",
             "server_drain",
             "server_upgrade",
             "server_clean",
@@ -506,6 +510,19 @@ fn github_connect_reads_cloud_s_answer_with_every_field_optional() {
     assert_eq!(
         connect(json!({})),
         json!({ "connected": false, "repositories": [], "connect_at": null })
+    );
+}
+
+#[test]
+fn server_add_gives_the_command_that_puts_a_server_in_a_region() {
+    let add = |input: Value| call(&shop(), "server_add", input, "call-1").ok();
+    assert_eq!(
+        add(json!({})),
+        json!({ "command": "ployz server add", "region": "default" })
+    );
+    assert_eq!(
+        add(json!({ "region": "SYD" })),
+        json!({ "command": "ployz server add --region syd", "region": "syd" })
     );
 }
 
@@ -1257,10 +1274,10 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
 fn project_create_makes_a_project_once_per_key() {
     let store = shop();
     let input = json!({ "name": "docs", "request_key": "project-docs-0001" });
-    let created = call(&store, "project_create", input.clone(), "create-1").ok();
+    let created = create_project(&store, input.clone(), "create-1").ok();
     assert_eq!(created["at"], "docs/production");
     assert_eq!(created["next"]["tool"], "environment_show");
-    let again = call(&store, "project_create", input, "create-2").ok();
+    let again = create_project(&store, input, "create-2").ok();
     assert_eq!(again, created, "the same key replays the same Project");
     let shown = call(
         &store,
@@ -1271,15 +1288,81 @@ fn project_create_makes_a_project_once_per_key() {
     .ok();
     assert_eq!(shown["at"], "docs/production", "{shown}");
 
-    let refusal = call(
+    let refusal = create_project(
         &store,
-        "project_create",
         json!({ "name": "docs", "request_key": "project-docs-0002" }),
         "create-3",
     )
     .refused();
     assert_eq!(refusal.code, RpcErrorCode::Conflict);
     assert_eq!(refusal.writes, Writes::None);
+}
+
+/// `project_create` against a Cluster whose Servers pin no region.
+fn create_project(store: &ConfigStore, input: Value, call_key: &str) -> Run {
+    drive(
+        store,
+        in_org(),
+        "project_create",
+        input,
+        call_key,
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+            Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+        },
+    )
+}
+
+fn production_region_of(store: &ConfigStore, project: &str) -> Option<String> {
+    store
+        .read(
+            &who(),
+            &EnvironmentQuery {
+                environment: EnvironmentRef {
+                    project: Some(ProjectName::parse(project).unwrap()),
+                    environment: None,
+                },
+                path: None,
+                all: false,
+            },
+        )
+        .unwrap()
+        .region
+        .map(|region| region.to_string())
+}
+
+fn create_docs_where_the_servers_say(first_region: Option<&str>) -> Option<String> {
+    let store = shop();
+    let mut answer = servers(&[("web-1", 'a')]);
+    if let Some(region) = first_region {
+        answer["new_environment_region"] = json!(region);
+    }
+    drive(
+        &store,
+        in_org(),
+        "project_create",
+        json!({ "name": "docs", "request_key": "project-docs-0001" }),
+        "create-1",
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(answer.clone()),
+            Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+        },
+    )
+    .ok();
+    production_region_of(&store, "docs")
+}
+
+#[test]
+fn a_project_the_agent_creates_runs_production_where_the_first_server_is() {
+    assert_eq!(
+        create_docs_where_the_servers_say(Some("default")),
+        Some("default".to_owned())
+    );
+}
+
+#[test]
+fn a_project_the_agent_creates_runs_in_any_region_when_no_region_is_pinned() {
+    assert_eq!(create_docs_where_the_servers_say(None), None);
 }
 
 #[test]
@@ -1308,9 +1391,8 @@ fn project_rename_applies_at_once_and_repeats_harmlessly() {
     .ok();
     assert_eq!(again["project"], "store");
 
-    call(
+    create_project(
         &store,
-        "project_create",
         json!({ "name": "docs", "request_key": "project-docs-0001" }),
         "create-1",
     )
@@ -1375,7 +1457,10 @@ fn two_organizations_create_with_the_same_key() {
             "project_create",
             input.clone(),
             call_key,
-            &mut no_cloud,
+            &mut |cloud| match cloud {
+                Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+                Cloud::Ask(_) | Cloud::Act(_) => panic!("unexpected Cloud call"),
+            },
         )
         .ok()
     };
@@ -1629,6 +1714,7 @@ fn an_undeployed_environment_is_removed_from_a_local_store() {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
                 project: None,
                 name: EnvironmentName::parse("preview").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -3029,6 +3115,7 @@ fn a_keyed_retry_of_the_latest_replays_after_it_becomes_the_latest() {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
                 project: None,
                 name: EnvironmentName::parse("preview").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -4098,7 +4185,7 @@ fn docs_answer_from_the_binary_on_any_store() {
 }
 
 /// Read tools with no input that names something which might not exist.
-const NO_MISSING_TARGET: &[&str] = &["github_connect"];
+const NO_MISSING_TARGET: &[&str] = &["github_connect", "region_list", "server_add"];
 
 /// Each read tool asked about a name or path that does not exist, one row per
 /// input that names one. A new read tool fails

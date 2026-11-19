@@ -32,6 +32,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
                 name: ProjectName::parse("test").unwrap(),
                 default_environment: environment(),
+                region: None,
             },
         )
         .unwrap();
@@ -1035,6 +1036,7 @@ fn separately_uploaded() -> Claimed {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
                 name: ProjectName::parse("test").unwrap(),
                 default_environment: environment(),
+                region: None,
             },
         )
         .unwrap();

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as github from "#/modules/github/github.collection";
+import * as regionHooks from "#/modules/machines/server-regions.hooks";
 import { databaseCommand } from "#/modules/config-store/database-presets";
 import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import * as functions from "#/modules/config-store/store.functions";
@@ -27,13 +28,21 @@ function deferred() {
 }
 
 /** /new over the real Store writer, with the Store's answers to `create_project` and to the database's Batch. */
-function setup({ project, database }: { project: Answer; database: Answer }) {
+function setup({ project, database, servers = { settled: true, region: null } }: {
+  project: Answer;
+  database: Answer;
+  /** What the Servers say a new Environment's region is: none pins one, unless a test says otherwise. */
+  servers?: ReturnType<typeof regionHooks.useNewEnvironmentRegion>;
+}) {
   const queryClient = new QueryClient();
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
   vi.spyOn(github, "preloadGithubRepos").mockImplementation(() => {});
+  vi.spyOn(regionHooks, "useNewEnvironmentRegion").mockReturnValue(servers);
   const sent: ConfigCommand["command"][] = [];
+  const commands: ConfigCommand[] = [];
   vi.spyOn(functions, "writeStoreServerFn").mockImplementation(async ({ data }) => {
     sent.push(data.command.command);
+    commands.push(data.command);
     return data.command.command === "create_project" ? project() : database();
   });
   vi.spyOn(creators, "useCreateStoreService").mockReturnValue(vi.fn());
@@ -61,7 +70,7 @@ function setup({ project, database }: { project: Answer; database: Answer }) {
   });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   const choosePostgres = async () => act(async () => fireEvent.click(await screen.findByRole("option", { name: "PostgreSQL" })));
-  return { router, sent, toastError, choosePostgres };
+  return { router, sent, commands, toastError, choosePostgres };
 }
 
 beforeEach(() => {
@@ -149,4 +158,30 @@ it("a new project whose own write fails stays put and says the project wasn't cr
   expect(await screen.findByText("Couldn’t create project")).toBeTruthy();
   expect(router.state.location.pathname).toBe("/cloud/acme/new");
   expect(sent).toEqual(["create_project"]);
+});
+
+it("starts a new project's Environment in the region of the Cluster's first Server", async () => {
+  const { commands, choosePostgres } = setup({ project: saved, database: saved, servers: { settled: true, region: "fsn" } });
+
+  await choosePostgres();
+
+  await waitFor(() => expect(commands[0]).toMatchObject({ command: "create_project", region: "fsn" }));
+});
+
+it("sends no region for a Cluster that pins none, rather than guess one", async () => {
+  const { commands, choosePostgres } = setup({ project: saved, database: saved });
+
+  await choosePostgres();
+
+  await waitFor(() => expect(commands).toHaveLength(2));
+  expect(commands[0]).not.toHaveProperty("region");
+});
+
+it("holds the picker until the Servers are read, so a new project isn't made without its region", async () => {
+  const { sent } = setup({ project: saved, database: saved, servers: { settled: false, region: null } });
+
+  const postgres = await screen.findByRole("option", { name: "PostgreSQL" });
+  expect(postgres.getAttribute("aria-disabled")).toBe("true");
+  await act(async () => fireEvent.click(postgres));
+  expect(sent).toEqual([]);
 });

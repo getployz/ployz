@@ -489,13 +489,14 @@ mod tests {
     use super::*;
 
     const SHAPING_SWITCHES: [&str; 3] = ["reset", "yes", "ingress-closed"];
-    const SHAPING_VALUES: [&str; 12] = [
+    const SHAPING_VALUES: [&str; 13] = [
         "name",
         "storage",
         "public-ip",
         "wg-endpoint",
         "wg-mtu",
         "label-add",
+        "region",
         "accepts-builds",
         "accepts-services",
         "accepts-ingress",
@@ -613,6 +614,8 @@ mod tests {
             "region=eu",
             "--label-add",
             "rack=r1",
+            "--region",
+            "EU",
             "--accepts-builds",
             "false",
             "--accepts-services=false",

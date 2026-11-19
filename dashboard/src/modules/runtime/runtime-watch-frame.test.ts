@@ -79,6 +79,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     const frame = runtimeWatchFrameForTransport(runtimeWatchFrameFixture({
       observed_at: OBSERVED_AT,
       effective_build_concurrency: { ["machine-a" as typeof api.machine_id]: 2 },
+      joined_at: { ["machine-a" as typeof api.machine_id]: 1_787_000_000 },
       machines: [
         runtimeWatchMachineObservationFixture({
           machine: runtimeWatchMachineFixture("machine-a", "edge-a", {
@@ -141,6 +142,8 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           storage: "pool",
           buildConcurrency: 2,
           region: null,
+          subnet: "10.0.0.0/24",
+          joinedAt: 1_787_000_000,
           effectiveBuildConcurrency: 2,
           runningBuilds: 1,
           capabilities: ["ployz.logs.tail.v1"],

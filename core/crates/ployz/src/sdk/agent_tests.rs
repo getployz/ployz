@@ -422,6 +422,32 @@ async fn acted<T, F: std::future::Future<Output = Result<T, RpcError>>>(
     acted
 }
 
+#[tokio::test]
+async fn a_new_environment_gets_no_region_while_a_servers_record_is_incomplete() {
+    let mut one = support::machine('a', "one");
+    one.machine.labels.insert(
+        ployz_core::MachineLabelKey::parse("region").unwrap(),
+        ployz_core::MachineLabelValue::parse("default").unwrap(),
+    );
+    let pinned = |incomplete: Vec<ployz_core::MachineId>| {
+        let service = support::DeployService::new(one.clone()).runtime_watch_incomplete(incomplete);
+        async {
+            let servers = CloudQuery::Servers { only: None };
+            acted(service, |session, _| async move {
+                ask(&session, servers, &Readable::All, None).await
+            })
+            .await
+            .unwrap()
+            .get("new_environment_region")
+            .cloned()
+            .unwrap_or_default()
+        }
+    };
+    assert_eq!(pinned(Vec::new()).await, serde_json::json!("default"));
+    let unread = support::machine('b', "two").machine.id;
+    assert_eq!(pinned(vec![unread]).await, serde_json::Value::Null);
+}
+
 fn logs_in(namespace: &str) -> LogsQuery {
     LogsQuery {
         namespace: Namespace::parse(namespace).unwrap(),

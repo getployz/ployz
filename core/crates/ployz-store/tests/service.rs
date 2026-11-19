@@ -42,6 +42,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -453,6 +454,7 @@ fn a_replayed_create_refuses_once_the_default_environment_moved() {
                 id: EnvironmentId::parse(uuid(9)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -522,6 +524,7 @@ fn a_replayed_create_whose_scope_names_no_place_now_returns_its_first_answer() {
                 id: ProjectId::parse(uuid(12)).unwrap(),
                 name: ProjectName::parse("blog").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(13)).unwrap(),
+                region: None,
             },
         )
         .unwrap();

@@ -18,6 +18,7 @@ import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
+import { useNewEnvironmentRegion } from "#/modules/machines/server-regions.hooks";
 
 /** Creates an empty root Environment and opens its canvas. */
 export function CreateEnvironmentDialog({
@@ -33,6 +34,8 @@ export function CreateEnvironmentDialog({
   const markHere = useStillHere();
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
+  // Its Services run where the Cluster's first Server is; an Environment from before this stays in any region.
+  const { settled, region } = useNewEnvironmentRegion(organizationSlug);
   const mutation = useMutation({
     mutationFn: async (input: {
       organizationSlug: string;
@@ -44,8 +47,8 @@ export function CreateEnvironmentDialog({
       if (invalid) throw new Error(invalid);
       // The Store names it as typed, or says why not in the form.
       const id = crypto.randomUUID();
-      await writer.commit({ command: "create_environment", id, project: input.projectSlug, name: input.name },
-        ["invalid_argument", "conflict"]);
+      const create = { command: "create_environment", id, project: input.projectSlug, name: input.name } as const;
+      await writer.commit(region === null ? create : { ...create, region }, ["invalid_argument", "conflict"]);
       return input.name;
     },
     onSuccess: async (environmentSlug, input) => {
@@ -78,7 +81,7 @@ export function CreateEnvironmentDialog({
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (name.trim() && !mutation.isPending)
+            if (name.trim() && settled && !mutation.isPending)
               mutation.mutate({
                 organizationSlug,
                 projectSlug,
@@ -106,7 +109,7 @@ export function CreateEnvironmentDialog({
             <DialogClose render={<Button variant="outline" />}>
               Cancel
             </DialogClose>
-            <Button type="submit" disabled={!name.trim() || mutation.isPending}>
+            <Button type="submit" disabled={!name.trim() || !settled || mutation.isPending}>
               {mutation.isPending && <Spinner data-icon="inline-start" />}
               Add environment
             </Button>

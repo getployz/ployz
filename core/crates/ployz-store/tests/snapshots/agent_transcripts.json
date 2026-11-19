@@ -617,6 +617,29 @@
     "turns": [
       {
         "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
           "step": "write",
           "write": {
             "at": "store",
@@ -5833,6 +5856,156 @@
     ]
   },
   {
+    "tool": "server_add",
+    "input": {
+      "region": "syd"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-server_add",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "command": "ployz server add --region syd",
+              "region": "syd"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "server_add",
+    "input": {
+      "region": "syd"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-server_add",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "command": "ployz server add --region syd",
+              "region": "syd"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "region_list",
+    "input": {},
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-region_list",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "region_list",
+                "input": {}
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "region_list",
+    "input": {},
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-region_list",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "region_list",
+                "input": {}
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "server_logs",
     "input": {
       "lines": 50,
@@ -7189,6 +7362,111 @@
                 "input": {
                   "accepts_ingress": false,
                   "server": "db-1"
+                }
+              },
+              "writes": "none",
+              "next": [],
+              "details": {
+                "fix": {
+                  "fix": "use_cloud"
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "region_rename",
+    "input": {
+      "name": "Falkenstein",
+      "region": "default"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-region_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "read",
+          "asks": [
+            {
+              "at": "cloud",
+              "ask": {
+                "query": "servers",
+                "only": null
+              }
+            }
+          ]
+        },
+        "answers": [
+          {
+            "error": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "details": null
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "unavailable",
+              "message": "no Ployz Cloud in this transcript",
+              "retry": {
+                "tool": "region_rename",
+                "input": {
+                  "name": "Falkenstein",
+                  "region": "default"
+                }
+              },
+              "writes": "none",
+              "next": []
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "region_rename",
+    "input": {
+      "name": "Falkenstein",
+      "region": "default"
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-region_rename",
+    "turns": [
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": false,
+            "refusal": {
+              "code": "not_here",
+              "message": "This needs Ployz Cloud; a local Config Store cannot answer it",
+              "retry": {
+                "tool": "region_rename",
+                "input": {
+                  "name": "Falkenstein",
+                  "region": "default"
                 }
               },
               "writes": "none",

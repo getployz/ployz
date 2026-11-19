@@ -40,6 +40,7 @@ fn project(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
+                region: None,
             },
         )
         .unwrap();

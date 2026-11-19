@@ -350,6 +350,7 @@ fn shop() -> ConfigStore {
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
                     .unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1993,6 +1994,7 @@ fn removed_but_unswept() -> ConfigStore {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -2986,6 +2988,7 @@ mod tool_facts {
 
     const SERVER: &[&str] = &[
         "server_show",
+        "server_add",
         "server_logs",
         "server_metrics",
         "server_drain",
@@ -2995,6 +2998,7 @@ mod tool_facts {
         "server_remove",
         "server_forget",
     ];
+    const REGION: &[&str] = &["region_list", "region_rename"];
     const VOLUME: &[&str] = &[
         "volume_add",
         "volume_update",
@@ -3072,6 +3076,7 @@ mod tool_facts {
     fn status_of(tool: &str) -> &'static str {
         let family = [
             (SERVER, "server_show"),
+            (REGION, "region_list"),
             (VOLUME, "volume_show"),
             (SERVICE, "service_status"),
             (DEPLOYMENT, "deployment_show"),
@@ -3084,7 +3089,7 @@ mod tool_facts {
 
     #[test]
     fn the_table_names_every_tool_once() {
-        let named = [SERVER, VOLUME, SERVICE, DEPLOYMENT].concat();
+        let named = [SERVER, REGION, VOLUME, SERVICE, DEPLOYMENT].concat();
         let catalog = tools::catalog();
         let mut catalogued: Vec<&str> = catalog.iter().map(|def| def.name).collect();
         let mut named_sorted = named.clone();

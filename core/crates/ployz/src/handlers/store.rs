@@ -479,9 +479,7 @@ impl<'m> Store<'m> {
         })
     }
 
-    /// The regions the Servers are in, by their `region` label; none when a Server went
-    /// unobserved.
-    fn observe_regions(&self) -> Option<BTreeSet<Region>> {
+    fn observe_frame(&self) -> Option<ployz_core::RuntimeWatchFrame> {
         let runtime = runtime().ok()?;
         let context = self.context();
         let observe = async {
@@ -491,9 +489,15 @@ impl<'m> Store<'m> {
             };
             client.ok()?.runtime_frame().await.ok()
         };
-        let frame = runtime
+        runtime
             .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await })
-            .ok()??;
+            .ok()?
+    }
+
+    /// The regions the Servers are in, by their `region` label; none when a Server went
+    /// unobserved.
+    fn observe_regions(&self) -> Option<BTreeSet<Region>> {
+        let frame = self.observe_frame()?;
         frame.incomplete_ids.machines.is_empty().then(|| {
             frame
                 .machines
@@ -501,6 +505,13 @@ impl<'m> Store<'m> {
                 .filter_map(|observed| Region::of(&observed.machine))
                 .collect()
         })
+    }
+
+    /// The region a new Environment starts in: the Cluster's first Server's. None when any
+    /// Server has no region, or a Server went unobserved, which pins nothing.
+    pub(crate) fn new_environment_region(&self) -> Option<Region> {
+        let frame = self.observe_frame()?;
+        Region::of_first_server(ployz_core::JoinedServer::all(&frame))
     }
 
     /// The Servers' certificates, ingress Servers and their addresses, through `--connect` or the
@@ -922,6 +933,7 @@ pub(crate) fn store_with_edits(matches: &ArgMatches) -> (Store<'_>, impl Fn()) {
                 id: ployz_store::ProjectId::parse(mint()).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: ployz_store::EnvironmentId::parse(mint()).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1238,6 +1250,15 @@ pub(crate) fn domain_changes<'a>(
 /// A Setting's value as `get` and `inspect` show it, marked when it is the default
 /// and followed by the default when it is not: `3 (default 1)`, or `(no default)`.
 pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
+    // An Environment's region has no default to compare: unset, its Services run in any region, so a set one
+    // reads as itself, never as a region named "default" with no default.
+    if row.path.to_string() == "@environment.region" {
+        return if row.value.is_null() {
+            "any region".to_owned()
+        } else {
+            plain(&row.value)
+        };
+    }
     let value = plain(&row.value);
     // A variable or mount (`SERVICE.env.KEY`, `SERVICE.mounts.VOLUME`) has no
     // default: unset removes it.
@@ -1619,6 +1640,14 @@ mod tests {
         assert_eq!(valued(&row("web.startCommand", json!(null))), "- (default)");
         assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "\"3000\"");
         assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "\"/data\"");
+        assert_eq!(
+            valued(&row("@environment.region", json!("default"))),
+            "\"default\""
+        );
+        assert_eq!(
+            valued(&row("@environment.region", json!(null))),
+            "any region"
+        );
     }
 
     #[test]

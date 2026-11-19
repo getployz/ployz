@@ -385,6 +385,7 @@ pub(super) fn new(root: &ArgMatches) -> Result<(), Error> {
         id: EnvironmentId::parse(mint())?,
         project: project(matches)?,
         name,
+        region: store.new_environment_region(),
     };
     let created = store.write(&create)?;
     crate::ui::finish(&created, || {

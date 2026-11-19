@@ -1963,6 +1963,7 @@ mod tests {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: receiver.clone(),
+                    region: None,
                 },
             )
             .unwrap();

@@ -1,7 +1,7 @@
 use crate::cluster::{Call, Wait};
 use clap::ArgMatches;
 use ployz_core::{
-    EnrollAs, EnrollRequest, EnrollmentSnapshot, Hint, InspectRequest, LocalMachinePhase,
+    EnrollAs, EnrollRequest, EnrollmentSnapshot, Hint, InspectRequest, LocalMachinePhase, Machine,
     MachineId, MachineName, RegisterRequest, WireGuardPublicKey, op,
 };
 
@@ -62,13 +62,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         let history = config.path().with_extension("enrollment");
         // A Server still joining under this identity resumes: an approved join stays unlisted
         // until its confirmation is relayed below.
-        let joining = details.phase == LocalMachinePhase::Joining
-            && details.machine.as_ref().is_some_and(|machine| {
-                machine.id == token.id && machine.public_key == token.public_key
-            });
+        let joining = (details.phase == LocalMachinePhase::Joining)
+            .then_some(details.machine.as_ref())
+            .flatten()
+            .filter(|machine| machine.id == token.id && machine.public_key == token.public_key);
+        let listed = listed(&snapshot, token.id, token.public_key);
         if details.phase != LocalMachinePhase::Uninitialized
-            && !joining
-            && !resumes(&snapshot, token.id, token.public_key)
+            && joining.is_none()
+            && listed.is_none()
         {
             helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
             helpers::leave(&mut target_client, &details).await?;
@@ -77,6 +78,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .await?
                 .1;
         }
+        let policy = policy.settle(listed.or(joining), matches)?;
 
         let assignment = crate::enrollment::local::save_assignment(
             &history,
@@ -273,13 +275,18 @@ fn require_free_name(
     ))))
 }
 
-/// Only a Server the Cluster lists resumes its join. One this computer assigned that the Cluster
-/// no longer lists was forgotten, and still holds the state it had then.
-fn resumes(snapshot: &EnrollmentSnapshot, id: MachineId, public_key: WireGuardPublicKey) -> bool {
+/// The Server the Cluster lists under this identity. Only a listed Server resumes its join. One
+/// this computer assigned that the Cluster no longer lists was forgotten, and still holds the
+/// state it had then.
+fn listed(
+    snapshot: &EnrollmentSnapshot,
+    id: MachineId,
+    public_key: WireGuardPublicKey,
+) -> Option<&Machine> {
     snapshot
         .machines
         .iter()
-        .any(|machine| machine.id == id && machine.public_key == public_key)
+        .find(|machine| machine.id == id && machine.public_key == public_key)
 }
 
 #[cfg(test)]
@@ -376,7 +383,7 @@ mod tests {
         .unwrap();
         joined.machines.push(saved.machine);
         assert!(
-            resumes(&joined, returning.id, returning.public_key),
+            listed(&joined, returning.id, returning.public_key).is_some(),
             "a Server the Cluster lists resumes its join"
         );
 
@@ -385,7 +392,7 @@ mod tests {
             ..joined
         };
         assert!(
-            !resumes(&forgotten, returning.id, returning.public_key),
+            listed(&forgotten, returning.id, returning.public_key).is_none(),
             "a forgotten Server is reset, whatever this computer once assigned it"
         );
     }

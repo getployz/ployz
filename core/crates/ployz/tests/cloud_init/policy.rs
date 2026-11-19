@@ -206,3 +206,196 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// `server add` joining over SSH with an enrollment token and `flags`.
+async fn join_with(
+    address: std::net::SocketAddr,
+    cloud: &str,
+    flags: &[&str],
+) -> std::process::Output {
+    super::harness::device_cli()
+        .args([
+            "--connect",
+            &format!("ssh://root@{address}"),
+            "server",
+            "add",
+            "--token-file",
+            super::harness::token_file(),
+            "--cloud-url",
+            cloud,
+            "--name",
+            "joiner",
+            "--yes",
+        ])
+        .args(flags)
+        .output()
+        .await
+        .unwrap()
+}
+
+/// A Server joins the region `--region` or its `region` label names, in lowercase, and the
+/// default region when neither does.
+#[tokio::test]
+async fn a_server_joins_the_region_it_is_given_or_the_default_one() {
+    for (flags, region) in [
+        (&[][..], "default"),
+        (&["--region", "SYD"][..], "syd"),
+        (&["--label-add", "region=Syd"][..], "syd"),
+        (&["--region", "syd", "--label-add", "region=SYD"][..], "syd"),
+    ] {
+        let mut registration = registration();
+        registration.assigned_machine.labels =
+            [("region".parse().unwrap(), region.parse().unwrap())].into();
+        let enroll = EnrollListen::start(json!({
+            "kind": "join",
+            "storage": "none",
+            "pairing": { "secret": PAIRING },
+            "registration": registration,
+        }))
+        .await;
+        let daemon = JoinDaemon::new(registration);
+        let address = serve_machine(daemon.clone()).await;
+
+        let output = join_with(address, &enroll.url, flags).await;
+
+        assert!(
+            output.status.success(),
+            "{flags:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            enroll
+                .posts()
+                .first()
+                .and_then(|post| post.pointer("/initialPolicy/labels")),
+            Some(&json!({ "region": region })),
+            "{flags:?}"
+        );
+        assert_eq!(daemon.join_attempts(), 1, "{flags:?}");
+    }
+}
+
+/// Two different regions are refused before Cloud or the Server hears of the join, saying
+/// which flag to keep.
+#[tokio::test]
+async fn a_join_naming_two_regions_is_refused_before_it_starts() {
+    let enroll = EnrollListen::script([]).await;
+    let events = EventLog::default();
+    let daemon = JoinDaemon::new(registration()).with_events(events.clone());
+    let address = serve_machine(daemon.clone()).await;
+
+    let output = join_with(
+        address,
+        &enroll.url,
+        &["--region", "syd", "--label-add", "region=fsn"],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "--region syd and --label-add region=fsn disagree. Keep --region syd and drop the region label."
+        ),
+        "{stderr}"
+    );
+    assert_eq!(enroll.paths(), Vec::<String>::new());
+    assert_eq!(events.entries(), Vec::<&str>::new());
+    assert_eq!(daemon.join_attempts(), 0);
+}
+
+/// A Server that already joined, in `region` or in none, listed by Cloud as joined and
+/// participating as itself.
+fn joined_server(region: Option<&str>) -> (Registered, JoinDaemon) {
+    let mut registration = registration();
+    registration.assigned_machine.labels = region
+        .map(|region| [("region".parse().unwrap(), region.parse().unwrap())].into())
+        .unwrap_or_default();
+    registration.assigned_machine.runtime.daemon_version = env!("CARGO_PKG_VERSION").into();
+    let daemon = JoinDaemon::new(registration.clone()).participating();
+    (registration, daemon)
+}
+
+async fn labels_of(address: std::net::SocketAddr) -> serde_json::Value {
+    let machine = connect_daemon(address)
+        .await
+        .call::<op::Inspect>(InspectRequest::default(), Call::read())
+        .await
+        .unwrap()
+        .machine
+        .unwrap();
+    serde_json::to_value(machine.labels).unwrap()
+}
+
+/// Rerunning the add of a Server that joined before regions, or in any region, asks Cloud
+/// for the Server as it is, and leaves its labels alone.
+#[tokio::test]
+async fn rerunning_an_add_with_no_region_keeps_the_servers_region() {
+    for region in [None, Some("default"), Some("fsn")] {
+        let (registration, daemon) = joined_server(region);
+        let labels = serde_json::to_value(&registration.assigned_machine.labels).unwrap();
+        let enroll = EnrollListen::start(json!({
+            "kind": "join",
+            "storage": "none",
+            "pairing": { "secret": PAIRING },
+            "registration": registration,
+        }))
+        .await;
+        let address = serve_machine(daemon.clone()).await;
+
+        let output = join_with(address, &enroll.url, &[]).await;
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{region:?}: {stderr}");
+        assert_eq!(
+            enroll
+                .posts()
+                .first()
+                .and_then(|post| post.pointer("/initialPolicy/labels")),
+            Some(&labels),
+            "{region:?}"
+        );
+        assert_eq!(labels_of(address).await, labels, "{region:?}");
+        assert_eq!(daemon.join_attempts(), 0, "{region:?}");
+    }
+}
+
+/// A region typed for a Server that is already in another one is refused before Cloud
+/// hears of it, naming both.
+#[tokio::test]
+async fn rerunning_an_add_with_another_region_is_refused_naming_both() {
+    for (region, said) in [
+        (
+            None,
+            "Server joiner has no region, not syd. Adding it again doesn't move it.",
+        ),
+        (
+            Some("default"),
+            "Server joiner is in region default, not syd. Adding it again doesn't move it.",
+        ),
+    ] {
+        for flags in [&["--region", "syd"][..], &["--label-add", "region=SYD"][..]] {
+            let (registration, daemon) = joined_server(region);
+            let enroll = EnrollListen::start(json!({
+                "kind": "join",
+                "storage": "none",
+                "pairing": { "secret": PAIRING },
+                "registration": registration,
+            }))
+            .await;
+            let address = serve_machine(daemon.clone()).await;
+
+            let output = join_with(address, &enroll.url, flags).await;
+
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{region:?} {flags:?}: {stderr}");
+            assert!(stderr.contains(said), "{region:?} {flags:?}: {stderr}");
+            assert!(
+                stderr.contains("server set joiner --label-add 'region=syd'"),
+                "{region:?} {flags:?}: {stderr}"
+            );
+            assert_eq!(enroll.posts(), Vec::<serde_json::Value>::new());
+            assert_eq!(daemon.join_attempts(), 0);
+        }
+    }
+}

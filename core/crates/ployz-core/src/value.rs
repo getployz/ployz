@@ -1270,7 +1270,7 @@ impl std::borrow::Borrow<str> for CertificateHost {
 /// One Machine's optimistic container subnet candidate.
 ///
 /// A Machine Subnet is always an IPv4 `/24`.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
 pub struct MachineSubnet(Ipv4Net);

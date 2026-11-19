@@ -6,6 +6,7 @@ use chrono::DateTime;
 use clap::{ArgMatches, Command};
 use globset::GlobMatcher;
 use ployz_core::{Hint, RpcErrorCode, StorageChoice};
+use ployz_store::RegionKey;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -23,6 +24,7 @@ pub(crate) fn command(command: Command) -> Command {
         .arg(switch("all", None).help("Select every waiting server"))
         .arg(value("first", None).num_args(0..=1).default_missing_value("").value_name("NAME").help("Enroll only the oldest match, or pick NAME as founder"))
         .arg(value("name", None).value_name("PATTERN").help("Server name pattern; put n in braces to number servers"))
+        .arg(value("region", None).value_name("KEY").help("Put every enrolled Server in region KEY; they start in default when omitted"))
         .arg(switch("status", None).help("Follow enrollment stages, or resume open attempts"))
         .arg(crate::cli::yes("Start after printing the plan without asking"))
         .arg(value("storage", None).value_parser(clap::value_parser!(StorageChoice)).help("zfs (default) or none for Docker volumes"))
@@ -282,9 +284,22 @@ fn request(matches: &ArgMatches, selected: &[&Waiting]) -> Result<Value, Error> 
             json!({ "kind": "zfs", "use_spare_disk": !matches.get_flag("no-spare-disk"), "fallback_to_docker": !matches.get_flag("no-fallback") })
         }
     };
-    Ok(
-        json!({ "ids": selected.iter().map(|host| &host.row.id).collect::<Vec<_>>(), "first": first, "names": names, "storage": storage, "runs": { "services": true, "ingress": true, "builds": true } }),
-    )
+    let regions = match matches.get_one::<String>("region") {
+        Some(region) => {
+            let region = RegionKey::parse(region)?;
+            let each: serde_json::Map<_, _> = selected
+                .iter()
+                .map(|host| (host.row.id.clone(), json!(region)))
+                .collect();
+            Some(each)
+        }
+        None => None,
+    };
+    let mut body = json!({ "ids": selected.iter().map(|host| &host.row.id).collect::<Vec<_>>(), "first": first, "names": names, "storage": storage, "runs": { "services": true, "ingress": true, "builds": true } });
+    if let (Some(regions), Some(fields)) = (regions, body.as_object_mut()) {
+        fields.insert("regions".to_owned(), regions.into());
+    }
+    Ok(body)
 }
 
 fn plan_table(plan: &Plan, selected: &[&Waiting]) -> Table {

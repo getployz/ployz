@@ -19,7 +19,7 @@ const observed: RuntimeSnapshot = {
     {
       id: "m1",
       name: "fra-1",
-      publicIp: null,
+      subnet: null, joinedAt: null, publicIp: null,
       acceptsIngress: true,
       endpoints: [],
       acceptsBuilds: true,

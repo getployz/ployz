@@ -38,6 +38,7 @@ pub(crate) mod operator;
 pub(crate) mod private_access;
 pub(crate) mod project;
 pub(crate) mod recovery;
+pub(crate) mod region;
 pub(crate) mod review;
 mod route;
 pub(crate) mod server;

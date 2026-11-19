@@ -390,6 +390,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
                     .unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -599,6 +600,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
                     .unwrap(),
+                region: None,
             },
         )
         .unwrap();

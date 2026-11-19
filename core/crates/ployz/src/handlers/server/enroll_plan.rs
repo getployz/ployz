@@ -8,10 +8,7 @@
 use clap::ArgMatches;
 use clap::parser::ValueSource;
 use ipnet::Ipv4Net;
-use ployz_core::{
-    ClusterName, InitialMachinePolicy, InspectRequest, MachineName, MachineRelease,
-    StoragePreparation,
-};
+use ployz_core::{ClusterName, InspectRequest, MachineName, MachineRelease, StoragePreparation};
 
 use crate::handlers::{Error, leaf_matches, string_values};
 use crate::provisioning::RemoteTarget;
@@ -24,6 +21,7 @@ pub(crate) struct Shaping {
     wg_endpoints: Vec<String>,
     wg_mtu: Option<u32>,
     labels: Vec<String>,
+    region: Option<String>,
     accepts: [Option<bool>; 3],
     network: Option<Ipv4Net>,
     cluster_name: Option<String>,
@@ -98,6 +96,7 @@ impl Shaping {
         let wg_endpoints = read.many("wg-endpoint");
         let wg_mtu = read.one("wg-mtu");
         let labels = read.many("label-add");
+        let region = read.one("region");
         let accepts = [
             read.one("accepts-builds"),
             read.one("accepts-services"),
@@ -117,6 +116,7 @@ impl Shaping {
             wg_endpoints,
             wg_mtu,
             labels,
+            region,
             accepts,
             network,
             cluster_name,
@@ -135,8 +135,8 @@ impl Shaping {
             .to_string()
     }
 
-    pub(crate) fn policy(&self) -> Result<InitialMachinePolicy, Error> {
-        super::initial_policy(&self.labels, self.accepts)
+    pub(crate) fn policy(&self) -> Result<super::AskedPolicy, Error> {
+        super::AskedPolicy::parse(&self.labels, self.region.as_deref(), self.accepts)
     }
 
     pub(crate) fn name(&self) -> Result<Option<MachineName>, Error> {

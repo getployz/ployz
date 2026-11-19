@@ -44,7 +44,12 @@ const MIX = [
 ] as const satisfies readonly { value: Readiness; bar: string; text: string }[];
 
 /** Servers waiting to join and servers enrolling, in one tray. The page renders it only when it holds something. */
-export function IntakeTray({ organizationSlug, token, firstRun }: { organizationSlug: string; token: string | undefined; firstRun: boolean }) {
+export function IntakeTray({ organizationSlug, token, firstRun, regionLabels }: {
+  organizationSlug: string;
+  token: string | undefined;
+  firstRun: boolean;
+  regionLabels: readonly string[];
+}) {
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const cancel = useCancelEnrollment(organizationSlug);
@@ -55,7 +60,7 @@ export function IntakeTray({ organizationSlug, token, firstRun }: { organization
     <Card>
       <CardContent className="flex flex-col gap-4">
         {/* Stays mounted while the last waiting server enrolls, so its sheet survives the row leaving. */}
-        <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} firstRun={firstRun} />
+        <WaitingList organizationSlug={organizationSlug} servers={servers} regionLabels={regionLabels} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} firstRun={firstRun} />
         {servers.length > 0 && enrolling ? <Separator /> : null}
         <EnrollingList attempts={attempts} onCancel={cancel.mutate} />
       </CardContent>
@@ -63,9 +68,10 @@ export function IntakeTray({ organizationSlug, token, firstRun }: { organization
   );
 }
 
-export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true, firstRun = false }: {
+export function WaitingList({ organizationSlug, servers, regionLabels, now, token, hasFirst = true, firstRun = false }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
+  regionLabels: readonly string[];
   now: number;
   token?: string | undefined;
   hasFirst?: boolean;
@@ -141,7 +147,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
 
   const opened = openId === null ? undefined : servers.find((server) => server.id === openId);
   const sheets = <>
-    {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
+    {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} regionLabels={regionLabels} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
     <WaitingDetailSheet
       open={openId !== null}
       failed={detail.isError}

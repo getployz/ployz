@@ -23,6 +23,7 @@ mod machine;
 mod metrics;
 mod project;
 mod refusal;
+mod region;
 mod release;
 mod removal;
 mod runtime;
@@ -123,6 +124,8 @@ tools! {
     github::GithubLs,
     github::GithubConnect,
     server::ServerShow,
+    server::ServerAdd,
+    region::RegionList,
     server::ServerLogs,
     metrics::ServerMetrics,
     runtime::ServiceState,
@@ -133,6 +136,7 @@ tools! {
     runtime::ServiceStart,
     runtime::ServiceStop,
     server::ServerSet,
+    region::RegionRename,
     server::ServerDrain,
     server::ServerUpgrade,
     server::ServerClean,

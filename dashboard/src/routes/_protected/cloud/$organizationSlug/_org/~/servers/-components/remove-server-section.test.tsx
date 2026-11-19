@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 const machine: RuntimeMachineRecord = {
-  id: "1".repeat(32), name: "web-1", publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: false, acceptsServices: true,
+  id: "1".repeat(32), name: "web-1", subnet: null, joinedAt: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: false, acceptsServices: true,
   storage: "pool", buildConcurrency: null, region: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion: "0.3.0-beta.2", capabilities: [],
   poolCommittableBytes: null, sealing: null, membership: "down", unanswered: false, observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
 };

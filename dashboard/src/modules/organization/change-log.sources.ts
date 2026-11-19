@@ -27,6 +27,7 @@ export const storeChangeSources = {
   // No family: a receipt outlives its Environments and no view reads it.
   config_sync_receipt: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"] },
+  config_region_name: { key: ["organization_id"] },
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },
   config_pull_request: { key: ["repository_id", "number"] },

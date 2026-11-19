@@ -31,6 +31,7 @@ mod pr_environment;
 mod project;
 mod pull_request;
 mod query;
+mod region;
 mod registry;
 mod removal;
 mod replay;
@@ -108,6 +109,10 @@ pub use pull_request::{
     Sweep,
 };
 pub use query::*;
+pub use region::{
+    NameRegion, NewRegionQuery, NewRegionView, REGION_LABEL, Region, RegionKey, RegionName,
+    RegionServers, RegionsQuery, RegionsView, ServersByRegion, region_servers,
+};
 pub use removal::{
     CancelRemoval, ConsentedQuery, ConsentedView, Due, DueQuery, Fix, Left, LeftStatus, Removal,
     RemovalCancelled, Remove, RemovedQuery, RemovedView, Residual, Waiting,

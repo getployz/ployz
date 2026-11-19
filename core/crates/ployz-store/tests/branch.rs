@@ -56,6 +56,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -500,6 +501,7 @@ fn an_empty_parent_says_there_is_nothing_to_branch() {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -884,6 +886,7 @@ fn a_branch_of_nothing_offers_no_preset_that_copies_the_same() {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("empty").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1075,6 +1078,7 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
                 id: EnvironmentId::parse(uuid(20)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();

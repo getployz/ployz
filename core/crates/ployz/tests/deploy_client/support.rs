@@ -49,6 +49,7 @@ pub(super) use build_fixture::BuildFixture;
 pub(super) struct DeployService {
     pub(super) builds: Option<Arc<BuildFixture>>,
     machines: Vec<MachineObservation>,
+    runtime_watch_incomplete: Option<Vec<MachineId>>,
     create_volume_error: Option<RpcError>,
     create_volume_verification_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
@@ -165,6 +166,7 @@ impl DeployService {
         Self {
             builds: None,
             machines: Vec::new(),
+            runtime_watch_incomplete: None,
             create_volume_error: None,
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
@@ -453,6 +455,11 @@ impl DeployService {
 
     pub(super) fn with_machines(mut self, machines: Vec<MachineObservation>) -> Self {
         self.machines = machines;
+        self
+    }
+
+    pub(super) fn runtime_watch_incomplete(mut self, incomplete: Vec<MachineId>) -> Self {
+        self.runtime_watch_incomplete = Some(incomplete);
         self
     }
 
@@ -900,6 +907,31 @@ impl FakeMachine for DeployService {
             enrollment: None,
             machines,
         }))
+    }
+
+    async fn runtime_watch(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<FakeStream>, Status> {
+        let incomplete = self
+            .runtime_watch_incomplete
+            .clone()
+            .ok_or_else(|| Status::unimplemented("RuntimeWatch is not used by this fixture"))?;
+        let frame = ployz_core::RuntimeWatchFrame {
+            machines: self.listed_machines(),
+            containers: Vec::new(),
+            volumes: Vec::new(),
+            certificates: Vec::new(),
+            incomplete_ids: ployz_core::RuntimeWatchIncompleteIds {
+                machines: incomplete,
+                ..Default::default()
+            },
+            unanswered: Vec::new(),
+            observed_at: String::new(),
+        };
+        let frame = ployz_core::encode_runtime_watch_frame(&frame)
+            .map_err(|error| Status::internal(error.to_string()))?;
+        Ok(Response::new(Box::pin(tokio_stream::once(Ok(frame)))))
     }
 
     async fn list_containers(

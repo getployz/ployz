@@ -23,7 +23,7 @@ status only when someone should look.
 | **Upgrading** | Ployz is upgrading it. See [Upgrade Ployz on a server](#upgrade-ployz-on-a-server). |
 | **Upgrade failed** | Its last upgrade didn't finish: it failed, stopped partway, or Cloud couldn't tell how it ended. A failed upgrade goes back to the release it ran before. **Show details** on its page has where it stopped and any error. |
 
-When the list is wide enough, each row also shows the server's region, if it has one, and how much
+When the list is wide enough, each row also shows the name of the server's region, if it has one, and how much
 of its CPU and memory is in use right now. The meters stay empty until the server sends a reading, and an offline server shows
 none. A dash means no recent reading reached Ployz for that meter: the server sent none, or its
 clock runs behind, so its readings look old. The server's page has disk and the full picture.
@@ -88,6 +88,11 @@ disk when available and falls back to Docker volumes where ZFS cannot run. Add
 `--no-spare-disk` to keep ZFS on the main disk, or `--no-fallback` to skip servers that cannot
 use ZFS. `--storage none` uses Docker volumes. Each enrolled server runs services, takes web
 traffic and runs builds.
+
+Each server starts in the `default` region. `--region fsn` puts every server of this enrollment
+in `fsn` instead, as the Enroll sheet's region picker does for each server. A `ployz` older than
+this option can't pass it: it enrolls every server in `default`, and you can move one later
+([Set a server's region](#set-a-servers-region)).
 
 Add `--yes` to accept the printed plan without a prompt. Without a terminal or with `--json`,
 Ployz requires `--yes` and otherwise returns the plan with `confirmation_required`.
@@ -480,13 +485,28 @@ command renamed it with `--name`, since the name you typed no longer selects it.
 
 ## Set a server's region
 
-A region is a label on the server named `region`, like `fsn` or `lhr`. The Servers list shows it
-in its own column. Servers with no region leave it blank.
+A region is a label on the server named `region`, like `fsn` or `lhr`. The Servers list shows the
+region's name in its own column, such as **Falkenstein** for `fsn` once you
+[rename it](#list-and-rename-regions). Servers with no region leave it blank.
 
-On a server's page, under **Placement**, open **Region** and pick one a server in your organization already has, **No
-region** to clear it, or **New region…** to type one. A region is up to 63 lowercase letters, digits
-and hyphens, and starts with a letter or digit. Anything else shows the rule under the field and
-sends nothing. Press Enter or click the check to save.
+On a server's page, under **Placement**, open **Region** and pick a region by its name, **No
+region** to clear it, or **New region…** to name a new one. Type its name, like `Sydney`, and press
+Enter or click the check. Its key comes from the name, here `sydney`. A name whose key a region
+already has, in any case, is refused under the field with that region's name, such as
+**Region Falkenstein (fsn) already exists.**, and nothing changes.
+
+When a service on the server belongs to an environment that runs in another region, the change
+asks first. **Move web-2 to Sydney** lists each service the change affects, with its environment
+and what the next deploy does with it. A service that another server in its region can run shows
+that server, such as **→ web-3**. A service whose region the change leaves with no server shows
+**Waits for a server in Falkenstein**. The next deploy doesn't start it there, and it keeps running
+on web-2 until a server is in that region. A server that is offline isn't offered as one a service
+goes to. **Move server** changes the region (**Clear region**, when you clear it), and **Cancel**
+keeps the old one. When nothing would leave, the region changes at once.
+
+While what runs on the server loads, and when it can't be read, the field says so and changes
+nothing, whether you pick a region, name a new one or confirm a question that was already open.
+When one environment's services can't be read, the question says so and names it.
 
 The page shows the region you picked and **Queued** until the server reports it, then the server's
 own value. If the server hasn't reported it after a minute, the page goes back to what the server
@@ -499,8 +519,47 @@ The CLI sets the same label, and the list shows it on its next refresh:
 ployz server set web-1 --label-add region=fsn
 ```
 
+`ployz server ls` shows each server's region in its **REGION** column, `-` for a server with none.
+
 Cloud can't set or clear a label other than `region`, and the
 [Ployz agent](../account/agent-sidebar.md) can't set a region yet.
+
+## List and rename regions
+
+A region has a key and a name. The key is the `region` label its servers carry, such as `default`
+or `fsn`. The name is what Ployz shows: **Default** for `default` and the key for any other, until
+you rename it. List regions with their servers:
+
+```sh
+ployz region ls
+```
+
+```
+REGION        KEY       SERVERS
+Falkenstein   default   web-1, web-2
+syd           syd       syd-1
+```
+
+A server with no region, such as one that joined on an older release, is listed below the table
+with the `ployz server set` command that puts it in one.
+
+Rename a region by its key:
+
+```sh
+ployz region rename default Falkenstein
+```
+
+It prints `Renamed default to Falkenstein. Nothing restarts.` Only the name changes. The key, each
+server's label and every environment stay as they are, so no service moves or restarts. A name is
+1 to 40 characters on one line. A name outside that, or one that another region already shows, is
+refused under the field, and the dialog keeps what you typed. Renaming needs `servers:operate`, which owners and admins have.
+Both commands need `ployz login`.
+
+In the dashboard, click **Rename region** on the **Servers** page. Pick the region, type its new
+name and click **Rename region**. The dialog shows the key the CLI takes, such as
+`--region default`. The Servers list and each server's page show the new name at once. For a
+member who isn't an owner or admin, the button is disabled and says why. The
+[Ployz agent](../account/agent-sidebar.md) can list and rename regions too.
 
 ## Upgrade Ployz on a server
 

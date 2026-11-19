@@ -69,11 +69,9 @@ describe("Server Policy", () => {
     expect(policyChangeObserved({ ...observed, region: null }, { region: null })).toBe(true);
   });
 
-  it("refuses a region with a space, a capital, a leading dash or more than 63 characters", () => {
+  it("takes the Engine's region grammar: letters, digits, hyphens, underscores and dots up to 63, in any case", () => {
     const decode = (region: string) => Schema.decodeUnknownOption(ServerPolicyChangeSchema)({ region })._tag;
-    expect(decode("fsn")).toBe("Some");
-    expect(decode("eu-west-2")).toBe("Some");
-    expect(decode("a".repeat(63))).toBe("Some");
-    for (const bad of ["new york", "-fsn", "FSN", "", "a".repeat(64)]) expect(decode(bad)).toBe("None");
+    for (const good of ["fsn", "FSN", "eu-west-2", "eu_west.1", "a".repeat(63)]) expect(decode(good)).toBe("Some");
+    for (const bad of ["new york", "eu/west", "", "a".repeat(64)]) expect(decode(bad)).toBe("None");
   });
 });

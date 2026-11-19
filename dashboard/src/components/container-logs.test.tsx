@@ -347,7 +347,7 @@ const transportError = (machineId: string) => new MessageEvent("log", { data: JS
 const historyRefusal = { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" };
 
 const runtimeMachine = (id: string, daemonVersion: string): RuntimeMachineRecord => ({
-  id, name: id, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
+  id, name: id, subnet: null, joinedAt: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
   buildConcurrency: null, region: null, effectiveBuildConcurrency: 1, runningBuilds: 0, daemonVersion, capabilities: [], poolCommittableBytes: null, sealing: null, membership: "active", unanswered: false,
   observedContainerCount: 0, observedAt: "2026-10-12T00:00:00Z",
 });

@@ -102,7 +102,7 @@ async fn new_founding_claim_with_reset_resets_then_initializes() {
         .call::<op::Enroll>(
             EnrollRequest {
                 role: EnrollAs::Founder {
-                    initial_policy: Default::default(),
+                    initial_policy: default_policy(),
                     name: founder.name,
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: None,
@@ -182,7 +182,7 @@ async fn resumed_founder_uses_the_matching_participating_machine() {
                 role: EnrollAs::Founder {
                     initial_policy: ployz_core::InitialMachinePolicy {
                         accepts_ingress: false,
-                        ..Default::default()
+                        ..default_policy()
                     },
                     name: founder.name,
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
@@ -269,7 +269,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         .call::<op::Enroll>(
             EnrollRequest {
                 role: EnrollAs::Founder {
-                    initial_policy: Default::default(),
+                    initial_policy: default_policy(),
                     name: founder.name,
                     cluster_network: "10.210.0.0/16".parse().unwrap(),
                     public_ip: founder.public_ip,
@@ -515,7 +515,7 @@ async fn participating_founder(
     let mut founder = founder_machine();
     let policy = ployz_core::InitialMachinePolicy {
         accepts_ingress: false,
-        ..Default::default()
+        ..default_policy()
     };
     founder.labels = policy.labels;
     founder.accepts_builds = policy.accepts_builds;

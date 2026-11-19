@@ -179,7 +179,7 @@ impl Trusted {
         if self.no_servers() {
             return Err(crate::error::conflict(
                 NO_SERVERS,
-                FollowUp::ServerAdd.details(),
+                FollowUp::ServerAdd { region: None }.details(),
             ));
         }
         Ok(())

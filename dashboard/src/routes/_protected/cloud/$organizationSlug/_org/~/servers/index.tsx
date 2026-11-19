@@ -2,6 +2,9 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Button } from "#/components/ui/button";
+import { OPERATE_REFUSED } from "#/modules/machines/server-policy.hooks";
+import { regionLabels } from "#/modules/machines/server-regions";
+import { useRegions } from "#/modules/machines/server-regions.hooks";
 import { useServers } from "#/modules/machines/use-servers";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
@@ -17,6 +20,8 @@ import { foundingFirstServer, serversPageState } from "./-components/servers-pag
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
+import { organizationMembersQueryOptions, useRoleGate } from "#/modules/organization/members.queries";
+import { RenameRegionDialog } from "./-components/rename-region-dialog";
 import { useEnrollmentStatus, useWaitingServers } from "./-components/use-waiting";
 import { IntakeTray } from "./-components/waiting-list";
 
@@ -31,6 +36,7 @@ export const Route = createFileRoute(
     channelReleaseQueryOptions(NEWEST_RELEASE),
     waitingServersQueryOptions(params.organizationSlug),
     serverEnrollmentsQueryOptions(params.organizationSlug),
+    organizationMembersQueryOptions(params.organizationSlug),
   ),
   component: RouteComponent,
 });
@@ -40,6 +46,9 @@ function RouteComponent() {
   const { token } = Route.useSearch();
   const { state, servers, older, awaitingKey } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
+  const labels = regionLabels(servers.map(({ machine }) => machine));
+  const regions = useRegions(organizationSlug, labels);
+  const operate = useRoleGate(organizationSlug, "servers:operate", OPERATE_REFUSED);
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const page = serversPageState({
@@ -59,6 +68,9 @@ function RouteComponent() {
       <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
         Tokens
       </Button>
+      {page.kind === "fleet" && regions !== undefined && regions.length > 0
+        ? <RenameRegionDialog organizationSlug={organizationSlug} regions={regions} labels={labels} gate={operate} />
+        : null}
       {canAdd ? (
         <AddServersDialog
           organizationSlug={organizationSlug}
@@ -73,7 +85,7 @@ function RouteComponent() {
         </p>
       ) : null}
       {/* Above the list: the skeleton below is a guess at the list's height, and the tray must not jump when it settles. */}
-      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} /> : null}
+      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} regionLabels={labels} /> : null}
       {page.kind === "fleet" ? <FirstTunnelStatus organizationSlug={organizationSlug} /> : null}
       {page.kind === "loading" ? (
         <ServersSkeleton />
@@ -91,6 +103,7 @@ function RouteComponent() {
                 key={server.machine.id}
                 organizationSlug={organizationSlug}
                 server={server}
+                regions={regions}
                 upgrade={upgrade?.rows.get(server.machine.id) ?? null}
                 stale={page.stale}
               />

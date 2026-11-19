@@ -57,6 +57,7 @@ fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -84,6 +85,7 @@ fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
                 id: EnvironmentId::parse(uuid(6)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("staging").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -743,6 +745,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
                 id: EnvironmentId::parse(uuid(8)).unwrap(),
                 project: None,
                 name: EnvironmentName::parse("production").unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -927,6 +930,7 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
                 id: ProjectId::parse(uuid(10)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(uuid(11)).unwrap(),
+                region: None,
             },
         )
         .unwrap();
@@ -1150,6 +1154,96 @@ fn shutting_down_what_never_ran_applies_at_once() {
         &Trusted::default(),
     );
     assert_eq!(refusal(again).code, RpcErrorCode::Conflict);
+}
+
+#[test]
+fn a_namespace_names_the_region_its_environment_runs_in() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web"]);
+    let regions = || {
+        store
+            .read(&who, &ployz_store::NamespacesQuery {})
+            .unwrap()
+            .namespaces
+            .into_iter()
+            .map(|owned| owned.region.map(|region| region.to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(regions(), [None]);
+
+    store
+        .write(
+            &who,
+            &ployz_store::Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![ployz_store::Change::Set {
+                    path: ployz_store::SettingPath::REGION,
+                    value: json!("fsn"),
+                }],
+            },
+        )
+        .unwrap();
+    assert_eq!(regions(), [Some("fsn".to_owned())]);
+}
+
+#[test]
+fn a_namespace_names_the_regions_a_service_sets_its_replicas_in() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web"]);
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Edit {
+                environment: at("production"),
+                expect: None,
+                changes: vec![ployz_store::Change::Set {
+                    path: ployz_store::SettingPath::parse("web.replicas").unwrap(),
+                    value: json!(r#"{"FSN":1,"lhr":1}"#),
+                }],
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    let owned = store
+        .read(&who, &ployz_store::NamespacesQuery {})
+        .unwrap()
+        .namespaces;
+    let regions = owned[0]
+        .replica_regions
+        .iter()
+        .map(|(service, regions)| {
+            (
+                service.to_string(),
+                regions.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    // Named by the Service, and by the Private DNS name its containers carry.
+    assert_eq!(
+        regions,
+        [("web".to_owned(), vec!["fsn".to_owned(), "lhr".to_owned()])]
+    );
+    assert!(!owned[0].unread);
+}
+
+#[test]
+fn a_namespace_whose_working_state_cannot_be_read_is_unread_not_any_region() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    deploy(&store, &who, "production", 1, &["web"]);
+    backend::execute(
+        &url,
+        "UPDATE config_environment SET working = 'not a document'",
+    );
+    let owned = store
+        .read(&who, &ployz_store::NamespacesQuery {})
+        .unwrap()
+        .namespaces;
+    assert_eq!(owned.len(), 1);
+    assert!(owned[0].unread);
+    assert_eq!(owned[0].region, None);
 }
 
 #[test]
@@ -2135,6 +2229,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
             id: EnvironmentId::parse(uuid(9)).unwrap(),
             project: None,
             name: EnvironmentName::parse("qa").unwrap(),
+            region: None,
         })),
         None,
     );

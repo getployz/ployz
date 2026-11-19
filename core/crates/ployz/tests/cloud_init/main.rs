@@ -7,12 +7,14 @@ mod harness;
 mod pin;
 mod policy;
 mod recovery;
+mod region;
 mod setup_report;
 mod signed_in;
 
 use harness::{
     EnrollListen, EventLog, JOIN_CONFIRMATION, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN,
-    approved_registration, founder_machine, ingress_on, registration, serve_machine,
+    approved_registration, default_policy, founder_machine, ingress_on, registration,
+    serve_machine,
 };
 use ployz::connect::Call;
 use ployz_core::{EnrollAs, EnrollRequest, InspectRequest, LocalMachinePhase, Registered, op};
@@ -943,7 +945,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
                 role: EnrollAs::Founder {
                     initial_policy: ployz_core::InitialMachinePolicy {
                         accepts_ingress: false,
-                        ..Default::default()
+                        ..default_policy()
                     },
                     name: founder.name.clone(),
                     cluster_network: "10.210.0.0/16".parse().unwrap(),

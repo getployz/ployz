@@ -305,6 +305,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0047_applied_region",
         Step::Sql(include_str!("migrations/0047_applied_region.sql")),
     ),
+    (
+        // The name each region shows as.
+        "0048_region_name",
+        Step::Sql(include_str!("migrations/0048_region_name.sql")),
+    ),
 ];
 
 enum Step {

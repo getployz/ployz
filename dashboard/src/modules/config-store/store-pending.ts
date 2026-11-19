@@ -96,6 +96,7 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "copy_node":
     case "keep_branch":
     case "set_build_order":
+    case "name_region":
     case "set_default_environment":
     case "set_branch_setup":
     case "set_environment_protected":

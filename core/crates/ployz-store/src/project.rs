@@ -1,7 +1,7 @@
 //! Creating Projects and Environments.
 
-use ployz_core::RpcError;
 use ployz_core::config::SavedEnvironmentIntent;
+use ployz_core::{Region, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -11,6 +11,7 @@ use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
 use crate::scope::{self, EnvironmentSummary, Project};
 use crate::storage::Tx;
+use crate::trusted::Trusted;
 
 /// The Default Environment every new Project starts with.
 const DEFAULT_ENVIRONMENT: &str = "production";
@@ -26,6 +27,11 @@ pub struct CreateProject {
     pub name: ProjectName,
     /// The ID of its Default Environment, created with it.
     pub default_environment: EnvironmentId,
+    /// The region its Default Environment's Services run in until it says otherwise: what
+    /// [`CreateEnvironment::region`] says. Omitted means any region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(as = "Option<String>", optional)]
+    pub region: Option<Region>,
 }
 
 /// The new Project and its Default Environment.
@@ -64,6 +70,11 @@ pub struct CreateEnvironment {
     pub project: Option<ProjectName>,
     /// Its name, unique in the Project.
     pub name: EnvironmentName,
+    /// The region its Services run in until it says otherwise, as the Servers' `region`
+    /// label names it. Omitted means any region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(as = "Option<String>", optional)]
+    pub region: Option<Region>,
 }
 
 /// The new, empty Environment.
@@ -91,8 +102,10 @@ pub(crate) fn create_project(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateProject,
+    trusted: &Trusted,
 ) -> Result<ProjectCreated, RpcError> {
     name_free(tx, who, &create.name)?;
+    refuse_unseen_region(create.region.as_ref(), trusted)?;
     tx.execute(
         "INSERT INTO config_project (id, organization_id, name, default_environment_id) \
          VALUES (?1, ?2, ?3, ?4)",
@@ -109,8 +122,14 @@ pub(crate) fn create_project(
         default_environment: create.default_environment.clone(),
     };
     let name = EnvironmentName::parse(DEFAULT_ENVIRONMENT).expect("a valid name");
-    let default_environment =
-        insert_environment(tx, who, &project, &create.default_environment, name)?;
+    let default_environment = insert_environment(
+        tx,
+        who,
+        &project,
+        &create.default_environment,
+        name,
+        create.region.clone(),
+    )?;
     tx.execute(
         "UPDATE config_environment SET protected = 1, protections = 1 WHERE id = ?1",
         &[create.default_environment.as_str().into()],
@@ -124,10 +143,19 @@ pub(crate) fn create_project(
     })
 }
 
+/// Refuse `region` when the caller looked at the Servers' regions and none is it.
+fn refuse_unseen_region(region: Option<&Region>, trusted: &Trusted) -> Result<(), RpcError> {
+    match (region, &trusted.regions) {
+        (Some(region), Some(regions)) => crate::refuse_unknown_region(region, regions),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn create_environment(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateEnvironment,
+    trusted: &Trusted,
 ) -> Result<EnvironmentCreated, RpcError> {
     let project = scope::project(tx, who, create.project.as_ref())?;
     crate::removal::project_marked(tx, &project.id, &project.name)?;
@@ -144,7 +172,15 @@ pub(crate) fn create_environment(
             json!({ "project": project.name, "environment": create.name }),
         ));
     }
-    let environment = insert_environment(tx, who, &project, &create.id, create.name.clone())?;
+    refuse_unseen_region(create.region.as_ref(), trusted)?;
+    let environment = insert_environment(
+        tx,
+        who,
+        &project,
+        &create.id,
+        create.name.clone(),
+        create.region.clone(),
+    )?;
     Ok(EnvironmentCreated { environment })
 }
 
@@ -154,6 +190,7 @@ pub(crate) fn insert_environment(
     project: &Project,
     id: &EnvironmentId,
     name: EnvironmentName,
+    region: Option<Region>,
 ) -> Result<EnvironmentSummary, RpcError> {
     let working = SavedEnvironmentIntent {
         version: 1,
@@ -161,7 +198,7 @@ pub(crate) fn insert_environment(
         services: Vec::new(),
         volumes: Vec::new(),
         configs: Vec::new(),
-        region: None,
+        region,
     };
     let revision = Revision(1);
     tx.execute(

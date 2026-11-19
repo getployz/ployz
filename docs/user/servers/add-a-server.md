@@ -55,6 +55,28 @@ which usually takes under a minute. If it is still catching up after a minute, t
 and names UDP 51820, which your servers use to reach each other. The wait gives up after 5
 minutes.
 
+### Put the server in a region
+
+A server joins the `default` region unless you name another one with `--region`:
+
+```sh
+ployz server add --command --region fsn
+```
+
+The printed line keeps `--region`. A region is made of letters, digits, hyphens, underscores and
+dots, such as `fsn` or `eu_west.1`. Capitals are lowered, so `FSN` joins `fsn`. `--label-add
+region=fsn` does the same. Give both with different regions and the command stops before anything
+starts, saying to keep `--region`. From the dashboard, you pick each server's region when you
+enroll it; see [Enroll the selection](add-many-servers.md#enroll-the-selection).
+
+Run the command again for a server that already joined and it keeps its region, or stays without
+one if it joined before regions. Name a different region and the command stops and says which
+region the server is in. To move a server, see
+[Set a server's region](manage-servers.md#set-a-servers-region).
+
+Ask the [Ployz agent](../account/agent-sidebar.md) to add a server in a region, such as Sydney, and
+it gives you the `ployz server add` line with `--region` for you to run. It adds nothing itself.
+
 Add more servers the same way, even at different providers. Each server after your cluster's
 first waits for a device you approved to sign its join, and you're told the code to approve; see
 [Approve a join](#approve-a-join). Nothing moves onto a new server until
@@ -279,7 +301,11 @@ the servers that are ready, preparing, blocked and offline, with a bar for the m
 to the bottom of the list, and the list never reorders while you look at it. When your very first
 server arrives ready, the tray names it and offers **Enroll** and **Reject** right in the header.
 
-Select a waiting server and click **Enroll** to choose its name, storage and what it runs.
+Select a waiting server and click **Enroll** to choose its region, name, storage and what it runs.
+Each server starts in the **Default** region unless you pick another. Two servers can't each
+make a new region from names that give one key, such as `Sydney` and `SYDNEY`: the sheet asks
+for one name. If the new region's name can't be saved after the servers enroll, a message says
+so, and the region shows its key until you [rename it](manage-servers.md#list-and-rename-regions).
 You can enroll while it prepares. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can enroll or reject servers. For a member,
 **Enroll** and **Reject** are disabled and say so. Follow [Add many servers](add-many-servers.md) for the full
 review and enrollment flow.

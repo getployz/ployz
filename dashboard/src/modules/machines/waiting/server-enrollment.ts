@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { RegionSchema } from "#/modules/machines/server-policy";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 
 export type EnrollmentRole = "founder" | "joiner";
@@ -68,6 +69,8 @@ export const EnrollInput = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("pattern"), pattern: Schema.String }),
   ]),
   runs: Schema.Struct({ services: Schema.Boolean, ingress: Schema.Boolean, builds: Schema.Boolean }),
+  /** Region key by waiting server id; one left out joins the default region. */
+  regions: Schema.optionalKey(Schema.Record(Schema.String, RegionSchema)),
 });
 export type EnrollInput = typeof EnrollInput.Type;
 

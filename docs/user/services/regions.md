@@ -7,7 +7,7 @@ A region is a name you give your servers, such as `fsn` for Falkenstein or `syd`
 an environment a region, and every service in it runs on the servers that carry that name. Without
 one, its services run on any server.
 
-Regions are CLI-only for now.
+You set regions from the CLI and from the Servers page in Ployz Cloud.
 
 ## Give a server a region
 
@@ -18,8 +18,24 @@ ployz server set web-1 --label-add region=fsn
 ```
 
 Choose any short name made of letters, digits, hyphens, underscores and dots. A label with other
-characters, such as a space, is not a region. Servers with the same name are in the same region.
-Upper and lower case are the same, so `FSN` is `fsn`.
+characters, such as a space or a slash, is not a region, and `ployz server set` and `ployz server
+add` refuse it. Servers with the same name are in the same region. Upper and lower case are the
+same, so `FSN` is `fsn`.
+
+## A new environment's region
+
+A new environment runs in the region of the first server. A server with no join approval on
+record, such as the one that started the cluster, comes first. The others follow in the order you
+approved them to join, which can differ from the order they finished joining. When two servers tie, the one with the lowest subnet comes first.
+`ployz get @environment.region` shows the region.
+
+This holds however you make the environment: in Ployz Cloud, with `ployz env new` or `ployz up`,
+as a new project's first environment, or through the [Ployz agent](../account/agent-sidebar.md).
+
+If any server in the cluster has no region, a new environment gets no region, and its services run
+on any server. Give every server a region to pin new environments again. The same goes for the
+short time a joining server's details are still reaching the others. An environment you made
+before regions also runs on any server, and a branch starts with its parent's region.
 
 ## Set an environment's region
 

@@ -23,6 +23,12 @@ pub struct ServersAnswer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub regions: Option<BTreeSet<Region>>,
+    /// The region a new Environment starts in, by the Engine's one rule for the Cluster's
+    /// first Server. Left out when no region is pinned, by an answerer that doesn't read
+    /// labels, and of an answer narrowed to one Server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub new_environment_region: Option<Region>,
 }
 
 /// One Server as it last reported.
@@ -37,6 +43,10 @@ pub struct ServerReport {
     pub upgrade: Option<String>,
     pub draining: bool,
     pub disk: Option<Disk>,
+    /// Its `region` label's value, as the Server holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub region: Option<String>,
     /// Every Namespace it runs containers or holds volumes for.
     pub namespaces: Vec<Namespace>,
 }

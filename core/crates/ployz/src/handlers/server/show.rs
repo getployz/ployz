@@ -67,6 +67,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         let mut table = Table::new(
             [
                 "SERVER",
+                "REGION",
                 "MEMBERSHIP",
                 "STORAGE",
                 "PUBLIC IP",
@@ -80,6 +81,14 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
             let machine = &observed.machine;
             table.row([
                 Cell::from(machine.name.to_string()),
+                Cell::from(
+                    machine
+                        .labels
+                        .iter()
+                        .find(|(key, _)| key.as_str() == ployz_store::REGION_LABEL)
+                        .map_or("-", |(_, region)| region.as_str())
+                        .to_owned(),
+                ),
                 Cell::status(
                     observed.membership.as_str(),
                     membership_tone(&observed.membership),

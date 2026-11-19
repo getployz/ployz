@@ -1288,9 +1288,23 @@ fn up_machine(machine: Machine) -> MachineObservation {
     MachineObservation::new(machine, MembershipObservation::Up)
 }
 
+/// The policy `server add` sends when no flag shapes it.
+pub fn default_policy() -> ployz_core::InitialMachinePolicy {
+    ployz_core::InitialMachinePolicy {
+        labels: in_default_region(),
+        ..Default::default()
+    }
+}
+
+/// The labels Cloud assigns a Server that joined with no region.
+fn in_default_region()
+-> std::collections::BTreeMap<ployz_core::MachineLabelKey, ployz_core::MachineLabelValue> {
+    [("region".parse().unwrap(), "default".parse().unwrap())].into()
+}
+
 fn joiner_machine() -> Machine {
     Machine {
-        labels: Default::default(),
+        labels: in_default_region(),
         accepts_builds: true,
         accepts_services: true,
         accepts_ingress: true,
@@ -1308,7 +1322,7 @@ fn joiner_machine() -> Machine {
 
 pub fn founder_machine() -> Machine {
     Machine {
-        labels: Default::default(),
+        labels: in_default_region(),
         accepts_builds: true,
         accepts_services: true,
         accepts_ingress: true,

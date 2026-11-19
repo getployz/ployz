@@ -16,6 +16,7 @@ export const storeViewSources = {
   store_pull_request: ["config_pull_request"],
   // Keyed by Organization: a suite names a commit, and every Deployment waiting for it rereads.
   store_check_suite: ["config_check_suite"],
+  store_region: ["config_region_name"],
 } satisfies Record<StoreViewName, readonly [ChangeSource, ...ChangeSource[]]>;
 
 /**

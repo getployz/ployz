@@ -23,7 +23,8 @@ use super::step::{
 };
 use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
-use crate::{NamespacesQuery, NamespacesView, OwnedNamespace};
+use crate::followup::FollowUp;
+use crate::{NamespacesQuery, NamespacesView, OwnedNamespace, RegionKey};
 
 const BUILDS: &str = "^(auto|[0-9]+)$";
 const SETTABLE: [&str; 4] = [
@@ -87,6 +88,40 @@ fn failed_drain(page: &OperationsAnswer) -> Option<Value> {
                 }
                 shown
             }),
+    }
+}
+
+tool_input! {
+    pub(crate) struct ServerAdd {
+        /// The region it joins, e.g. `syd`. Omit for the default.
+        #[serde(default)]
+        #[schemars(with = "Option<String>", example = &"syd")]
+        region: Option<RegionKey>,
+    }
+}
+
+impl Tool for ServerAdd {
+    const NAME: &'static str = "server_add";
+    const STATUS: ToolId = ToolId::ServerShow;
+    const TITLE: &'static str = "Add a Server";
+    const DESCRIPTION: &'static str = "The command a person runs to add a Server to a region. With no region it joins the default one. Nothing changes until they run it.";
+    const EFFECT: Effect = Effect::Read;
+    const REACH: Reach = Reach::Anywhere;
+
+    fn example() -> Value {
+        json!({ "region": "syd" })
+    }
+
+    fn plan(self, _cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let region = self
+            .region
+            .clone()
+            .unwrap_or_else(RegionKey::default_region);
+        let command = FollowUp::ServerAdd {
+            region: self.region,
+        }
+        .cli();
+        Ok(json!({ "command": command, "region": region }))
     }
 }
 

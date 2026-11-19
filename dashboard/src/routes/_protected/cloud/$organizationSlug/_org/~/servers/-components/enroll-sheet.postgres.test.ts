@@ -7,6 +7,8 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { createElement } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import * as scopes from "#/collections/use-collection-scope";
+import * as storeFunctions from "#/modules/config-store/store.functions";
 import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
 import type { HostReport } from "#/modules/machines/waiting/checkin-wire";
@@ -90,6 +92,8 @@ beforeEach(async () => {
   vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockImplementation(({ data }) => run(listWaitingServers(ada, data)));
   vi.spyOn(waitingFunctions, "serverEnrollmentStatusServerFn").mockImplementation(({ data }) => run(readServerEnrollmentStatus(ada, data)));
   vi.spyOn(waitingFunctions, "planServerEnrollmentServerFn").mockImplementation(({ data }) => run(previewServerEnrollment(ada, data)));
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient: new QueryClient(), sessionId: "session", userId: ada.userId });
+  vi.spyOn(storeFunctions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: { view: "regions", regions: [{ key: "default", name: "Default" }] } } as never);
 });
 
 afterEach(() => {
@@ -121,7 +125,7 @@ async function openEnroll() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createRouter({
     routeTree: createRootRoute({
-      component: () => createElement(QueryClientProvider, { client }, createElement(IntakeTray, { organizationSlug: "ada", token: undefined, firstRun: false })),
+      component: () => createElement(QueryClientProvider, { client }, createElement(IntakeTray, { organizationSlug: "ada", token: undefined, firstRun: false, regionLabels: ["default"] })),
     }),
     history: createMemoryHistory(),
   });

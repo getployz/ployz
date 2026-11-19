@@ -157,6 +157,8 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     branch: same,
     branch_plan: same,
     build_order: same,
+    regions: same,
+    new_region: same,
     environments: redact.environments,
     projects: same,
     due: same,
@@ -207,6 +209,7 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
     case "domain":
     case "branch":
     case "build_order":
+    case "region_named":
     case "synced":
     case "undone":
     case "removed":

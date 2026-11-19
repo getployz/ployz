@@ -74,6 +74,7 @@ fn shop(protected: bool) -> (ConfigStore, EnvironmentId) {
                 id: ProjectId::parse(uuid(1)).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: environment.clone(),
+                region: None,
             },
         )
         .unwrap();
