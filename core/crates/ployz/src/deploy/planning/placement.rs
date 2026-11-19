@@ -577,42 +577,45 @@ impl<'a> Spread<'a> {
             .collect()
     }
 
-    /// The Containers the waiting regions keep as they are: in each, as many as its count,
-    /// those nearest this Deploy's version first. A Container on a Server in none of the
-    /// counted regions counts toward a waiting region, after that region's own, so a
-    /// Server that loses its label gives up no replica. A Container past the count is
-    /// removed like any other.
-    fn left_running(&self, current: &[ServiceContainer]) -> Vec<ContainerId> {
-        let counted = |machine: &MachineId| {
-            self.regions
-                .iter()
-                .chain(&self.waiting)
-                .any(|share| share.labelled.contains(machine))
+    /// The Containers the waiting regions keep as they are, `placed` being those the
+    /// regions that start already keep or stop: in each, as many as its count, those
+    /// nearest this Deploy's version first. A Container its own region doesn't need, past
+    /// that region's count or on a Server in none of the counted regions, counts toward a
+    /// waiting region still short of its count, so a Server whose label changes gives up
+    /// no replica while a region waits. A Container no count needs is removed like any
+    /// other.
+    fn left_running(
+        &self,
+        current: &[ServiceContainer],
+        placed: &BTreeSet<ContainerId>,
+    ) -> Vec<ContainerId> {
+        let nearest = |mut held: Vec<&ContainerObservation>, count: usize| {
+            held.sort_by_key(|observation| std::cmp::Reverse(self.standing(observation)));
+            held.truncate(count);
+            held.into_iter()
+                .map(|observation| observation.container_id)
+                .collect::<Vec<_>>()
         };
-        let mut spare = current
-            .iter()
-            .map(ServiceContainer::as_observation)
-            .filter(|observation| !counted(&observation.machine_id))
-            .collect::<Vec<_>>();
         let mut kept = Vec::new();
+        let mut short = 0;
         for share in &self.waiting {
-            let mut held = current
+            let own = current
                 .iter()
                 .map(ServiceContainer::as_observation)
                 .filter(|observation| share.labelled.contains(&observation.machine_id))
-                .map(|observation| (observation, true))
-                .chain(spare.iter().map(|observation| (*observation, false)))
-                .collect::<Vec<_>>();
-            held.sort_by_key(|(observation, own)| {
-                std::cmp::Reverse((self.standing(observation), *own))
-            });
-            held.truncate(share.count);
-            spare.retain(|observation| {
-                held.iter()
-                    .all(|(held, _)| held.container_id != observation.container_id)
-            });
-            kept.extend(held.into_iter().map(|(held, _)| held.container_id));
+                .filter(|observation| self.standing(observation) > Standing::NotServing)
+                .collect();
+            let own = nearest(own, share.count);
+            short += share.count - own.len();
+            kept.extend(own);
         }
+        let spare = current
+            .iter()
+            .map(ServiceContainer::as_observation)
+            .filter(|observation| !placed.contains(&observation.container_id))
+            .filter(|observation| !kept.contains(&observation.container_id))
+            .collect();
+        kept.extend(nearest(spare, short));
         kept
     }
 
@@ -778,6 +781,7 @@ pub(super) fn plan_replicated(
         .map(|container| (container.as_observation().container_id, container))
         .collect::<BTreeMap<_, _>>();
     let mut used = BTreeSet::new();
+    let mut pre_stopped = BTreeSet::new();
     let mut operations = Vec::new();
     let emitter = ReplicaEmitter {
         service_id,
@@ -805,6 +809,7 @@ pub(super) fn plan_replicated(
                 pre_stops,
             } => {
                 used.insert(container_id);
+                pre_stopped.extend(pre_stops.iter().copied());
                 Replica::Replace {
                     old: observed(container_id),
                     pre_stops,
@@ -814,7 +819,8 @@ pub(super) fn plan_replicated(
         };
         emitter.emit(&mut placement.sockets, &mut operations, machine_id, replica)?;
     }
-    used.extend(target.spread.left_running(current));
+    let placed = used.union(&pre_stopped).copied().collect();
+    used.extend(target.spread.left_running(current, &placed));
     remove_unused(&mut operations, requested, current, &used, placement);
     Ok((operations, reservation.hook_machine))
 }
@@ -827,7 +833,10 @@ pub(super) fn withdraw(
     requested: &RequestedServiceSpec,
     placement: &mut PlacementState,
 ) -> Vec<DeployOperation> {
-    let used = spread.left_running(current).into_iter().collect();
+    let used = spread
+        .left_running(current, &BTreeSet::new())
+        .into_iter()
+        .collect();
     let mut operations = Vec::new();
     remove_unused(&mut operations, requested, current, &used, placement);
     operations

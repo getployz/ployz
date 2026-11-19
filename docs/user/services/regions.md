@@ -199,9 +199,11 @@ A smaller count still removes replicas there: going from `{"fsn":1,"syd":2}` to
 `{"fsn":1,"syd":1}` removes one `syd` replica while `syd-1` takes no services. A replica on the
 old version goes first.
 
-A server that loses its `region` label keeps its replicas while its region waits, up to the
-region's count. Put the label back and the next deploy changes nothing. Replicas in a region you
-took out of the counts stay the same way, until the waiting region starts.
+While a region waits for a replica, the deploy keeps a spare replica running in its place: one on
+a server whose `region` label changed, in a region you took out of the counts, or past a smaller
+count in another region. So changing a server's label removes nothing, and with the label back
+the next deploy changes nothing. The spare replica is removed once the waiting region starts its
+own.
 
 ## Good to know
 
