@@ -479,7 +479,6 @@ impl<'m> Store<'m> {
         })
     }
 
-    /// The Cluster as the Servers show it now; none when they can't be asked in time.
     fn observe_frame(&self) -> Option<ployz_core::RuntimeWatchFrame> {
         let runtime = runtime().ok()?;
         let context = self.context();

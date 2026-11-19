@@ -430,7 +430,7 @@ async fn a_new_environment_gets_no_region_while_a_servers_record_is_incomplete()
         ployz_core::MachineLabelValue::parse("default").unwrap(),
     );
     let pinned = |incomplete: Vec<ployz_core::MachineId>| {
-        let service = support::DeployService::new(one.clone()).watched(incomplete);
+        let service = support::DeployService::new(one.clone()).runtime_watch_incomplete(incomplete);
         async {
             let servers = CloudQuery::Servers { only: None };
             acted(service, |session, _| async move {

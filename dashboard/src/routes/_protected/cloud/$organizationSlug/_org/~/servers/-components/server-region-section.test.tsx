@@ -79,7 +79,6 @@ function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet
     </QueryClientProvider>
   );
   const page = render(view(owned));
-  /** The read of what runs here, as a later refresh leaves it. */
   return { reads: (read: OwnedNamespaces) => page.rerender(view(read)) };
 }
 
@@ -272,15 +271,11 @@ it("asks before a move when an Environment's Working State couldn't be read, nam
   expect(requestChange).not.toHaveBeenCalled();
 });
 
-/**
- * Runs what the page already asked for to its end, on a clock the test drives: the Store's answer and what follows it.
- * React renders when each `act` ends, so the second passes in steps.
- */
+/** React renders only when each `act` ends, so the clock advances in steps. */
 async function settle() {
   for (let elapsed = 0; elapsed < 1000; elapsed += 100) await act(() => vi.advanceTimersByTimeAsync(100));
 }
 
-/** Types `name` into the open New region field and confirms it, then lets the Store say what it makes. */
 async function nameRegion(name: string) {
   const input = screen.getByRole("textbox", { name: "New region" });
   fireEvent.change(input, { target: { value: name } });

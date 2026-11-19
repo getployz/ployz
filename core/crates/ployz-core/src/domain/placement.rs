@@ -117,8 +117,7 @@ pub struct Placement {
     pub constraints: std::collections::BTreeSet<PlacementConstraint>,
 }
 
-/// What the rule for a Cluster's first Server reads of one Server. The rule is handed every
-/// Server, the ones not read too, since one of those may be the first.
+/// What the rule for a Cluster's first Server reads of one Server.
 #[derive(Clone, Copy, Debug)]
 pub enum JoinedServer<'a> {
     Read {

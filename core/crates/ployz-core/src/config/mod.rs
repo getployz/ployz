@@ -48,7 +48,7 @@ enum ConfigRequest {
 }
 
 /// A Server's Machine Subnet, when its join was approved and its `region` label value, as a
-/// caller sees them. A caller that hasn't read the Server's record has no subnet for it.
+/// caller sees them.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerRegion {

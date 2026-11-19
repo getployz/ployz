@@ -23,15 +23,14 @@ function summary(serverName: string, rows: readonly Leaving[]) {
     : `These leave ${serverName} on the next deploy. The ones that wait keep running here.`;
 }
 
-export function MoveServerDialog({ serverName, regionName: to, rows, unread, held, regions, open, onOpenChange, onConfirm }: {
+export function MoveServerDialog({ serverName, regionName: to, rows, unread, holdReason, regions, open, onOpenChange, onConfirm }: {
   serverName: string;
   /** The region's name, or null when the Server leaves every region. */
   regionName: string | null;
   rows: readonly Leaving[];
   /** The Environments whose Working State couldn't be read: what leaves from them isn't shown. */
   unread: readonly string[];
-  /** Why the change can't be made now: what runs here isn't read, so `rows` shows nothing. Null when it is. */
-  held: string | null;
+  holdReason: string | null;
   regions: readonly NamedRegion[] | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -43,8 +42,8 @@ export function MoveServerDialog({ serverName, regionName: to, rows, unread, hel
         <DialogHeader>
           <DialogTitle>{to === null ? `Clear ${serverName}’s region` : `Move ${serverName} to ${to}`}</DialogTitle>
           <DialogDescription>
-            {held ?? summary(serverName, rows)}
-            {held === null && unread.length > 0 ? ` Couldn’t read ${unread.join(", ")}, so what leaves from there isn’t shown.` : ""}
+            {holdReason ?? summary(serverName, rows)}
+            {holdReason === null && unread.length > 0 ? ` Couldn’t read ${unread.join(", ")}, so what leaves from there isn’t shown.` : ""}
           </DialogDescription>
         </DialogHeader>
         <ItemGroup role="list" aria-label="Services this changes" className="max-h-72 overflow-y-auto">
@@ -60,7 +59,7 @@ export function MoveServerDialog({ serverName, regionName: to, rows, unread, hel
         </ItemGroup>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-          <Button disabled={held !== null} onClick={onConfirm}>{to === null ? "Clear region" : "Move server"}</Button>
+          <Button disabled={holdReason !== null} onClick={onConfirm}>{to === null ? "Clear region" : "Move server"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -15,7 +15,6 @@ import { MoveServerDialog } from "./move-server-dialog";
 const NO_REGION = "no region";
 const NEW_REGION = "new region";
 
-/** A region change the user is asked about. What it takes off the Server is read again each time it is shown. */
 type Move = { readonly region: string | null; readonly created: NamedRegion | null };
 
 export function ServerRegionSection({ machine, machines, services, owned, regions, organizationSlug, gate }: {
@@ -40,8 +39,6 @@ export function ServerRegionSection({ machine, machines, services, owned, region
   const check = useNewRegions(organizationSlug, naming ? [draft] : [], labels)(draft);
   const choices = regions ?? [];
   const label = policy.region;
-  // Where Services run decides what a region change moves, so no change is made on a read that isn't current: one
-  // still being read, and one that failed.
   const held = owned.kind === "reading" ? "Reading what runs here…"
     : owned.kind === "failed" ? "Couldn’t read what runs here. Reload to change the region." : null;
 
@@ -132,7 +129,7 @@ export function ServerRegionSection({ machine, machines, services, owned, region
         regionName={moving === null ? null : moving.created?.name ?? regionName(moving.region, regions)}
         rows={moving === null ? [] : leaving(moving.region)}
         unread={unread}
-        held={held}
+        holdReason={held}
         regions={regions}
         open={moving !== null}
         onOpenChange={(open) => { if (!open) setMoving(null); }}

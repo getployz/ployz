@@ -87,11 +87,9 @@ it("lists a Service that counts replicas in both the region a Server leaves and 
   // Server 2 holds web's default replica; in syd it no longer does, though syd also has a count.
   // It must keep running in the region the Server leaves, not in both of its regions.
   expect(leavingServer("2", "syd", counted, servers)).toEqual([{ ...counted[0], next: "moves", to: ["np1-vm-1"], searched: ["default"] }]);
-  // The Server was the only one in default: the Deploy places none of web's replicas, so both keep running.
   expect(leavingServer("1", "syd", counted, [server("1", "np1-vm-1", "default"), server("9", "syd-1", "syd")])).toEqual([{ ...counted[0], next: "waits", empty: ["default"] }]);
   expect(leavingServer("1", "syd", counted, [server("1", "np1-vm-1", "default")])).toEqual([{ ...counted[0], next: "waits", empty: ["default"] }]);
   expect(leavingServer("2", "SYD", counted, servers).map(({ name }) => name)).toEqual(["web"]);
-  // A Deploy waits on any region of the Service with no Server, not only the one this Server leaves.
   const apart = placedServices(
     [running("shop-production/web")],
     [{ namespace: "shop-production", project: "shop", environment: "production", replica_regions: { web: ["default", "lhr"] } }],

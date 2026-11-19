@@ -49,9 +49,7 @@ pub(super) use build_fixture::BuildFixture;
 pub(super) struct DeployService {
     pub(super) builds: Option<Arc<BuildFixture>>,
     machines: Vec<MachineObservation>,
-    /// Once set, Runtime Watch answers one frame of the Machines, naming these as the ones
-    /// whose record is incomplete.
-    watched: Option<Vec<MachineId>>,
+    runtime_watch_incomplete: Option<Vec<MachineId>>,
     create_volume_error: Option<RpcError>,
     create_volume_verification_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
@@ -168,7 +166,7 @@ impl DeployService {
         Self {
             builds: None,
             machines: Vec::new(),
-            watched: None,
+            runtime_watch_incomplete: None,
             create_volume_error: None,
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
@@ -460,8 +458,8 @@ impl DeployService {
         self
     }
 
-    pub(super) fn watched(mut self, incomplete: Vec<MachineId>) -> Self {
-        self.watched = Some(incomplete);
+    pub(super) fn runtime_watch_incomplete(mut self, incomplete: Vec<MachineId>) -> Self {
+        self.runtime_watch_incomplete = Some(incomplete);
         self
     }
 
@@ -916,7 +914,7 @@ impl FakeMachine for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<FakeStream>, Status> {
         let incomplete = self
-            .watched
+            .runtime_watch_incomplete
             .clone()
             .ok_or_else(|| Status::unimplemented("RuntimeWatch is not used by this fixture"))?;
         let frame = ployz_core::RuntimeWatchFrame {
