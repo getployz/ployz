@@ -134,9 +134,11 @@ A service with counts by region keeps them when you change a count, also with on
 before you opened it. It stays in `fsn` when the environment's region changes. To make it follow
 the environment again, set one number with `ployz set api.replicas=3`.
 
-Setting the counts back to what's deployed puts back what's deployed. A service deployed with one
-number, then set to `{"fsn":3}` with `ployz set`, goes back to one number when you lower it to the
-deployed count. It then follows the environment's region again.
+Setting the counts back to what's deployed puts back what's deployed, when both the regions and the
+counts match. Say api is deployed with one number, 1, in an environment in `fsn`. If `ployz set`
+changes it to `{"fsn":3}`, lowering it to 1 puts back the one number, and api follows the
+environment's region again. If it was set to `{"syd":3}`, lowering it to 1 keeps `{"syd":1}`. To
+follow the environment from there, set one number with `ployz set api.replicas=1`.
 
 A service deployed with one number goes back to one number when you remove the regions you added.
 With the count unchanged, nothing is left to deploy.
