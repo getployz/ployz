@@ -2149,7 +2149,39 @@ fn a_waiting_region_keeps_the_replica_on_its_own_server_first() {
 }
 
 #[test]
-fn a_smaller_count_in_a_region_that_starts_removes_its_extra_replica_while_another_waits() {
+fn a_server_moved_into_a_region_whose_count_is_met_keeps_its_replica_while_its_old_region_waits() {
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            in_region(machine('1', "first"), "fsn"),
+            in_region(machine('2', "second"), "fsn"),
+        ],
+        containers: vec![
+            container('b', '1', &api, &service_id('a')),
+            container('c', '2', &api, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
+    };
+    assert_eq!(
+        waiting.regions,
+        BTreeMap::from([(Region::parse("syd").unwrap(), not_running(1))])
+    );
+    assert_eq!(waiting.error.message, "no Server in syd");
+}
+
+#[test]
+fn a_smaller_count_keeps_its_extra_replica_in_place_of_one_that_waits_in_another_region() {
     let was = by_region(replicated("api", 1), &[("fsn", 2), ("syd", 1)]);
     let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
     let snapshot = DeploySnapshot {
@@ -2167,8 +2199,67 @@ fn a_smaller_count_in_a_region_that_starts_removes_its_extra_replica_while_anoth
     let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
 
     let removed = [removed_from(&preview, '1'), removed_from(&preview, '2')].concat();
-    assert_eq!(removed.len(), 1, "{:?}", operations(&preview));
+    assert_eq!(removed, [], "{:?}", operations(&preview));
     assert_eq!(preview.waiting.len(), 1, "{:?}", preview.waiting);
+}
+
+#[test]
+fn a_smaller_count_removes_its_extra_replica_when_the_region_that_cant_start_has_its_count() {
+    let was = by_region(replicated("api", 1), &[("fsn", 2), ("syd", 1)]);
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let mut drained = records_placements(in_region(machine('3', "third"), "syd"));
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            records_placements(in_region(machine('1', "first"), "fsn")),
+            records_placements(in_region(machine('2', "second"), "fsn")),
+            drained,
+        ],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '2', &was, &service_id('a')),
+            container('d', '3', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    let removed = [removed_from(&preview, '1'), removed_from(&preview, '2')].concat();
+    assert_eq!(removed.len(), 1, "{:?}", operations(&preview));
+    assert_eq!(removed_from(&preview, '3'), []);
+    assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
+}
+
+#[test]
+fn a_replica_kept_in_place_of_one_that_waited_is_removed_once_its_region_starts() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("nrt", 1)]);
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            records_placements(in_region(machine('1', "first"), "nrt")),
+            records_placements(in_region(machine('2', "second"), "fsn")),
+            records_placements(in_region(machine('3', "third"), "lhr")),
+        ],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '2', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert_eq!(removed_from(&preview, '1'), [container_id('b')]);
+    assert!(
+        operations(&preview).iter().any(|operation| matches!(
+            operation,
+            DeployOperation::RunContainer { machine_id: on, .. } if on == &machine_id('3')
+        )),
+        "{:?}",
+        operations(&preview)
+    );
+    assert!(preview.waiting.is_empty(), "{:?}", preview.waiting);
 }
 
 #[test]
