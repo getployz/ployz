@@ -1770,8 +1770,8 @@ fn a_replica_running_in_a_region_with_no_server_up_keeps_running_while_it_waits(
 }
 
 #[test]
-fn a_replica_in_a_region_the_counts_dropped_still_stops_while_another_region_waits() {
-    let was = by_region(replicated("api", 1), &[("fsn", 1), ("nrt", 1)]);
+fn replicas_in_a_region_the_counts_dropped_stop_past_the_count_of_the_region_that_waits() {
+    let was = by_region(replicated("api", 1), &[("fsn", 1), ("nrt", 2)]);
     let api = by_region(replicated("api", 1), &[("fsn", 1), ("lhr", 1)]);
     let snapshot = DeploySnapshot {
         machines: vec![
@@ -1781,30 +1781,19 @@ fn a_replica_in_a_region_the_counts_dropped_still_stops_while_another_region_wai
         containers: vec![
             container('b', '1', &was, &service_id('a')),
             container('c', '2', &was, &service_id('a')),
+            container('d', '1', &was, &service_id('a')),
         ],
         ..Default::default()
     };
 
-    let preview = plan_deploy(
-        [&api],
-        &snapshot,
-        PlanOptions {
-            block_unmountable: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
 
     assert_eq!(preview.waiting.len(), 1, "{:?}", preview.waiting);
-    let operations = operations(&preview);
-    assert!(
-        operations.iter().any(|operation| matches!(
-            operation,
-            DeployOperation::StopContainer { machine_id: on, .. }
-                | DeployOperation::RemoveContainer { machine_id: on, .. }
-                if on == &machine_id('1')
-        )),
-        "{operations:?}"
+    assert_eq!(
+        removed_from(&preview, '1').len(),
+        1,
+        "{:?}",
+        operations(&preview)
     );
 }
 
@@ -2044,6 +2033,168 @@ fn a_service_never_started_in_a_region_that_takes_no_services_still_waits() {
     };
     assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
     assert_eq!(blocked.error.message, "first takes no services");
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+}
+
+#[test]
+fn a_server_that_leaves_its_region_keeps_its_replicas_while_the_region_waits() {
+    let api = by_region(replicated("api", 1), &[("syd", 2)]);
+    for left in [
+        machine('1', "first"),
+        in_region(machine('1', "first"), "nrt"),
+    ] {
+        let snapshot = DeploySnapshot {
+            machines: vec![left, in_region(machine('2', "second"), "fsn")],
+            containers: vec![
+                container('b', '1', &api, &service_id('a')),
+                container('c', '1', &api, &service_id('a')),
+            ],
+            ..Default::default()
+        };
+
+        let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+        assert!(
+            operations(&preview).is_empty(),
+            "{:?}",
+            operations(&preview)
+        );
+        let [blocked] = preview.blocked.as_slice() else {
+            panic!("{:?}", preview.blocked)
+        };
+        assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
+        assert_eq!(blocked.error.message, "no Server in syd");
+    }
+}
+
+#[test]
+fn a_replica_on_a_server_that_left_its_region_keeps_running_beside_the_regions_that_start() {
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            machine('1', "first"),
+            in_region(machine('2', "second"), "fsn"),
+        ],
+        containers: vec![
+            container('b', '1', &api, &service_id('a')),
+            container('c', '2', &api, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert!(
+        operations(&preview).is_empty(),
+        "{:?}",
+        operations(&preview)
+    );
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
+    };
+    assert_eq!(
+        waiting.regions,
+        BTreeMap::from([(Region::parse("syd").unwrap(), not_running(1))])
+    );
+    assert_eq!(waiting.error.message, "no Server in syd");
+}
+
+#[test]
+fn a_smaller_count_removes_only_the_extra_replica_from_a_server_that_left_its_region() {
+    let was = by_region(replicated("api", 1), &[("syd", 2)]);
+    let api = by_region(replicated("api", 1), &[("syd", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '1', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert_eq!(
+        removed_from(&preview, '1').len(),
+        1,
+        "{:?}",
+        operations(&preview)
+    );
+    assert_eq!(preview.waiting.len(), 1, "{:?}", preview.waiting);
+}
+
+#[test]
+fn a_waiting_region_keeps_the_replica_on_its_own_server_first() {
+    let was = by_region(replicated("api", 1), &[("syd", 2)]);
+    let api = by_region(replicated("api", 1), &[("syd", 1)]);
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![drained, machine('2', "second")],
+        containers: vec![
+            container('b', '2', &was, &service_id('a')),
+            container('c', '1', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    assert_eq!(removed_from(&preview, '1'), []);
+    assert_eq!(removed_from(&preview, '2'), [container_id('b')]);
+}
+
+#[test]
+fn a_smaller_count_in_a_region_that_starts_removes_its_extra_replica_while_another_waits() {
+    let was = by_region(replicated("api", 1), &[("fsn", 2), ("syd", 1)]);
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let snapshot = DeploySnapshot {
+        machines: vec![
+            records_placements(in_region(machine('1', "first"), "fsn")),
+            records_placements(in_region(machine('2', "second"), "fsn")),
+        ],
+        containers: vec![
+            container('b', '1', &was, &service_id('a')),
+            container('c', '2', &was, &service_id('a')),
+        ],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    let removed = [removed_from(&preview, '1'), removed_from(&preview, '2')].concat();
+    assert_eq!(removed.len(), 1, "{:?}", operations(&preview));
+    assert_eq!(preview.waiting.len(), 1, "{:?}", preview.waiting);
+}
+
+#[test]
+fn a_wait_names_only_the_regions_still_short_of_a_replica() {
+    let api = by_region(replicated("api", 1), &[("lhr", 1), ("syd", 1)]);
+    let mut short = in_region(machine('2', "second"), "lhr");
+    short.machine.accepts_services = false;
+    let mut met = in_region(machine('3', "third"), "syd");
+    met.machine.accepts_services = false;
+    let snapshot = DeploySnapshot {
+        machines: vec![short, met],
+        containers: vec![container('b', '3', &api, &service_id('a'))],
+        ..Default::default()
+    };
+
+    let preview = plan_deploy([&api], &snapshot, runner_options()).unwrap();
+
+    let [blocked] = preview.blocked.as_slice() else {
+        panic!("{:?}", preview.blocked)
+    };
+    assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
+    assert_eq!(blocked.error.message, "second takes no services");
+    assert_eq!(
+        blocked.error.details.get("regions"),
+        Some(&serde_json::json!(["lhr"]))
+    );
     assert!(
         operations(&preview).is_empty(),
         "{:?}",
