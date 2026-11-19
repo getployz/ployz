@@ -1274,6 +1274,20 @@ impl Verdict<'_> {
             })
     }
 
+    /// Whether `wait` waits whole on the one reason that names what to fix in place of a
+    /// region, and that reason is true here: `service` mounts the Volume and its writer's
+    /// Server takes no services. Any other Wait must name each region still short.
+    fn waits_on_the_writer(&self, service: usize, wait: &ployz_core::Wait<'_>) -> bool {
+        let holder = self.state.server(HOLDER);
+        wait.kind == BlockedKind::Wait
+            && wait.partial.is_none()
+            && wait.error.details.get("reason")
+                == Some(&serde_json::json!("volume_server_takes_no_services"))
+            && self.model.mounts_volume(service)
+            && holder.present
+            && !holder.accepts
+    }
+
     fn judge(&self) -> (u32, u32) {
         let mut broke = 0;
         let mut reached = 0;
@@ -1336,7 +1350,7 @@ impl Verdict<'_> {
                 .unwrap_or_default();
             let whole = self
                 .waits(service)
-                .is_some_and(|wait| wait.kind == BlockedKind::Wait && !about_regions(&wait));
+                .is_some_and(|wait| self.waits_on_the_writer(service, &wait));
             if !refused && !whole && !short.is_named(&named, waits) {
                 fail(SHORT_IS_NAMED);
             }
@@ -1713,20 +1727,6 @@ impl RegionPlacement {
             }
         }
     }
-}
-
-/// Whether a Wait's reason is about regions, so it must name each region short of its
-/// count. Any other Wait (a Volume's Server that takes no services) waits whole and names
-/// what to fix in place of a region.
-fn about_regions(wait: &ployz_core::Wait<'_>) -> bool {
-    wait.partial.is_some()
-        || matches!(
-            wait.error
-                .details
-                .get("reason")
-                .and_then(serde_json::Value::as_str),
-            Some("region_unmatched" | "volume_outside_region")
-        )
 }
 
 /// The regions a Wait tells the user are short: those its error names (`RegionUnmatched`,
