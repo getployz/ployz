@@ -1367,9 +1367,9 @@ fn a_service_sharing_a_volume_kept_in_another_region_is_refused_though_its_regio
 fn services_in_two_regions_sharing_a_volume_not_made_yet_are_both_refused() {
     let api = sharing("api", "fsn", &["data"]);
     let web = spec("web");
-    let line = |first: &str, second: &str, facts: &str| {
+    let line = |facts: &str| {
         format!(
-            "{first} and {second} share the Volume data, so they have to run in the same region. \
+            "api and worker share the Volume data, so they have to run in the same region. \
              data isn't made yet. {facts}. Set them all to one region"
         )
     };
@@ -1390,19 +1390,11 @@ fn services_in_two_regions_sharing_a_volume_not_made_yet_are_both_refused() {
             BTreeMap::from([
                 (
                     "api".to_owned(),
-                    line(
-                        "api",
-                        "worker",
-                        &format!("worker is set to {other} and api is set to fsn")
-                    )
+                    line(&format!("api is set to fsn and worker is set to {other}"))
                 ),
                 (
                     "worker".to_owned(),
-                    line(
-                        "worker",
-                        "api",
-                        &format!("api is set to fsn and worker is set to {other}")
-                    )
+                    line(&format!("api is set to fsn and worker is set to {other}"))
                 ),
             ]),
             "{other}"
@@ -1585,7 +1577,7 @@ fn a_volume_shared_across_regions_on_a_server_in_neither_is_refused_for_both() {
             ),
             (
                 "worker".to_owned(),
-                "worker and api share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
+                "api and worker share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
             ),
         ])
     );
@@ -1700,7 +1692,7 @@ fn a_refusal_of_a_shared_volume_leaves_out_a_service_naming_no_region() {
             ),
             (
                 "worker".to_owned(),
-                "worker and api share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
+                "api and worker share the Volume data, so they have to run in the same region. data is on second, which has no region. Give second a region, then set them all to it".to_owned()
             ),
         ])
     );

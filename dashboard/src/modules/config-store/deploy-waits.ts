@@ -59,13 +59,15 @@ function splitRefusal(name: string, region: string, volume: SharedVolume, lens: 
     return sharer !== name && regions?.length ? [{ sharer, regions }] : [];
   });
   const home = homeOf(volume.id);
+  const each = [{ sharer: name, regions: [region] }, ...kept];
+  if (home === null || !("region" in home)) each.sort((a, b) => a.sharer.localeCompare(b.sharer));
   const short = home === null ? `Must run with ${allOf(kept.map(({ sharer }) => sharer))}`
     : "region" in home ? `Must run in ${home.region}` : `${home.server} has no region`;
   const why = home === null
-    ? `${volume.name} isn't made yet. ${allOf([...kept.map(({ sharer, regions }) => `${sharer} is set to ${allOf(regions)}`), `${name} is set to ${region}`])}. Set them all to one region`
+    ? `${volume.name} isn't made yet. ${allOf(each.map(({ sharer, regions }) => `${sharer} is set to ${allOf(regions)}`))}. Set them all to one region`
     : "region" in home ? `${volume.name} is in ${home.region} and ${name} is set to ${region}. Set ${name} to ${home.region}`
     : `${volume.name} is on ${home.server}, which has no region. Give ${home.server} a region, then set them all to it`;
-  const together = allOf([name, ...kept.map(({ sharer }) => sharer)]);
+  const together = allOf(each.map(({ sharer }) => sharer));
   const [agreed, ...apart] = new Set(kept.flatMap(({ regions }) => regions));
   const mount = home === null
     ? `To mount ${volume.name}, ${agreed !== undefined && apart.length === 0 ? `set ${name} to ${agreed}` : `set ${together} to one region`}`

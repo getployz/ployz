@@ -813,10 +813,14 @@ fn shared_across_regions(
     sharers: &[(ServiceName, Vec<Region>)],
     home: &SharedHome,
 ) -> String {
-    let names = all_of(
-        std::iter::once(service.to_string())
-            .chain(sharers.iter().map(|(name, _)| name.to_string())),
-    );
+    let refused = (service.clone(), vec![region.clone()]);
+    let mut each = std::iter::once(&refused).chain(sharers).collect::<Vec<_>>();
+    // Where every sharer gets the same instruction, each one's refusal reads the same, so a
+    // Deployment names it once.
+    if !matches!(home, SharedHome::Region(_)) {
+        each.sort();
+    }
+    let names = all_of(each.iter().map(|(name, _)| name.to_string()));
     let why = match home {
         SharedHome::Region(at) => {
             format!("{volume} is in {at} and {service} is set to {region}. Set {service} to {at}")
@@ -825,17 +829,12 @@ fn shared_across_regions(
             "{volume} is on {machine}, which has no region. Give {machine} a region, then set them all to it"
         ),
         SharedHome::Unmade => {
-            let set = all_of(
-                sharers
-                    .iter()
-                    .map(|(name, regions)| {
-                        format!(
-                            "{name} is set to {}",
-                            all_of(regions.iter().map(ToString::to_string))
-                        )
-                    })
-                    .chain(std::iter::once(format!("{service} is set to {region}"))),
-            );
+            let set = all_of(each.iter().map(|(name, regions)| {
+                format!(
+                    "{name} is set to {}",
+                    all_of(regions.iter().map(ToString::to_string))
+                )
+            }));
             format!("{volume} isn't made yet. {set}. Set them all to one region")
         }
     };

@@ -32,13 +32,15 @@ it("gives every Service sharing a Volume on a Server with no region the one way 
     volumes: [{ id: "v1", name: "pg-data", mounts: [{ service: "postgres" }, { service: "reader" }] }], copies: [copy("m1")],
     servers: [{ id: "m1", name: "machine-1", region: null }, { id: "m2", name: "machine-2", region: "syd" }] });
   const way = "pg-data is on machine-1, which has no region. Give machine-1 a region, then set them all to it";
-  expect(unlabelled.map(({ service, why }) => [service, why.split(". ").slice(1).join(". ")])).toEqual([["postgres", way], ["reader", way]]);
+  const once = `postgres and reader share the Volume pg-data, so they have to run in the same region. ${way}`;
+  expect(unlabelled.map(({ service, why }) => [service, why])).toEqual([["postgres", once], ["reader", once]]);
 });
 
 it("asks Services sharing a Volume not made yet to agree on a region, not to swap", () => {
   const unmade = deployWaits({ services: [postgres, { name: "reader", replicas: { syd: 1 } }], home: "fsn",
     volumes: [{ id: "v1", name: "pg-data", mounts: [{ service: "postgres" }, { service: "reader" }] }], copies: [], servers });
-  expect(unmade.map(({ why }) => why.endsWith("Set them all to one region"))).toEqual([true, true]);
+  const once = "postgres and reader share the Volume pg-data, so they have to run in the same region. pg-data isn't made yet. postgres is set to fsn and reader is set to syd. Set them all to one region";
+  expect(unmade.map(({ why }) => why)).toEqual([once, once]);
 });
 
 it("holds a Service in Scale to the region its Volume is in, even when a sharer is set elsewhere", () => {

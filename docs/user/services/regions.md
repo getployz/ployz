@@ -276,10 +276,11 @@ starts its own.
   ```
 
   When the volume is on a server in no region, none of the services that share it is started, and
-  each line gives the same way out:
+  each line gives the same way out, which the deployment's page says once:
 
   ```
-  reader: not started (reader and postgres share the Volume pg-data, so they have to run in the same region. pg-data is on machine-1, which has no region. Give machine-1 a region, then set them all to it)
+  postgres: not started (postgres and reader share the Volume pg-data, so they have to run in the same region. pg-data is on machine-1, which has no region. Give machine-1 a region, then set them all to it)
+  reader: not started (postgres and reader share the Volume pg-data, so they have to run in the same region. pg-data is on machine-1, which has no region. Give machine-1 a region, then set them all to it)
   ```
 
   When the volume isn't made yet, none of them is started either. Each line says where each
