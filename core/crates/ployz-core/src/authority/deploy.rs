@@ -153,32 +153,15 @@ pub(super) fn run_fields_cleared(spec: &RequestedServiceSpec) -> RequestedServic
     }
 }
 
-/// Whether where `spec` runs is a signed choice. That holds when it mounts a Volume other
-/// than a tmpfs, since two Servers can hold same-named Volumes with different contents, or
-/// when it has any [`host_reach`] beyond a Volume it only declares.
+/// Whether where `spec` runs is a signed choice. That holds when it mounts any Volume but a
+/// tmpfs mount, since a named Volume, even one Docker backs with tmpfs, is found by name and
+/// two Servers can hold same-named Volumes with different contents, or when it has any
+/// [`host_reach`] beyond a Volume it only declares.
 fn reads_host_data(spec: &RequestedServiceSpec) -> bool {
     spec.volume_graph()
         .mounted_volumes()
-        .any(|volume| !is_tmpfs(volume.source.kind()))
+        .any(|volume| !matches!(volume.source.kind(), RawVolumeSource::Tmpfs { .. }))
         || !reach(spec, &[]).is_empty()
-}
-
-/// Whether `source` is a fresh tmpfs on every Server: a tmpfs mount, or an Ordinary Volume
-/// on `local` whose only options make it one.
-fn is_tmpfs(source: &RawVolumeSource) -> bool {
-    match source {
-        RawVolumeSource::Tmpfs { .. } => true,
-        RawVolumeSource::Ordinary { driver, .. } => {
-            plain_local(driver)
-                && driver
-                    .options()
-                    .get("type")
-                    .is_some_and(|kind| kind == "tmpfs")
-        }
-        RawVolumeSource::Bind { .. }
-        | RawVolumeSource::External { .. }
-        | RawVolumeSource::Provisioned { .. } => false,
-    }
 }
 
 impl PayloadDigest {

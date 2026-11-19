@@ -484,6 +484,12 @@ fn where_a_spec_runs_is_signed_unless_it_holds_nothing_per_server() {
         &["volumes", "0", "source"],
         json!({"kind": "ordinary", "name": "data", "driver": {"name": "local"}}),
     );
+    let tmpfs_named = set(
+        contained_json(),
+        &["volumes", "0", "source"],
+        json!({"kind": "ordinary", "name": "data",
+               "driver": {"name": "local", "options": {"type": "tmpfs"}}}),
+    );
     let privileged = set(contained_json(), &["container", "privileged"], json!(true));
     let device = set(
         contained_json(),
@@ -497,6 +503,7 @@ fn where_a_spec_runs_is_signed_unless_it_holds_nothing_per_server() {
     for (what, base) in [
         ("a Provisioned Volume", provisioned),
         ("an Ordinary Volume", ordinary),
+        ("a named Volume Docker backs with tmpfs", tmpfs_named),
         ("privileges", privileged),
         ("a device", device),
     ] {
@@ -512,12 +519,18 @@ fn where_a_spec_runs_is_signed_unless_it_holds_nothing_per_server() {
         &["volumes"],
         json!([
             {"reference": "host", "source": {"kind": "bind", "machine_path": "/srv/web"}},
-            {"reference": "data", "source": {"kind": "ordinary", "name": "data",
-             "driver": {"name": "local", "options": {"type": "tmpfs"}}}}
+            {"reference": "data", "source": {"kind": "tmpfs"}}
         ]),
     );
     for (what, base) in [
-        ("a stateless spec", contained_json()),
+        (
+            "a stateless spec",
+            set(
+                contained_json(),
+                &["volumes", "0", "source"],
+                json!({"kind": "tmpfs"}),
+            ),
+        ),
         ("an unused Bind Mount declaration", unused_bind),
     ] {
         assert!(
