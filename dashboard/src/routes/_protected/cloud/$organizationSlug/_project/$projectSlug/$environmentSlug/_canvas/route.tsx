@@ -21,12 +21,13 @@ export const Route = createFileRoute(
     streamStoreViews(context, params.organizationSlug, domainsQuery(store));
     // Only the Sealed controls read it, and they show as off until it lands.
     streamRemote(context, sealingQueryOptions(params.organizationSlug));
-    // Open uptime incidents add to the canvas ⚠ counts. A failed read leaves them as they were.
-    await prefetchRemoteUptime(context, params.organizationSlug, environmentUptimeQueryOptions({ organizationSlug: params.organizationSlug, environmentId: environment.id }));
     // GitHub's origin links a Git Service's repository and a merged pull request.
     await prefetchStoreEnvironment(context, params.organizationSlug, store,
       [environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), configsQuery(store), namespaceQuery(store)],
       githubWebQueryOptions());
+    // Open uptime incidents add to the canvas ⚠ counts. A failed read leaves them as they were. It streams, so it starts
+    // after the Store reads rather than before them.
+    await prefetchRemoteUptime(context, params.organizationSlug, environmentUptimeQueryOptions({ organizationSlug: params.organizationSlug, environmentId: environment.id }));
   },
   errorComponent: CanvasError,
   component: CanvasLayout,
