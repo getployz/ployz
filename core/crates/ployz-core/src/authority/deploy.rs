@@ -31,8 +31,8 @@ use crate::value::hex_newtype;
 use crate::{
     ContainerKind, ContainerResources, MachineId, Namespace, OperationId, Placement,
     PortPublication, PullPolicy, RawVolumeSource, RequestedServiceSpec, ResolvedServiceSpec,
-    SealingPublicKey, ServiceContainerSpec, ServiceMode, ServiceName, ServiceNetwork, UpdateConfig,
-    VolumeDriver,
+    SealingPublicKey, ServiceContainerSpec, ServiceMode, ServiceName, ServiceNetwork,
+    ServiceVolume, UpdateConfig, VolumeDriver,
 };
 
 hex_newtype!(
@@ -153,18 +153,32 @@ pub(super) fn run_fields_cleared(spec: &RequestedServiceSpec) -> RequestedServic
     }
 }
 
-/// Whether `spec` mounts a Bind Mount, an External Volume or an Ordinary Volume whose
-/// driver can reach a host path. Each Server's folder or volume of that name can hold
-/// different files, so where such a spec runs is a signed choice.
+/// Whether where `spec` runs is a signed choice. That holds when it mounts a Volume other
+/// than a tmpfs, since two Servers can hold same-named Volumes with different contents, or
+/// when it has any [`host_reach`] beyond a Volume it only declares.
 fn reads_host_data(spec: &RequestedServiceSpec) -> bool {
     spec.volume_graph()
-        .volumes()
-        .iter()
-        .any(|volume| match volume.source.kind() {
-            RawVolumeSource::Bind { .. } | RawVolumeSource::External { .. } => true,
-            RawVolumeSource::Ordinary { driver, .. } => !plain_local(driver),
-            RawVolumeSource::Provisioned { .. } | RawVolumeSource::Tmpfs { .. } => false,
-        })
+        .mounted_volumes()
+        .any(|volume| !is_tmpfs(volume.source.kind()))
+        || !reach(spec, &[]).is_empty()
+}
+
+/// Whether `source` is a fresh tmpfs on every Server: a tmpfs mount, or an Ordinary Volume
+/// on `local` whose only options make it one.
+fn is_tmpfs(source: &RawVolumeSource) -> bool {
+    match source {
+        RawVolumeSource::Tmpfs { .. } => true,
+        RawVolumeSource::Ordinary { driver, .. } => {
+            plain_local(driver)
+                && driver
+                    .options()
+                    .get("type")
+                    .is_some_and(|kind| kind == "tmpfs")
+        }
+        RawVolumeSource::Bind { .. }
+        | RawVolumeSource::External { .. }
+        | RawVolumeSource::Provisioned { .. } => false,
+    }
 }
 
 impl PayloadDigest {
@@ -365,6 +379,11 @@ pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<Shown> {
 /// holder's network, and a privileged hook. Only a Device or a passkey's own prompt
 /// approves any of it.
 pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
+    reach(spec, spec.volume_graph().volumes())
+}
+
+/// [`host_reach`], naming only what `volumes` of `spec` reach.
+fn reach(spec: &RequestedServiceSpec, volumes: &[ServiceVolume]) -> Vec<Shown> {
     let container = &spec.container;
     let mut host = Vec::new();
     if container.privileged {
@@ -409,7 +428,7 @@ pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
         }
         PortPublication::Ingress { .. } => None,
     }));
-    host.extend(spec.volume_graph().volumes().iter().filter_map(|volume| {
+    host.extend(volumes.iter().filter_map(|volume| {
         match volume.source.kind() {
             RawVolumeSource::Bind { machine_path, .. } => {
                 Some(Shown::words("binds ").and_text(machine_path.as_str()))

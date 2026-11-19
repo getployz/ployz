@@ -395,13 +395,7 @@ fn cloud_changes_what_it_picks_per_run_without_a_new_signature() {
             &["mode"],
             json!({"mode": "replicated", "replicas": 9}),
         ),
-        ("regions", &["regions"], json!({"fsn": 3})),
         ("rollout order", &["update"], json!({"order": "stop_first"})),
-        (
-            "where it runs",
-            &["placement"],
-            json!({"constraints": ["node.labels.zone==b"]}),
-        ),
         (
             "Volume bound",
             &["volumes", "0", "source", "maximum_bytes"],
@@ -460,6 +454,74 @@ fn a_spec_that_reads_host_data_keeps_where_it_runs_signed() {
         assert_eq!(
             verify_from(regional.clone(), changed).unwrap_err(),
             AuthorityRefusal::Mismatch { field: "a payload" },
+            "{what}"
+        );
+    }
+}
+
+/// `spec` placed on the `zone` label, in the `fsn` region.
+fn placed(spec: Value, zone: &str) -> Value {
+    set(
+        set(
+            spec,
+            &["placement"],
+            json!({"constraints": [format!("node.labels.zone=={zone}")]}),
+        ),
+        &["regions"],
+        json!({"fsn": 2}),
+    )
+}
+
+#[test]
+fn where_a_spec_runs_is_signed_unless_it_holds_nothing_per_server() {
+    let provisioned = set(
+        contained_json(),
+        &["volumes", "0", "source"],
+        json!({"kind": "provisioned", "name": "data", "maximum_bytes": 1000}),
+    );
+    let ordinary = set(
+        contained_json(),
+        &["volumes", "0", "source"],
+        json!({"kind": "ordinary", "name": "data", "driver": {"name": "local"}}),
+    );
+    let privileged = set(contained_json(), &["container", "privileged"], json!(true));
+    let device = set(
+        contained_json(),
+        &["container", "resources"],
+        json!({"devices": [{
+            "machine_path": "/dev/null",
+            "container_path": "/dev/null",
+            "cgroup_permissions": "rwm"
+        }]}),
+    );
+    for (what, base) in [
+        ("a Provisioned Volume", provisioned),
+        ("an Ordinary Volume", ordinary),
+        ("privileges", privileged),
+        ("a device", device),
+    ] {
+        assert_eq!(
+            verify_from(placed(base.clone(), "a"), placed(base, "b")).unwrap_err(),
+            AuthorityRefusal::Mismatch { field: "a payload" },
+            "{what}"
+        );
+    }
+
+    let unused_bind = set(
+        contained_json(),
+        &["volumes"],
+        json!([
+            {"reference": "host", "source": {"kind": "bind", "machine_path": "/srv/web"}},
+            {"reference": "data", "source": {"kind": "ordinary", "name": "data",
+             "driver": {"name": "local", "options": {"type": "tmpfs"}}}}
+        ]),
+    );
+    for (what, base) in [
+        ("a stateless spec", contained_json()),
+        ("an unused Bind Mount declaration", unused_bind),
+    ] {
+        assert!(
+            verify_from(placed(base.clone(), "a"), placed(base, "b")).is_ok(),
             "{what}"
         );
     }

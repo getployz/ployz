@@ -175,10 +175,17 @@ The signature doesn't cover where a service runs, how many replicas it runs, its
 [count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a
 deploy replaces them in, its pull policy, its CPU and memory limits or the largest size of a
 managed volume. None of them show here, and Ployz Cloud could change them on a deploy you approve.
-That can stop or slow a service but can't reach more of your data. A service that mounts a host
-path or an external volume, or a Docker volume whose driver can reach one, keeps the servers it may
-run on in the signature: its placement and the names of its regions. Only the replica count inside
-each region stays open.
+That can stop or slow a service but can't reach more of your data. A service that mounts a volume
+other than a tmpfs, whether a bind mount, an external volume or a volume Ployz manages, or that
+asks anything of the host (privileged mode, devices, added capabilities, PID mode, sysctls, host
+ports, the ingress or tunnel network, a privileged hook), keeps the servers it may run on in the
+signature: its placement and the names of its regions. Two servers can hold a volume of the same
+name with different contents, and a host-level setting acts on whichever server runs it. Only the
+replica count inside each region stays open. A volume the service declares but never mounts
+doesn't count.
+Only a `node.id` constraint pins a service to one server. A region name limits where the service
+runs only as far as the servers' labels are honest, and Ployz Cloud can relabel a server, the same
+way it can mislabel one today.
 Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
 shows here even if Cloud put it there. A control character in a value prints as its escape,
 such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
