@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { NamedRegion } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
@@ -27,6 +27,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -64,19 +65,22 @@ function section(shown: RuntimeMachineRecord, { allowed = true, machines = fleet
 } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
-  render(
+  const view = (read: OwnedNamespaces) => (
     <QueryClientProvider client={queryClient}>
       <ServerRegionSection
         machine={shown}
         machines={machines}
         services={services}
-        owned={owned}
+        owned={read}
         regions={regions}
         organizationSlug="acme"
         gate={allowed ? { allowed: true, reason: undefined } : { allowed: false, reason: "Only an owner or admin can change how a server runs." }}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const page = render(view(owned));
+  /** The read of what runs here, as a later refresh leaves it. */
+  return { reads: (read: OwnedNamespaces) => page.rerender(view(read)) };
 }
 
 it("shows the Server's region by its name, then every region by name, then a way to clear or add one", async () => {
@@ -184,11 +188,25 @@ it("keeps the Server where it was when the move is cancelled", async () => {
   expect(screen.getByRole("combobox", { name: "Region" }).textContent).toContain("Default");
 });
 
-it("says so when no other Server is in a Service's region", async () => {
+it("says a Service waits and keeps running here when the move leaves its region with no Server", async () => {
   section(vm3, { services: RUNNING.slice(0, 1), owned: READ });
   await pick("Sydney");
-  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
-    "webshop/productionNo server in Default",
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("These keep running on server-3 until their region has a server.")).toBeTruthy();
+  expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+    "webshop/productionWaits for a server in Default",
+  ]);
+});
+
+it("tells the Services the next Deploy moves from the ones that wait", async () => {
+  section(vm3, { services: RUNNING, owned: READ });
+  await pick("Sydney");
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText("These leave server-3 on the next deploy. The ones that wait keep running here.")).toBeTruthy();
+  expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+    "webshop/productionWaits for a server in Default",
+    "postgresshop/productionWaits for a server in Default",
+    "apiblog/production→ server-1",
   ]);
 });
 
@@ -207,11 +225,13 @@ it("asks before a move that takes a Server out of one of the regions a Service c
   expect(requestChange).not.toHaveBeenCalled();
 });
 
-it("names only the region a Server leaves when no other Server is in it, though the Service counts the new region too", async () => {
+it("says a Service that counts replicas by region waits when the move empties one of them, though it counts the new region too", async () => {
   const counted: OwnedNamespaces = { kind: "read", namespaces: [{ ...SHOP, replica_regions: { web: ["default", "syd"] } }] };
   section(vm3, { services: RUNNING.slice(0, 1), owned: counted });
   await pick("Sydney");
-  expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/productionNo server in Default"]);
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByText("These leave server-3 on the next deploy.")).toBeNull();
+  expect(within(dialog).getAllByRole("listitem").map((row) => row.textContent)).toEqual(["webshop/productionWaits for a server in Default"]);
 });
 
 it("leaves out an offline Server as a place a Service can go", async () => {
@@ -219,7 +239,7 @@ it("leaves out an offline Server as a place a Service can go", async () => {
   section(vm3, { services: RUNNING.slice(0, 1), owned: READ, machines: [...fleet, down] });
   await pick("Sydney");
   expect(within(await screen.findByRole("dialog")).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
-    "webshop/productionNo server in Default",
+    "webshop/productionWaits for a server in Default",
   ]);
 });
 
@@ -249,5 +269,66 @@ it("asks before a move when an Environment's Working State couldn't be read, nam
   await pick("Sydney");
   const dialog = await screen.findByRole("dialog");
   expect(within(dialog).getByText(/Couldn’t read shop\/production/)).toBeTruthy();
+  expect(requestChange).not.toHaveBeenCalled();
+});
+
+/**
+ * Runs what the page already asked for to its end, on a clock the test drives: the Store's answer and what follows it.
+ * React renders when each `act` ends, so the second passes in steps.
+ */
+async function settle() {
+  for (let elapsed = 0; elapsed < 1000; elapsed += 100) await act(() => vi.advanceTimersByTimeAsync(100));
+}
+
+/** Types `name` into the open New region field and confirms it, then lets the Store say what it makes. */
+async function nameRegion(name: string) {
+  const input = screen.getByRole("textbox", { name: "New region" });
+  fireEvent.change(input, { target: { value: name } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  await settle();
+  expect(storeFunctions.readStoreViewServerFn).toHaveBeenCalledWith(
+    expect.objectContaining({ data: expect.objectContaining({ query: expect.objectContaining({ query: "new_region", name }) }) }),
+  );
+}
+
+it("changes nothing from a New region field left open when the read of what runs here then fails", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const page = section(vm3, { services: RUNNING, owned: READ });
+  await pick("New region…");
+  await screen.findByRole("textbox", { name: "New region" });
+  page.reads({ kind: "failed" });
+  await nameRegion("Sydney 2");
+  expect(requestChange).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
+  expect(screen.getByText("Couldn’t read what runs here. Reload to change the region.")).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "New region" }) as HTMLInputElement).value).toBe("Sydney 2");
+});
+
+it("changes nothing from a New region field while what runs here is read again, then asks once it is read", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const page = section(vm3, { services: RUNNING, owned: READ });
+  await pick("New region…");
+  await screen.findByRole("textbox", { name: "New region" });
+  page.reads({ kind: "reading" });
+  await nameRegion("Sydney 2");
+  expect(requestChange).not.toHaveBeenCalled();
+
+  page.reads(READ);
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "New region" }), { key: "Enter" });
+  expect(within(await screen.findByRole("dialog")).getByRole("heading").textContent).toBe("Move server-3 to Sydney 2");
+  expect(requestChange).not.toHaveBeenCalled();
+});
+
+it("holds a Move dialog left open when the read of what runs here then fails", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const page = section(vm3, { services: RUNNING, owned: READ, machines: withDefaultPeer });
+  await pick("Sydney");
+  const dialog = await screen.findByRole("dialog");
+  page.reads({ kind: "failed" });
+  expect(within(dialog).getByText("Couldn’t read what runs here. Reload to change the region.")).toBeTruthy();
+  const confirm = within(dialog).getByRole("button", { name: "Move server" });
+  expect(confirm.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(confirm);
+  await settle();
   expect(requestChange).not.toHaveBeenCalled();
 });

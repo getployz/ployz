@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ConfigView, OwnedNamespace } from "@ployz/sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -57,4 +57,18 @@ it("shows the Namespaces again once the read that failed succeeds", async () => 
   await waitFor(() => expect(page.reads).toHaveLength(3));
   await act(async () => page.reads[2]?.answer(namespaces(shop)));
   await waitFor(() => expect(page.kind()).toBe("read"));
+});
+
+it("holds the picker when a read asked again waits for the network, though an earlier answer is cached", async () => {
+  const page = openServerPage();
+  await waitFor(() => expect(page.reads).toHaveLength(1));
+  await act(async () => page.reads[0]?.answer(namespaces(shop)));
+  await waitFor(() => expect(page.kind()).toBe("read"));
+  try {
+    act(() => onlineManager.setOnline(false));
+    page.refresh();
+    await waitFor(() => expect(page.kind()).toBe("reading"));
+  } finally {
+    onlineManager.setOnline(true);
+  }
 });

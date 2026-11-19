@@ -496,12 +496,17 @@ already has, in any case, is refused under the field with that region's name, su
 **Region Falkenstein (fsn) already exists.**, and nothing changes.
 
 When a service on the server belongs to an environment that runs in another region, the change
-asks first. **Move web-2 to Sydney** lists each service that leaves web-2 on the next deploy, with
-its environment and the server it goes to, or **No server in fsn** when no other server is in its region. A server that is offline isn't offered as one it goes to. **Move server** changes the region (**Clear region**, when you clear
-it), and **Cancel** keeps the old one. When nothing would leave, the region changes at once.
-The field waits for what runs on the server to load, and says so when it can't be read, rather
-than change a region without knowing what leaves. When one environment's services can't be
-read, the question says so and names it.
+asks first. **Move web-2 to Sydney** lists each service the change affects, with its environment
+and what the next deploy does with it. A service that another server in its region can run shows
+that server, such as **→ web-3**. A service whose region the change leaves with no server shows
+**Waits for a server in Falkenstein**. The next deploy doesn't start it there, and it keeps running
+on web-2 until a server is in that region. A server that is offline isn't offered as one a service
+goes to. **Move server** changes the region (**Clear region**, when you clear it), and **Cancel**
+keeps the old one. When nothing would leave, the region changes at once.
+
+While what runs on the server loads, and when it can't be read, the field says so and changes
+nothing, whether you pick a region, name a new one or confirm a question that was already open.
+When one environment's services can't be read, the question says so and names it.
 
 The page shows the region you picked and **Queued** until the server reports it, then the server's
 own value. If the server hasn't reported it after a minute, the page goes back to what the server

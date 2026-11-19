@@ -14,10 +14,15 @@ export type Placed = {
 };
 
 /**
- * A Placed that leaves on the next Deploy. `to` names the Servers it can run on, which are in `searched`: the regions it
- * must keep running in, the one a Server leaves when it counts replicas by region, else all its `regions`.
+ * A Placed a region change takes off the Server, and what the next Deploy does with it. It `moves` when every region it
+ * runs in still has a Server that can run it: `to` names the ones in `searched`, the regions it must keep running in,
+ * which is the one the Server leaves when it counts replicas by region, else all its `regions`. It `waits`, and keeps
+ * running where it is, when the regions in `empty` have none.
  */
-export type Leaving = Placed & { readonly to: readonly string[]; readonly searched: readonly string[] };
+export type Leaving = Placed & (
+  | { readonly next: "moves"; readonly to: readonly string[]; readonly searched: readonly string[] }
+  | { readonly next: "waits"; readonly empty: readonly string[] }
+);
 
 /** An Environment's Namespace as the Store names it, with where its Services run. */
 type OwnedNamespace = {
@@ -58,11 +63,11 @@ export function unreadEnvironments(placed: readonly Placed[]): string[] {
 }
 
 /**
- * What leaves the Server `serverId` once it is in region `to` (null: no region). A Service that runs in one region
- * leaves when `to` isn't it. A Service that counts replicas by region leaves too when the Server holds the replica of
- * the region it is in now, which it stops doing once `to` is another, though `to` is counted as well. Region keys
- * compare without case. `to` on each lists the other Servers that take Services and are not offline, in the regions
- * the Service must run in, where a Deploy can move it.
+ * What a Deploy takes off the Server `serverId` once it is in region `to` (null: no region). A Service that runs in one
+ * region leaves when `to` isn't it. A Service that counts replicas by region leaves too when the Server holds the
+ * replica of the region it is in now, which it stops doing once `to` is another, though `to` is counted as well. Region
+ * keys compare without case. A Deploy places a Service only when each of its regions has a Server that takes Services
+ * and is not offline, this Server counting in `to`: then it moves to the other such Servers, else it waits.
  */
 export function leavingServer(
   serverId: string,
@@ -78,15 +83,19 @@ export function leavingServer(
 ): Leaving[] {
   const here = to?.toLowerCase();
   const from = servers.find(({ id }) => id === serverId)?.region?.toLowerCase();
-  return placed.flatMap((item) => {
+  const after = servers
+    .filter((server) => server.acceptsServices && !server.offline)
+    .map(({ id, name, region }) => ({ id, name, region: id === serverId ? here : region?.toLowerCase() }));
+  return placed.flatMap((item): Leaving[] => {
     const regions = item.regions.map((region) => region.toLowerCase());
     if (regions.length === 0) return [];
     const heldRegion = item.perRegion && from !== undefined && regions.includes(from) && from !== here ? from : null;
     if (heldRegion === null && here !== undefined && regions.includes(here)) return [];
+    const empty = item.regions.filter((region) => !after.some((server) => server.region === region.toLowerCase()));
+    if (empty.length > 0) return [{ ...item, next: "waits", empty }];
     const searched = heldRegion === null ? item.regions : item.regions.filter((region) => region.toLowerCase() === heldRegion);
     const wanted = searched.map((region) => region.toLowerCase());
-    const there = servers.filter((other) =>
-      other.id !== serverId && other.acceptsServices && !other.offline && wanted.includes(other.region?.toLowerCase() ?? ""));
-    return [{ ...item, to: there.map(({ name }) => name).sort(), searched }];
+    const there = after.filter((other) => other.id !== serverId && wanted.includes(other.region ?? ""));
+    return [{ ...item, next: "moves", to: there.map(({ name }) => name).sort(), searched }];
   });
 }

@@ -5,20 +5,33 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { regionName } from "#/modules/machines/server-regions";
 import type { Leaving } from "#/modules/machines/server-move";
 
-function destination(row: Leaving, regions: readonly NamedRegion[] | undefined) {
-  const searched = row.searched.map((each) => regionName(each, regions)).join(", ");
+const named = (keys: readonly string[], regions: readonly NamedRegion[] | undefined) =>
+  keys.map((each) => regionName(each, regions)).join(", ");
+
+function next(row: Leaving, regions: readonly NamedRegion[] | undefined) {
+  if (row.next === "waits") return `Waits for a server in ${named(row.empty, regions)}`;
   const [only, ...more] = row.to;
-  if (only === undefined) return `No server in ${searched}`;
-  return more.length === 0 ? `→ ${only}` : `→ ${row.to.length} servers in ${searched}`;
+  return more.length === 0 ? `→ ${only}` : `→ ${row.to.length} servers in ${named(row.searched, regions)}`;
 }
 
-export function MoveServerDialog({ serverName, regionName: to, rows, unread, regions, open, onOpenChange, onConfirm }: {
+function summary(serverName: string, rows: readonly Leaving[]) {
+  const waiting = rows.filter((row) => row.next === "waits").length;
+  if (rows.length === 0) return `Nothing shown leaves ${serverName}.`;
+  if (waiting === 0) return `These leave ${serverName} on the next deploy.`;
+  return waiting === rows.length
+    ? `These keep running on ${serverName} until their region has a server.`
+    : `These leave ${serverName} on the next deploy. The ones that wait keep running here.`;
+}
+
+export function MoveServerDialog({ serverName, regionName: to, rows, unread, held, regions, open, onOpenChange, onConfirm }: {
   serverName: string;
   /** The region's name, or null when the Server leaves every region. */
   regionName: string | null;
   rows: readonly Leaving[];
   /** The Environments whose Working State couldn't be read: what leaves from them isn't shown. */
   unread: readonly string[];
+  /** Why the change can't be made now: what runs here isn't read, so `rows` shows nothing. Null when it is. */
+  held: string | null;
   regions: readonly NamedRegion[] | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -30,24 +43,24 @@ export function MoveServerDialog({ serverName, regionName: to, rows, unread, reg
         <DialogHeader>
           <DialogTitle>{to === null ? `Clear ${serverName}’s region` : `Move ${serverName} to ${to}`}</DialogTitle>
           <DialogDescription>
-            {rows.length > 0 ? `These leave ${serverName} on the next deploy.` : `Nothing shown leaves ${serverName}.`}
-            {unread.length > 0 ? ` Couldn’t read ${unread.join(", ")}, so what leaves from there isn’t shown.` : ""}
+            {held ?? summary(serverName, rows)}
+            {held === null && unread.length > 0 ? ` Couldn’t read ${unread.join(", ")}, so what leaves from there isn’t shown.` : ""}
           </DialogDescription>
         </DialogHeader>
-        <ItemGroup role="list" aria-label={`Leaving ${serverName}`} className="max-h-72 overflow-y-auto">
+        <ItemGroup role="list" aria-label="Services this changes" className="max-h-72 overflow-y-auto">
           {rows.map((row) => (
             <Item key={row.key} role="listitem" variant="outline" size="xs">
               <ItemContent className="min-w-0">
                 <ItemTitle>{row.name}</ItemTitle>
                 <ItemDescription className="font-mono">{row.environment}</ItemDescription>
               </ItemContent>
-              <ItemActions><ItemDescription>{destination(row, regions)}</ItemDescription></ItemActions>
+              <ItemActions><ItemDescription>{next(row, regions)}</ItemDescription></ItemActions>
             </Item>
           ))}
         </ItemGroup>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-          <Button onClick={onConfirm}>{to === null ? "Clear region" : "Move server"}</Button>
+          <Button disabled={held !== null} onClick={onConfirm}>{to === null ? "Clear region" : "Move server"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

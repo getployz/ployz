@@ -33,14 +33,14 @@ export type OwnedNamespaces =
 
 /**
  * The Namespaces the Organization's Environments own, each with the regions its Services run in. Only an answer known to
- * be current is `read`: an unanswered read, one asked again, and one that failed after an earlier answer are not, since
- * what that answer showed may have changed. Each is its own state, never an empty list.
+ * be current is `read`: an unanswered read, one asked again, whether sent or waiting for the network, and one that failed
+ * after an earlier answer are not, since what that answer showed may have changed. Each is its own state, never an empty list.
  */
 export function useOwnedNamespaces(organizationSlug: string): OwnedNamespaces {
   const scope = useCollectionScope();
   const [read] = useQueries({ queries: [storeViewOptions(organizationSlug, scope, { query: "namespaces" })] });
   if (read.isError) return { kind: "failed" };
-  if (read.isFetching) return { kind: "reading" };
+  if (read.fetchStatus !== "idle") return { kind: "reading" };
   if (read.data?.ok && read.data.value.view === "namespaces") return { kind: "read", namespaces: read.data.value.namespaces };
   return read.data !== undefined ? { kind: "failed" } : { kind: "reading" };
 }
