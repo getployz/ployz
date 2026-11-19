@@ -1380,8 +1380,9 @@ fn outside_region(
     }
     Some(PlanError::VolumeOutsideRegion {
         volume: plan.authored(managed_volume_name(volume)?).to_owned(),
+        service: spec.name.clone(),
         machine: holder,
-        beside: match volume_region {
+        beside: Box::new(match volume_region {
             Some(at) => BesideVolume::RunIn {
                 region: at,
                 replicas: match spec.mode {
@@ -1390,7 +1391,7 @@ fn outside_region(
                 },
             },
             None => BesideVolume::Label,
-        },
+        }),
         region,
     })
 }

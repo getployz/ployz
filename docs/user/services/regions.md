@@ -147,20 +147,21 @@ and says **Limited to 1**. You can still pick its region.
 
 A service with a [volume](volumes.md) runs on the server that writes the volume. A
 [mirror](mirror-a-volume.md) in the region doesn't count. A volume can't move to another region in
-this version of Ployz, so a service whose volume is outside its region stays with the volume. With
+this version of Ployz, so a service whose volume is outside its region waits. With
 the environment moved to `syd` and `pg-data` on a server in `fsn`:
 
 ```
-postgres: not started (it stays in fsn with its Volume pg-data, which can't move to syd yet)
+postgres: not started (its Volume pg-data is in fsn and can't move to syd yet. Run postgres in fsn instead)
 ```
 
-The rest of the deploy goes ahead, and `postgres` keeps running in `fsn`. The deployment reads
+The rest of the deploy goes ahead. If `postgres` already ran, it keeps running in `fsn`. A new
+service doesn't start. The deployment reads
 **Deployed, 1 waiting**, or **Nothing deployed, 1 waiting** when no other service had a change,
 and `ployz deploy` exits 3. In Ployz Cloud the Deployment page says the same under the
 deployment's title, and **Details** says it before you deploy.
 
-To stop the wait, run the service in the volume's region. The deploy prints the command that does
-it:
+To stop the wait, run the service in the volume's region, from **Scale** in Ployz Cloud. The deploy
+prints the command that does it:
 
 ```sh
 ployz set postgres.replicas='{"fsn":1}'
@@ -174,7 +175,7 @@ If the volume's server is in no region, the line names the server, and the deplo
 command that gives it the service's region:
 
 ```
-postgres: not started (it stays on db-1, a Server in no region, with its Volume pg-data, which can't move to syd yet)
+postgres: not started (its Volume pg-data is on db-1, a Server in no region, and can't move to syd yet. Give db-1 the region syd instead)
 ```
 
 ```sh
