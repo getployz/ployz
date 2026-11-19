@@ -5,15 +5,15 @@
 //! it, and an Operator's start of it is checked against the keys trusted then. A hook runs
 //! once, when it is created.
 
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 use ployz_core::{
     ClientKey, ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant,
     DeviceCode, ManagementScope, Namespace, NewContainer, ResolvedServiceSpec, RunTarget, Sealing,
     ServiceName, Start,
     authority::{
-        Approver, AuthorityRefusal, DeployApproval, DeployFacts, PayloadDigest, RuleProof,
-        ServiceVersion, Signed, SigningPublicKey, TrustedKeys, VersionFacts,
+        Approver, AuthorityRefusal, Budget, DeployApproval, DeployFacts, PayloadDigest, RuleId,
+        RuleProof, ServiceVersion, Signed, SigningPublicKey, TrustedKeys, VersionFacts,
         deploy::{self, Creation, content_addressed},
         needs_signature, version,
     },
@@ -21,7 +21,7 @@ use ployz_core::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{Caller, Error, LocalMachine, consumption::SpecSigner};
+use super::{Caller, ConsumptionLog, Error, LocalMachine, RecordOwner, consumption::SpecSigner};
 use crate::docker::ContainerRuntime;
 
 /// Who admitted a Container, kept with it for as long as it exists.
@@ -29,8 +29,15 @@ use crate::docker::ContainerRuntime;
 #[serde(tag = "by", rename_all = "snake_case")]
 pub(crate) enum AdmittedBy {
     /// The keys whose signature admitted it, never empty: the signers of its versions or
-    /// its deploy approval, the Device whose own connection asked, or a rule's signer.
+    /// its deploy approval, or the Device whose own connection asked.
     Keys { keys: Vec<KeptKey> },
+    /// An automatic deploy rule at one generation, signed by `signer`. It admits while
+    /// that key is trusted and no newer generation of the rule has reached this Machine.
+    Rule {
+        signer: KeptKey,
+        rule: RuleId,
+        generation: u64,
+    },
     /// This Server's own socket, or the daemon itself.
     Local,
     /// A spec that reaches no data.
@@ -96,22 +103,53 @@ impl AdmittedBy {
         }
         (!keys.is_empty()).then_some(Self::Keys { keys })
     }
+}
 
-    /// Whether it still admits on a Machine trusting `trusted`: one of its keys is
-    /// trusted.
+/// What a kept admission is checked against each time it is used: the keys this Machine
+/// trusts and its marks of automatic deploy rules, both read at the check.
+#[derive(Clone)]
+pub(crate) struct Standing {
+    owner: RecordOwner,
+    rules: Arc<ConsumptionLog>,
+}
+
+impl Standing {
+    /// Whether `by` still admits here: one of its keys is trusted, and for a rule its
+    /// signer is trusted and its generation is still the newest this Machine has seen.
     ///
     /// # Errors
-    /// Returns the first key's refusal when none is.
-    pub(crate) fn still_admits(&self, trusted: &TrustedKeys) -> Result<(), AuthorityRefusal> {
-        match self {
-            Self::Keys { keys } => match keys.iter().find(|key| key.trusted(trusted)) {
+    /// The outer error is `unread`'s, when the rule marks cannot be read. The inner one
+    /// is the refusal: the first key's when none is trusted, a generation for a rule a
+    /// newer one replaced, and an admission for a rule this Machine has no mark of.
+    pub(crate) fn admits<E>(
+        &self,
+        by: &AdmittedBy,
+        unread: fn(io::Error) -> E,
+    ) -> Result<Result<(), AuthorityRefusal>, E> {
+        let trusted = self.owner.record().trusted_keys();
+        Ok(match by {
+            AdmittedBy::Keys { keys } => match keys.iter().find(|key| key.trusted(&trusted)) {
                 Some(_) => Ok(()),
                 None => Err(keys
                     .first()
                     .map_or(AuthorityRefusal::UnknownPasskey, |key| key.untrusted())),
             },
-            Self::Local | Self::Free => Ok(()),
-        }
+            AdmittedBy::Rule {
+                signer,
+                rule,
+                generation,
+            } => match self.rules.rule_generation(*rule, unread)? {
+                _ if !signer.trusted(&trusted) => Err(signer.untrusted()),
+                Some(newest) if newest == *generation => Ok(()),
+                Some(_) => Err(AuthorityRefusal::Mismatch {
+                    field: "a generation",
+                }),
+                None => Err(AuthorityRefusal::Mismatch {
+                    field: "an admission",
+                }),
+            },
+            AdmittedBy::Local | AdmittedBy::Free => Ok(()),
+        })
     }
 }
 
@@ -120,9 +158,6 @@ impl From<SpecSigner> for AdmittedBy {
         Self::of_signers(vec![signer]).unwrap_or(Self::Local)
     }
 }
-
-/// The keys this Machine trusts now, read each time it is called.
-type Trust = Arc<dyn Fn() -> TrustedKeys + Send + Sync>;
 
 /// A spec this Machine admitted for a new Container, and who admitted it. A Container
 /// opens Sealed values, and runs an image this Machine did not pull itself with no login,
@@ -136,7 +171,7 @@ pub(crate) struct AdmittedSpec {
     /// holding a negative number has no [`PayloadDigest`].
     spec: [u8; 32],
     by: AdmittedBy,
-    trust: Option<Trust>,
+    standing: Option<Standing>,
 }
 
 impl std::fmt::Debug for AdmittedSpec {
@@ -166,7 +201,7 @@ impl AdmittedSpec {
         Ok(Self {
             spec: Self::hash(namespace, spec).map_err(Error::DeployRefused)?,
             by: AdmittedBy::Local,
-            trust: None,
+            standing: None,
         })
     }
 
@@ -180,14 +215,18 @@ impl AdmittedSpec {
     }
 
     /// Whether the admission still holds, checked again right before Docker creates the
-    /// Container: a key that admitted it may have been removed during the image pull.
+    /// Container: a key that admitted it may have been removed, or a newer generation of
+    /// its rule may have arrived, during the image pull.
     ///
     /// # Errors
-    /// Returns the refusal when none of its keys is trusted now.
-    pub(crate) fn still_holds(&self) -> Result<(), AuthorityRefusal> {
-        match &self.trust {
-            Some(trust) => self.by.still_admits(&trust()),
-            None => Ok(()),
+    /// As [`Standing::admits`].
+    pub(crate) fn still_holds<E>(
+        &self,
+        unread: fn(io::Error) -> E,
+    ) -> Result<Result<(), AuthorityRefusal>, E> {
+        match &self.standing {
+            Some(standing) => standing.admits(&self.by, unread),
+            None => Ok(Ok(())),
         }
     }
 
@@ -211,7 +250,7 @@ impl AdmittedSpec {
             } else {
                 AdmittedBy::Free
             },
-            trust: None,
+            standing: None,
         }
     }
 }
@@ -273,7 +312,7 @@ impl LocalMachine {
             Ok(Some(AdmittedSpec {
                 spec,
                 by,
-                trust: Some(self.trust()),
+                standing: Some(self.standing()),
             }))
         };
         // A spec holding a negative number has no digest: no key can sign it, and this
@@ -287,9 +326,11 @@ impl LocalMachine {
                 versions,
             } => (false, deploy, rule, versions),
         };
+        // One budget for every signature this attempt opens, whichever proof carries it.
+        let mut budget = Budget::default();
         let mut unapproved = None;
         if !versions.is_empty() {
-            match self.approved_versions(new, versions) {
+            match self.approved_versions(new, versions, &mut budget) {
                 Ok(keys) => {
                     for key in &keys {
                         self.remember(new, digest, (*key).into())?;
@@ -301,10 +342,14 @@ impl LocalMachine {
         }
         // A signature presented is checked and kept whatever else would admit the spec,
         // so the spec stays admitted for as long as any key that signed it is trusted.
-        match deploy.map(|approval| self.approved_deploy(new, approval)) {
+        match deploy.map(|approval| self.approved_deploy(new, approval, &mut budget)) {
             Some(Ok(key)) => {
                 self.remember(new, digest, key.into())?;
                 return admitted(AdmittedBy::Keys { keys: vec![key] });
+            }
+            // A proof left unopened says more than an earlier proof's refusal.
+            Some(Err(AuthorityRefusal::Overspent)) => {
+                unapproved = Some(AuthorityRefusal::Overspent);
             }
             Some(Err(refusal)) => unapproved = unapproved.or(Some(refusal)),
             None => {}
@@ -320,10 +365,10 @@ impl LocalMachine {
         if deploy.is_none()
             && let Some(rule) = rule
         {
-            let key = self.admit_rule_deploy_online(want, rule).await?;
-            return admitted(AdmittedBy::Keys {
-                keys: vec![key.into()],
-            });
+            let by = self
+                .admit_rule_deploy_online(want, rule, &mut budget)
+                .await?;
+            return admitted(by);
         }
         match needs_signature(creation(new), new.registry_auth.is_some()) {
             Some(reach) => Err(refused(
@@ -340,6 +385,7 @@ impl LocalMachine {
         &self,
         new: &NewContainer,
         versions: &[Signed<ServiceVersion>],
+        budget: &mut Budget,
     ) -> Result<Vec<KeptKey>, AuthorityRefusal> {
         let record = self.record();
         let approved = version::verify(
@@ -350,6 +396,7 @@ impl LocalMachine {
                 namespace: &new.slot.namespace,
                 creation: creation(new),
             },
+            budget,
         )?;
         let keys: Vec<KeptKey> = approved.by.into_iter().map(KeptKey::from).collect();
         tracing::info!(
@@ -367,13 +414,16 @@ impl LocalMachine {
         &self,
         new: &NewContainer,
         approval: &Signed<DeployApproval>,
+        budget: &mut Budget,
     ) -> Result<KeptKey, AuthorityRefusal> {
         let record = self.record();
+        let trusted = record.trusted_keys();
+        budget.reserve(approval, &trusted)?;
         let approved = deploy::verify(
             approval,
             &DeployFacts {
                 cluster: self.cluster_key(record.phase()),
-                trusted: &record.trusted_keys(),
+                trusted: &trusted,
                 namespace: &new.slot.namespace,
                 creation: creation(new),
             },
@@ -390,19 +440,21 @@ impl LocalMachine {
         Ok(approved.by.into())
     }
 
-    /// The keys this Machine trusts, read again each time, for a creation's check right
-    /// before Docker makes it.
-    fn trust(&self) -> Trust {
-        let owner = self.owner.clone();
-        Arc::new(move || owner.record().trusted_keys())
+    /// What a kept admission is checked against when it is used.
+    pub(super) fn standing(&self) -> Standing {
+        Standing {
+            owner: self.owner.clone(),
+            rules: Arc::clone(&self.approvals),
+        }
     }
 
-    /// Start `id`. An Operator's start is refused when no key that admitted the Container
-    /// is trusted here now, and when this Machine kept no admission for it.
+    /// Start `id`. An Operator's start is refused when the admission kept with the
+    /// Container no longer stands here, as [`Standing::admits`] decides, and when this
+    /// Machine kept no admission for it.
     ///
     /// # Errors
-    /// Returns [`Error::DeployRefused`] for a refused start, and the Docker error of a
-    /// start that fails.
+    /// Returns [`Error::DeployRefused`] for a refused start, [`Error::ApprovalRecord`]
+    /// when the rule marks cannot be read, and the Docker error of a start that fails.
     pub(super) async fn start_checked(
         &self,
         containers: &ContainerRuntime,
@@ -410,7 +462,7 @@ impl LocalMachine {
     ) -> Result<(), Error> {
         if self.scope == ManagementScope::Operator {
             let refusal = match containers.lifecycle().admitted_by(id).await? {
-                Some(by) => by.still_admits(&self.record().trusted_keys()).err(),
+                Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
                 None => Some(AuthorityRefusal::Mismatch {
                     field: "an admission",
                 }),
@@ -488,7 +540,7 @@ impl LocalMachine {
                 Ok(Some(AdmittedSpec {
                     spec,
                     by: signer.into(),
-                    trust: Some(self.trust()),
+                    standing: Some(self.standing()),
                 }))
             }
         }
@@ -633,6 +685,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch {
             field: "an admission",
         } => "This server kept no record of who approved this container. Deploy it again.",
+        AuthorityRefusal::Mismatch {
+            field: "a generation",
+        } => {
+            "A newer approval of the automatic deploy rule replaced the one this container ran under."
+        }
         AuthorityRefusal::Overspent => {
             "This deploy carries more signatures than a server checks at once. Deploy again."
         }

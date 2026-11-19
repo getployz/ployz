@@ -484,6 +484,18 @@ impl ConsumptionLog {
         })
     }
 
+    /// The newest generation of `rule` this Machine has seen, ended or not, and `None`
+    /// when it has seen none.
+    pub(crate) fn rule_generation<E>(
+        &self,
+        rule: RuleId,
+        map_io: fn(io::Error) -> E,
+    ) -> Result<Option<u64>, E> {
+        self.read(map_io, |log| {
+            log.rules.get(&rule).map(|mark| mark.generation)
+        })
+    }
+
     /// Whether this Machine already admitted a creation of `claim`'s build under `rule`.
     pub(crate) fn accepted(
         &self,

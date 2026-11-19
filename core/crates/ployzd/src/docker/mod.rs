@@ -1465,6 +1465,10 @@ pub enum Error {
     /// No key that admitted the spec was trusted any more right before Docker made it.
     #[error("the spec's admission ended before its Container was made: {0}")]
     Unadmitted(ployz_core::authority::AuthorityRefusal),
+    /// The record of automatic deploy rules a spec's admission is checked against could
+    /// not be read right before Docker made the Container.
+    #[error("could not read this Server's record of automatic deploy rules")]
+    AdmissionUnread(#[source] std::io::Error),
     /// A registry or peer pull failed while the Docker root had almost no free space.
     #[error("{full}")]
     DiskFull {
@@ -1557,6 +1561,7 @@ impl Error {
             | Self::DiskFull { .. }
             | Self::Io(_)
             | Self::Json(_)
+            | Self::AdmissionUnread(_)
             | Self::Network(_)
             | Self::SpecStore(_)
             | Self::ReplicatedStore(_)

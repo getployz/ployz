@@ -15,12 +15,12 @@ use std::time::Instant;
 use ployz_core::{
     ContainerKind, ContainerWant, RunTarget, Sealing, ServiceName,
     authority::{
-        Approver, AuthorityRefusal, AutoDeployRule, RuleFacts, RuleProof, Timestamp,
+        AuthorityRefusal, AutoDeployRule, Budget, RuleFacts, RuleProof, Timestamp,
         deploy::Creation, rule::verify_signature,
     },
 };
 
-use super::{Error, LocalMachine, rule_grant::Github};
+use super::{AdmittedBy, Error, LocalMachine, rule_grant::Github};
 
 /// Why a Machine refused a deploy under a rule.
 #[derive(Debug, thiserror::Error)]
@@ -51,8 +51,9 @@ impl RuleDeployRefusal {
 }
 
 impl LocalMachine {
-    /// Admit an Operator's new Container on `proof`, at `now`, and name the rule's signer.
-    /// The creation records the accepted build, and a hook takes its place once per push.
+    /// Admit an Operator's new Container on `proof`, at `now`, with the rule's signature
+    /// charged to `budget`, and name the rule, its generation and its signer. The
+    /// creation records the accepted build, and a hook takes its place once per push.
     ///
     /// # Errors
     /// Returns [`Error::RuleDeployRefused`] naming what does not hold, and
@@ -63,7 +64,8 @@ impl LocalMachine {
         proof: &RuleProof,
         github: &impl Github,
         now: Timestamp,
-    ) -> Result<Approver, Error> {
+        budget: &mut Budget,
+    ) -> Result<AdmittedBy, Error> {
         let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
@@ -74,8 +76,9 @@ impl LocalMachine {
         let started = Instant::now();
         let refused = |refusal| Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal));
         let record = self.record();
-        let (rule, signer) =
-            verify_signature(&proof.rule, &record.trusted_keys()).map_err(refused)?;
+        let trusted = record.trusted_keys();
+        budget.reserve(&proof.rule, &trusted).map_err(refused)?;
+        let (rule, signer) = verify_signature(&proof.rule, &trusted).map_err(refused)?;
         let held = |field| {
             tracing::warn!(rule = %rule.rule, field, "refused a deploy under a rule");
             refused(AuthorityRefusal::Mismatch { field })
@@ -157,7 +160,11 @@ impl LocalMachine {
             rule.generation,
             claim.commit.short(),
         );
-        Ok(signer)
+        Ok(AdmittedBy::Rule {
+            signer: signer.into(),
+            rule: rule.rule,
+            generation: rule.generation,
+        })
     }
 
     /// Admit `want` on the rule proof Cloud attached, reading GitHub through the daemon's
@@ -170,13 +177,14 @@ impl LocalMachine {
         &self,
         want: &ContainerWant,
         proof: &RuleProof,
-    ) -> Result<Approver, Error> {
+        budget: &mut Budget,
+    ) -> Result<AdmittedBy, Error> {
         let github = super::rule_grant::GithubOnline::shared().ok_or(Error::RuleDeployRefused(
             RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
                 field: "a GitHub client",
             }),
         ))?;
-        self.admit_rule_deploy(want, proof, github, Timestamp::now())
+        self.admit_rule_deploy(want, proof, github, Timestamp::now(), budget)
             .await
     }
 }

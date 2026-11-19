@@ -4938,7 +4938,8 @@ mod ensure_container {
             DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
             SealingPublicKey,
             authority::{
-                ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, Timestamp,
+                ApprovedService, DeployApproval, PayloadDigest, ServiceVersion, Signed, Signer,
+                Timestamp,
             },
             rpc::status_details,
         };
@@ -5911,6 +5912,69 @@ mod ensure_container {
                 ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
                 0
             );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn signed_versions_and_a_deploy_approval_in_one_request_share_eight_checks() {
+            let fixture = enforced("ployzd-mixed-proof-budget").await;
+            let approved = reaching(PINNED);
+            let mut elsewhere = approved.clone();
+            elsewhere["container"]["environment"] = json!({"MODE": "elsewhere"});
+            let namespace = Namespace::parse("app").unwrap();
+            let resolved: ployz_core::ResolvedServiceSpec =
+                serde_json::from_value(elsewhere).unwrap();
+            let version = ServiceVersion {
+                cluster: fixture.cluster,
+                namespace: namespace.clone(),
+                service: resolved.name.clone(),
+                digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
+                signed_at: Timestamp::now(),
+                signer: ployz_core::authority::SignerKey::Device(fixture.signer.public().into()),
+                proposal: None,
+            };
+            let version = Signed::sign(&version, &fixture.signer).unwrap();
+            let deploy = fixture.deploy(&approved);
+            let seen = requests(&fixture.fake).len();
+
+            let mut request = Request::new(
+                op::EnsureContainer::into_request(
+                    serde_json::from_value(json!({
+                        "want": new_want("service_container", "k1", &approved),
+                        "deploy": deploy,
+                        "versions": vec![version; 8],
+                    }))
+                    .unwrap(),
+                )
+                .encode()
+                .unwrap(),
+            );
+            request
+                .metadata_mut()
+                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            let mixed = fixture
+                .service
+                .ensure_container(request)
+                .await
+                .map(|response| {
+                    response
+                        .into_inner()
+                        .decode_response()
+                        .unwrap()
+                        .decode::<op::EnsureContainer>()
+                        .unwrap()
+                });
+            deploy_refused(mixed, "more signatures than a server checks at once");
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k2", &approved),
+                Some(&deploy),
+            )
+            .await
+            .unwrap();
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
     }

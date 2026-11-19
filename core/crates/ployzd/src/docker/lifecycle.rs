@@ -398,8 +398,12 @@ impl Lifecycle {
         {
             return Ok(existing);
         }
-        // A key that admitted the spec may have been removed while the image pulled.
-        creating.admitted.still_holds().map_err(Error::Unadmitted)?;
+        // A key that admitted the spec may have been removed, or a newer generation of
+        // its rule may have arrived, while the image pulled.
+        creating
+            .admitted
+            .still_holds(Error::AdmissionUnread)?
+            .map_err(Error::Unadmitted)?;
         let mounts = body
             .host_config
             .get_or_insert_default()
