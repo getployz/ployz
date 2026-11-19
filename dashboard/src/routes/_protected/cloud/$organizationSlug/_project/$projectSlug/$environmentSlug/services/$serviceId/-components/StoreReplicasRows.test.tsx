@@ -5,6 +5,7 @@ import { useState } from "react";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { replicaRows } from "#/modules/config-store/replica-rows";
+import type { SharedRegion } from "#/modules/config-store/volume-sharing";
 import { regionOptions } from "#/modules/machines/server-regions";
 import { StoreReplicasRows } from "./StoreReplicasRows";
 
@@ -25,22 +26,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+type Held = { capped?: string; attached?: boolean; deployed?: JsonValue; sharing?: SharedRegion };
+
 /** The rows over a value that takes each write, as the Store hands it back to them. */
-function staged(start: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
+function staged(start: JsonValue, home: string | null, held: Held = {}) {
   const onChange = vi.fn((_: JsonValue) => Promise.resolve());
   function Staged() {
     const [value, setValue] = useState(start);
     const kept = replicaRows(value, home).flatMap(({ region }) => region ?? []);
     return (
       <StoreReplicasRows options={regionOptions(servers, [], kept)} value={value} deployed={held.deployed ?? start} home={home}
-        capped={held.capped} oneRegion={held.attached ?? held.capped !== undefined} changed={false}
+        capped={held.capped} oneRegion={held.attached ?? (held.capped !== undefined || held.sharing !== undefined)}
+        sharing={held.sharing ?? null} changed={false}
         onChange={(next) => { setValue(next); return onChange(next); }} />
     );
   }
   return { Staged, onChange };
 }
 
-function rows(start: JsonValue, home: string | null, held: { capped?: string; attached?: boolean; deployed?: JsonValue } = {}) {
+function rows(start: JsonValue, home: string | null, held: Held = {}) {
   const { Staged, onChange } = staged(start, home, held);
   render(<Staged />);
   return onChange;
@@ -51,9 +55,10 @@ const shownIn = (row: number) => regionOf(row).querySelector("[data-slot=select-
 const addRegion = () => screen.queryByRole("button", { name: "Add region" });
 const more = (label: string) => fireEvent.click(within(screen.getByRole("group", { name: label })).getByRole("button", { name: "One more" }));
 
-async function pick(row: number, name: string) {
+async function pick(row: number, name: string, listed?: (names: (string | null)[]) => void) {
   fireEvent.click(regionOf(row));
   const option = await screen.findByRole("option", { name });
+  listed?.(screen.getAllByRole("option").map(({ textContent }) => textContent));
   fireEvent.pointerEnter(option, { pointerType: "mouse" });
   fireEvent.pointerMove(option, { pointerType: "mouse" });
   fireEvent.mouseMove(option);
@@ -83,6 +88,21 @@ it("never offers Add region while a Volume limits the count", () => {
   rows(1, "fsn", { capped: "Limited to 1 while pg-data is attached." });
   expect(screen.getByText(/Limited to 1 while/).textContent).toContain("pg-data");
   expect(addRegion()).toBeNull();
+});
+
+it("holds a Service to the region the Services it shares a Volume with run in, and says why", () => {
+  const sharing = { region: "fsn", sharers: ["postgres"], volume: "pg-data" };
+  rows(1, "fsn", { sharing });
+  expect(regionOf(1).hasAttribute("disabled")).toBe(true);
+  expect(shownIn(1)).toBe("fsn");
+  expect(document.body.textContent).toContain("Runs in fsn with postgres. They share the volume pg-data.");
+  expect(addRegion()).toBeNull();
+});
+
+it("offers only the sharers' region to a Service set apart from them", async () => {
+  const onChange = rows({ syd: 1 }, "fsn", { sharing: { region: "fsn", sharers: ["postgres"], volume: "pg-data" } });
+  await pick(1, "fsn · server-1", (names) => expect(names).toEqual(["fsn · server-1"]));
+  expect(onChange).toHaveBeenLastCalledWith({ fsn: 1 });
 });
 
 it("keeps a Service with a shared-write Volume in one region, with more replicas there", () => {

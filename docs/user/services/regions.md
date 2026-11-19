@@ -139,7 +139,8 @@ With the count unchanged, nothing is left to deploy.
 
 **Add region** shows only when the environment has a region and the service has no
 [volume](volumes.md). A service whose volume doesn't allow shared writes also keeps one replica,
-and says **Limited to 1**. You can still pick its region.
+and says **Limited to 1**. You can still pick its region. A service that shares its volume with
+a service in a region runs there too, and its row says so.
 
 **Details** lists a change as `fsn 2 → fsn 2 · syd 1`, and so does **Deployments → Versions**.
 
@@ -254,23 +255,24 @@ starts its own.
   down with it. Add a second server to the region before you rely on replicas.
 - **A service with a volume runs in one region.** Its replicas all write to the volume, which is
   on one server. Ployz refuses counts in two regions for it.
-- **Services that share a volume with shared writes run where it is.** When they're kept in
-  different regions, the services in the volume's region deploy. Each service in another region
-  isn't started, and its line says where the volume is. The volume stays with the services that
-  run, so deploying again doesn't start it, and the deployment reads **Failed**. Deploying that
-  service by name is refused the same way. So is a service whose own region has no server: a
-  server added there wouldn't have the volume. Change where the service runs:
+- **Services that share a volume run in the same region.** A volume is on one server, so every
+  service that mounts it has to run in its region. In Ployz Cloud, **Scale** offers such a service
+  only the region the others run in, and says why: `Runs in fsn with postgres. They share the
+  volume pg-data.` When the environment's region changes and one of them has its own region,
+  **Details** says so before you deploy.
+
+  Set apart with `ployz set` or by an agent, the services in the volume's region deploy. Each
+  service in another region isn't started, and its line says which region to set. Deploying again
+  doesn't start it, and the deployment reads **Failed**. Deploying that service by name is
+  refused the same way. So is a service whose own region has no server: a server added there
+  wouldn't have the volume.
 
   ```
-  worker: not started (pg-data is in fsn, and worker runs in syd. Run worker in fsn instead)
+  reader: not started (reader and postgres share the Volume pg-data, so they have to run in the same region. postgres is in fsn and reader is set to syd. Set reader to fsn)
   ```
 
   When the volume is on a server in no region, or isn't made yet, none of the services that share
-  it is started:
-
-  ```
-  worker: not started (pg-data is shared by api in fsn and worker in syd. Run them in one region, or give each its own Volume)
-  ```
+  it is started, and each line says the same about the others.
 
   A service can run in neither region when it shares one volume with a service in `fsn` and
   another with a service in `syd`. Run the services that share them in one region, or split the

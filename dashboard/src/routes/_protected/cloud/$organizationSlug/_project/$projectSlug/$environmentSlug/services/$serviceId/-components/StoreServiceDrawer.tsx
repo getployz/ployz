@@ -8,7 +8,7 @@ import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingC
 import { replicaRows } from "#/modules/config-store/replica-rows";
 import { effectiveVolumes } from "#/modules/config-store/store-volumes";
 import { useRegionOptions } from "#/modules/machines/use-region-options";
-import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
+import { replicaCap, replicaCount, sharedRegion, type SharedRegion } from "#/modules/config-store/volume-sharing";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Badge } from "#/components/ui/badge";
@@ -159,6 +159,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   };
   const database = service.template != null;
   const replicasOf = (name: string) => replicaCount(serviceSettingRows(settings, name).get("replicas"));
+  const home = settings.region ?? null;
   // A volume without shared writes holds this service to one replica. More than one already (from before the rule)
   // isn't capped: its volume's writers warning says so, with the fix.
   const cap = replicaCap(service.name, volumes);
@@ -183,7 +184,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     ),
     storage: database && !hasVolume ? <SettingsRow label="Volume" commit="none"><RowWarning>No volume. Data is lost on redeploy.</RowWarning></SettingsRow> : null,
     scale: <>
-      <StoreReplicas state={state} home={settings.region ?? null} oneRegion={hasVolume}
+      <StoreReplicas state={state} home={home} oneRegion={hasVolume}
+        sharing={sharedRegion(service.name, volumes, (name) => replicasValue(serviceSettingRows(settings, name).get("replicas")), home)}
         capped={capped ? <CappedHint params={params} volume={capped} /> : undefined} />
       <StoreResourceLimits state={state} />
     </>,
@@ -454,15 +456,23 @@ function StoreOptionalField({ state, name, addLabel, unset }: { state: StoreServ
   );
 }
 
-function StoreReplicas({ state, home, capped, oneRegion }: { state: StoreService; home: string | null; capped: ReactNode; oneRegion: boolean }) {
+const replicasValue = (row: SettingRow | undefined): JsonValue => row?.value ?? row?.default ?? 1;
+
+function StoreReplicas({ state, home, capped, oneRegion, sharing }: {
+  state: StoreService;
+  home: string | null;
+  capped: ReactNode;
+  oneRegion: boolean;
+  sharing: SharedRegion | null;
+}) {
   const row = state.rows.get("replicas");
   const change = state.changes.get("replicas");
   const unset = row?.default ?? 1;
-  const value = row?.value ?? unset;
+  const value = replicasValue(row);
   const deployedUnset = change?.before === null;
   const options = useRegionOptions(state.organizationSlug, replicaRows(value, home).flatMap(({ region }) => region ?? []));
   return (
-    <StoreReplicasRows options={options} home={home} capped={capped} oneRegion={oneRegion}
+    <StoreReplicasRows options={options} home={home} capped={capped} oneRegion={oneRegion} sharing={sharing}
       value={value} deployed={change ? change.before ?? unset : value} changed={change !== undefined}
       onChange={(next) => state.set("replicas", deployedUnset && next === unset ? null : next)} />
   );

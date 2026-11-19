@@ -1,5 +1,5 @@
-import type { SettingRow, VolumeListing } from "@ployz/sdk";
-import { desiredReplicas } from "./replica-rows";
+import type { JsonValue, SettingRow, VolumeListing } from "@ployz/sdk";
+import { desiredReplicas, replicaRows } from "./replica-rows";
 
 // The Store refuses a second writer unless the Volume allows shared writes; these say so before the user asks, and warn
 // where a Volume allows it, or where writers predate the rule.
@@ -41,3 +41,26 @@ export function volumeWriters(volume: Pick<VolumeListing, "mounts">, replicasOf:
 /** The writers in one line: "postgres ×2, redis". */
 export const writersText = (writers: readonly VolumeWriter[]) =>
   writers.map(({ service, replicas }) => replicas > 1 ? `${service} ×${replicas}` : service).join(", ");
+
+/** The region a Service has to run in because Services it shares a Volume with are kept there, and who they are. */
+export type SharedRegion = { readonly region: string; readonly sharers: readonly string[]; readonly volume: string };
+
+/**
+ * Where `service` has to run: the one region another Service mounting the same Volume is kept in, as the next Deploy
+ * has it. A Volume is on one Server, so the Deploy refuses Services that share it in different regions. Null when no
+ * sharer is kept in one region.
+ */
+export function sharedRegion(service: string, volumes: readonly Pick<VolumeListing, "name" | "mounts">[], replicasOf: (service: string) => JsonValue, home: string | null): SharedRegion | null {
+  for (const volume of volumes) {
+    if (!volume.mounts.some((mount) => mount.service === service)) continue;
+    const others = [...new Set(volume.mounts.map((mount) => mount.service))].filter((other) => other !== service);
+    const kept = others.flatMap((other) => {
+      const [only, ...more] = replicaRows(replicasOf(other), home);
+      return only?.region != null && more.length === 0 ? [{ other, region: only.region }] : [];
+    });
+    const [first] = kept;
+    if (first === undefined) continue;
+    return { region: first.region, sharers: kept.filter(({ region }) => region === first.region).map(({ other }) => other), volume: volume.name };
+  }
+  return null;
+}
