@@ -34,6 +34,8 @@ pub enum AuthorityRefusal {
     NoClusterIdentity,
     #[error("this GitHub token already minted a Build Grant; a build asks for a new one")]
     ProofReplayed,
+    #[error("the request carries more signatures than this Machine checks for one request")]
+    Overspent,
 }
 
 /// The first of `checks` that does not hold, as a [`AuthorityRefusal::Mismatch`] naming its field.

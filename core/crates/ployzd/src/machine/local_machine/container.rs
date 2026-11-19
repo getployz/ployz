@@ -270,8 +270,7 @@ impl LocalMachine {
     /// container.
     pub(crate) async fn start_container(&self, container_id: ContainerId) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
-            local.docker()?.lifecycle().start(&container_id).await?;
-            Ok(())
+            local.start_checked(local.docker()?, &container_id).await
         })
         .await
     }
@@ -327,7 +326,7 @@ impl LocalMachine {
                         .container_id
                 }
             };
-            containers.lifecycle().start(&container_id).await?;
+            local.start_checked(containers, &container_id).await?;
             Ok(Ok(()))
         })
         .await
@@ -659,6 +658,37 @@ impl LocalMachine {
             }
         }
         Ok(false)
+    }
+
+    /// Whether `want` starts an existing Container that mounts a Provisioned Volume.
+    ///
+    /// # Errors
+    /// Returns when the Container cannot be read.
+    pub(crate) async fn starts_provisioned_holder(
+        &self,
+        want: &ContainerWant,
+    ) -> Result<bool, Error> {
+        let ContainerWant::Running {
+            container: RunTarget::Existing(locator),
+            ..
+        } = want
+        else {
+            return Ok(false);
+        };
+        Ok(match self.container_now(locator).await? {
+            ContainerNow::Present(observed) => observed
+                .resolved_spec
+                .to_requested()
+                .volume_graph()
+                .mounted_volumes()
+                .any(|volume| {
+                    matches!(
+                        volume.source.kind(),
+                        ployz_core::RawVolumeSource::Provisioned { .. }
+                    )
+                }),
+            ContainerNow::Absent { .. } => false,
+        })
     }
 
     /// Remove one local Docker Volume while holding Machine mutation admission.
@@ -1475,6 +1505,7 @@ impl LocalMachine {
                 }
                 if let Some((run, expect)) = fence {
                     return rotation::start_fenced(
+                        &local,
                         containers,
                         &created.container_id,
                         run,
@@ -1482,7 +1513,11 @@ impl LocalMachine {
                     )
                     .await;
                 }
-                containers.lifecycle().start(&created.container_id).await?;
+                // A create may adopt a Container another request made, so its start is
+                // checked as any other.
+                local
+                    .start_checked(containers, &created.container_id)
+                    .await?;
                 Ok(None)
             })
             .await?;
@@ -1557,6 +1592,16 @@ impl LocalMachine {
                 },
             )
             .await
+            .map_err(|error| {
+                let Error::Docker(crate::docker::Error::Unadmitted(refusal)) = error else {
+                    return error;
+                };
+                tracing::warn!(
+                    service = %spec.name,
+                    "create refused right before Docker made it: {refusal}"
+                );
+                Error::DeployRefused(refusal)
+            })
     }
 }
 

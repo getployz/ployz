@@ -185,6 +185,16 @@ impl Client {
         self
     }
 
+    /// Hand every Server the signed versions of the Service each creation belongs to.
+    #[must_use]
+    pub(crate) fn with_versions(
+        mut self,
+        versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
+    ) -> Self {
+        self.deploy.set_versions(versions);
+        self
+    }
+
     /// Hand every Server the rule's proof for the Service each change belongs to, in
     /// place of a person's deploy approval.
     #[must_use]
@@ -1142,6 +1152,7 @@ impl Client {
             want,
             deploy: carried.deploy,
             rule: carried.rule,
+            versions: carried.versions,
         })
     }
 

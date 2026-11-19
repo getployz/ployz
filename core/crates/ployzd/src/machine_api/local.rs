@@ -174,6 +174,16 @@ impl MachineService {
         self.local.clone()
     }
 
+    /// This Machine for one call, at Operator scope when `operator`.
+    fn local_at(&self, operator: bool) -> LocalMachine {
+        let scope = if operator {
+            ployz_core::ManagementScope::Operator
+        } else {
+            ployz_core::ManagementScope::Full
+        };
+        self.local.clone().at_scope(scope)
+    }
+
     #[cfg(test)]
     #[must_use]
     pub(crate) fn with_machine_api_port(mut self, port: u16) -> Self {
@@ -545,21 +555,30 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::EnsureContainer>(request)?;
+        let local = self.local_at(operator);
         let presented = if operator {
             Presented::Operator {
                 deploy: request.deploy.as_ref(),
                 rule: request.rule.as_deref(),
+                versions: &request.versions,
             }
         } else {
             Presented::FullAccess {
                 deploy: request.deploy.as_ref(),
             }
         };
-        let admitted = match self.local.admit_spec(&request.want, presented).await {
+        let admitted = match local.admit_spec(&request.want, presented).await {
             Ok(admitted) => admitted,
             Err(error) => return local_error(error),
         };
-        finish(self.local.ensure_container(request.want, admitted).await)
+        // An Operator's start of a Provisioned Volume's holder waits out a switch of that
+        // Volume, as a Writer's start does.
+        let _switch = match local.starts_provisioned_holder(&request.want).await {
+            Ok(true) if operator => Some(self.switch_mutation.lock().await),
+            Ok(_) => None,
+            Err(error) => return local_error(error),
+        };
+        finish(local.ensure_container(request.want, admitted).await)
     }
 
     async fn update_container_limits(
@@ -653,10 +672,14 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::SetVolumeCopy>(request)?;
+        let service = Self {
+            local: self.local_at(operator),
+            ..self.clone()
+        };
         let admitted = match &request.want {
             ployz_core::WantedCopy::Writer {
                 start: Some(start), ..
-            } => match self.local.admit_volume_start(start, operator).await {
+            } => match service.local.admit_volume_start(start, operator).await {
                 Ok(admitted) => admitted,
                 Err(error) => return local_error(error),
             },
@@ -666,7 +689,7 @@ impl MachineRpc for MachineService {
             | ployz_core::WantedCopy::Forget
             | ployz_core::WantedCopy::Floor => None,
         };
-        self.set_copy(request, admitted).await
+        service.set_copy(request, admitted).await
     }
 
     async fn seed_volume(

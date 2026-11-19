@@ -15,8 +15,8 @@ use std::time::Instant;
 use ployz_core::{
     ContainerKind, ContainerWant, RunTarget, Sealing, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, RuleFacts, RuleProof, Timestamp, deploy::Creation,
-        rule::verify_signature,
+        Approver, AuthorityRefusal, AutoDeployRule, RuleFacts, RuleProof, Timestamp,
+        deploy::Creation, rule::verify_signature,
     },
 };
 
@@ -51,8 +51,8 @@ impl RuleDeployRefusal {
 }
 
 impl LocalMachine {
-    /// Admit an Operator's new Container on `proof`, at `now`. The creation records the
-    /// accepted build, and a hook takes its place once per push.
+    /// Admit an Operator's new Container on `proof`, at `now`, and name the rule's signer.
+    /// The creation records the accepted build, and a hook takes its place once per push.
     ///
     /// # Errors
     /// Returns [`Error::RuleDeployRefused`] naming what does not hold, and
@@ -63,7 +63,7 @@ impl LocalMachine {
         proof: &RuleProof,
         github: &impl Github,
         now: Timestamp,
-    ) -> Result<(), Error> {
+    ) -> Result<Approver, Error> {
         let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
@@ -74,7 +74,8 @@ impl LocalMachine {
         let started = Instant::now();
         let refused = |refusal| Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal));
         let record = self.record();
-        let (rule, _) = verify_signature(&proof.rule, &record.trusted_keys()).map_err(refused)?;
+        let (rule, signer) =
+            verify_signature(&proof.rule, &record.trusted_keys()).map_err(refused)?;
         let held = |field| {
             tracing::warn!(rule = %rule.rule, field, "refused a deploy under a rule");
             refused(AuthorityRefusal::Mismatch { field })
@@ -156,7 +157,7 @@ impl LocalMachine {
             rule.generation,
             claim.commit.short(),
         );
-        Ok(())
+        Ok(signer)
     }
 
     /// Admit `want` on the rule proof Cloud attached, reading GitHub through the daemon's
@@ -169,7 +170,7 @@ impl LocalMachine {
         &self,
         want: &ContainerWant,
         proof: &RuleProof,
-    ) -> Result<(), Error> {
+    ) -> Result<Approver, Error> {
         let github = super::rule_grant::GithubOnline::shared().ok_or(Error::RuleDeployRefused(
             RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
                 field: "a GitHub client",
@@ -245,7 +246,8 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::NeedsSignature { .. }
         | AuthorityRefusal::NoClusterIdentity
         | AuthorityRefusal::Expired
-        | AuthorityRefusal::ProofReplayed => {
+        | AuthorityRefusal::ProofReplayed
+        | AuthorityRefusal::Overspent => {
             return format!("This server refused the automatic deploy rule: {refusal}.");
         }
     };

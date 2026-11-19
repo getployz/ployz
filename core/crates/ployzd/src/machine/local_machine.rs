@@ -73,6 +73,9 @@ impl std::ops::Deref for Admission {
 pub struct LocalMachine {
     owner: RecordOwner,
     caller: Caller,
+    /// Operator for a call at Operator scope, whose starts are checked against who
+    /// admitted each Container. Full otherwise, the daemon's own work included.
+    scope: ployz_core::ManagementScope,
     cluster: Option<ClusterContext>,
     containers: Option<ContainerRuntime>,
     plugin: crate::storage::Plugin,
@@ -105,7 +108,7 @@ mod consumption;
 mod container;
 mod ingress_doors;
 mod private_access;
-pub(crate) use admission::{AdmittedSpec, Presented};
+pub(crate) use admission::{AdmittedBy, AdmittedSpec, Presented};
 pub(crate) use consumption::ConsumptionLog;
 pub(crate) use container::CutRefusal;
 #[cfg(test)]
@@ -327,6 +330,7 @@ impl LocalMachine {
             approvals: owner.restart_approvals(),
             owner,
             caller: Caller::Routed,
+            scope: ployz_core::ManagementScope::Full,
             cluster: None,
             containers: None,
             plugin: crate::storage::Plugin::default(),
@@ -392,6 +396,14 @@ impl LocalMachine {
     #[must_use]
     pub(crate) fn with_management_client(mut self, remote: ClientKey) -> Self {
         self.caller = Caller::Management(remote);
+        self
+    }
+
+    /// Mark subsequent calls as an Operator's, whose starts of existing Containers are
+    /// checked.
+    #[must_use]
+    pub(crate) fn at_scope(mut self, scope: ployz_core::ManagementScope) -> Self {
+        self.scope = scope;
         self
     }
 

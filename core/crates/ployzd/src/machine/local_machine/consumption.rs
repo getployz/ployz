@@ -296,8 +296,8 @@ impl ConsumptionLog {
         }
     }
 
-    /// Whether this Machine admitted `digest` signed for `service` before, by a key it
-    /// still trusts or at Full access.
+    /// Who admitted `digest` signed for `service` here before, among the keys this
+    /// Machine still trusts and Full access. Empty when none did.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
@@ -307,15 +307,15 @@ impl ConsumptionLog {
         service: &ServiceName,
         digest: PayloadDigest,
         trusted: &TrustedKeys,
-    ) -> Result<bool, Error> {
+    ) -> Result<Vec<SpecSigner>, Error> {
         self.read(Error::ApprovalRecord, |log| {
             log.specs
                 .get(&spec_key(namespace, service))
-                .is_some_and(|admitted| {
-                    admitted
-                        .iter()
-                        .any(|entry| entry.digest == digest && entry.by.trusted(trusted))
-                })
+                .into_iter()
+                .flatten()
+                .filter(|entry| entry.digest == digest && entry.by.trusted(trusted))
+                .map(|entry| entry.by)
+                .collect()
         })
     }
 

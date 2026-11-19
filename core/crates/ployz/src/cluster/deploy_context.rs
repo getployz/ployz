@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, RegistryAuth, RunTarget, ServiceName,
-    authority::{DeployApproval, RuleProof, Signed},
+    authority::{DeployApproval, RuleProof, ServiceVersion, Signed, version::MAX_PRESENTED},
 };
 
 /// The Deploy this client executes, shared by its clones as their Deploy's own.
@@ -27,6 +27,8 @@ struct Approvals {
     /// A rule's proof for each Service it built, when a rule deploys in place of a
     /// person's approval.
     proofs: RuleProofs,
+    /// The signed versions of each Service this Deploy creates.
+    versions: BTreeMap<ServiceName, Vec<Signed<ServiceVersion>>>,
 }
 
 /// The proof each Service an automatic deploy rule built carries to every Server, in
@@ -40,6 +42,7 @@ pub struct RuleProofs {
 pub(super) struct Carried {
     pub(super) rule: Option<Box<RuleProof>>,
     pub(super) deploy: Option<Signed<DeployApproval>>,
+    pub(super) versions: Vec<Signed<ServiceVersion>>,
 }
 
 impl Carried {
@@ -47,6 +50,7 @@ impl Carried {
         Self {
             rule: None,
             deploy: None,
+            versions: Vec::new(),
         }
     }
 }
@@ -60,11 +64,43 @@ impl DeployContext {
         Arc::make_mut(&mut self.approvals).proofs = proofs;
     }
 
-    /// What a change of `want` carries.
+    /// Hand each Service's creations the versions signed for it, newest last.
+    pub(super) fn set_versions(&mut self, versions: Vec<Signed<ServiceVersion>>) {
+        let mut by_service: BTreeMap<ServiceName, Vec<_>> = BTreeMap::new();
+        for version in versions {
+            if let Ok(body) = version.open() {
+                by_service.entry(body.service).or_default().push(version);
+            }
+        }
+        Arc::make_mut(&mut self.approvals).versions = by_service;
+    }
+
+    /// What a change of `want` carries. A new creation carries its Service's newest
+    /// versions; a step on an existing Container carries none.
     pub(super) fn carried(&self, want: &ContainerWant) -> Carried {
+        let versions = match want {
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+                ..
+            } => self
+                .approvals
+                .versions
+                .get(&new.slot.service)
+                .map(|versions| {
+                    let skip = versions.len().saturating_sub(MAX_PRESENTED);
+                    versions.iter().skip(skip).cloned().collect()
+                })
+                .unwrap_or_default(),
+            ContainerWant::Running { .. }
+            | ContainerWant::Held { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Gone { .. } => Vec::new(),
+        };
         Carried {
             rule: proof_for(&self.approvals.proofs.rules, want),
             deploy: self.approvals.deploy.clone(),
+            versions,
         }
     }
 }

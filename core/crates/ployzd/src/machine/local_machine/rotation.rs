@@ -258,7 +258,7 @@ impl LocalMachine {
     ) -> Result<Option<ContainerRefusal>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
-            start_fenced(containers, &id, run, expect.as_ref()).await
+            start_fenced(&local, containers, &id, run, expect.as_ref()).await
         })
         .await
     }
@@ -682,6 +682,7 @@ fn is_sibling(copy: &CopyState, observed: &ContainerObservation) -> bool {
 /// against this Machine's record, read under the copy's rotation turn, so a refused
 /// In starts nothing. The caller holds the admission turn.
 pub(super) async fn start_fenced(
+    local: &LocalMachine,
     containers: &ContainerRuntime,
     id: &ContainerId,
     run: Option<DeploymentLogId>,
@@ -692,7 +693,7 @@ pub(super) async fn start_fenced(
         Checked::Refused(refusal) => return Ok(Some(refusal)),
         Checked::Met | Checked::Allowed(_) => {}
     }
-    containers.lifecycle().start(id).await?;
+    local.start_checked(containers, id).await?;
     drop(turn);
     Ok(None)
 }

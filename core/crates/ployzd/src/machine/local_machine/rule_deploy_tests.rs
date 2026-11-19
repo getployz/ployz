@@ -107,6 +107,7 @@ impl Fixture {
         self.machine
             .admit_rule_deploy(&want, proof, &github(head), at)
             .await
+            .map(drop)
     }
 }
 
@@ -402,7 +403,7 @@ async fn a_newer_generation_landing_during_the_head_read_refuses_the_older_one()
             slow.release.notify_one();
         }
     );
-    assert_eq!(refused(in_flight), "a generation");
+    assert_eq!(refused(in_flight.map(drop)), "a generation");
 }
 
 #[tokio::test]

@@ -722,7 +722,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
 
     assert_eq!(
         local
-            .create_and_start(new.clone(), None, admitted)
+            .create_and_start(new.clone(), None, admitted.clone())
             .await
             .unwrap(),
         None

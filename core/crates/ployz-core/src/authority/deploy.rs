@@ -538,8 +538,8 @@ impl StepBody for DeployApproval {
     fn namespace(&self) -> &Namespace {
         &self.namespace
     }
-    fn window(&self) -> (Timestamp, Timestamp) {
-        (self.issued_at, self.expires_at)
+    fn window(&self) -> Option<(Timestamp, Timestamp)> {
+        Some((self.issued_at, self.expires_at))
     }
 }
 

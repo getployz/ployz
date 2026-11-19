@@ -1462,6 +1462,9 @@ pub enum Error {
     /// A Container was about to be made from a spec nothing admitted.
     #[error("this Server did not admit the spec")]
     NotAdmitted,
+    /// No key that admitted the spec was trusted any more right before Docker made it.
+    #[error("the spec's admission ended before its Container was made: {0}")]
+    Unadmitted(ployz_core::authority::AuthorityRefusal),
     /// A registry or peer pull failed while the Docker root had almost no free space.
     #[error("{full}")]
     DiskFull {
@@ -1547,6 +1550,7 @@ impl Error {
             | Self::UnrecognizedNetwork
             | Self::UnsignedImage(_)
             | Self::NotAdmitted
+            | Self::Unadmitted(_)
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
@@ -1750,7 +1754,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
-            crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
+            &crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
         )
         .unwrap();
         assert!(
@@ -1771,7 +1775,7 @@ mod tests {
                 &other,
                 &create::CreationNetwork::Bridge,
                 None,
-                crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
+                &crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
             ),
             Err(Error::NotAdmitted)
         ));
@@ -1823,7 +1827,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
-            crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
+            &crate::machine::AdmittedSpec::test_signed(&namespace, &spec),
         )
         .unwrap();
         assert_eq!(hook.cmd, Some(vec!["migrate".into()]));
@@ -1896,7 +1900,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
-            crate::machine::AdmittedSpec::test_signed(
+            &crate::machine::AdmittedSpec::test_signed(
                 &ployz_core::Namespace::parse("app").unwrap(),
                 &spec,
             ),
@@ -1934,7 +1938,7 @@ mod tests {
                 &spec,
                 &create::CreationNetwork::Bridge,
                 None,
-                crate::machine::AdmittedSpec::test_signed(namespace, &spec),
+                &crate::machine::AdmittedSpec::test_signed(namespace, &spec),
             )
             .unwrap();
             create::ingress_sysctls(
@@ -1999,7 +2003,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Holder(holder),
             None,
-            crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &spec),
+            &crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &spec),
         )
         .unwrap();
         let host = body.host_config.unwrap();
@@ -2021,7 +2025,7 @@ mod tests {
             &specs.holder,
             &create::CreationNetwork::Bridge,
             None,
-            crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &specs.holder),
+            &crate::machine::AdmittedSpec::test_signed(&Namespace::system(), &specs.holder),
         )
         .unwrap();
         let host = holder_body.host_config.unwrap();
@@ -2053,7 +2057,7 @@ mod tests {
                 &caddy,
                 &create::CreationNetwork::Bridge,
                 None,
-                crate::machine::AdmittedSpec::test_signed(namespace, &caddy),
+                &crate::machine::AdmittedSpec::test_signed(namespace, &caddy),
             )
             .unwrap();
             assert!(
@@ -2085,7 +2089,7 @@ mod tests {
             &holder,
             &create::CreationNetwork::Bridge,
             None,
-            crate::machine::AdmittedSpec::test_signed(&ingress.namespace, &holder),
+            &crate::machine::AdmittedSpec::test_signed(&ingress.namespace, &holder),
         )
         .unwrap();
         assert!(takes_bridge_ipv6(body.labels.as_ref().unwrap()));
@@ -2143,7 +2147,7 @@ mod tests {
                     &spec(ports.clone()),
                     &create::CreationNetwork::Bridge,
                     None,
-                    crate::machine::AdmittedSpec::test_signed(&namespace, &spec(ports.clone())),
+                    &crate::machine::AdmittedSpec::test_signed(&namespace, &spec(ports.clone())),
                 )
                 .unwrap();
                 assert_eq!(
@@ -2209,7 +2213,7 @@ mod tests {
             &spec,
             &create::CreationNetwork::Bridge,
             None,
-            crate::machine::AdmittedSpec::test_signed(
+            &crate::machine::AdmittedSpec::test_signed(
                 &ployz_core::Namespace::parse("app").unwrap(),
                 &spec,
             ),

@@ -398,6 +398,8 @@ impl Lifecycle {
         {
             return Ok(existing);
         }
+        // A key that admitted the spec may have been removed while the image pulled.
+        creating.admitted.still_holds().map_err(Error::Unadmitted)?;
         let mounts = body
             .host_config
             .get_or_insert_default()
@@ -462,7 +464,7 @@ impl Lifecycle {
             spec,
             &network,
             self.observation.sealing_key_dir(),
-            creating.admitted,
+            &creating.admitted,
         )?;
         create::ingress_sysctls(
             &mut body,
@@ -528,7 +530,15 @@ impl Lifecycle {
         // A daemon killed here leaves a Container no spec describes.
         crate::faults::kill_inside("CreateContainer.BeforeSpec", None);
         let slot = super::spec_store::CreationSlot::new(namespace, kind, creation_key);
-        if let Err(error) = config_operation.put(&container_id, Some(&slot), spec).await {
+        if let Err(error) = config_operation
+            .put(
+                &container_id,
+                Some(&slot),
+                spec,
+                Some(creating.admitted.by()),
+            )
+            .await
+        {
             self.remove_if_present(&container_id).await?;
             return Err(error.into());
         }
@@ -761,6 +771,14 @@ impl Lifecycle {
                 .await?;
         }
         Ok(eligibility)
+    }
+
+    /// Who admitted the Container, `None` when this Machine kept no admission for it.
+    pub(crate) async fn admitted_by(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<crate::machine::AdmittedBy>, Error> {
+        Ok(self.specs.admitted_by(container_id).await?)
     }
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
@@ -1486,6 +1504,7 @@ mod tests {
                     &ContainerId::parse("f".repeat(64)).unwrap(),
                     Some(&slot),
                     &spec,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1689,7 +1708,7 @@ mod tests {
             "plan:0",
         );
         create
-            .put(&replacement, Some(&creation), &spec)
+            .put(&replacement, Some(&creation), &spec, None)
             .await
             .unwrap();
         drop(create);

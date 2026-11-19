@@ -69,7 +69,7 @@ pub(crate) fn open(
     environment: BTreeMap<String, EnvValue>,
     identity: Option<&SealedIdentity>,
     key_dir: Option<&Path>,
-    admitted: AdmittedSpec,
+    admitted: &AdmittedSpec,
 ) -> Result<OpenedEnv, OpenError> {
     let (sealed, text): (BTreeMap<_, _>, BTreeMap<_, _>) = environment
         .into_iter()
@@ -483,7 +483,7 @@ pub(crate) mod test_support {
                 env,
                 Some(&self.identity),
                 Some(&self.dir.0),
-                AdmittedSpec::test_unbound(true),
+                &AdmittedSpec::test_unbound(true),
             )
         }
 
@@ -562,7 +562,7 @@ mod tests {
             BTreeMap::from([("A".to_owned(), EnvValue::from("b"))]),
             None,
             None,
-            AdmittedSpec::test_unbound(true),
+            &AdmittedSpec::test_unbound(true),
         )
         .unwrap();
         assert_eq!(opened.values.get("A").map(String::as_str), Some("b"));
@@ -635,7 +635,7 @@ mod tests {
             Some("postgres://app:pa55@db")
         );
         assert!(matches!(
-            open(url(), Some(&elsewhere), Some(&cluster.dir.0), AdmittedSpec::test_unbound(true)),
+            open(url(), Some(&elsewhere), Some(&cluster.dir.0), &AdmittedSpec::test_unbound(true)),
             Err(OpenError::Unopenable(key)) if key == "URL"
         ));
     }
@@ -683,7 +683,7 @@ mod tests {
         };
         let env = BTreeMap::from([("TOKEN".to_owned(), EnvValue::Sealed(value))]);
         assert!(matches!(
-            open(env, Some(&elsewhere), Some(&cluster.dir.0), AdmittedSpec::test_unbound(true)),
+            open(env, Some(&elsewhere), Some(&cluster.dir.0), &AdmittedSpec::test_unbound(true)),
             Err(OpenError::Unopenable(key)) if key == "TOKEN"
         ));
     }
@@ -700,7 +700,7 @@ mod tests {
                 token,
                 Some(&cluster.identity),
                 Some(&cluster.dir.0),
-                AdmittedSpec::test_unbound(false),
+                &AdmittedSpec::test_unbound(false),
             ),
             Err(OpenError::Unsigned(key)) if key == "TOKEN"
         ));
@@ -720,7 +720,7 @@ mod tests {
                 token(),
                 Some(&cluster.identity),
                 None,
-                AdmittedSpec::test_unbound(true)
+                &AdmittedSpec::test_unbound(true)
             ),
             Err(OpenError::KeyMissing)
         ));
@@ -731,7 +731,7 @@ mod tests {
                 token(),
                 Some(&cluster.identity),
                 Some(&empty.0),
-                AdmittedSpec::test_unbound(true)
+                &AdmittedSpec::test_unbound(true)
             ),
             Err(OpenError::KeyMissing)
         ));
@@ -740,7 +740,7 @@ mod tests {
                 token(),
                 None,
                 Some(&cluster.dir.0),
-                AdmittedSpec::test_unbound(true)
+                &AdmittedSpec::test_unbound(true)
             ),
             Err(OpenError::MissingIdentity(_))
         ));

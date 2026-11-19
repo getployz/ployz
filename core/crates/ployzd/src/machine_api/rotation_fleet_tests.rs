@@ -831,6 +831,7 @@ async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
         want,
         deploy: None,
         rule: None,
+        versions: Vec::new(),
     });
     node.service
         .ensure_container(Request::new(request.encode().unwrap()))
@@ -2453,6 +2454,7 @@ fn creation_on_wire(
             want,
             deploy: None,
             rule: None,
+            versions: Vec::new(),
         });
         service
             .ensure_container(Request::new(request.encode().unwrap()))

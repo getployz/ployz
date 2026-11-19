@@ -73,7 +73,7 @@ impl ContainerRuntime {
             machine,
             storage.as_ref(),
         ))?;
-        config_operation.put(container_id, None, spec).await?;
+        config_operation.put(container_id, None, spec, None).await?;
         config_operation.republish();
         Ok(updated)
     }
