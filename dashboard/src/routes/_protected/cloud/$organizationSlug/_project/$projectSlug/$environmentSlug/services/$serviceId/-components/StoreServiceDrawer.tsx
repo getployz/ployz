@@ -181,7 +181,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     ),
     storage: database && !hasVolume ? <SettingsRow label="Volume" commit="none"><RowWarning>No volume. Data is lost on redeploy.</RowWarning></SettingsRow> : null,
     scale: <>
-      <StoreReplicasRows organizationSlug={organizationSlug} params={params} home={settings.region ?? null} volume={capped}
+      <StoreReplicasRows organizationSlug={organizationSlug} params={params} home={settings.region ?? null} volume={capped} oneRegion={hasVolume}
         value={state.rows.get("replicas")?.value ?? state.rows.get("replicas")?.default ?? 1} changed={state.changes.has("replicas")}
         onChange={(value) => state.set("replicas", value)} />
       <StoreResourceLimits state={state} />
@@ -712,4 +712,3 @@ export function StoreDangerSection({ state }: { state: StoreService }) {
     </>
   );
 }
-

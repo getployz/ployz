@@ -54,13 +54,16 @@ export type RegionOption = { readonly key: string | null; readonly name: string;
 
 export const ANY_REGION = "Any region";
 
-/** Any region, then each region a Server is in with its Servers. A `kept` region no Server is in stays listed. */
+/**
+ * Any region, then every region there is with its Servers: each a Server is in, each given a name, and each of `kept`.
+ * One with no Servers is listed too, so a choice can say why it can't be made.
+ */
 export function regionOptions(
   machines: readonly { readonly name: string; readonly region: string | null }[],
   names: readonly NamedRegion[] | undefined,
   kept: readonly string[] = [],
 ): RegionOption[] {
-  const servers = new Map<string, string[]>(kept.map((key) => [key, []]));
+  const servers = new Map<string, string[]>([...kept, ...(names ?? []).map(({ key }) => key)].map((key) => [key, []]));
   for (const { name, region } of machines) {
     const key = region?.toLowerCase();
     if (key !== undefined && isRegionKey(key)) servers.set(key, [...(servers.get(key) ?? []), name]);

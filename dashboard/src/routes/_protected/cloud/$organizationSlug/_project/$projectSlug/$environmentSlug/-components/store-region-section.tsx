@@ -24,7 +24,6 @@ export function StoreRegionSection({ organizationSlug, projectSlug, environmentS
   return (
     <SettingsSection id="region" title="Region">
       <SettingsRow label="Runs in" commit="change"
-        hint="A Service with its own regions ignores this."
         control={(
           <RegionSelect label="Runs in" options={options} value={region}
             onChange={(next) => hold(next, writer.edit({ environment, changes: [

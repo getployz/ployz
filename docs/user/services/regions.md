@@ -63,12 +63,15 @@ before regions also runs on any server, and a branch starts with its parent's re
    ```
 
 In Ployz Cloud, open the environment's **Settings → Environment** and pick a region under
-**Region → Runs in**. The list holds **Any region** and each region a server is in, with its servers
-under its name. A region you set that no server is in stays in the list until you pick another.
+**Region → Runs in**. The list holds **Any region** and each of your regions with its servers, as in
+`Falkenstein · web-1, web-2`. A region no server is in reads `Sydney · no Servers`, and you can't
+pick it.
 
 The region is a staged change like any other: `ployz diff` shows it as `@environment.region`,
 and `ployz discard @environment.region` drops it. In Ployz Cloud, the environment's bottom bar
-counts it and **Details** lists it as **Region**, where you can deploy or discard it. The
+counts it and **Details** lists it as **Region**, where you can discard it. To deploy it, run
+`ployz deploy` on an approved device: your servers refuse **Deploy** in the dashboard in this
+version of Ployz, see [Deploy from the dashboard](../deploy/deployments.md#deploy-from-the-dashboard). The
 [Ployz agent](../account/agent-sidebar.md) can stage a region too. Its deploy waits for your
 approval, which shows the region.
 
@@ -124,14 +127,17 @@ ployz deploy
 In Ployz Cloud, open the service's **Settings** and find **Scale**. **Replicas** has a row for each
 region, with a count you raise and lower. A service with one number shows one row, in the
 environment's region, or in **Any region** when the environment has none. **Add region** adds a row
-in a region that has none yet, and the **×** on a row takes it out. When one row is left and it is in
-the environment's region, the service is back to one number. The counts add up to at most 50.
+in a region that has none yet, and the **×** on a row takes it out. The counts add up to at most 50.
 
-**Add region** shows only when the environment has a region, or when the service already has
-counts by region. A service whose [volume](volumes.md) doesn't allow shared writes keeps one
-replica and no **Add region**, and says **Limited to 1**. You can still pick its region.
+A service with counts by region keeps them through every change here, also with one row left, as
+`{"fsn":3}`. It stays in `fsn` when the environment's region changes. To make it follow the
+environment again, set one number with `ployz set api.replicas=3`.
 
-**Details** lists a change as `fsn 2 → fsn 2 · syd 1`.
+**Add region** shows only when the environment has a region and the service has no
+[volume](volumes.md). A service whose volume doesn't allow shared writes also keeps one replica,
+and says **Limited to 1**. You can still pick its region.
+
+**Details** lists a change as `fsn 2 → fsn 2 · syd 1`, and so does **Deployments → Versions**.
 
 ## When a volume is outside the region
 

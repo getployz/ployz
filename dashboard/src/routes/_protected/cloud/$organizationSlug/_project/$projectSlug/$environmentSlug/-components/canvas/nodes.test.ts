@@ -42,7 +42,7 @@ describe("Config Store nodes", () => {
     ({ id, name: id, files: [], mounts, deployed: true, change: null });
   const configs = configTrays(listings, [config("sentry", [{ service: "web", dir: "/etc/sentry" }]), config("spare", [])], diff);
   const store = {
-    services: listings.map((service) => ({ service, changeCount: 0, runtimeIdentity: null, desiredReplicas: null,
+    services: listings.map((service) => ({ service, changeCount: 0, runtimeIdentity: null, desiredReplicas: null, replicas: 1,
       trays: trays.get(service.id) ?? [], configTrays: configs.trays.get(service.id) ?? [], notSet: [] })),
     unmountedVolumes: unmounted,
     unmountedConfigs: configs.unmounted,

@@ -17,9 +17,10 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-
 /**
  * A Service's replicas as a row per region: how many run where. A bare count is one row in the Environment's region, or
  * in any region when it has none. A Volume that doesn't allow shared writes fixes the count at 1 and leaves the region to
- * pick, and no region can be added while it holds the count.
+ * pick. A second region is on offer only where the Store takes one: the Environment has a region, and the Service
+ * mounts no Volume.
  */
-export function StoreReplicasRows({ organizationSlug, params, value, home, volume, changed, onChange }: {
+export function StoreReplicasRows({ organizationSlug, params, value, home, volume, oneRegion, changed, onChange }: {
   organizationSlug: string;
   params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
   /** The `replicas` value as the next Deploy has it. */
@@ -28,18 +29,19 @@ export function StoreReplicasRows({ organizationSlug, params, value, home, volum
   home: string | null;
   /** The Volume that holds the count to 1. */
   volume: VolumeListing | null;
+  /** Whether a Volume the Service mounts keeps it to one region: any Volume does, as the Store rules. */
+  oneRegion: boolean;
   changed: boolean;
   onChange: (value: JsonValue) => Write;
 }) {
   const [rows, hold, commit] = useCommitHold<readonly ReplicaRow[]>(replicaRows(value, home));
   const options = useRegionOptions(organizationSlug, rows.flatMap(({ region }) => region ?? []));
-  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home)));
+  const save = (next: readonly ReplicaRow[]) => hold(next, onChange(replicaValue(next, home, value)));
   const update = (index: number, change: Partial<ReplicaRow>) => save(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
-  const unused = options.find(({ key }) => key !== null && !rows.some(({ region }) => region === key));
+  const unused = options.find(({ key, servers }) => key !== null && servers.length > 0 && !rows.some(({ region }) => region === key));
   const total = rows.reduce((sum, { count }) => sum + count, 0);
   const full = total >= REPLICAS_MAX;
-  const canAdd = volume === null && !full && unused !== undefined && rows.every(({ region }) => region !== null);
-  const named = options.length > 1;
+  const canAdd = home !== null && !oneRegion && !full && unused !== undefined;
   const taken = rows.flatMap(({ region }) => region ?? []);
   const nameOf = (region: string | null) => options.find(({ key }) => key === region)?.name ?? region;
   return (
@@ -49,12 +51,10 @@ export function StoreReplicasRows({ organizationSlug, params, value, home, volum
           {rows.map((row, index) => {
             const where = nameOf(row.region);
             return (
-              <div key={row.region ?? "any"} className="flex items-center gap-2">
-                {named || row.region !== null ? (
-                  <RegionSelect label={`Region of row ${index + 1}`} options={options} value={row.region} taken={taken}
-                    allowAny={rows.length === 1 && home === null} changed={changed}
-                    onChange={(region) => update(index, { region })} />
-                ) : null}
+              <div key={index} className="flex items-center gap-2">
+                <RegionSelect label={`Region of row ${index + 1}`} options={options} value={row.region} taken={taken}
+                  allowAny={rows.length === 1 && home === null} changed={changed}
+                  onChange={(region) => update(index, { region })} />
                 <Stepper label={where === null ? "Replicas" : `Replicas in ${where}`} count={row.count} changed={changed}
                   canAdd={!full} disabled={volume !== null}
                   onChange={(count) => update(index, { count })} />

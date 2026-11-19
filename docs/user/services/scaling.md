@@ -17,9 +17,10 @@ flowchart LR
 
 1. Open your service and go to **Settings → Scale**.
 2. Set **Replicas**, up to 50.
-3. Click **Deploy**.
+3. Run `ployz deploy` on an approved device. Your servers refuse **Deploy** in the dashboard in
+   this version of Ployz, see [Deploy from the dashboard](../deploy/deployments.md#deploy-from-the-dashboard).
 
-![Settings → Scale: Replicas, CPU limit and Memory limit](../images/service-settings-scale.png)
+![Settings → Scale: Replicas with a region and a count, CPU limit and Memory limit](../images/service-settings-scale.png)
 
 Ployz gives each server one replica before any server gets a second. A replica that crashes gets
 no traffic until it recovers. A new replica gets none until it passes its

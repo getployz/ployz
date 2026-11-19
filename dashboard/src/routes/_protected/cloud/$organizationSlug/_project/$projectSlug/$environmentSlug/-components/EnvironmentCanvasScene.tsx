@@ -2,7 +2,6 @@ import { effectiveVolumes } from "#/modules/config-store/store-volumes";
 import { replicaCount } from "#/modules/config-store/volume-sharing";
 import { CANVAS_FIT_VIEW } from "./canvas/constants";
 import { Suspense, useState } from "react";
-import { Schema } from "effect";
 import {
   Background,
   BackgroundVariant,
@@ -27,6 +26,7 @@ import { arrivingNodes, buildStoreEdges, buildStoreNodes, volumeTrays } from "./
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { desiredReplicas } from "#/modules/config-store/replica-rows";
 import { isBranch, liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { notSetVariables } from "#/modules/config-store/store-variables";
@@ -35,9 +35,6 @@ import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
 import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
 import { StoreRenameLock } from "./StoreRenameLock";
-
-/** A `replicas` Setting that says how many. */
-const isReplicaCount = Schema.is(Schema.Int);
 
 export function PendingCanvas() {
   return (
@@ -103,14 +100,16 @@ function CanvasWithData() {
     services: services.services.map((service) => {
       const changes = serviceChanges(diff, service.id);
       // What runs asks for the deployed count, not one the next Deploy would set.
-      const replicas = changes.get("replicas")?.before ?? serviceSettingRows(settings, service.name).get("replicas")?.value;
+      const row = serviceSettingRows(settings, service.name).get("replicas");
+      const replicas = changes.get("replicas")?.before ?? row?.value;
       // Its containers are named by the deployed private DNS until the Deploy that changes it lands.
       const privateDns = settingText(changes.get("privateDns")?.before) || service.private_dns;
       return {
         service,
         changeCount: serviceChangeCount(diff, service.id),
         runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${privateDns}` : null,
-        desiredReplicas: isReplicaCount(replicas) ? replicas : null,
+        desiredReplicas: desiredReplicas(replicas),
+        replicas: row?.value ?? row?.default ?? 1,
         trays: trays.get(service.id) ?? [],
         configTrays: configs.trays.get(service.id) ?? [],
         notSet: notSetVariables(serviceSettingRows(settings, service.name), changes),
