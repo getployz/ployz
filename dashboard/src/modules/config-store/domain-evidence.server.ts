@@ -13,6 +13,7 @@ import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
+import { CLUSTER_QUERIES } from "./cluster-queries";
 
 const DNS_TIMEOUT_MS = 3_000;
 /** How long one observation answers `domains` reads: an open drawer rereads them on every edit and every poll. */
@@ -25,7 +26,7 @@ const DomainCall = Schema.Union([
   Schema.Struct({ command: Schema.Literals(["create_branch", "copy_node", "sync", "take"]) }),
   // Only a Deploy or a reapply expands domains: a removal expands none, a retry inherits what its source froze.
   Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literals(["deploy", "reapply"]), environment: Schema.optional(EnvironmentRef) }),
-  Schema.Struct({ query: Schema.Literals(["domains", "domain"]) }),
+  Schema.Struct({ query: Schema.Literals(CLUSTER_QUERIES) }),
   // A change's views name the generated domains it stages under the Cluster Domain. A rule's and a review's views
   // lower the specs a person signs, which Servers compare with the specs a Deploy lowers, generated domains included.
   Schema.Struct({ query: Schema.Literals(["diff", "plan", "service", "rule"]) }),

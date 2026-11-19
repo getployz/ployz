@@ -1,4 +1,4 @@
-import type { ConfigListing, DiffView, DomainRow, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { ConfigListing, DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import type { Node } from "@xyflow/react";
@@ -8,8 +8,6 @@ export type CanvasResourceType = "service" | "volume" | "config";
 /** A Service as the Config Store lists it, with what its card shows. */
 export type StoreCanvasService = {
   service: ServiceListing;
-  /** Its public domains, with their status. */
-  domains: DomainRow[];
   /** How many of its Settings the next Deploy changes. */
   changeCount: number;
   /** How runtime evidence names it, `NAMESPACE/PRIVATE_DNS`; null when the Environment has no Namespace. */

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { ZapIcon } from "lucide-react";
 import type { DomainRow, JsonValue, ServiceSettingChange } from "@ployz/sdk";
 import { Link } from "@tanstack/react-router";
@@ -9,6 +9,7 @@ import type { StoreService } from "./StoreServiceDrawer";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { SettingsAddButton, SettingsFoot, SettingsRow } from "#/components/settings/settings-section";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { Skeleton } from "#/components/ui/skeleton";
 import { Schema } from "effect";
 import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -90,6 +91,30 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   privateFirst?: boolean;
   validatePrivateDns: (raw: string) => string | null;
 }) {
+  const { service, changes } = state;
+  // Outside the domains' Suspense, so an address being typed survives them landing.
+  const privateRow = (
+    <SettingsRow label="Private address" hint="How other services in this environment reach it." commit="confirm" control={
+      <ServiceSettingInput ariaLabel="Private address" suffix=".internal" placeholder={service.name}
+        value={settingText(state.rows.get("privateDns")?.value) || service.private_dns}
+        {...changedProps(changes.get("privateDns"))}
+        validate={validatePrivateDns}
+        onCommit={(raw) => state.set("privateDns", raw === "" ? null : raw)} />
+    } />
+  );
+  return (
+    <>
+      {privateFirst ? privateRow : null}
+      {/* Domain statuses wait on the Cluster, so the rest of the drawer doesn't wait for them. */}
+      <Suspense fallback={<Skeleton className="h-12 w-full" />}>
+        <NetworkingDomains state={state} />
+      </Suspense>
+      {privateFirst ? null : privateRow}
+    </>
+  );
+}
+
+function NetworkingDomains({ state }: { state: StoreService }) {
   const { organizationSlug, environment, service, changes } = state;
   const privateDns = settingText(state.rows.get("privateDns")?.value) || service.private_dns;
   const all = requireView(useStoreView(organizationSlug, domainsQuery(environment))).domains;
@@ -124,18 +149,9 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   // there is unknown, so this is a hint, never a failure.
   const defaultPort = defaultPortHint(state.rows.get("env.PORT")?.value, domains);
   const blankPort = blankPortTarget(state.rows.get("env.PORT")?.value);
-  const privateRow = (
-    <SettingsRow label="Private address" hint="How other services in this environment reach it." commit="confirm" control={
-      <ServiceSettingInput ariaLabel="Private address" suffix=".internal" placeholder={service.name} value={privateDns}
-        {...changedProps(changes.get("privateDns"))}
-        validate={validatePrivateDns}
-        onCommit={(raw) => state.set("privateDns", raw === "" ? null : raw)} />
-    } />
-  );
 
   return (
     <>
-      {privateFirst ? privateRow : null}
       {none ? <SettingsEmpty title="No public domains">Generate one under the cluster domain, or add your own.</SettingsEmpty> : (
         <SettingsList label="Public domains">
           {removed.map((removed) => (
@@ -180,7 +196,6 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
         <SettingsRow label="Default port" commit="none"
           hint={<>Domains without a port use {defaultPort}. <Link to="." search={(prev) => ({ ...prev, tab: "variables" })} className="underline">Change</Link></>} />
       ) : null}
-      {privateFirst ? null : privateRow}
       {editor?.kind === "generate" ? (
         <ManagedDomainDialog
           mode="generate"

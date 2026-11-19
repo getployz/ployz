@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchStoreViews, requireStoreEnvironment, prefetchRemoteUptime } from "#/collections/route-data";
+import { streamStoreViews, requireStoreEnvironment, prefetchRemoteUptime } from "#/collections/route-data";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -22,7 +22,7 @@ export const Route = createFileRoute(
       const scope = { organizationSlug: params.organizationSlug, environmentId: environment.id };
       await prefetchRemoteUptime(context, params.organizationSlug, serviceUptimeQueryOptions(scope, params.serviceId, { from: deps.from ?? DEFAULT_RANGE.from, to: deps.to ?? DEFAULT_RANGE.to }));
     }
-    await prefetchStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: params.environmentSlug }));
+    streamStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: params.environmentSlug }));
   },
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Service" />,

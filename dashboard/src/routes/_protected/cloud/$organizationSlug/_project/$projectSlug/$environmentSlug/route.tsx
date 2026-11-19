@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { createFileRoute, Outlet } from "@tanstack/react-router";
-import { prefetchStoreEnvironment, requireStoreEnvironment, streamRemote } from "#/collections/route-data";
+import { prefetchStoreEnvironment, requireStoreEnvironment, streamRemote, streamStoreViews } from "#/collections/route-data";
 import { sealingQueryOptions } from "#/modules/sealing/sealing.queries";
 import { LeaveWhenClosed } from "./-components/sync/branch-close";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
@@ -14,8 +14,9 @@ export const Route = createFileRoute(
     const environment = await requireStoreEnvironment(context, params);
     // Only the Sealed controls read it, and they show as off until it lands.
     streamRemote(context, sealingQueryOptions(params.organizationSlug));
+    streamStoreViews(context, params.organizationSlug, domainsQuery(store));
     await prefetchStoreEnvironment(context, params.organizationSlug, store,
-      environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), configsQuery(store), namespaceQuery(store), domainsQuery(store),
+      environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), configsQuery(store), namespaceQuery(store),
       // A Branch's Live Nodes and Sync button; refused elsewhere.
       branchQuery(store));
     return { environmentId: environment.id, store };

@@ -3,7 +3,8 @@ import { notFound } from "@tanstack/react-router";
 import type { CollectionScope } from "./scope";
 import { orgStoreOptions } from "./org-store";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
-import type { ConfigQuery, EnvironmentRef } from "@ployz/sdk";
+import type { EnvironmentRef } from "@ployz/sdk";
+import type { AwaitableQuery, ClusterQuery } from "#/modules/config-store/cluster-queries";
 import { configQuery, configsQuery, environmentsQuery, projectsQuery, requireView, storeDeploymentsOptions, storeViewOptions } from "#/modules/config-store/store-view.queries";
 
 /**
@@ -74,7 +75,7 @@ export async function prefetchRemote(context: Pick<RouteDataContext, "queryClien
 }
 
 /** `prefetchStoreViews` and the page's other Remote Reads, all started together. */
-export async function prefetchRemoteWithStoreViews(context: RouteDataContext, organizationSlug: string, queries: ConfigQuery[],
+export async function prefetchRemoteWithStoreViews(context: RouteDataContext, organizationSlug: string, queries: AwaitableQuery[],
   ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
   await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)), ...reads);
 }
@@ -94,8 +95,13 @@ export async function prefetchRemoteUptime(context: RouteDataContext, organizati
 }
 
 /** `prefetchRemote` for Config Store views, started together. */
-export async function prefetchStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: ConfigQuery[]) {
+export async function prefetchStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: AwaitableQuery[]) {
   await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)));
+}
+
+/** `streamRemote` for Config Store views that wait on the Cluster: the only way a loader starts one. */
+export function streamStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: ClusterQuery[]) {
+  streamRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)));
 }
 
 /**
@@ -103,7 +109,7 @@ export async function prefetchStoreViews(context: RouteDataContext, organization
  * bar's in-flight one, the Deployments list).
  */
 export async function prefetchStoreEnvironment(context: RouteDataContext, organizationSlug: string, environment: EnvironmentRef,
-  ...queries: ConfigQuery[]) {
+  ...queries: AwaitableQuery[]) {
   await Promise.all([
     prefetchStoreViews(context, organizationSlug, ...queries),
     prefetchRemotePages(context, storeDeploymentsOptions(organizationSlug, scopeOf(context), environment)),

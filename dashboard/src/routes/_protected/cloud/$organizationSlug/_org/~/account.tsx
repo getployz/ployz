@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { DashboardPage } from "#/components/dashboard-page";
-import { prefetchRemote, requireOrganization } from "#/collections/route-data";
+import { prefetchRemote, requireOrganization, streamRemote } from "#/collections/route-data";
 import { accountReads, AccountSections } from "../-components/account-sections";
 import { passkeysQueryOptions } from "#/modules/passkeys/passkeys.queries";
 import { PasskeysSection } from "../-components/passkeys-section";
@@ -9,8 +9,10 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~
   loader: async ({ context, params }) => {
     const scope = { queryClient: context.queryClient, sessionId: context.session.session.id, userId: context.session.user.id };
     const { access } = await requireOrganization(context, params.organizationSlug);
-    // A passkey belongs to a member, so a support visit neither reads nor shows the section.
-    return prefetchRemote(scope, ...accountReads(scope), ...(access === "member" ? [passkeysQueryOptions(params.organizationSlug)] : []));
+    // A passkey belongs to a member, so a support visit neither reads nor shows the section. Servers answer for each
+    // passkey, so the list streams in after the page.
+    if (access === "member") streamRemote(context, passkeysQueryOptions(params.organizationSlug));
+    return prefetchRemote(scope, ...accountReads(scope));
   },
   component: AccountPage,
 });

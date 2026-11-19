@@ -1,4 +1,5 @@
-import { type MouseEvent, use } from "react";
+import { type MouseEvent, Suspense, use } from "react";
+import type { DomainRow } from "@ployz/sdk";
 import { Handle, Position } from "@xyflow/react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { LockIcon } from "lucide-react";
@@ -19,7 +20,7 @@ import { CopyHang } from "./MirrorNode";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
-import { deploymentQuery, useCachedStoreRead, useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { deploymentQuery, domainsQuery, useCachedStoreRead, useInFlightDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
 import { useContainerTrouble } from "./use-container-trouble";
@@ -29,8 +30,28 @@ import { usePendingNode } from "./usePendingNode";
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
  * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, notSet, selected, compact = false, className }:
-  StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
+export function StoreServiceCard(props: CardProps) {
+  // Domain statuses wait on the Cluster, so the card shows without them until they land.
+  return (
+    <Suspense fallback={<ServiceCard {...props} domains={[]} />}>
+      <ServiceCardWithDomains {...props} />
+    </Suspense>
+  );
+}
+
+type CardProps = StoreCanvasService & { selected: boolean; compact?: boolean; className: string };
+
+function ServiceCardWithDomains(props: CardProps) {
+  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const result = useStoreView(organizationSlug, domainsQuery(store));
+  // A closed Branch's views refuse as it leaves; the canvas stops drawing, and meanwhile the card shows no domains.
+  const domains = result.ok ? result.value.domains.filter((domain) => domain.service === props.service.name) : [];
+  return <ServiceCard {...props} domains={domains} />;
+}
+
+function ServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, notSet, selected, compact = false, className }:
+  CardProps & { domains: readonly DomainRow[] }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);

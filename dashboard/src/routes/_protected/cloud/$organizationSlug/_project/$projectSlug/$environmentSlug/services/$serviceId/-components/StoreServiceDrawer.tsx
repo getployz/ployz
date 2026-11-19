@@ -174,13 +174,10 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   };
   const bodies = {
     source: <StoreSourceSection state={state} />,
-    // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
     networking: (
-      <Suspense fallback={null}>
-        <StoreNetworkingSection state={state} privateFirst={database}
-          validatePrivateDns={(raw) => raw === "" ? null : settingError(serviceSetting("privateDns"), raw)
-            ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
-      </Suspense>
+      <StoreNetworkingSection state={state} privateFirst={database}
+        validatePrivateDns={(raw) => raw === "" ? null : settingError(serviceSetting("privateDns"), raw)
+          ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
     ),
     storage: database && !hasVolume ? <SettingsRow label="Volume" commit="none"><RowWarning>No volume. Data is lost on redeploy.</RowWarning></SettingsRow> : null,
     scale: <>

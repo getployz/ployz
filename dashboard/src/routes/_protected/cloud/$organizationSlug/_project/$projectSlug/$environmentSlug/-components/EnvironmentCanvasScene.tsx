@@ -26,7 +26,7 @@ import { useCanvasCopies } from "./canvas/useCanvasCopies";
 import { arrivingNodes, buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
-import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, configsQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { isBranch, liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChangeCount, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { notSetVariables } from "#/modules/config-store/store-variables";
@@ -75,9 +75,8 @@ function CanvasWithData() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store: ref, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
-  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace, domainsResult, configsResult] = useStoreViews(organizationSlug,
-    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), domainsQuery(ref),
-      configsQuery(ref)] as const);
+  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace, configsResult] = useStoreViews(organizationSlug,
+    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), configsQuery(ref)] as const);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
@@ -88,14 +87,13 @@ function CanvasWithData() {
   const pending = useStorePendingNodes(organizationSlug, ref);
   const copies = useCanvasCopies(organizationSlug, ref, environmentId, volumesResult.ok ? volumesResult.value.volumes : []);
   // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
-  if ([servicesResult, settingsResult, diffResult, volumesResult, domainsResult, configsResult].some((r) => !r.ok && r.refusal.code === "not_found")) {
+  if ([servicesResult, settingsResult, diffResult, volumesResult, configsResult].some((r) => !r.ok && r.refusal.code === "not_found")) {
     return <PendingCanvas />;
   }
   const services = requireView(servicesResult);
   const settings = requireView(settingsResult);
   const diff = requireView(diffResult);
   const volumes = { ...requireView(volumesResult), volumes: effectiveVolumes(requireView(volumesResult).volumes, services.services, settings) };
-  const domains = requireView(domainsResult).domains;
   const configListings = requireView(configsResult).configs;
   const configs = configTrays(services.services, configListings, diff);
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
@@ -110,7 +108,6 @@ function CanvasWithData() {
       const privateDns = settingText(changes.get("privateDns")?.before) || service.private_dns;
       return {
         service,
-        domains: domains.filter((domain) => domain.service === service.name),
         changeCount: serviceChangeCount(diff, service.id),
         runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${privateDns}` : null,
         desiredReplicas: isReplicaCount(replicas) ? replicas : null,

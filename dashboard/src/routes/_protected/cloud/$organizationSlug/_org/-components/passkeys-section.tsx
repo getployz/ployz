@@ -2,12 +2,13 @@ import { startRegistration } from "@simplewebauthn/browser";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { KeyRoundIcon } from "lucide-react";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsSection } from "#/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
+import { Skeleton } from "#/components/ui/skeleton";
 import { beginPasskeyServerFn, finishPasskeyServerFn } from "#/modules/passkeys/passkeys.functions";
 import { passkeysQueryOptions, type PasskeyRow, type PasskeysView, type ServerTrust, trustedEverywhere } from "#/modules/passkeys/passkeys.queries";
 import { RelativeTime } from "#/components/relative-time";
@@ -26,7 +27,6 @@ export function PasskeysSection() {
 
 function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
-  const { data } = useSuspenseQuery(passkeysQueryOptions(organizationSlug));
   const [failure, setFailure] = useState<string | null>(null);
   const add = useMutation({
     mutationFn: async () => {
@@ -47,9 +47,17 @@ function MemberPasskeys({ organizationSlug }: { organizationSlug: string }) {
         </Button>
       )}>
       {failure === null ? null : <AddFailed message={failure} />}
-      <PasskeyList view={data} />
+      {/* Each Server is asked live what it says of a passkey, so the list lands after the page. */}
+      <Suspense fallback={<Skeleton className="h-12 w-full" />}>
+        <MemberPasskeyList organizationSlug={organizationSlug} />
+      </Suspense>
     </SettingsSection>
   );
+}
+
+function MemberPasskeyList({ organizationSlug }: { organizationSlug: string }) {
+  const { data } = useSuspenseQuery(passkeysQueryOptions(organizationSlug));
+  return <PasskeyList view={data} />;
 }
 
 function AddFailed({ message }: { message: string }) {
