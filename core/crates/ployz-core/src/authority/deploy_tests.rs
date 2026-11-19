@@ -280,6 +280,18 @@ fn each_payload_field_changed_alone_is_refused() {
             with(&["container", "network"], json!("ingress_holder")),
         ),
         (
+            "extra host",
+            with(&["container", "extra_hosts"], json!(["db:169.254.169.254"])),
+        ),
+        (
+            "restart policy",
+            with(&["container", "restart"], json!({"name": "always"})),
+        ),
+        (
+            "stop timeout",
+            with(&["container", "stop_timeout_secs"], json!(1)),
+        ),
+        (
             "hook command",
             with(&["pre_deploy", "command"], json!(["sh", "-c", "id"])),
         ),
