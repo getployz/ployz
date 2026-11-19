@@ -46,6 +46,10 @@ const pages = {
   environment: { path: "ssr-project/ssr-production", shows: `data-canvas-node="${SSR_SERVICE}"` },
   // The Run's progress.
   deployment: { path: `ssr-project/ssr-production/deployments/${SSR_DEPLOYMENT}`, shows: " · 0 of 1" },
+  // The Service drawer's Scale.
+  service: { path: `ssr-project/ssr-production/services/${SSR_SERVICE}`, shows: 'aria-label="Replicas' },
+  // The Environment's region.
+  settings: { path: "ssr-project/ssr-production/settings", shows: `id="settings-region"` },
 };
 
 /**

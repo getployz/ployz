@@ -1,13 +1,14 @@
 import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { Suspense, useState, type ComponentProps, type ReactNode } from "react";
-import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
+import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { EllipsisIcon, PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow, VolumeListing } from "@ployz/sdk";
+import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
+import { replicaRows } from "#/modules/config-store/replica-rows";
 import { effectiveVolumes } from "#/modules/config-store/store-volumes";
+import { useRegionOptions } from "#/modules/machines/use-region-options";
 import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
-import { InfoHint } from "#/components/info-hint";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Badge } from "#/components/ui/badge";
@@ -30,11 +31,11 @@ import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsS
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
-import { RowWarning, SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { RowWarning } from "#/components/settings/row-warning";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
@@ -45,6 +46,7 @@ import { useRemoveStoreService } from "./useDeleteService";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
+import { CappedHint, StoreReplicasRows } from "./StoreReplicasRows";
 import { useServiceRuntime } from "./useServiceRuntime";
 import { ServiceActAlert, ServiceActions, useServiceAct } from "./ServiceActions";
 import { ContainerLogs } from "#/components/container-logs";
@@ -181,7 +183,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     ),
     storage: database && !hasVolume ? <SettingsRow label="Volume" commit="none"><RowWarning>No volume. Data is lost on redeploy.</RowWarning></SettingsRow> : null,
     scale: <>
-      {capped ? <StoreReplicasCapped params={params} volume={capped} /> : field("replicas")}
+      <StoreReplicas state={state} home={settings.region ?? null} oneRegion={hasVolume}
+        capped={capped ? <CappedHint params={params} volume={capped} /> : undefined} />
       <StoreResourceLimits state={state} />
     </>,
     build: state.source === "git" ? <>
@@ -286,7 +289,6 @@ const COMMANDS = new Map<ServiceSettingName, { placeholder: string; unset?: stri
 /** One-line hints for rows whose catalog description runs long; the rest use the catalog's words. */
 // Most rows need none: the label and the placeholder say it. A hint only where it changes a decision.
 const HINTS = new Map<ServiceSettingName, string | undefined>([
-  ["replicas", undefined],
   ["cpuLimit", undefined],
   ["memLimit", undefined],
   ["startCommand", undefined],
@@ -300,7 +302,7 @@ const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["m
 /** The choice that unsets a Setting whose empty value means something, such as an automatic update order. */
 const UNSET_CHOICE = "unset";
 
-const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
+const SUFFIXES = new Map<ServiceSettingName, string>([["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
 
 /** What each choice does, shown under it. */
 const OPTION_HELP = new Map([
@@ -449,6 +451,20 @@ function StoreOptionalField({ state, name, addLabel, unset }: { state: StoreServ
     <SettingsDisclosure label={setting.title} addLabel={addLabel} configured={isSet(state, name, unset)}>
       {() => <StoreSettingField state={state} name={name} />}
     </SettingsDisclosure>
+  );
+}
+
+function StoreReplicas({ state, home, capped, oneRegion }: { state: StoreService; home: string | null; capped: ReactNode; oneRegion: boolean }) {
+  const row = state.rows.get("replicas");
+  const change = state.changes.get("replicas");
+  const unset = row?.default ?? 1;
+  const value = row?.value ?? unset;
+  const deployedUnset = change?.before === null;
+  const options = useRegionOptions(state.organizationSlug, replicaRows(value, home).flatMap(({ region }) => region ?? []));
+  return (
+    <StoreReplicasRows options={options} home={home} capped={capped} oneRegion={oneRegion}
+      value={value} deployed={change ? change.before ?? unset : value} changed={change !== undefined}
+      onChange={(next) => state.set("replicas", deployedUnset && next === unset ? null : next)} />
   );
 }
 
@@ -709,21 +725,5 @@ export function StoreDangerSection({ state }: { state: StoreService }) {
         description={`${state.service.name} is new and will be deleted, with its unsaved settings.`}
         actionLabel="Delete" variant="destructive" onConfirm={remove} />
     </>
-  );
-}
-
-/** Replicas while a volume without shared writes is attached: one, fixed, and the way to allow more. */
-function StoreReplicasCapped({ params, volume }: {
-  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
-  volume: VolumeListing;
-}) {
-  return (
-    <SettingsRow label="Replicas" commit="none"
-      hint={<>
-        Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
-        <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
-        <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
-      </>}
-      control={<Input id="replicas-capped" aria-label="Replicas" value="1" disabled />} />
   );
 }

@@ -78,6 +78,11 @@ pub struct DiffView {
     #[serde(default)]
     #[ts(as = "Option<usize>", optional)]
     pub draft_count: usize,
+    /// The default region of the latest Saved revision and of Working State, when they
+    /// differ: a bare replica count of `draft_changes` runs in them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub draft_region: Option<RegionChange>,
     /// Whether every Deploy of the latest Saved revision ran nothing, so none of what it
     /// saved reached a Server. Its draft reversals are changes that never ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -111,12 +116,12 @@ pub struct DiffView {
     pub broken: Vec<crate::BrokenReference>,
 }
 
-/// A staged change of an Environment's default region.
+/// An Environment's default region on both sides of a comparison.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct RegionChange {
-    /// The region its Services deployed in; none when they run in any.
+    /// The region its Services ran in before; none when they run in any.
     pub before: Option<Region>,
-    /// The region they deploy in next; none for any.
+    /// The region they run in after; none for any.
     pub after: Option<Region>,
 }
 
@@ -356,6 +361,10 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         .unwrap_or_else(|| crate::scope::empty(environment.summary.name.as_str()));
     let draft = saved_comparison(environment, &baseline, &[])?;
     let region_unsaved = view.region.is_some() && baseline.region != environment.working.region;
+    view.draft_region = (baseline.region != environment.working.region).then(|| RegionChange {
+        before: baseline.region.clone(),
+        after: environment.working.region.clone(),
+    });
     view.draft_changes = draft.changes;
     view.draft_count = draft.total_count + usize::from(region_unsaved);
     // Only staged changes or draft reversals are worded by it.
@@ -515,6 +524,7 @@ fn compare(
         region,
         draft_changes: Vec::new(),
         draft_count: 0,
+        draft_region: None,
         saved_ran_nothing: false,
         incoming: Vec::new(),
         follow_hints: Vec::new(),

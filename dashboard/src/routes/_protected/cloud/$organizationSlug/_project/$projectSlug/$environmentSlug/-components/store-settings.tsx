@@ -20,6 +20,7 @@ import { dnsLabelError } from "#/modules/config-store/store-services";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { StoreAutomaticDeploys } from "./store-automatic-deploys";
+import { StoreRegionSection } from "./store-region-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
 
@@ -46,6 +47,7 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
       <StoreProtection organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug}
         saved={environment.protected} />
     ) : null}
+    <StoreRegionSection organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />
     <StoreBranchSetup organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug}
       saved={environment?.branch_setup ?? []} />
     <StoreAutomaticDeploys organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />

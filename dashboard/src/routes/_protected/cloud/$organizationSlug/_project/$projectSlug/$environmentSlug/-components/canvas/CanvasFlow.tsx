@@ -30,7 +30,9 @@ import { useConfigCreator } from "./useConfigCreator";
 import { ConfigCreatorDialog } from "./ConfigCreatorDialog";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
+import { deployWaits } from "#/modules/config-store/deploy-waits";
 import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-deployments";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { deploymentDestination } from "../deployments/run-search";
@@ -231,8 +233,13 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
     (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss);
   const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0];
   const { noServers } = use(RuntimeLensContext);
+  const { machines, volumeCopies } = useRuntimeLens(params.organizationSlug);
   const storage = useStorageSteps(params.organizationSlug);
-  const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
+  const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service), store.region);
+  const waits = deployWaits({
+    services: store.services.map(({ service, replicas }) => ({ name: service.name, replicas })),
+    home: store.region, volumes: store.volumes, copies: volumeCopies, servers: machines,
+  });
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
   const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath, group.discardTarget);
   const draftCount = diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count);
@@ -248,6 +255,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         groups={groups}
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
         stagedChanges={placements.groups.reduce((count, group) => count + group.changeCount, draftCount)}
+        waits={waits}
         undeployedSave={draftCount === 0 && diff.total_count > 0 ? diff.saved : null}
         ranNothingSave={diff.saved_ran_nothing ? diff.saved : null}
         notSet={store.services.reduce((count, service) => count + service.notSet.length, 0)}

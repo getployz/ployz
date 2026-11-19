@@ -48,3 +48,26 @@ export function regionName(label: string | null, regions: readonly NamedRegion[]
   if (label === null || regions === undefined) return null;
   return regionOf(label, regions)?.name ?? label;
 }
+
+/** A region an Environment or a Service can run in: `key` null is any region, the one that names none. */
+export type RegionOption = { readonly key: string | null; readonly name: string; readonly servers: readonly string[] };
+
+const ANY_REGION = "Any region";
+
+/**
+ * Any region, then every region there is with its Servers: each a Server is in, each given a name, and each of `kept`.
+ * One with no Servers is listed too, so a choice can say why it can't be made.
+ */
+export function regionOptions(
+  machines: readonly { readonly name: string; readonly region: string | null }[],
+  names: readonly NamedRegion[] | undefined,
+  kept: readonly string[] = [],
+): RegionOption[] {
+  const servers = new Map<string, string[]>([...kept, ...(names ?? []).map(({ key }) => key)].map((key) => [key, []]));
+  for (const { name, region } of machines) {
+    const key = region?.toLowerCase();
+    if (key !== undefined && isRegionKey(key)) servers.set(key, [...(servers.get(key) ?? []), name]);
+  }
+  const regions = [...servers].map(([key, held]) => ({ key, name: regionName(key, names) ?? key, servers: held.sort() }));
+  return [{ key: null, name: ANY_REGION, servers: [] }, ...regions.sort((a, b) => a.name.localeCompare(b.name))];
+}

@@ -8,7 +8,9 @@ an environment a region, and its services run on the servers that carry that nam
 has [its own counts](#run-a-service-in-more-than-one-region). Without a region, its services run
 on any server.
 
-You set regions from the CLI and from the Servers page in Ployz Cloud.
+You set a server's region from the CLI and from the Servers page in Ployz Cloud. You set an
+environment's region, and a service's replicas in each region, from the CLI and from Ployz Cloud's
+settings.
 
 ## Give a server a region
 
@@ -60,9 +62,16 @@ before regions also runs on any server, and a branch starts with its parent's re
    ployz deploy
    ```
 
+In Ployz Cloud, open the environment's **Settings → Environment** and pick a region under
+**Region → Runs in**. The list holds **Any region** and each of your regions with its servers, as in
+`Falkenstein · web-1, web-2`. A region no server is in reads `Sydney · no Servers`, and you can't
+pick it.
+
 The region is a staged change like any other: `ployz diff` shows it as `@environment.region`,
 and `ployz discard @environment.region` drops it. In Ployz Cloud, the environment's bottom bar
-counts it and **Details** lists it as **Region**, where you can deploy or discard it. The
+counts it and **Details** lists it as **Region**, where you can discard it. To deploy it, run
+`ployz deploy` on an approved device: your servers refuse **Deploy** in the dashboard in this
+version of Ployz, see [Deploy from the dashboard](../deploy/deployments.md#deploy-from-the-dashboard). The
 [Ployz agent](../account/agent-sidebar.md) can stage a region too. Its deploy waits for your
 approval, which shows the region.
 
@@ -115,36 +124,66 @@ ployz set api.replicas=3
 ployz deploy
 ```
 
+In Ployz Cloud, open the service's **Settings** and find **Scale**. **Replicas** has a row for each
+region, with a count you raise and lower. A service with one number shows one row, in the
+environment's region, or in **Any region** when the environment has none. **Add region** adds a row
+in a region that has none yet, and the **×** on a row takes it out. The counts add up to at most 50.
+
+A service with counts by region keeps them through every change here, also with one row left, as
+`{"fsn":3}`. That holds when it was deployed with them, and when they were set with `ployz set`
+before you opened it. It stays in `fsn` when the environment's region changes. To make it follow
+the environment again, set one number with `ployz set api.replicas=3`.
+
+A service deployed with one number goes back to one number when you remove the regions you added.
+With the count unchanged, nothing is left to deploy.
+
+**Add region** shows only when the environment has a region and the service has no
+[volume](volumes.md). A service whose volume doesn't allow shared writes also keeps one replica,
+and says **Limited to 1**. You can still pick its region.
+
+**Details** lists a change as `fsn 2 → fsn 2 · syd 1`, and so does **Deployments → Versions**.
+
 ## When a volume is outside the region
 
-A service with a [volume](volumes.md) runs on the volume's server. If that server is outside the
-region, the deploy doesn't start the service, and names the volume and where it is:
+A service with a [volume](volumes.md) runs on the server that writes the volume. A
+[mirror](mirror-a-volume.md) in the region doesn't count. A volume can't move to another region in
+this version of Ployz, so a service whose volume is outside its region waits. With
+the environment moved to `syd` and `pg-data` on a server in `fsn`:
 
 ```
-postgres: not started (pg-data is on db-1)
+postgres: not started (its Volume pg-data is in fsn and can't move to syd yet. Run it in fsn instead)
 ```
 
-The rest of the deploy goes ahead, and the service keeps running where it was. The deployment
-reads **Deployed, 1 waiting**, and `ployz deploy` exits 3.
+The rest of the deploy goes ahead. If `postgres` already ran, it keeps running in `fsn`. A new
+service doesn't start. The deployment reads
+**Deployed, 1 waiting**, or **Nothing deployed, 1 waiting** when no other service had a change,
+and `ployz deploy` exits 3. In Ployz Cloud the Deployment page says the same under the
+deployment's title, and **Details** says it before you deploy.
 
-The volume stays on its server, so run the service in the volume's region. The deploy prints the
-command that does it. With the environment in `fsn` and `db-1` in `syd`:
+To stop the wait, run the service in the volume's region, from **Scale** in Ployz Cloud. The deploy
+prints the command that does it:
 
 ```sh
-ployz set postgres.replicas='{"syd":1}'
+ployz set postgres.replicas='{"fsn":1}'
 ployz deploy
 ```
 
-The count puts `postgres` alone in `syd`. To move the services that use the environment's region
-there too, run `ployz env region syd`. A service with its own counts stays where they put it.
+The count keeps `postgres` alone in `fsn`, while the environment's other services run in `syd`.
+To move the environment back as well, run `ployz env region fsn`.
 
-If the volume's server is in no region, the deploy prints the command that gives it the service's
-region:
+If the volume's server is in no region, the line names the server, and the deploy prints the
+command that gives it the service's region:
+
+```
+postgres: not started (its Volume pg-data is on db-1, a Server in no region, and can't move to syd yet. Give db-1 the region syd instead)
+```
 
 ```sh
-ployz server set db-1 --label-add region=fsn
+ployz server set db-1 --label-add region=syd
 ployz deploy
 ```
+
+**Details** names a service in a region no server is in the same way: `web waits: no Server in fsn`.
 
 ## When no server is in the region
 

@@ -7,7 +7,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::id::{Principal, Revision};
-use crate::review::{self, NodeChange};
+use crate::review::{self, NodeChange, RegionChange};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 
 use crate::storage::Tx;
@@ -52,6 +52,9 @@ pub struct SavedRevision {
     pub saved_at: Option<i64>,
     pub predecessor: Option<Revision>,
     pub changes: Vec<NodeChange>,
+    /// The Environment's default region before this revision and in it, the same where
+    /// the save left it alone: a bare replica count of `changes` runs in them.
+    pub region: RegionChange,
     pub total_count: usize,
     /// Change path to how many changes undoing that one change reverses, for
     /// changes the same save linked together. Absent means one.
@@ -181,6 +184,10 @@ pub(crate) fn history(
                 saved_at: row.optional_int(4)?,
                 predecessor: previous.as_ref().map(|(revision, _)| *revision),
                 changes: changes.changes,
+                region: RegionChange {
+                    before: baseline.region.clone(),
+                    after: environment.working.region.clone(),
+                },
                 total_count: changes.total_count,
                 linked: changes.linked,
             });

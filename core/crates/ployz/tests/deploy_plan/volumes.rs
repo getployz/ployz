@@ -1124,13 +1124,16 @@ fn a_volume_outside_the_region_stops_its_service_and_stays_where_it_is() {
     assert_eq!(blocked.service, db.name);
     assert_eq!(blocked.kind, ployz_core::BlockedKind::Wait);
     let rpc = &blocked.error;
-    assert_eq!(rpc.message, "data is on second");
+    assert_eq!(
+        rpc.message,
+        "its Volume data is in syd and can't move to fsn yet. Run it in syd instead"
+    );
     assert_eq!(
         rpc.details.get("reason"),
         Some(&serde_json::json!("volume_outside_region"))
     );
     assert_eq!(rpc.details.get("volume"), Some(&serde_json::json!("data")));
-    assert_eq!(rpc.details.get("to"), Some(&serde_json::json!("first")));
+    assert_eq!(rpc.details.get("region"), Some(&serde_json::json!("fsn")));
     assert_eq!(
         rpc.details.get("volume_region"),
         Some(&serde_json::json!("syd"))
@@ -1242,7 +1245,10 @@ fn a_volume_only_one_region_mounts_keeps_its_service_waiting_beside_a_shared_one
         panic!("{:?}", preview.blocked)
     };
     assert_eq!(blocked.service, worker.name);
-    assert_eq!(blocked.error.message, "scratch is on first");
+    assert_eq!(
+        blocked.error.message,
+        "its Volume scratch is in syd and can't move to fsn yet. Run it in syd instead"
+    );
     assert_eq!(
         blocked.error.details.get("reason"),
         Some(&serde_json::json!("volume_outside_region"))
@@ -1592,9 +1598,19 @@ fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
     let mut by_name = full.clone();
     by_name.options.selected = vec![ServiceAttempt { name: solo.name }];
 
-    for (case, regions, holder_has_region) in [
-        ("holder in no region", ["syd", "fsn"], false),
-        ("holder in syd", ["fsn", "syd"], true),
+    for (case, regions, holder_has_region, why) in [
+        (
+            "holder in no region",
+            ["syd", "fsn"],
+            false,
+            "its Volume data is on second, a Server in no region, and can't move to fsn yet. Give second the region fsn instead",
+        ),
+        (
+            "holder in syd",
+            ["fsn", "syd"],
+            true,
+            "its Volume data is in syd and can't move to fsn yet. Run it in syd instead",
+        ),
     ] {
         let mut snapshot = shared_data_snapshot();
         snapshot.machines = snapshot
@@ -1619,7 +1635,7 @@ fn a_service_naming_no_region_leaves_a_shared_volume_to_wait_on_labels_alone() {
             assert_eq!(planned, started, "{case}, {scope}");
             assert_eq!(
                 blocked,
-                BTreeMap::from([("solo".to_owned(), "data is on second".to_owned())]),
+                BTreeMap::from([("solo".to_owned(), why.to_owned())]),
                 "{case}, {scope}"
             );
             let [entry] = preview.blocked.as_slice() else {

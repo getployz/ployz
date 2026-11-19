@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { firstServerRegion, regionLabels } from "./server-regions";
+import { firstServerRegion, regionLabels, regionOptions } from "./server-regions";
 
 const server = (subnet: string | null, region: string | null, joinedAt: number | null = null) => ({ subnet, joinedAt, region });
 
@@ -34,4 +34,13 @@ it("pins nothing for no Servers, or a first Server whose label is no region", ()
 
 it("lists the default region and each region the Servers are in, leaving out a label that is no region", () => {
   expect(regionLabels([{ region: "eu_west.1" }, { region: "eu/west" }, { region: null }, { region: "fsn" }])).toEqual(["default", "eu_west.1", "fsn"]);
+});
+
+it("offers every named region, one no Server is in too, after Any region", () => {
+  const options = regionOptions([{ name: "server-2", region: "syd" }, { name: "server-1", region: "SYD" }], [{ key: "fsn", name: "Falkenstein" }, { key: "syd", name: "Sydney" }]);
+  expect(options).toEqual([
+    { key: null, name: "Any region", servers: [] },
+    { key: "fsn", name: "Falkenstein", servers: [] },
+    { key: "syd", name: "Sydney", servers: ["server-1", "server-2"] },
+  ]);
 });

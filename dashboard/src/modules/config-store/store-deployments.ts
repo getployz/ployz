@@ -5,6 +5,7 @@ import type {
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
 import { healthcheckOf } from "./healthcheck";
+import { replicaChange } from "./replica-rows";
 import { branchText, sourceChange } from "./store-branches";
 import { volumeStorageText } from "./store-volumes";
 
@@ -74,11 +75,16 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
   return setting;
 }
 
+/** The Environment's region on each side of a comparison: before it, then after. A bare replica count runs in them. */
+export type Homes = readonly [before: string | null, after: string | null];
+
+export const homesOf = (change: DiffView["region"], home: string | null): Homes => (change ? [change.before, change.after] : [home, home]);
+
 /**
- * The Store's review as the bottom bar's Details groups it: one group per changed node, one row per changed Setting.
+ * The Store's changes as the bottom bar's Details groups them: one group per changed node, one row per changed Setting.
  * Rows discard by their Store path (`web.replicas`), a Service by its name, a Volume by `volumes.VOLUME`.
  */
-export function changeGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
+export function changeGroups(diff: Pick<DiffView, "changes">, services: readonly ServiceListing[], homes: Homes = [null, null]): ChangeGroup[] {
   return diff.changes.map((node) => ({
     owner: "store",
     nodeType: node.type,
@@ -102,7 +108,9 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
       const [before, after] = setting === "source" ? sourceChange(row.before, row.after)
         : setting === "source.branch" ? [branchText(row.before), branchText(row.after)]
         : setting === "memLimit" ? [memorySize(row.before), memorySize(row.after)]
-        : setting === "cpuLimit" ? [cpuCount(row.before), cpuCount(row.after)] : [shownValue(row.before), shownValue(row.after)];
+        : setting === "cpuLimit" ? [cpuCount(row.before), cpuCount(row.after)]
+        : node.type === "service" && setting === "replicas" ? replicaChange(row.before, row.after, homes)
+        : [shownValue(row.before), shownValue(row.after)];
       const file = (value: JsonValue) => value === null ? null : Option.getOrThrowWith(decodeFile(value),
         () => new Error(`Could not read Config file comparison for ${row.path}.`));
       const configFile = node.type === "config" && setting.startsWith("files.") ? { before: file(row.before), after: file(row.after) } : undefined;
@@ -143,10 +151,14 @@ function regionGroups(diff: DiffView): ChangeGroup[] {
   }];
 }
 
-/** Runtime changes, the staged region and draft reversals in one review, with each row's Discard baseline. */
-export function reviewGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
-  const groups = [...regionGroups(diff), ...changeGroups(diff, services).map((group) => ({ ...group, rows: [...group.rows] }))];
-  const drafts = changeGroups({ ...diff, changes: diff.draft_changes ?? [] }, services);
+/**
+ * Runtime changes, the staged region and draft reversals in one review, with each row's Discard baseline. `home` is the
+ * Environment's region as the next Deploy has it. A runtime row compares with the deployed region, a draft row with the
+ * one the latest Save holds.
+ */
+export function reviewGroups(diff: DiffView, services: readonly ServiceListing[], home: string | null = null): ChangeGroup[] {
+  const groups = [...regionGroups(diff), ...changeGroups(diff, services, homesOf(diff.region, home)).map((group) => ({ ...group, rows: [...group.rows] }))];
+  const drafts = changeGroups({ changes: diff.draft_changes ?? [] }, services, homesOf(diff.draft_region, home));
   for (const draft of drafts) {
     draft.discardTarget = "saved";
     draft.rows = draft.rows.map((row) => ({ ...row, discardTarget: "saved" }));
