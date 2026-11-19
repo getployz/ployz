@@ -4,8 +4,9 @@ description: Keep an environment's services on the servers in one region, such a
 ---
 
 A region is a name you give your servers, such as `fsn` for Falkenstein or `syd` for Sydney. Give
-an environment a region, and every service in it runs on the servers that carry that name. Without
-one, its services run on any server.
+an environment a region, and its services run on the servers that carry that name, unless a service
+has [its own counts](#run-a-service-in-more-than-one-region). Without a region, its services run
+on any server.
 
 You set regions from the CLI and from the Servers page in Ployz Cloud.
 
@@ -134,8 +135,8 @@ ployz set postgres.replicas='{"syd":1}'
 ployz deploy
 ```
 
-The count puts `postgres` alone in `syd`. To run every service there instead, change the
-environment's region with `ployz env region syd`.
+The count puts `postgres` alone in `syd`. To move the services that use the environment's region
+there too, run `ployz env region syd`. A service with its own counts stays where they put it.
 
 If the volume's server is in no region, the deploy prints the command that gives it the service's
 region:
@@ -231,9 +232,9 @@ old version goes first.
   worker: not started (logs is in syd and pg-data is in fsn, and worker runs in one region. Run the Services that share them in one region, or split worker)
   ```
 
-  A volume only services of one region use, on a server outside that region, leaves its service
-  waiting [as above](#when-a-volume-is-outside-the-region). The services it shares another volume
-  with deploy meanwhile.
+  A volume that no service kept in another region uses, on a server outside the region, leaves its
+  service waiting [as above](#when-a-volume-is-outside-the-region). A service that names no region
+  never causes the refusal. The services it shares another volume with deploy meanwhile.
 - **A preview environment runs its one replica in the region with the most replicas**: `syd` for
   `{"fsn":1,"syd":3}`. When regions tie, it is the first by name.
 - **A drain keeps a replica in its region when the service has a count for that region.** The
