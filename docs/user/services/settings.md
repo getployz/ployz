@@ -146,9 +146,13 @@ update services that typed the old name in the same deploy. See
 ### Replicas
 
 1 by default, up to 50. Ployz gives each server one replica before any server gets a second. A
-service with a volume runs one replica unless the volume allows shared writes, and the field
+service with a volume runs one replica unless the volume allows shared writes, and the row
 then says **Limited to 1**. Preview environments run one of each service. See
 [Run more replicas](scaling.md#run-more-replicas).
+
+With [regions](regions.md), **Replicas** is a row for each region: a region and how many replicas
+run in it. **Add region** adds a row, and **×** takes one out. See
+[Run a service in more than one region](regions.md#run-a-service-in-more-than-one-region).
 
 ### CPU limit
 

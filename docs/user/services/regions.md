@@ -8,7 +8,9 @@ an environment a region, and its services run on the servers that carry that nam
 has [its own counts](#run-a-service-in-more-than-one-region). Without a region, its services run
 on any server.
 
-You set regions from the CLI and from the Servers page in Ployz Cloud.
+You set a server's region from the CLI and from the Servers page in Ployz Cloud. You set an
+environment's region, and a service's replicas in each region, from the CLI and from Ployz Cloud's
+settings.
 
 ## Give a server a region
 
@@ -59,6 +61,10 @@ before regions also runs on any server, and a branch starts with its parent's re
    ```sh
    ployz deploy
    ```
+
+In Ployz Cloud, open the environment's **Settings → Environment** and pick a region under
+**Region → Runs in**. The list holds **Any region** and each region a server is in, with its servers
+under its name. A region you set that no server is in stays in the list until you pick another.
 
 The region is a staged change like any other: `ployz diff` shows it as `@environment.region`,
 and `ployz discard @environment.region` drops it. In Ployz Cloud, the environment's bottom bar
@@ -114,6 +120,18 @@ To put the service back in the environment's region, set one number:
 ployz set api.replicas=3
 ployz deploy
 ```
+
+In Ployz Cloud, open the service's **Settings** and find **Scale**. **Replicas** has a row for each
+region, with a count you raise and lower. A service with one number shows one row, in the
+environment's region, or in **Any region** when the environment has none. **Add region** adds a row
+in a region that has none yet, and the **×** on a row takes it out. When one row is left and it is in
+the environment's region, the service is back to one number. The counts add up to at most 50.
+
+**Add region** shows only when the environment has a region, or when the service already has
+counts by region. A service whose [volume](volumes.md) doesn't allow shared writes keeps one
+replica and no **Add region**, and says **Limited to 1**. You can still pick its region.
+
+**Details** lists a change as `fsn 2 → fsn 2 · syd 1`.
 
 ## When a volume is outside the region
 

@@ -27,7 +27,7 @@ no traffic until it recovers. A new replica gets none until it passes its
 later, and the dashboard warns.
 
 To run a set number of replicas in each of your [regions](regions.md#run-a-service-in-more-than-one-region),
-use the CLI: `ployz set web.replicas='{"fsn":2,"syd":1}'`.
+click **Add region** under **Replicas**, or use the CLI: `ployz set web.replicas='{"fsn":2,"syd":1}'`.
 
 **CPU limit** and **Memory limit** in the same section cap what each replica can use. Ployz
 doesn't check that a server has room for them, so leave some headroom.
