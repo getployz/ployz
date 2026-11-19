@@ -201,8 +201,9 @@ old version goes first.
 
 While a region waits for a replica, the deploy keeps a spare replica running in its place: one on
 a server whose `region` label changed, in a region you took out of the counts, or past a smaller
-count in another region. So changing a server's label removes nothing, and with the label back
-the next deploy changes nothing. A server that joins a region whose count its replicas already
+count in another region. So changing a server's label removes nothing. With the label back, the
+spare counts for its region again, and the next deploy spreads the other regions' replicas across
+their servers as usual. A server that joins a region whose count its replicas already
 meet doesn't take one from it either. If the deploy changed the service, the spare stays on its
 old version, and the deploy says so as above. The spare replica is removed once the waiting region
 starts its own.
