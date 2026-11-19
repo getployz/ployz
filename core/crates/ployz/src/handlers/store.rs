@@ -479,8 +479,8 @@ impl<'m> Store<'m> {
         })
     }
 
-    /// The Servers' records; none when one went unobserved.
-    fn observe_machines(&self) -> Option<Vec<ployz_core::Machine>> {
+    /// The Cluster as the Servers show it now; none when they can't be asked in time.
+    fn observe_frame(&self) -> Option<ployz_core::RuntimeWatchFrame> {
         let runtime = runtime().ok()?;
         let context = self.context();
         let observe = async {
@@ -490,34 +490,29 @@ impl<'m> Store<'m> {
             };
             client.ok()?.runtime_frame().await.ok()
         };
-        let frame = runtime
+        runtime
             .block_on(async { tokio::time::timeout(OBSERVE_SERVERS_TIMEOUT, observe).await })
-            .ok()??;
-        frame.incomplete_ids.machines.is_empty().then(|| {
-            frame
-                .machines
-                .into_iter()
-                .map(|observed| observed.machine)
-                .collect()
-        })
+            .ok()?
     }
 
     /// The regions the Servers are in, by their `region` label; none when a Server went
     /// unobserved.
     fn observe_regions(&self) -> Option<BTreeSet<Region>> {
-        Some(
-            self.observe_machines()?
+        let frame = self.observe_frame()?;
+        frame.incomplete_ids.machines.is_empty().then(|| {
+            frame
+                .machines
                 .iter()
-                .filter_map(Region::of)
-                .collect(),
-        )
+                .filter_map(|observed| Region::of(&observed.machine))
+                .collect()
+        })
     }
 
     /// The region a new Environment starts in: the Cluster's first Server's. None when any
     /// Server has no region, or a Server went unobserved, which pins nothing.
     pub(crate) fn new_environment_region(&self) -> Option<Region> {
-        let machines = self.observe_machines()?;
-        Region::of_first_server(machines.iter().map(ployz_core::JoinedServer::of))
+        let frame = self.observe_frame()?;
+        Region::of_first_server(ployz_core::JoinedServer::all(&frame))
     }
 
     /// The Servers' certificates, ingress Servers and their addresses, through `--connect` or the

@@ -140,16 +140,10 @@ async fn servers(
                     .filter_map(|machine| Region::of(&machine.machine))
                     .collect()
             });
-            let new_environment_region = only
-                .is_none()
-                .then(|| {
-                    Region::of_first_server(
-                        machines
-                            .iter()
-                            .map(|observed| ployz_core::JoinedServer::of(&observed.machine)),
-                    )
-                })
-                .flatten();
+            let new_environment_region = match only {
+                Some(_) => None,
+                None => new_environment_region(&client).await,
+            };
             Ok(ServersAnswer {
                 servers,
                 seen: seen(&machines, &unanswered),
@@ -158,6 +152,17 @@ async fn servers(
             })
         })
         .await
+}
+
+/// The region a new Environment starts in, by the Engine's one rule. It reads the Servers from a
+/// Runtime Watch frame, which names the Machines whose record is incomplete where a Machine list
+/// leaves them out. None, any region, when the frame can't be read in time.
+async fn new_environment_region(client: &crate::connect::Client) -> Option<Region> {
+    let frame = tokio::time::timeout(crate::connect::TARGET_RPC_TIMEOUT, client.runtime_frame())
+        .await
+        .ok()?
+        .ok()?;
+    Region::of_first_server(ployz_core::JoinedServer::all(&frame))
 }
 
 fn server(

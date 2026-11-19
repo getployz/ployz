@@ -48,11 +48,11 @@ enum ConfigRequest {
 }
 
 /// A Server's Machine Subnet, when its join was approved and its `region` label value, as a
-/// caller sees them.
+/// caller sees them. A caller that hasn't read the Server's record has no subnet for it.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServerRegion {
-    subnet: crate::MachineSubnet,
+    subnet: Option<crate::MachineSubnet>,
     #[serde(default)]
     joined: Option<crate::authority::Timestamp>,
     region: Option<String>,
@@ -83,10 +83,13 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
             .map(|name| serde_json::Value::String(name.to_owned()))
             .ok_or_else(|| ConfigError::at("name", crate::Region::NAME_RULE)),
         ConfigRequest::FirstServerRegion { servers } => Ok(serde_json::to_value(
-            crate::Region::of_first_server(servers.iter().map(|server| crate::JoinedServer {
-                subnet: server.subnet,
-                joined: server.joined,
-                label: server.region.as_deref(),
+            crate::Region::of_first_server(servers.iter().map(|server| match server.subnet {
+                Some(subnet) => crate::JoinedServer::Read {
+                    subnet,
+                    joined: server.joined,
+                    label: server.region.as_deref(),
+                },
+                None => crate::JoinedServer::Unread,
             })),
         )
         .expect("a region is JSON")),

@@ -39,6 +39,7 @@ assert.equal(api.parseRegionName('  Falkenstein '), 'Falkenstein');
 assert.throws(() => api.parseRegionName('a'.repeat(41)), /40 characters/);
 assert.equal(api.firstServerRegion([{ subnet: '10.210.10.0/24', region: 'later' }, { subnet: '10.210.9.0/24', region: 'Earlier' }]), 'earlier');
 assert.equal(api.firstServerRegion([{ subnet: '10.210.0.0/24', region: null }, { subnet: '10.210.1.0/24', region: 'default' }]), null);
+assert.equal(api.firstServerRegion([{ subnet: '10.210.0.0/24', region: 'default' }, { subnet: null, region: 'default' }]), null);
 
 const read = (file) => readFileSync(new URL(file, import.meta.url), 'utf8');
 const names = (body) => [...body.matchAll(/^  (\w+)[<(]/gm)].map(([, name]) => name);

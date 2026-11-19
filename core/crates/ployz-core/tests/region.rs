@@ -15,12 +15,15 @@ fn first(servers: &[(&str, Option<&str>)]) -> Option<String> {
 }
 
 fn first_joined(servers: &[(&str, Option<u64>, Option<&str>)]) -> Option<String> {
-    Region::of_first_server(servers.iter().map(|(subnet_, joined, label)| JoinedServer {
+    Region::of_first_server(servers.iter().map(|server| read(*server))).map(String::from)
+}
+
+fn read<'a>((subnet_, joined, label): (&str, Option<u64>, Option<&'a str>)) -> JoinedServer<'a> {
+    JoinedServer::Read {
         subnet: subnet(subnet_),
         joined: joined.map(|millis| Timestamp::from_millis(millis).unwrap()),
-        label: *label,
-    }))
-    .map(String::from)
+        label,
+    }
 }
 
 #[test]
@@ -76,6 +79,20 @@ fn a_first_server_with_a_label_that_is_no_region_starts_environments_in_any_regi
         None
     );
     assert_eq!(first(&[]), None);
+}
+
+#[test]
+fn a_cluster_with_a_server_that_went_unread_starts_environments_in_any_region() {
+    let default = read(("10.210.0.0/24", Some(1_000), Some("default")));
+    assert_eq!(
+        Region::of_first_server([default]).map(String::from),
+        Some("default".to_owned())
+    );
+    assert_eq!(
+        Region::of_first_server([default, JoinedServer::Unread]),
+        None,
+        "the unread Server may have joined first, in another region or none"
+    );
 }
 
 #[test]

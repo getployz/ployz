@@ -32,7 +32,8 @@ in. `ployz get @environment.region` shows it.
 
 If any server in the cluster has no region, because it joined before regions, a new environment
 runs in any region, since the cluster has no single place to start it. Give those servers a region
-to pin new environments again. An environment you made before this also runs in any region, and a
+to pin new environments again. The same goes for the short time a joining server's details are
+still reaching the others. An environment you made before this also runs in any region, and a
 branch starts with its parent's region.
 
 ## Set an environment's region

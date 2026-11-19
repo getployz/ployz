@@ -25,15 +25,14 @@ export function regionLabels(machines: readonly { readonly region: string | null
 }
 
 /**
- * The region a new Environment runs in, by the Engine's one rule, which this only hands the Servers to: that of the
+ * The region a new Environment runs in, by the Engine's one rule, which this hands every Server to: that of the
  * Cluster's first Server, in lowercase as placement reads it. Null, any region, when any Server has none, or when a
  * Server's subnet isn't known yet: a cluster that predates regions pins nothing.
  */
 export function firstServerRegion(
   machines: readonly { readonly subnet: string | null; readonly joinedAt: number | null; readonly region: string | null }[],
 ): string | null {
-  const servers = machines.flatMap(({ subnet, joinedAt, region }) => subnet === null ? [] : [{ subnet, joined: joinedAt, region }]);
-  return servers.length < machines.length ? null : firstRegion(servers);
+  return firstRegion(machines.map(({ subnet, joinedAt, region }) => ({ subnet, joined: joinedAt, region })));
 }
 
 /** Labels compare without case, as placement does. */

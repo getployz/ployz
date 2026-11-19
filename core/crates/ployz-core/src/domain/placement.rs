@@ -117,27 +117,35 @@ pub struct Placement {
     pub constraints: std::collections::BTreeSet<PlacementConstraint>,
 }
 
-/// What the rule for a Cluster's first Server reads of one Server.
+/// What the rule for a Cluster's first Server reads of one Server. The rule is handed every
+/// Server, the ones not read too, since one of those may be the first.
 #[derive(Clone, Copy, Debug)]
-pub struct JoinedServer<'a> {
-    pub subnet: crate::MachineSubnet,
-    /// When its join was approved, if the Machine record keeps it.
-    pub joined: Option<crate::authority::Timestamp>,
-    /// Its `region` label's value, if it has one.
-    pub label: Option<&'a str>,
+pub enum JoinedServer<'a> {
+    Read {
+        subnet: crate::MachineSubnet,
+        /// When its join was approved, if the Machine record keeps it.
+        joined: Option<crate::authority::Timestamp>,
+        /// Its `region` label's value, if it has one.
+        label: Option<&'a str>,
+    },
+    /// Its Machine record is incomplete where the Servers were read, so its region is unknown.
+    Unread,
 }
 
 impl<'a> JoinedServer<'a> {
-    #[must_use]
-    pub fn of(machine: &'a crate::Machine) -> Self {
-        Self {
-            subnet: machine.subnet,
-            joined: machine.joined_at(),
-            label: machine
+    /// Every Server in `frame`: each Machine it read, and each whose record it holds incomplete.
+    pub fn all(frame: &'a crate::RuntimeWatchFrame) -> impl Iterator<Item = Self> + 'a {
+        let read = frame.machines.iter().map(|observed| Self::Read {
+            subnet: observed.machine.subnet,
+            joined: observed.machine.joined_at(),
+            label: observed
+                .machine
                 .labels
                 .get(Region::LABEL)
                 .map(|value| value.as_str()),
-        }
+        });
+        let unread = frame.incomplete_ids.machines.iter().map(|_| Self::Unread);
+        read.chain(unread)
     }
 }
 
@@ -188,24 +196,31 @@ impl Region {
     }
 
     /// The region a new Environment starts in: that of the Cluster's first Server. None when
-    /// any Server has no region, since a Cluster that predates regions, or one a Server from
-    /// before them is still in, cannot say which Server was first, and an Environment then runs
-    /// in any region. Otherwise the first is the one with the earliest recorded join time. A
-    /// Server with none was there before join approvals were kept, or founded the Cluster, so
-    /// it comes first. Servers that tie, or none of which has a join time, are told apart by
-    /// the lowest Machine Subnet, which allocation hands out first and a removed Server frees.
+    /// any Server has no region or went unread, since a Cluster that predates regions, or one a
+    /// Server from before them is still in, cannot say which Server was first, and an Environment
+    /// then runs in any region. Otherwise the first is the one with the earliest recorded join
+    /// time. A Server with none was there before join approvals were kept, or founded the
+    /// Cluster, so it comes first. Servers that tie, or none of which has a join time, are told
+    /// apart by the lowest Machine Subnet, which allocation hands out first and a removed Server
+    /// frees.
     #[must_use]
     pub fn of_first_server<'a>(
         servers: impl IntoIterator<Item = JoinedServer<'a>>,
     ) -> Option<Self> {
-        let mut first: Option<(JoinedServer<'a>, Self)> = None;
+        let mut first = None;
         for server in servers {
-            let region = Self::parse(server.label?).ok()?;
-            let earlier = first.as_ref().is_none_or(|(held, _)| {
-                (server.joined, server.subnet) < (held.joined, held.subnet)
-            });
-            if earlier {
-                first = Some((server, region));
+            let JoinedServer::Read {
+                subnet,
+                joined,
+                label,
+            } = server
+            else {
+                return None;
+            };
+            let region = Self::parse(label?).ok()?;
+            let order = (joined, subnet);
+            if first.as_ref().is_none_or(|(held, _)| order < *held) {
+                first = Some((order, region));
             }
         }
         first.map(|(_, region)| region)
