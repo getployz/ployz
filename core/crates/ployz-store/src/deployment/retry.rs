@@ -257,7 +257,7 @@ pub(crate) fn retry(
             ..uploads
         })
     });
-    let ran = super::versions::replaying(tx, source)?;
+    let ran = super::versions::replaying(source)?;
     let admitted_at = now();
     queue(tx, &stored.summary.environment_id, false, |tx, number| {
         let listed = next_listed(tx, &stored.summary.environment_id)?;

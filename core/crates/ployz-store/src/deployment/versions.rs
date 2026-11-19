@@ -80,6 +80,10 @@ enum Origin {
     /// Service, while only run fields changed since.
     #[default]
     Own,
+    /// A Deployment admitted before the Store kept what each one ran. Like main, it
+    /// pins only what its own approval names and otherwise runs its Saved image as
+    /// written, never a pin another Deployment ran.
+    Legacy,
     /// A retry or rollback, which runs what `source` ran and takes nothing from any
     /// later Deployment.
     Replay { source: DeploymentId },
@@ -89,9 +93,9 @@ enum Origin {
 /// what `id` already records for that Service. A statement already kept stays as it is.
 ///
 /// # Errors
-/// Returns `invalid_argument` for more statements than `id` has Services, a statement
-/// whose body doesn't parse or names another Namespace or a Service `id` doesn't deploy,
-/// or a pin that isn't content-addressed; or a storage error.
+/// Returns `invalid_argument` for a statement whose body doesn't parse, names another
+/// Namespace or a Service `id` doesn't deploy, or names a Service an earlier statement
+/// already named, or a pin that isn't content-addressed; or a storage error.
 pub(crate) fn post(
     tx: &mut dyn Tx,
     id: &DeploymentId,
@@ -111,19 +115,9 @@ pub(crate) fn post(
             }
         })
         .collect();
-    let most = services.len().min(MAX_PRESENTED);
-    if posted.len() > most {
-        return Err(error::invalid(
-            format!(
-                "This deploy carries {} signed versions, and it deploys {} services",
-                posted.len(),
-                services.len()
-            ),
-            json!({ "versions": posted.len(), "most": most }),
-        ));
-    }
     let organization = crate::build::organization(tx, id)?;
     let mut record = record_of(tx, id)?;
+    let mut named = BTreeSet::new();
     for PostedVersion { statement, pin } in posted {
         let body = statement.open().map_err(|refusal| {
             error::invalid(
@@ -138,6 +132,15 @@ pub(crate) fn post(
                     body.service, body.namespace
                 ),
                 json!({ "service": body.service, "namespace": body.namespace }),
+            ));
+        }
+        if !named.insert(body.service.clone()) {
+            return Err(error::invalid(
+                format!(
+                    "This deploy carries more than one signed version of {}",
+                    body.service
+                ),
+                json!({ "service": body.service }),
             ));
         }
         if let Some(pin) = pin
@@ -179,17 +182,18 @@ pub(crate) fn post(
     write_record(tx, id, &record)
 }
 
-/// What a retry or rollback of `source` records before it is claimed: what `source`
-/// ran, as JSON for its `ran` column.
+/// What a retry or rollback of `source` records before it is claimed, as JSON for its
+/// `ran` column: only its source. Its claim reads what `source` ran, after what the
+/// retry itself posted or approved.
 ///
 /// # Errors
-/// Returns a storage error, or `corrupt` for a record that doesn't read.
-pub(super) fn replaying(tx: &mut dyn Tx, source: &DeploymentId) -> Result<String, RpcError> {
+/// Returns `corrupt` when the record doesn't serialize.
+pub(super) fn replaying(source: &DeploymentId) -> Result<String, RpcError> {
     json_text(&Record {
         origin: Origin::Replay {
             source: source.clone(),
         },
-        services: record_of(tx, source)?.services,
+        services: Ran::new(),
     })
 }
 
@@ -222,11 +226,12 @@ pub(crate) fn versions_for(
 }
 
 /// What each Service of `target` runs in Deployment `id`, written back so a retry of `id`
-/// runs the same, with the versions kept for each digest. A Service `id` records nothing
-/// for runs, in order: the pin `id`'s own deploy approval names; for a Deploy, what the
-/// Deployment that last applied it ran, when the spec differs from that one only in run
-/// fields; for a retry or rollback, what its source ran or its source's approval named;
-/// else its Saved image as written.
+/// runs the same, with the versions kept for each digest. A Service runs, in order: what
+/// `id` already records, which is the version posted with it or what an earlier claim
+/// resolved; the pin `id`'s own deploy approval names; for a Deploy, what the Deployment
+/// that last applied it ran, when the spec differs from that one only in run fields; for
+/// a retry or rollback, what its source ran or its source's approval named; else its
+/// Saved image as written, which is all a Deployment from before records ever gets.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a record that doesn't read.
@@ -246,6 +251,7 @@ pub(super) fn pinned(
             Some(ran) => Some(ran),
             None => match &record.origin {
                 Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
+                Origin::Legacy => None,
                 Origin::Replay { source } => replayed(tx, source.clone(), spec)?,
             },
         };
@@ -338,7 +344,7 @@ fn replayed(
             return Ok(Some(ran));
         }
         match record.origin {
-            Origin::Own => return Ok(None),
+            Origin::Own | Origin::Legacy => return Ok(None),
             Origin::Replay { source: earlier } => source = earlier,
         }
     }

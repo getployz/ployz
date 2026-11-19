@@ -9443,14 +9443,7 @@ fn a_rollback_to_a_deployment_from_before_pins_were_kept_borrows_no_later_pin() 
     let approval = approval_pinning(&store, &who, 1, &[("web", P1)]);
     admit_with(&store, &who, 1, (Vec::new(), Some(approval))).unwrap();
     apply(&store, 1);
-    // What the Store kept of #1 before it recorded what each Deployment ran.
-    backend::execute(
-        &url,
-        &format!(
-            "UPDATE config_deployment SET ran = NULL WHERE id = '{}'",
-            id(1)
-        ),
-    );
+    legacy(&url, 1);
     set_replicas(&store, &who, "web", 2);
     admit_signed(
         &store,
@@ -9501,7 +9494,6 @@ fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_on
         vec![version("shop-production", "db")],
         vec![
             version("shop-production", "web"),
-            version("shop-production", "api"),
             version("shop-production", "web"),
         ],
     ] {
@@ -9528,4 +9520,89 @@ fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_on
         .unwrap();
     assert!(kept.contains(&first.statement), "{kept:?}");
     assert!(kept.contains(&later.statement), "{kept:?}");
+}
+
+/// Leave Deployment `n` as 0049 leaves one admitted before the Store kept what each
+/// Deployment ran.
+fn legacy(url: &str, n: u8) {
+    backend::execute(
+        url,
+        &format!(
+            "UPDATE config_deployment SET ran = '{{\"origin\":\"legacy\",\"services\":{{}}}}' \
+             WHERE id = '{}'",
+            id(n)
+        ),
+    );
+}
+
+#[test]
+fn a_deploy_from_before_pins_were_kept_runs_its_tag_not_a_later_pin() {
+    let (store, who, url, _dir) = own_shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 2);
+    admit(&store, &who, 2, &[], None).unwrap();
+    legacy(&url, 2);
+    assert_eq!(web_runs(&store, 2), None);
+}
+
+#[test]
+fn a_retry_carrying_its_own_approval_runs_what_it_approved_not_its_sources_pin() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    assert_eq!(web_runs(&store, 1), Some((P1.to_owned(), 1)));
+    apply(&store, 1);
+    // The tag moved to P2, and a released CLI retries #1 posting only its approval.
+    let approval = approval_pinning(&store, &who, 2, &[("web", P2)]);
+    retry_approved(&store, &who, (2, 1), Some(approval)).unwrap();
+    assert_eq!(web_runs(&store, 2), Some((P2.to_owned(), 0)));
+    apply(&store, 2);
+    // A rollback to the retry runs what the retry ran.
+    retry(&store, &who, 3, 2).unwrap();
+    assert_eq!(web_runs(&store, 3), Some((P2.to_owned(), 0)));
+}
+
+#[test]
+fn a_deploy_carries_one_signed_version_for_each_of_more_services_than_a_request_presents() {
+    let (store, who) = shop();
+    let names: Vec<String> = (0..31).map(|n| format!("worker-{n}")).collect();
+    for (n, name) in names.iter().enumerate() {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!(
+                        "00000000-0000-4000-8000-0000000002{n:02}"
+                    ))
+                    .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: Some("nginx:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    let services: Vec<&str> = ["web", "api"]
+        .into_iter()
+        .chain(names.iter().map(String::as_str))
+        .collect();
+    assert_eq!(services.len(), 33);
+    let versions = services
+        .iter()
+        .map(|service| posted(&store, &who, service, P1))
+        .collect();
+    admit_signed(&store, &who, 1, versions);
+    let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
+    let pins: Vec<_> = claimed
+        .ran
+        .values()
+        .map(|pinned| {
+            (
+                pinned.ran.pin.as_ref().map(|pin| pin.image.as_str()),
+                pinned.versions.len(),
+            )
+        })
+        .collect();
+    assert_eq!(pins, vec![(Some(P1), 1); 33]);
 }

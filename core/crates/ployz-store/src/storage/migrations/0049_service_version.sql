@@ -14,8 +14,10 @@ CREATE TABLE config_service_version (
     PRIMARY KEY (organization_id, namespace, service, digest, statement_hash)
 );
 -- What each Service of this Deployment runs, by runtime name, and where a Service it
--- names nothing for takes its pin at claim: {"origin": "own"} for a Deploy, or
--- {"origin": "replay", "source": id} for a retry or rollback, with
--- "services": {service: {digest, pin?: {tag, image}}}. NULL until a client posts versions,
--- a retry copies its source's, or a runner claims it.
+-- names nothing for takes its pin at claim: {"origin": "own"} for a Deploy,
+-- {"origin": "replay", "source": id} for a retry or rollback, or {"origin": "legacy"}
+-- for a Deployment admitted before this column, with
+-- "services": {service: {digest, pin?: {tag, image}}}. NULL is a Deploy nothing posted
+-- versions for or claimed yet.
 ALTER TABLE config_deployment ADD COLUMN ran TEXT;
+UPDATE config_deployment SET ran = '{"origin":"legacy","services":{}}';
