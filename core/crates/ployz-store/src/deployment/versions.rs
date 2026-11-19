@@ -359,16 +359,19 @@ fn replayed(
             return Err(error::corrupt("Deployment ran"));
         }
         let record = record_of(tx, &source)?;
-        let approval = super::device_approval(tx, &source)?;
         pending.retain(|spec| {
-            let ran = record
-                .services
-                .get(&spec.name)
-                .cloned()
-                .or_else(|| approved(approval.as_ref(), spec));
+            let ran = record.services.get(&spec.name).cloned();
             ran.map(|ran| found.insert(spec.name.clone(), ran))
                 .is_none()
         });
+        if !pending.is_empty() {
+            let approval = super::device_approval(tx, &source)?;
+            pending.retain(|spec| {
+                let ran = approved(approval.as_ref(), spec);
+                ran.map(|ran| found.insert(spec.name.clone(), ran))
+                    .is_none()
+            });
+        }
         match record.origin {
             Origin::Replay { source: earlier } => source = earlier,
             Origin::Own | Origin::Legacy => break,
