@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DrainReport, DrainScope, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
+import { type DrainReport, type DrainScope, type MachineName, type QualifiedService, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schedule } from "effect";
 import type { MachineId } from "#/db/tables";
@@ -300,8 +300,8 @@ const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizati
 });
 
 /** What the Engine said when it refused, within the row's limit. */
-function refusalMessage(cause: unknown) {
-  const message = cause instanceof Error ? cause.message.trim() : "";
+function refusalMessage(cause: Error) {
+  const message = cause.message.trim();
   const text = message.length > 0 ? message : "The drain was refused.";
   return text.length > MESSAGE_LIMIT ? `${text.slice(0, MESSAGE_LIMIT - 1)}…` : text;
 }
@@ -331,8 +331,8 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
 /**
  * Ask the Engine once. The row is claimed (`running`) right before the call and ended with the Engine's answer right
  * after, in one step: a retry that finds the row running knows the Engine may have been asked, closes it lost
- * and never asks again; one that finds it ended returns what's there. An error from the Engine means nothing moved
- * (its preflight refused), so the row ends refused. An answer replaces an unknown end (a cancellation that couldn't
+ * and never asks again; one that finds it ended returns what's there. The Engine's own error means nothing moved (its
+ * preflight refused), so the row ends refused; any other rejection may follow a move, so the row ends lost. An answer replaces an unknown end (a cancellation that couldn't
  * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
  *
  * A Cluster that doesn't answer before the claim leaves the row pending and marks it silent, for the run to try again
@@ -413,7 +413,9 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
     catch: (cause) => cause,
   }).pipe(
     Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), endCode: null, refusalMessage: null }) as const),
-    Effect.catch((cause) => Effect.succeed(refused(refusalMessage(cause)))),
+    // The Engine's own error comes from its input checks, the dial or its preflight, before anything moved. Anything
+    // else may come after copies moved, so what the drain did is unknown.
+    Effect.catch((cause) => Effect.succeed(cause instanceof RpcError ? refused(refusalMessage(cause)) : ended("lost"))),
     Effect.timeoutOrElse({ duration: DRAIN_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),
   );
   // The answer is in hand: the write is retried here rather than by asking the Engine again.

@@ -580,13 +580,14 @@ describe("drain-server", () => {
     expect(drainCalls).toHaveLength(1);
   });
 
-  it("ends the row refused with the words of a rejection that isn't the Engine's own error", async () => {
-    drainAnswer = () => Promise.reject(new TypeError("scope is not a DrainScope"));
+  it("ends the row lost when the drain fails without the Engine's own error, since copies may have moved", async () => {
+    drainAnswer = () => Promise.reject(new Error("the report didn't cross the binding"));
     await request();
     const output = await drain();
 
-    expect(output.result).toEqual({ attemptId: requestId, state: "failed" });
-    expect(await rows()).toMatchObject([{ state: "failed", end_code: "refused", refusal_message: "scope is not a DrainScope" }]);
+    expect(output.result).toEqual({ attemptId: requestId, state: "unknown" });
+    expect(drainCalls).toHaveLength(1);
+    expect(await rows()).toMatchObject([{ state: "unknown", end_code: "lost", refusal_message: null }]);
   });
 
   it("a waiting run and the sweep end the row once: the run that wakes after the sweep finds it ended", async () => {
