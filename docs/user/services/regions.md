@@ -146,23 +146,49 @@ environment's services and reports each one:
 web: not started (no Server in fsn)
 ```
 
-If the region has servers but none can run services, the line names them:
+If the region has servers but none can run services, the line names them and says why:
 
 ```
 web: not started (fsn-1 is down, and no other Server in fsn is up)
+web: not started (fsn-1 takes no services)
 ```
 
 Replicas that already run keep running. With two services left waiting, the deployment reads
 **Nothing deployed, 2 waiting**, and `ployz deploy` exits 3. Give a server the region, bring its
 server back, or change the environment's region, and deploy again.
 
-A service with a count for each region isn't started when any of its regions has no server that
-can run it. The deploy names every such region, and the service's replicas in its other regions
-keep running as they were:
+A service with a count for each region starts its replicas in every region that has a server that
+can run them. Only the replicas of a region with no such server wait, and the deploy names them
+and the regions:
 
 ```
-api: not started (no Server in syd)
+api: deployed (1 replica waiting, no Server in syd)
+1 deployed · 1 replica waiting · across 2 servers
 ```
+
+The deployment reads **Deployed, 1 waiting**, and `ployz deploy` exits 3, as it does when a whole
+service waits. `ployz deploy --plan` says so first, when no server has the region's label:
+
+```
+api → fsn 2 · syd 1: 1 replica waits (no Server in syd)
+```
+
+The deploy leaves a replica that already runs in that region as it is. If the deploy changed the
+service, that replica stays on its old version until you deploy again with a server there that can
+run it:
+
+```
+api: deployed (1 replica still on the old version, syd-1 takes no services)
+1 deployed · 1 replica on the old version · across 3 servers
+```
+
+Give a server that region, bring its server back, or turn its services back on, and deploy again:
+the waiting replicas start and the old ones are replaced. A service whose counts are all in
+regions with no server isn't started, as above.
+
+A smaller count still removes replicas there: going from `{"fsn":1,"syd":2}` to
+`{"fsn":1,"syd":1}` removes one `syd` replica while `syd-1` takes no services. A replica on the
+old version goes first.
 
 ## Good to know
 
@@ -171,13 +197,43 @@ api: not started (no Server in syd)
   down with it. Add a second server to the region before you rely on replicas.
 - **A service with a volume runs in one region.** Its replicas all write to the volume, which is
   on one server. Ployz refuses counts in two regions for it.
+- **Services that share a volume with shared writes run where it is.** When they're kept in
+  different regions, the services in the volume's region deploy. Each service in another region
+  isn't started, and its line says where the volume is. The volume stays with the services that
+  run, so deploying again doesn't start it, and the deployment reads **Failed**. Deploying that
+  service by name is refused the same way. So is a service whose own region has no server: a
+  server added there wouldn't have the volume. Change where the service runs:
+
+  ```
+  worker: not started (pg-data is in fsn, and worker runs in syd. Run worker in fsn instead)
+  ```
+
+  When the volume is on a server in no region, or isn't made yet, none of the services that share
+  it is started:
+
+  ```
+  worker: not started (pg-data is shared by api in fsn and worker in syd. Run them in one region, or give each its own Volume)
+  ```
+
+  A service can run in neither region when it shares one volume with a service in `fsn` and
+  another with a service in `syd`. Run the services that share them in one region, or split the
+  service in two:
+
+  ```
+  worker: not started (logs is in syd and pg-data is in fsn, and worker runs in one region. Run the Services that share them in one region, or split worker)
+  ```
+
+  A volume only services of one region use, on a server outside that region, leaves its service
+  waiting [as above](#when-a-volume-is-outside-the-region). The services it shares another volume
+  with deploy meanwhile.
 - **A preview environment runs its one replica in the region with the most replicas**: `syd` for
   `{"fsn":1,"syd":3}`. When regions tie, it is the first by name.
 - **A drain keeps a replica in its region when the service has a count for that region.** The
   replica moves to another server there, or stays when there is none. If its server's region is
   no longer one the service has a count for, it moves to a server in any region that is. A
   service with one number moves within the environment's region, or to any server when the
-  environment has none.
+  environment has none. A replica a deploy left on its old version, in a region with no server
+  that can run it, doesn't stop a drain from moving the service's other replicas.
 - **An older `ployz` still deploys an environment with regions.** Its deploys follow the
   environment's region and each service's counts. It shows a count for each region as
   `{"fsn":2,"syd":1}`, and can set one. It doesn't show the environment's region: `ployz get`
