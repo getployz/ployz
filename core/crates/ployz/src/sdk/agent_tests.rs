@@ -6,17 +6,14 @@ use std::{
 
 use ployz_core::{
     ConfiguredHealthcheck, ContainerId, ContainerKind, ContainerRuntimeObservation, CopyRotation,
-    DeploymentLogId, HealthcheckCommand, HealthcheckSpec,
-    Namespace, RpcError, RpcErrorCode, ServiceName,
+    DeploymentLogId, HealthcheckCommand, HealthcheckSpec, Namespace, RpcError, RpcErrorCode,
+    ServiceName,
 };
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer};
-use ployz_store::tools::{
-    CloudQuery, LineCap, LogText, LogsQuery, ServerRef, Withheld,
-};
+use ployz_store::tools::{CloudQuery, LineCap, LogText, LogsQuery, ServerRef, Withheld};
 
 use super::{
-    Readable, ServiceCopy, Started, ask, copies_of, logs, remove_one, report, start_one,
-    stop_one,
+    Readable, ServiceCopy, Started, ask, copies_of, logs, remove_one, report, start_one, stop_one,
 };
 use crate::global_fixtures::{container_id, machine, running_on};
 use crate::sdk::test_support as support;

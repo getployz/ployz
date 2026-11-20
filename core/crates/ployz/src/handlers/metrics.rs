@@ -34,11 +34,9 @@ pub(super) fn command(command: Command) -> Command {
             .value_name("NAME")
             .help("A Server's own totals instead of a Service"),
     )
-    .arg(
-        value("since", None)
-            .default_value("1h")
-            .help(format!("Range start, for history in Ployz Cloud: {TIME_FORMATS}")),
-    )
+    .arg(value("since", None).default_value("1h").help(format!(
+        "Range start, for history in Ployz Cloud: {TIME_FORMATS}"
+    )))
     .group(
         ArgGroup::new("subject")
             .args(["service", "server"])

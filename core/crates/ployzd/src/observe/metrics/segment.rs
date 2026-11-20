@@ -56,10 +56,7 @@ pub fn append(store: &StoreRoot, rows: &[Row]) -> io::Result<()> {
     let mut lines: BTreeMap<SegmentName, Vec<u8>> = BTreeMap::new();
     for row in rows {
         let name = SegmentName::containing(row.ts()).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "marker stamped before 1970",
-            )
+            io::Error::new(io::ErrorKind::InvalidInput, "marker stamped before 1970")
         })?;
         let buf = lines.entry(name).or_default();
         serde_json::to_writer(&mut *buf, row)?;

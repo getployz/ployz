@@ -15,8 +15,7 @@ use ployz_store::tools::cloud::{
     ServerReport, ServerState, ServersAnswer,
 };
 use ployz_store::tools::{
-    CloudQuery, Freshness, LogsQuery, ServerLogsQuery,
-    ServerName, ServerRef, Source, Timestamp,
+    CloudQuery, Freshness, LogsQuery, ServerLogsQuery, ServerName, ServerRef, Source, Timestamp,
 };
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;

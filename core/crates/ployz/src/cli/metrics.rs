@@ -40,18 +40,21 @@ pub(crate) fn report(live: &LiveMetrics, subject: &str) -> Table {
         }
     });
     table.row(["Containers".to_owned(), containers.len().to_string()]);
-    table.row(["CPU".to_owned(), shown(cpu.map(|cpu| format!("{cpu:.2} vCPU")))]);
+    table.row([
+        "CPU".to_owned(),
+        shown(cpu.map(|cpu| format!("{cpu:.2} vCPU"))),
+    ]);
     table.row(["Memory".to_owned(), shown(memory)]);
     for (metric, read) in [
-        ("Net in", (|container| container.rx) as fn(&LiveContainer) -> Option<u64>),
+        (
+            "Net in",
+            (|container| container.rx) as fn(&LiveContainer) -> Option<u64>,
+        ),
         ("Net out", |container| container.tx),
         ("Disk read", |container| container.io_r),
         ("Disk write", |container| container.io_w),
     ] {
-        table.row([
-            format!("{metric} (total)"),
-            shown(sum(read).map(bytes)),
-        ]);
+        table.row([format!("{metric} (total)"), shown(sum(read).map(bytes))]);
     }
     table
 }

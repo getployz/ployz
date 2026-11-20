@@ -119,17 +119,17 @@ impl VolumeSeries {
 }
 
 fn body(at: i64, volumes: &[VolumeIo], disk: Option<DiskBreakdown>) -> Value {
-    let attribute = |key: &str, value: &str| json!({ "key": key, "value": { "stringValue": value } });
+    let attribute =
+        |key: &str, value: &str| json!({ "key": key, "value": { "stringValue": value } });
     let point = |attributes: Vec<Value>, start: Option<i64>, value: u64| {
-        let mut point = json!({
-            "attributes": attributes,
-            "timeUnixNano": at.to_string(),
-            "asInt": value.to_string(),
-        });
+        let mut point = serde_json::Map::new();
+        point.insert("attributes".into(), json!(attributes));
+        point.insert("timeUnixNano".into(), json!(at.to_string()));
+        point.insert("asInt".into(), json!(value.to_string()));
         if let Some(start) = start {
-            point["startTimeUnixNano"] = json!(start.to_string());
+            point.insert("startTimeUnixNano".into(), json!(start.to_string()));
         }
-        point
+        Value::Object(point)
     };
     let volume_sum = |name: &str, bytes: fn(&DatasetIo) -> u64| {
         let points: Vec<Value> = volumes
@@ -220,8 +220,14 @@ mod tests {
             start_nanos,
             io,
         };
-        assert_eq!(series.read(1, datasets(io(10, 20))), [volume(1, io(10, 20))]);
-        assert_eq!(series.read(2, datasets(io(15, 25))), [volume(1, io(15, 25))]);
+        assert_eq!(
+            series.read(1, datasets(io(10, 20))),
+            [volume(1, io(10, 20))]
+        );
+        assert_eq!(
+            series.read(2, datasets(io(15, 25))),
+            [volume(1, io(15, 25))]
+        );
         assert_eq!(series.read(3, datasets(io(15, 4))), [volume(3, io(15, 4))]);
     }
 }

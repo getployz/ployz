@@ -17,7 +17,10 @@ const STATS_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl LocalDocker {
     /// A container Docker does not answer for in time is left out.
-    pub(crate) async fn live_stats(&self, scope: &MetricScope) -> Result<Vec<LiveContainer>, Error> {
+    pub(crate) async fn live_stats(
+        &self,
+        scope: &MetricScope,
+    ) -> Result<Vec<LiveContainer>, Error> {
         let mut filter = vec![
             labels::MANAGED.to_owned(),
             labels::SERVICE_ID.to_owned(),
@@ -28,18 +31,26 @@ impl LocalDocker {
             filter.push(format!("{}={}", labels::NAMESPACE, service.namespace));
             filter.push(format!("{}={}", labels::SERVICE_NAME, service.name));
         }
-        let containers = self.labelled(filter).await?.into_iter().filter_map(|(id, labelled)| {
-            if labelled.contains_key(labels::HOOK) {
-                return None;
-            }
-            let (_, service) = labels::service_pair(&labelled)?;
-            Some((id, service))
-        });
+        let containers = self
+            .labelled(filter)
+            .await?
+            .into_iter()
+            .filter_map(|(id, labelled)| {
+                if labelled.contains_key(labels::HOOK) {
+                    return None;
+                }
+                let (_, service) = labels::service_pair(&labelled)?;
+                Some((id, service))
+            });
         let read = join_all(containers.map(|(id, service)| self.read_stats(id, service))).await;
         Ok(read.into_iter().flatten().collect())
     }
 
-    async fn read_stats(&self, id: ContainerId, service: QualifiedService) -> Option<LiveContainer> {
+    async fn read_stats(
+        &self,
+        id: ContainerId,
+        service: QualifiedService,
+    ) -> Option<LiveContainer> {
         let options = StatsOptionsBuilder::default()
             .stream(false)
             .one_shot(false)
@@ -57,7 +68,11 @@ impl LocalDocker {
     }
 }
 
-fn live(container_id: ContainerId, service: QualifiedService, stats: &ContainerStatsResponse) -> LiveContainer {
+fn live(
+    container_id: ContainerId,
+    service: QualifiedService,
+    stats: &ContainerStatsResponse,
+) -> LiveContainer {
     let networks = stats.networks.as_ref();
     let network = |bytes: fn(&bollard::models::ContainerNetworkStats) -> Option<u64>| {
         networks.map(|networks| networks.values().filter_map(bytes).sum())
@@ -71,7 +86,12 @@ fn live(container_id: ContainerId, service: QualifiedService, stats: &ContainerS
             .map(|entries| {
                 entries
                     .iter()
-                    .filter(|entry| entry.op.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(op)))
+                    .filter(|entry| {
+                        entry
+                            .op
+                            .as_deref()
+                            .is_some_and(|name| name.eq_ignore_ascii_case(op))
+                    })
                     .filter_map(|entry| entry.value)
                     .sum()
             })
@@ -108,7 +128,9 @@ fn cpu(stats: &ContainerStatsResponse) -> Option<f64> {
         .as_ref()?
         .total_usage?
         .checked_sub(before.cpu_usage.as_ref()?.total_usage?)?;
-    let elapsed = now.system_cpu_usage?.checked_sub(before.system_cpu_usage?)?;
+    let elapsed = now
+        .system_cpu_usage?
+        .checked_sub(before.system_cpu_usage?)?;
     if elapsed == 0 {
         return None;
     }

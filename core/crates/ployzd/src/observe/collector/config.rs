@@ -144,13 +144,20 @@ mod tests {
         for file in [BASE, METRICS, mask.as_str()] {
             merge(&mut config, serde_norway::from_str(file).unwrap());
         }
-        let pipelines = config["service"]["pipelines"].as_mapping().unwrap();
+        let pipelines = config
+            .get("service")
+            .and_then(|service| service.get("pipelines"))
+            .and_then(Value::as_mapping)
+            .unwrap();
         assert!(pipelines.contains_key("metrics") && pipelines.contains_key("logs"));
         for (name, pipeline) in pipelines {
             for kind in ["receivers", "processors", "exporters"] {
-                for component in pipeline[kind].as_sequence().unwrap() {
+                for component in pipeline.get(kind).and_then(Value::as_sequence).unwrap() {
                     assert!(
-                        config[kind].get(component).is_some(),
+                        config
+                            .get(kind)
+                            .and_then(|defined| defined.get(component))
+                            .is_some(),
                         "pipeline {name:?} names {component:?}, which no file defines under {kind}"
                     );
                 }
