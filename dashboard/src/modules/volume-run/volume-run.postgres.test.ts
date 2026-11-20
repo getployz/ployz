@@ -215,7 +215,7 @@ describe("volume runs", () => {
   let storeProject: string;
   /** Runs once after the Store answers a namespaces read, as a write committed between that read and the next. */
   let afterNamespaces: (() => void) | null;
-  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete"; recorded_storage?: number }>;
+  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete"; recorded_storage?: number; born?: boolean }>;
   /** Every system event the Store recorded, and how it refuses the next one, if it does. */
   let storeEvents: SystemEvent[];
   let storeRefuse: ((event: SystemEvent) => InstanceType<typeof RpcError> | null) | null;
@@ -2366,6 +2366,21 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
       expect(await rows()).toMatchObject([{ state: "done", message: null }]);
+    });
+
+    it("mirror: a born Volume goes only to a Server that checks where its data began; a Legacy one goes anywhere", async () => {
+      storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 }, born: true }];
+      expect(await request({ kind: "mirror", args: { to: "fsn-2" } })).toEqual({ ok: false, busy: null, refusal: {
+        code: "upgrade_required", message: "Upgrade fsn-2 first. data needs a newer Ployz on every Server that holds it.", details: { servers: ["fsn-2"] },
+      } });
+      expect(await rows()).toEqual([]);
+
+      machines[1] = { name: "fsn-2", pool: true, copy: null, capabilities: [...ON_PLOYZ_04, requirements.volumeOrigin.capability] };
+      expect(await request({ kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+    });
+
+    it("mirror: a Legacy Volume mirrors onto a Server that can't check origins", async () => {
+      expect(await request({ kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
     });
 
     it("a plain sync row with one primary ends without touching a copy, since the mirror sync runs with no row", async () => {
