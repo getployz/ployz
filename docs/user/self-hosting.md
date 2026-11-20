@@ -224,9 +224,11 @@ In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 
 ## Keep logs, metrics and traces in Cloud (optional)
 
-By default your servers keep their own logs and metrics, and Ployz Cloud keeps none. To keep a
-copy in Ployz Cloud, turn on the `observe` profile. It adds ClickHouse and a Collector that take
-what your servers send over the same address they already use. Neither is published on a port.
+By default your servers keep their own logs and metrics, and Ployz Cloud keeps none. The
+`observe` profile adds ClickHouse and a Collector, so Cloud can keep a copy of the logs, metrics
+and traces a server sends to it over the address it already uses. Neither is published on a port.
+Servers don't send them yet, so turning the profile on prepares Cloud and collects nothing until
+they do.
 
 1. Set `CLICKHOUSE_PASSWORD` in `.env` to a generated secret:
 
@@ -244,8 +246,11 @@ what your servers send over the same address they already use. Neither is publis
    `ps` and `logs`, so they include the new services. Without the profile, a server that sends
    to your Cloud gets a `503` and keeps what it has.
 
-Ployz Cloud keeps each record for 30 days and files it under the organization that owns the
-server that sent it. A server can't claim another organization's name. Back up the
+Ployz Cloud keeps each record for 30 days from the time the server stamped on it, and files it
+under the organization that owns the server that sent it. A server can't claim another
+organization's name. Cloud answers a server once its Collector has taken a batch, before
+ClickHouse has written it, so a restart of the Collector or a long ClickHouse outage can lose
+batches a server believes were kept. Back up the
 `ployz-cloud-self-host_clickhouse-data` volume if you want to keep the history.
 
 Ployz masks the values it sealed from what a server sends, but only on a best-effort basis.

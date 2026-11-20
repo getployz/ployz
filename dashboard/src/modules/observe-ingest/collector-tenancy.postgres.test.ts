@@ -77,17 +77,19 @@ afterAll(async () => {
   }
 }, 60_000);
 
+const repeated = (key: string, value: string) => [1, 2, 3].map(() => ({ key, value: { stringValue: value } }));
+
 const forged = (body: string) => JSON.stringify({
   resourceLogs: [{
     resource: { attributes: [
       { key: "service.name", value: { stringValue: "web" } },
-      { key: "ployz.org", value: { stringValue: "victim-org" } },
-      { key: "ployz.retention_days", value: { stringValue: "9999" } },
+      ...repeated("ployz.org", "victim-org"),
+      ...repeated("ployz.retention_days", "9999"),
     ] },
     scopeLogs: [{ logRecords: [{
       timeUnixNano: `${Date.now()}000000`,
       body: { stringValue: body },
-      attributes: [{ key: "ployz.org", value: { stringValue: "victim-org" } }],
+      attributes: repeated("ployz.org", "victim-org"),
     }] }],
   }],
 });
@@ -109,4 +111,5 @@ it("files a record under the org Cloud stamped, never the one the sender claimed
     { Body: "unstamped", OrgId: "", RetentionDays: 30 },
   ]);
   expect(await query("SELECT count() AS n FROM otel.otel_logs WHERE OrgId = 'victim-org'")).toEqual([{ n: 0 }]);
+  expect(await query("SELECT count() AS n FROM otel.otel_logs WHERE has(mapValues(ResourceAttributes), 'victim-org') OR has(mapValues(LogAttributes), 'victim-org')")).toEqual([{ n: 0 }]);
 }, 120_000);

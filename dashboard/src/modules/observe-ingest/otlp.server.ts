@@ -51,7 +51,7 @@ export const forwardOtlp = Effect.fn("ObserveIngest.otlpForward")(function* (
   const encoding = headers.get("content-encoding")?.trim().toLowerCase();
   if (encoding !== undefined) {
     if (!ENCODINGS.has(encoding)) return badBody("OTLP bodies are gzip, zstd or uncompressed.");
-    forward.set("content-encoding", encoding);
+    if (encoding !== "identity") forward.set("content-encoding", encoding);
   }
   const upstream = yield* Effect.tryPromise({
     try: (signalAbort) => fetch(`${observeCollectorUrl.origin}/v1/${signal}`, {
