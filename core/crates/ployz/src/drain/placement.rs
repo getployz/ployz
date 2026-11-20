@@ -234,18 +234,24 @@ pub enum MoveFailure {
         detail: String,
     },
     /// The new Container on `to` never served. `replacement_removed` says none is left
-    /// there; otherwise it may still be.
+    /// there; otherwise it may still be. `replacement` says how.
     NotServing {
         from: MachineRef,
         to: MachineRef,
         detail: String,
         replacement_removed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        replacement: Option<Replacement>,
     },
     /// Cancelled before the new Container served.
     Cancelled {
         from: MachineRef,
         to: MachineRef,
         replacement_removed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        replacement: Option<Replacement>,
     },
     /// Another Container holds the replacement's slot on `to`: `occupant`, when the
     /// Server named it. Nothing was removed, since it may be another caller's.
@@ -267,23 +273,52 @@ pub enum MoveFailure {
     Unrecognized,
 }
 
+/// What a move that never served did with its new Container on `to`, as the drain saw it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Replacement {
+    /// `to` made none, or answered that none of it is left, so nothing was removed.
+    NoneLeft,
+    /// Removed by the ID `to` answered with.
+    Removed,
+    /// No answer said what the start made, so whatever held its slot on `to` was removed
+    /// by key. That may have been another caller's Container.
+    Discarded,
+    /// Kept on purpose, or its removal failed: it may still be on `to`.
+    Left,
+    /// A kind a later release added.
+    #[serde(other)]
+    Unrecognized,
+}
+
+impl Replacement {
+    /// Whether none of it is left on `to`, as `replacement_removed` says.
+    pub(crate) fn gone(self) -> bool {
+        match self {
+            Self::NoneLeft | Self::Removed | Self::Discarded => true,
+            Self::Left | Self::Unrecognized => false,
+        }
+    }
+}
+
 impl MoveFailure {
     pub(crate) fn of(error: MoveError, from: MachineRef, to: MachineRef) -> Self {
-        let MoveError {
-            end,
-            replacement_removed,
-        } = error;
+        let MoveError { end, replacement } = error;
+        let replacement_removed = replacement.gone();
+        let replacement = Some(replacement);
         match end {
             MoveEnd::NotServing { detail } => Self::NotServing {
                 from,
                 to,
                 detail,
                 replacement_removed,
+                replacement,
             },
             MoveEnd::Cancelled => Self::Cancelled {
                 from,
                 to,
                 replacement_removed,
+                replacement,
             },
             MoveEnd::NeedsUpgrade => Self::Refused {
                 from: Some(from),
@@ -732,7 +767,10 @@ pub(crate) async fn relocate<C: MachineOperations>(
         let removed = cleanup::remove(client, &new, AnonymousVolumes::Remove).await;
         return Err(MoveError {
             end: MoveEnd::NotServing { detail },
-            replacement_removed: matches!(removed, Ok(cleanup::Removal::Removed)),
+            replacement: match removed {
+                Ok(cleanup::Removal::Removed) => Replacement::Removed,
+                _ => Replacement::Left,
+            },
         });
     }
     let listed = cleanup::wait_listed(

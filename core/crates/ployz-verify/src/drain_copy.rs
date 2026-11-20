@@ -10,8 +10,8 @@
 //! - **Cleanup by the named ID.** After a definitive answer, the drain removes only the
 //!   Container a `Present` answer named. After `Absent` or a refusal it removes nothing, so a
 //!   refused occupant another caller made always survives. An answer is definitive when the
-//!   Machine gave it, as a typed answer or an error it marked as refused before acting, and
-//!   no earlier send of the start may have acted unanswered.
+//!   Machine gave it, as a typed answer or an error it raised before Docker's create, and no
+//!   earlier send of the start reached the handler and lost its answer.
 //! - **Nothing of ours is left.** A drain that ends without moving leaves no Container the
 //!   handler made in the slot, unless the handler made it after the drain's removal by key.
 //!
@@ -20,21 +20,26 @@
 //! - the handler, `MachineService::ensure` (ployzd/src/machine_api/local.rs), then
 //!   `converge_now` and `create_and_start` (ployzd/src/machine/local_machine/container.rs):
 //!   admission may refuse the request before anything else, as an error it marks as
-//!   refused before acting (`unacted`); otherwise it reads
+//!   refused before acting (`LocalMachineError::Unacted`); otherwise it reads
 //!   the slot and plans (`ContainerStep::{Done, Start, CreateAndStart}`), creates or adopts
 //!   the Container a name conflict finds, checks the image by ID (`image_differs`) before it
 //!   starts or answers, starts, then reads the Container it acted on (`container_now` of
-//!   `ContainerLocator::Id(acted)`) and answers. `Done` answers what its plan read. Its
-//!   start may be refused after the create (`start_checked`'s signer check), as an error
-//!   with no mark. One request, and one resend after a lost answer (`RestartTolerant`,
+//!   `ContainerLocator::Id(acted)`) and answers. `Done` answers what its plan read. A
+//!   signer removed while the image pulled refuses the create right before Docker makes it
+//!   (`still_holds` in `create_admitted`, ployzd/src/docker/lifecycle.rs), marked as
+//!   refused before acting. Its start may be refused after the create (`start_checked`'s
+//!   signer check), as an error with no mark. One request, and one resend after a lost
+//!   answer or a send the entry couldn't dial (`RestartTolerant`,
 //!   ployz/src/deploy/exec/transport.rs), which the entry may refuse to redial;
 //! - the planter, an ensure.v1 caller on the drain's key `move:{old}`, acting at most twice:
 //!   it creates and starts a Container of either spec and either image while the slot is
 //!   empty, stops the slot's Container by ID, or removes it by key;
 //! - the drain, `move_container` (ployz/src/deploy/exec/start.rs): it sends, may cancel
-//!   before the answer, reads what each send heard (`heard` in transport.rs), waits out
-//!   health, and cleans up by the `Outcome` that `ployz_decide::drain_start::Outcome::of`
-//!   builds from its last send and the sends before it, which the model calls.
+//!   before the answer, reads what each failed send did from its error, waits out health,
+//!   and cleans up by the `Outcome` that `ployz_decide::drain_start::Outcome::of` builds
+//!   from its last send and the sends before it. The model calls both: `Failed::of` on the
+//!   error each failed send carries, as the entry or the handler words it, and
+//!   `Outcome::of`.
 //!
 //! Bounds: one destination slot, Container IDs up to 4, two specs, two images.
 //!
@@ -46,7 +51,8 @@
 
 use std::fmt::Write as _;
 
-use ployz_decide::drain_start::{Earlier, Heard, Outcome};
+use ployz_core::{RpcError, RpcErrorCode};
+use ployz_decide::drain_start::{Earlier, Failed, Heard, Outcome};
 use stateright::{Model, Property};
 
 /// The spec a Container was made from: the drain's own, or another.
@@ -96,6 +102,9 @@ enum Refusal {
 enum Erred {
     /// Admission refused the request before the slot was read, and marked the error so.
     Admission,
+    /// The signer was removed while the image pulled, so the create was refused right
+    /// before Docker made it, by an error marked so.
+    BeforeCreate,
     /// The start was refused after the create, by an error that names its gate but carries
     /// no mark.
     AfterCreate,
@@ -208,6 +217,9 @@ struct State {
     wrong_start: bool,
     /// The handler made a Container after the drain removed by key.
     made_after_discard: bool,
+    /// A send reached the handler and its answer was lost, so it may have acted: what the
+    /// drain's `earlier` must say, whatever its errors told it.
+    lost_after_reaching: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -225,6 +237,12 @@ enum Action {
     Handler,
     /// Admission refuses the request.
     Refuse,
+    /// The signer is removed while the image pulls: the create is refused before Docker
+    /// makes anything.
+    RefuseBeforeCreate,
+    /// The entry can't dial the destination, so the request never reaches the handler;
+    /// `RestartTolerant` resends once.
+    Undial,
     /// `start_checked` refuses the start after the create.
     RefuseStart,
     /// The entry refuses to dial again, so the resend never leaves.
@@ -248,6 +266,31 @@ struct Switches {
     reply: ReplyBy,
     check: Check,
     cleanup: Cleanup,
+    marks: Marks,
+    dial: Dial,
+}
+
+/// Which errors the handler marks as raised before it acted.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+enum Marks {
+    /// Admission's, and the signer check right before Docker's create
+    /// (`LocalMachineError::Unacted` through `CreateFailure::unacted`).
+    #[default]
+    BeforeCreate,
+    /// Admission's only: the signer check before the create answers unmarked.
+    AdmissionOnly,
+    /// None.
+    Nothing,
+}
+
+/// What the client keeps of an entry that couldn't dial the destination.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+enum Dial {
+    /// The router's mark, kept as `undialed` by `answered_by`.
+    #[default]
+    Kept,
+    /// Dropped: the error says only that the Machine didn't answer.
+    Dropped,
 }
 
 /// What the final read names.
@@ -282,8 +325,6 @@ enum Cleanup {
     BySlot,
     /// As `ByAnswer`, and also removes the occupant a refusal names.
     RefusedOccupant,
-    /// As `ByAnswer`, but an error that refused the request is read as no answer.
-    RefusalAsUnanswered,
     /// As `ByAnswer`, but any error that names its gate is read as a refusal, marked or not.
     GateAsRefusal,
     /// As `ByAnswer`, but only the last send counts, as if no earlier one had been lost.
@@ -300,6 +341,17 @@ const REPLY_IS_OURS: &str =
 const NO_WRONG_START: &str = "the handler never starts a Container that runs another image";
 const CLEANUP_BY_ID: &str =
     "after a definitive answer the drain removes only the Container a Present answer named";
+
+/// The error a gate refusing a deploy's signer words, as `local_failure` sends it for
+/// `DeployRefused`: it names its capability, and is marked only when `marked`.
+fn gated(marked: bool) -> RpcError {
+    let error = RpcError::new(
+        RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        "the spec's signer is no longer trusted here",
+    )
+    .with_details(serde_json::json!({ "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY }));
+    if marked { error.unacted() } else { error }
+}
 const NOTHING_LEFT: &str =
     "a drain that ends without moving leaves no Container the handler made in the slot";
 
@@ -469,23 +521,39 @@ impl DrainCopy {
         })
     }
 
-    /// What the drain's last send heard, as `move_container` and `heard` read it.
+    /// What the drain's last send heard, as `move_container` reads it.
     fn heard(&self, answer: Option<Answer>) -> Heard<u8> {
-        let cleanup = self.switches.cleanup;
-        match answer {
-            None => Heard::Unanswered,
-            Some(Answer::Present { id, .. }) => Heard::Present(id),
-            Some(Answer::Absent) => Heard::Absent,
-            Some(Answer::Refused { .. }) => Heard::Refused,
-            Some(Answer::Error(Erred::Admission)) if cleanup == Cleanup::RefusalAsUnanswered => {
-                Heard::Unanswered
-            }
-            Some(Answer::Error(Erred::Admission)) => Heard::Refused,
-            Some(Answer::Error(Erred::AfterCreate)) if cleanup == Cleanup::GateAsRefusal => {
-                Heard::Refused
-            }
-            Some(Answer::Error(Erred::AfterCreate)) => Heard::Unanswered,
-            Some(Answer::Error(Erred::Redial)) => Heard::Unsent,
+        let marks = self.switches.marks;
+        let error = match answer {
+            None => return Heard::Unanswered,
+            Some(Answer::Present { id, .. }) => return Heard::Present(id),
+            Some(Answer::Absent) => return Heard::Absent,
+            Some(Answer::Refused { .. }) => return Heard::Refused,
+            // The resend never left: the start's last send is the lost one before it,
+            // which `earlier` holds already.
+            Some(Answer::Error(Erred::Redial)) => return Heard::Unsent,
+            Some(Answer::Error(Erred::Admission)) => gated(marks != Marks::Nothing),
+            Some(Answer::Error(Erred::BeforeCreate)) => gated(marks == Marks::BeforeCreate),
+            Some(Answer::Error(Erred::AfterCreate)) => gated(false),
+        };
+        if self.switches.cleanup == Cleanup::GateAsRefusal
+            && error.details.get("capability").is_some()
+        {
+            return Heard::Refused;
+        }
+        Failed::of(&error).into()
+    }
+
+    /// The error the drain gets for a send the entry couldn't dial, as `answered_by` words
+    /// the router's status.
+    fn undialed(&self) -> RpcError {
+        let silent = RpcError::unanswered_target(
+            RpcErrorCode::Unavailable,
+            "Machine 2 did not answer: connection refused".into(),
+        );
+        match self.switches.dial {
+            Dial::Kept => silent.undialed_target(),
+            Dial::Dropped => silent,
         }
     }
 
@@ -557,6 +625,7 @@ impl Model for DrainCopy {
             },
             wrong_start: false,
             made_after_discard: false,
+            lost_after_reaching: false,
         }]
     }
 
@@ -580,11 +649,16 @@ impl Model for DrainCopy {
             Step::Answer => actions.extend([Action::Deliver, Action::Lose]),
             Step::Plan => {
                 actions.extend([Action::Handler, Action::Refuse]);
-                if state.handler.run == 2 {
-                    actions.push(Action::RefuseRedial);
+                match state.handler.run {
+                    1 => actions.push(Action::Undial),
+                    _ => actions.push(Action::RefuseRedial),
                 }
             }
             Step::Start { .. } => actions.extend([Action::Handler, Action::RefuseStart]),
+            // `still_holds` runs only when no Container of the key was found to adopt.
+            Step::Create if state.slot.is_none() => {
+                actions.extend([Action::Handler, Action::RefuseBeforeCreate]);
+            }
             Step::Create | Step::Check { .. } => actions.push(Action::Handler),
         }
         if state.planter_acts < 2 {
@@ -620,6 +694,15 @@ impl Model for DrainCopy {
                 state.handler.erred = Some(Erred::Admission);
                 state.handler.step = Step::Answer;
             }
+            Action::RefuseBeforeCreate => {
+                state.handler.erred = Some(Erred::BeforeCreate);
+                state.handler.step = Step::Answer;
+            }
+            // The handler never got the request; the resend is its first.
+            Action::Undial => {
+                state.handler.run = 2;
+                state.drain.earlier = state.drain.earlier.then(Failed::of(&self.undialed()));
+            }
             // The created Container stays, not started.
             Action::RefuseStart => {
                 state.handler.erred = Some(Erred::AfterCreate);
@@ -645,7 +728,8 @@ impl Model for DrainCopy {
                         planned: None,
                     };
                     // The lost send may have acted; the resend's answer speaks only for itself.
-                    state.drain.earlier = state.drain.earlier.then(&Heard::<u8>::Unanswered);
+                    state.drain.earlier = state.drain.earlier.then(Failed::Unanswered);
+                    state.lost_after_reaching = true;
                 } else {
                     handler.step = Step::Done;
                     let heard = if action == Action::Deliver {
@@ -703,14 +787,14 @@ impl Model for DrainCopy {
             Property::always(NO_WRONG_START, |_, state: &State| !state.wrong_start),
             Property::always(CLEANUP_BY_ID, |_, state: &State| {
                 let drain = state.drain;
-                let definitive = drain.earlier == Earlier::Nothing
+                let definitive = !state.lost_after_reaching
                     && matches!(
                         drain.answer,
                         Some(
                             Answer::Present { .. }
                                 | Answer::Absent
                                 | Answer::Refused { .. }
-                                | Answer::Error(Erred::Admission)
+                                | Answer::Error(Erred::Admission | Erred::BeforeCreate)
                         )
                     );
                 match (drain.answer, drain.removal) {
@@ -763,6 +847,24 @@ impl Model for DrainCopy {
                         && state.drain.earlier == Earlier::Nothing
                         && state.drain.phase == Phase::Finished
                         && state.slot.is_some_and(|o| o.made_by == Maker::Planter)
+                },
+            ),
+            Property::sometimes(
+                "a signer removed before the create leaves the planter's Container in place",
+                |_, state: &State| {
+                    state.drain.answer == Some(Answer::Error(Erred::BeforeCreate))
+                        && state.drain.phase == Phase::Finished
+                        && state.slot.is_some_and(|o| o.made_by == Maker::Planter)
+                },
+            ),
+            Property::sometimes(
+                "a refusal after a send the entry couldn't dial leaves the occupant in place",
+                |_, state: &State| {
+                    matches!(state.drain.answer, Some(Answer::Refused { occupant: Some(id), .. })
+                        if state.handler.run == 2
+                            && !state.lost_after_reaching
+                            && state.drain.phase == Phase::Finished
+                            && state.container(id).is_some_and(|o| o.made_by == Maker::Planter))
                 },
             ),
             Property::sometimes(
@@ -848,9 +950,12 @@ fn reads_as(action: Action, before: &State) -> String {
     match action {
         Action::Send => "drain: move_container sends the start (ensure_new)".to_owned(),
         Action::Cancel => "drain: cancelled before any answer".to_owned(),
-        Action::Refuse => {
-            "handler: admit_spec refuses the request, marked as refused before acting".to_owned()
+        // Whether the refusal carries its mark depends on the switches.
+        Action::Refuse => "handler: admit_spec refuses the request before acting".to_owned(),
+        Action::RefuseBeforeCreate => {
+            "handler: still_holds refuses the create right before Docker".to_owned()
         }
+        Action::Undial => "entry: can't dial the destination; the drain resends".to_owned(),
         Action::RefuseStart => {
             "handler: start_checked refuses the start after the create, unmarked".to_owned()
         }
@@ -907,10 +1012,11 @@ mod tests {
 
     /// As shipped, every property holds and every `sometimes` is reached: a fresh answer,
     /// a resend that adopts its own Container, an Absent answer beside the planter's
-    /// Container, a refusal that leaves the planter's occupant, an admission refusal that
-    /// leaves the planter's Container, a refused redial and a start refused after its
-    /// create that each remove the start's Container by key, and a late create after a
-    /// removal by key.
+    /// Container, a refusal that leaves the planter's occupant, an admission refusal and a
+    /// signer removed before the create that each leave the planter's Container, a refusal
+    /// after a send the entry couldn't dial that leaves the occupant, a refused redial and
+    /// a start refused after its create that each remove the start's Container by key, and
+    /// a late create after a removal by key.
     #[test]
     fn the_drain_s_start_answers_and_cleans_up_only_its_own_container() {
         let checker = check(switched(Switches::default()));
@@ -1009,7 +1115,7 @@ mod tests {
     #[test]
     fn a_refusal_read_as_no_answer_removes_another_caller_s_container() {
         let model = switched(Switches {
-            cleanup: Cleanup::RefusalAsUnanswered,
+            marks: Marks::Nothing,
             ..Switches::default()
         });
         let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
@@ -1057,5 +1163,51 @@ mod tests {
         );
         assert_eq!(last.drain.answer, Some(Answer::Error(Erred::AfterCreate)));
         assert_eq!(last.drain.removal, None);
+    }
+
+    /// Left unmarked, the signer check right before Docker's create reads as no answer:
+    /// the drain removes by key, which takes the Container the planter made after it.
+    #[test]
+    fn a_refusal_before_the_create_left_unmarked_removes_another_caller_s_container() {
+        let model = switched(Switches {
+            marks: Marks::AdmissionOnly,
+            ..Switches::default()
+        });
+        let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
+            let last = last(path);
+            last.drain.answer == Some(Answer::Error(Erred::BeforeCreate))
+                && matches!(last.drain.removal, Some((Removal::Key, Some(_))))
+        });
+        println!(
+            "{CLEANUP_BY_ID} fails on an unmarked refusal before the create:\n{}",
+            model.story(&path)
+        );
+        let last = last(&path);
+        assert!(matches!(last.drain.removal, Some((Removal::Key, Some(_)))));
+        assert!(last.slot.is_none());
+    }
+
+    /// Without the entry's word that it couldn't dial, a send that never reached the
+    /// handler reads as one that may have acted. The resend's refusal then removes by key
+    /// and takes the occupant it named.
+    #[test]
+    fn a_send_the_entry_could_not_dial_read_as_unanswered_removes_the_occupant() {
+        let model = switched(Switches {
+            dial: Dial::Dropped,
+            ..Switches::default()
+        });
+        let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
+            let last = last(path);
+            matches!(last.drain.answer, Some(Answer::Refused { .. }))
+                && last.handler.first_made.is_none()
+        });
+        println!(
+            "{CLEANUP_BY_ID} fails when the failed dial is forgotten:\n{}",
+            model.story(&path)
+        );
+        let last = last(&path);
+        assert_eq!(last.drain.earlier, Earlier::MaybeActed);
+        assert!(!last.lost_after_reaching);
+        assert!(matches!(last.drain.removal, Some((Removal::Key, Some(_)))));
     }
 }

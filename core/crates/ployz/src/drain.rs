@@ -40,7 +40,7 @@ use placement::{Converged, LastIn, Moving, can_move, converge, named};
 use retirement::{Retirement, let_go, retire_globals};
 
 pub use placement::{
-    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
+    DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, Replacement, StayReason, Unconfirmed,
 };
 
 /// Which user Services a Drain acts on. Those of reserved Namespaces never are.

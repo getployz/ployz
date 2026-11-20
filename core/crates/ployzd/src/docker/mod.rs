@@ -74,7 +74,9 @@ use recovery::IngressRecovery;
 
 pub(crate) use create::container_log_config;
 use create::effective_healthcheck;
-pub(crate) use lifecycle::{ContainerCreated, ContainerRequest, require_eligible, same_creation};
+pub(crate) use lifecycle::{
+    ContainerCreated, ContainerRequest, CreateFailure, require_eligible, same_creation,
+};
 pub use limits::UnappliedLimits;
 pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;

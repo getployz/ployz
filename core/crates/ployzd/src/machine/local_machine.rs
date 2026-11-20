@@ -217,6 +217,10 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+    /// This Machine refused the call with `0` before it acted on anything, so the call
+    /// made no Container. Its answer is `0`'s, marked so.
+    #[error(transparent)]
+    Unacted(Box<Error>),
     #[error("at least one Machine update is required")]
     EmptyUpdate,
     #[error("push target {0}")]
@@ -327,6 +331,24 @@ pub enum Error {
     Sealing(#[from] SealingError),
     #[error(transparent)]
     Recovery(#[from] RecoveryError),
+}
+
+impl Error {
+    /// `self`, refused before the call acted on anything: see [`Self::Unacted`].
+    #[must_use]
+    pub(crate) fn unacted(self) -> Self {
+        if matches!(self, Self::Unacted(_)) {
+            self
+        } else {
+            Self::Unacted(Box::new(self))
+        }
+    }
+}
+
+impl crate::docker::CreateFailure for Error {
+    fn unacted(self) -> Self {
+        Self::unacted(self)
+    }
 }
 
 impl LocalMachine {
@@ -563,9 +585,20 @@ impl LocalMachine {
         G: Send + 'static,
     {
         let installation = self.admit_installation()?;
+        self.spawn_admitted((turn, installation), work).await
+    }
+
+    /// Run `work` detached, holding `held` (its turn and installation guard) until it ends.
+    async fn spawn_admitted<T, F, Fut, G>(&self, held: G, work: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(Admission) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+        G: Send + 'static,
+    {
         let admission = Admission(self.clone());
         tokio::spawn(async move {
-            let _held = (turn, installation);
+            let _held = held;
             work(admission).await
         })
         .await?

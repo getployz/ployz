@@ -1,6 +1,8 @@
 //! What a drain's start of its new copy on the destination says of that Server, read from
 //! every send of it, and so what the drain removes after the start failed.
 
+use ployz_core::{ENSURE_PINNED_CONTAINER_CAPABILITY, RpcError};
+
 /// What one send of the start heard back.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Heard<Id> {
@@ -19,6 +21,51 @@ pub enum Heard<Id> {
     Unanswered,
 }
 
+/// What a send that failed with an error did on the Machine, as far as the error tells.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Failed {
+    /// The Machine's own word that it made nothing: an error it marked as refused before
+    /// it acted, or its refusal of the pinned route itself.
+    Refused,
+    /// The send never reached the Machine: it never left this client, or the entry
+    /// couldn't dial the Machine.
+    Unsent,
+    /// The send may have reached the Machine and nothing says what it did.
+    Unanswered,
+}
+
+impl Failed {
+    /// What `error` says its send did. Only the Machine's own word that it acted on nothing,
+    /// or a send that never reached it, says nothing was made; any other error may follow
+    /// work the Machine did.
+    #[must_use]
+    pub fn of(error: &RpcError) -> Self {
+        if error.reply_lost() {
+            Self::Unanswered
+        } else if error.never_reached() || error.on_closed_session() || error.undialed() {
+            Self::Unsent
+        } else if error.never_acted()
+            || error
+                .refusal()
+                .is_some_and(|refusal| refusal.capability == ENSURE_PINNED_CONTAINER_CAPABILITY)
+        {
+            Self::Refused
+        } else {
+            Self::Unanswered
+        }
+    }
+}
+
+impl<Id> From<Failed> for Heard<Id> {
+    fn from(failed: Failed) -> Self {
+        match failed {
+            Failed::Refused => Self::Refused,
+            Failed::Unsent => Self::Unsent,
+            Failed::Unanswered => Self::Unanswered,
+        }
+    }
+}
+
 /// What the start's sends before its last one may have done.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum Earlier {
@@ -31,12 +78,12 @@ pub enum Earlier {
 }
 
 impl Earlier {
-    /// `self`, after a send that heard `heard` and was sent again.
+    /// `self`, after a send that failed as `failed` and was sent again.
     #[must_use]
-    pub fn then<Id>(self, heard: &Heard<Id>) -> Self {
-        match heard {
-            Heard::Unanswered => Self::MaybeActed,
-            Heard::Present(_) | Heard::Absent | Heard::Refused | Heard::Unsent => self,
+    pub fn then(self, failed: Failed) -> Self {
+        match failed {
+            Failed::Unanswered => Self::MaybeActed,
+            Failed::Refused | Failed::Unsent => self,
         }
     }
 }
@@ -45,8 +92,10 @@ impl Earlier {
 /// before it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Outcome<Id> {
-    /// The Container the answer named. A resend that finds the Container a lost send made
-    /// adopts it by its creation key, so this names it too.
+    /// The Container the latest answer named, which a failed start removes by this ID. A
+    /// resend adopts whatever Container of the same spec holds its creation key: the one a
+    /// lost send made while it is still there, or another caller's that replaced it. So this
+    /// is the ID the Machine acted on last, not proof of what an earlier send made.
     Present(Id),
     /// Nothing of this start is left: the Container it acted on is gone.
     Absent,
@@ -57,9 +106,9 @@ pub enum Outcome<Id> {
 }
 
 impl<Id> Outcome<Id> {
-    /// The outcome of a start whose last send heard `last`. Only `Present` speaks for a send
-    /// before it that may have acted unanswered: an answer that made nothing says nothing
-    /// of what that send made.
+    /// The outcome of a start whose last send heard `last`. After a send that may have acted
+    /// unanswered, only `Present` stands: it names the Container in the slot the drain
+    /// removes by ID. An answer that made nothing says nothing of what that send made.
     #[must_use]
     pub fn of(earlier: Earlier, last: Heard<Id>) -> Self {
         match (earlier, last) {

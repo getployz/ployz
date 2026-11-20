@@ -3,11 +3,12 @@ use super::machine_ops::CopyLifecycle;
 use super::machine_ops::Creation;
 use super::machine_ops::MachineOperations;
 use super::stop_first::{Withdrawn, leave_unstopped};
-use super::transport::{RESTART_WAIT, RestartTolerant, heard};
+use super::transport::{Failure, RESTART_WAIT, RestartTolerant};
 use super::{Left, Rows, SlotPolicy, left_by, machine_error, stop};
 use crate::connect::{ConnectError, TransportError};
 use crate::deploy::cleanup::EmptyPolicy;
 use crate::deploy::progress::Progress;
+use crate::drain::Replacement;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
     ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
@@ -152,12 +153,11 @@ pub(super) async fn remove_stray<C: MachineOperations>(
     rows.leave_unrouted(progress, service, *machine_id, container_id, error);
 }
 
-/// Why a move's replacement never served, and whether none of it is left on its
-/// destination; otherwise it may still be there.
+/// Why a move's replacement never served, and what the move did with it.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct MoveError {
     pub(crate) end: MoveEnd,
-    pub(crate) replacement_removed: bool,
+    pub(crate) replacement: Replacement,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -222,7 +222,11 @@ pub(crate) async fn move_container<C: MachineOperations>(
         Err(error) => {
             return Err(MoveError {
                 end: machine_error(MachineAction::InspectContainer, error).into(),
-                replacement_removed: !adopts,
+                replacement: if adopts {
+                    Replacement::Left
+                } else {
+                    Replacement::NoneLeft
+                },
             });
         }
     };
@@ -308,20 +312,18 @@ pub(crate) async fn move_container<C: MachineOperations>(
             machine_error(MachineAction::CreateContainer, error).into(),
             Heard::Unsent,
         ),
-        Some(Err(error))
+        // The reported error may be an earlier send's: what is left follows the last send.
+        Some(Err(Failure { error, last }))
             if error.refusal().is_some_and(|refusal| {
                 refusal.capability == ENSURE_PINNED_CONTAINER_CAPABILITY
             }) =>
         {
-            (MoveEnd::NeedsUpgrade, heard(&error))
+            (MoveEnd::NeedsUpgrade, last.into())
         }
-        Some(Err(error)) => {
-            let heard = heard(&error);
-            (
-                machine_error(MachineAction::CreateContainer, error).into(),
-                heard,
-            )
-        }
+        Some(Err(Failure { error, last })) => (
+            machine_error(MachineAction::CreateContainer, error).into(),
+            last.into(),
+        ),
         None => (MoveEnd::Cancelled, Heard::Unanswered),
     };
     let outcome = Outcome::of(earlier, heard);
@@ -333,9 +335,9 @@ pub(crate) async fn move_container<C: MachineOperations>(
         end
     };
     let keep = adopts || (global && !cancellation.is_cancelled());
-    let replacement_removed = match outcome {
-        Outcome::Absent | Outcome::Refused => true,
-        _ if keep => false,
+    let replacement = match outcome {
+        Outcome::Absent | Outcome::Refused => Replacement::NoneLeft,
+        _ if keep => Replacement::Left,
         Outcome::Present(id) => {
             let removed = cleanup::gone(
                 &client,
@@ -346,17 +348,17 @@ pub(crate) async fn move_container<C: MachineOperations>(
                 None,
             );
             // Unanswered for as long as a restart takes, the replacement may remain.
-            matches!(
-                tokio::time::timeout(RESTART_WAIT, removed).await,
-                Ok(Ok(cleanup::Gone::Removed))
-            )
+            match tokio::time::timeout(RESTART_WAIT, removed).await {
+                Ok(Ok(cleanup::Gone::Removed)) => Replacement::Removed,
+                _ => Replacement::Left,
+            }
         }
-        Outcome::Unknown => discard_attempt(&client, to, slot).await.is_ok(),
+        Outcome::Unknown => match discard_attempt(&client, to, slot).await {
+            Ok(()) => Replacement::Discarded,
+            Err(_) => Replacement::Left,
+        },
     };
-    Err(MoveError {
-        end,
-        replacement_removed,
-    })
+    Err(MoveError { end, replacement })
 }
 
 /// `end`, for a move one of whose sends may have made a Container: a refusal of a later

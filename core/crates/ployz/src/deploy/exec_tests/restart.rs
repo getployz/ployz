@@ -283,7 +283,7 @@ async fn cancelling_a_deploy_ends_a_redial_still_dialing() {
     .await
     .unwrap_err();
 
-    assert!(crate::connect::on_closed_session(&error));
+    assert!(error.on_closed_session());
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "{:?}",

@@ -14,10 +14,27 @@ use ployz_core::{
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::deploy::{DeployOutcome, FailedOperation};
 
+use super::machine_ops::RedialFailure;
 use super::machine_ops::{DeployOperations, Listed, omission_requires_observation};
-use super::transport::{RESTART_POLL, RESTART_WAIT, wait_out_restart};
+use super::transport::{RESTART_POLL, RESTART_WAIT, sends_out_restart};
 use super::*;
 use crate::deploy::cleanup::ACK_POLL;
+
+/// `op`'s answer, sent again while the Machine restarts, as any resent call reports it.
+async fn wait_out_restart<T, Fut, Redial>(
+    cancellation: &CancellationToken,
+    op: impl FnMut() -> Fut,
+    redial: impl FnMut() -> Redial,
+) -> Result<T, RpcError>
+where
+    Fut: std::future::Future<Output = Result<T, RpcError>>,
+    Redial: std::future::Future<Output = Option<Result<(), RedialFailure>>>,
+{
+    sends_out_restart(cancellation, op, redial)
+        .await
+        .0
+        .map_err(|failure| failure.error)
+}
 
 fn test_namespace() -> Namespace {
     Namespace::parse("app").unwrap()
@@ -105,6 +122,8 @@ enum Reply {
     CreatedAfter(ContainerId, fn() -> tokio::time::Sleep),
     /// Absent once the test's own delay ends.
     OkAfter(fn() -> tokio::time::Sleep),
+    /// This error once the test's own delay ends.
+    ErrorAfter(RpcError, fn() -> tokio::time::Sleep),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -928,6 +947,7 @@ impl Scripted {
                     Reply::Listed(_)
                     | Reply::CreatedAfter(..)
                     | Reply::OkAfter(_)
+                    | Reply::ErrorAfter(..)
                     | Reply::Observed(..)
                     | Reply::ObservedDoor(..)
                     | Reply::Refused(..) => {
@@ -1085,6 +1105,7 @@ impl Scripted {
             Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedAfter(id, _) => Some(*id),
             Reply::Ok
             | Reply::OkAfter(_)
+            | Reply::ErrorAfter(..)
             | Reply::Listed(_)
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
@@ -1127,6 +1148,10 @@ impl Scripted {
                 ensured(ContainerNow::Absent { of }, None)
             }
             Reply::Error(error) => Err(error),
+            Reply::ErrorAfter(error, delay) => {
+                delay().await;
+                Err(error)
+            }
             Reply::Refused(reason, occupant) => Ok(EnsuredContainer::Refused {
                 now: occupant.map_or(ContainerNow::Absent { of }, |id| present(&id)),
                 refusal: refusal(reason, "refused"),
@@ -1224,6 +1249,7 @@ impl CopyLifecycle for Scripted {
             | Reply::Settled(..)
             | Reply::CreatedAfter(..)
             | Reply::OkAfter(_)
+            | Reply::ErrorAfter(..)
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
             | Reply::Pending
@@ -1411,6 +1437,7 @@ impl CopyLifecycle for Scripted {
             | Reply::Settled(..)
             | Reply::CreatedAfter(..)
             | Reply::OkAfter(_)
+            | Reply::ErrorAfter(..)
             | Reply::Refused(..) => {
                 panic!("scripted inspect requires Observed or Error")
             }
@@ -1539,6 +1566,7 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::Settled(..)
         | Reply::CreatedAfter(..)
         | Reply::OkAfter(_)
+        | Reply::ErrorAfter(..)
         | Reply::Observed(..)
         | Reply::ObservedDoor(..)
         | Reply::Pending

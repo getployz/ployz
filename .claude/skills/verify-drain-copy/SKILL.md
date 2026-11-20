@@ -1,23 +1,23 @@
 ---
 name: verify-drain-copy
-description: Model-check a drain's start of its new copy on the destination Server (the handler's plan, create or adopt, image check by ID, start and final read, another ensure.v1 caller on the same slot key, and the drain's cancel, resend and cleanup by answer class) with the Stateright model in core/crates/ployz-verify/src/drain_copy.rs. Use when a change touches converge_now, create_and_start, image_differs or pinned in core/crates/ployzd/src/machine/local_machine/container.rs, ensure, ensure_pinned_container, pin_on_ensure or pinned_shape in core/crates/ployzd/src/machine_api/local.rs, unacted in core/crates/ployzd/src/machine_api/local.rs, move_container, unsettled or MoveEnd in core/crates/ployz/src/deploy/exec/start.rs, Heard, Earlier or Outcome in core/crates/ployz-decide/src/drain_start.rs, ensure_new in core/crates/ployz/src/deploy/exec/machine_ops.rs, or heard, sends_out_restart, ensure_new_sent or the ensure_new row in core/crates/ployz/src/deploy/exec/transport.rs.
+description: Model-check a drain's start of its new copy on the destination Server (the handler's plan, create or adopt, image check by ID, start and final read, another ensure.v1 caller on the same slot key, and the drain's cancel, resend and cleanup by answer class) with the Stateright model in core/crates/ployz-verify/src/drain_copy.rs. Use when a change touches converge_now, create_and_start, create_refusal, image_differs or pinned in core/crates/ployzd/src/machine/local_machine/container.rs, create_with_admission, create_admitted or CreateFailure in core/crates/ployzd/src/docker/lifecycle.rs, LocalMachineError::Unacted, ensure, ensure_pinned_container, pin_on_ensure, pinned_shape or local_failure in core/crates/ployzd/src/machine_api/local.rs, answered_by in core/crates/ployz/src/cluster.rs, move_container, unsettled or MoveEnd in core/crates/ployz/src/deploy/exec/start.rs, Heard, Failed, Earlier or Outcome in core/crates/ployz-decide/src/drain_start.rs, ensure_new in core/crates/ployz/src/deploy/exec/machine_ops.rs, or sends_out_restart, Failure, ensure_new_sent or the ensure_new row in core/crates/ployz/src/deploy/exec/transport.rs.
 ---
 
 # Verify drain copy
 
 The model in `core/crates/ployz-verify/src/drain_copy.rs` explores every interleaving of one drain starting its new copy on the destination. Three actors take turns, one step at a time:
 
-- **the handler** (`MachineService::ensure`, then `converge_now` and `create_and_start`) may be refused at admission before it reads anything, as an error it marks as refused before acting (`"acted": false`). Otherwise it plans from the slot, creates or adopts what a name conflict finds, checks the image by ID, starts, reads the Container it acted on, and answers. Its start may be refused after the create, as an error with no mark. A `Done` plan answers what the plan read. It runs once, and again after a lost answer, unless the entry refuses to dial again for the resend;
+- **the handler** (`MachineService::ensure`, then `converge_now` and `create_and_start`) may be refused at admission before it reads anything, as an error it marks as refused before acting (`"acted": false`). Otherwise it plans from the slot, creates or adopts what a name conflict finds, checks the image by ID, starts, reads the Container it acted on, and answers. A signer removed while the image pulled refuses the create right before Docker makes it, marked too. Its start may be refused after the create, as an error with no mark. A `Done` plan answers what the plan read. It runs once, and again after a lost answer or a first send the entry couldn't dial, unless the entry refuses to dial again for the resend;
 - **the planter**, another ensure.v1 caller on the drain's slot key `move:{old}`, acts at most twice. It creates and starts a Container of either spec and either image, stops the slot's Container, or removes it by key;
 - **the drain** (`move_container`) sends, may cancel before the answer, waits out health, and cleans up by its `Outcome`, built from its last send and whether an earlier send may have acted unanswered.
 
-The drain's cleanup decision is the real code: the model calls `ployz_decide::drain_start::Outcome::of`, as `move_container` does. The handler's steps and the drain's reading of what each send heard (`heard` in transport.rs) are a hand copy, so they drift unless you keep them in step.
+The drain's reading of each failed send and its cleanup decision are the real code: the model calls `ployz_decide::drain_start::Failed::of` on the error each failed send carries, and `Outcome::of`, as `move_container` does. The handler's steps and the wording of each error (the daemon's mark, `answered_by`'s undialed mark) are a hand copy, so they drift unless you keep them in step.
 
 The four properties:
 
 - **The reply is ours.** Every `Present` answer names the Container this run made or adopted, from the drain's spec, on the pinned image.
 - **No wrong start.** The handler never starts a stopped Container that runs another image.
-- **Cleanup by the named ID.** After a definitive answer, the drain removes only the Container a `Present` answer named. After `Absent` or a refusal, an admission refusal included, it removes nothing. An answer is definitive when the Machine gave it, as a typed answer or a marked error, and no earlier send may have acted unanswered.
+- **Cleanup by the named ID.** After a definitive answer, the drain removes only the Container a `Present` answer named. After `Absent` or a refusal, an admission refusal included, it removes nothing. An answer is definitive when the Machine gave it, as a typed answer or an error raised before Docker's create, and no earlier send reached the handler and lost its answer. The model judges that from what happened, not from what the drain's errors told it.
 - **Nothing of ours is left.** A drain that ends without moving leaves no Container the handler made in the slot, unless the handler made it after the drain's removal by key.
 
 The harm when one breaks: a drain reports a move that runs another image, starts a Container another caller left, deletes a Container that was never its own, or reports clean while its own Pending Container stays.
@@ -28,18 +28,20 @@ The harm when one breaks: a drain reports a move that runs another image, starts
 cd core && cargo test -p ployz-verify drain_copy -- --nocapture
 ```
 
-The run takes well under a second, and the shipped model has about 3,400 states. CI runs it in the workspace nextest.
+The run takes well under a second, and the shipped model has about 4,700 states. CI runs it in the workspace nextest.
 
-Green means all nine tests pass:
+Green means all eleven tests pass:
 
-- `the_drain_s_start_answers_and_cleans_up_only_its_own_container` checks the code as it ships. Every property holds, and every `sometimes` is reached: a fresh answer, a resend that adopts its own Container, an `Absent` answer beside the planter's Container, a refusal that leaves the planter's occupant, an admission refusal that leaves the planter's Container, a refused redial and a start refused after its create that each remove the start's Container by key, and a late create after a removal by key.
-- Eight tests each switch one guard back to an earlier design and expect its counterexample:
+- `the_drain_s_start_answers_and_cleans_up_only_its_own_container` checks the code as it ships. Every property holds, and every `sometimes` is reached: a fresh answer, a resend that adopts its own Container, an `Absent` answer beside the planter's Container, a refusal that leaves the planter's occupant, an admission refusal and a signer removed before the create that each leave the planter's Container, a refusal after a send the entry couldn't dial that leaves the occupant, a refused redial and a start refused after its create that each remove the start's Container by key, and a late create after a removal by key.
+- Ten tests each switch one guard back to an earlier design and expect its counterexample:
   - `ReplyBy::Slot` reads the slot instead of the acted ID, which breaks "the reply is ours".
   - `Check::None` breaks both "the reply is ours" and "no wrong start".
   - `Check::AfterStart` breaks "no wrong start" with the planter's stopped Container.
   - `Cleanup::BySlot` is main's discard after any failure. It breaks "cleanup by the named ID" through an `Absent` answer.
   - `Cleanup::RefusedOccupant` removes the occupant a refusal names, which also breaks "cleanup by the named ID".
-  - `Cleanup::RefusalAsUnanswered` reads admission's refusal as no answer and removes by key, which takes a Container the planter made after the refusal.
+  - `Marks::Nothing` leaves admission's refusal unmarked, so it reads as no answer and the drain removes by key, which takes a Container the planter made after the refusal.
+  - `Marks::AdmissionOnly` leaves the signer check right before Docker's create unmarked, which breaks "cleanup by the named ID" the same way.
+  - `Dial::Dropped` forgets that the entry couldn't dial the destination. That send then reads as one that may have acted, and the resend's refusal removes the occupant by key.
   - `Cleanup::LastReply` reads only the last send. A refused redial after a lost answer then removes nothing, which breaks "nothing of ours is left".
   - `Cleanup::GateAsRefusal` reads any error that names its gate as a refusal, marked or not. A start refused after its create then leaves that Container, which also breaks "nothing of ours is left".
 
@@ -68,4 +70,4 @@ The model leaves these out:
 
 A removal by key with no definitive answer can still take another caller's Container that filled the slot meanwhile. The model reaches that case and accepts it, as main does.
 
-Sync point: main at `65d9e5c65a`, plus the change that added this model and its classification by every send.
+Sync point: main at `65d9e5c65a`, plus the change that added this model, its classification by every send, and the shared `Failed::of` classifier.

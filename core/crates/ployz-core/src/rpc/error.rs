@@ -262,6 +262,13 @@ impl RpcError {
         self.marked::<ReplyLost>().is_some()
     }
 
+    /// Whether the call failed on a client channel whose one stream had closed, so it
+    /// never left the client: resending it on that channel can never reach a daemon.
+    #[must_use]
+    pub fn on_closed_session(&self) -> bool {
+        self.details.get("reason").and_then(Value::as_str) == Some(SESSION_CLOSED_REASON)
+    }
+
     /// Whether the target Machine didn't answer, rather than answering with this error.
     #[must_use]
     pub fn target_unanswered(&self) -> bool {
@@ -461,6 +468,10 @@ pub fn target_unreached_status(error: &(dyn std::error::Error + 'static)) -> ton
     );
     status
 }
+
+/// The `reason` a client puts in the details of a call that met a channel whose one
+/// stream had closed. Read back by [`RpcError::on_closed_session`]. Never on the wire.
+pub const SESSION_CLOSED_REASON: &str = "session_closed";
 
 /// The `reason` an entry Machine's router puts in the details of a status it made for a
 /// target that did not answer, when its own path probes found that large packets to that

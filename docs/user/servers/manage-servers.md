@@ -453,11 +453,16 @@ reached **Not attempted**; those still run on the server. When a container the d
 holds the new container's place on the other server, as one an older CLI left mid-move, the move
 fails and names it: **Container 3f2a9c1d07b4 is in the way on web-3. Inspect it, remove it if
 it's a leftover, and drain again.** The drain removes nothing it didn't make, and the service
-keeps running where it was. One exception: if the connection to the other server drops before it
-answers, the drain can't tell whether it made a container there, so it removes whatever holds that
-place, as a failed deploy does. If a server's proxy doesn't confirm the
-switch in time, the moved service's old container keeps running on the drained server and the row says
-so; the next drain removes it, along with any old container an earlier drain left there. While an old
+keeps running where it was. One exception: when the other server's answer doesn't say the drain
+made nothing there, the drain can't tell whether it did, so it removes whatever holds that place, as
+a failed deploy does. That happens when the connection drops before the server answers, when the
+server fails with an error it didn't mark as made-nothing, and on any error from a server running an
+older Ployz. A container in the way can then be removed instead of named and left in place. With
+`--json`, a move that failed says what became of its new container under `replacement`:
+`none_left` when the server made none or none of it is left, `removed` when the drain removed it,
+`discarded` when it removed whatever held its place, and `left` when it may still be there.
+If a server's proxy doesn't confirm the switch in time, the moved service's old container keeps
+running on the drained server and the row says so; the next drain removes it, along with any old container an earlier drain left there. While an old
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`
 names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button

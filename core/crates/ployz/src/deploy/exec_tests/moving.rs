@@ -3,8 +3,10 @@
 use ployz_core::{DeploymentLogId, Gen, MachineName};
 
 use super::*;
+use crate::connect::ConnectError;
 use crate::deploy::cleanup::Copy;
 use crate::deploy::{MoveEnd, MoveError};
+use crate::drain::Replacement;
 use crate::drain::placement::{
     LastIn, MachineRef, OldCopyEnd, Relocated, Unconfirmed, relocate, retire_old,
 };
@@ -142,12 +144,12 @@ async fn a_refused_in_discards_the_new_copy_and_keeps_the_old_one() {
     );
     let Err(MoveError {
         end: MoveEnd::NotServing { .. },
-        replacement_removed,
+        replacement,
     }) = relocate_with(&client, &CancellationToken::new()).await
     else {
         panic!("a copy that did not go In serves nothing");
     };
-    assert!(replacement_removed);
+    assert_eq!(replacement, Replacement::Removed);
     assert_eq!(client.rotation(&container('a')), Some(CopyRotation::In));
     assert_eq!(client.rotation(&container('b')), None);
     client.assert_done();
@@ -267,14 +269,14 @@ async fn a_replacement_is_claimed_removed_only_when_its_removal_was_acknowledged
                 machine(TO),
                 ContainerKind::ServiceContainer,
             )),
-            true,
+            Replacement::Discarded,
         ),
         (
             failed(
                 Call::DiscardSlot(machine(TO), ContainerKind::ServiceContainer),
                 "remove failed",
             ),
-            false,
+            Replacement::Left,
         ),
     ] {
         let client = moving(vec![
@@ -284,14 +286,10 @@ async fn a_replacement_is_claimed_removed_only_when_its_removal_was_acknowledged
             ),
             removal,
         ]);
-        let Err(MoveError {
-            replacement_removed,
-            ..
-        }) = move_with(&client).await
-        else {
+        let Err(MoveError { replacement, .. }) = move_with(&client).await else {
             panic!("the new Container never served");
         };
-        assert_eq!(replacement_removed, removed);
+        assert_eq!(replacement, removed);
         client.assert_done();
     }
 }
@@ -357,14 +355,10 @@ async fn a_failed_run_removes_its_slot() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    let Err(MoveError {
-        replacement_removed,
-        ..
-    }) = move_with(&client).await
-    else {
+    let Err(MoveError { replacement, .. }) = move_with(&client).await else {
         panic!("nothing served");
     };
-    assert!(replacement_removed);
+    assert_eq!(replacement, Replacement::Discarded);
     client.assert_done();
 }
 
@@ -376,13 +370,13 @@ async fn an_unreadable_source_copy_starts_no_replacement() {
     )]);
     let Err(MoveError {
         end: MoveEnd::NotServing { detail },
-        replacement_removed,
+        replacement,
     }) = move_with(&client).await
     else {
         panic!("the move stops at the inspect");
     };
     assert!(detail.starts_with("inspect Container failed: "), "{detail}");
-    assert!(replacement_removed);
+    assert_eq!(replacement, Replacement::NoneLeft);
     client.assert_done();
 }
 
@@ -405,18 +399,14 @@ async fn a_start_that_made_nothing_removes_nothing() {
             Call::Run(machine(TO), ContainerKind::ServiceContainer),
             reply,
         )]);
-        let Err(MoveError {
-            end,
-            replacement_removed,
-        }) = move_with(&client).await
-        else {
+        let Err(MoveError { end, replacement }) = move_with(&client).await else {
             panic!("nothing served");
         };
         match occupant {
             None => assert!(matches!(end, MoveEnd::NotServing { .. }), "{end:?}"),
             Some(occupant) => assert_eq!(end, MoveEnd::SlotOccupied { occupant }),
         }
-        assert!(replacement_removed);
+        assert_eq!(replacement, Replacement::NoneLeft);
         client.assert_done();
     }
 }
@@ -442,10 +432,7 @@ async fn a_failed_start_removes_only_the_container_it_answered() {
                 cancellation.clone(),
             ));
         }
-        let Err(MoveError {
-            end,
-            replacement_removed,
-        }) = move_container(
+        let Err(MoveError { end, replacement }) = move_container(
             &client,
             &test_namespace(),
             &spec(Some(0), None, None),
@@ -459,7 +446,7 @@ async fn a_failed_start_removes_only_the_container_it_answered() {
             panic!("nothing served");
         };
         assert_eq!(cancelled, end == MoveEnd::Cancelled, "{end:?}");
-        assert!(replacement_removed);
+        assert_eq!(replacement, Replacement::Removed);
         client.assert_done();
     }
 }
@@ -495,15 +482,11 @@ async fn a_refusal_after_a_lost_answer_discards_the_slot() {
             )),
         ]);
         client.redial = redial;
-        let Err(MoveError {
-            end,
-            replacement_removed,
-        }) = move_with(&client).await
-        else {
+        let Err(MoveError { end, replacement }) = move_with(&client).await else {
             panic!("nothing served");
         };
         assert!(matches!(end, MoveEnd::NotServing { .. }), "{end:?}");
-        assert!(replacement_removed);
+        assert_eq!(replacement, Replacement::Discarded);
         client.assert_done();
     }
 }
@@ -525,14 +508,10 @@ async fn only_a_refusal_before_the_create_leaves_the_slot_alone() {
         run(),
         Reply::Error(RpcError::internal("could not record the admission").unacted()),
     )]);
-    let Err(MoveError {
-        replacement_removed,
-        ..
-    }) = move_with(&before).await
-    else {
+    let Err(MoveError { replacement, .. }) = move_with(&before).await else {
         panic!("nothing served");
     };
-    assert!(replacement_removed);
+    assert_eq!(replacement, Replacement::NoneLeft);
     before.assert_done();
 
     let after = moving(vec![
@@ -542,18 +521,85 @@ async fn only_a_refusal_before_the_create_leaves_the_slot_alone() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    let Err(MoveError {
-        replacement_removed,
-        ..
-    }) = move_with(&after).await
-    else {
+    let Err(MoveError { replacement, .. }) = move_with(&after).await else {
         panic!("nothing served");
     };
-    assert!(replacement_removed);
+    assert_eq!(replacement, Replacement::Discarded);
     after.assert_done();
 }
 
-async fn cancelled_global_move(client: &Scripted) -> bool {
+/// A send the entry couldn't dial never reached the destination, so it made nothing there.
+/// The resend's refusal then speaks for the whole start: the occupant is named and left.
+#[tokio::test(start_paused = true)]
+async fn a_refusal_after_an_undialed_send_leaves_the_slot_alone() {
+    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
+    let undialed = crate::cluster::answered_by(
+        &machine(TO),
+        ConnectError::from(ployz_core::rpc::target_unreached_status(
+            &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused"),
+        )),
+    );
+    let client = moving(vec![
+        Step(run(), Reply::Error(undialed)),
+        Step(
+            run(),
+            Reply::Refused(ContainerRefusalReason::SlotOccupied, Some(container('c'))),
+        ),
+    ]);
+    let Err(MoveError { end, replacement }) = move_with(&client).await else {
+        panic!("nothing served");
+    };
+    assert_eq!(
+        end,
+        MoveEnd::SlotOccupied {
+            occupant: Some(container('c'))
+        }
+    );
+    assert_eq!(replacement, Replacement::NoneLeft);
+    client.assert_done();
+}
+
+/// The error a failed start reports may be an earlier send's. What is left on the Machine
+/// follows the last send: one left unanswered may have made a Container, which the move
+/// discards, whatever answer it reports.
+#[tokio::test(start_paused = true)]
+async fn a_last_send_left_unanswered_discards_the_slot_whatever_error_is_reported() {
+    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
+    let client = moving(vec![
+        Step(
+            run(),
+            Reply::Error(RpcError::unavailable("Cluster store is not available").unacted()),
+        ),
+        Step(
+            run(),
+            Reply::ErrorAfter(
+                RpcError::unanswered_target(
+                    RpcErrorCode::Unavailable,
+                    format!("Machine {} did not answer", machine(TO)),
+                ),
+                || tokio::time::sleep(RESTART_WAIT),
+            ),
+        ),
+        ok(Call::DiscardSlot(
+            machine(TO),
+            ContainerKind::ServiceContainer,
+        )),
+    ]);
+    let Err(MoveError { end, replacement }) = move_with(&client).await else {
+        panic!("nothing served");
+    };
+    let MoveEnd::NotServing { detail } = end else {
+        panic!("nothing served: {end:?}");
+    };
+    assert!(
+        detail.contains("Cluster store is not available"),
+        "{detail}"
+    );
+    assert_eq!(replacement, Replacement::Discarded);
+    client.assert_done();
+}
+
+async fn cancelled_global_move(client: &Scripted) -> Replacement {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;
     let cancellation = CancellationToken::new();
@@ -576,12 +622,12 @@ async fn cancelled_global_move(client: &Scripted) -> bool {
     cancellation.cancel();
     let Err(MoveError {
         end: MoveEnd::Cancelled,
-        replacement_removed,
+        replacement,
     }) = moving.await
     else {
         panic!("a cancelled move serves nothing");
     };
-    replacement_removed
+    replacement
 }
 
 #[tokio::test]
@@ -596,7 +642,7 @@ async fn a_cancelled_global_move_removes_its_replacement() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    assert!(cancelled_global_move(&client).await);
+    assert_eq!(cancelled_global_move(&client).await, Replacement::Discarded);
     client.assert_done();
 }
 
@@ -607,7 +653,7 @@ async fn a_cancelled_global_move_keeps_an_adopted_replica() {
         Reply::Pending,
     )]);
     client.runs_global = true;
-    assert!(!cancelled_global_move(&client).await);
+    assert_eq!(cancelled_global_move(&client).await, Replacement::Left);
     client.assert_done();
 }
 

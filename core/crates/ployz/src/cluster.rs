@@ -1315,12 +1315,18 @@ pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcErr
         };
     }
     // Named in the details too, as a lost reply is, so a refusal after it can still say
-    // which Machine may have done the call.
+    // which Machine may have done the call. A router that couldn't dial the Machine says
+    // the call never reached it, and that stays said.
+    let undialed = error.target_unreached();
     let mut silent = unanswered_by(machine_id, rpc_error(error));
     if let serde_json::Value::Object(details) = &mut silent.details {
         details.insert("machine_id".into(), machine_id.to_string().into());
     }
-    silent
+    if undialed {
+        silent.undialed_target()
+    } else {
+        silent
+    }
 }
 
 /// `error`, from a call `machine` left unanswered, naming it in the deepest line.

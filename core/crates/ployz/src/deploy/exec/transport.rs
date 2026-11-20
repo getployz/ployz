@@ -1,7 +1,7 @@
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY;
 use ployz_core::{
     ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerNow, ContainerObservation,
     ContainerPlacementUpdated, ContainerWant, DockerVolumeId, EnsuredContainer, HealthVerdict,
@@ -9,8 +9,7 @@ use ployz_core::{
     ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, SetIngressDoorsRequest,
     SetPrivateAccessRequest, SlotKey,
 };
-use ployz_decide::drain_start::{Earlier, Heard};
-use std::sync::atomic::{AtomicU64, Ordering};
+use ployz_decide::drain_start::{Earlier, Failed};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -64,7 +63,7 @@ impl<'a, C: Session> RestartTolerant<'a, C> {
 impl<C: Session> RestartTolerant<'_, C> {
     /// `op`'s answer, sent again while the Machine restarts, with what the sends before
     /// the last may have done.
-    async fn sent<T, Fut>(&self, op: impl FnMut() -> Fut) -> (Result<T, RpcError>, Earlier)
+    async fn sent<T, Fut>(&self, op: impl FnMut() -> Fut) -> (Result<T, Failure>, Earlier)
     where
         Fut: Future<Output = Result<T, RpcError>>,
     {
@@ -79,13 +78,13 @@ impl<C: Session> RestartTolerant<'_, C> {
 }
 
 impl<C: CopyLifecycle + Session> RestartTolerant<'_, C> {
-    /// [`CopyLifecycle::ensure_new`], with what its sends before the answer may have made:
+    /// [`CopyLifecycle::ensure_new`], with what its sends before the last may have made:
     /// a creation's answer speaks only for its own send.
     pub(crate) async fn ensure_new_sent(
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> (Result<Creation, RpcError>, Earlier) {
+    ) -> (Result<Creation, Failure>, Earlier) {
         self.sent(|| self.inner.ensure_new(machine_id, want.clone()))
             .await
     }
@@ -109,7 +108,11 @@ macro_rules! restart_policy {
         )*
     };
     (@send wait $self:ident $name:ident $($arg:ident)*) => {{
-        $self.sent(|| $self.inner.$name($(Clone::clone(&$arg)),*)).await.0
+        $self
+            .sent(|| $self.inner.$name($(Clone::clone(&$arg)),*))
+            .await
+            .0
+            .map_err(|failure| failure.error)
     }};
     (@send once($reason:literal) $self:ident $name:ident $($arg:ident)*) => {
         $self.inner.$name($($arg),*).await
@@ -143,27 +146,22 @@ restart_policy! {
     }
 }
 
-#[cfg(test)]
-pub(super) async fn wait_out_restart<T, Fut, Redial>(
-    cancellation: &CancellationToken,
-    op: impl FnMut() -> Fut,
-    redial: impl FnMut() -> Redial,
-) -> Result<T, RpcError>
-where
-    Fut: Future<Output = Result<T, RpcError>>,
-    Redial: Future<Output = Option<Result<(), RedialFailure>>>,
-{
-    sends_out_restart(cancellation, op, redial).await.0
+/// A call no send of which was answered.
+pub(crate) struct Failure {
+    /// The error that best says why, which may be an earlier send's.
+    pub(crate) error: RpcError,
+    /// What the last send's own error says it did, whichever error is reported.
+    pub(crate) last: Failed,
 }
 
 /// `op`'s answer, sent again while the Machine restarts, with what the sends before the
 /// last may have done: a later answer never speaks for an earlier send whose answer was
 /// lost.
-async fn sends_out_restart<T, Fut, Redial>(
+pub(super) async fn sends_out_restart<T, Fut, Redial>(
     cancellation: &CancellationToken,
     mut op: impl FnMut() -> Fut,
     mut redial: impl FnMut() -> Redial,
-) -> (Result<T, RpcError>, Earlier)
+) -> (Result<T, Failure>, Earlier)
 where
     Fut: Future<Output = Result<T, RpcError>>,
     Redial: Future<Output = Option<Result<(), RedialFailure>>>,
@@ -190,14 +188,12 @@ where
         // of it: it ends the wait in its own words, still saying what earlier sends may have
         // done. Other unreached failures, as a refused dial, go through the bookkeeping below
         // as before.
+        let last = Failed::of(&error);
         if error.never_reached() && error.code == RpcErrorCode::Unauthenticated {
-            return (
-                Err(still_lost(error, lost.as_ref().or(silent.as_ref()))),
-                earlier,
-            );
+            let error = still_lost(error, lost.as_ref().or(silent.as_ref()));
+            return (Err(Failure { error, last }), earlier);
         }
-        let this_send = heard::<()>(&error);
-        let closed = crate::connect::on_closed_session(&error);
+        let closed = error.on_closed_session();
         // A send that never reached the Machine, or met a closed session, says nothing of
         // it, so it is never kept.
         let unreached = error.never_reached() || closed;
@@ -228,37 +224,18 @@ where
                 || match redialed(&mut redial, deadline, cancellation).await {
                     Ok(redialed) => redialed,
                     Err(refusal) => {
-                        let refusal = still_lost(refusal, lost.as_ref().or(silent.as_ref()));
-                        return (Err(refusal), earlier);
+                        let error = still_lost(refusal, lost.as_ref().or(silent.as_ref()));
+                        return (Err(Failure { error, last }), earlier);
                     }
                 });
         if !again {
-            return (Err(error), earlier);
+            return (Err(Failure { error, last }), earlier);
         }
-        earlier = earlier.then(&this_send);
         tokio::select! {
-            () = cancellation.cancelled() => return (Err(error), earlier),
+            () = cancellation.cancelled() => return (Err(Failure { error, last }), earlier),
             () = tokio::time::sleep(RESTART_POLL) => {}
         }
-    }
-}
-
-/// What a send that failed with `error` did on its Machine, as far as `error` tells. Only
-/// the Machine's own word that it acted on nothing, or a send that never left, says
-/// nothing was made; any other error may follow work the Machine did.
-pub(crate) fn heard<Id>(error: &RpcError) -> Heard<Id> {
-    if error.reply_lost() {
-        Heard::Unanswered
-    } else if error.never_reached() || crate::connect::on_closed_session(error) {
-        Heard::Unsent
-    } else if error.never_acted()
-        || error
-            .refusal()
-            .is_some_and(|refusal| refusal.capability == ENSURE_PINNED_CONTAINER_CAPABILITY)
-    {
-        Heard::Refused
-    } else {
-        Heard::Unanswered
+        earlier = earlier.then(last);
     }
 }
 

@@ -105,11 +105,43 @@ fn an_unclaimed_server_that_turns_the_pin_down_needs_upgrading() {
     let failure = MoveFailure::of(
         MoveError {
             end: MoveEnd::NeedsUpgrade,
-            replacement_removed: true,
+            replacement: Replacement::NoneLeft,
         },
         from.clone(),
         to,
     );
     assert!(failure.clean_elsewhere(&unclaimed.machine.id));
     assert!(!failure.clean_elsewhere(&from.id));
+}
+
+/// A failed move's report says what became of its replacement: none made, removed by its
+/// ID, or whatever held its slot removed by key. `replacement_removed` still says only
+/// that none is left, so a reader from before `replacement` reads the report as it did.
+#[test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+fn a_failed_move_reports_how_its_replacement_ended() {
+    let (from, to) = (
+        MachineRef::from(&server('a', None).machine),
+        MachineRef::from(&server('b', None).machine),
+    );
+    for (replacement, removed, reported) in [
+        (Replacement::NoneLeft, true, "none_left"),
+        (Replacement::Discarded, true, "discarded"),
+        (Replacement::Removed, true, "removed"),
+        (Replacement::Left, false, "left"),
+    ] {
+        let failure = MoveFailure::of(
+            MoveError {
+                end: MoveEnd::NotServing {
+                    detail: "never became healthy".into(),
+                },
+                replacement,
+            },
+            from.clone(),
+            to.clone(),
+        );
+        let report = serde_json::to_value(&failure).unwrap();
+        assert_eq!(report["replacement_removed"], json!(removed), "{report}");
+        assert_eq!(report["replacement"], json!(reported), "{report}");
+    }
 }
