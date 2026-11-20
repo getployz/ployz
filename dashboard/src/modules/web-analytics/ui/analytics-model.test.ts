@@ -130,19 +130,24 @@ describe("goalRate", () => {
 describe("analyticsGate", () => {
   const on = { enabled: true };
   it("closes on the plan before looking at the Environment", () => {
-    expect(analyticsGate("self-host-off", true, on)).toEqual({ gate: "self-host-off" });
+    expect(analyticsGate("self-host-off", true, true, on)).toEqual({ gate: "self-host-off" });
   });
 
   it("opens on Cloud or a self-host plan only where the Environment turned it on", () => {
-    expect(analyticsGate("cloud", true, on)).toEqual({ gate: "on", site: on });
-    expect(analyticsGate("self-host-on", true, on)).toEqual({ gate: "on", site: on });
-    expect(analyticsGate("cloud", true, { enabled: false })).toEqual({ gate: "site-off" });
-    expect(analyticsGate("cloud", true, undefined)).toEqual({ gate: "site-off" });
+    expect(analyticsGate("cloud", true, true, on)).toEqual({ gate: "on", site: on });
+    expect(analyticsGate("self-host-on", true, true, on)).toEqual({ gate: "on", site: on });
+    expect(analyticsGate("cloud", true, true, { enabled: false })).toEqual({ gate: "site-off" });
+    expect(analyticsGate("cloud", true, true, undefined)).toEqual({ gate: "site-off" });
   });
 
   it("asks an Organization without Production for it, whatever the Environment says", () => {
-    expect(analyticsGate("cloud", false, on)).toEqual({ gate: "production" });
-    expect(analyticsGate("cloud", false, undefined)).toEqual({ gate: "production" });
+    expect(analyticsGate("cloud", false, true, on)).toEqual({ gate: "production" });
+    expect(analyticsGate("cloud", false, true, undefined)).toEqual({ gate: "production" });
+  });
+
+  it("closes where requests have nowhere to be read from, before offering to turn the Environment on", () => {
+    expect(analyticsGate("self-host-on", true, false, on)).toEqual({ gate: "no-clickhouse" });
+    expect(analyticsGate("self-host-on", true, false, undefined)).toEqual({ gate: "no-clickhouse" });
   });
 });
 

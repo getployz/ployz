@@ -1,16 +1,17 @@
 import "@tanstack/react-start/server-only";
 
-import { and, asc, eq, gte, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { analyticsPlan, includesMonitoring } from "#/modules/billing/billing.server";
 import type { Actor } from "#/modules/identity/actor";
+import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Validation } from "#/server/public-error";
 import * as analytics from "../adapter";
 import { hourBuckets, localDay, localDays } from "../local-time";
-import { setSiteAnalytics } from "../salts.server";
-import { analyticsGoal, analyticsRequest, analyticsSite } from "../tables";
+import { namespacesByEnvironment, setSiteAnalytics } from "../salts.server";
+import { analyticsGoal, analyticsSite } from "../tables";
 import {
   analyticsGate,
   type CreateGoalInput,
@@ -43,8 +44,15 @@ const siteRow = Effect.fn("WebAnalyticsView.site")(function* (organizationId: st
 const gateFor = Effect.fn("WebAnalyticsView.gate")(function* (organizationId: string, environmentId: string) {
   const plan = yield* analyticsPlan();
   const entitled = yield* includesMonitoring(organizationId);
-  const site = plan === "self-host-off" || !entitled ? undefined : yield* siteRow(organizationId, environmentId);
-  return analyticsGate(plan, entitled, site);
+  const clickhouse = yield* observeConfigured;
+  const site = plan === "self-host-off" || !entitled || !clickhouse ? undefined : yield* siteRow(organizationId, environmentId);
+  return analyticsGate(plan, entitled, clickhouse, site);
+});
+
+/** The site as a query reads it: whose rows, and which namespace its Services run in. */
+const siteOf = Effect.fn("WebAnalyticsView.siteOf")(function* (organizationId: string, environmentId: string, timezone: string) {
+  const namespace = (yield* namespacesByEnvironment(organizationId)).get(environmentId);
+  return { organizationId, environmentId, timezone, namespaces: namespace === undefined ? [] : [namespace] } satisfies analytics.Site;
 });
 
 /** An Environment's analytics for one range: nothing past the plan gate is read unless the gate is open. */
@@ -57,33 +65,26 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
   const { drizzle } = yield* Database;
   const goals = yield* drizzle.select({ id: analyticsGoal.id, name: analyticsGoal.name, pathPattern: analyticsGoal.pathPattern })
     .from(analyticsGoal).where(eq(analyticsGoal.environmentId, input.environmentId)).orderBy(asc(analyticsGoal.createdAt));
-  const pageviews = and(eq(analyticsRequest.environmentId, input.environmentId), eq(analyticsRequest.kind, "pageview"));
-  const [seen] = yield* drizzle.select({ ts: analyticsRequest.ts }).from(analyticsRequest)
-    .where(and(pageviews, isNotNull(analyticsRequest.visitorId))).limit(1);
-  if (seen === undefined) {
-    // Every pageview can come on a day with no salt: then the days they came are all the site has.
-    const day = sql<string>`((${analyticsRequest.ts} at time zone ${site.timezone}::text)::date)::text`;
-    const lost = yield* drizzle.selectDistinct({ day }).from(analyticsRequest)
-      .where(and(pageviews, isNull(analyticsRequest.visitorId))).orderBy(sql`1`);
-    return {
-      gate: "on",
-      empty: true,
-      timezone: site.timezone,
-      lostDays: lost.map(({ day }) => day),
-      goals: goals.map((goal) => ({ ...goal, visitors: 0, conversions: 0 })),
-    } as const;
-  }
+  const siteQuery = yield* siteOf(organization.id, input.environmentId, site.timezone);
 
   const now = yield* Clock.currentTimeMillis;
   const { range, interval } = resolveRange(isRangeSpec(input.range) ? input.range : DEFAULT_RANGE, site.timezone, now);
   const page = parsePageFilter(input.page);
-  const q: analytics.Query = {
-    site: { environmentId: input.environmentId, timezone: site.timezone },
-    range,
-    filters: page === null ? [] : [page],
-    limit: TABLE_ROWS,
-  };
+  const q: analytics.Query = { site: siteQuery, range, filters: page === null ? [] : [page], limit: TABLE_ROWS, goals };
   const figures = yield* analytics.figures(q, interval, ["page", "source", "utm_campaign", "language", "host"]);
+  // A range with no visitor may be a site that has counted none at all: then the days it came without a salt are all it has.
+  if (figures.overview.visitors === 0 && figures.overview.pageviews === 0) {
+    const seen = yield* analytics.seen(siteQuery);
+    if (!seen.seen) {
+      return {
+        gate: "on",
+        empty: true,
+        timezone: site.timezone,
+        lostDays: seen.lostDays,
+        goals: goals.map((goal) => ({ ...goal, visitors: 0, conversions: 0 })),
+      } as const;
+    }
+  }
   const today = localDay(site.timezone, now);
   const byGoal = new Map(figures.goals.map((goal) => [goal.goalId, goal]));
   return {
@@ -116,25 +117,12 @@ const openRequests = Effect.fn("WebAnalyticsView.openRequests")(function* (actor
   const { timezone } = open.site;
   const now = yield* Clock.currentTimeMillis;
   const q: analytics.Query = {
-    site: { environmentId: input.environmentId, timezone },
+    site: yield* siteOf(organization.id, input.environmentId, timezone),
     range: resolveWindow(isRequestWindow(input.window) ? input.window : DEFAULT_WINDOW, timezone, now),
     filters: [],
     limit: TABLE_ROWS,
   };
   return { gate: "on", q } as const;
-});
-
-const servicesIn = Effect.fn("WebAnalyticsView.services")(function* (environmentId: string, range: analytics.Range) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.selectDistinct({ service: analyticsRequest.service }).from(analyticsRequest)
-    .where(and(
-      eq(analyticsRequest.environmentId, environmentId),
-      ne(analyticsRequest.kind, "bot"),
-      gte(analyticsRequest.ts, range.start),
-      lt(analyticsRequest.ts, range.end),
-    ))
-    .orderBy(asc(analyticsRequest.service));
-  return rows.map((row) => row.service);
 });
 
 const sample = (row: analytics.RequestSample) => ({ ...row, ts: row.ts.getTime() });
@@ -149,7 +137,7 @@ export const readApiView = Effect.fn("WebAnalyticsView.readApi")(function* (acto
     timezone: open.q.site.timezone,
     range: { start: answer.range.start.getTime(), end: answer.range.end.getTime() },
     clamped: answer.clamped,
-    services: yield* servicesIn(input.environmentId, answer.range),
+    services: answer.services,
     routes: answer.routes,
     slowest: answer.slowest.map(sample),
   } as const;
@@ -167,7 +155,7 @@ export const readErrorsView = Effect.fn("WebAnalyticsView.readErrors")(function*
     timezone,
     range: { start: answer.range.start.getTime(), end: answer.range.end.getTime() },
     clamped: answer.clamped,
-    services: yield* servicesIn(input.environmentId, answer.range),
+    services: answer.services,
     hourly: hourBuckets(timezone, answer.range.start, answer.range.end).map((bucket) => ({
       at: bucket.getTime(),
       clientErrors: counted.get(bucket.getTime())?.clientErrors ?? 0,

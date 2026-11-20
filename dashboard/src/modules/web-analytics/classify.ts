@@ -1,24 +1,22 @@
 import { isbotMatch } from "isbot";
-import type { RequestKind } from "#/modules/web-analytics/tables";
 
-export type RequestTraits = {
-  readonly method: string;
-  readonly status: number;
-  readonly ua: string;
-  readonly contentType: string | null;
-  readonly secPurpose: string | null;
-};
+/** Whether a user agent is a crawler or other program, by the `isbot` list. */
+export const isBotUserAgent = (ua: string) => isbotMatch(ua) !== null;
 
-export type Classified = { readonly kind: RequestKind; readonly botReason: string | null };
+const CACHE_LIMIT = 50_000;
+const verdicts = new Map<string, boolean>();
 
-const isSpeculative = (secPurpose: string | null) => secPurpose !== null && /prefetch|prerender/i.test(secPurpose);
-
-export function classify(request: RequestTraits): Classified {
-  const bot = isbotMatch(request.ua);
-  if (bot !== null) return { kind: "bot", botReason: bot.toLowerCase() };
-  const page = request.method === "GET"
-    && request.status >= 200 && request.status < 300
-    && request.contentType?.toLowerCase().startsWith("text/html") === true
-    && !isSpeculative(request.secPurpose);
-  return { kind: page ? "pageview" : "other", botReason: null };
+/**
+ * The user agents among `uas` that are bots. One agent string is classified once per process: the same few thousand
+ * agents arrive in every window. The cache is bounded and starts over when full.
+ */
+export function botsAmong<Ua extends { readonly ua: string }>(uas: ReadonlyArray<Ua>): Ua[] {
+  return uas.filter(({ ua }) => {
+    const known = verdicts.get(ua);
+    if (known !== undefined) return known;
+    if (verdicts.size >= CACHE_LIMIT) verdicts.clear();
+    const verdict = isBotUserAgent(ua);
+    verdicts.set(ua, verdict);
+    return verdict;
+  });
 }

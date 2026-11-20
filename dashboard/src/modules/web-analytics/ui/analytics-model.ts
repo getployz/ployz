@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { type NeedsProduction, needsProduction } from "#/modules/billing/billing";
 import { addDays, dayStart, HOUR_MS, hourStart, localDay } from "../local-time";
 import type { Filter, Interval, Range } from "../model";
-import type { RouteRow } from "../postgres/routes";
+import type { RouteRow } from "../requests/routes";
 
 /** `today`, `7d`, `30d`, or `YYYY-MM-DD..YYYY-MM-DD`: site-local days, both ends included. */
 export type RangeSpec = string;
@@ -119,16 +119,18 @@ export function partialDays(days: ReadonlyArray<string>, evidence: DayEvidence):
 }
 
 export type AnalyticsPlan = "cloud" | "self-host-on" | "self-host-off";
-export type ClosedGate = "self-host-off" | NeedsProduction["gate"] | "site-off";
+export type ClosedGate = "self-host-off" | NeedsProduction["gate"] | "no-clickhouse" | "site-off";
 
 /**
  * What the page can show. A self-hosted Cloud runs analytics when its operator turns it on, Ployz-hosted Cloud shows
- * it to Organizations with Production, and an Environment counts nothing until someone turns it on there.
+ * it to Organizations with Production, requests are read from ClickHouse so a Cloud without it has nothing to show,
+ * and an Environment counts nothing until someone turns it on there.
  */
-export function analyticsGate<S extends { readonly enabled: boolean }>(plan: AnalyticsPlan, entitled: boolean, site: S | undefined):
+export function analyticsGate<S extends { readonly enabled: boolean }>(plan: AnalyticsPlan, entitled: boolean, clickhouse: boolean, site: S | undefined):
   { readonly gate: "on"; readonly site: S } | { readonly gate: ClosedGate } {
   if (plan === "self-host-off") return { gate: plan };
   if (!entitled) return needsProduction;
+  if (!clickhouse) return { gate: "no-clickhouse" };
   return site?.enabled ? { gate: "on", site } : { gate: "site-off" };
 }
 

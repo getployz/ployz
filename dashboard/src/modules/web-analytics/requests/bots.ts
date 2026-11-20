@@ -1,0 +1,29 @@
+import { Effect, Schema } from "effect";
+import { botsAmong } from "../classify";
+import type { Range } from "../model";
+import { Params, readRequests, type Scope } from "./statement";
+
+/**
+ * Past this many distinct user agents in one window the rarest go unclassified and count as people. The bot list
+ * travels in the URL as 64-bit hashes, and 20 000 of them stay far under ClickHouse's URI limit.
+ */
+const DISTINCT_AGENTS = 20_000;
+
+/** A request a person's browser made for a page: GET, 2xx, HTML, and not a prefetch or prerender the person never saw. */
+export const PAGEVIEW = "Method = 'GET' AND Status >= 200 AND Status < 300 AND startsWith(lower(ContentType), 'text/html') AND NOT match(SecPurpose, '(?i)prefetch|prerender')";
+
+const Agent = Schema.Struct({ ua: Schema.String, hash: Schema.String });
+
+/**
+ * The hashes of the bot user agents in a window. ClickHouse lists the window's distinct agents, the `isbot` list names
+ * the bots among them here, and a figure's query then drops `cityHash64(Ua)` in this list. `pageviewsOnly` looks only at
+ * the agents behind page requests.
+ */
+export const botHashes = Effect.fn("WebAnalytics.bots")(function* (scope: Scope, range: Range, pageviewsOnly: boolean) {
+  const params = new Params();
+  const agents = yield* readRequests(scope, params, [], `
+    SELECT Ua AS ua, toString(cityHash64(Ua)) AS hash FROM scoped
+    WHERE Timestamp >= ${params.instant(range.start)} AND Timestamp < ${params.instant(range.end)}${pageviewsOnly ? ` AND ${PAGEVIEW}` : ""}
+    GROUP BY Ua ORDER BY count() DESC, Ua LIMIT ${DISTINCT_AGENTS}`, Agent);
+  return botsAmong(agents).map(({ hash }) => hash);
+});

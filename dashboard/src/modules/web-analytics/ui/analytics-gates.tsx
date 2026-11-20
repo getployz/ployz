@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { ChartLineIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { ObserveOffState } from "#/components/observe/ObserveOffState";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import type { ClosedGate } from "./analytics-model";
@@ -22,6 +23,7 @@ export function Gate({ title, children, action }: { title: string; children?: Re
 /** Why the page reads nothing: the plan or the Environment's switch. */
 export function ClosedGateView({ gate, scope }: { gate: ClosedGate; scope: AnalyticsScope }) {
   if (gate === "self-host-off") return <SelfHostOff />;
+  if (gate === "no-clickhouse") return <NoClickhouse />;
   return gate === "production" ? <NeedsProductionView scope={scope} /> : <SiteOff scope={scope} />;
 }
 
@@ -47,10 +49,19 @@ function SelfHostOff() {
   );
 }
 
+function NoClickhouse() {
+  return (
+    <ObserveOffState title="Analytics needs ClickHouse">
+      Set <code className="font-mono">OBSERVE_CLICKHOUSE_URL</code>, <code className="font-mono">CLICKHOUSE_USER</code> and{" "}
+      <code className="font-mono">CLICKHOUSE_PASSWORD</code> on this Cloud and restart it to read visits.
+    </ObserveOffState>
+  );
+}
+
 function SiteOff({ scope }: { scope: AnalyticsScope }) {
   const turnOn = useTurnOnAnalytics(scope);
   return (
-    <Gate title="Analytics is off for this Environment"
+    <Gate title="Analytics are off for this site"
       action={<Button disabled={turnOn.isPending} onClick={() => turnOn.mutate()}>Turn on</Button>}>
       Counts visits to this Environment&apos;s domains from the moment it is on, without cookies.
     </Gate>
