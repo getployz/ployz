@@ -144,11 +144,13 @@ impl ConfigStore {
         principal: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, principal)?;
+        let command = whole_numbers(command);
+        ployz_store::refuse_deploy_approval(&command).map_err(rpc_to_napi)?;
         #[expect(
             clippy::disallowed_methods,
             reason = "whole numbers first, as `from_js`"
         )]
-        let command = ployz_store::Command::decode(whole_numbers(command))
+        let command = ployz_store::Command::decode(command)
             .map_err(|error| refused("Expected a Config Store command", &error))?;
         let trusted = evidence(trusted)?;
         self.run(move |store| store.commit(&who, &command, &trusted))

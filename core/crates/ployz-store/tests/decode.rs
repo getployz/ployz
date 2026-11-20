@@ -183,3 +183,46 @@ fn a_setting_of_the_wrong_shape_names_its_reason_never_its_value() {
 fn uuid(label: &str) -> String {
     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, label.as_bytes()).to_string()
 }
+
+/// A CLI from before signed versions posts its Device's deploy approval with a Deploy or a
+/// redeploy, and no signed version. No Server reads that approval, so the command is
+/// refused with the update to run, and never decodes into one that runs unsigned.
+#[test]
+fn an_old_clis_deploy_approval_is_refused_with_the_update_to_run() {
+    let id = "0b9e7c4e-1f2a-4c3b-9d8e-7f6a5b4c3d2f";
+    let approval = json!({ "body": "{}", "signatures": [] });
+    for (admit, extra) in [
+        ("deploy", json!({})),
+        ("retry", json!({ "deployment": VOLUME })),
+    ] {
+        let mut command = json!({ "command": "admit", "admit": admit, "id": id });
+        command
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        Command::decode(command.clone()).unwrap();
+        ployz_store::refuse_deploy_approval(&command).unwrap();
+
+        command
+            .as_object_mut()
+            .unwrap()
+            .insert("approval".into(), approval.clone());
+        let refused = ployz_store::refuse_deploy_approval(&command).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unsupported, "{admit}");
+        assert!(
+            refused.message.contains("Update ployz"),
+            "{}",
+            refused.message
+        );
+        assert!(
+            refused
+                .details
+                .get("next")
+                .and_then(Value::as_str)
+                .is_some_and(|next| next.contains("ployz.sh")),
+            "{}",
+            refused.details
+        );
+        assert!(Command::decode(command).is_err(), "{admit}");
+    }
+}
