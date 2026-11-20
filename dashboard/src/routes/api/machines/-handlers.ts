@@ -26,7 +26,6 @@ function errorResponse(cause: unknown) {
   return Response.json({ error: publicError.message }, { status: statusForPublicError(publicError), headers: noStore });
 }
 
-/** OTLP request bodies, as sent: compressed when the Machine compresses them. */
 const MAX_OTLP_BYTES = 8 * 1024 * 1024;
 
 export function handleMachineOtlp(request: Request, signal: OtlpSignal) {

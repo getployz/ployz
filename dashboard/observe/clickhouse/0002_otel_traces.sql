@@ -1,4 +1,3 @@
--- Traces, and the trace id lookup the ClickStack reads.
 CREATE TABLE IF NOT EXISTS otel.otel_traces
 (
     `Timestamp` DateTime64(9) CODEC(Delta(8), ZSTD(1)),

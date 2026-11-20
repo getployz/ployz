@@ -9,7 +9,6 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 
-/** Whether `signature` is the ed25519 signature of `message` by the management key `identity` (64 hex digits). */
 export function verifyManagementSignature(identity: string, message: Uint8Array, signature: Uint8Array) {
   try {
     const x = Buffer.from(identity, "hex").toString("base64url");

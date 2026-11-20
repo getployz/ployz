@@ -1,4 +1,3 @@
--- Metrics, one table per OTLP data type.
 CREATE TABLE IF NOT EXISTS otel.otel_metrics_gauge
 (
     `ResourceAttributes` Map(LowCardinality(String), String) CODEC(ZSTD(1)),

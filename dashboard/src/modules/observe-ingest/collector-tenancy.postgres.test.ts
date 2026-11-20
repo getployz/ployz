@@ -41,7 +41,6 @@ async function published(name: string, port: string) {
   return `http://127.0.0.1:${stdout.trim().split("\n")[0]?.split(":").at(-1)}`;
 }
 
-/** Retries until `attempt` stops throwing or returns a value; ClickHouse and the Collector take seconds to come up. */
 const until = <A>(attempt: () => Promise<A | undefined>) =>
   vi.waitFor(async () => {
     const value = await attempt();

@@ -24,12 +24,10 @@ export type MachineToken = {
   readonly machine: Schema.Schema.Type<typeof claims>["machine"];
   readonly iat: number;
   readonly exp: number;
-  /** The bytes the Machine signed. */
   readonly message: Buffer;
   readonly signature: Buffer;
 };
 
-/** The token an Authorization header carries, or none when it is malformed. Says nothing about whether it is signed or current. */
 export function parseMachineToken(authorization: string | null): Option.Option<MachineToken> {
   const match = BEARER.exec(authorization ?? "");
   if (match === null) return Option.none();
@@ -48,7 +46,6 @@ export function parseMachineToken(authorization: string | null): Option.Option<M
   }));
 }
 
-/** Whether a token's claims hold at `nowSeconds`: not issued in the future, not expired, and short-lived. */
 export function machineTokenCurrent({ iat, exp }: Pick<MachineToken, "iat" | "exp">, nowSeconds: number) {
   return iat <= nowSeconds + TOKEN_MAX_SKEW_SECONDS && exp > nowSeconds && exp > iat && exp - iat <= TOKEN_MAX_LIFETIME_SECONDS;
 }
