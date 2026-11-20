@@ -16,6 +16,10 @@ x-app: &app
     PLOYZ_HOSTED_DNS_URL: ${PLOYZ_HOSTED_DNS_URL:-https://dns.ployz.app/}
     # Reached only with the observe profile; without it Machines' OTLP posts get a 503.
     OBSERVE_COLLECTOR_URL: http://observe-collector:4318
+    # Set only when CLICKHOUSE_PASSWORD is, as the observe profile requires; unset, metrics show as not enabled.
+    OBSERVE_CLICKHOUSE_URL: ${CLICKHOUSE_PASSWORD:+http://clickhouse:8123}
+    CLICKHOUSE_USER: otel
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
   depends_on:
     postgres:
       condition: service_healthy
