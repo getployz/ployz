@@ -42,8 +42,8 @@ replied. It can:
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
 - Read a server's own recent logs from the Ployz daemon, Docker or Ployz's network store, up to 200 lines,
   with secret-shaped values replaced (**server logs**). Ployz support can't read them.
-- Read a service's or a server's [metrics](../observe/metrics.md), with the OOM kills, exits and
-  restarts in the range (**service metrics**, **server metrics**). Name a deployment and it reads
+- Read a service's or a server's [metrics](../observe/metrics.md), with the OOM kills and exits
+  in the range (**service metrics**, **server metrics**). Name a deployment and it reads
   from that deployment's start and keeps only its events.
 - Restart, start or stop a service (**service restart**, **service start**, **service stop**).
 - Drain, upgrade, clean up after, remove or forget a server (**server drain**, **server upgrade**,
