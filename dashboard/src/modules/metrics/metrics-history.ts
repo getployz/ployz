@@ -51,8 +51,8 @@ export const DISK_METRIC = "ployz.disk.bytes";
 export const DISK_KINDS = { total: "total", free: "free", volumes: "volumes", mirrors: "mirror_slots", logsAndMetrics: "observe_store", other: "other" } as const;
 
 const NS_PER_SECOND = 1e9;
-/** `system.cpu.time` states that are not work. Idle includes iowait. */
-const IDLE_STATES = new Set(["idle", "iowait"]);
+/** The `system.cpu.time` states, as hostmetrics names them, in which a core waits rather than works. Every other state is busy. */
+const IDLE_STATES = new Set(["idle", "wait"]);
 
 const samples = (rows: readonly MetricRow[], keep: (row: MetricRow) => boolean): SeriesSample[] =>
   rows.filter((row) => keep(row) && Number.isFinite(row.value)).map((row) => ({ series: `${row.machine}|${row.series}`, at: row.bucket * 1000, value: row.value }));

@@ -5,8 +5,8 @@ import { Effect } from "effect";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import type { AppConfig } from "#/server/config.server";
 import { testConfigLayer } from "#/test/config-environment";
-import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS } from "./metrics-history";
-import { readCrashEvents, readDiskRows, readHostRows, readServiceRows } from "./metrics-store.server";
+import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS, hostHistory, serviceHistory } from "./metrics-history";
+import { countCrashEvents, readCrashEvents, readDiskRows, readHostRows, readServiceRows } from "./metrics-store.server";
 
 const execFile = promisify(execFileCallback);
 const docker = (...args: ReadonlyArray<string>) => execFile("docker", args, { maxBuffer: 10 * 1024 * 1024 });
@@ -54,6 +54,10 @@ const SERVICE = "web";
 const MACHINE = "machine-1";
 const ORGANIZATIONS = ["org-a", "org-b"] as const;
 const NOW = Math.floor(Date.now() / 1000);
+const FAN_MACHINE = "machine-fan";
+const FAN_SERVICE = "fan";
+const LOOP_SERVICE = "loop";
+const LOOP_EVENTS = 590;
 /** Two buckets of ten seconds that the read window below covers. */
 const TIMES = [NOW - 120, NOW - 60] as const;
 
@@ -70,6 +74,27 @@ async function seed() {
   ])));
   await insert("otel_metrics_gauge", ORGANIZATIONS.map((org) => ({
     ResourceAttributes: { "ployz.org": org, "ployz.machine": MACHINE }, MetricName: DISK_METRIC, Attributes: { kind: "volumes" }, TimeUnix: clickhouseTime(TIMES[1]), Value: GROWTH[org],
+  })));
+  // Counters that fan out: a Machine of two cores, one pinned and one idle, and a Service reading two block devices.
+  const counter = (index: number, grow: number) => 1000 + index * grow;
+  await insert("otel_metrics_sum", TIMES.flatMap((time, index) => [
+    ...[["cpu0", "user", 60], ["cpu0", "idle", 0], ["cpu1", "user", 0], ["cpu1", "idle", 60]].map(([cpu, state, grow]) => ({
+      ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": FAN_MACHINE }, MetricName: HOST_METRICS.cpu,
+      Attributes: { cpu, state }, TimeUnix: clickhouseTime(time), Value: counter(index, Number(grow)), IsMonotonic: true,
+    })),
+    ...["8", "253"].map((major) => ({
+      ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": FAN_MACHINE, "ployz.namespace": NAMESPACE, "ployz.service.name": FAN_SERVICE, "container.id": "fan-container" },
+      MetricName: SERVICE_METRICS.io, Attributes: { device_major: major, device_minor: "0", operation: "read" },
+      TimeUnix: clickhouseTime(time), Value: counter(index, 60e6), IsMonotonic: true,
+    })),
+  ]));
+  // One replica exiting 1 every 6 s for the last hour, newest 10 s ago.
+  await insert("otel_logs", Array.from({ length: LOOP_EVENTS }, (_, index) => ({
+    Timestamp: clickhouseTime(NOW - 10 - index * 6), Body: "container exited", ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": FAN_MACHINE },
+    LogAttributes: {
+      "ployz.namespace": NAMESPACE, "ployz.service.name": LOOP_SERVICE, "ployz.service.id": "loop-service", "container.id": "loop-container",
+      "ployz.exit.reason": "exit_nonzero", "ployz.exit.code": "1", "ployz.event.id": `loop-${index}`,
+    },
   })));
   await insert("otel_logs", ORGANIZATIONS.map((org) => ({
     Timestamp: clickhouseTime(TIMES[1]), Body: "container exited", ResourceAttributes: { "ployz.org": org, "ployz.machine": MACHINE },
@@ -89,7 +114,7 @@ const asOrganization = <A, E>(read: Effect.Effect<A, E, AppConfig>) =>
 it("reads a Service's rows for the session's Organization alone when two Organizations share a namespace and Service name", async () => {
   for (const org of ORGANIZATIONS) {
     const rows = await asOrganization(readServiceRows(org, range, NAMESPACE, SERVICE));
-    expect(rows.map((row) => row.series)).toEqual([`${org}-container`, `${org}-container`]);
+    expect(rows.map((row) => row.series)).toEqual([`${org}-container|||`, `${org}-container|||`]);
     expect(rows.map((row) => row.value)).toEqual([100, 100 + GROWTH[org]]);
   }
   expect(await asOrganization(readServiceRows("org-c", range, NAMESPACE, SERVICE))).toEqual([]);
@@ -110,4 +135,29 @@ it("reads crash events for the session's Organization alone", async () => {
     expect(crashes.map((crash) => [crash.container, crash.serviceId, crash.reason])).toEqual([[`${org}-container`, `${org}-service`, "out_of_memory"]]);
   }
   expect(await asOrganization(readCrashEvents("org-c", range, { namespace: NAMESPACE, service: SERVICE }))).toEqual([]);
+}, 60_000);
+
+it("reads each core's state, each block device and each interface as its own series, so growth sums across them", async () => {
+  const reading = { ...range, at: NOW * 1000 };
+  const host = await asOrganization(readHostRows("org-a", range, FAN_MACHINE));
+  expect(new Set(host.map((row) => row.series)).size).toBe(4);
+  expect(hostHistory(host, [], reading).points.map((point) => point.cpuBusy)).toEqual([0.5]);
+  const service = await asOrganization(readServiceRows("org-a", range, NAMESPACE, FAN_SERVICE));
+  expect(new Set(service.map((row) => row.series)).size).toBe(2);
+  expect(serviceHistory(service, [], reading).points.map((point) => point.diskRead)).toEqual([2e6]);
+}, 60_000);
+
+it("keeps the newest crash events and counts every one when a replica crashes more often than the read lists", async () => {
+  const hour = { window: { from: (NOW - 3600) * 1000, to: NOW * 1000 }, stepMs: 20_000 };
+  const filter = { namespace: NAMESPACE, service: LOOP_SERVICE };
+  const crashes = await asOrganization(readCrashEvents("org-a", hour, filter));
+  expect(crashes).toHaveLength(500);
+  expect(crashes.at(-1)?.at).toBe((NOW - 10) * 1000);
+  expect(crashes.map((crash) => crash.at)).toEqual([...crashes.map((crash) => crash.at)].sort((left, right) => left - right));
+  expect(await asOrganization(countCrashEvents("org-a", hour, filter))).toEqual({ oomKills: 0, exits: LOOP_EVENTS });
+  expect(await asOrganization(countCrashEvents("org-a", hour, { ...filter, namespaces: [NAMESPACE] }))).toEqual({ oomKills: 0, exits: LOOP_EVENTS });
+  expect(await asOrganization(countCrashEvents("org-a", hour, { ...filter, namespaces: ["elsewhere"] }))).toEqual({ oomKills: 0, exits: 0 });
+  expect(await asOrganization(countCrashEvents("org-a", hour, { ...filter, namespaces: [] }))).toEqual({ oomKills: 0, exits: 0 });
+  expect(await asOrganization(countCrashEvents("org-a", hour, { machine: "another-machine" }))).toEqual({ oomKills: 0, exits: 0 });
+  expect(await asOrganization(countCrashEvents("org-b", hour, filter))).toEqual({ oomKills: 0, exits: 0 });
 }, 60_000);

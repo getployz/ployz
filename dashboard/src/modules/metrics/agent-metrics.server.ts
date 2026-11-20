@@ -7,7 +7,7 @@ import { hostHistory, serviceHistory, type CrashEvent } from "./metrics-history"
 import { serverMetrics, serviceMetrics } from "./metrics-model";
 import { stepFor } from "./metrics-series";
 import { gapNotes, serverRows, serviceRows } from "./metrics-summary";
-import { machineIsReporting, readCrashEvents, readDiskRows, readHostRows, readServiceRows } from "./metrics-store.server";
+import { countCrashEvents, machineIsReporting, readCrashEvents, readDiskRows, readHostRows, readServiceRows } from "./metrics-store.server";
 
 /** What the agent hears: the answer, or that Cloud keeps no metrics. */
 export type AgentMetrics = { readonly type: "not_configured" } | { readonly type: "answered"; readonly answer: MetricsAnswer };
@@ -39,10 +39,12 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
   const range = { window, stepMs: stepFor(window) };
   const reading = { ...range, at: now };
   const { subject } = query;
-  const everyCrash = yield* readCrashEvents(organizationId, range, subject.kind === "service" ? { namespace: subject.namespace, service: subject.service } : {});
   // A token held to Environments hears of crashes in the Namespaces of those Environments only; `null` is every Namespace.
-  const crashes = everyCrash.filter((crash) => (subject.kind === "service" || crash.machine === subject.server.machine)
-    && (readable === null || readable.includes(crash.namespace)));
+  const crashFilter = {
+    ...(subject.kind === "service" ? { namespace: subject.namespace, service: subject.service } : { machine: subject.server.machine }),
+    ...(readable !== null && { namespaces: readable }),
+  };
+  const [crashes, counted] = yield* Effect.all([readCrashEvents(organizationId, range, crashFilter), countCrashEvents(organizationId, range, crashFilter)]);
   const notes: string[] = [];
   let metrics: MetricsAnswer["metrics"] = [];
   if (subject.kind === "service") {
@@ -65,16 +67,19 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
   if (metrics.length === 0 && notes.length === 0) notes.push("No readings in this range.");
   if (query.deployment !== null) notes.push("Metrics and crash events aren’t split by Deployment, so these cover every Deployment.");
   notes.push("Restarts aren’t recorded.");
+  const total = counted.oomKills + counted.exits;
+  const listed = Math.min(crashes.length, EVENT_LIMIT);
+  if (total > listed) notes.push(`The events are the newest ${listed} of ${total} crashes; the counts cover all ${total}.`);
   // SAFETY: crash events carry the Machine ids Cloud's Collector stamped, which are the ids `serverNames` keys by.
   const machines = [...new Set(crashes.map((crash) => crash.machine))] as MachineId[];
   const names = yield* serverNames(organizationId, machines);
   const newest = [...crashes].sort((left, right) => right.at - left.at);
   const answer: MetricsAnswer = {
     since, until, metrics,
-    oom_kills: crashes.filter((crash) => crash.reason === "out_of_memory").length,
-    exits: crashes.filter((crash) => crash.reason === "exit_nonzero").length,
+    oom_kills: counted.oomKills,
+    exits: counted.exits,
     restarts: 0,
-    events: newest.slice(0, EVENT_LIMIT).map((crash) => eventOf(crash, names)),
+    events: newest.slice(0, listed).map((crash) => eventOf(crash, names)),
     notes,
     seen: { seen_by: null, observed_at: until, read_at: until, age_seconds: 0, from: "cloud_cache", unanswered: [] },
   };

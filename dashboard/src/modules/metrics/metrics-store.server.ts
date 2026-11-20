@@ -25,6 +25,8 @@ const names = (metrics: Readonly<Record<string, string>>) => Object.values(metri
 const BUCKET = "intDiv(toUnixTimestamp(TimeUnix), {step:UInt32}) * {step:UInt32}";
 /** A counter keeps its last value in the bucket, so growth between buckets is exact. A gauge keeps its mean. */
 const VALUE = "if(any(IsMonotonic), argMax(Value, TimeUnix), avg(Value))";
+/** The identity of one series of a counter: every attribute that fans it out. Two with different identities grow on their own. */
+const identity = (...parts: readonly string[]) => `concat(${parts.join(", '|', ")})`;
 const IN_RANGE = "TimeUnix >= fromUnixTimestamp64Milli({from:Int64}) AND TimeUnix <= fromUnixTimestamp64Milli({to:Int64})";
 
 /** One bucket earlier than the range, so the first bucket in view has a predecessor to grow from. */
@@ -34,7 +36,7 @@ export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (
   return yield* queryObserveOrg(organizationId, `
     SELECT MetricName AS metric,
       ResourceAttributes['ployz.machine'] AS machine,
-      ResourceAttributes['container.id'] AS series,
+      ${identity("ResourceAttributes['container.id']", "Attributes['interface']", "Attributes['device_major']", "Attributes['device_minor']")} AS series,
       '' AS state, '' AS direction, '' AS device,
       Attributes['operation'] AS operation,
       ${BUCKET} AS bucket,
@@ -53,7 +55,7 @@ export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organi
   return yield* queryObserveOrg(organizationId, `
     SELECT MetricName AS metric,
       ResourceAttributes['ployz.machine'] AS machine,
-      '' AS series,
+      ${identity("Attributes['cpu']", "Attributes['state']", "Attributes['device']", "Attributes['direction']")} AS series,
       Attributes['state'] AS state,
       Attributes['direction'] AS direction,
       Attributes['device'] AS device,
@@ -65,7 +67,7 @@ export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organi
       AND MetricName IN (${names(HOST_METRICS)})
       AND ResourceAttributes['ployz.machine'] = {machine:String}
       AND ${IN_RANGE}
-    GROUP BY metric, machine, state, direction, device, bucket
+    GROUP BY metric, machine, series, state, direction, device, bucket
     ORDER BY bucket`, params({ ...bounds(range), machine }), metricRow);
 });
 
@@ -102,14 +104,48 @@ export const machineIsReporting = Effect.fn("MetricsStore.machineIsReporting")(f
  */
 const attribute = (key: string) => `if(mapContains(LogAttributes, '${key}'), LogAttributes['${key}'], ResourceAttributes['${key}'])`;
 
-/** Narrows crash events to one Service. With neither field set, every Service in the Organization matches. */
-export type CrashFilter = { readonly namespace?: string; readonly service?: string };
+/**
+ * Narrows crash events. With nothing set, every Service in the Organization matches. `namespaces` is the list a caller
+ * may read: none means no event matches, and leaving it out means every Namespace.
+ */
+export type CrashFilter = {
+  readonly namespace?: string;
+  readonly service?: string;
+  readonly machine?: string;
+  readonly namespaces?: readonly string[];
+};
 
-/** Out-of-memory kills and non-zero exits of a Service's containers in the range, newest last. */
+/** The newest crash events a read returns. A crash loop needs only its latest few, so older ones go first. */
+export const CRASH_EVENT_LIMIT = 500;
+
+const crashFilter = (filter: CrashFilter) => {
+  const listed = (filter.namespaces ?? []).map((namespace, index) => [`readable${index}`, namespace] as const);
+  const clauses = [
+    filter.namespace === undefined ? "" : `AND ${attribute("ployz.namespace")} = {namespace:String}`,
+    filter.service === undefined ? "" : `AND ${attribute("ployz.service.name")} = {service:String}`,
+    filter.machine === undefined ? "" : "AND ResourceAttributes['ployz.machine'] = {machine:String}",
+    filter.namespaces === undefined ? "" : listed.length === 0 ? "AND 0" : `AND ${attribute("ployz.namespace")} IN (${listed.map(([name]) => `{${name}:String}`).join(", ")})`,
+  ].join("\n      ");
+  return {
+    clauses,
+    values: {
+      ...(filter.namespace !== undefined && { namespace: filter.namespace }),
+      ...(filter.service !== undefined && { service: filter.service }),
+      ...(filter.machine !== undefined && { machine: filter.machine }),
+      ...Object.fromEntries(listed),
+    },
+  };
+};
+
+const EVENT_KEY = `if(${attribute("ployz.event.id")} != '', ${attribute("ployz.event.id")}, concat(${attribute("container.id")}, toString(Timestamp)))`;
+const CRASH_WHERE = `OrgId = {org:String}
+      AND Timestamp >= fromUnixTimestamp64Milli({from:Int64}) AND Timestamp <= fromUnixTimestamp64Milli({to:Int64})
+      AND ${attribute("ployz.exit.reason")} IN ('out_of_memory', 'exit_nonzero')`;
+
+/** The newest `CRASH_EVENT_LIMIT` out-of-memory kills and non-zero exits in the range, oldest first. `countCrashEvents` says how many there are. */
 export const readCrashEvents = Effect.fn("MetricsStore.crashEvents")(function* (organizationId: string, { window }: StoreRange, filter: CrashFilter = {}) {
-  const namespace = filter.namespace === undefined ? "" : `AND ${attribute("ployz.namespace")} = {namespace:String}`;
-  const service = filter.service === undefined ? "" : `AND ${attribute("ployz.service.name")} = {service:String}`;
-  return yield* queryObserveOrg(organizationId, `
+  const { clauses, values } = crashFilter(filter);
+  const newestFirst = yield* queryObserveOrg(organizationId, `
     SELECT toFloat64(toUnixTimestamp64Milli(Timestamp)) AS at,
       ResourceAttributes['ployz.machine'] AS machine,
       ${attribute("container.id")} AS container,
@@ -119,15 +155,25 @@ export const readCrashEvents = Effect.fn("MetricsStore.crashEvents")(function* (
       ${attribute("ployz.exit.reason")} AS reason,
       toInt32OrNull(${attribute("ployz.exit.code")}) AS exitCode
     FROM otel.otel_logs
-    WHERE OrgId = {org:String}
-      AND Timestamp >= fromUnixTimestamp64Milli({from:Int64}) AND Timestamp <= fromUnixTimestamp64Milli({to:Int64})
-      AND ${attribute("ployz.exit.reason")} IN ('out_of_memory', 'exit_nonzero')
-      ${namespace} ${service}
-    ORDER BY Timestamp
-    LIMIT 1 BY if(${attribute("ployz.event.id")} != '', ${attribute("ployz.event.id")}, concat(container, toString(Timestamp)))
-    LIMIT 500`, params({
-    from: window.from, to: window.to,
-    ...(filter.namespace !== undefined && { namespace: filter.namespace }),
-    ...(filter.service !== undefined && { service: filter.service }),
-  }), crashRow);
+    WHERE ${CRASH_WHERE}
+      ${clauses}
+    ORDER BY Timestamp DESC
+    LIMIT 1 BY ${EVENT_KEY}
+    LIMIT ${CRASH_EVENT_LIMIT}`, params({ from: window.from, to: window.to, ...values }), crashRow);
+  return [...newestFirst].reverse();
+});
+
+const countRow = Schema.Struct({ reason: Schema.String, events: Schema.Number });
+
+/** How many out-of-memory kills and non-zero exits the range holds, whatever `readCrashEvents` returns of them. */
+export const countCrashEvents = Effect.fn("MetricsStore.countCrashEvents")(function* (organizationId: string, { window }: StoreRange, filter: CrashFilter = {}) {
+  const { clauses, values } = crashFilter(filter);
+  const rows = yield* queryObserveOrg(organizationId, `
+    SELECT ${attribute("ployz.exit.reason")} AS reason, toFloat64(uniqExact(${EVENT_KEY})) AS events
+    FROM otel.otel_logs
+    WHERE ${CRASH_WHERE}
+      ${clauses}
+    GROUP BY reason`, params({ from: window.from, to: window.to, ...values }), countRow);
+  const of = (reason: string) => rows.find((row) => row.reason === reason)?.events ?? 0;
+  return { oomKills: of("out_of_memory"), exits: of("exit_nonzero") };
 });

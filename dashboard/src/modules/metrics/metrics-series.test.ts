@@ -29,6 +29,12 @@ describe("counter rates", () => {
     expect(servicePoints(rows, window, STEP).map((point) => point.netIn)).toEqual([50, 30]);
   });
 
+  it("adds the growth of every block device, so a Service reading two disks is not read as one", () => {
+    const read = (bucket: number, device: string, value: number) => row("container.blockio.io_service_bytes_recursive", bucket, value, { operation: "read", series: `c1|||${device}` });
+    const rows = [0, 10, 20].flatMap((bucket, index) => [read(bucket, "8:0", 1e6 + index * 10e6), read(bucket, "253:0", 5e9 + index * 10e6)]);
+    expect(servicePoints(rows, window, STEP).map((point) => point.diskRead)).toEqual([2e6, 2e6]);
+  });
+
   it("keeps a series on its own Machine", () => {
     const rows = [
       row("container.cpu.usage.total", 0, 0, { machine: "a" }),
@@ -48,6 +54,26 @@ describe("host points", () => {
       cpu(20, "user", 2), cpu(20, "idle", 5),
     ];
     expect(hostPoints(rows, [], window, STEP).map((point) => point.cpuBusy)).toEqual([10 / 100]);
+  });
+
+  /** One counter per core and state, each growing by its own amount per bucket, as hostmetrics sends them. */
+  const cores = (growth: readonly Readonly<Record<string, number>>[], buckets = [0, 10, 20, 30]) =>
+    buckets.flatMap((bucket, index) => growth.flatMap((states, core) =>
+      Object.entries(states).map(([state, grow]) => row("system.cpu.time", bucket, 1000 * (core + 1) + index * grow, { state, series: `cpu${core}|${state}` }))));
+  const busy = (rows: readonly MetricRow[]) => hostPoints(rows, [], window, STEP).map((point) => point.cpuBusy);
+
+  it("gives a core's busy share across all its states, and none for the bucket with no predecessor", () => {
+    expect(busy(cores([{ user: 2, system: 1, idle: 7 }]))).toEqual([0.3, 0.3, 0.3]);
+  });
+
+  it("shares the growth of every core, so one pinned core of four is 25% busy", () => {
+    const pinned = { user: 10, idle: 0 };
+    const idle = { user: 0, idle: 10 };
+    expect(busy(cores([pinned, idle, idle, idle]))).toEqual([0.25, 0.25, 0.25]);
+  });
+
+  it("does not count a core waiting for IO as busy", () => {
+    expect(busy(cores([{ user: 1, idle: 4, wait: 5 }]))).toEqual([0.1, 0.1, 0.1]);
   });
 
   it("reads network rates by interface and the disk breakdown", () => {
