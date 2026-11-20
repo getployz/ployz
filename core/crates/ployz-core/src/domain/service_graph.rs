@@ -375,6 +375,32 @@ impl ServiceMountGraph {
         }
     }
 
+    /// These mounts with `birth` asked for each managed Volume that carries none, by the
+    /// name it is declared under. Every alias of one Volume gets the same answer, so
+    /// aliases stay compatible.
+    #[must_use]
+    pub fn with_births(
+        &self,
+        mut birth: impl FnMut(&DockerVolumeName) -> Option<crate::VolumeBirth>,
+    ) -> Self {
+        let volumes = self
+            .volumes
+            .volumes
+            .iter()
+            .map(|volume| ServiceVolume {
+                reference: volume.reference.clone(),
+                source: volume.source.born(&mut birth),
+            })
+            .collect();
+        Self {
+            volumes: ServiceVolumeGraph {
+                volumes,
+                mounts: self.volumes.mounts.clone(),
+            },
+            configs: self.configs.clone(),
+        }
+    }
+
     pub(crate) fn into_parts(self) -> (ServiceVolumeGraph, ServiceConfigGraph) {
         (self.volumes, self.configs)
     }

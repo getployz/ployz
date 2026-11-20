@@ -42,6 +42,7 @@ fn change(spec: &RequestedServiceSpec, pins: &BTreeMap<ServiceName, String>) -> 
         std::slice::from_ref(spec),
         &Namespace::parse("app").unwrap(),
         pins,
+        &ployz_core::authority::Mounts::unnamed(ployz_core::authority::Timestamp::now()),
     )
     .unwrap()
     .try_into()

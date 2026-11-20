@@ -398,6 +398,27 @@ impl VolumeSource {
         cleared
     }
 
+    /// This managed source carrying `birth`, when it carries none yet. A Legacy source of
+    /// any other kind, or one already born, stays as it is.
+    #[must_use]
+    pub(crate) fn born(
+        &self,
+        birth: impl FnOnce(&DockerVolumeName) -> Option<VolumeBirth>,
+    ) -> Self {
+        let mut born = self.clone();
+        if let RawVolumeSource::Ordinary {
+            name, birth: held, ..
+        }
+        | RawVolumeSource::Provisioned {
+            name, birth: held, ..
+        } = &mut born.source
+            && held.is_none()
+        {
+            *held = birth(name);
+        }
+        born
+    }
+
     pub(crate) fn is_resolved(&self) -> bool {
         !matches!(
             self.source,

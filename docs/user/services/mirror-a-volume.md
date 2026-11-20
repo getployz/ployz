@@ -11,6 +11,10 @@ A volume has one mirror for now. Every server with storage needs a newer Ployz b
 can have one. Until then the volume's **Copies** only shows, and names the servers to upgrade,
 for example "Upgrade db-1 to a newer Ployz". The 15-minute refresh waits too.
 
+A volume first deployed on this version of Ployz also needs it on every server that holds a copy.
+Adding a copy on an older server is refused, for example with "Upgrade web-2 first. uploads needs
+a newer Ployz on every Server that holds it." Older volumes mirror as before.
+
 ## Add a mirror
 
 1. Open a managed volume after its first deploy and go to **Copies**.

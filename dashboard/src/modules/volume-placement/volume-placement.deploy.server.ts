@@ -10,7 +10,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
+import { originBlockers, originUpgradeMessage, placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, UNANSWERED, view } from "#/modules/volume-placement/volume-placement.server";
 import {
@@ -320,6 +320,35 @@ export const unlessPlacementRefused = <A, E, R>(organizationId: string, write: E
     return yield* write;
   });
 
+/** The Servers a born Volume would be held on that can't check where its data began, by name. Legacy Volumes name none. */
+export type OriginReader = (organizationId: string, servers: readonly MachineId[]) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
+
+export const readOriginBlockers: OriginReader = (organizationId, servers) => firstRuntimeFrame(organizationId).pipe(
+  Effect.flatMap((frame) => frame === null ? Effect.fail("no Server answered") : Effect.succeed(originBlockers(frame.machines.map((entry) => ({
+    id: entry.machine.id, name: entry.machine.name, capabilities: entry.machine.runtime.capabilities ?? [],
+  })), servers))),
+);
+
+/**
+ * `write` runs only once every Server in `placement` can hold Volume `volumeId`: any Server for a Legacy Volume, and only
+ * one that checks where a copy's data began for a born one.
+ */
+export const unlessOriginRefused = <A, E, R>(
+  organizationId: string,
+  { environment, volumeId, placement }: { readonly environment: EnvironmentRef; readonly volumeId: string; readonly placement: Placement },
+  write: Effect.Effect<A, E, R>,
+  read: OriginReader = readOriginBlockers,
+) => Effect.gen(function* () {
+  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  const volume = volumes.find((entry) => entry.id === volumeId);
+  if (volume?.born !== true) return yield* write;
+  const blockers = yield* read(organizationId, [placement.primary, ...placement.mirrors]).pipe(Effect.catch(() => Effect.succeed(null)));
+  if (blockers === null) return { ok: false, refusal: UNANSWERED } as const;
+  if (blockers.length === 0) return yield* write;
+  const refusal: StoreRefusal = { code: "upgrade_required", message: originUpgradeMessage(volume.name, blockers), details: { servers: [...blockers] } };
+  return { ok: false, refusal } as const;
+});
+
 /** Delete on an old copy in the volume drawer. */
 export const deleteCopy = Effect.fn("VolumePlacement.deleteCopy")(function* (
   actor: Actor,
@@ -332,13 +361,15 @@ export const deleteCopy = Effect.fn("VolumePlacement.deleteCopy")(function* (
 
 const NO_COPIES: CopyObservation["copies"] = [];
 
-type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string };
+type EnvironmentVolume = { readonly volumeId: string; readonly name: string; readonly environment: EnvironmentRef; readonly dockerVolume: string; readonly born: boolean };
 
 /** The Volumes of the Environment that owns Namespace `owned`. */
 const ownedVolumes = Effect.fn("VolumePlacement.ownedVolumes")(function* (organizationId: string, owned: OwnedNamespace) {
   const environment: EnvironmentRef = { project: owned.project, environment: owned.environment };
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
-  return volumes.map((volume): EnvironmentVolume => ({ volumeId: volume.id, name: volume.name, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id) }));
+  return volumes.map((volume): EnvironmentVolume => ({
+    volumeId: volume.id, name: volume.name, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id), born: volume.born === true,
+  }));
 });
 
 /** A Volume a sync has something to say about: one with a slot anywhere, or with two primaries to settle. */
@@ -393,7 +424,7 @@ export const refreshMirrors = Effect.fn("VolumePlacement.refreshMirrors")(functi
  */
 export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(function* (
   organizationId: string, server: MachineId, accepting: readonly MachineId[], unrouted: readonly MachineId[] = [],
-  observe: CopyObserver = observeOrganizationCopies, inspect: MemberInspector = inspectVolumeCopies,
+  observe: CopyObserver = observeOrganizationCopies, inspect: MemberInspector = inspectVolumeCopies, origins: OriginReader = readOriginBlockers,
 ) {
   const copies = yield* observe(organizationId);
   const { drizzle } = yield* Database;
@@ -418,6 +449,15 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
       const upgraded = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, unrouted, server, owed !== null);
       const to = members.find((member) => member.machine.id === upgraded?.primary);
       blocked.push({ volume: volume.name, upgrade: to?.machine.name ?? null });
+      continue;
+    }
+    // A born Volume moves only onto Servers that check where its data began.
+    const unchecked = volume.born
+      ? yield* origins(organizationId, [staged.primary, ...staged.mirrors]).pipe(Effect.catch(() => Effect.succeed(null)))
+      : [];
+    if (unchecked === null || unchecked.length > 0) {
+      stuck.push(volume.name);
+      blocked.push({ volume: volume.name, upgrade: unchecked?.[0] ?? null });
       continue;
     }
     const written = yield* stagePlacement(organizationId, {

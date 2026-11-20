@@ -18,6 +18,10 @@ const OTHER: &str = "nginx@sha256:0000000000000000000000000000000000000000000000
 const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 const SEALED_B: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==";
 
+fn unnamed() -> Mounts<'static> {
+    Mounts::unnamed(Timestamp::from_millis(0).unwrap())
+}
+
 fn signer(seed: u8) -> Signer {
     Signer::from_seed(&[seed; 32])
 }
@@ -326,7 +330,8 @@ fn derived_fields_change_nothing() {
         &["mode"],
         json!({"mode": "replicated", "replicas": 7}),
     ));
-    let shown = |spec| ApprovedChange::of(&[spec], &namespace(), &BTreeMap::new()).unwrap();
+    let shown =
+        |spec| ApprovedChange::of(&[spec], &namespace(), &BTreeMap::new(), &unnamed()).unwrap();
     assert_eq!(
         shown(counted.clone()),
         shown(base),
@@ -629,6 +634,7 @@ fn a_pinned_change_signs_the_digest_of_the_spec_the_runner_sends() {
         std::slice::from_ref(&tagged),
         &namespace(),
         &BTreeMap::from([(web(), PINNED.to_owned())]),
+        &unnamed(),
     )
     .unwrap();
     let [change] = changes.as_slice() else {
@@ -968,11 +974,16 @@ fn a_deploy_step_in_a_bundle_no_trusted_key_signed_is_refused() {
 /// What the approver reads before signing `spec`, the same lines on the CLI and in a
 /// browser.
 fn draft_lines(spec: Value) -> Vec<String> {
-    ApprovedChange::of(&[requested(spec)], &namespace(), &BTreeMap::new())
-        .unwrap()
-        .iter()
-        .flat_map(ApprovedChange::lines)
-        .collect()
+    ApprovedChange::of(
+        &[requested(spec)],
+        &namespace(),
+        &BTreeMap::new(),
+        &unnamed(),
+    )
+    .unwrap()
+    .iter()
+    .flat_map(ApprovedChange::lines)
+    .collect()
 }
 
 /// Each field Cloud could plant in the plan it relays changes what the approver reads

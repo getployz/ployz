@@ -11,7 +11,8 @@ use ployz_core::authority::rule::{BUILDER_SHA, Builder};
 use ployz_core::authority::rule_draft::RuleDraftError;
 use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
-    AutoDeployRule, CommitSha, RuleId, RuleSummary, RuleTerms, Signed, Signer, SignerKey, Timestamp,
+    AutoDeployRule, Births, CommitSha, RuleId, RuleSummary, RuleTerms, Signed, Signer, SignerKey,
+    Timestamp,
 };
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{ApproveRule, RuleQuery};
@@ -105,7 +106,7 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let view = store.read(&RuleQuery {
         environment: environment.clone(),
     })?;
-    let basis = view.basis();
+    let mut basis = view.basis();
     let terms = RuleTerms {
         cluster: enforcing.cluster,
         machines: enforcing.machines,
@@ -116,12 +117,12 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
         issued_at: Timestamp::now(),
         signer: SignerKey::Device(signer.public().into()),
     };
-    let mut rule = AutoDeployRule::draft(&basis, &names, terms).map_err(drafting)?;
+    let mut rule = AutoDeployRule::draft(&mut basis, &names, terms).map_err(drafting)?;
     rule.source.owner_id = owner(root, &rule.source.repository, rule.source.repository_id)?;
     let repository = rule.source.repository.clone();
     let branch = rule.source.branch.clone();
     show(view.environment.name.as_str(), &rule.summary(&basis));
-    keep(&store, environment, &rule, &signer)?;
+    keep(&store, environment, (&rule, &basis.minted), &signer)?;
     crate::ui::stream(format_args!(
         "Approved. Every push to {branch} now deploys {} with these settings.",
         joined(&names)
@@ -165,7 +166,7 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
             ),
         )
     })?;
-    keep(&store, environment, &rule, &signer)?;
+    keep(&store, environment, (&rule, &Births::new()), &signer)?;
     crate::ui::stream(format_args!(
         "Automatic deploys are off. Pushes to {} no longer deploy on servers that enforce \
          device approval.",
@@ -261,13 +262,14 @@ pub(super) fn owner(root: &ArgMatches, repository: &str, repository_id: u64) -> 
 fn keep(
     store: &Store<'_>,
     environment: ployz_store::EnvironmentRef,
-    rule: &AutoDeployRule,
+    (rule, births): (&AutoDeployRule, &Births),
     signer: &Signer,
 ) -> Result<(), Error> {
     let signed = Signed::sign(rule, signer).map_err(Error::command)?;
     store.write(&ApproveRule {
         environment,
         rule: Box::new(signed),
+        births: births.clone(),
     })?;
     Ok(())
 }
@@ -277,6 +279,7 @@ fn drafting(error: RuleDraftError) -> Error {
     let code = match error {
         RuleDraftError::NotSaved(_) | RuleDraftError::NoRule => RpcErrorCode::NotFound,
         RuleDraftError::Sealed(_) | RuleDraftError::Canonical(_) => return Error::command(error),
+        RuleDraftError::Birth(_) => RpcErrorCode::InvalidArgument,
         RuleDraftError::NotGit(_)
         | RuleDraftError::Disconnected(_)
         | RuleDraftError::TwoBranches { .. }

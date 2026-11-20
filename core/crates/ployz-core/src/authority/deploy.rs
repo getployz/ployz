@@ -17,6 +17,7 @@ use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
+    birth::Mounts,
     canonical::{self, CanonicalError, drop_nulls},
     rule_draft::settings,
     shown::Shown,
@@ -240,7 +241,8 @@ pub struct ApprovedChange {
 
 impl ApprovedChange {
     /// One change per Service of `target`, sorted by name and distinct. A Service in `pins` is approved with its image set
-    /// to the pinned reference, so the digest covers the spec the runner sends.
+    /// to the pinned reference, so the digest covers the spec the runner sends. `mounts`
+    /// names the data each managed Volume mount holds.
     ///
     /// # Errors
     /// Returns a [`CanonicalError`] when a spec has no [`PayloadDigest`] in `namespace`.
@@ -248,6 +250,7 @@ impl ApprovedChange {
         target: &[RequestedServiceSpec],
         namespace: &Namespace,
         pins: &BTreeMap<ServiceName, String>,
+        mounts: &Mounts<'_>,
     ) -> Result<Vec<Self>, CanonicalError> {
         let mut changes = target
             .iter()
@@ -262,7 +265,10 @@ impl ApprovedChange {
                     image: pinned.container.image,
                     tag,
                     host: host_sensitive(spec).into_iter().map(String::from).collect(),
-                    settings: settings(spec).into_iter().map(String::from).collect(),
+                    settings: settings(spec, mounts)
+                        .into_iter()
+                        .map(String::from)
+                        .collect(),
                 })
             })
             .collect::<Result<Vec<_>, CanonicalError>>()?;

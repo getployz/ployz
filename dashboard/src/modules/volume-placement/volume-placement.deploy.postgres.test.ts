@@ -6,7 +6,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
-  advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessPlacementRefused,
+  advancePlacement, type MemberInspector, refreshMirrors, releasePlacementClaims, stageOffServer, unlessOriginRefused, unlessPlacementRefused,
 } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { listPlacements, stagePlacement, stampPlacements, writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
 import { placementTargets } from "#/modules/volume-placement/volume-placement";
@@ -37,6 +37,8 @@ describe("deploying a Volume placement", () => {
   let restoredStorage: VolumeKind;
   /** What the Store recorded for `data` once deployed; none before its first Deploy. */
   let recordedStorage: number | undefined;
+  /** An approval recorded where `data`'s data began. */
+  let born = false;
   /** Volumes discarded from the Store. */
   const discarded = new Set<string>();
   const inspect: MemberInspector = () => Effect.succeed(members);
@@ -54,7 +56,7 @@ describe("deploying a Volume placement", () => {
           }
           return {
             environment: { id: "env-1", project: "shop", name: "production", revision: 1 },
-            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 }, recorded_storage: recordedStorage }, { id: "vol2", name: "data-1430", storage: restoredStorage }]
+            volumes: [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 1 }, recorded_storage: recordedStorage, born }, { id: "vol2", name: "data-1430", storage: restoredStorage }]
               .filter((volume) => !discarded.has(volume.id)),
           };
         },
@@ -89,6 +91,7 @@ describe("deploying a Volume placement", () => {
     discarded.clear();
     restoredStorage = { kind: "provisioned", maximumBytes: 1 };
     recordedStorage = undefined;
+    born = false;
     send.mockClear();
     await harness.pool.query(`
       truncate table organization cascade;
@@ -699,6 +702,25 @@ describe("deploying a Volume placement", () => {
 
     it("stages once every one runs the verbs", async () => {
       expect(await stage(() => Effect.succeed([]))).toMatchObject({ ok: true, placement: { staged: { primary: web("web-2") } } });
+    });
+  });
+
+  describe("gating a born Volume on the Servers that would hold it", () => {
+    const staged = { primary: web("web-2"), mirrors: [web("web-3")], deletes: [] };
+    const stage = (lacking: readonly string[]) => run(unlessOriginRefused(organizationId, { environment, volumeId, placement: staged },
+      stagePlacement(organizationId, { environment, volumeId, staged, mirrors: [] }), () => Effect.succeed(lacking)));
+
+    it("refuses a born Volume onto a Server that doesn't check origins, and stages nothing", async () => {
+      born = true;
+      expect(await stage(["web-3"])).toEqual({ ok: false, refusal: {
+        code: "upgrade_required", message: "Upgrade web-3 first. data needs a newer Ployz on every Server that holds it.", details: { servers: ["web-3"] },
+      } });
+      expect(await run(listPlacements(organizationId))).toEqual([]);
+    });
+
+    it("stages a Legacy Volume onto the same Servers", async () => {
+      born = false;
+      expect(await stage(["web-3"])).toMatchObject({ ok: true, placement: { staged: { primary: web("web-2") } } });
     });
   });
 

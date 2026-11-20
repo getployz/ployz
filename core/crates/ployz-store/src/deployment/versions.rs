@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    PayloadDigest, ProposalRef, Purpose, ServiceVersion, Signed, SignerKey, Statement, Timestamp,
-    deploy::content_addressed, version::MAX_PRESENTED,
+    Births, PayloadDigest, ProposalRef, Purpose, ServiceVersion, Signed, SignerKey, Statement,
+    Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
 };
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
@@ -35,6 +35,12 @@ pub struct PostedVersion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub pin: Option<TagPin>,
+    /// The births the approval minted for Volumes this Service's spec mounts first, by the
+    /// name the spec declares each under. The Store records them, so every later spec of
+    /// those Volumes carries them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional, as = "Option<Births>")]
+    pub births: Births,
 }
 
 /// A Saved image reference that names a tag, and the content-addressed image a client
@@ -94,12 +100,14 @@ enum Origin {
 }
 
 /// Keep each of `posted` and record it as what its Service of Deployment `id` runs, over
-/// what `id` already records for that Service. A statement already kept stays as it is.
+/// what `id` already records for that Service, and record the births it minted. A
+/// statement already kept stays as it is.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a statement whose body doesn't parse, names another
 /// Namespace or a Service `id` doesn't deploy, or names a Service an earlier statement
-/// already named, or a pin that isn't content-addressed; or a storage error.
+/// already named, or a pin that isn't content-addressed; what recording a birth refuses;
+/// or a storage error.
 pub(crate) fn post(
     tx: &mut dyn Tx,
     id: &DeploymentId,
@@ -122,7 +130,13 @@ pub(crate) fn post(
     let organization = crate::build::organization(tx, id)?;
     let mut record = record_of(tx, id)?;
     let mut named = BTreeSet::new();
-    for PostedVersion { statement, pin } in posted {
+    let mut births = Births::new();
+    for PostedVersion {
+        statement,
+        pin,
+        births: minted,
+    } in posted
+    {
         let body = statement.open().map_err(|refusal| {
             error::invalid(
                 format!("A signed version doesn't read: {refusal}"),
@@ -182,6 +196,20 @@ pub(crate) fn post(
                 pin: pin.clone(),
             },
         );
+        births.extend(
+            minted
+                .iter()
+                .map(|(name, birth)| (name.clone(), birth.clone())),
+        );
+    }
+    if !births.is_empty() {
+        let saved = super::held_revision(tx, &stored)?;
+        crate::volume::birth::record(
+            tx,
+            (&stored.summary.environment_id, stored.namespace()),
+            &saved,
+            &births,
+        )?;
     }
     write_record(tx, id, &record)
 }

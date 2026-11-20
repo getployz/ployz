@@ -133,6 +133,8 @@ Approving automatic deploys for production:
 Approved. Every push to main now deploys web, worker with these settings.
 ```
 
+A volume a service mounts shows as its own line, the way [`ployz deploy`](deployments.md#deploy-from-an-approved-device) shows it, such as `mounts uploads at /app/uploads, read-write: a new, empty volume`.
+
 It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
 
 To pin your own fork of the builder, add `--builder <owner>/build/.github/workflows/build.yml@<sha>`

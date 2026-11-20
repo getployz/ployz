@@ -171,6 +171,21 @@ and `-_./:@+` shows in double quotes. A sealed value shows by the name it was se
 its value, and a value built from text and sealed parts shows its text, quoted. Since the
 approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
 value before a deploy you approve.
+A volume Ployz manages shows as one line for each place a service mounts it, saying whose data it
+holds:
+
+```text
+  mounts uploads at /app/uploads, read-write: a new, empty volume
+  mounts previews at /srv/previews, read-write: data made as previews, 3 Nov 14:02 UTC, 16 days ago (Ployz Cloud calls it thumbs)
+  mounts db at /var/lib/postgresql/data, read-write: data from before this version of Ployz recorded where data began
+```
+
+The deploy that first mounts a volume makes it new and empty, and every later deploy names that
+data: the name it had then and when it began, with its name now in brackets when it changed.
+Renaming a service or a volume keeps the data. If a volume you expect to be new reads "data made
+…", Ployz Cloud is offering data you already have. Answer no and nothing starts. A
+[branch](../environments/environments.md) makes each of its volumes new on its first deploy.
+
 The signature doesn't cover where a service runs, how many replicas it runs, its
 [count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a
 deploy replaces them in, its pull policy, its CPU and memory limits or the largest size of a

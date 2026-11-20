@@ -72,7 +72,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
       {open === null ? null : (
         <RuleDialog organizationSlug={organizationSlug} view={view} scope={rule} ending={open === "end"}
           onClose={() => setOpen(null)}
-          commit={async (signed) => { await writer.commit({ command: "approve_rule", environment, rule: signed }); }}
+          commit={async (signed, births) => { await writer.commit({ command: "approve_rule", environment, rule: signed, births }); }}
           ownerQuery={githubRepositoryOwnerQueryOptions} />
       )}
     </SettingsSection>
@@ -81,7 +81,8 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
 
 /**
  * What turning a rule on, approving it again or turning it off asks: the rule as it would be signed, then one passkey
- * prompt. `commit` keeps the signed rule in the Store; `ownerQuery` reads who owns the repository on GitHub.
+ * prompt. `commit` keeps the signed rule in the Store, with the births of the Volumes it makes new; `ownerQuery` reads who
+ * owns the repository on GitHub.
  */
 export function RuleDialog({ organizationSlug, view, scope, ending, onClose, commit, ownerQuery }: {
   organizationSlug: string;
@@ -89,7 +90,7 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
   scope: ReturnType<typeof ruleScope>;
   ending: boolean;
   onClose: () => void;
-  commit: (rule: Signed) => Promise<void>;
+  commit: (rule: Signed, births: NonNullable<RuleDraft["births"]>) => Promise<void>;
   ownerQuery: typeof githubRepositoryOwnerQueryOptions;
 }) {
   const [busy, setBusy] = useState(false);
@@ -124,7 +125,7 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
     try {
       const draft = ending || target === null ? draftEnd(view) : draftRule(view, target, owner.data?.ownerId ?? 0);
       const rule = await answerRule(draft);
-      await commit(rule);
+      await commit(rule, draft.births ?? {});
       onClose();
     } catch (error) {
       // The Store's refusal toasts by itself; a passkey's or the draft's shows here.
