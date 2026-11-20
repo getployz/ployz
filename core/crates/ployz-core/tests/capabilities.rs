@@ -222,7 +222,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.image.pull-from-machine.v1",
             "ployz.build.grant.mint.v1",
             "ployz.build.grant.inspect.v1",
-            "ployz.metrics.history.v1",
+            "ployz.metrics.live.v1",
             "ployz.logs.retained-env.v1",
             "ployz.logs.history.v2",
             "ployz.logs.tail.v1",
@@ -347,7 +347,6 @@ const FIELD_FLOOR: &[&str] = &[
     "ployz.machine.storage-observation.v1",
     "ployz.machine.update.v1",
     "ployz.machine.upgrade.request.v1",
-    "ployz.metrics.history.v1",
     "ployz.rpc.describe-contract.v1",
     "ployz.runtime.watch.v1",
     "ployz.serving.routes.v1",
@@ -394,6 +393,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.rule.passkey.v1",
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
+    ),
+    (
+        "ployz.metrics.live.v1",
+        "refused legibly: `ployz metrics` names a Server whose daemon lacks it as not answering",
     ),
     (
         "ployz.image.pull.v1",
