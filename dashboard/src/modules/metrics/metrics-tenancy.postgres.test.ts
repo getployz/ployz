@@ -55,7 +55,7 @@ const MACHINE = "machine-1";
 const ORGANIZATIONS = ["org-a", "org-b"] as const;
 const NOW = Math.floor(Date.now() / 1000);
 /** Two buckets of ten seconds that the read window below covers. */
-const TIMES = [NOW - 120, NOW - 60];
+const TIMES = [NOW - 120, NOW - 60] as const;
 
 /** Each Organization's CPU counter grows by its own amount, so a leaked row changes the sum. */
 const GROWTH = { "org-a": 10, "org-b": 500 } as const;
