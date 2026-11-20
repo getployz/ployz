@@ -9102,6 +9102,7 @@ fn posted(
             tag: "nginx:1".to_owned(),
             image: image.to_owned(),
         }),
+        births: Default::default(),
     }
 }
 
@@ -9374,6 +9375,7 @@ fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_on
     let version = |namespace, service| ployz_store::PostedVersion {
         statement: statement((namespace, service), digest, at),
         pin: None,
+        births: Default::default(),
     };
     for refused in [
         vec![version("shop-staging", "web")],
@@ -9476,4 +9478,242 @@ fn a_deploy_carries_one_signed_version_for_each_of_more_services_than_a_request_
         })
         .collect();
     assert_eq!(pins, vec![(Some(P1), 1); 33]);
+}
+
+const DATA: &str = "00000000-0000-4000-8000-000000000005";
+
+/// Stage a Docker Volume `data` mounted by `web` at `/data`.
+fn data_volume(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &ployz_store::CreateVolume {
+                id: ployz_store::VolumeId::parse(DATA).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("data").unwrap(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+fn plan_at(store: &ConfigStore, who: &Actor, environment: EnvironmentRef) -> ployz_store::PlanView {
+    store
+        .read(
+            who,
+            &PlanQuery {
+                environment,
+                services: Vec::new(),
+                target: true,
+                deployment: None,
+            },
+        )
+        .unwrap()
+}
+
+/// The birth `spec` carries for the Volume declared as `vol-<DATA>`.
+fn data_birth(spec: &ployz_core::RequestedServiceSpec) -> Option<ployz_core::VolumeBirth> {
+    spec.volume_graph()
+        .volumes()
+        .iter()
+        .find(|volume| {
+            volume.source.docker_volume_name().map(|name| name.as_str())
+                == Some(format!("vol-{DATA}").as_str())
+        })
+        .and_then(|volume| volume.source.birth().cloned())
+}
+
+/// `web` signed as the plan lowers it now, minting every Volume the plan lists as unborn.
+fn signed_web(store: &ConfigStore, who: &Actor) -> ployz_store::PostedVersion {
+    use ployz_core::BirthNonce;
+    use ployz_core::authority::{PayloadDigest, Timestamp, birth};
+    let plan = plan_at(store, who, EnvironmentRef::default());
+    let mut target = plan.target.unwrap();
+    let now = Timestamp::now();
+    let minted = birth::mint(&mut target, (&plan.namespace, &plan.volumes), now, |_| {
+        BirthNonce::from_bytes([4; 16])
+    })
+    .unwrap();
+    let mut web = target
+        .into_iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    web.container.image = P1.to_owned();
+    ployz_store::PostedVersion {
+        statement: statement(
+            ("shop-production", "web"),
+            PayloadDigest::of(&web, &plan.namespace).unwrap(),
+            now,
+        ),
+        pin: Some(ployz_store::TagPin {
+            tag: "nginx:1".to_owned(),
+            image: P1.to_owned(),
+        }),
+        births: birth::carried(&web, &minted),
+    }
+}
+
+/// The approval that first mounts a Volume makes its birth. The Store records the one a
+/// signed version posts, the runner's spec carries it so the signature covers it, and it
+/// stays through a Volume and a Service rename, which each take one ordinary approval.
+#[test]
+fn the_birth_a_signed_version_posts_is_what_every_later_spec_carries() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    let declared = ployz_core::DockerVolumeName::for_resource(DATA).unwrap();
+    let plan = plan_at(&store, &who, EnvironmentRef::default());
+    assert!(plan.volumes[&declared].unborn, "{:?}", plan.volumes);
+    let posted = signed_web(&store, &who);
+    let birth = posted.births[&declared].clone();
+    admit_signed(&store, &who, 1, vec![posted.clone()]);
+
+    let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
+    let web = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(data_birth(web), Some(birth.clone()));
+    let ran = &claimed.ran[&ServiceName::parse("web").unwrap()];
+    assert_eq!(
+        ran.versions,
+        [posted.statement],
+        "the runner's spec is the signed one"
+    );
+    apply(&store, 1);
+
+    let again = plan_at(&store, &who, EnvironmentRef::default());
+    assert!(!again.volumes[&declared].unborn);
+    store
+        .write(
+            &who,
+            &ployz_store::RenameVolume {
+                environment: EnvironmentRef::default(),
+                volume: ployz_store::VolumeName::parse("data").unwrap(),
+                name: ployz_store::VolumeName::parse("files").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("front").unwrap(),
+            },
+        )
+        .unwrap();
+    let renamed = plan_at(&store, &who, EnvironmentRef::default());
+    assert_eq!(renamed.volumes[&declared].name, "files");
+    // A Service keeps its private address, which its spec runs as, through a rename.
+    let front = renamed
+        .target
+        .unwrap()
+        .into_iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(
+        data_birth(&front),
+        Some(birth),
+        "the renamed Volume keeps its data"
+    );
+}
+
+/// A birth is recorded once: another approval's birth for the same Volume, or a birth for
+/// a Volume whose data a Server may already hold, is refused and records nothing.
+#[test]
+fn a_volume_is_born_once_and_never_over_data_it_holds() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    let first = signed_web(&store, &who);
+    let mut second = signed_web(&store, &who);
+    for birth in second.births.values_mut() {
+        birth.nonce = ployz_core::BirthNonce::from_bytes([5; 16]);
+    }
+    admit_signed(&store, &who, 1, vec![first.clone()]);
+    apply(&store, 1);
+    assert_eq!(
+        code(admit_with(&store, &who, 2, vec![second])),
+        RpcErrorCode::Conflict
+    );
+    // The same birth posted again, as a retry posts it, changes nothing.
+    admit_signed(&store, &who, 2, vec![first]);
+
+    // A Volume a Deploy prepared before births holds Legacy data.
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    let unsigned = signed_web(&store, &who);
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    assert!(
+        !plan_at(&store, &who, EnvironmentRef::default())
+            .volumes
+            .values()
+            .any(|v| v.unborn)
+    );
+    assert_eq!(
+        code(admit_with(&store, &who, 2, vec![unsigned])),
+        RpcErrorCode::InvalidArgument
+    );
+    let web = plan_at(&store, &who, EnvironmentRef::default())
+        .target
+        .unwrap()
+        .into_iter()
+        .find(|spec| spec.name.as_str() == "web")
+        .unwrap();
+    assert_eq!(data_birth(&web), None, "Legacy data stays Legacy");
+}
+
+/// A Branch's Own Copy of a born Volume starts empty: its plan lists it unborn and lowers
+/// no birth, so its first approval mints its own.
+#[test]
+fn a_branch_copy_of_a_born_volume_is_unborn() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    admit_signed(&store, &who, 1, vec![signed_web(&store, &who)]);
+    apply(&store, 1);
+    let staging = EnvironmentRef {
+        project: Some(ployz_store::ProjectName::parse("shop").unwrap()),
+        environment: Some(ployz_store::EnvironmentName::parse("staging").unwrap()),
+    };
+    store
+        .write(
+            &who,
+            &ployz_store::CreateBranch {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000099").unwrap(),
+                from: EnvironmentRef::default(),
+                name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+                copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: false,
+                fix: None,
+            },
+        )
+        .unwrap();
+    let plan = plan_at(&store, &who, staging);
+    assert!(!plan.volumes.is_empty());
+    assert!(
+        plan.volumes.values().all(|volume| volume.unborn),
+        "{:?}",
+        plan.volumes
+    );
+    for spec in plan.target.unwrap() {
+        assert!(
+            spec.volume_graph()
+                .volumes()
+                .iter()
+                .all(|volume| volume.source.birth().is_none()),
+            "{spec:?}"
+        );
+    }
 }

@@ -1,6 +1,7 @@
 //! Deployment reads: the authored plan of a Deploy, one page of an Environment's
 //! Deployments, and one Deployment with its Node Outcomes.
 
+use ployz_core::authority::PlannedVolumes;
 use ployz_core::config::{SavedEnvironmentIntent, canonicalize_environment_intent};
 use ployz_core::{Region, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,11 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(optional, as = "Option<BTreeMap<ServiceName, BTreeMap<Region, u8>>>")]
     pub replicas: BTreeMap<ServiceName, BTreeMap<Region, NonZeroU8>>,
+    /// The Volumes `target` may mount, by the name it declares each under, when the query
+    /// asked for `target`: which ones the approval mints a birth for.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(optional, as = "Option<PlannedVolumes>")]
+    pub volumes: PlannedVolumes,
 }
 
 /// Where an Environment runs on the Servers.
@@ -301,15 +307,18 @@ pub(crate) fn plan(
         namespace.clone(),
         None,
     )?;
-    let lowered = match query.target {
-        true => Some(lowered_target(
-            tx,
-            who,
-            trusted,
-            (&environment, &target),
-            query,
-        )?),
-        false => None,
+    let (lowered, volumes) = match query.target {
+        true => (
+            Some(lowered_target(
+                tx,
+                who,
+                trusted,
+                (&environment, &target),
+                query,
+            )?),
+            crate::volume::birth::planned(tx, &environment.summary.id, &target)?,
+        ),
+        false => (None, PlannedVolumes::new()),
     };
     let regions = target
         .services
@@ -347,6 +356,7 @@ pub(crate) fn plan(
         target: lowered,
         regions,
         replicas,
+        volumes,
     })
 }
 
@@ -374,7 +384,7 @@ fn redeploy_plan(
             json!({ "deployment": id }),
         ));
     }
-    let target = match query.target {
+    let (target, volumes) = match query.target {
         true => {
             trusted.writes(&environment.summary.name)?;
             let saved = deployment::held_revision(tx, &stored)?;
@@ -384,9 +394,10 @@ fn redeploy_plan(
             if !stored.targeting().is_full() {
                 target.retain(|spec| lowered.shipped.contains(&spec.name));
             }
-            Some(target)
+            let volumes = crate::volume::birth::planned(tx, &environment.summary.id, &saved)?;
+            (Some(target), volumes)
         }
-        false => None,
+        false => (None, PlannedVolumes::new()),
     };
     let version = review::review(tx, &environment)?.view.version;
     Ok(PlanView {
@@ -398,6 +409,7 @@ fn redeploy_plan(
         target,
         regions: BTreeMap::new(),
         replicas: BTreeMap::new(),
+        volumes,
     })
 }
 
@@ -428,6 +440,7 @@ pub(crate) fn saved_target(
     crate::volume::size::held(tx, id, &mut saved.volumes)?;
     let branch = crate::branch::lowering(tx, id, &saved)?;
     let deployed = deployment::deployed_volumes(tx, id, &saved)?;
+    let born = crate::volume::birth::born(tx, id)?;
     let removals = deployment::ServiceRemovals::default();
     let ships = match services.is_empty() {
         true => deployment::Ships::All {
@@ -448,7 +461,7 @@ pub(crate) fn saved_target(
     deployment::lower(
         id,
         &saved,
-        &deployed,
+        (&deployed, &born),
         &ships,
         (namespace, cluster_domain),
         &branch,

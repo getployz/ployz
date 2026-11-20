@@ -7,6 +7,7 @@
 //! once, and each step travels unsigned with the bundle in its envelope.
 
 pub mod admission;
+pub mod birth;
 pub mod canonical;
 pub mod coverage;
 pub mod deploy;
@@ -24,6 +25,7 @@ pub mod validity;
 pub mod version;
 
 pub use admission::{DataReach, needs_signature};
+pub use birth::{BirthError, Births, Mounts, PlannedVolume, PlannedVolumes};
 pub use canonical::{CanonicalError, Timestamp};
 pub use deploy::{ApprovedChange, PayloadDigest};
 pub use join::{JoinApproval, Member};

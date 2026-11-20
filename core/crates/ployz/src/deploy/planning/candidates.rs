@@ -2,8 +2,9 @@
 //! snapshot.
 
 use ployz_core::{
-    MachineName, MachineObservation, MembershipObservation, Namespace, Region,
+    Claim, MachineName, MachineObservation, MembershipObservation, Namespace, Region,
     RequestedServiceSpec, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    VOLUME_ORIGIN_CAPABILITY,
 };
 
 use crate::deploy::{DeploySnapshot, ServerAway};
@@ -20,6 +21,9 @@ pub(super) enum Exclusion {
     Silent,
     /// The Machine does not accept this kind of work.
     WorkNotAccepted,
+    /// The Service mounts a born Volume, and the Machine doesn't advertise that it checks
+    /// where a Volume's data began.
+    ChecksNoOrigins,
     /// Membership is neither up nor down: no RPC goes to the Machine. A refusal names
     /// no Machine for this reason.
     Unreached,
@@ -43,6 +47,10 @@ impl DeploySnapshot {
         requested: &RequestedServiceSpec,
         namespace: &Namespace,
     ) -> Candidates<'_> {
+        let born = requested
+            .volume_graph()
+            .mounted_volumes()
+            .any(|volume| volume.source.birth().is_some());
         Candidates(
             self.machines
                 .iter()
@@ -67,6 +75,11 @@ impl DeploySnapshot {
                         == ineligible(ServicePlacementIneligibleReason::WorkNotAccepted)
                     {
                         Candidacy::Excluded(Exclusion::WorkNotAccepted)
+                    } else if born
+                        && machine.machine.runtime.claim(VOLUME_ORIGIN_CAPABILITY)
+                            != Claim::Advertises
+                    {
+                        Candidacy::Excluded(Exclusion::ChecksNoOrigins)
                     } else if !machine.invites_rpc() {
                         Candidacy::Excluded(Exclusion::Unreached)
                     } else {
@@ -121,7 +134,10 @@ impl<'snapshot> Candidates<'snapshot> {
                     Candidacy::Excluded(Exclusion::Silent) => ServerAway::Silent,
                     Candidacy::Excluded(Exclusion::WorkNotAccepted) => ServerAway::TakesNoServices,
                     Candidacy::Excluded(Exclusion::Unreached) => ServerAway::Unreached,
-                    Candidacy::Excluded(Exclusion::PlacementMismatch) | Candidacy::Candidate(_) => {
+                    Candidacy::Excluded(
+                        Exclusion::PlacementMismatch | Exclusion::ChecksNoOrigins,
+                    )
+                    | Candidacy::Candidate(_) => {
                         return None;
                     }
                 };

@@ -3,6 +3,7 @@
 //! data; only removing a deployed Volume deletes data, and a Deploy of that removal
 //! needs its destructive review (see `crate::removal`).
 
+pub(crate) mod birth;
 pub(crate) mod query;
 pub(crate) mod size;
 
@@ -172,7 +173,6 @@ pub(crate) fn create_volume(
         storage: create.storage,
         shared_writes: create.shared_writes,
         restored_from: create.restored_from.clone(),
-        birth: None,
     };
     environment.working.volumes.push(node.clone());
     let mut staged = vec![SettingPath::volume(&create.name)];

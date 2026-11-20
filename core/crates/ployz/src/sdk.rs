@@ -1811,6 +1811,7 @@ fn plan_refusal_code(error: &crate::deploy::PlanError) -> RpcErrorCode {
         PlanError::Storage { .. }
         | PlanError::NoWriter { .. }
         | PlanError::VolumeServerTakesNoServices { .. }
+        | PlanError::VolumeOriginsUnchecked { .. }
         | PlanError::CopiesUnknown { .. }
         | PlanError::VolumeHolderUnknown { .. } => RpcErrorCode::Internal,
     }

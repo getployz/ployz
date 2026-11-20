@@ -2067,6 +2067,7 @@ fn approve_rule(
         &ployz_store::ApproveRule {
             environment: EnvironmentRef::default(),
             rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
+            births: Default::default(),
         },
     )
 }

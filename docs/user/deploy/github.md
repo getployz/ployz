@@ -122,6 +122,7 @@ It prints what you approve, then signs it with your device key:
 
 ```text
 Approving automatic deploys for production:
+  namespace   shop-production
   repository  acme/web on main
   workflow    .github/workflows/ployz-build.yml, on push and on rebuilds you approve
   builder     getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
@@ -132,6 +133,8 @@ Approving automatic deploys for production:
     command ["node server.js"]
 Approved. Every push to main now deploys web, worker with these settings.
 ```
+
+A volume a service mounts shows as its own line, the way [`ployz deploy`](deployments.md#deploy-from-an-approved-device) shows it, such as `mounts managed volume uploads at /app/uploads, read-write: a new, empty volume`. A volume only services outside the rule mount stays as it was.
 
 It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
 

@@ -18,6 +18,10 @@ const OTHER: &str = "nginx@sha256:0000000000000000000000000000000000000000000000
 const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 const SEALED_B: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg==";
 
+fn unnamed() -> Mounts<'static> {
+    Mounts::unnamed(Timestamp::from_millis(0).unwrap())
+}
+
 fn signer(seed: u8) -> Signer {
     Signer::from_seed(&[seed; 32])
 }
@@ -326,7 +330,8 @@ fn derived_fields_change_nothing() {
         &["mode"],
         json!({"mode": "replicated", "replicas": 7}),
     ));
-    let shown = |spec| ApprovedChange::of(&[spec], &namespace(), &BTreeMap::new()).unwrap();
+    let shown =
+        |spec| ApprovedChange::of(&[spec], &namespace(), &BTreeMap::new(), &unnamed()).unwrap();
     assert_eq!(
         shown(counted.clone()),
         shown(base),
@@ -629,6 +634,7 @@ fn a_pinned_change_signs_the_digest_of_the_spec_the_runner_sends() {
         std::slice::from_ref(&tagged),
         &namespace(),
         &BTreeMap::from([(web(), PINNED.to_owned())]),
+        &unnamed(),
     )
     .unwrap();
     let [change] = changes.as_slice() else {
@@ -968,11 +974,16 @@ fn a_deploy_step_in_a_bundle_no_trusted_key_signed_is_refused() {
 /// What the approver reads before signing `spec`, the same lines on the CLI and in a
 /// browser.
 fn draft_lines(spec: Value) -> Vec<String> {
-    ApprovedChange::of(&[requested(spec)], &namespace(), &BTreeMap::new())
-        .unwrap()
-        .iter()
-        .flat_map(ApprovedChange::lines)
-        .collect()
+    ApprovedChange::of(
+        &[requested(spec)],
+        &namespace(),
+        &BTreeMap::new(),
+        &unnamed(),
+    )
+    .unwrap()
+    .iter()
+    .flat_map(ApprovedChange::lines)
+    .collect()
 }
 
 /// Each field Cloud could plant in the plan it relays changes what the approver reads
@@ -1101,10 +1112,11 @@ fn a_change_lists_its_settings_under_the_service_line() {
              8080, binds /srv/web, hook migrate)",
             "  variables PLAIN=one, SECRET (sealed)",
             r#"  pre-deploy ["migrate"]"#,
+            r#"  mounts Docker volume app_data at /data, driver {"name":"local","options":{"type":"tmpfs"}}, read-write: data from before this version of Ployz recorded where data began"#,
             r#"  configs [{"content":"hi","name":"site"}]"#,
-            r#"  mounts [{"no_copy":false,"read_only":false,"target":"/srv","volume":"host"},{"no_copy":false,"read_only":false,"target":"/data","volume":"data"}]"#,
+            r#"  mounts [{"no_copy":false,"read_only":false,"target":"/srv","volume":"host"}]"#,
             r#"  ports [{"bind":{"kind":"all"},"container_port":80,"mode":"host","published_port":8080,"transport_protocol":"tcp"},{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]"#,
-            r#"  volumes [{"reference":"host","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv/web"}},{"reference":"data","source":{"driver":{"name":"local","options":{"type":"tmpfs"}},"kind":"ordinary","labels":{},"name":"data"}}]"#,
+            r#"  volumes [{"reference":"host","source":{"create_machine_path":false,"kind":"bind","machine_path":"/srv/web"}}]"#,
             r#"  cap_add ["NET_ADMIN"]"#,
             r#"  command ["nginx","-g","daemon off;"]"#,
             r#"  config_mounts [{"config_name":"site","mode":420,"target":"/etc/site.conf"}]"#,

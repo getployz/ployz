@@ -180,9 +180,10 @@ pub struct LowerDeploymentVolume {
     /// A Deploy applied it, so its data is on some Server. Written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deployed: bool,
-    /// Written only when the Store holds one.
+    /// Where its data began, once an approval recorded it. None for a Volume still to be
+    /// born and for one from before births, whose mounts read as Legacy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub birth: Option<super::BirthState>,
+    pub birth: Option<crate::VolumeBirth>,
 }
 
 /// One Config the Namespace holds, its references resolved.
@@ -234,10 +235,12 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         .volumes
         .iter()
         .map(|v| {
+            // A birth from another Namespace names data that Environment approved, never
+            // this one's, so the Volume starts as a new one here.
             let birth = v
                 .birth
                 .as_ref()
-                .and_then(|birth| birth.in_namespace(&input.namespace));
+                .filter(|birth| birth.namespace == input.namespace);
             (
                 v.volume_resource_id.as_str(),
                 (v.storage, v.deployed, birth),

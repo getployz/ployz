@@ -629,11 +629,12 @@ pub(crate) fn lowered(
     let branch = crate::branch::lowering(tx, &stored.summary.environment_id, saved)?;
     let ships = stored.lowering(saved);
     let deployed = deployed_volumes(tx, &stored.summary.environment_id, saved)?;
+    let born = crate::volume::birth::born(tx, &stored.summary.environment_id)?;
     let organization = crate::build::organization(tx, &stored.summary.id)?;
     lower(
         &stored.summary.environment_id,
         saved,
-        &deployed,
+        (&deployed, &born),
         &ships,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
         &branch,

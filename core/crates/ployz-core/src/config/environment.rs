@@ -651,33 +651,6 @@ pub struct SavedVolumeIntent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub restored_from: Option<RestoredFrom>,
-    /// Where its data began, once a signed version recorded it. Absent for a Volume from
-    /// before births, whose data reads as Legacy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub birth: Option<BirthState>,
-}
-
-/// A Volume's birth as the Store holds it: one a signer is still to mint, or the one a
-/// signed version recorded. The Store never makes one.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum BirthState {
-    Unborn,
-    Born(crate::VolumeBirth),
-}
-
-impl BirthState {
-    /// The birth a Deploy into `namespace` mounts. A birth from another Namespace, such
-    /// as a Branch's Parent's, names data this one does not hold, so the Volume starts
-    /// as a new one there.
-    #[must_use]
-    pub fn in_namespace(&self, namespace: &crate::Namespace) -> Option<&crate::VolumeBirth> {
-        match self {
-            Self::Born(birth) if birth.namespace == *namespace => Some(birth),
-            Self::Born(_) | Self::Unborn => None,
-        }
-    }
 }
 
 /// A restore point of another Volume in the same Environment.

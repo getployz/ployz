@@ -321,6 +321,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0050_approved_pins",
         Step::Rust(|tx, _| crate::deployment::versions::record_approved(tx).map(|()| None)),
     ),
+    (
+        // Where each Volume's data began, as the approval that first mounted it minted it.
+        "0051_volume_birth",
+        Step::Sql(include_str!("migrations/0051_volume_birth.sql")),
+    ),
 ];
 
 enum Step {

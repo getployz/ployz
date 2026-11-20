@@ -3,6 +3,7 @@ import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, Wan
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
+import { originUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
@@ -250,6 +251,11 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     if (writer?.view.copy?.kind !== "root") return yield* answer(reported, { kind: "no_writer" });
     if (roleOf(writer) === "cutting") return yield* answer(reported, { kind: "cutting", server: writer.machine.name });
     const epoch = writer.view.copy.epoch;
+    // A born Volume's copies go only between Servers that check where its data began, so none is pulled once one can't.
+    if ([writer, ...mirrors].some((member) => member.view.copy?.origin != null)) {
+      const unchecked = [writer, ...mirrors].filter((member) => member.checksOrigins !== true).map((member) => member.machine.name);
+      if (unchecked.length > 0) return yield* answer(reported, { kind: "refused", message: originUpgradeMessage(volume.name, unchecked) });
+    }
 
     const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
     const steps: MirrorStep[] = [];

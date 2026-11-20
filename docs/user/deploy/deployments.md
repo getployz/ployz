@@ -156,7 +156,7 @@ Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
 Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b (adds NET_ADMIN, host port 9000)
   cap_add ["NET_ADMIN"]
   ...
-Approve web, worker? [y/N]
+Approve web, worker in namespace shop-production? [y/N]
 ```
 
 The first line of each service names the image and anything the service asks of the server:
@@ -171,6 +171,28 @@ and `-_./:@+` shows in double quotes. A sealed value shows by the name it was se
 its value, and a value built from text and sealed parts shows its text, quoted. Since the
 approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
 value before a deploy you approve.
+The question names the namespace the signature is for. A deploy for a
+[branch](../environments/environments.md) names the branch's own namespace, so if it names
+another environment's, answer no.
+
+A volume Ployz manages shows as one line for each place a service mounts it, saying whether it's a
+managed or a Docker volume and whose data it holds, with its subpath, labels and the rest of what
+the mount signs:
+
+```text
+  mounts managed volume uploads at /app/uploads, read-write: a new, empty volume
+  mounts managed volume previews at /srv/previews, read-write: data made as previews, 3 Nov 14:02 UTC, 16 days ago (Ployz Cloud calls it thumbs)
+  mounts Docker volume shop-production_vol-db at /var/lib/postgresql/data, subpath pgdata, read-write: data from before this version of Ployz recorded where data began (Ployz Cloud calls it db)
+```
+
+The deploy that first mounts a volume makes it new and empty, and every later deploy names that
+data: the name it had then and when it began, with its name now in brackets when it changed. A
+volume from before this version is named as your servers name it, with Ployz Cloud's name in
+brackets.
+Renaming a service or a volume keeps the data. If a volume you expect to be new reads "data made
+…", Ployz Cloud is offering data you already have. Answer no and nothing starts. A
+[branch](../environments/environments.md) makes each of its volumes new on its first deploy.
+
 The signature doesn't cover where a service runs, how many replicas it runs, its
 [count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a
 deploy replaces them in, its pull policy, its CPU and memory limits or the largest size of a
