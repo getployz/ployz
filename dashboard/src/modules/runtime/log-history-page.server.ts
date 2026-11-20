@@ -61,7 +61,7 @@ export const readHistoryPage = Effect.fn("Runtime.readHistoryPage")(function* (r
   if (endpoint === undefined) return { rows: [], failures: [], cursor: null };
   const filter = yield* resolveLogFilter(organizationId, input);
   const page = yield* readLogHistory(endpoint, {
-    organizationId, namespace: filter.namespace, serviceId: filter.serviceId, serviceName: filter.serviceName,
+    organizationId, namespace: filter.namespace, serviceName: filter.serviceName,
     machineId: input.machineId, search: input.contains,
   }, { limit: HISTORY_PAGE, cursor: input.cursor });
   const names = yield* machineNames(organizationId, [...new Set(page.rows.map((row) => row.machineId))]);

@@ -101,8 +101,8 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     link: <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Open Servers</Link>,
   };
   const runtimeServices = useLiveQuery(getRuntimeCollections(selection.organizationSlug, scope).services).data ?? [];
-  const containers = selection.serviceId === undefined ? [] : runtimeServices.map(projectRuntimeServiceRecord)
-    .filter(service => service.serviceId === selection.serviceId).flatMap(service => service.containers);
+  const containers = selection.serviceIdentity === undefined ? [] : runtimeServices.map(projectRuntimeServiceRecord)
+    .filter(service => service.identity === selection.serviceIdentity).flatMap(service => service.containers);
   const off = logOffStates({ status, containers, now: Date.now() });
   const serverNames = new Map(lens.machines.map(server => [server.id, server.name]));
   const empty = hidden ? <LogEmpty title="Container logs are hidden from Ployz support." />

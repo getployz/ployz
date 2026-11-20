@@ -18,7 +18,7 @@ at once. New lines wait while you're scrolled up; **Latest** brings you back to 
 shows them.
 
 **Search logs** looks through every line Cloud kept for what you selected, across all its servers,
-and shows the matches newest first. Clear the search to follow live logs again. Without log
+and shows the matches in time order, newest at the bottom. Scroll up for older ones. Clear the search to follow live logs again. Without log
 history, it filters only the lines loaded in the page.
 
 For one service, click it on the canvas and open its **Logs** tab.

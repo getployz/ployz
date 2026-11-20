@@ -49,7 +49,7 @@ import { ConfirmDialog } from "#/components/confirm-dialog";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import { CappedHint, StoreReplicasRows } from "./StoreReplicasRows";
-import { useServiceRuntime } from "./useServiceRuntime";
+import { deployedServiceIdentity, useServiceRuntime } from "./useServiceRuntime";
 import { ServiceActAlert, ServiceActions, useServiceAct } from "./ServiceActions";
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
@@ -169,6 +169,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const capped = cap && replicasOf(service.name) <= 1 ? cap : null;
   const hasVolume = volumes.some((volume) => volume.mounts.some((mount) => mount.service === service.name));
   const managedVolume = volumes.find((volume) => volume.storage.kind === "provisioned" && volume.mounts.some((mount) => mount.service === service.name)) ?? null;
+  const serviceIdentity = deployedServiceIdentity(state, namespace);
   const vcpuLimit = deployedVcpuLimit(rows, state.changes);
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
@@ -247,7 +248,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             </nav>
           </TabsContent>
           <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col">
-            <ContainerLogs selection={{ organizationSlug, projectSlug: params.projectSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
+            {serviceIdentity === null ? <Skeleton className="h-16 w-full" />
+              : <ContainerLogs selection={{ organizationSlug, projectSlug: params.projectSlug, environmentSlug: params.environmentSlug, serviceId: service.id, serviceIdentity }} />}
           </TabsContent>
           <TabsContent value="monitoring" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">

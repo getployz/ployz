@@ -8,6 +8,8 @@ export type ClickhouseEndpoint = { readonly url: URL; readonly user: string; rea
 export const OBSERVE_NOT_CONFIGURED = "This Cloud keeps no observe data.";
 
 const QUERY_SECONDS = 20;
+/** ClickHouse reads a `param_` value as escaped text, so a backslash, tab or newline in a value must be written escaped to arrive as itself. */
+const escapeParam = (value: string) => value.replace(/[\\\t\n\r]/g, (char) => ({ "\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r" })[char] ?? char);
 const ORG_FILTER = /\bWHERE\s+OrgId\s*=\s*\{org:String\}/;
 
 export const clickhouseEndpoint = Effect.gen(function* () {
@@ -33,7 +35,7 @@ const queryClickhouse = Effect.fn("ObserveStore.query")(function* <Row>(
   target.searchParams.set("default_format", "JSONEachRow");
   target.searchParams.set("readonly", "2");
   target.searchParams.set("max_execution_time", String(QUERY_SECONDS));
-  for (const [name, value] of params) target.searchParams.set(`param_${name}`, value);
+  for (const [name, value] of params) target.searchParams.set(`param_${name}`, escapeParam(value));
   const text = yield* Effect.tryPromise({
     try: async (signal) => {
       const response = await fetch(target, {

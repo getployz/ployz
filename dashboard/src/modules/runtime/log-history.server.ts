@@ -5,7 +5,6 @@ import { type ClickhouseEndpoint, queryObserveOrgAt } from "#/modules/observe-st
 export type LogHistoryScope = {
   readonly organizationId: string;
   readonly namespace: string;
-  readonly serviceId?: string | undefined;
   readonly serviceName?: string | undefined;
   readonly machineId?: string | undefined;
   /** Lines whose text holds this, ignoring case. */
@@ -42,10 +41,13 @@ const rowSchema = Schema.Struct({
   body: Schema.String,
 });
 
+/** Orders lines that share a timestamp. Every field that can tell two lines apart goes in, so a cursor between them is exact. */
+const TIE_BREAK = "cityHash64(Body, LogAttributes['container.id'], ResourceAttributes['ployz.machine'], LogAttributes['log.iostream'])";
+
 const statement = (scope: LogHistoryScope, cursor: boolean, from: boolean) => `
 SELECT
   toString(toUnixTimestamp64Nano(Timestamp)) AS ts,
-  toString(cityHash64(Body, LogAttributes['container.id'], ResourceAttributes['ployz.machine'])) AS hash,
+  toString(${TIE_BREAK}) AS hash,
   ResourceAttributes['ployz.machine'] AS machine,
   LogAttributes['container.id'] AS container,
   LogAttributes['ployz.service.name'] AS service,
@@ -54,15 +56,14 @@ SELECT
 FROM otel.otel_logs
 WHERE OrgId = {org:String}
   AND LogAttributes['ployz.namespace'] = {namespace:String}
-  ${scope.serviceId === undefined ? "" : "AND LogAttributes['ployz.service.id'] = {serviceId:String}"}
-  ${scope.serviceId === undefined && scope.serviceName !== undefined ? "AND LogAttributes['ployz.service.name'] = {serviceName:String}" : ""}
+  ${scope.serviceName === undefined ? "" : "AND LogAttributes['ployz.service.name'] = {serviceName:String}"}
   ${scope.machineId === undefined ? "" : "AND ResourceAttributes['ployz.machine'] = {machine:String}"}
   ${scope.search === undefined ? "" : "AND positionCaseInsensitiveUTF8(Body, {search:String}) > 0"}
   ${from ? "AND TimestampTime >= toDateTime({from:UInt32})" : ""}
   ${cursor ? `AND TimestampTime <= toDateTime(intDiv({cursorTs:Int64}, 1000000000))
   AND (Timestamp < fromUnixTimestamp64Nano({cursorTs:Int64})
-    OR (Timestamp = fromUnixTimestamp64Nano({cursorTs:Int64}) AND cityHash64(Body, LogAttributes['container.id'], ResourceAttributes['ployz.machine']) < {cursorHash:UInt64}))` : ""}
-ORDER BY Timestamp DESC, cityHash64(Body, LogAttributes['container.id'], ResourceAttributes['ployz.machine']) DESC
+    OR (Timestamp = fromUnixTimestamp64Nano({cursorTs:Int64}) AND ${TIE_BREAK} < {cursorHash:UInt64}))` : ""}
+ORDER BY Timestamp DESC, ${TIE_BREAK} DESC
 LIMIT {limit:UInt32}`;
 
 /**
@@ -79,8 +80,7 @@ export const readLogHistory = Effect.fn("Runtime.readLogHistory")(function* (
     ? Math.floor((options.now ?? new Date()).getTime() / 1000) + 1
     : Number(BigInt(cursorTs) / NANOS) + 1;
   const params = new Map<string, string>([["namespace", scope.namespace], ["limit", String(options.limit)]]);
-  if (scope.serviceId !== undefined) params.set("serviceId", scope.serviceId);
-  else if (scope.serviceName !== undefined) params.set("serviceName", scope.serviceName);
+  if (scope.serviceName !== undefined) params.set("serviceName", scope.serviceName);
   if (scope.machineId !== undefined) params.set("machine", scope.machineId);
   if (scope.search !== undefined) params.set("search", scope.search);
   if (cursorTs !== undefined && cursorHash !== undefined) {

@@ -17,6 +17,8 @@ export const logSearchSchema = Schema.Struct({
   projectSlug: Schema.optional(Schema.String),
   deploymentId: Schema.optional(Schema.String.check(Schema.isUUID())),
   serviceId: Schema.optional(Schema.String.check(Schema.isUUID())),
+  /** The Engine's `namespace/name` for `serviceId`: lines in Cloud's history carry that name, not the Store's ID. */
+  serviceIdentity: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
 });
 export type LogSearch = typeof logSearchSchema.Type;
 
@@ -34,7 +36,10 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
   const view = yield* readStore(organizationId, query).pipe(Effect.mapError(() => missing));
   // A Deployment names its Services' runtime names, so the Log Store finds one even after it's removed.
   const node = "runtime_names" in view ? view.nodes.find(candidate => candidate.type === "service" && candidate.id === search.serviceId) : undefined;
-  const serviceName = node && "runtime_names" in view ? view.runtime_names[node.name] ?? node.name : undefined;
+  const prefix = `${view.namespace}/`;
+  const named = search.serviceIdentity?.startsWith(prefix) ? search.serviceIdentity.slice(prefix.length) : undefined;
+  const serviceName = node && "runtime_names" in view ? view.runtime_names[node.name] ?? node.name : named;
+  if (search.serviceId !== undefined && serviceName === undefined) return yield* new NotFound({ message: "Service was not found." });
   return { namespace: view.namespace, serviceId: search.serviceId, serviceName, deploymentId } satisfies LogFilter;
 });
 

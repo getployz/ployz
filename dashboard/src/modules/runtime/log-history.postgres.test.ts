@@ -127,10 +127,26 @@ it("reaches lines older than the first look-back and reports where a short page 
   expect(page.cursor).toBeNull();
 }, 60_000);
 
-it("selects one Service of a namespace by ID, or by name when only the name is known", async () => {
+it("selects one Service of a namespace by its name", async () => {
   await insert([{ org: ACME, at: second(30), body: "billing tick", service: "billing" }]);
   expect((await read({ serviceName: "billing" })).rows.map((row) => row.message)).toEqual(["billing tick"]);
-  expect((await read({ serviceId: "22222222-2222-4222-8222-222222222222" })).rows).toEqual([]);
+  expect((await read({ serviceName: "missing" })).rows).toEqual([]);
+}, 60_000);
+
+it("pages through a line printed on both streams in one nanosecond", async () => {
+  const at = second(2_000);
+  await insert([
+    { org: ACME, at, body: "both streams", stream: "stdout", service: "twin" },
+    { org: ACME, at, body: "both streams", stream: "stderr", service: "twin" },
+  ]);
+  const all = await pages({ serviceName: "twin" }, 1);
+  expect(all.map((row) => row.stream).sort()).toEqual(["stderr", "stdout"]);
+}, 60_000);
+
+it("searches a Windows path with backslashes as written", async () => {
+  const path = String.raw`C:\temp\new\table`;
+  await insert([{ org: ACME, at: second(40), body: `opened ${path}` }]);
+  expect((await read({ search: path })).rows.map((row) => row.message)).toEqual([`opened ${path}`]);
 }, 60_000);
 
 it("keeps a value that looks like SQL a value", async () => {
