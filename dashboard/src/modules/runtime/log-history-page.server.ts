@@ -9,7 +9,8 @@ import { Database } from "#/server/database.server";
 import { Forbidden } from "#/server/public-error";
 import type { ContainerLogLine } from "./container-log.collection";
 import { logSearchSchema, resolveLogFilter } from "./container-logs.server";
-import { clickhouseEndpoint, type LogHistoryRow, logHistoryCursor, readLogHistory } from "./log-history.server";
+import { clickhouseEndpoint } from "#/modules/observe-store/clickhouse.server";
+import { type LogHistoryRow, logHistoryCursor, readLogHistory } from "./log-history.server";
 import { logLevel } from "./log-level";
 
 const HISTORY_PAGE = 500;

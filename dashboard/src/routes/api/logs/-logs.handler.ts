@@ -3,7 +3,8 @@ import { Effect, Option, Schema } from "effect";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { resolveLogFilter } from "#/modules/runtime/container-logs.server";
 import { machineNames, MAX_SEARCH_LENGTH } from "#/modules/runtime/log-history-page.server";
-import { clickhouseEndpoint, logHistoryCursor, readLogHistory } from "#/modules/runtime/log-history.server";
+import { clickhouseEndpoint, OBSERVE_NOT_CONFIGURED } from "#/modules/observe-store/clickhouse.server";
+import { logHistoryCursor, readLogHistory } from "#/modules/runtime/log-history.server";
 import { lacks } from "#/modules/organization/access.server";
 import { readCappedBody } from "#/server/capped-body";
 import { Forbidden, NotFound, Unavailable, Validation } from "#/server/public-error";
@@ -41,7 +42,7 @@ export const handleLogsRead = Effect.fn("Runtime.handleLogsRead")(function* (req
   const query = Schema.decodeUnknownOption(logsReadSchema)(input);
   if (Option.isNone(query)) return yield* new Validation({ message: "Expected an environment, and optionally a service, machine, search, limit and cursor.", userFacing: true });
   const endpoint = yield* clickhouseEndpoint;
-  if (endpoint === undefined) return yield* new Unavailable({ message: "This Cloud keeps no log history.", userFacing: true });
+  if (endpoint === undefined) return yield* new Unavailable({ message: OBSERVE_NOT_CONFIGURED, userFacing: true });
   const { environment, service, machine, search, limit, cursor } = query.value;
   const organizationId = caller.organization.id;
   const filter = yield* resolveLogFilter(organizationId, {

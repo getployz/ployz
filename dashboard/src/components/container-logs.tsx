@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { LogOffState } from "./log-off-state";
+import { ObserveOffState } from "./observe/ObserveOffState";
 import { LatestButton, LOG_TIME_COLUMN, LogEmpty, LogHeader, LogSkeleton, useLogScroll } from "./log-scroll";
 import { cn } from "#/lib/utils";
 import { logTimestamp, useTimeZone } from "#/utils/time-zone";
@@ -127,16 +127,16 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
         {LEVELS.map(level => <ToggleGroupItem key={level} value={level} className="capitalize">{level}</ToggleGroupItem>)}
       </ToggleGroup>
     </div>
-    {status && !historyOn ? <LogOffState title="Log history isn’t set up" action={<a href={LOG_HISTORY_DOCS} target="_blank" rel="noreferrer" className={linkClass}>Set up log history</a>}>
+    {status && !historyOn ? <ObserveOffState title="Log history isn’t set up" action={<a href={LOG_HISTORY_DOCS} target="_blank" rel="noreferrer" className={linkClass}>Set up log history</a>}>
       Live output still works. Add ClickHouse to keep logs and search them.
-    </LogOffState> : null}
-    {off.onLocal ? <LogOffState title="This service isn’t sending logs yet" action={<Redeploy selection={selection} />}>
+    </ObserveOffState> : null}
+    {off.onLocal ? <ObserveOffState title="This service isn’t sending logs yet" action={<Redeploy selection={selection} />}>
       It started before logs were kept. Redeploy it to start sending them.
-    </LogOffState> : null}
-    {off.silent.map(server => <LogOffState key={server.machineId} title={`${serverNames.get(server.machineId) ?? "A server"} ${server.silentMs === null ? "hasn’t sent logs yet" : `hasn’t sent logs for ${Math.floor(server.silentMs / 60_000)} minutes`}`}
+    </ObserveOffState> : null}
+    {off.silent.map(server => <ObserveOffState key={server.machineId} title={`${serverNames.get(server.machineId) ?? "A server"} ${server.silentMs === null ? "hasn’t sent logs yet" : `hasn’t sent logs for ${Math.floor(server.silentMs / 60_000)} minutes`}`}
       action={<Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug: selection.organizationSlug, serverId: server.machineId }} className={linkClass}>Open {serverNames.get(server.machineId) ?? "server"}</Link>}>
       Its log collector may be stopped or unable to reach Cloud, or the service may be quiet. Live output still works.
-    </LogOffState>)}
+    </ObserveOffState>)}
     {searching ? <p className="text-muted-foreground">Showing stored logs that match. Clear the search to follow live logs.</p> : null}
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}

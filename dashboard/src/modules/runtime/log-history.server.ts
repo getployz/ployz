@@ -1,10 +1,6 @@
 import "@tanstack/react-start/server-only";
-import { Effect, Redacted, Schema } from "effect";
-import { AppConfig } from "#/server/config.server";
-import { Unavailable } from "#/server/public-error";
-
-/** Where Cloud's ClickHouse answers, and who it reads as. */
-export type ClickhouseEndpoint = { readonly url: URL; readonly user: string; readonly password: Redacted.Redacted<string> };
+import { Effect, Schema } from "effect";
+import { type ClickhouseEndpoint, queryObserveOrgAt } from "#/modules/observe-store/clickhouse.server";
 
 /** One Service's logs, for one Organization. `organizationId` leads every query's WHERE. */
 export type LogHistoryScope = {
@@ -39,7 +35,6 @@ export const logHistoryCursor = Schema.String.check(Schema.isPattern(/^[0-9]{1,1
  * busy Service's newest page never scans its whole retention.
  */
 const WINDOWS_SECONDS = [3_600, 86_400, 7 * 86_400, 30 * 86_400] as const;
-const QUERY_SECONDS = 20;
 const NANOS = 1_000_000_000n;
 
 const rowSchema = Schema.Struct({
@@ -50,40 +45,6 @@ const rowSchema = Schema.Struct({
   service: Schema.String,
   stream: Schema.String,
   body: Schema.String,
-});
-const decodeRow = Schema.decodeUnknownSync(rowSchema);
-
-const unavailable = (cause: unknown) => new Unavailable({ message: "Cloud's log history is not answering.", userFacing: true, cause });
-
-/**
- * A read-only parameterized query: every value travels as a ClickHouse `param_` binding, never in the statement's text.
- * `readonly=2` lets the per-query limits below apply while still refusing writes and DDL.
- */
-const run = Effect.fn("Runtime.clickhouseQuery")(function* (
-  endpoint: ClickhouseEndpoint,
-  statement: string,
-  params: ReadonlyMap<string, string>,
-) {
-  const target = new URL("/", endpoint.url);
-  target.searchParams.set("default_format", "JSONEachRow");
-  target.searchParams.set("readonly", "2");
-  target.searchParams.set("max_execution_time", String(QUERY_SECONDS));
-  for (const [name, value] of params) target.searchParams.set(`param_${name}`, value);
-  const text = yield* Effect.tryPromise({
-    try: async (signal) => {
-      const response = await fetch(target, {
-        method: "POST",
-        headers: { authorization: `Basic ${Buffer.from(`${endpoint.user}:${Redacted.value(endpoint.password)}`).toString("base64")}` },
-        body: statement,
-        signal: AbortSignal.any([signal, AbortSignal.timeout((QUERY_SECONDS + 5) * 1000)]),
-      });
-      const body = await response.text();
-      if (!response.ok) throw new Error(`ClickHouse answered ${response.status}: ${body.slice(0, 300)}`);
-      return body;
-    },
-    catch: unavailable,
-  });
-  return text.trim() === "" ? [] : text.trim().split("\n").map((line) => decodeRow(JSON.parse(line)));
 });
 
 const statement = (scope: LogHistoryScope, cursor: boolean, from: boolean) => `
@@ -122,7 +83,7 @@ export const readLogHistory = Effect.fn("Runtime.readLogHistory")(function* (
   const startSeconds = cursorTs === undefined
     ? Math.floor((options.now ?? new Date()).getTime() / 1000) + 1
     : Number(BigInt(cursorTs) / NANOS) + 1;
-  const params = new Map<string, string>([["org", scope.organizationId], ["namespace", scope.namespace], ["limit", String(options.limit)]]);
+  const params = new Map<string, string>([["namespace", scope.namespace], ["limit", String(options.limit)]]);
   if (scope.serviceId !== undefined) params.set("serviceId", scope.serviceId);
   else if (scope.serviceName !== undefined) params.set("serviceName", scope.serviceName);
   if (scope.machineId !== undefined) params.set("machine", scope.machineId);
@@ -133,10 +94,12 @@ export const readLogHistory = Effect.fn("Runtime.readLogHistory")(function* (
   }
   for (const [index, window] of WINDOWS_SECONDS.entries()) {
     const last = index === WINDOWS_SECONDS.length - 1;
-    const rows = yield* run(
+    const rows = yield* queryObserveOrgAt(
       endpoint,
+      scope.organizationId,
       statement(scope, cursorTs !== undefined, !last),
       last ? params : new Map([...params, ["from", String(Math.max(0, startSeconds - window))]]),
+      rowSchema,
     );
     if (rows.length < options.limit && !last) continue;
     const page = rows.map((row): LogHistoryRow => ({
@@ -147,10 +110,4 @@ export const readLogHistory = Effect.fn("Runtime.readLogHistory")(function* (
     return { rows: page, cursor: oldest === undefined || page.length < options.limit ? null : `${oldest.timestamp}.${oldest.hash}` } satisfies LogHistoryPage;
   }
   return { rows: [], cursor: null } satisfies LogHistoryPage;
-});
-
-/** ClickHouse as this Cloud is configured to reach it, or undefined where it keeps no log history. */
-export const clickhouseEndpoint = Effect.gen(function* () {
-  const { observeClickhouse } = yield* AppConfig;
-  return observeClickhouse;
 });

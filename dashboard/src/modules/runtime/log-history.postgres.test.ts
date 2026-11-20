@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { type ClickhouseEndpoint, type LogHistoryRow, type LogHistoryScope, readLogHistory } from "./log-history.server";
+import type { ClickhouseEndpoint } from "#/modules/observe-store/clickhouse.server";
+import { type LogHistoryRow, type LogHistoryScope, readLogHistory } from "./log-history.server";
 
 const execFile = promisify(execFileCallback);
 const docker = (...args: ReadonlyArray<string>) => execFile("docker", args, { maxBuffer: 10 * 1024 * 1024 });
