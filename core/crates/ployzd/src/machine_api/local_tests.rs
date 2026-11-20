@@ -4992,7 +4992,7 @@ mod ensure_container {
         //! runs only the spec an approved Device signed.
 
         use ployz_core::{
-            DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER,
+            SIGNED_VERSION_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER,
             SealingPublicKey,
             authority::{PayloadDigest, ServiceVersion, Signed, Signer, Timestamp},
             rpc::status_details,
@@ -5368,7 +5368,7 @@ mod ensure_container {
             assert!(status.message().contains(reason), "{}", status.message());
             assert_eq!(
                 status_details(status.details()).unwrap()["capability"],
-                json!(DEPLOY_APPROVAL_CAPABILITY)
+                json!(SIGNED_VERSION_CAPABILITY)
             );
         }
 

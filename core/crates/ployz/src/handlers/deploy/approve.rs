@@ -39,6 +39,9 @@ pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
     /// The name each Server reports, which a person reads its signed lines by.
     pub(in crate::handlers) names: BTreeMap<ployz_core::MachineId, String>,
+    /// Each Server that enforces and runs a ployz too old to check a signed version, by
+    /// name. It would refuse every Service this Device signs.
+    pub(in crate::handlers) outdated: Vec<String>,
 }
 
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
@@ -92,6 +95,9 @@ pub(in crate::handlers) fn sign(
         }
         Probe::Enforcing(enforcing) => enforcing,
     };
+    if !enforcing.outdated.is_empty() {
+        return Err(outdated(&enforcing.outdated));
+    }
     let plan = plan?;
     let target = signable(plan.target)?;
     let pins = pin_tags(matches, &target)?;
@@ -272,11 +278,58 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
         .iter()
         .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
         .collect();
+    // An empty list claims nothing: a relayed record can arrive without one.
+    let mut outdated: Vec<String> = observed
+        .iter()
+        .map(|observed| &observed.machine)
+        .filter(|machine| {
+            machine.runtime.device_enforcement == Some(true)
+                && !machine.runtime.capabilities.is_empty()
+                && !machine
+                    .runtime
+                    .capabilities
+                    .contains(ployz_core::SIGNED_VERSION_CAPABILITY)
+        })
+        .map(|machine| machine.name.to_string())
+        .collect();
+    outdated.sort_unstable();
+    outdated.dedup();
     Probe::Enforcing(Enforcing {
         cluster,
         machines,
         names,
+        outdated,
     })
+}
+
+/// The refusal for Servers that enforce and can't check a signed version, before
+/// anything is signed or admitted.
+fn outdated(servers: &[String]) -> Error {
+    let named = match servers {
+        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => servers.join(""),
+    };
+    // This CLI's own channel, which carries a ployz that checks what it signs.
+    let channel = match ployz_core::MachineVersion::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(version) if !version.is_prerelease() => "stable",
+        _ => "beta",
+    };
+    let mut upgrade = vec!["ployz", "server", "upgrade", channel];
+    upgrade.extend(servers.iter().map(String::as_str));
+    Error::detailed(
+        RpcErrorCode::Unsupported,
+        format!(
+            "Upgrade {named} first: {each} enforces device approval with an older ployz that \
+             can't check this device's signature, so {each} would refuse this deploy. Nothing \
+             signed or deployed.",
+            each = if servers.len() == 1 { "it" } else { "each" },
+        ),
+        json!({
+            "servers": servers,
+            "capability": ployz_core::SIGNED_VERSION_CAPABILITY,
+        }),
+    )
+    .hint(Hint::Next(shell_words::join(upgrade)))
 }
 
 /// Whether `spec` runs the image a build or upload will make, which no Device can

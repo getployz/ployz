@@ -1260,7 +1260,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::DeployRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            &Gate::new(ployz_core::DEPLOY_APPROVAL_CAPABILITY).next("ployz deploy from an approved device"),
+            &Gate::new(ployz_core::SIGNED_VERSION_CAPABILITY).next("ployz deploy from an approved device"),
         )),
         LocalMachineError::RuleDeployRefused(ref refusal) => {
             let gate = Gate::new(ployz_core::DEPLOY_RULE_CAPABILITY);

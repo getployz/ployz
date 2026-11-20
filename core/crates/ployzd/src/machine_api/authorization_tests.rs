@@ -739,7 +739,7 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
             let answer = send(machine, &create).await;
             assert!(
                 matches!(&answer, Answer::Refused { capability: Some(name), .. }
-                    if name == ployz_core::DEPLOY_APPROVAL_CAPABILITY),
+                    if name == ployz_core::SIGNED_VERSION_CAPABILITY),
                 "{case:?}: the create after it was not refused: {answer:?}"
             );
         }

@@ -4,7 +4,7 @@ use ployz_core::authority::{ApprovedChange, PayloadDigest};
 use ployz_core::{Hint, Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
-use super::{Enforcing, Probe, consent, enforced, pin_tags, signable, unpinnable};
+use super::{Enforcing, Probe, consent, enforced, outdated, pin_tags, signable, unpinnable};
 use crate::image::PinError;
 
 const PINNED: &str =
@@ -265,6 +265,47 @@ fn an_enforcing_cluster_signs_for_every_server_listed() {
     assert_eq!(cluster, ployz_core::SealingPublicKey::from_bytes([9; 32]));
     assert_eq!(machines.len(), 2);
     assert!(machines.is_sorted());
+}
+
+/// `observation` reporting `capabilities`.
+fn serving(
+    mut observation: ployz_core::MachineObservation,
+    capabilities: &[&str],
+) -> ployz_core::MachineObservation {
+    observation.machine.runtime.capabilities =
+        capabilities.iter().map(|name| (*name).to_owned()).collect();
+    observation
+}
+
+/// A Server that enforces and serves a list without signed versions refuses every signed
+/// Service, so the deploy names it to upgrade before anything is signed. A list that is
+/// empty claims nothing, and a Server that doesn't enforce takes any creation.
+#[test]
+fn an_enforcing_server_without_signed_versions_is_named_to_upgrade() {
+    let old = ["ployz.container.deploy-approval.v1"];
+    let Probe::Enforcing(enforcing) = enforced(&[
+        serving(server(1, Some(true), Some(9)), &old),
+        serving(
+            server(2, Some(true), Some(9)),
+            &[ployz_core::SIGNED_VERSION_CAPABILITY],
+        ),
+        server(3, Some(true), Some(9)),
+        serving(server(4, Some(false), Some(9)), &old),
+    ]) else {
+        panic!("expected enforcing");
+    };
+    assert_eq!(enforcing.outdated, ["machine-1"]);
+
+    let refused = outdated(&enforcing.outdated);
+    assert_eq!(refused.report().code, ployz_core::RpcErrorCode::Unsupported);
+    let channel = match ployz_core::MachineVersion::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(version) if !version.is_prerelease() => "stable",
+        _ => "beta",
+    };
+    assert_eq!(
+        next_hints(&refused),
+        [format!("ployz server upgrade {channel} machine-1")]
+    );
 }
 
 /// `--yes` signs without asking, for a run nobody watches.
