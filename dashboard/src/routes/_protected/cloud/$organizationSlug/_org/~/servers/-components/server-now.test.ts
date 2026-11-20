@@ -66,10 +66,8 @@ describe("serverNow", () => {
   });
 
   it("names why a Server has no meters", () => {
-    const ref = { id: "2".repeat(32), name: "syd-1" };
-    expect(serverNow({ ...empty, availability: { type: "needs_upgrade", servers: [ref] } }, 0)).toEqual({ type: "needs_upgrade" });
-    expect(serverNow({ ...empty, availability: { type: "unanswered", servers: [ref], needsUpgrade: [] } }, 0)).toEqual({ type: "unanswered" });
-    expect(serverNow({ ...empty, availability: { type: "offline" } }, 0)).toEqual({ type: "unanswered" });
+    expect(serverNow({ ...empty, availability: { type: "not_configured" } }, 0)).toEqual({ type: "not_configured" });
+    expect(serverNow({ ...empty, availability: { type: "not_reporting" } }, 0)).toEqual({ type: "not_reporting" });
     expect(serverNow({ ...empty, availability: { type: "no_readings" } }, 0)).toEqual({ type: "no_readings" });
   });
 });

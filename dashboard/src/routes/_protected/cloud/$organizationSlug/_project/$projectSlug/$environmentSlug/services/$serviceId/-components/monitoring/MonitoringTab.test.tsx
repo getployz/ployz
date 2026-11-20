@@ -36,11 +36,6 @@ const down = (status: number, share: number) => uptime({
 const WEB_1 = "a".repeat(32) as MachineId;
 const WEB_2 = "b".repeat(32) as MachineId;
 const nanos = (ms: number) => ms * 1e6;
-type Unanswered = MetricHistory["unanswered"][number];
-const refused = (machine_id: MachineId): Unanswered =>
-  ({ machine_id, error: { code: "unsupported", message: "old", details: { capability: "ployz.metrics.history.v1", target: "x" } } });
-const silent = (machine_id: MachineId): Unanswered =>
-  ({ machine_id, error: { code: "unavailable", message: "the Server is not up, so it was not asked", details: null } });
 const sampled = { service: [{ ts: nanos(now - 60_000), cpu_usec: 1_000_000 }] };
 const answered = (machine_id: MachineId) => ({ machine_id, value: { points: sampled, step_nanos: nanos(60_000), gaps: [] } });
 const metrics = (history: Partial<MetricHistory> = {}): MetricRead => ({
@@ -53,7 +48,7 @@ const metrics = (history: Partial<MetricHistory> = {}): MetricRead => ({
 const range = { from: "1h", to: "now" };
 const store = { project: "shop", environment: "production" };
 
-const settled = () => screen.findAllByRole("heading", { level: 3, name: /^(Disk|Upgrade .*|Your servers are offline)$/ });
+const settled = () => screen.findAllByRole("heading", { level: 3, name: /^(Disk|Metrics aren’t enabled on this Service|Not reporting)$/ });
 
 async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready", until = settled, receivedAt = now }: {
   shown?: ServiceUptime | NeedsProduction | null;
@@ -187,57 +182,19 @@ it("says No readings on each chart, not a zero, when no Server has sampled the S
   expect(screen.getAllByText("No readings")).toHaveLength(4);
 });
 
-it("replaces the charts with a link to the Server when the only Server needs an upgrade", async () => {
-  await open({ checker: false, read: metrics({ unanswered: [refused(WEB_2)] }) });
-  expect(charts()).toEqual(["Upgrade web-2 to see its metrics"]);
-  expect(screen.getByRole("link", { name: "Open web-2" }).getAttribute("href")).toBe(`/cloud/acme/~/servers/${WEB_2}`);
+it("replaces the charts with the off state when Cloud keeps no metrics", async () => {
+  await open({ checker: false, read: { type: "not_configured", window: { from: now - 3_600_000, to: now }, at: now } });
+  expect(charts()).toEqual(["Metrics aren’t enabled on this Service"]);
+  expect(screen.getByRole("link", { name: "Set up metrics" })).toBeTruthy();
 });
 
-it("counts the Servers and links to the list when several need an upgrade", async () => {
-  await open({ checker: false, read: metrics({ unanswered: [refused(WEB_1), refused(WEB_2)] }) });
-  expect(charts()).toEqual(["Upgrade 2 servers to see their metrics"]);
-  expect(screen.getByRole("link", { name: "Open Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
+it("replaces the charts with the off state when the Service's Server sends nothing", async () => {
+  await open({ checker: false, read: { type: "not_reporting", window: { from: now - 3_600_000, to: now }, at: now } });
+  expect(charts()).toEqual(["Not reporting"]);
 });
 
-it("keeps the charts and names a Server that needs an upgrade or didn't answer when another answered", async () => {
-  await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1)], unanswered: [refused(WEB_2)] }) });
-  expect(charts()).toEqual(["CPU", "Memory", "Network", "Disk"]);
-  expect(screen.getByText(/needs an upgrade/).textContent).toBe("web-2 needs an upgrade to show its metrics.");
-
-  cleanup();
-  await open({ checker: false, read: metrics({ points: sampled, machines: [answered(WEB_1)], unanswered: [silent(WEB_2)] }) });
-  expect(screen.getByText(/didn’t answer/).textContent).toBe("web-2 didn’t answer.");
-});
-
-const WEB_3 = "c".repeat(32) as MachineId;
-
-it("names neither the Server nor its id when the list doesn't name it, and says nothing until the list loads", async () => {
-  const read = metrics({ points: sampled, machines: [answered(WEB_1)], unanswered: [silent(WEB_3)] });
-  await open({ checker: false, read });
-  expect(screen.getByText(/didn’t answer/).textContent).toBe("A server didn’t answer.");
-  expect(document.body.textContent).not.toContain(WEB_3);
-
-  cleanup();
-  await open({ checker: false, read, listed: "loading" });
-  expect(screen.queryByText(/didn’t answer/)).toBeNull();
-  expect(document.body.textContent).not.toContain(WEB_3);
-});
-
-it("holds the upgrade copy until the list loads, so it never reads a server and then its name", async () => {
-  await open({ checker: false, read: metrics({ unanswered: [refused(WEB_2)] }), listed: "loading",
-    until: () => screen.findAllByRole("status", { name: "Checking your servers" }) });
-  expect(charts()).toEqual([]);
-  expect(document.body.textContent).not.toMatch(/Upgrade/);
-});
-
-it("asks to upgrade a server, not an id, when the list doesn't name the only one", async () => {
-  await open({ checker: false, read: metrics({ unanswered: [refused(WEB_3)] }) });
-  expect(charts()).toEqual(["Upgrade a server to see its metrics"]);
-  expect(screen.getByRole("link", { name: "Open Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
-});
-
-it("offers All and By server when the Service runs on several Servers and one answered", async () => {
-  const oneAnswered = metrics({ points: sampled, machines: [answered(WEB_1)], unanswered: [refused(WEB_2)] });
+it("offers All and By server when the Service runs on several Servers and one has readings", async () => {
+  const oneAnswered = metrics({ points: sampled, machines: [answered(WEB_1)] });
   await open({ checker: false, read: oneAnswered, placedOn: 2 });
   expect(screen.getByRole("button", { name: "By server" })).toBeDefined();
 
@@ -246,7 +203,7 @@ it("offers All and By server when the Service runs on several Servers and one an
   expect(screen.queryByRole("button", { name: "By server" })).toBeNull();
 
   cleanup();
-  await open({ checker: false, read: metrics({ unanswered: [silent(WEB_1), silent(WEB_2)] }), placedOn: 2 });
+  await open({ checker: false, read: metrics(), placedOn: 2 });
   expect(screen.queryByRole("button", { name: "By server" })).toBeNull();
 });
 

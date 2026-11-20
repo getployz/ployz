@@ -29,10 +29,7 @@ describe("verifyMetricHistory", () => {
     expect(web.availability).toEqual({ type: "normal" });
     expect(web.byServer).toHaveLength(2);
 
-    const api = service("api").availability;
-    expect(api.type).toBe("mixed");
-    expect(api.type === "mixed" && [api.needsUpgrade.map((ref) => ref.id), api.unanswered.map((ref) => ref.id)])
-      .toEqual([["2".repeat(32)], ["3".repeat(32)]]);
+    expect(service("api").availability).toEqual({ type: "normal" });
 
     const worker = service("worker");
     expect(worker.availability).toEqual({ type: "normal" });
@@ -40,7 +37,7 @@ describe("verifyMetricHistory", () => {
     expect(worker.all.cpu).toHaveLength(120);
     expect(worker.allGaps).toEqual([]);
 
-    expect(service("redis").availability.type).toBe("needs_upgrade");
+    expect(service("redis").availability).toEqual({ type: "no_readings" });
     expect(service("unknown").availability).toEqual({ type: "no_readings" });
   });
 
@@ -59,8 +56,7 @@ describe("verifyMetricHistory", () => {
     expect(normal.gaps).toHaveLength(1);
     expect(server("4".repeat(32)).availability).toEqual({ type: "no_readings" });
     expect(normal.disk[0]).toMatchObject({ volumes: expect.any(Number), mirrors: expect.any(Number), logsAndMetrics: expect.any(Number), other: expect.any(Number) });
-    expect(server("1".repeat(32)).availability.type).toBe("unanswered");
-    expect(server("2".repeat(32)).availability.type).toBe("needs_upgrade");
-    expect(server("f".repeat(32)).availability.type).toBe("unanswered");
+    expect(server("1".repeat(32)).availability.type).toBe("no_readings");
+    expect(server("f".repeat(32)).availability.type).toBe("no_readings");
   });
 });

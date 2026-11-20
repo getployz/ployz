@@ -37,5 +37,8 @@ export type MetricWindow = { readonly from: number; readonly to: number };
 
 /** `at` is when the server read, so a chart anchors on the same instant when it renders and when it hydrates. */
 export type MetricRead =
-  | { readonly type: "offline"; readonly window: MetricWindow; readonly at: number }
+  /** Cloud has no ClickHouse, so it keeps no metrics. */
+  | { readonly type: "not_configured"; readonly window: MetricWindow; readonly at: number }
+  /** A Server sent nothing for the last minute and nothing in the range. */
+  | { readonly type: "not_reporting"; readonly window: MetricWindow; readonly at: number }
   | { readonly type: "history"; readonly window: MetricWindow; readonly at: number; readonly history: MetricHistory };

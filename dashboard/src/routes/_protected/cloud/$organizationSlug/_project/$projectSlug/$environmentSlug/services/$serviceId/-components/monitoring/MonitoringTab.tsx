@@ -1,8 +1,9 @@
 import { Suspense, useDeferredValue, useState, type ReactNode } from "react";
 import { useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
 import { CatchBoundary, Link, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
-import { InfoIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
 import type { DeploymentSummary, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { MetricsNotEnabled, MetricsNotReporting } from "#/components/observe/ObserveOffState";
 import { MetricChart, atFormat, useMetricCursor, type ChartLimit, type ChartMarker, type MetricCursor, type MetricSeries, type TimeBand, type TimeSpan } from "#/components/metrics/metric-chart";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { Button } from "#/components/ui/button";
@@ -20,7 +21,7 @@ import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { volumeStorageText } from "#/modules/config-store/store-volumes";
 import { useServerList } from "#/modules/machines/use-servers";
 import { bytesIn, bytesText, cpuIn, cpuText, onGrid, rateIn, rateText } from "#/modules/metrics/metric-chart-data";
-import { serviceMetrics, type Marker, type MetricAvailability, type ServerRef, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
+import { serviceMetrics, type Marker, type ServiceMetrics, type ServiceSeries } from "#/modules/metrics/metrics-model";
 import { serviceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import {
   causeText,
@@ -327,7 +328,6 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
   }));
   const serverList = useServerList(organizationSlug);
   const names = new Map(serverList.servers.map((row) => [row.machine.id, row.name]));
-  const named = serverList.state !== "loading";
   const metrics = serviceMetrics(read, names);
   const cursor = useMetricCursor();
   const [split, setSplit] = useState(false);
@@ -388,16 +388,17 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
           </Suspense>
         </CatchBoundary>
       ) : null}
-      <AvailabilityLine organizationSlug={organizationSlug} availability={named ? metrics.availability : { type: "normal" }}
-        toggle={splittable ? (
+      {splittable ? (
+        <div className="flex min-h-7 justify-end">
           <ToggleGroup variant="outline" size="sm" spacing={0} value={[perServer ? "server" : "all"]}
             onValueChange={([next]) => { if (next === "all" || next === "server") setSplit(next === "server"); }}>
             <ToggleGroupItem value="all">All</ToggleGroupItem>
             <ToggleGroupItem value="server">By server</ToggleGroupItem>
           </ToggleGroup>
-        ) : null} />
-      {metrics.availability.type === "needs_upgrade" || metrics.availability.type === "offline"
-        ? <MetricsUnavailable organizationSlug={organizationSlug} availability={metrics.availability} named={named} />
+        </div>
+      ) : null}
+      {metrics.availability.type === "not_configured" ? <MetricsNotEnabled subject="Service" />
+        : metrics.availability.type === "not_reporting" ? <MetricsNotReporting server={null} />
         : RESOURCE_CHARTS.map((resource) => (
           <MetricChart key={resource.id} id={resource.id} title={resource.title} format={resource.format} axisFormat={"axisFormat" in resource ? resource.axisFormat : undefined} {...chart}
             value={valueText(resource.lines, metrics, window, resource.format)} series={lines(resource.lines)}
@@ -422,70 +423,6 @@ function valueText(chartLines: readonly ChartLine[], metrics: ServiceMetrics, wi
   return values.length === 1
     ? format(values[0]?.value ?? 0)
     : values.map((entry) => `${entry.label} ${entry.value === null ? "–" : format(entry.value)}`).join(" · ");
-}
-
-const LINK_CLASS = "underline underline-offset-4";
-
-function ServersText({ organizationSlug, servers }: { organizationSlug: string; servers: readonly ServerRef[] }) {
-  const [only] = servers;
-  if (only === undefined) return null;
-  if (servers.length > 1 || only.name === null) {
-    return <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>{servers.length > 1 ? `${servers.length} servers` : "A server"}</Link>;
-  }
-  return <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: only.id }} className={LINK_CLASS}>{only.name}</Link>;
-}
-
-function AvailabilityLine({ organizationSlug, availability, toggle }: { organizationSlug: string; availability: MetricAvailability; toggle: ReactNode }) {
-  const lacking = availability.type === "mixed" || availability.type === "unanswered" ? availability.needsUpgrade : [];
-  const silent = availability.type === "mixed" ? availability.unanswered : availability.type === "unanswered" ? availability.servers : [];
-  if (lacking.length === 0 && silent.length === 0 && toggle === null) return null;
-  return (
-    <div className="flex min-h-7 flex-wrap items-center justify-between gap-3">
-      <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
-        {lacking.length > 0 || silent.length > 0 ? <InfoIcon aria-hidden className="size-3.5 shrink-0" /> : null}
-        {lacking.length > 0 ? (
-          <span>
-            <ServersText organizationSlug={organizationSlug} servers={lacking} />
-            {lacking.length > 1 ? " need an upgrade to show their metrics." : " needs an upgrade to show its metrics."}
-          </span>
-        ) : null}
-        {silent.length > 0 ? <span><ServersText organizationSlug={organizationSlug} servers={silent} /> didn’t answer.</span> : null}
-      </p>
-      {toggle}
-    </div>
-  );
-}
-
-function MetricsUnavailable({ organizationSlug, availability, named }: {
-  organizationSlug: string;
-  availability: Extract<MetricAvailability, { type: "needs_upgrade" | "offline" }>;
-  named: boolean;
-}) {
-  if (availability.type === "needs_upgrade" && !named) {
-    return (
-      <Card size="sm" role="status" aria-label="Checking your servers" className="items-center gap-2 px-3 py-10">
-        <Skeleton className="h-4 w-48" />
-        <Skeleton className="h-4 w-24" />
-      </Card>
-    );
-  }
-  const servers = availability.type === "needs_upgrade" ? availability.servers : [];
-  const only = servers.length === 1 && servers[0]?.name != null ? { id: servers[0].id, name: servers[0].name } : null;
-  const title = availability.type === "offline" ? "Your servers are offline"
-    : only !== null ? `Upgrade ${only.name} to see its metrics`
-    : servers.length === 1 ? "Upgrade a server to see its metrics"
-    : `Upgrade ${servers.length} servers to see their metrics`;
-  const link = availability.type === "offline"
-    ? <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>Check your servers</Link>
-    : only !== null
-      ? <Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: only.id }} className={LINK_CLASS}>Open {only.name}</Link>
-      : <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK_CLASS}>Open Servers</Link>;
-  return (
-    <Card size="sm" className="items-center gap-1 px-3 py-10 text-center">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <p className="text-sm text-muted-foreground">{link}</p>
-    </Card>
-  );
 }
 
 /**

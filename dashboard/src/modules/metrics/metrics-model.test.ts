@@ -4,8 +4,6 @@ import type { MetricRead } from "./metrics";
 import { containerId, machineId, serviceId } from "#/test/ids";
 import { serverMetrics, serviceMetrics } from "./metrics-model";
 
-type RpcError = MetricHistory["unanswered"][number]["error"];
-
 const A = machineId("a");
 const B = machineId("b");
 const C = machineId("c");
@@ -14,14 +12,11 @@ const names = new Map([[A, "web-10"], [B, "web-2"], [C, "db-1"]]);
 const window = { from: 0, to: 10_000 };
 const ms = (value: number) => value * 1e6;
 
-const refusal: RpcError = { code: "unsupported", message: "old", details: { capability: "ployz.metrics.history.v1", target: "x" } };
-const down: RpcError = { code: "unavailable", message: "the Server is not up, so it was not asked", details: null };
-
 const reply = (points: MetricHistoryReply["points"], extra: Partial<MetricHistoryReply> = {}): MetricHistoryReply =>
   ({ points, step_nanos: ms(1000), gaps: [], ...extra });
-// What the daemon sends from a Server without the Service, or for a read that timed out: no points, one gap over the range.
-const nothing = (reason: "not_sampled" | "timeout" = "not_sampled"): MetricHistoryReply =>
-  reply({ service: [] }, { gaps: [{ from: ms(window.from), to: ms(window.to), reason }] });
+// What Cloud answers for a Server without the Service: no points, one gap over the range.
+const nothing = (): MetricHistoryReply =>
+  reply({ service: [] }, { gaps: [{ from: ms(window.from), to: ms(window.to), reason: "not_sampled" }] });
 const read = (history: Partial<MetricHistory>): MetricRead => ({
   type: "history",
   window,
@@ -29,7 +24,6 @@ const read = (history: Partial<MetricHistory>): MetricRead => ({
   history: { step_nanos: ms(1000), points: { service: [] }, machines: [], unanswered: [], ...history },
 });
 const answering = (machine: MachineId, value: MetricHistoryReply) => ({ machine_id: machine, value });
-const failing = (machine: MachineId, error: RpcError) => ({ machine_id: machine, error });
 const servicePoint = (atMs: number, fields: Omit<ServicePoint, "ts"> = {}): ServicePoint => ({ ts: ms(atMs), ...fields });
 type MarkerFields =
   | { readonly kind: "oom" | "restart"; readonly deployment_id?: string }
@@ -51,54 +45,10 @@ describe("serviceMetrics availability", () => {
     expect(serviceMetrics(read({ points: point, machines: [answering(A, reply(point))] }), names).availability).toEqual({ type: "normal" });
   });
 
-  it("is mixed when some answer, splitting refusals from silence and naming each Server", () => {
-    const metrics = serviceMetrics(read({
-      points: point,
-      machines: [answering(A, reply(point))],
-      unanswered: [failing(B, refusal), failing(D, down)],
-    }), names);
-    expect(metrics.availability).toEqual({
-      type: "mixed",
-      needsUpgrade: [{ id: B, name: "web-2" }],
-      unanswered: [{ id: D, name: null }],
-    });
-  });
 
-  it("needs upgrade when none answer and every one refused for the metrics capability", () => {
-    expect(serviceMetrics(read({ unanswered: [failing(B, refusal), failing(C, refusal)] }), names).availability).toEqual({
-      type: "needs_upgrade",
-      servers: [{ id: B, name: "web-2" }, { id: C, name: "db-1" }],
-    });
-  });
 
-  it("treats an unsupported refusal for another capability as not answering", () => {
-    const other: RpcError = { ...refusal, details: { capability: "ployz.logs.tail.v1" } };
-    expect(serviceMetrics(read({ unanswered: [failing(B, other)] }), names).availability).toEqual({
-      type: "unanswered",
-      servers: [{ id: B, name: "web-2" }],
-      needsUpgrade: [],
-    });
-  });
 
-  it("names the Servers that did not answer, not mixed, when the ones that answered have nothing", () => {
-    expect(serviceMetrics(read({ machines: [answering(A, nothing())], unanswered: [failing(B, refusal)] }), names).availability).toEqual({
-      type: "needs_upgrade",
-      servers: [{ id: B, name: "web-2" }],
-    });
-    expect(serviceMetrics(read({ machines: [answering(A, nothing())], unanswered: [failing(B, refusal), failing(D, down)] }), names).availability).toEqual({
-      type: "unanswered",
-      servers: [{ id: D, name: null }],
-      needsUpgrade: [{ id: B, name: "web-2" }],
-    });
-  });
 
-  it("is unanswered when none answer and any did not, still listing the ones that need upgrade", () => {
-    expect(serviceMetrics(read({ unanswered: [failing(B, refusal), failing(D, down)] }), names).availability).toEqual({
-      type: "unanswered",
-      servers: [{ id: D, name: null }],
-      needsUpgrade: [{ id: B, name: "web-2" }],
-    });
-  });
 
   it("has no readings when no Server is asked, or every answer is empty", () => {
     expect(serviceMetrics(read({}), names).availability).toEqual({ type: "no_readings" });
@@ -107,16 +57,18 @@ describe("serviceMetrics availability", () => {
     expect(serviceMetrics(read({ points: empty, machines: [answering(A, reply(empty))] }), names).availability).toEqual({ type: "no_readings" });
   });
 
-  it("is offline with empty series over the read's window", () => {
-    expect(serviceMetrics({ type: "offline", window, at: window.to }, names)).toEqual({
-      availability: { type: "offline" },
-      window,
-      stepMs: null,
-      all: { cpu: [], memory: [], memoryLimit: [], netIn: [], netOut: [], diskRead: [], diskWrite: [] },
-      allGaps: [],
-      byServer: [],
-      markers: [],
-    });
+  it("has empty series over the window when Cloud keeps no metrics or the Server is silent", () => {
+    for (const type of ["not_configured", "not_reporting"] as const) {
+      expect(serviceMetrics({ type, window, at: window.to }, names)).toEqual({
+        availability: { type },
+        window,
+        stepMs: null,
+        all: { cpu: [], memory: [], memoryLimit: [], netIn: [], netOut: [], diskRead: [], diskWrite: [] },
+        allGaps: [],
+        byServer: [],
+        markers: [],
+      });
+    }
   });
 });
 
@@ -184,21 +136,7 @@ describe("serviceMetrics series", () => {
     expect(a?.series.cpu.map((sample) => sample.at)).toEqual([0, 3000, 4000]);
   });
 
-  it("keeps the sum and names a Server whose read timed out over the whole range as not answering", () => {
-    const onA = { service: every(0, 10_000, 500_000) };
-    const metrics = serviceMetrics(read({ points: onA, machines: [answering(A, reply(onA)), answering(B, nothing("timeout"))] }), names);
-    expect(metrics.availability).toEqual({ type: "mixed", needsUpgrade: [], unanswered: [{ id: B, name: "web-2" }] });
-    expect(metrics.allGaps).toEqual([]);
-    expect(metrics.all.cpu).toEqual(onA.service.map((point) => ({ at: point.ts / 1e6, value: 0.5 })));
-    expect(metrics.byServer.map((entry) => entry.server.id)).toEqual([A]);
-  });
 
-  it("names every Server that timed out when none has readings", () => {
-    const metrics = serviceMetrics(read({ machines: [answering(A, nothing("timeout")), answering(B, nothing())] }), names);
-    expect(metrics.availability).toEqual({ type: "unanswered", servers: [{ id: A, name: "web-10" }], needsUpgrade: [] });
-    expect(metrics.allGaps).toEqual([{ from: 0, to: 10_000, reason: "not_sampled" }]);
-    expect(metrics.byServer).toEqual([]);
-  });
 
   it("lists answering Servers with readings or markers, by name with numbers in order", () => {
     const some = { service: [servicePoint(0, { mem_bytes: 1 })] };
@@ -279,16 +217,10 @@ describe("serverMetrics", () => {
     expect(metrics.gaps).toEqual([{ from: 0, to: 2000, reason: "timeout" }, { from: 5000, to: 6000, reason: "not_sampled" }]);
   });
 
-  it("classifies a Server that refused or did not answer", () => {
-    const empty = { points: { machine: [] } };
-    expect(serverMetrics(read({ ...empty, unanswered: [failing(B, refusal)] }), names).availability)
-      .toEqual({ type: "needs_upgrade", servers: [{ id: B, name: "web-2" }] });
-    expect(serverMetrics(read({ ...empty, unanswered: [failing(C, down)] }), names).availability)
-      .toEqual({ type: "unanswered", servers: [{ id: C, name: "db-1" }], needsUpgrade: [] });
-    expect(serverMetrics(read({ ...empty, machines: [answering(A, reply({ machine: [] }))] }), names).availability)
+  it("has no readings for a Server with nothing in range, and names the off states", () => {
+    expect(serverMetrics(read({ points: { machine: [] }, machines: [answering(A, reply({ machine: [] }))] }), names).availability)
       .toEqual({ type: "no_readings" });
-    const timedOut = reply({ machine: [] }, { gaps: [{ from: ms(window.from), to: ms(window.to), reason: "timeout" }] });
-    expect(serverMetrics(read({ ...empty, machines: [answering(A, timedOut)] }), names))
-      .toMatchObject({ availability: { type: "unanswered", servers: [{ id: A, name: "web-10" }], needsUpgrade: [] }, gaps: [] });
+    expect(serverMetrics({ type: "not_reporting", window, at: window.to }, names).availability).toEqual({ type: "not_reporting" });
+    expect(serverMetrics({ type: "not_configured", window, at: window.to }, names).availability).toEqual({ type: "not_configured" });
   });
 });

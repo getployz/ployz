@@ -8,17 +8,13 @@ import type {
   MetricMarker,
   ServicePoint,
 } from "@ployz/sdk";
-import { requirements } from "#/modules/runtime/daemon-compat";
 import { containerId, machineId, serviceId } from "#/test/ids";
 
-type RpcError = MetricHistory["unanswered"][number]["error"];
 type Answer = MetricHistory["machines"][number];
-type Failure = MetricHistory["unanswered"][number];
 
 export const NORMAL = machineId("0123456789abcdef0123456789abcdef");
 export const ONES = machineId("1");
 export const TWOS = machineId("2");
-const THREES = machineId("3");
 /** Up and answering, with nothing sampled yet. */
 export const FOURS = machineId("4");
 const MIB = 1024 * 1024;
@@ -71,15 +67,6 @@ function sumServicePoints(replies: readonly (readonly ServicePoint[])[]): Servic
   return [...byTs.values()].sort((left, right) => left.ts - right.ts);
 }
 
-const refusal = (machine: MachineId): Failure => ({
-  machine_id: machine,
-  error: { code: "unsupported", message: "this Server's daemon does not serve metric history", details: { capability: requirements.metrics.capability, target: machine } } satisfies RpcError,
-});
-const down = (machine: MachineId): Failure => ({
-  machine_id: machine,
-  error: { code: "unavailable", message: "the Server is not up, so it was not asked", details: null } satisfies RpcError,
-});
-
 function serviceReply(machine: MachineId, points: ServicePoint[], step: number, extra: Partial<MetricHistoryReply> = {}): Answer {
   return { machine_id: machine, value: { points: { service: points }, step_nanos: step, gaps: [], ...extra } };
 }
@@ -89,11 +76,11 @@ function absent(machine: MachineId, { since, until, step }: Buckets): Answer {
   return serviceReply(machine, [], step, { gaps: [{ from: since, to: until, reason: "not_sampled" }] });
 }
 
-function serviceHistory(answers: readonly Answer[], unanswered: readonly Failure[], step: number): MetricHistory {
+function serviceHistory(answers: readonly Answer[], step: number): MetricHistory {
   const history: MetricHistory = {
     points: { service: sumServicePoints(answers.map((answer) => "service" in answer.value.points ? answer.value.points.service : [])) },
     machines: [...answers],
-    unanswered: [...unanswered],
+    unanswered: [],
   };
   if (answers.length > 0) history.step_nanos = step;
   return history;
@@ -121,24 +108,24 @@ function postgres(service: string, range: Buckets): MetricHistory {
   const points = servicePoints(ts, 2, true).filter((_, index) => index < third || index >= 2 * third);
   const oomAt = ts[2 * third + 2] ?? ts.at(-1) ?? 0;
   const markers = [marker(service, NORMAL, oomAt, "oom"), marker(service, NORMAL, oomAt + Math.floor(step / 2), "restart")];
-  return serviceHistory([serviceReply(NORMAL, points, step, { gaps, markers }), absent(ONES, range)], [], step);
+  return serviceHistory([serviceReply(NORMAL, points, step, { gaps, markers }), absent(ONES, range)], step);
 }
 
 function serviceFixture(service: string, range: Buckets): MetricHistory {
   const { step, ts } = range;
   switch (service.split("/").at(-1)) {
     case "web":
-      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 0, false), step), serviceReply(ONES, servicePoints(ts, 1.3, false), step)], [], step);
+      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 0, false), step), serviceReply(ONES, servicePoints(ts, 1.3, false), step)], step);
     case "api":
-      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 0.6, false), step)], [refusal(TWOS), down(THREES)], step);
+      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 0.6, false), step)], step);
     case "worker":
-      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 2.1, false), step), absent(ONES, range)], [], step);
+      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 2.1, false), step), absent(ONES, range)], step);
     case "redis":
-      return serviceHistory([], [refusal(ONES), refusal(TWOS)], step);
+      return serviceHistory([], step);
     case "postgres":
       return postgres(service, range);
     default:
-      return serviceHistory([absent(NORMAL, range), absent(ONES, range)], [], step);
+      return serviceHistory([absent(NORMAL, range), absent(ONES, range)], step);
   }
 }
 
@@ -174,7 +161,7 @@ function machineFixture(machine: MachineId, { step, ts }: Buckets): MetricHistor
   if (machine === FOURS) {
     return { step_nanos: step, points: { machine: [] }, machines: [{ machine_id: machine, value: { points: { machine: [] }, step_nanos: step, gaps: [] } }], unanswered: [] };
   }
-  return { points: { machine: [] }, machines: [], unanswered: [machine === TWOS ? refusal(machine) : down(machine)] };
+  return { points: { machine: [] }, machines: [], unanswered: [] };
 }
 
 /** A canned metric history for the verify dashboard, which has no real Servers to ask. Same input, same reply. */

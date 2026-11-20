@@ -1,10 +1,6 @@
-import type { HostPoint, MachineFailure, MetricGap, MetricHistory, MetricHistoryReply, MetricPoints, ServicePoint } from "@ployz/sdk";
-import { Schema, type Types } from "effect";
-import { requirements } from "#/modules/runtime/daemon-compat";
+import type { HostPoint, MetricGap, MetricHistory, MetricHistoryReply, MetricPoints, ServicePoint } from "@ployz/sdk";
+import type { Types } from "effect";
 import type { MetricRead, MetricWindow } from "./metrics";
-
-// The SDK exports `RpcError` as its error class; the payload type is only reachable through a reply.
-type RpcError = MetricHistory["unanswered"][number]["error"];
 
 /** `name` is null for a Server the list doesn't name. */
 export type ServerRef = { readonly id: string; readonly name: string | null };
@@ -22,11 +18,11 @@ export type Marker = {
 
 export type MetricAvailability =
   | { readonly type: "normal" }
-  | { readonly type: "mixed"; readonly needsUpgrade: readonly ServerRef[]; readonly unanswered: readonly ServerRef[] }
-  | { readonly type: "needs_upgrade"; readonly servers: readonly ServerRef[] }
-  | { readonly type: "unanswered"; readonly servers: readonly ServerRef[]; readonly needsUpgrade: readonly ServerRef[] }
   | { readonly type: "no_readings" }
-  | { readonly type: "offline" };
+  /** Cloud keeps no metrics: ClickHouse is not set up. */
+  | { readonly type: "not_configured" }
+  /** A Server that is up sent nothing for the last minute. */
+  | { readonly type: "not_reporting" };
 
 export type ServiceSeries = {
   /** vCPUs in use. */
@@ -82,39 +78,14 @@ const serverRef = (id: string, names: Names): ServerRef => ({ id, name: names.ge
 const byName = (left: { readonly name: string | null }, right: { readonly name: string | null }) =>
   (left.name ?? "").localeCompare(right.name ?? "", undefined, { numeric: true });
 
-const needsUpgrade: (error: RpcError) => boolean = Schema.is(Schema.Struct({
-  code: Schema.Literal("unsupported"),
-  details: Schema.Struct({ capability: Schema.Literal(requirements.metrics.capability) }),
-}));
-
-function availability(history: MetricHistory, timedOut: readonly ServerRef[], names: Names, hasSample: boolean): MetricAvailability {
-  const refs = (failures: readonly MachineFailure<RpcError>[]) => failures.map((failure) => serverRef(failure.machine_id, names));
-  const refused = refs(history.unanswered.filter((failure) => needsUpgrade(failure.error)));
-  const silent = [...refs(history.unanswered.filter((failure) => !needsUpgrade(failure.error))), ...timedOut];
-  if (refused.length === 0 && silent.length === 0) return hasSample ? { type: "normal" } : { type: "no_readings" };
-  if (hasSample) return { type: "mixed", needsUpgrade: refused, unanswered: silent };
-  // A Server that answered with nothing only says the Service is not there, so the ones that did not answer explain the empty chart.
-  return silent.length > 0 ? { type: "unanswered", servers: silent, needsUpgrade: refused } : { type: "needs_upgrade", servers: refused };
-}
-
-/** The daemon answers a read past its deadline with one timeout gap over the whole range, which says nothing about the Server's data. */
-function timedOutOver(reply: MetricHistoryReply, window: MetricWindow): boolean {
-  const [gap, ...rest] = reply.gaps;
-  return gap !== undefined && rest.length === 0 && gap.reason === "timeout" && toMs(gap.from) <= window.from && toMs(gap.to) >= window.to;
-}
+const availability = (hasSample: boolean): MetricAvailability => hasSample ? { type: "normal" } : { type: "no_readings" };
 
 type Answer = { readonly server: ServerRef; readonly reply: MetricHistoryReply; readonly gaps: readonly Gap[] };
 
-/** Splits the replies into answers and the Servers whose read timed out over the whole range. */
-function answers(read: Extract<MetricRead, { type: "history" }>, names: Names) {
-  const answered: Answer[] = [];
-  const timedOut: ServerRef[] = [];
-  for (const machine of read.history.machines) {
-    const server = serverRef(machine.machine_id, names);
-    if (timedOutOver(machine.value, read.window)) timedOut.push(server);
-    else answered.push({ server, reply: machine.value, gaps: mergeGaps(machine.value.gaps.map(toGap)) });
-  }
-  return { answered, timedOut };
+function answers(read: Extract<MetricRead, { type: "history" }>, names: Names): Answer[] {
+  return read.history.machines.map((machine) => ({
+    server: serverRef(machine.machine_id, names), reply: machine.value, gaps: mergeGaps(machine.value.gaps.map(toGap)),
+  }));
 }
 
 const toGap = (gap: MetricGap): Gap => ({ from: toMs(gap.from), to: toMs(gap.to), reason: gap.reason });
@@ -192,11 +163,11 @@ const EMPTY_SERVICE: ServiceSeries = { cpu: [], memory: [], memoryLimit: [], net
 
 /** A Service's read as charts: the sum over its Servers, each Server's own, and what happened to its containers. */
 export function serviceMetrics(read: MetricRead, names: Names): ServiceMetrics {
-  if (read.type === "offline") {
-    return { availability: { type: "offline" }, window: read.window, stepMs: null, all: EMPTY_SERVICE, allGaps: [], byServer: [], markers: [] };
+  if (read.type !== "history") {
+    return { availability: { type: read.type }, window: read.window, stepMs: null, all: EMPTY_SERVICE, allGaps: [], byServer: [], markers: [] };
   }
   const { history } = read;
-  const { answered, timedOut } = answers(read, names);
+  const answered = answers(read, names);
   // Every up Server answers, and one without the Service answers a not_sampled gap over the whole range, so a span is a gap
   // in the sum only where no answering Server has data.
   const allGaps = answered.length === 0 ? [] : answered.map((entry) => entry.gaps).reduce(intersectGaps);
@@ -207,7 +178,7 @@ export function serviceMetrics(read: MetricRead, names: Names): ServiceMetrics {
     .map(({ server, series: own, gaps }) => ({ server, series: own, gaps }))
     .sort((left, right) => byName(left.server, right.server));
   return {
-    availability: availability(history, timedOut, names, hasSamples(Object.values(all))),
+    availability: availability(hasSamples(Object.values(all))),
     window: read.window,
     stepMs: stepMs(history),
     all,
@@ -221,14 +192,14 @@ const HIDDEN_INTERFACE = /^(?:lo|veth.*|docker.*|br-.*)$/u;
 
 /** A Server's read as charts: its CPU, memory, network interfaces and disk. */
 export function serverMetrics(read: MetricRead, names: Names): ServerMetrics {
-  if (read.type === "offline") {
+  if (read.type !== "history") {
     return {
-      availability: { type: "offline" }, window: read.window, stepMs: null,
+      availability: { type: read.type }, window: read.window, stepMs: null,
       cpu: [], memoryUsed: [], memoryTotal: [], interfaces: [], disk: [], gaps: [],
     };
   }
   const { history } = read;
-  const { answered, timedOut } = answers(read, names);
+  const answered = answers(read, names);
   const gaps = answered[0]?.gaps ?? [];
   const points = hostPoints(history.points);
   const interfaceNames = [...new Set(points.flatMap((point) => Object.keys(point.interfaces ?? {})))]
@@ -254,7 +225,7 @@ export function serverMetrics(read: MetricRead, names: Names): ServerMetrics {
   const memoryTotal = series(points, gaps, (point) => point.memory?.total);
   const hasSample = hasSamples([cpu, memoryUsed, memoryTotal, disk, ...interfaces.flatMap((iface) => [iface.netIn, iface.netOut])]);
   return {
-    availability: availability(history, timedOut, names, hasSample),
+    availability: availability(hasSample),
     window: read.window,
     stepMs: stepMs(history),
     cpu, memoryUsed, memoryTotal, interfaces, disk, gaps,
