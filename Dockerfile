@@ -53,7 +53,7 @@ COPY --from=dashboard --chmod=a+rX /app/dashboard/node_modules node_modules
 RUN ln -sfn /app/.output/server/node_modules/@ployz/sdk node_modules/@ployz/sdk \
     && touch .env \
     && node -p 'require("@ployz/sdk").ployzVersion()' > .ployz-version
-COPY dashboard/package.json dashboard/drizzle.config.ts dashboard/drizzle.analytics.config.ts ./
+COPY dashboard/package.json dashboard/drizzle.config.ts ./
 COPY dashboard/drizzle/ drizzle/
 COPY dashboard/scripts/check-schema.ts dashboard/scripts/telemetry.ts scripts/
 COPY dashboard/src/server/schema-compatibility.ts src/server/schema-compatibility.ts
