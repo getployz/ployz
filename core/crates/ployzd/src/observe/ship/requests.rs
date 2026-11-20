@@ -198,6 +198,12 @@ impl RequestOutbox {
     }
 
     #[cfg(test)]
+    pub(in crate::observe) fn seal(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        self.flush(&mut state).unwrap();
+    }
+
+    #[cfg(test)]
     pub(in crate::observe) fn held_rows(&self) -> usize {
         self.state
             .lock()
@@ -262,6 +268,9 @@ impl Stream for RequestOutbox {
     }
 
     fn ack(&self, seqs: &[u64]) -> io::Result<()> {
+        if seqs.is_empty() {
+            return Ok(());
+        }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         for seq in seqs {
             remove_entry(&self.dir, *seq, SEGMENT_SUFFIX)?;
@@ -274,6 +283,9 @@ impl Stream for RequestOutbox {
     }
 
     fn refuse(&self, seqs: &[u64]) -> io::Result<()> {
+        if seqs.is_empty() {
+            return Ok(());
+        }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.in_flight.clear();
         self.discard(&mut state, seqs)
@@ -281,6 +293,18 @@ impl Stream for RequestOutbox {
 
     fn wake(&self) -> &Notify {
         &self.wake
+    }
+
+    /// An empty batch at the last seq, so a Machine with no traffic still refreshes its
+    /// analytics salts. It holds nothing, so acking or refusing it leaves the held batch alone.
+    fn salt_refresh(&self) -> io::Result<Option<Held>> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut body = envelope(state.ledger.last_seq, state.ledger.dropped);
+        body.extend_from_slice(b"]}");
+        Ok(Some(Held {
+            body,
+            seqs: Vec::new(),
+        }))
     }
 }
 

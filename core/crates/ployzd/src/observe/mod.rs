@@ -86,7 +86,7 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     ));
     let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds()));
     let crashes = ship::Outbox::open(&store)?;
-    spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;
+    spawn_crash_sender(crashes.clone(), data_dir)?;
     if let Err(error) = harvest_requests(&store, run_dir, data_dir, salts) {
         tracing::warn!(%error, "cannot harvest requests; crash reports still ship");
     }
@@ -104,8 +104,8 @@ fn harvest_requests(
     request::spawn(run_dir, salts, requests)
 }
 
-fn spawn_shipper<S: ship::Stream>(
-    outbox: Arc<S>,
+fn spawn_shipper(
+    outbox: Arc<ship::RequestOutbox>,
     salts: Arc<salts::Salts>,
     data_dir: &Path,
 ) -> io::Result<()> {
@@ -113,6 +113,16 @@ fn spawn_shipper<S: ship::Stream>(
     let shipper = ship::Shipper::new(outbox, salts, move || ship::push_target(&machine_dir))
         .map_err(io::Error::other)?;
     tokio::spawn(shipper.run());
+    Ok(())
+}
+
+fn spawn_crash_sender(crashes: Arc<ship::Outbox>, data_dir: &Path) -> io::Result<()> {
+    let machine_dir = data_dir.to_path_buf();
+    let sender = ship::CrashSender::new(crashes, collector::CRASH_RECEIVER, move || {
+        ship::push_target(&machine_dir).is_some()
+    })
+    .map_err(io::Error::other)?;
+    tokio::spawn(sender.run());
     Ok(())
 }
 
