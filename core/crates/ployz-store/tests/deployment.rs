@@ -9302,7 +9302,7 @@ fn a_rollback_across_the_upgrade_runs_no_pin_from_an_approval_the_claim_would_no
 
 /// Leave Deployment `n` as a Store at 0049 left one a Device approved before signed
 /// versions, with `approval` kept and nothing recorded as what it ran, and reopen the
-/// Store on this build.
+/// Store on this build, which replays 0050 alone: the later migrations already ran.
 fn upgraded(store: ConfigStore, url: &str, n: u8, approval: &str) -> ConfigStore {
     legacy(url, n);
     for sql in [
@@ -9310,7 +9310,7 @@ fn upgraded(store: ConfigStore, url: &str, n: u8, approval: &str) -> ConfigStore
             "UPDATE config_deployment SET deploy_approval = '{approval}' WHERE id = '{}'",
             id(n)
         ),
-        "DELETE FROM config_migration WHERE name > '0049_service_version'".to_owned(),
+        "DELETE FROM config_migration WHERE name = '0050_approved_pins'".to_owned(),
     ] {
         backend::execute(url, &sql);
     }
