@@ -1586,12 +1586,12 @@ async fn live_stats_leave_out_an_exited_service_container() {
         .start_container(id.as_str(), None::<StartContainerOptions>)
         .await
         .unwrap();
-    // Docker's running list can still show a container just after its wait returns.
     let review = || vec![format!("{}=review", labels::NAMESPACE)];
     for _ in 0..50 {
         if docker.running_labelled(review()).await.unwrap().is_empty() {
             break;
         }
+        // real-wait: Docker's running list lags a container's exit
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(docker.labelled(review()).await.unwrap().len(), 1);

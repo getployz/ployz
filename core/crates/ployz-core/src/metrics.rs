@@ -80,7 +80,9 @@ pub struct MetricRange {
 pub enum MetricScope {
     /// Every Ployz Service container.
     Machine,
-    Service { service: QualifiedService },
+    Service {
+        service: QualifiedService,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
