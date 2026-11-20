@@ -256,6 +256,16 @@ impl MachineService {
                 .await
             }
             (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+                // Recorded before the destroy, so no restart after it loses the record.
+                if let Some(VolumeCopy::Slot { origin, .. } | VolumeCopy::Root { origin, .. }) =
+                    &copy
+                {
+                    let origin = origin.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(&name));
+                    self.containers()?
+                        .lifecycle()
+                        .forgot(&name, &origin)
+                        .await?;
+                }
                 self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
                     .await
             }

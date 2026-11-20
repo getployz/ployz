@@ -102,12 +102,21 @@ impl LocalMachine {
     }
 
     /// Recheck the complete local placement and secure all provisioned Volumes before applications start.
+    ///
+    /// Holds the switch lock, as a Forget does, from before the admission turn through
+    /// provisioning, so no Forget lands between the read of the forgotten record and
+    /// the read of the copy.
     pub(crate) async fn prepare_volumes(
         &self,
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::RawVolumeSource;
+        let switch = match &self.switch {
+            Some(lock) => Some(Arc::clone(lock).lock_owned().await),
+            None => None,
+        };
         self.finish_mutation(move |local| async move {
+            let _switch = switch;
             let containers = local.docker()?;
             let record = local.record();
             if !record.has_cluster_identity() {
@@ -116,6 +125,7 @@ impl LocalMachine {
             let machine = record.machine().ok_or(Error::NotParticipating)?;
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();
+            let mut mounted = std::collections::BTreeMap::new();
             for spec in &specs {
                 crate::docker::require_eligible(
                     spec.placement_eligibility(machine, storage.as_ref()),
@@ -129,6 +139,7 @@ impl LocalMachine {
                     else {
                         unreachable!("provisioned iterator")
                     };
+                    mounted.entry(name.clone()).or_insert(volume);
                     if let Some(existing) = requested.insert(name.clone(), *maximum_bytes)
                         && existing != *maximum_bytes
                     {
@@ -144,8 +155,9 @@ impl LocalMachine {
                 .volumes()
                 .validate_provisioned_volumes(&machine.id, &specs)
                 .await?;
-            for name in requested.keys() {
-                local.admit_plain_mount(&machine.id, name).await?;
+            for (name, volume) in &mounted {
+                let forgot = containers.lifecycle().forgot_here(volume).await?;
+                local.admit_plain_mount(&machine.id, name, forgot).await?;
             }
             let names: Vec<ployz_core::DockerVolumeName> = local
                 .plugin()
@@ -161,11 +173,13 @@ impl LocalMachine {
     }
 
     /// A plain Deploy mounts `name` only on its writer: this Machine's writable root, or
-    /// nothing at all while no other Machine holds a copy.
+    /// nothing at all while no other Machine holds a copy. `forgot` says this Machine
+    /// forgot a copy of the data, which then lives elsewhere however late the view.
     async fn admit_plain_mount(
         &self,
         me: &ployz_core::MachineId,
         name: &DockerVolumeName,
+        forgot: bool,
     ) -> Result<(), Error> {
         use ployz_core::{CopyRole, DockerVolumeStorageObservation, KnownCopy, SwitchError};
         let held: ployz_core::VolumeCopyView = self
@@ -199,7 +213,12 @@ impl LocalMachine {
                 })
             })
             .collect();
-        match ployz_core::admit_plain_mount(held.copy.as_ref(), &elsewhere) {
+        let admitted = if forgot && held.copy.is_none() {
+            Err(SwitchError::NoWriter)
+        } else {
+            ployz_core::admit_plain_mount(held.copy.as_ref(), &elsewhere)
+        };
+        match admitted {
             Ok(()) => Ok(()),
             Err(SwitchError::NoWriter) => {
                 // This Server's own slot is a copy Restore can name, beside any elsewhere.

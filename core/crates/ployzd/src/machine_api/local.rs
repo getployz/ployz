@@ -629,7 +629,13 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PrepareVolumes>(request)?;
-        finish(self.local.prepare_volumes(request.specs).await)
+        finish(
+            self.local
+                .clone()
+                .with_switch(Arc::clone(&self.switch_mutation))
+                .prepare_volumes(request.specs)
+                .await,
+        )
     }
 
     async fn list_volumes(
