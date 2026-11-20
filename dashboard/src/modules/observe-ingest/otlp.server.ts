@@ -1,5 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Clock, Effect, Option } from "effect";
+import type { ObservePusher } from "#/modules/observe-ingest/ingest.server";
 import { machineTokenCurrent, parseMachineToken } from "#/modules/observe-ingest/machine-token";
 import { organizationOfSigningMachine, verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
 import { AppConfig } from "#/server/config.server";
@@ -15,14 +16,15 @@ const FORWARD_TIMEOUT_MS = 20_000;
 const badBody = (message: string) => Response.json({ error: message }, { status: 400, headers: { "cache-control": "no-store" } });
 const ENCODINGS = new Set(["gzip", "zstd", "identity"]);
 
-/** The Organization whose Machine signed this token. Everything Cloud stamps on a record comes from here. */
+/** The Machine that signed this token and the Organization it belongs to. Everything Cloud stamps on a record comes from here. */
 export const authenticateMachineToken = Effect.fn("ObserveIngest.otlpToken")(function* (authorization: string | null) {
   const token = parseMachineToken(authorization);
   if (Option.isNone(token)) return yield* new Unauthorized();
   const nowSeconds = Math.floor((yield* Clock.currentTimeMillis) / 1000);
   if (!machineTokenCurrent(token.value, nowSeconds)) return yield* new Unauthorized();
   const { machine, message, signature } = token.value;
-  return yield* organizationOfSigningMachine(machine, (identity) => verifyManagementSignature(identity, message, signature));
+  const organizationId = yield* organizationOfSigningMachine(machine, (identity) => verifyManagementSignature(identity, message, signature));
+  return { organizationId, machineId: machine } satisfies ObservePusher;
 });
 
 /**

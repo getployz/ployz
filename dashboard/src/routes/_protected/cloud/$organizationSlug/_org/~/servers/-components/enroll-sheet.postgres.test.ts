@@ -111,7 +111,7 @@ const adaOwns: Members = {
 };
 
 const pushedAgo = (machine: string, ms: number) => harness.pool.query(
-  "insert into observe_ingest_cursor (organization_id, machine_id, stream, seq, updated_at) values ($1, $2, 'crash', 1, now() - $3 * interval '1 millisecond')",
+  "insert into observe_ingest_cursor (organization_id, machine_id, stream, seq, updated_at) values ($1, $2, 'requests', 1, now() - $3 * interval '1 millisecond')",
   [adaOrg, machine, ms],
 );
 
