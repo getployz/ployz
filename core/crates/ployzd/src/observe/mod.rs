@@ -88,7 +88,7 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     let crashes = ship::Outbox::open(&store)?;
     spawn_crash_sender(crashes.clone(), data_dir)?;
     if let Err(error) = harvest_requests(&store, run_dir, data_dir, salts) {
-        tracing::warn!(%error, "cannot harvest requests; crash reports still ship");
+        tracing::warn!(%error, "cannot harvest requests; crash events still post");
     }
     harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
 }

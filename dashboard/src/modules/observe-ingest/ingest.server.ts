@@ -87,7 +87,7 @@ const analyticsRows = Effect.fn("ObserveIngest.analyticsRows")(function* (pusher
 
 /**
  * Keeps the push's analytics rows, and advances the cursor even when it keeps none: a Machine that serves traffic keeps
- * its salts fresh with requests pushes and sends no crash refresh, so this cursor is its only recent push time.
+ * its salts fresh with requests pushes, empty ones when no traffic is queued, so this cursor is its only recent push time.
  */
 export const ingestRequestPush = Effect.fn("ObserveIngest.requests")(function* (pusher: ObservePusher, push: RequestPushInput) {
   if (push.dropped > 0) {
