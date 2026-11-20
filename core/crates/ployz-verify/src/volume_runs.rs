@@ -73,7 +73,7 @@
 //! Out of scope: operator collisions, a forged step, a Deploy that takes over a Move's
 //! lane (`fenceTaken`, `fenceFollowed`), the rowless mirror sync, a demote, warm rounds
 //! beyond one pull, a third takeover, and a first Deploy's late step while no copy
-//! exists yet, since every start has a Writer (#4466). Of the resize: real capacities and floors (one
+//! exists yet, since every start has a Writer (`first_placement` checks it). Of the resize: real capacities and floors (one
 //! Machine either takes the target or not, and a floor never moves), ZFS (a bound is one
 //! value per copy), the Store's record transaction (one atomic step on the lock row), a
 //! second resize, a resize during or after the Move (a late `SetVolumeSize` may land
