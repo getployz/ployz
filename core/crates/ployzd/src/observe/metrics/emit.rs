@@ -5,8 +5,8 @@
 //! refused and the reading is dropped.
 
 use std::{
-    collections::HashMap,
-    path::PathBuf,
+    collections::{BTreeMap, HashMap},
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -54,7 +54,7 @@ async fn emit_every_interval(store: StoreRoot, slow: watch::Receiver<SlowReading
     loop {
         ticks.tick().await;
         let at = now_nanos();
-        let datasets = zfs_io::read(std::path::Path::new(zfs_io::KSTAT_ROOT));
+        let datasets = zfs_io::read(Path::new(zfs_io::KSTAT_ROOT));
         let disk = disk::filesystem(store.path()).map(|fs| disk::breakdown(fs, *slow.borrow()));
         let body = body(at, &volumes.read(at, datasets), disk);
         match client.post(ENDPOINT).json(&body).send().await {
@@ -82,11 +82,7 @@ struct VolumeIo {
 struct VolumeSeries(HashMap<String, (i64, DatasetIo)>);
 
 impl VolumeSeries {
-    fn read(
-        &mut self,
-        at: i64,
-        datasets: std::collections::BTreeMap<String, DatasetIo>,
-    ) -> Vec<VolumeIo> {
+    fn read(&mut self, at: i64, datasets: BTreeMap<String, DatasetIo>) -> Vec<VolumeIo> {
         let mut read = Vec::new();
         let mut seen = HashMap::new();
         for (dataset, io) in datasets {

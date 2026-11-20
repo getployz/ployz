@@ -8,7 +8,6 @@ use crate::{sdk::LiveMetrics, ui::Table};
 
 pub(crate) const HISTORY_NOTE: &str = "History is in Ployz Cloud.";
 
-/// The table for `live`, which `subject` names.
 pub(crate) fn report(live: &LiveMetrics, subject: &str) -> Table {
     let containers: Vec<&LiveContainer> = live
         .machines

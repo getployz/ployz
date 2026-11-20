@@ -91,7 +91,7 @@ pub struct MetricsLiveRequest {
 }
 
 /// One reading of each running container the scope covers, from Docker's stats.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MetricsLiveReply {
     pub containers: Vec<LiveContainer>,
 }
