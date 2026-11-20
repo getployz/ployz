@@ -1627,6 +1627,99 @@ mod stopped_on_request {
         fixture.finish();
     }
 
+    mod removal_wait {
+        use super::*;
+
+        const GRACE: Duration = Duration::from_secs(2);
+
+        fn removal(fixture: &Fixture, drain: Drain) -> ContainerWant {
+            ContainerWant::Gone {
+                container: ContainerLocator::Id(fixture.id),
+                drain,
+                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+            }
+        }
+
+        async fn connect(fixture: &Fixture) {
+            fixture
+                .local
+                .set_push_target(ployz_core::SetPushTargetRequest {
+                    url: Some(
+                        "https://cloud.example/api/machines/aa/observe"
+                            .parse()
+                            .unwrap(),
+                    ),
+                })
+                .await
+                .unwrap();
+        }
+
+        async fn removed_in(fixture: &Fixture, drain: Drain) -> Duration {
+            let began = std::time::Instant::now();
+            let reply = fixture
+                .local
+                .ensure_full_access(removal(fixture, drain))
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    reply,
+                    EnsuredContainer::Ensured {
+                        now: ContainerNow::Absent { .. },
+                        ..
+                    }
+                ),
+                "expected the container gone, got {reply:?}"
+            );
+            began.elapsed()
+        }
+
+        #[tokio::test]
+        async fn removing_a_running_container_waits_for_the_collector_to_read_its_log() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+
+            let took = removed_in(&fixture, Drain::try_from(1).unwrap()).await;
+
+            assert!(took >= GRACE, "removed after {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn removing_a_hook_or_on_a_machine_without_cloud_does_not_wait() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+            let took = removed_in(&fixture, Drain::NONE).await;
+            assert!(took < GRACE, "a removal with no drain took {took:?}");
+            fixture.finish();
+
+            let fixture = Fixture::start().await;
+            let took = removed_in(&fixture, Drain::try_from(1).unwrap()).await;
+            assert!(took < GRACE, "a removal with no Collector took {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn the_wait_leaves_the_machines_turn_free() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+            let local = fixture.local.clone();
+            let want = removal(&fixture, Drain::try_from(1).unwrap());
+            let removing = tokio::spawn(async move { local.ensure_full_access(want).await });
+            // real-wait: the removal reaches its wait through the fake Docker's TCP
+            // socket, which emits no event.
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+            tokio::time::timeout(Duration::from_millis(300), fixture.local.exclusive_turn())
+                .await
+                .expect("the removal's wait holds the Machine's turn");
+
+            assert!(!removing.is_finished(), "the removal did not wait");
+            removing.await.unwrap().unwrap();
+            fixture.finish();
+        }
+    }
+
     mod stop_checked {
         use super::*;
 

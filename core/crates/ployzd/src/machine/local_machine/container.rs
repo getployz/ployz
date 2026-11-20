@@ -49,6 +49,21 @@ const DRAIN_POLL: Duration = Duration::from_millis(50);
 /// client that connects to it after the stop hangs until its connect times out.
 const WITHDRAWAL_PROPAGATION: Duration = Duration::from_secs(1);
 
+/// How long a stopped container's `json-file` log outlives its stop, so the Collector
+/// reads the last lines before removal deletes the file. A container the Collector never
+/// opened lost 70 to 90% of its lines at 0 s and none at 1 s or 2 s.
+const LOG_READ_GRACE: Duration = Duration::from_secs(2);
+
+/// What a removal waits after the stop. A removal with no drain is a hook or a discarded
+/// start, whose output nobody reads, and a Machine that ships no logs has no Collector
+/// to wait for.
+fn removal_wait(drain: Drain, ships_logs: bool) -> Duration {
+    if drain == Drain::NONE || !ships_logs {
+        return Duration::ZERO;
+    }
+    LOG_READ_GRACE
+}
+
 /// Where a test holds an `ensure_container` call so a Leave can run against it.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1375,8 +1390,10 @@ impl LocalMachine {
                         )
                         .await
                     {
-                        Ok(Ok(_))
-                        | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                        Ok(Ok(_)) => {
+                            tokio::time::sleep(removal_wait(drain, local.ships_logs())).await;
+                        }
+                        Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
@@ -1413,6 +1430,12 @@ impl LocalMachine {
             None => EnsuredContainer::Ensured { now, health: None },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
+    }
+
+    /// Whether the Collector runs here, which it does for as long as Cloud has a push
+    /// target for this Machine.
+    fn ships_logs(&self) -> bool {
+        self.record().push_target().is_some()
     }
 
     async fn wait_for_admitted_work(&self) {
