@@ -20,7 +20,7 @@ use ployzd::{
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
-    holders::Unheld,
+    holders::{Unheld, copy_held_for_other_data},
     inspect::{answering, internal},
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
@@ -471,12 +471,20 @@ impl VolumeStorage {
             .map_err(internal)?;
         match self.admit_holders(&request.name, carried).await {
             Ok(()) => {}
-            Err(Unheld::Foreign(message)) => {
+            Err(Unheld::Foreign) => {
                 return Err(self
-                    .refuse_found(&scope, CopyRefusal::Foreign, message)
+                    .refuse_found(
+                        &scope,
+                        CopyRefusal::Foreign,
+                        copy_held_for_other_data(&request.name),
+                    )
                     .await);
             }
-            Err(Unheld::Unlisted(error)) => return Err(error),
+            Err(Unheld::Unlisted(message)) => {
+                return Err(self
+                    .refuse_found(&scope, CopyRefusal::DockerUnavailable, message)
+                    .await);
+            }
         }
         marks.promote_slot(request.epoch).await.map_err(internal)?;
         // A Machine that only ever mirrored has no managed parent for the root yet.

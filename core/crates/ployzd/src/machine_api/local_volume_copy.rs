@@ -532,8 +532,12 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
         CopyRefusal::Written => format!("Volume {name} was written after the wanted snapshot"),
         CopyRefusal::NoSource => format!("Volume {name} has no copy to pull from"),
         CopyRefusal::Foreign => {
-            format!("Volume {name} is mounted by a Container approved for other data")
+            format!("Volume {name} {}", crate::volume_copy::HELD_FOR_OTHER_DATA)
         }
+        CopyRefusal::DockerUnavailable => {
+            format!("Docker is not answering on this Machine, so Volume {name} stays as it is")
+        }
+        CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",
             refused.floor.unwrap_or_default()

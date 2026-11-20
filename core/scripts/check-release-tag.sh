@@ -36,7 +36,12 @@ if grep -q '^impl VolumeOrigin' "$root/crates/ployz-core/src/domain/volume.rs"; 
         echo "tag '$tag' carries Volume origins, but the catalog does not declare ployz.volume.origin.v1" >&2
         exit 1
     fi
-    if ! grep -q 'ployz_core::VOLUME_ORIGIN_CAPABILITY,' "$root/crates/ployzd/src/volume_plugin/transfer.rs"; then
+    if ! awk '
+        /^[[:space:]]*\.header\($/ { header = NR }
+        header && NR == header + 1 && /^[[:space:]]*ployz_core::CAPABILITIES_HEADER,$/ { named = NR }
+        named && NR == named + 1 && /^[[:space:]]*ployz_core::VOLUME_ORIGIN_CAPABILITY,$/ { claimed = 1 }
+        END { exit !claimed }
+    ' "$root/crates/ployzd/src/volume_plugin/transfer.rs"; then
         echo "tag '$tag' carries Volume origins, but its pulls do not claim ployz.volume.origin.v1" >&2
         exit 1
     fi

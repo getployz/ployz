@@ -188,6 +188,22 @@ impl VolumeStorage {
             )));
         }
 
+        // A Container kept from an earlier Volume of this name may still mount it. A fresh
+        // root goes under the name only if every such Container expects its origin.
+        let docker_name = ployz_core::DockerVolumeName::parse(name.as_str())
+            .map_err(|error| PluginError::from(error.to_string()))?;
+        match self.admit_holders(&docker_name, origin).await {
+            Ok(()) => {}
+            Err(super::holders::Unheld::Foreign) => {
+                return Err(PluginError::HeldForOtherData {
+                    name: name.to_string(),
+                });
+            }
+            Err(super::holders::Unheld::Unlisted(message)) => {
+                return Err(PluginError::from(message));
+            }
+        }
+
         if matches!(admission, CapacityAdmission::Required) {
             self.ensure_commitment(pool, &datasets, requested).await?;
         }

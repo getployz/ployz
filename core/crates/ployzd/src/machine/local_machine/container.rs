@@ -2049,9 +2049,11 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(
             Docker::ImagePull(_) | Docker::UnsignedImage(_) | Docker::DiskFull { .. },
         ) => ContainerRefusalReason::ImagePullFailed,
-        Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
-            ContainerRefusalReason::VolumesNotPrepared
-        }
+        Error::Docker(
+            Docker::ExternalVolumeNotFound(_)
+            | Docker::VolumeShapeMismatch { .. }
+            | Docker::VolumeNotWritable(_),
+        ) => ContainerRefusalReason::VolumesNotPrepared,
         Error::Docker(Docker::ForeignVolume { .. }) => ContainerRefusalReason::ForeignVolume,
         Error::Docker(Docker::Sealed(open)) => match open {
             OpenError::KeyMissing => ContainerRefusalReason::SealingKeyMissing,

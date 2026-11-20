@@ -12,6 +12,11 @@ use ployz_core::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The plugin's words, after a Volume's name, for a root it refused because a Container
+/// that mounts the name expects other data. The daemon reads them back out of Docker's
+/// refusal of a create.
+pub const HELD_FOR_OTHER_DATA: &str = "is mounted by a Container approved for other data";
+
 /// The Pool's capacity and commitments, with no effect.
 pub const STORAGE_INSPECT_ROUTE: &str = "Storage.Inspect";
 /// The Pool made ready for Volumes.

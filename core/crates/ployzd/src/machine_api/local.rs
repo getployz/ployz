@@ -556,8 +556,9 @@ impl MachineRpc for MachineService {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::EnsureContainer>(request)?;
         // Every start or create of a Provisioned Volume's holder, a hook's included, waits
-        // out a switch of that Volume, as a Writer's start does: its create reads each
-        // Volume's origin, and no promote or seed may land between that read and Docker.
+        // out any switch on this Machine, as a Writer's start does. The lock is one for the
+        // Machine, not one per Volume: a create reads each Volume's origin, and no promote
+        // or seed may land between that read and Docker.
         let local = self
             .local_at(operator)
             .with_switch(Arc::clone(&self.switch_mutation));

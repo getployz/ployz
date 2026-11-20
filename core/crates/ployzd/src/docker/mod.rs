@@ -1388,6 +1388,10 @@ pub enum Error {
         /// What is wrong with the Volume, as a clause after its name.
         found: String,
     },
+    /// A mounted Provisioned Volume has no root on this Machine: it is absent, or only a
+    /// slot holds a copy of it.
+    #[error("Volume '{0}' has no writable copy on this Machine")]
+    VolumeNotWritable(DockerVolumeName),
     /// The volume plugin did not say which origin a Provisioned Volume carries.
     #[error("could not read which data Volume '{name}' holds")]
     VolumeOriginUnread {
@@ -1538,6 +1542,7 @@ impl Error {
             })
             | Self::VolumeShapeMismatch { .. }
             | Self::ForeignVolume { .. }
+            | Self::VolumeNotWritable(_)
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
             | Self::ServicePlacementMismatch

@@ -195,9 +195,11 @@ doesn't start there and nothing is deleted. Make the copy you want the volume, t
 ployz volume restore data --from web-2
 ```
 
-A move, mirror or restore is refused the same way when a service on the server, running or
-stopped, was approved for other data under that name: "Volume data is mounted by a Container
-approved for other data".
+A move or restore that would make a copy the volume, and a new volume made under that name, are
+refused the same way when a service on the server, running or stopped, was approved for other data
+under that name: "Volume data is mounted by a Container approved for other data". Remove that
+service from the server, or restore the data it was approved for. A mirror is never refused this
+way, since no service opens it.
 
 ## A volume change says Docker is not answering
 
@@ -205,8 +207,9 @@ approved for other data".
 Docker is not answering on this Machine, so Volume data keeps its copies as they are until it does
 ```
 
-A server changes which copy is the volume only while Docker can say which services use it. Start
-Docker on that server, or wait for it to come back, then run the command again.
+A server changes which copy is the volume, or makes a new one, only while Docker can say which
+services use it. Start Docker on that server, or wait for it to come back, then run the command
+again.
 
 ## A move to another server says the volume already has a copy
 

@@ -232,6 +232,12 @@ pub enum CopyRefusal {
     /// A Container that mounts the Volume expects data of another origin than the copy
     /// carries.
     Foreign,
+    /// Docker could not say which Containers mount the Volume, so no copy went under its
+    /// name.
+    DockerUnavailable,
+    /// A reason introduced after this build. This daemon never sends it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 /// `RpcError.details` of a refused `SetVolumeCopy`: the reason and the copy it left.
@@ -260,7 +266,7 @@ impl Evidence for SetVolumeCopyRefused {
 impl CodedRefusal for SetVolumeCopyRefused {
     fn code(&self) -> RpcErrorCode {
         match self.reason {
-            CopyRefusal::NoCapacity => RpcErrorCode::Unavailable,
+            CopyRefusal::NoCapacity | CopyRefusal::DockerUnavailable => RpcErrorCode::Unavailable,
             CopyRefusal::Mismatch
             | CopyRefusal::NoTransition
             | CopyRefusal::Busy
@@ -269,6 +275,7 @@ impl CodedRefusal for SetVolumeCopyRefused {
             | CopyRefusal::NoSource
             | CopyRefusal::Stale
             | CopyRefusal::Foreign => RpcErrorCode::Conflict,
+            CopyRefusal::Unrecognized => RpcErrorCode::Internal,
         }
     }
 }

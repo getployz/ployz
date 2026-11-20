@@ -1,9 +1,12 @@
 //! A copy goes under a name only when every Container that mounts the name, running or
 //! stopped, expects the origin it carries, and only while Docker can say which those are.
 
-use ployz_core::{DockerVolumeName, VolumeOrigin};
+use std::time::{Duration, Instant};
 
-use super::super::holders::Holder;
+use ployz_core::{DockerVolumeName, VolumeOrigin};
+use tokio::io::AsyncWriteExt as _;
+
+use super::super::holders::{Holder, Holders};
 use super::copy_tests::{BORN, SLOT_FS, poll, set_snapshots};
 use super::inspect_tests::set_property;
 use super::*;
@@ -16,12 +19,19 @@ fn start_holding(
     markers: &[&str],
     holders: std::result::Result<Vec<Holder>, String>,
 ) -> PathBuf {
+    let fixed = Holders::none();
+    fixed.set(holders);
+    start_listing(test, markers, fixed)
+}
+
+/// A plugin over fake ZFS that lists Containers from `holders`.
+fn start_listing(test: &TestDir, markers: &[&str], holders: Holders) -> PathBuf {
     for marker in markers {
         fs::write(test.0.join(marker), "").unwrap();
     }
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
-    let storage = VolumeStorage::with_programs(zpool, zfs);
-    storage.holders.set(holders);
+    let mut storage = VolumeStorage::with_programs(zpool, zfs);
+    storage.holders = holders;
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     tokio::spawn(serve(listener, storage));
@@ -205,4 +215,163 @@ async fn a_seed_landing_under_a_holder_expecting_other_data_is_refused() {
         test.0.join("seed-slot").exists(),
         "the copy stays in its slot"
     );
+}
+
+/// A Docker on `socket` that reads each request, writes `reply`, and then holds the
+/// connection open without another byte.
+fn stalled_docker(socket: &Path, reply: &'static [u8]) {
+    let listener = UnixListener::bind(socket).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut request = [0_u8; 4096];
+                let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut request).await;
+                let _ = stream.write_all(reply).await;
+                std::future::pending::<()>().await;
+                drop(stream);
+            });
+        }
+    });
+}
+
+/// Docker sent the list's headers and stalled in its body. The promote is still refused
+/// as unavailable, so admission is not held past the bound.
+#[tokio::test]
+async fn a_promote_while_docker_stalls_in_the_list_body_is_refused() {
+    let test = TestDir::new();
+    let docker = test.0.join("docker.sock");
+    stalled_docker(
+        &docker,
+        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n[",
+    );
+    let socket = start_listing(
+        &test,
+        &["root", "mirror", "mirror-fs"],
+        Holders::Socket(docker),
+    );
+    set_snapshots(&test, SLOT_FS, &[("f-1", 13)]);
+
+    let reply = tokio::time::timeout(Duration::from_secs(8), promote(&socket))
+        .await
+        .expect("the promote waited on Docker's body past its bound");
+    assert_eq!(
+        reply.pointer("/Err/code"),
+        Some(&json!("unavailable")),
+        "{reply}"
+    );
+    assert_still_in_its_slot(&test);
+}
+
+/// The CLI and Cloud give a copy call 10 s. A Docker that never answers is refused well
+/// inside that, so the caller reads "Docker is not answering" instead of a timeout that
+/// may have changed the copy.
+#[tokio::test]
+async fn a_promote_while_docker_never_answers_is_refused_inside_a_callers_budget() {
+    let test = TestDir::new();
+    let docker = test.0.join("docker.sock");
+    stalled_docker(&docker, b"");
+    let socket = start_listing(
+        &test,
+        &["root", "mirror", "mirror-fs"],
+        Holders::Socket(docker),
+    );
+    set_snapshots(&test, SLOT_FS, &[("f-1", 13)]);
+
+    let started = Instant::now();
+    let reply = promote(&socket).await;
+    let took = started.elapsed();
+    assert_eq!(
+        reply.pointer("/Err/code"),
+        Some(&json!("unavailable")),
+        "{reply}"
+    );
+    assert_eq!(
+        reply.pointer("/Err/details/reason"),
+        Some(&json!("docker_unavailable")),
+        "the refusal says the copy stayed, so the caller knows nothing changed: {reply}"
+    );
+    assert!(
+        reply
+            .pointer("/Err/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("Docker is not answering")),
+        "{reply}"
+    );
+    assert!(
+        took < Duration::from_secs(5),
+        "refused after {took:?}, too close to the caller's 10 s"
+    );
+    assert_still_in_its_slot(&test);
+}
+
+async fn create(socket: &Path, origin: Option<&str>) -> String {
+    let mut options = serde_json::Map::from_iter([("size".to_owned(), json!("1g"))]);
+    if let Some(origin) = origin {
+        options.insert(
+            ployz_core::PROVISIONED_ORIGIN_OPTION.to_owned(),
+            json!(origin),
+        );
+    }
+    let reply = post(
+        socket,
+        "/VolumeDriver.Create",
+        json!({"Name": "data", "Opts": options}),
+    )
+    .await;
+    reply
+        .get("Err")
+        .and_then(Value::as_str)
+        .expect("Create answers Err")
+        .to_owned()
+}
+
+/// A Container kept from an earlier Volume `data` still mounts the name after its copy was
+/// forgotten. A fresh root of other data under the name would open to it on its next
+/// start, so none is made: not a born root under an unlabelled Container, and not a
+/// Legacy or other born root under a born one.
+#[tokio::test]
+async fn a_fresh_root_under_a_holder_expecting_other_data_is_refused() {
+    let other = "b".repeat(64);
+    for (held, requested) in [
+        (None, Some(BORN)),
+        (Some(BORN), None),
+        (Some(BORN), Some(other.as_str())),
+    ] {
+        let test = TestDir::new();
+        let socket = start_holding(&test, &["root"], Ok(vec![holder("data", held)]));
+
+        let error = create(&socket, requested).await;
+        assert!(
+            error.contains(ployzd::volume_copy::HELD_FOR_OTHER_DATA),
+            "{held:?} took {requested:?}: {error}"
+        );
+        assert!(!test.0.join("volume").exists(), "no root was made");
+        assert!(
+            !commands(&test).contains("zfs create"),
+            "{}",
+            commands(&test)
+        );
+    }
+}
+
+/// The control: a fresh root whose origin every holder expects is made, and a Docker that
+/// cannot list holders makes none.
+#[tokio::test]
+async fn a_fresh_root_is_made_only_under_holders_expecting_it() {
+    for (held, requested) in [(Some(BORN), Some(BORN)), (None, None)] {
+        let test = TestDir::new();
+        let label = held.map_or_else(|| legacy("data"), str::to_owned);
+        let socket = start_holding(&test, &["root"], Ok(vec![holder("data", Some(&label))]));
+
+        assert_eq!(create(&socket, requested).await, "", "{held:?}");
+        assert!(test.0.join("volume").exists(), "the root was made");
+        assert_eq!(property(&test, ROOT, "ployz:origin").as_deref(), requested);
+    }
+
+    let test = TestDir::new();
+    let socket = start_holding(&test, &["root"], Err("connection refused".into()));
+    let error = create(&socket, None).await;
+    assert!(error.contains("Docker is not answering"), "{error}");
+    assert!(!test.0.join("volume").exists(), "no root was made");
 }

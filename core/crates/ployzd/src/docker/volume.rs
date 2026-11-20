@@ -117,6 +117,13 @@ impl Volumes {
                     Err(error) if volume_conflict(&error) => {
                         verify_volume(source, &self.inspect_volume(machine_id, name).await?)
                     }
+                    Err(error) if held_for_other_data(&error) => Err(Error::ForeignVolume {
+                        name: name.clone(),
+                        found: format!(
+                            "{}, so no new data is made under its name until that Container is removed",
+                            crate::volume_copy::HELD_FOR_OTHER_DATA
+                        ),
+                    }),
                     Err(error) => Err(error),
                 }
             }
@@ -175,10 +182,7 @@ impl Volumes {
                 })?;
             let carried = carried.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(name));
             if carried != expected {
-                return Err(Error::ForeignVolume {
-                    name: name.clone(),
-                    found: "holds another Volume's data under the same name, not the data this Service was approved for".to_owned(),
-                });
+                return Err(other_data(name));
             }
         }
         Ok(())
@@ -516,17 +520,41 @@ async fn provisioned_origin(
         })?;
     match copy {
         Some(ployz_core::VolumeCopy::Root { origin, .. }) => Ok(origin),
-        Some(ployz_core::VolumeCopy::Slot { .. }) | None => Err(Error::ForeignVolume {
-            name: name.clone(),
-            found: "has no writable copy on this Machine".to_owned(),
-        }),
+        Some(ployz_core::VolumeCopy::Slot { .. }) | None => {
+            Err(Error::VolumeNotWritable(name.clone()))
+        }
     }
+}
+
+fn other_data(name: &DockerVolumeName) -> Error {
+    Error::ForeignVolume {
+        name: name.clone(),
+        found: "holds another Volume's data under the same name, not the data this Service was approved for".to_owned(),
+    }
+}
+
+/// Whether Docker refused a create because the volume plugin found a Container that
+/// mounts the name and expects other data.
+fn held_for_other_data(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Docker(bollard::errors::Error::DockerResponseServerError { message, .. })
+            if message.contains(crate::volume_copy::HELD_FOR_OTHER_DATA)
+    )
 }
 
 fn verify_volume(source: &VolumeSource, observed: &DockerVolume) -> Result<(), Error> {
     let expected = source
         .to_create_volume_request()
         .expect("only managed Docker Volume sources are verified");
+    // An Ordinary Volume's origin is its label, so one that carries another origin than a
+    // born source names holds other data, which is no shape problem.
+    if matches!(source.kind(), ployz_core::RawVolumeSource::Ordinary { .. })
+        && let Some(origin) = expected.labels.get(labels::VOLUME_ORIGIN)
+        && observed.labels.get(labels::VOLUME_ORIGIN) != Some(origin)
+    {
+        return Err(other_data(&expected.name));
+    }
     if !source.matches_managed_volume(observed) {
         return Err(Error::VolumeShapeMismatch {
             name: expected.name,
