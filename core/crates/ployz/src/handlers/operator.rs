@@ -632,10 +632,9 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         return removed_logs(root, namespace.as_ref(), &removed, &read, &machines, utc);
     }
     let (reading_read, reading_machines) = (read.clone(), machines.clone());
-    let names = args
+    let asked_services = args
         .iter()
         .filter_map(|arg| ployz_core::QualifiedService::parse(arg.service.as_str()).ok())
-        .map(|qualified| qualified.name)
         .collect::<Vec<_>>();
     let nothing_running = std::rc::Rc::new(std::cell::Cell::new(false));
     let reading_nothing = nothing_running.clone();
@@ -657,14 +656,19 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         })
     });
     let credential = match credential {
-        Err(error) if nothing_running.get() && !fallback.unservable && !names.is_empty() => {
+        Err(error)
+            if nothing_running.get() && !fallback.unservable && !asked_services.is_empty() =>
+        {
             // A Service the Environment has whose containers are gone, as a failed deploy
-            // leaves it: Cloud may still hold what it printed.
-            return match fallback
-                .scoped
-                .as_ref()
-                .map(|scoped| kept_in_cloud(root, scoped, &names, &read, utc))
-            {
+            // leaves it: Cloud may still hold what it printed. Cloud reads one Environment,
+            // so a name in another Namespace keeps the error.
+            return match fallback.scoped.as_ref().and_then(|scoped| {
+                let names = asked_services
+                    .iter()
+                    .map(|asked| (asked.namespace == scoped.namespace).then(|| asked.name.clone()))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(kept_in_cloud(root, scoped, &names, &read, utc))
+            }) {
                 Some(Ok(Some(outcome))) => outcome,
                 Some(Ok(None) | Err(_)) | None => Err(error),
             };
