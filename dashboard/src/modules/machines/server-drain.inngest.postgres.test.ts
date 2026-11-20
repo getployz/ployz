@@ -1,4 +1,4 @@
-import type { ConfigStore, DrainReport, DrainScope, RuntimeWatchView } from "@ployz/sdk";
+import { type ConfigStore, type DrainReport, type DrainScope, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Fiber } from "effect";
 import { TestClock } from "effect/testing";
@@ -16,7 +16,7 @@ import {
 import { applyServerPolicyChangeActivity, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
-import { PloyzProviderError, type PloyzSdkError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
@@ -82,9 +82,12 @@ describe("drain-server", () => {
   let namespaces: string[];
   /** Whether the Config Store fails its read. */
   let storeDown: boolean;
+  /** Whether the Config Store's next open after it reads the owned Namespaces fails, once. */
+  let failAfterRead: boolean;
+  let failNextOpen: boolean;
   let drainCalls: Array<[string, DrainScope]>;
   /** What the Engine answers a Drain with. */
-  let drainAnswer: () => Effect.Effect<DrainReport, PloyzSdkError>;
+  let drainAnswer: () => Promise<DrainReport>;
   let updates: unknown[][];
   /** What the Engine shows Cloud of the cluster when a Drain plans. */
   let frame: RuntimeWatchView;
@@ -101,12 +104,22 @@ describe("drain-server", () => {
     harness.runEffect(operation.pipe(
       Effect.provideService(InngestClient, inngest),
       Effect.provideService(CloudStore, {
-        open: Effect.succeed(asTestDouble<ConfigStore>()({
+        open: Effect.suspend(() => {
+          if (!failNextOpen) return Effect.void;
+          failNextOpen = false;
+          return Effect.die(new Error("config store unavailable"));
+        }).pipe(Effect.as(asTestDouble<ConfigStore>()({
           read: async () => {
             if (storeDown) throw new Error("config store unavailable");
+            failNextOpen = failAfterRead;
+            failAfterRead = false;
             return { namespaces: namespaces.map((namespace) => ({ namespace })) };
           },
-        })),
+          drainMachine: (_organization: string, machine: string, scope: DrainScope) => {
+            drainCalls.push([machine, scope]);
+            return drainAnswer();
+          },
+        }))),
       }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
@@ -115,10 +128,6 @@ describe("drain-server", () => {
           whileSilent();
           return { status: "unreachable" as const, error: null };
         }) : Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
-          drainMachine: (machine: string, scope: DrainScope) => {
-            drainCalls.push([machine, scope]);
-            return drainAnswer();
-          },
           updateMachine: (...args: unknown[]) => Effect.sync(() => void updates.push(args)),
           watchFirstFrame: () => Effect.succeed(frame),
         }) }),
@@ -185,13 +194,15 @@ describe("drain-server", () => {
   beforeEach(async () => {
     namespaces = ["shop-production"];
     storeDown = false;
+    failAfterRead = false;
+    failNextOpen = false;
     frame = frameOf("replicated");
     silentOpens = 0;
     unpaired = false;
     whileWaiting = async () => {};
     whileSilent = () => {};
     drainCalls = [];
-    drainAnswer = () => Effect.succeed(partialReport);
+    drainAnswer = async () => partialReport;
     updates = [];
     send.mockReset();
     send.mockResolvedValue({ ids: [] });
@@ -363,7 +374,7 @@ describe("drain-server", () => {
 
   it("passes a plan with nothing owned as no services, so the Engine selects nothing rather than everything", async () => {
     namespaces = [];
-    drainAnswer = () => Effect.succeed({ ...partialReport, services: [], stopped: null });
+    drainAnswer = async () => ({ ...partialReport, services: [], stopped: null });
     await request();
     await drain();
 
@@ -372,9 +383,7 @@ describe("drain-server", () => {
   });
 
   it("ends failed with the Engine's words when it refuses, and never asks again", async () => {
-    drainAnswer = () => Effect.fail(new PloyzProviderError({
-      operation: "drain machine", cause: { code: "not_found", message: "no server named web-2" },
-    }));
+    drainAnswer = () => Promise.reject(new RpcError({ code: "not_found", message: "no server named web-2", details: null }));
     await request();
     const output = await drain();
 
@@ -410,10 +419,10 @@ describe("drain-server", () => {
     silentOpens = 1;
     const seen: unknown[] = [];
     whileWaiting = async () => { seen.push(await viewOf()); };
-    drainAnswer = () => Effect.promise(async () => {
+    drainAnswer = async () => {
       seen.push(await viewOf());
       return partialReport;
-    });
+    };
     await drain();
 
     expect(seen).toEqual([{ kind: "waiting" }, { kind: "running", since: expect.any(String) }]);
@@ -549,7 +558,7 @@ describe("drain-server", () => {
   });
 
   it("never waits once it asked the Engine: a Server lost mid-drain ends the row refused, as before", async () => {
-    drainAnswer = () => Effect.fail(new PloyzProviderError({ operation: "drain machine", cause: { message: "connection reset" } }));
+    drainAnswer = () => Promise.reject(new RpcError({ code: "unavailable", message: "connection reset", details: null }));
     await request();
     const output = await drain();
 
@@ -557,6 +566,28 @@ describe("drain-server", () => {
     expect(sleeps(output)).toEqual([]);
     expect(drainCalls).toHaveLength(1);
     expect(await rows()).toMatchObject([{ state: "failed", end_code: "refused", refusal_message: "connection reset" }]);
+  });
+
+  it("keeps the row pending when the Store doesn't open before the Engine is asked, so the retry drains", async () => {
+    await request();
+    await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
+    failAfterRead = true;
+    await expect(runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).rejects.toThrow();
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ state: "pending" }]);
+
+    expect(await runEffect(executeDrainOnce(request0, "run-1", { waited: false }))).toEqual({ attemptId: requestId, state: "finished" });
+    expect(drainCalls).toHaveLength(1);
+  });
+
+  it("ends the row lost when the drain fails without the Engine's own error, since copies may have moved", async () => {
+    drainAnswer = () => Promise.reject(new Error("the report didn't cross the binding"));
+    await request();
+    const output = await drain();
+
+    expect(output.result).toEqual({ attemptId: requestId, state: "unknown" });
+    expect(drainCalls).toHaveLength(1);
+    expect(await rows()).toMatchObject([{ state: "unknown", end_code: "lost", refusal_message: null }]);
   });
 
   it("a waiting run and the sweep end the row once: the run that wakes after the sweep finds it ended", async () => {
@@ -602,12 +633,12 @@ describe("drain-server", () => {
 
   it("a cancel while the Engine works ends the row unknown, and the report that arrives after replaces it", async () => {
     await request();
-    drainAnswer = () => Effect.promise(async () => {
+    drainAnswer = async () => {
       const [{ inngest_run_id: runId } = { inngest_run_id: null }] = await rows();
       expect((await cancel(String(runId))).result).toEqual({ closed: 1 });
       expect(await rows()).toMatchObject([{ state: "unknown", end_code: "interrupted" }]);
       return partialReport;
-    });
+    };
 
     expect((await drain()).result).toEqual({ attemptId: requestId, state: "finished" });
     expect(await rows()).toMatchObject([{ state: "finished", end_code: null, refusal_message: null, report: partialReport }]);
@@ -642,10 +673,10 @@ describe("drain-server", () => {
   it("ends the row unknown inside the step when the Engine gives no answer in a day", async () => {
     let asked: () => void = () => {};
     const engineAsked = new Promise<void>((resolve) => { asked = resolve; });
-    drainAnswer = () => Effect.suspend(() => {
+    drainAnswer = () => {
       asked();
-      return Effect.never;
-    });
+      return new Promise<never>(() => {});
+    };
     await request();
     await harness.pool.query(`update server_drain_attempt set inngest_run_id = 'run-1' where id = $1`, [requestId]);
 

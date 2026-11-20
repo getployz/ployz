@@ -97,6 +97,7 @@ fn admit(
             prune: false,
             no_prune: false,
             approval: None,
+            versions: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -3136,6 +3137,7 @@ fn retry(
             version: None,
             accept_volume_loss: Vec::new(),
             approval: None,
+            versions: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )
@@ -3343,6 +3345,7 @@ fn rollback(
             version: None,
             accept_volume_loss: Vec::new(),
             approval: None,
+            versions: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )
@@ -4330,6 +4333,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -4434,6 +4438,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -4552,6 +4557,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         prune: false,
                         no_prune: false,
                         approval: None,
+                        versions: Vec::new(),
                     }),
                     &Trusted::default(),
                 )
@@ -4640,6 +4646,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4771,6 +4778,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4815,6 +4823,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             prune: false,
             no_prune: false,
             approval: None,
+            versions: Vec::new(),
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
         // admitter and uploader.
@@ -4899,6 +4908,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
         )
     };
@@ -4919,6 +4929,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
         )
         .unwrap();
@@ -5418,6 +5429,7 @@ fn deploy_choosing(
         prune: false,
         no_prune: false,
         approval: None,
+        versions: Vec::new(),
     };
     choose(&mut deploy);
     store.write_trusted(who, &Admit::Deploy(deploy), trusted)
@@ -5719,6 +5731,7 @@ fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted {
                 running,
@@ -5762,6 +5775,7 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &agent(approval, running),
         )
@@ -5860,6 +5874,7 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -5933,6 +5948,7 @@ fn agent_deploys_only(
             prune: false,
             no_prune: false,
             approval: None,
+            versions: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -5979,6 +5995,7 @@ fn agent_deploys_upload(
             prune: false,
             no_prune: false,
             approval: None,
+            versions: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -6018,6 +6035,7 @@ fn agent_retries(
             version: None,
             accept_volume_loss: Vec::new(),
             approval: None,
+            versions: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -6052,6 +6070,7 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &staging,
         )
@@ -6209,6 +6228,7 @@ fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
         )
         .unwrap();
@@ -6507,6 +6527,7 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &unprotecting(approval),
         )
@@ -6590,6 +6611,7 @@ fn retry_as(
             version: None,
             accept_volume_loss: Vec::new(),
             approval: None,
+            versions: Vec::new(),
         }),
         trusted,
     )
@@ -7319,6 +7341,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     prune: false,
                     no_prune: false,
                     approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -7393,6 +7416,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -7436,6 +7460,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     prune: false,
                     no_prune: false,
                     approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -7569,6 +7594,7 @@ fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             trusted,
         )
@@ -7616,6 +7642,7 @@ fn a_retry_that_takes_nothing_off_still_asks_nothing() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7792,6 +7819,7 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7890,6 +7918,7 @@ fn rollback_to(
             version: None,
             accept_volume_loss: Vec::new(),
             approval: None,
+            versions: Vec::new(),
         }),
         &protector(Approval::Required, Asks::Destroys),
     )
@@ -8287,6 +8316,7 @@ fn a_device_approval_of_the_plan_reaches_the_runner_with_the_specs_it_names() {
                 prune: false,
                 no_prune: false,
                 approval: Some(Box::new(approval)),
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -8318,6 +8348,7 @@ fn retry_approved(
             version: None,
             accept_volume_loss: Vec::new(),
             approval: approval.map(Box::new),
+            versions: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -8408,6 +8439,7 @@ fn a_rollbacks_approval_names_what_its_runner_lowers() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: Some(Box::new(approval.clone())),
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -8446,6 +8478,7 @@ fn a_redeploy_without_an_approval_runs_as_before_and_its_source_lends_none() {
                 prune: false,
                 no_prune: false,
                 approval: Some(Box::new(device_approval(&id(1), &plan))),
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -9146,4 +9179,429 @@ fn a_staged_region_is_left_to_save_until_a_save_holds_it() {
     save(&store, &who);
     let saved = diff(&store, &who);
     assert_eq!((saved.total_count, saved.draft_count), (1, 0));
+}
+
+/// What Deployment `n` would lower for `service` if it were admitted now, with its image set
+/// to `image`, and the digest of that spec.
+fn signed_spec(
+    store: &ConfigStore,
+    who: &Actor,
+    service: &str,
+    image: &str,
+) -> ployz_core::authority::PayloadDigest {
+    let plan = store
+        .read(
+            who,
+            &PlanQuery {
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                target: true,
+                deployment: None,
+            },
+        )
+        .unwrap();
+    let mut spec = plan
+        .target
+        .unwrap()
+        .into_iter()
+        .find(|spec| spec.name.as_str() == service)
+        .unwrap();
+    spec.container.image = image.to_owned();
+    ployz_core::authority::PayloadDigest::of(&spec, &plan.namespace).unwrap()
+}
+
+/// A Device's signed version of `service` in `namespace` at `digest`, signed at `at`.
+fn statement(
+    (namespace, service): (&str, &str),
+    digest: ployz_core::authority::PayloadDigest,
+    at: ployz_core::authority::Timestamp,
+) -> ployz_core::authority::Signed<ployz_core::authority::ServiceVersion> {
+    use ployz_core::authority::{ServiceVersion, Signed, Signer, SignerKey};
+    let signer = Signer::from_seed(&[7; 32]);
+    Signed::sign(
+        &ServiceVersion {
+            cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+            namespace: ployz_core::Namespace::parse(namespace).unwrap(),
+            service: ServiceName::parse(service).unwrap(),
+            digest,
+            signed_at: at,
+            signer: SignerKey::Device(signer.public().into()),
+            proposal: None,
+        },
+        &signer,
+    )
+    .unwrap()
+}
+
+/// A Device's signed version of `service` as saved now, with its tag `nginx:1` pinned to
+/// `image`.
+fn posted(
+    store: &ConfigStore,
+    who: &Actor,
+    service: &str,
+    image: &str,
+) -> ployz_store::PostedVersion {
+    ployz_store::PostedVersion {
+        statement: statement(
+            ("shop-production", service),
+            signed_spec(store, who, service, image),
+            ployz_core::authority::Timestamp::now(),
+        ),
+        pin: Some(ployz_store::TagPin {
+            tag: "nginx:1".to_owned(),
+            image: image.to_owned(),
+        }),
+    }
+}
+
+const P1: &str = "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+const P2: &str = "nginx@sha256:2222222222222222222222222222222222222222222222222222222222222222";
+
+/// Admit a Deploy of every Service as `n`, carrying `versions` and `approval`.
+fn admit_with(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    (versions, approval): (
+        Vec<ployz_store::PostedVersion>,
+        Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
+    ),
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            approval: approval.map(Box::new),
+            versions,
+        }),
+        &Trusted::default(),
+    )
+}
+
+fn admit_signed(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    versions: Vec<ployz_store::PostedVersion>,
+) -> DeploymentSummary {
+    admit_with(store, who, n, (versions, None)).unwrap()
+}
+
+/// A Device's approval of Deployment `n` naming each of `pins`' Services pinned to its
+/// image, as a CLI from before signed versions posts it.
+fn approval_pinning(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    pins: &[(&str, &str)],
+) -> ployz_core::authority::Signed<ployz_core::authority::DeployApproval> {
+    use ployz_core::authority::{
+        ApprovedService, DeployApproval, Signed, Signer, SignerKey, Timestamp,
+    };
+    let signer = Signer::from_seed(&[7; 32]);
+    let mut services: Vec<ApprovedService> = pins
+        .iter()
+        .map(|(service, image)| ApprovedService {
+            name: ServiceName::parse(*service).unwrap(),
+            digest: signed_spec(store, who, service, image),
+            image: Some((*image).to_owned()),
+        })
+        .collect();
+    services.sort_by(|left, right| left.name.cmp(&right.name));
+    let issued_at = Timestamp::now();
+    let body = DeployApproval {
+        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        operation: ployz_core::OperationId::from_uuid(id(n).as_str()).unwrap(),
+        namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
+        services,
+        issued_at,
+        expires_at: issued_at.plus(60_000),
+        signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
+    };
+    Signed::sign(&body, &signer).unwrap()
+}
+
+/// The image Deployment `n` pins `service` to, and how many signed versions it sends.
+fn runs(store: &ConfigStore, n: u8, service: &str) -> Option<(String, usize)> {
+    let claimed = store.claim(&id(n), &runner("runner-a")).unwrap();
+    let pinned = claimed.ran.get(&ServiceName::parse(service).unwrap())?;
+    let image = pinned.ran.pin.as_ref().map(|pin| pin.image.clone())?;
+    Some((image, pinned.versions.len()))
+}
+
+fn web_runs(store: &ConfigStore, n: u8) -> Option<(String, usize)> {
+    runs(store, n, "web")
+}
+
+fn set(store: &ConfigStore, who: &Actor, path: &str, value: serde_json::Value) {
+    store
+        .write(
+            who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse(path).unwrap(),
+                    value,
+                }],
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_rollback_runs_the_image_its_source_ran_after_the_tag_moved() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    assert_eq!(web_runs(&store, 1), Some((P1.to_owned(), 1)));
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 2);
+    admit_signed(&store, &who, 2, vec![posted(&store, &who, "web", P2)]);
+    apply(&store, 2);
+
+    retry(&store, &who, 3, 1).unwrap();
+    assert_eq!(web_runs(&store, 3), Some((P1.to_owned(), 1)));
+    apply(&store, 3);
+
+    // A scale after the rollback keeps running what the rollback ran.
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 4, &[], None).unwrap();
+    assert_eq!(web_runs(&store, 4), Some((P1.to_owned(), 1)));
+}
+
+#[test]
+fn a_deploy_without_a_signature_runs_no_older_pin_once_the_tag_changed() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    set(&store, &who, "web.image", json!("nginx:2"));
+    admit(&store, &who, 2, &[], None).unwrap();
+    assert_eq!(web_runs(&store, 2), None);
+}
+
+#[test]
+fn a_deploy_that_changes_a_signed_setting_runs_the_tag_not_the_last_pin() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    // A free Service's variable changes after its tag moved: it runs what the tag names.
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    admit(&store, &who, 2, &[], None).unwrap();
+    assert_eq!(web_runs(&store, 2), None);
+}
+
+#[test]
+fn a_service_saved_by_digest_records_the_digest_it_sends() {
+    let (store, who) = shop();
+    set(&store, &who, "web.image", json!(P1));
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    set(&store, &who, "web.image", json!(P2));
+    admit(&store, &who, 2, &[], None).unwrap();
+    let claimed = store.claim(&id(2), &runner("runner-a")).unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    let spec = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name == web)
+        .unwrap();
+    assert_eq!(spec.container.image, P2);
+    assert_eq!(
+        claimed.ran[&web].ran.digest,
+        ployz_core::authority::PayloadDigest::of(spec, &claimed.intent.namespace).unwrap()
+    );
+}
+
+#[test]
+fn a_deploy_with_only_an_approval_runs_and_keeps_the_image_it_approved() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    // A released CLI posts only its approval, after the tag moved to P2.
+    let approval = approval_pinning(&store, &who, 2, &[("web", P2)]);
+    admit_with(&store, &who, 2, (Vec::new(), Some(approval))).unwrap();
+    assert_eq!(web_runs(&store, 2), Some((P2.to_owned(), 0)));
+    apply(&store, 2);
+    retry(&store, &who, 3, 2).unwrap();
+    assert_eq!(web_runs(&store, 3), Some((P2.to_owned(), 0)));
+}
+
+#[test]
+fn a_rollback_to_a_deployment_from_before_pins_were_kept_borrows_no_later_pin() {
+    let (store, who, url, _dir) = own_shop();
+    let approval = approval_pinning(&store, &who, 1, &[("web", P1)]);
+    admit_with(&store, &who, 1, (Vec::new(), Some(approval))).unwrap();
+    apply(&store, 1);
+    legacy(&url, 1);
+    set_replicas(&store, &who, "web", 2);
+    admit_signed(
+        &store,
+        &who,
+        2,
+        vec![
+            posted(&store, &who, "web", P2),
+            posted(&store, &who, "api", P2),
+        ],
+    );
+    apply(&store, 2);
+
+    retry(&store, &who, 3, 1).unwrap();
+    // #1's own approval pinned web; it pinned nothing of api, which ran its tag.
+    assert_eq!(web_runs(&store, 3), Some((P1.to_owned(), 0)));
+    assert_eq!(runs(&store, 3, "api"), None);
+}
+
+#[test]
+fn two_services_with_one_signer_keep_their_own_pins() {
+    let (store, who) = shop();
+    admit_signed(
+        &store,
+        &who,
+        1,
+        vec![
+            posted(&store, &who, "web", P1),
+            posted(&store, &who, "api", P2),
+        ],
+    );
+    assert_eq!(
+        (web_runs(&store, 1), runs(&store, 1, "api")),
+        (Some((P1.to_owned(), 1)), Some((P2.to_owned(), 1)))
+    );
+}
+
+#[test]
+fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_one() {
+    let (store, who) = shop();
+    let digest = signed_spec(&store, &who, "web", P1);
+    let at = ployz_core::authority::Timestamp::now();
+    let version = |namespace, service| ployz_store::PostedVersion {
+        statement: statement((namespace, service), digest, at),
+        pin: None,
+    };
+    for refused in [
+        vec![version("shop-staging", "web")],
+        vec![version("shop-production", "db")],
+        vec![
+            version("shop-production", "web"),
+            version("shop-production", "web"),
+        ],
+    ] {
+        assert_eq!(
+            code(admit_with(&store, &who, 1, (refused, None))),
+            RpcErrorCode::InvalidArgument
+        );
+    }
+    let first = posted(&store, &who, "web", P1);
+    admit_signed(&store, &who, 1, vec![first.clone()]);
+    apply(&store, 1);
+    let mut later = first.clone();
+    later.statement = statement(("shop-production", "web"), digest, at.plus(1_000));
+    admit_signed(&store, &who, 2, vec![later.clone()]);
+    let kept = store
+        .versions_for(
+            &OrganizationId::parse("org").unwrap(),
+            (
+                &ployz_core::Namespace::parse("shop-production").unwrap(),
+                &ServiceName::parse("web").unwrap(),
+            ),
+            digest,
+        )
+        .unwrap();
+    assert!(kept.contains(&first.statement), "{kept:?}");
+    assert!(kept.contains(&later.statement), "{kept:?}");
+}
+
+/// Leave Deployment `n` as 0049 leaves one admitted before the Store kept what each
+/// Deployment ran.
+fn legacy(url: &str, n: u8) {
+    backend::execute(
+        url,
+        &format!(
+            "UPDATE config_deployment SET ran = '{{\"origin\":\"legacy\",\"services\":{{}}}}' \
+             WHERE id = '{}'",
+            id(n)
+        ),
+    );
+}
+
+#[test]
+fn a_deploy_from_before_pins_were_kept_runs_its_tag_not_a_later_pin() {
+    let (store, who, url, _dir) = own_shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    apply(&store, 1);
+    set_replicas(&store, &who, "web", 2);
+    admit(&store, &who, 2, &[], None).unwrap();
+    legacy(&url, 2);
+    assert_eq!(web_runs(&store, 2), None);
+}
+
+#[test]
+fn a_retry_carrying_its_own_approval_runs_what_it_approved_not_its_sources_pin() {
+    let (store, who) = shop();
+    admit_signed(&store, &who, 1, vec![posted(&store, &who, "web", P1)]);
+    assert_eq!(web_runs(&store, 1), Some((P1.to_owned(), 1)));
+    apply(&store, 1);
+    // The tag moved to P2, and a released CLI retries #1 posting only its approval.
+    let approval = approval_pinning(&store, &who, 2, &[("web", P2)]);
+    retry_approved(&store, &who, (2, 1), Some(approval)).unwrap();
+    assert_eq!(web_runs(&store, 2), Some((P2.to_owned(), 0)));
+    apply(&store, 2);
+    // A rollback to the retry runs what the retry ran.
+    retry(&store, &who, 3, 2).unwrap();
+    assert_eq!(web_runs(&store, 3), Some((P2.to_owned(), 0)));
+}
+
+#[test]
+fn a_deploy_carries_one_signed_version_for_each_of_more_services_than_a_request_presents() {
+    let (store, who) = shop();
+    let names: Vec<String> = (0..31).map(|n| format!("worker-{n}")).collect();
+    for (n, name) in names.iter().enumerate() {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!(
+                        "00000000-0000-4000-8000-0000000002{n:02}"
+                    ))
+                    .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: Some("nginx:1".into()),
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    let services: Vec<&str> = ["web", "api"]
+        .into_iter()
+        .chain(names.iter().map(String::as_str))
+        .collect();
+    let versions = services
+        .iter()
+        .map(|service| posted(&store, &who, service, P1))
+        .collect();
+    admit_signed(&store, &who, 1, versions);
+    let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
+    let pins: Vec<_> = claimed
+        .ran
+        .values()
+        .map(|pinned| {
+            (
+                pinned.ran.pin.as_ref().map(|pin| pin.image.as_str()),
+                pinned.versions.len(),
+            )
+        })
+        .collect();
+    assert_eq!(pins, vec![(Some(P1), 1); 33]);
 }

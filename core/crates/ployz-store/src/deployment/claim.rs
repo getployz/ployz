@@ -248,6 +248,15 @@ fn take(
             authority: ployz_core::authority::CommitAuthority::Head,
         })?,
     };
+    let ran = super::versions::pinned(
+        tx,
+        (
+            &id,
+            stored.summary.environment_id.as_str(),
+            stored.namespace(),
+        ),
+        (&stored.nodes, &intent.target),
+    )?;
     Ok(Taken::Claimed(Box::new(Claimed {
         deployment: stored.summary,
         intent,
@@ -262,6 +271,7 @@ fn take(
         approval,
         rule,
         image_tokens,
+        ran,
     })))
 }
 

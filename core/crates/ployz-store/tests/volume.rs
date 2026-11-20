@@ -171,6 +171,7 @@ fn admit_named(
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted {
                 volumes: observed,
@@ -1086,6 +1087,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1253,6 +1255,7 @@ fn rolling_back_asks_again_before_deleting_data_a_newer_deployment_brought_back(
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),
@@ -1516,6 +1519,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),

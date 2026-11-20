@@ -211,6 +211,7 @@ fn deploy_leaving(
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -2260,6 +2261,7 @@ fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -2792,6 +2794,7 @@ fn copying_a_node_waits_for_a_settled_branch() {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )

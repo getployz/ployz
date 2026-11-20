@@ -14,7 +14,7 @@ use ployz_core::{
     Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, SealingPublicKey,
     ServiceName, cluster_sealing_key,
 };
-use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
+use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery, PostedVersion, TagPin};
 use serde_json::json;
 
 use super::super::device::DeviceSigning;
@@ -22,11 +22,11 @@ use super::super::store::Store;
 use super::super::{Error, route};
 use crate::image::{PinError, pin_public};
 
-/// A signed approval, a signed version of each Service, the plan version it approves,
-/// and what it approved.
+/// A signed approval, a signed version of each Service with the image it pinned, the
+/// plan version it approves, and what it approved.
 pub(in crate::handlers) struct DeviceApproval {
     pub(in crate::handlers) signed: Signed<DeployApproval>,
-    pub(in crate::handlers) versions: Vec<Signed<ServiceVersion>>,
+    pub(in crate::handlers) versions: Vec<PostedVersion>,
     pub(in crate::handlers) version: String,
     pub(in crate::handlers) approved: Vec<ApprovedChange>,
 }
@@ -125,7 +125,7 @@ pub(in crate::handlers) fn sign(
     let versions = approved
         .iter()
         .map(|change| {
-            signing.sign(&ServiceVersion {
+            let statement = signing.sign(&ServiceVersion {
                 cluster: enforcing.cluster,
                 namespace: namespace.clone(),
                 service: change.service.clone(),
@@ -133,9 +133,16 @@ pub(in crate::handlers) fn sign(
                 signed_at: window.issued_at,
                 signer: window.signer,
                 proposal: None,
+            })?;
+            Ok(PostedVersion {
+                statement,
+                pin: change.tag.clone().map(|tag| TagPin {
+                    tag,
+                    image: change.image.clone(),
+                }),
             })
         })
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<_, Error>>()?;
     Ok(Some(DeviceApproval {
         signed,
         versions,

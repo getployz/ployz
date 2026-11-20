@@ -12,8 +12,7 @@ use std::time::Duration;
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
     HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
-    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, RunnerOptions,
-    ServiceName,
+    RemoveContainerPurpose, RpcError, RpcErrorCode, RunnerOptions, ServiceName,
 };
 use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::tools::{LogText, SealedValues, Withheld};
@@ -64,9 +63,6 @@ pub struct Sources {
     /// builds, which each Server reads before it creates under the rule. None reads a
     /// public repository.
     pub reader: Option<ployz_core::GithubToken>,
-    /// Signed versions of the Deployment's Services that this runner's own Device made,
-    /// handed to every Server with a new Container of their Service.
-    pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// Why a Deployment's builds didn't all succeed.
@@ -190,10 +186,6 @@ pub async fn run_deployment_expecting(
             .as_ref()
             .ok()
             .and_then(|sources| sources.reader.clone()),
-        versions: checkouts
-            .as_ref()
-            .map(|sources| sources.versions.clone())
-            .unwrap_or_default(),
     };
     let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
@@ -574,7 +566,6 @@ struct Run {
     over: Latch,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
-    versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// What `read`, the store's answer to one of this run's records, says about the Deployment.
@@ -642,7 +633,17 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let approval = claimed.approval.clone();
-        pin_approved(&mut claimed.intent.target, approval.as_ref());
+        let pins = pins(&claimed.ran);
+        for spec in &mut claimed.intent.target {
+            if let Some(image) = pins.get(&spec.name) {
+                spec.container.image.clone_from(image);
+            }
+        }
+        let versions = claimed
+            .ran
+            .values()
+            .flat_map(|pinned| pinned.versions.iter().cloned())
+            .collect();
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let mut rules = crate::cluster::RuleProofs::default();
@@ -656,7 +657,8 @@ impl Run {
                 Ok(mut receipts) => {
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self.reader.as_ref()).await;
-                    self.prepare(session, claimed, targets, receipts).await
+                    self.prepare(session, claimed, targets, (receipts, pins))
+                        .await
                 }
                 Err(unbuilt) => return self.unbuilt(unbuilt).await,
             }
@@ -683,7 +685,7 @@ impl Run {
             ImageCleanup::Auto,
             approval,
             rules,
-            self.versions.clone(),
+            versions,
         ) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
@@ -942,7 +944,10 @@ impl Run {
         session: &Session,
         claimed: Claimed,
         targets: Vec<Target>,
-        receipts: BTreeMap<ServiceName, BuildReceipt>,
+        (receipts, pins): (
+            BTreeMap<ServiceName, BuildReceipt>,
+            BTreeMap<ServiceName, String>,
+        ),
     ) -> Result<PreparedDeploy, Unprepared> {
         let mut input = PreparationInput {
             deployment: claimed.input,
@@ -950,6 +955,7 @@ impl Run {
                 .into_iter()
                 .map(|(service, receipt)| (service, vec![receipt]))
                 .collect(),
+            pins,
             ..PreparationInput::default()
         };
         for target in &targets {
@@ -1573,19 +1579,15 @@ async fn rule_proofs(
     proofs
 }
 
-/// Write the image each Service's approval pinned into its spec, so the Servers are asked
-/// to create the spec the approval's digest covers. The Saved State keeps the tag. A
-/// Server refuses a spec the approval doesn't match, so a runner can't choose the image.
-fn pin_approved(
-    target: &mut [RequestedServiceSpec],
-    approval: Option<&ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-) {
-    let Some(approved) = approval.and_then(|approval| approval.open().ok()) else {
-        return;
-    };
-    for spec in target {
-        approved.pin(spec);
-    }
+/// The image each Service's tag runs as, which the runner writes into its spec so the
+/// Servers are asked to create the spec a person signed. The Saved State keeps the tag.
+fn pins(ran: &BTreeMap<ServiceName, ployz_store::Pinned>) -> BTreeMap<ServiceName, String> {
+    ran.iter()
+        .filter_map(|(service, pinned)| {
+            let pin = pinned.ran.pin.as_ref()?;
+            Some((service.clone(), pin.image.clone()))
+        })
+        .collect()
 }
 
 /// The uploaded Services among `targets` that build from an earlier upload than

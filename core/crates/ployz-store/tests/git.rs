@@ -426,6 +426,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -600,6 +601,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -677,6 +679,7 @@ fn redeploying_an_older_applied_deployment_builds_the_commit_it_pinned() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
