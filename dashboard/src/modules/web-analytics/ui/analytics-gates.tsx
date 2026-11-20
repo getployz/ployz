@@ -7,6 +7,8 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import type { ClosedGate } from "./analytics-model";
 import { type AnalyticsScope, useTurnOnAnalytics } from "./analytics.queries";
 
+const OBSERVE_SETUP_DOCS = "https://ployz.dev/docs/self-hosting#keep-logs-metrics-and-traces-in-cloud-optional";
+
 export function Gate({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <Empty className="border" data-analytics-gate={title}>
@@ -52,8 +54,9 @@ function SelfHostOff() {
 function NoClickhouse() {
   return (
     <ObserveOffState title="Analytics needs ClickHouse">
-      Set <code className="font-mono">OBSERVE_CLICKHOUSE_URL</code>, <code className="font-mono">CLICKHOUSE_USER</code> and{" "}
-      <code className="font-mono">CLICKHOUSE_PASSWORD</code> on this Cloud and restart it to read visits.
+      Run the <code className="font-mono">observe</code> profile and set{" "}
+      <code className="font-mono">OBSERVE_CLICKHOUSE_URL</code> on this Cloud, then restart it to read visits.{" "}
+      <a className="underline" href={OBSERVE_SETUP_DOCS} target="_blank" rel="noreferrer">See self-hosting</a>.
     </ObserveOffState>
   );
 }
