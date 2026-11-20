@@ -73,8 +73,19 @@ impl Renamed {
     /// The landing after the rename, repeatable. The received snapshot goes last, so a root
     /// still holding it has not finished landing. Its name belongs to the source's runs,
     /// and the new Volume's own runs name theirs from one.
+    ///
+    /// A parent still holding a record lost its copy before completion stamped it, so the
+    /// root may not carry the origin the record names. That root stays read-only and the
+    /// parent stays with its record.
     async fn finish_landing(self, storage: &VolumeStorage) -> Result<(), RpcError> {
         let root = &self.root;
+        if let Some(parent) = &self.parent
+            && storage.record(parent).await.map_err(internal)?.is_some()
+        {
+            return Err(SwitchError::Precondition.rpc_error(format!(
+                "{root} left slot {parent} before its origin was stamped; forget it and seed again"
+            )));
+        }
         storage
             .zfs(&["inherit", "mountpoint", root])
             .await

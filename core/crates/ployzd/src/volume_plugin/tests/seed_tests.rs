@@ -271,6 +271,50 @@ async fn seed_finishes_an_interrupted_landing_on_resend() {
     assert_landed(&test);
 }
 
+/// A root renamed out of a slot whose parent still holds a record was never stamped with
+/// the origin the record names. Its landing is refused before any write: the root stays
+/// read-only with its received snapshot, and the parent keeps its record.
+#[tokio::test]
+async fn a_renamed_seed_whose_parent_holds_a_record_is_refused() {
+    let test = TestDir::new();
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-volume", "seed-slot"],
+    );
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    set_property(
+        &test,
+        "tank/ployz/seed",
+        "snapshots",
+        "tank/ployz/seed@w-1-1\t77\t1700000000",
+    );
+    set_property(&test, "tank/ployz/seed", "ployz:seed", "77");
+    set_property(&test, "tank/ployz/seed", "ployz:promote", "on");
+    set_property(&test, "tank/ployz/seed", "readonly", "on");
+    set_property(&test, "tank/ployz-mirror/seed", "ployz:pull-origin", BORN);
+    let log = commands(&test);
+
+    let reply = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert_eq!(
+        reply.pointer("/Err/details/reason"),
+        Some(&json!("precondition")),
+        "{reply}"
+    );
+    assert_eq!(effects_since(&test, &log), Vec::<String>::new());
+    assert!(test.0.join("seed-slot").exists(), "the parent stays");
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/seed", "ployz:pull-origin").as_deref(),
+        Some(BORN)
+    );
+    assert_eq!(
+        property(&test, "tank/ployz/seed", "readonly").as_deref(),
+        Some("on")
+    );
+    assert_eq!(snapshot_names(&test, "tank/ployz/seed"), ["w-1-1"]);
+}
+
 #[tokio::test]
 async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
     let test = TestDir::new();
