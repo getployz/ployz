@@ -201,9 +201,10 @@ pub(super) fn stored_logs(
     want: usize,
     since: Option<i64>,
     until: Option<i64>,
-) -> Result<Vec<StoredLine>, Error> {
+) -> Result<Stored, Error> {
     let runtime = super::runtime()?;
     let mut lines = Vec::new();
+    let mut missing = Vec::new();
     for name in removed {
         let mut kept = Vec::new();
         let mut cursor = None::<String>;
@@ -238,11 +239,21 @@ pub(super) fn stored_logs(
             }
         }
         if kept.is_empty() {
-            return Err(scoped.no_service(name));
+            missing.push(name.clone());
         }
         lines.extend(kept);
     }
-    Ok(history::window(lines, since, until, want))
+    Ok(Stored {
+        lines: history::window(lines, since, until, want),
+        missing,
+    })
+}
+
+/// What Cloud kept of the removed Services asked for.
+pub(super) struct Stored {
+    pub(super) lines: Vec<StoredLine>,
+    /// The names it holds no line for.
+    pub(super) missing: Vec<ServiceName>,
 }
 
 /// `metrics` for a Service, by its runtime name, or a Server, by name.

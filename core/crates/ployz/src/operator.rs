@@ -516,6 +516,7 @@ pub async fn observe_service_logs(
         asked,
         live,
         unanswered,
+        resume: HashMap::new(),
     })
 }
 
@@ -543,6 +544,9 @@ pub struct LogScope {
     asked: HashSet<ployz_core::MachineId>,
     live: ployz_core::LiveServices<ployz_core::RpcError>,
     pub unanswered: Unanswered,
+    /// Where a Container that an earlier read printed from is read from now, instead of
+    /// from the request's options: it isn't read again from the start.
+    resume: HashMap<ContainerId, i64>,
 }
 
 /// Open log streams for `args`; none means every Service in `namespace`, or in the
@@ -563,9 +567,17 @@ pub async fn open_service_logs(
         let (service, containers) = target?;
         for container in containers {
             let observation = container.as_observation();
+            let options = scope.resume.get(&observation.container_id).map_or_else(
+                || options.clone(),
+                |last| LogsOptions {
+                    tail: -1,
+                    since_nanos: Some(*last),
+                    ..options.clone()
+                },
+            );
             let request = op::TailLogs::into_request(TailLogsRequest {
                 target: LiveLogTarget::Container(observation.container_id),
-                options: options.clone(),
+                options,
             })
             .encode()?;
             let identity = format!("{service}/{}", observation.display_name);
@@ -688,6 +700,11 @@ fn not_running(
 }
 
 impl LogScope {
+    /// Read each Container in `last` from the nanosecond it last printed.
+    pub fn resume_from(&mut self, last: HashMap<ContainerId, i64>) {
+        self.resume = last;
+    }
+
     #[must_use]
     pub fn running(&self) -> std::collections::BTreeSet<ContainerId> {
         self.live

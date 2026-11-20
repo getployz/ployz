@@ -41,8 +41,9 @@ See [Deployments](../deploy/deployments.md).
 
 `ployz logs app/api` reads what the service's containers print from Docker on each server, with
 each [Sealed](../services/variables.md) value replaced by `[secret NAME]` on the server before it
-reaches you. A container Docker still has reads in full, including a replica that failed. Servers
-that don't answer are named, and partial results exit with code 3.
+reaches you. A container Docker still has reads in full, including a replica that failed.
+`--tail 50` prints the newest 50 lines of everything it reads, not 50 per replica. Servers that
+don't answer are named, and partial results exit with code 3.
 
 A removed service has no container left on your servers. When your CLI is signed in to Ployz
 Cloud, `ployz logs` reads its lines from Cloud's log history instead, newest 30 days at most,

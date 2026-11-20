@@ -248,8 +248,14 @@ impl Scoped {
         if ployz_core::ServiceId::parse(selector.as_str()).is_ok() {
             return None;
         }
-        let name = ployz_core::ServiceName::parse(selector.as_str()).ok()?;
-        (!self.services.contains_key(&name) && !authored.contains(&name)).then_some(name)
+        let name = match ployz_core::QualifiedService::parse(selector.as_str()) {
+            Ok(qualified) if qualified.namespace == self.namespace => qualified.name,
+            Ok(_) => return None,
+            Err(_) => ployz_core::ServiceName::parse(selector.as_str()).ok()?,
+        };
+        let deployed = self.services.contains_key(&name)
+            || self.services.values().any(|runtime| *runtime == name);
+        (!deployed && !authored.contains(&name)).then_some(name)
     }
 
     pub(super) fn not_kept(&self, name: &ployz_core::ServiceName) -> Error {
@@ -684,7 +690,7 @@ fn removed_logs(
     let until = options
         .until_unix_seconds
         .map(|until| until.saturating_mul(NANOS));
-    let lines = super::cloud_read::stored_logs(
+    let stored = super::cloud_read::stored_logs(
         &credential,
         scoped,
         removed,
@@ -692,10 +698,25 @@ fn removed_logs(
         options.since_nanos,
         until,
     )?;
-    for line in &lines {
+    let Some(first) = stored.missing.first() else {
+        for line in &stored.lines {
+            print_stored(line, utc)?;
+        }
+        return Ok(());
+    };
+    if stored.lines.is_empty() {
+        return Err(scoped.no_service(first));
+    }
+    for line in &stored.lines {
         print_stored(line, utc)?;
     }
-    Ok(())
+    for name in &stored.missing {
+        crate::ui::warn(format!(
+            "No Service named {name} in Environment {}",
+            scoped.environment
+        ));
+    }
+    Err(crate::failure::Failure::partial())
 }
 
 /// What one `ployz logs` reads from Docker, across the Servers it asks.
@@ -723,7 +744,8 @@ impl Reading<'_> {
         let mut first = true;
         loop {
             let seen_at = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
-            let scope = observe_service_logs(client, self.machines).await?;
+            let mut scope = observe_service_logs(client, self.machines).await?;
+            scope.resume_from(printed.borrow().last.clone());
             let names = &scope.unanswered.names;
             if first {
                 gaps = crate::ui::Gaps::default().named(names.iter());
@@ -753,7 +775,13 @@ impl Reading<'_> {
                     | OperatorError::NoDeploymentContainers
                     | OperatorError::NoContainersOnMachines { .. }
                     | OperatorError::NotRunning { .. },
-                ) if !first => Vec::new(),
+                ) if !first => {
+                    // Nothing answers any more: the Servers that stopped are named, and that is the end.
+                    if !gaps.is_complete() {
+                        return gaps.outcome();
+                    }
+                    Vec::new()
+                }
                 Err(error) => return Err(error.into()),
             };
             let deployments = scope.deployments();
@@ -764,6 +792,9 @@ impl Reading<'_> {
                 &deployments,
                 &mut gaps,
                 |entry| printed.borrow_mut().skip(entry),
+                usize::try_from(options.tail)
+                    .ok()
+                    .filter(|_| !options.follow),
             );
             if !options.follow {
                 print.await?;
@@ -790,13 +821,15 @@ impl Reading<'_> {
             // What replaced a container was made after this look, so reading from it, or
             // from where a running container left off, misses nothing; lines already
             // printed are skipped.
-            let resume = printed
-                .borrow()
-                .resume_at(&running)
-                .map_or(seen_at, |last| last.min(seen_at));
+            if options
+                .until_unix_seconds
+                .is_some_and(|until| Utc::now().timestamp() >= until)
+            {
+                return gaps.outcome();
+            }
             options = LogsOptions {
                 tail: -1,
-                since_nanos: Some(resume),
+                since_nanos: Some(seen_at),
                 ..options
             };
             first = false;
@@ -908,6 +941,7 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
                 &HashMap::new(),
                 &mut gaps,
                 |_| false,
+                None,
             )
             .await?;
             gaps.outcome()
@@ -1138,23 +1172,18 @@ impl Printed {
         *last = (*last).max(ts);
         false
     }
-
-    fn resume_at(&self, running: &std::collections::BTreeSet<ContainerId>) -> Option<i64> {
-        running
-            .iter()
-            .filter_map(|container| self.last.get(container))
-            .min()
-            .copied()
-    }
 }
 
+/// Print `entries` as they arrive, or, with `keep`, only the newest `keep` once they end.
 async fn print_logs(
     mut entries: tokio::sync::mpsc::Receiver<Result<LogEntry, crate::operator::LogFault>>,
     utc: bool,
     deployments: &HashMap<ContainerId, String>,
     gaps: &mut crate::ui::Gaps,
     printed: impl Fn(&LogEntry) -> bool,
+    keep: Option<usize>,
 ) -> Result<(), Error> {
+    let mut newest = std::collections::VecDeque::new();
     while let Some(entry) = entries.recv().await {
         let entry = match entry {
             Ok(entry) => entry,
@@ -1170,26 +1199,47 @@ async fn print_logs(
         if printed(&entry) {
             continue;
         }
-        if crate::ui::json() {
-            if let Some(line) = log_line(&entry, deployments) {
-                crate::ui::emit_line(&line)?;
-            }
+        let Some(keep) = keep else {
+            print_entry(&entry, utc, deployments)?;
+            continue;
+        };
+        if printable_log_bytes(&entry.body).is_none() {
             continue;
         }
-        let prefix = LogLine::from_live(&entry, deployments).prefix(utc);
-        let Some((message, stderr)) = printable_log_bytes(&entry.body) else {
-            continue;
-        };
-        let output: &mut dyn Write = if stderr {
-            &mut std::io::stderr()
-        } else {
-            &mut crate::ui::stdout_bytes()
-        };
-        output
-            .write_all(prefix.as_bytes())
-            .and_then(|()| output.write_all(message))?;
-        crate::ui::printed();
+        newest.push_back(entry);
+        if newest.len() > keep {
+            newest.pop_front();
+        }
     }
+    newest
+        .iter()
+        .try_for_each(|entry| print_entry(entry, utc, deployments))
+}
+
+fn print_entry(
+    entry: &LogEntry,
+    utc: bool,
+    deployments: &HashMap<ContainerId, String>,
+) -> Result<(), Error> {
+    if crate::ui::json() {
+        if let Some(line) = log_line(entry, deployments) {
+            crate::ui::emit_line(&line)?;
+        }
+        return Ok(());
+    }
+    let prefix = LogLine::from_live(entry, deployments).prefix(utc);
+    let Some((message, stderr)) = printable_log_bytes(&entry.body) else {
+        return Ok(());
+    };
+    let output: &mut dyn Write = if stderr {
+        &mut std::io::stderr()
+    } else {
+        &mut crate::ui::stdout_bytes()
+    };
+    output
+        .write_all(prefix.as_bytes())
+        .and_then(|()| output.write_all(message))?;
+    crate::ui::printed();
     Ok(())
 }
 
@@ -1772,7 +1822,7 @@ mod scope_tests {
             stream: Box::pin(futures_util::stream::pending()),
         };
         let entries = merge_logs(vec![silent], tokio_util::sync::CancellationToken::new());
-        print_logs(entries, true, &HashMap::new(), &mut gaps, |_| false)
+        print_logs(entries, true, &HashMap::new(), &mut gaps, |_| false, None)
             .await
             .unwrap();
         assert_eq!(gaps.omitted, [machine]);
@@ -1808,8 +1858,6 @@ mod scope_tests {
         for (id, ts) in [('a', 100), ('a', 100), ('b', 50)] {
             assert!(!printed.skip(&line(id, ts)));
         }
-        let running = std::collections::BTreeSet::from([container('a'), container('b')]);
-        assert_eq!(printed.resume_at(&running), Some(50));
         printed.begin_round();
         assert!(printed.skip(&line('b', 50)));
         assert!(printed.skip(&line('a', 99)));
@@ -1852,6 +1900,17 @@ mod scope_tests {
             "shop-production/worker"
         );
         assert_eq!(resolve(&scoped, "other-ns/api2").unwrap(), "other-ns/api2");
+        // Qualified by this Environment's Namespace, a removed Service is as unknown as its bare name.
+        assert_eq!(
+            resolve(&scoped, "shop-production/web")
+                .unwrap_err()
+                .to_string(),
+            "No Service named web in Environment production"
+        );
+        assert_eq!(
+            resolve(&scoped, "shop-production/api").unwrap(),
+            "shop-production/api"
+        );
         let id = "a".repeat(32);
         assert_eq!(resolve(&scoped, &id).unwrap(), id);
         let typo = resolve(&scoped, "web").unwrap_err();
