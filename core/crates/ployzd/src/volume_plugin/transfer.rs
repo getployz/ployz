@@ -397,11 +397,6 @@ impl Receives {
     }
 }
 
-/// Whether a pull claims [`ployz_core::VOLUME_ORIGIN_CAPABILITY`]. A Server claims it once
-/// it checks origins at every rename; until then only a verify build does, for the
-/// harness.
-const CLAIMS_ORIGIN: bool = cfg!(any(test, feature = "verify-faults"));
-
 /// An origin as a message names it; `None` is Legacy.
 pub(super) fn shown_origin(origin: Option<ployz_core::VolumeOrigin>) -> String {
     origin.map_or_else(|| "Legacy".to_owned(), |origin| origin.to_string())
@@ -555,16 +550,18 @@ impl VolumeStorage {
                     inline(&error)
                 ))
             })?;
-        let mut request = client.get(&url);
-        if CLAIMS_ORIGIN {
-            request = request.header(
+        // This Server checks origins at create and at every rename, so it takes born data.
+        let response = client
+            .get(&url)
+            .header(
                 ployz_core::CAPABILITIES_HEADER,
                 ployz_core::VOLUME_ORIGIN_CAPABILITY,
-            );
-        }
-        let response = request.send().await.map_err(|error| {
-            ReceiveFailure::Failed(format!("GET {shown}: {}", inline(&error.without_url())))
-        })?;
+            )
+            .send()
+            .await
+            .map_err(|error| {
+                ReceiveFailure::Failed(format!("GET {shown}: {}", inline(&error.without_url())))
+            })?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             let reason = response.text().await.unwrap_or_default();
             return Err(ReceiveFailure::NoStream(format!("GET {shown}: {reason}")));

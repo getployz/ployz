@@ -40,6 +40,8 @@ pub(super) struct VolumeStorage {
     /// How long a departure waits for every receive to stop. Demote answers within its
     /// 120 s timeout even when ZFS hangs one of them.
     pub(super) stop_deadline: Duration,
+    /// Where a rename under a name lists the Containers that mount it.
+    pub(super) holders: super::holders::Holders,
 }
 
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
@@ -117,6 +119,7 @@ impl VolumeStorage {
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
             stop_deadline: STOP_DEADLINE,
+            holders: super::holders::Holders::Docker,
         }
     }
 
@@ -140,6 +143,7 @@ impl VolumeStorage {
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
             stop_deadline: STOP_DEADLINE,
+            holders: super::holders::Holders::none(),
         }
     }
 
@@ -182,6 +186,25 @@ impl VolumeStorage {
             return Err(PluginError::from(format!(
                 "Volume {name} is held in slot {slot}; promote or restore it before creating it again"
             )));
+        }
+
+        // A Container kept from an earlier Volume of this name may still mount it. A fresh
+        // root goes under the name only if every such Container expects its origin.
+        let docker_name = ployz_core::DockerVolumeName::parse(name.as_str())
+            .map_err(|error| PluginError::from(error.to_string()))?;
+        match self.admit_holders(&docker_name, origin).await {
+            Ok(()) => {}
+            Err(super::holders::Unheld::Foreign) => {
+                return Err(PluginError::HeldForOtherData {
+                    name: name.to_string(),
+                });
+            }
+            Err(super::holders::Unheld::Unlisted(cause)) => {
+                return Err(PluginError::HoldersUnlisted {
+                    name: name.to_string(),
+                    cause,
+                });
+            }
         }
 
         if matches!(admission, CapacityAdmission::Required) {

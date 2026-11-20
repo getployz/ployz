@@ -22,6 +22,19 @@ pub(super) enum PluginError {
     NotProvisioned { dataset: String },
     #[error(transparent)]
     Capacity(#[from] ployz_core::StorageCapacityError),
+    /// A Container that mounts the name expects other data, so no fresh root goes under it.
+    #[error(
+        "Volume {name} {}, so no new data is made under its name until that Container is removed",
+        ployzd::volume_copy::HELD_FOR_OTHER_DATA
+    )]
+    HeldForOtherData { name: String },
+    /// Docker did not list the Containers that mount the name, so no fresh root goes under
+    /// it yet.
+    #[error(
+        "{}, so no new data is made under Volume {name} until it does: {cause}",
+        ployzd::volume_copy::DOCKER_NOT_ANSWERING
+    )]
+    HoldersUnlisted { name: String, cause: String },
     /// A dataset carries an origin this Machine did not stamp, or one it cannot read.
     #[error("{0}")]
     Unstamped(String),

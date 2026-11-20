@@ -333,7 +333,7 @@ case "$*" in
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
   'create -o refquota=1073741824 -o ployz:origin='*' tank/ployz/data')
     touch '{volume}'
-    put '{props}/tank/ployz/data/ployz:origin' "${{4#ployz:origin=}}" ;;
+    put '{props}/tank/ployz/data/ployz:origin' "${{5#ployz:origin=}}" ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror')
     if exists tank/ployz-mirror; then echo "cannot create 'tank/ployz-mirror': dataset already exists" >&2; exit 1; fi
     touch '{mirror_root}'

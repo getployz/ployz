@@ -356,13 +356,23 @@ fn a_switch_refusal_is_the_reason_object() {
             RpcErrorCode::Unavailable,
             "no_capacity",
         ),
+        (SwitchError::Foreign, RpcErrorCode::Conflict, "foreign"),
+        (
+            SwitchError::DockerUnavailable,
+            RpcErrorCode::Unavailable,
+            "docker_unavailable",
+        ),
     ] {
         let error = refusal.rpc_error("m");
         assert_eq!(error.code, code);
         assert_eq!(error.details, json!({ "reason": reason }));
         assert_eq!(read::<SwitchError>(&error.details), Some(refusal));
     }
-    assert_eq!(read::<SwitchError>(&json!({ "reason": "unknown" })), None);
+    assert_eq!(
+        read::<SwitchError>(&json!({ "reason": "from_a_later_release" })),
+        Some(SwitchError::Unrecognized),
+        "a reason from a later release still reads as a refusal"
+    );
     assert_eq!(read::<SwitchError>(&json!("busy")), None);
     assert_eq!(read::<SwitchError>(&Value::Null), None);
 }
@@ -386,6 +396,12 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
         (CopyRefusal::Written, RpcErrorCode::Conflict, "written"),
         (CopyRefusal::NoSource, RpcErrorCode::Conflict, "no_source"),
         (CopyRefusal::Stale, RpcErrorCode::Conflict, "stale"),
+        (CopyRefusal::Foreign, RpcErrorCode::Conflict, "foreign"),
+        (
+            CopyRefusal::DockerUnavailable,
+            RpcErrorCode::Unavailable,
+            "docker_unavailable",
+        ),
     ] {
         let refusal = SetVolumeCopyRefused {
             reason,
@@ -415,6 +431,15 @@ fn a_copy_refusal_keeps_a_null_copy_on_the_wire() {
             floor: None,
         }),
         "a refusal without its copy key reads as no copy"
+    );
+    assert_eq!(
+        read::<SetVolumeCopyRefused>(&json!({ "reason": "from_a_later_release", "copy": null })),
+        Some(SetVolumeCopyRefused {
+            reason: CopyRefusal::Unrecognized,
+            copy: None,
+            floor: None,
+        }),
+        "a reason from a later release still reads as a refusal"
     );
     assert_eq!(read::<SetVolumeCopyRefused>(&json!({ "copy": null })), None);
 }

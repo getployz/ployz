@@ -415,7 +415,8 @@ impl ContainerRefusal {
             | ContainerRefusalReason::HeldByOtherRun
             | ContainerRefusalReason::RotationMismatch
             | ContainerRefusalReason::InRotation
-            | ContainerRefusalReason::ImageDiffers => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::ImageDiffers
+            | ContainerRefusalReason::ForeignVolume => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -454,6 +455,8 @@ pub enum ContainerRefusalReason {
     SealedValueUnopenable,
     /// The Container in the slot runs another image than the one the request pinned.
     ImageDiffers,
+    /// A Volume on this Machine carries data of another origin than the spec expects.
+    ForeignVolume,
     #[serde(other)]
     Unrecognized,
 }

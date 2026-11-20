@@ -87,6 +87,16 @@ impl ServiceVolumeGraph {
         Self::parse(volumes, mounts)
     }
 
+    /// Whether every birth among the declarations was minted in `namespace`. A birth from
+    /// another Environment names data that Environment approved, never this one's.
+    #[must_use]
+    pub fn born_in(&self, namespace: &crate::Namespace) -> bool {
+        self.volumes
+            .iter()
+            .filter_map(|volume| volume.source.birth())
+            .all(|birth| &birth.namespace == namespace)
+    }
+
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
         &self.volumes

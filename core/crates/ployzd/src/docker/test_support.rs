@@ -58,6 +58,9 @@ pub(crate) struct FakeDocker {
     /// The next Container list is answered, then its reply waits here twice.
     pub(crate) listed_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     pub(crate) reject_list: Arc<AtomicBool>,
+    /// Every Volume create answers a Docker 500 with this message, as Docker relays a
+    /// volume plugin's refusal.
+    pub(crate) refuse_volume_create: Arc<Mutex<Option<String>>>,
     /// Named mode: every stop fails and leaves the Container as it was.
     pub(crate) refuse_stop: Arc<AtomicBool>,
     /// Named mode: a stop lands and the next inspect sees it, then a restart policy
@@ -634,6 +637,14 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({"message":"create rejected"}),
         )
+    } else if method == Method::POST
+        && path.ends_with("/volumes/create")
+        && let Some(message) = fake.refuse_volume_create.lock().unwrap().clone()
+    {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "message": message }),
+        )
     } else if method == Method::POST && path.ends_with("/volumes/create") {
         let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let name = request
@@ -899,6 +910,13 @@ fn image_id(image: &str) -> String {
     }
 }
 
+/// A volume plugin no test serves: a create that reads a Provisioned Volume's origin
+/// through it is refused, as when the plugin is down.
+pub(crate) static NO_PLUGIN: std::sync::LazyLock<crate::storage::Plugin> =
+    std::sync::LazyLock::new(|| {
+        crate::storage::Plugin::at("/nonexistent/ployz-test-plugin.sock".into())
+    });
+
 pub(super) fn container_request<'spec, Storage>(
     kind: ContainerKind,
     namespace: &'spec Namespace,
@@ -916,6 +934,7 @@ pub(super) fn container_request<'spec, Storage>(
         admitted: crate::machine::AdmittedSpec::test_signed(namespace, spec),
         admission: std::future::ready(Ok(())),
         storage,
+        plugin: &NO_PLUGIN,
     }
 }
 

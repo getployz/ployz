@@ -476,6 +476,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         send_port: first.send_port,
         receive_stall: first.receive_stall,
         stop_deadline: first.stop_deadline,
+        holders: first.holders.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -546,6 +547,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         send_port: first.send_port,
         receive_stall: first.receive_stall,
         stop_deadline: first.stop_deadline,
+        holders: first.holders.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -1056,5 +1058,6 @@ esac
         send_port: ployz_core::VOLUME_SEND_PORT,
         receive_stall: super::super::transfer::RECEIVE_STALL,
         stop_deadline: super::super::transfer::STOP_DEADLINE,
+        holders: super::super::holders::Holders::none(),
     }
 }

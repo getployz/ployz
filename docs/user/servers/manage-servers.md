@@ -618,6 +618,10 @@ route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
 ([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
 answer `503` briefly, for about 6 seconds when the app runs on another server.
 
+A server that enforces device approval starts a container made before its upgrade only from a
+signed deploy. After you upgrade one, deploy each of its services once with a current `ployz`.
+See [After a server upgrade, deploy each service once](../deploy/deployments.md#after-a-server-upgrade-deploy-each-service-once).
+
 ### Turn on automatic upgrades
 
 Automatic upgrades are off until you turn them on. Click the **Upgrade settings** icon at the top

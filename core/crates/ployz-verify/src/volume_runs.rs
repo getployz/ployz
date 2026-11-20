@@ -841,7 +841,11 @@ fn refusal(reason: CopyRefusal) -> Refusal {
         CopyRefusal::NoTransition => Refusal::NoTransition,
         CopyRefusal::Behind => Refusal::Behind,
         CopyRefusal::NoCapacity => Refusal::NoCapacity,
-        CopyRefusal::Written | CopyRefusal::NoSource => Refusal::Other,
+        CopyRefusal::Written
+        | CopyRefusal::NoSource
+        | CopyRefusal::Foreign
+        | CopyRefusal::DockerUnavailable
+        | CopyRefusal::Unrecognized => Refusal::Other,
     }
 }
 

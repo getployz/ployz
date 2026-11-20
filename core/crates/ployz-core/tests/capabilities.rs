@@ -22,7 +22,8 @@ use ployz_core::{
     SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
     TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_ORIGIN_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -153,6 +154,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
+        (VOLUME_ORIGIN_CAPABILITY, "ployz.volume.origin.v1"),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -235,6 +237,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.v1",
             "ployz.volume.copy.floor.v1",
             "ployz.volume.size.shrink.v1",
+            "ployz.volume.origin.v1",
         ]
     );
     assert_eq!(
@@ -423,6 +426,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.volume.size.shrink.v1",
         "gated: a caller checks the contract on every Machine holding a copy and refuses the shrink, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.volume.origin.v1",
+        "refused legibly: a Server sends a born Volume's data only to a pull that names it, and the refusal names the capability; Legacy data moves between any two daemons as before",
     ),
     (
         "ployz.container.limits.update.v1",
