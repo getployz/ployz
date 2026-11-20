@@ -222,6 +222,36 @@ ployz login --cloud-url https://cloud.example.com
 In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 [Make an organization token](cli/overview.md#make-an-organization-token).
 
+## Keep logs, metrics and traces in Cloud (optional)
+
+By default your servers keep their own logs and metrics, and Ployz Cloud keeps none. To keep a
+copy in Ployz Cloud, turn on the `observe` profile. It adds ClickHouse and a Collector that take
+what your servers send over the same address they already use. Neither is published on a port.
+
+1. Set `CLICKHOUSE_PASSWORD` in `.env` to a generated secret:
+
+   ```sh
+   echo "CLICKHOUSE_PASSWORD=$(openssl rand -hex 32)"
+   ```
+
+2. Start with the profile. The tables are created on every start, so there is no separate step:
+
+   ```sh
+   docker compose --profile observe up -d
+   ```
+
+   Add `--profile observe` to the other `docker compose` commands on this page too, such as
+   `ps` and `logs`, so they include the new services. Without the profile, a server that sends
+   to your Cloud gets a `503` and keeps what it has.
+
+Ployz Cloud keeps each record for 30 days and files it under the organization that owns the
+server that sent it. A server can't claim another organization's name. Back up the
+`ployz-cloud-self-host_clickhouse-data` volume if you want to keep the history.
+
+Ployz masks the values it sealed from what a server sends, but only on a best-effort basis.
+A secret that is encoded, shorter than 6 bytes, split by a very long line, or not one Ployz
+sealed can reach Ployz Cloud. Don't print secrets from your services.
+
 ## Upgrade
 
 Pick the release to move to on the [releases page](https://github.com/getployz/ployz/releases).

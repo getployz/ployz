@@ -14,6 +14,8 @@ x-app: &app
     NPM_CONFIG_UPDATE_NOTIFIER: 'false'
     ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-false}
     PLOYZ_HOSTED_DNS_URL: ${PLOYZ_HOSTED_DNS_URL:-https://dns.ployz.app/}
+    # Reached only with the observe profile; without it Machines' OTLP posts get a 503.
+    OBSERVE_COLLECTOR_URL: http://observe-collector:4318
   depends_on:
     postgres:
       condition: service_healthy
@@ -90,10 +92,105 @@ services:
       timeout: 5s
       retries: 10
 
+  # The observe profile keeps the logs, metrics and traces Machines send. Start it with
+  # `docker compose --profile observe up -d`. None of these publish a port: Cloud's web service
+  # forwards a verified Machine's OTLP posts to the Collector over the compose network.
+  clickhouse:
+    profiles: [observe]
+    image: clickhouse/clickhouse-server:25.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: otel
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD to run the observe profile}
+      CLICKHOUSE_DB: otel
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: [CMD-SHELL, 'wget -qO- http://127.0.0.1:8123/ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: creates the tables and exits. Safe to run again on every start.
+  observe-migrate:
+    profiles: [observe]
+    image: ghcr.io/getployz/ployz-cloud:${PLOYZ_CLOUD_VERSION:?set PLOYZ_CLOUD_VERSION to a release tag}
+    restart: 'no'
+    command: [npm, run, observe:migrate]
+    environment:
+      OBSERVE_CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: otel
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  observe-collector:
+    profiles: [observe]
+    # 0.147.0 or newer: Machines run the same Collector line.
+    image: otel/opentelemetry-collector-contrib:0.147.0
+    restart: unless-stopped
+    command: [--config=/etc/otelcol/config.yaml]
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?}
+    configs:
+      - source: observe-collector
+        target: /etc/otelcol/config.yaml
+    depends_on:
+      observe-migrate:
+        condition: service_completed_successfully
+
 configs:
   inngest-database:
     content: CREATE DATABASE inngest;
+  # Cloud stamps tenancy: the web service sets x-ployz-org from the verified Machine token and
+  # x-ployz-retention-days itself. Each stamp deletes whatever the sender put under the key first,
+  # then sets it from the request header, so a forged ployz.org never reaches ClickHouse. The
+  # stamps run before batch, and batch keeps one batch per org. ClickHouse derives OrgId from the
+  # ployz.org resource attribute; the tables come from `npm run observe:migrate`, so the exporter
+  # never creates them.
+  observe-collector:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            http:
+              endpoint: 0.0.0.0:4318
+              include_metadata: true
+      processors:
+        resource/org:
+          attributes:
+            - { key: ployz.org, action: delete }
+            - { key: ployz.org, from_context: metadata.x-ployz-org, action: upsert }
+            - { key: ployz.retention_days, action: delete }
+            - { key: ployz.retention_days, from_context: metadata.x-ployz-retention-days, action: upsert }
+        attributes/org:
+          actions:
+            - { key: ployz.org, action: delete }
+            - { key: ployz.org, from_context: metadata.x-ployz-org, action: upsert }
+        batch:
+          timeout: 2s
+          metadata_keys: [x-ployz-org]
+      exporters:
+        clickhouse:
+          endpoint: tcp://clickhouse:9000
+          username: otel
+          password: $${env:CLICKHOUSE_PASSWORD}
+          database: otel
+          create_schema: false
+          sending_queue: { enabled: true, queue_size: 1000 }
+          retry_on_failure: { enabled: true, max_elapsed_time: 60s }
+      service:
+        telemetry:
+          metrics: { level: none }
+        pipelines:
+          logs: { receivers: [otlp], processors: [resource/org, attributes/org, batch], exporters: [clickhouse] }
+          metrics: { receivers: [otlp], processors: [resource/org, attributes/org, batch], exporters: [clickhouse] }
+          traces: { receivers: [otlp], processors: [resource/org, attributes/org, batch], exporters: [clickhouse] }
 
 volumes:
   postgres-data:
   redis-data:
+  clickhouse-data:
