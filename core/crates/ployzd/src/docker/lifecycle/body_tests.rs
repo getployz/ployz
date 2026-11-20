@@ -50,7 +50,7 @@ fn body_of(
         spec,
         network,
         None,
-        AdmittedSpec::test_signed(namespace, spec),
+        &AdmittedSpec::test_signed(namespace, spec),
     )
     .unwrap();
     create::ingress_sysctls(&mut body, Door::of_service(namespace, &spec.name), true);

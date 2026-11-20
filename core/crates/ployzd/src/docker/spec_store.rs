@@ -40,9 +40,13 @@ CREATE TABLE IF NOT EXISTS creations (
     slot TEXT NOT NULL PRIMARY KEY,
     id   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS admitted (
+    id          TEXT NOT NULL PRIMARY KEY,
+    admitted_by TEXT NOT NULL CHECK (json_valid(admitted_by))
+);
 ";
 /// The tables keyed by a Container's Docker ID, which move and are dropped with it.
-const ID_TABLES: [&str; 3] = [SPEC_TABLE, "rotations", "stops"];
+const ID_TABLES: [&str; 4] = [SPEC_TABLE, "rotations", "stops", "admitted"];
 const SPEC_TABLE: &str = "containers";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -122,6 +126,18 @@ impl MachineSpecStore {
         encoded
             .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
             .transpose()
+    }
+
+    /// Who admitted the Container, `None` when this Machine kept no admission for it.
+    pub(crate) async fn admitted_by(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<crate::machine::AdmittedBy>, Error> {
+        self.decoded(
+            "SELECT admitted_by FROM admitted WHERE id = ?1",
+            container_id,
+        )
+        .await
     }
 
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
@@ -444,10 +460,12 @@ impl ConfigOperation<'_> {
         container_id: &ContainerId,
         slot: Option<&CreationSlot>,
         spec: &ResolvedServiceSpec,
+        admitted_by: Option<&crate::machine::AdmittedBy>,
     ) -> Result<(), Error> {
         let container_id = container_id.to_string();
         let slot = slot.cloned();
         let spec = serde_json::to_string(spec)?;
+        let admitted_by = admitted_by.map(serde_json::to_string).transpose()?;
         self.store
             .run(move |connection| {
             let transaction = connection.transaction()?;
@@ -455,6 +473,12 @@ impl ConfigOperation<'_> {
                 "INSERT INTO containers (id, service_spec) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET service_spec = excluded.service_spec",
                 params![container_id, spec],
             )?;
+            if let Some(admitted_by) = admitted_by {
+                transaction.execute(
+                    "INSERT INTO admitted (id, admitted_by) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET admitted_by = excluded.admitted_by",
+                    params![container_id, admitted_by],
+                )?;
+            }
             if let Some(CreationSlot(slot)) = slot {
                 transaction.execute(
                     "INSERT INTO creations (slot, id) VALUES (?1, ?2) ON CONFLICT (slot) DO UPDATE SET id = excluded.id",
@@ -948,8 +972,8 @@ mod tests {
         let second_id = ContainerId::parse("c".repeat(64)).unwrap();
         let incompatible_id = ContainerId::parse("d".repeat(64)).unwrap();
 
-        operation.put(&id, None, &spec).await.unwrap();
-        operation.put(&second_id, None, &spec).await.unwrap();
+        operation.put(&id, None, &spec, None).await.unwrap();
+        operation.put(&second_id, None, &spec, None).await.unwrap();
         connect(&path)
             .unwrap()
             .execute(
@@ -1639,8 +1663,11 @@ mod tests {
         let stale = ContainerId::parse("b".repeat(64)).unwrap();
         let restored = ContainerId::parse("c".repeat(64)).unwrap();
         let mut operation = store.config_operation().await;
-        operation.put(&live, Some(&slot), &spec).await.unwrap();
-        operation.put(&stale, None, &spec).await.unwrap();
+        operation
+            .put(&live, Some(&slot), &spec, None)
+            .await
+            .unwrap();
+        operation.put(&stale, None, &spec, None).await.unwrap();
         operation
             .record_creations(vec![(stale, Some(slot.clone()))])
             .await

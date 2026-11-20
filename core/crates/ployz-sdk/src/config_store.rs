@@ -267,6 +267,7 @@ impl ConfigStore {
                 checkouts: sources.checkouts,
                 upload: sources.upload,
                 reader: sources.reader.map(ployz_core::GithubToken::new),
+                versions: Vec::new(),
             }),
         };
         // Only a Deployment of this Organization runs here.

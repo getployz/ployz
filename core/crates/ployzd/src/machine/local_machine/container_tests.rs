@@ -722,7 +722,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
 
     assert_eq!(
         local
-            .create_and_start(new.clone(), None, admitted)
+            .create_and_start(new.clone(), None, admitted.clone(), None)
             .await
             .unwrap(),
         None
@@ -741,7 +741,10 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
         container["State"] = json!({"Status":"exited", "ExitCode":0});
     }
     assert_eq!(
-        local.create_and_start(new, None, admitted).await.unwrap(),
+        local
+            .create_and_start(new, None, admitted, None)
+            .await
+            .unwrap(),
         None
     );
     assert_eq!(starts(), 1, "the adopted hook is not run again");

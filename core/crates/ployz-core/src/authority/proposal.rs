@@ -105,7 +105,8 @@ pub(super) trait StepBody: Statement {
     fn signer(&self) -> SignerKey;
     fn cluster(&self) -> SealingPublicKey;
     fn namespace(&self) -> &Namespace;
-    fn window(&self) -> (Timestamp, Timestamp);
+    /// The window the bundle must share, `None` for a body that has none.
+    fn window(&self) -> Option<(Timestamp, Timestamp)>;
 }
 
 /// Open `step`, an unsigned step body, as the step of `bundle` it names, signed by one of
@@ -154,7 +155,8 @@ pub(super) fn open_step<T: StepBody>(
         (field::ENVIRONMENT, &plan.environment == body.namespace()),
         (
             field::WINDOW,
-            (plan.issued_at, plan.expires_at) == body.window(),
+            body.window()
+                .is_none_or(|window| window == (plan.issued_at, plan.expires_at)),
         ),
     ])?;
     let by = by.expect("the signer check passed");

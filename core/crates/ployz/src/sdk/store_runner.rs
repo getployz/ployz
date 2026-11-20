@@ -64,6 +64,9 @@ pub struct Sources {
     /// builds, which each Server reads before it creates under the rule. None reads a
     /// public repository.
     pub reader: Option<ployz_core::GithubToken>,
+    /// Signed versions of the Deployment's Services that this runner's own Device made,
+    /// handed to every Server with a new Container of their Service.
+    pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// Why a Deployment's builds didn't all succeed.
@@ -187,6 +190,10 @@ pub async fn run_deployment_expecting(
             .as_ref()
             .ok()
             .and_then(|sources| sources.reader.clone()),
+        versions: checkouts
+            .as_ref()
+            .map(|sources| sources.versions.clone())
+            .unwrap_or_default(),
     };
     let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
@@ -567,6 +574,7 @@ struct Run {
     over: Latch,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
+    versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// What `read`, the store's answer to one of this run's records, says about the Deployment.
@@ -670,7 +678,13 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, approval, rules) {
+        let running = match prepared.confirm_approved(
+            log_id,
+            ImageCleanup::Auto,
+            approval,
+            rules,
+            self.versions.clone(),
+        ) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };

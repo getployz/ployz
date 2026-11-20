@@ -825,7 +825,8 @@ async fn fake_docker_service_keeping_runtime(
     crate::docker::test_support::FakeDocker,
     crate::docker::ContainerRuntime,
 ) {
-    let (data_dir, store, service, fake, runtime) = fake_docker_service_built(prefix, None).await;
+    let (data_dir, store, service, fake, runtime) =
+        fake_docker_service_built(prefix, None, None).await;
     (data_dir, store, service, fake, runtime)
 }
 
@@ -843,13 +844,16 @@ async fn fake_docker_service_sealing(
 ) {
     let cluster = crate::sealed_env::test_support::Cluster::new();
     let (data_dir, store, service, fake, runtime) =
-        fake_docker_service_built(prefix, Some(cluster.dir.0.clone())).await;
+        fake_docker_service_built(prefix, Some(cluster.dir.0.clone()), None).await;
     (data_dir, store, service, fake, runtime, cluster)
 }
 
+/// With `start_barrier`, every start waits there twice: once to announce it began, once
+/// to be released.
 async fn fake_docker_service_built(
     prefix: &str,
     sealing_key_dir: Option<std::path::PathBuf>,
+    start_barrier: Option<Arc<tokio::sync::Barrier>>,
 ) -> (
     std::path::PathBuf,
     RecordOwner,
@@ -881,6 +885,7 @@ async fn fake_docker_service_built(
     let (runtime, fake) = fake_runtime_with(FakeDocker {
         named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
         list_named: true,
+        start_barrier,
         ..Default::default()
     })
     .await;
@@ -2986,6 +2991,58 @@ mod set_volume_copy {
             .container_id
     }
 
+    #[tokio::test]
+    async fn an_operator_start_of_a_holder_keeps_the_switch_lock_after_its_caller_hangs_up() {
+        let started = Arc::new(tokio::sync::Barrier::new(2));
+        let (data_dir, _store, service, fake, _) =
+            fake_docker_service_built("ployzd-holder-start-dropped", None, Some(started.clone()))
+                .await;
+        let kept = kept_holder(&service, &fake).await;
+        for container in fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+        {
+            container["State"] = json!({"Status":"exited", "Running":false});
+        }
+        let mut request = Request::new(
+            op::EnsureContainer::into_request(
+                serde_json::from_value(json!({"want": {"state":"running", "rotation":"pending",
+                    "container":{"existing":{"id":kept}}}}))
+                .unwrap(),
+            )
+            .encode()
+            .unwrap(),
+        );
+        request
+            .metadata_mut()
+            .insert(ployz_core::OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+        let ensuring = tokio::spawn({
+            let service = service.clone();
+            async move { service.ensure_container(request).await }
+        });
+
+        started.wait().await;
+        ensuring.abort();
+        assert!(ensuring.await.unwrap_err().is_cancelled());
+        assert!(
+            service.switch_mutation.try_lock().is_err(),
+            "the caller hung up and freed the switch lock while the holder's start still ran"
+        );
+
+        started.wait().await;
+        let _freed = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            service.switch_mutation.lock(),
+        )
+        .await
+        .expect("the start ended and freed the switch lock");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     fn running(fake: &crate::docker::test_support::FakeDocker) -> usize {
         holder_status(fake)
             .iter()
@@ -4938,7 +4995,8 @@ mod ensure_container {
             DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
             SealingPublicKey,
             authority::{
-                ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, Timestamp,
+                ApprovedService, DeployApproval, PayloadDigest, ServiceVersion, Signed, Signer,
+                Timestamp,
             },
             rpc::status_details,
         };
@@ -5911,6 +5969,69 @@ mod ensure_container {
                 ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
                 0
             );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn signed_versions_and_a_deploy_approval_in_one_request_share_eight_checks() {
+            let fixture = enforced("ployzd-mixed-proof-budget").await;
+            let approved = reaching(PINNED);
+            let mut elsewhere = approved.clone();
+            elsewhere["container"]["environment"] = json!({"MODE": "elsewhere"});
+            let namespace = Namespace::parse("app").unwrap();
+            let resolved: ployz_core::ResolvedServiceSpec =
+                serde_json::from_value(elsewhere).unwrap();
+            let version = ServiceVersion {
+                cluster: fixture.cluster,
+                namespace: namespace.clone(),
+                service: resolved.name.clone(),
+                digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
+                signed_at: Timestamp::now(),
+                signer: ployz_core::authority::SignerKey::Device(fixture.signer.public().into()),
+                proposal: None,
+            };
+            let version = Signed::sign(&version, &fixture.signer).unwrap();
+            let deploy = fixture.deploy(&approved);
+            let seen = requests(&fixture.fake).len();
+
+            let mut request = Request::new(
+                op::EnsureContainer::into_request(
+                    serde_json::from_value(json!({
+                        "want": new_want("service_container", "k1", &approved),
+                        "deploy": deploy,
+                        "versions": vec![version; 8],
+                    }))
+                    .unwrap(),
+                )
+                .encode()
+                .unwrap(),
+            );
+            request
+                .metadata_mut()
+                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+            let mixed = fixture
+                .service
+                .ensure_container(request)
+                .await
+                .map(|response| {
+                    response
+                        .into_inner()
+                        .decode_response()
+                        .unwrap()
+                        .decode::<op::EnsureContainer>()
+                        .unwrap()
+                });
+            deploy_refused(mixed, "more signatures than a server checks at once");
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
+
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k2", &approved),
+                Some(&deploy),
+            )
+            .await
+            .unwrap();
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
     }

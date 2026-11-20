@@ -105,7 +105,7 @@ pub(super) fn container_create_body(
     spec: &ResolvedServiceSpec,
     network: &CreationNetwork,
     sealing_key_dir: Option<&Path>,
-    admitted: AdmittedSpec,
+    admitted: &AdmittedSpec,
 ) -> Result<ContainerCreateBody, Error> {
     if !admitted.covers(namespace, spec) {
         return Err(Error::NotAdmitted);

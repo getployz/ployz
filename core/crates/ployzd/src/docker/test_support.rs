@@ -195,6 +195,13 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         hold.wait().await;
     }
     if let Some(containers) = &fake.named_containers {
+        if method == Method::POST
+            && path.ends_with("/start")
+            && let Some(barrier) = &fake.start_barrier
+        {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
         let mut containers = containers.lock().unwrap();
         if fake.list_named && method == Method::GET && path.ends_with("/containers/json") {
             return Json(listed_by_labels(&containers, uri.query())).into_response();

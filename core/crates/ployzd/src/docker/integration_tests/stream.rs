@@ -83,7 +83,7 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     specs
         .config_operation()
         .await
-        .put(&container_id, None, &spec)
+        .put(&container_id, None, &spec, None)
         .await
         .unwrap();
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
@@ -246,7 +246,7 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     specs
         .config_operation()
         .await
-        .put(&container_id, None, &spec)
+        .put(&container_id, None, &spec, None)
         .await
         .unwrap();
     let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);

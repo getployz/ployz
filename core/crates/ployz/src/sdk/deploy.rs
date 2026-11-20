@@ -104,12 +104,14 @@ impl PreparedDeploy {
             cleanup,
             None,
             crate::cluster::RuleProofs::default(),
+            Vec::new(),
         )
     }
 
     /// As [`Self::confirm_with_log_id`], handing every Server the deploy approval a
-    /// Device signed for this Deploy, or each Service's proof under an automatic deploy
-    /// rule. A Server creates no Container without one.
+    /// Device signed for this Deploy and the signed versions of each Service, or each
+    /// Service's proof under an automatic deploy rule. A Server creates no Container
+    /// without one.
     /// # Errors
     /// Returns the same admission and session errors as confirm.
     pub fn confirm_approved(
@@ -118,6 +120,7 @@ impl PreparedDeploy {
         cleanup: ImageCleanup,
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
         rules: crate::cluster::RuleProofs,
+        versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
@@ -136,6 +139,7 @@ impl PreparedDeploy {
         let mut client = session
             .client()?
             .with_deploy_approval(approval)
+            .with_versions(versions)
             .with_rule_proofs(rules);
         client.deploy.id = deployment_id;
         let preview = self.preview.clone();

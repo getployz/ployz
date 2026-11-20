@@ -86,6 +86,15 @@ pub struct EnsureContainerRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub rule: Option<Box<crate::authority::RuleProof>>,
+    /// The signed versions of the Service a new creation belongs to, at most
+    /// [`crate::authority::version::MAX_PRESENTED`]. An older daemon ignores them.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::authority::version::at_most_presented"
+    )]
+    #[ts(optional, as = "Option<Vec<Signed<crate::authority::ServiceVersion>>>")]
+    pub versions: Vec<Signed<crate::authority::ServiceVersion>>,
 }
 
 /// The state a driver wants one Container in. The Machine converges to it and

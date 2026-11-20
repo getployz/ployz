@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    ApprovedChange, DeployApproval, DeployTerms, Signed, deploy::content_addressed,
+    ApprovedChange, DeployApproval, DeployTerms, ServiceVersion, Signed, deploy::content_addressed,
 };
 use ployz_core::{
     Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, SealingPublicKey,
@@ -22,9 +22,11 @@ use super::super::store::Store;
 use super::super::{Error, route};
 use crate::image::{PinError, pin_public};
 
-/// A signed approval, the plan version it approves, and what it approved.
+/// A signed approval, a signed version of each Service, the plan version it approves,
+/// and what it approved.
 pub(in crate::handlers) struct DeviceApproval {
     pub(in crate::handlers) signed: Signed<DeployApproval>,
+    pub(in crate::handlers) versions: Vec<Signed<ServiceVersion>>,
     pub(in crate::handlers) version: String,
     pub(in crate::handlers) approved: Vec<ApprovedChange>,
 }
@@ -95,6 +97,7 @@ pub(in crate::handlers) fn sign(
     let target = signable(plan.target)?;
     let pins = pin_tags(matches, &target)?;
     let window = signing.window();
+    let namespace = plan.namespace.clone();
     let terms = DeployTerms {
         cluster: enforcing.cluster,
         operation: OperationId::from_uuid(id.as_str()).map_err(Error::command)?,
@@ -119,8 +122,23 @@ pub(in crate::handlers) fn sign(
         crate::ui::confirm(question, || refusal, declined)
     })?;
     let signed = signing.sign(&body)?;
+    let versions = approved
+        .iter()
+        .map(|change| {
+            signing.sign(&ServiceVersion {
+                cluster: enforcing.cluster,
+                namespace: namespace.clone(),
+                service: change.service.clone(),
+                digest: change.digest,
+                signed_at: window.issued_at,
+                signer: window.signer,
+                proposal: None,
+            })
+        })
+        .collect::<Result<_, _>>()?;
     Ok(Some(DeviceApproval {
         signed,
+        versions,
         version: plan.version,
         approved,
     }))

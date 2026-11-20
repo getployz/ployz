@@ -207,6 +207,11 @@ needs no new signature, from the dashboard or the CLI. A version stops counting 
 remove every device that signed it. One deployed from the server's own terminal keeps
 counting.
 
+A server also keeps which devices approved each container it made, and checks they're still
+approved before it creates the container and each time the dashboard starts it again. Once
+you remove all of them, that container won't start from the dashboard. It keeps running if
+it's running. Deploy it again to sign it with a device you kept.
+
 Every image runs by digest, since a tag names whatever the registry holds under it now. For
 a tag on a public registry, `ployz deploy` reads the digest from the registry itself and
 signs it, so `web` above keeps `nginx:1.29-alpine` in your settings and runs that exact

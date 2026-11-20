@@ -615,6 +615,7 @@ async fn ensure(
                 want,
                 deploy: None,
                 rule: None,
+                versions: Vec::new(),
             },
             Call::keyed().to(&MachineTarget::from(&machine_id)),
         )

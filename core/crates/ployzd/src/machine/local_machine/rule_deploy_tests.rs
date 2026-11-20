@@ -3,8 +3,8 @@
 use ployz_core::{
     GithubToken, Namespace,
     authority::{
-        AttestKey, AuthorityRefusal, BuildClaim, BuildStage, CommitSha, ImageDigest, RuleProof,
-        Signed, Timestamp,
+        AttestKey, AuthorityRefusal, Budget, BuildClaim, BuildStage, CommitSha, ImageDigest,
+        RuleProof, Signed, Timestamp,
     },
 };
 use serde_json::{Value, json};
@@ -105,8 +105,9 @@ impl Fixture {
         at: Timestamp,
     ) -> Result<(), Error> {
         self.machine
-            .admit_rule_deploy(&want, proof, &github(head), at)
+            .admit_rule_deploy(&want, proof, &github(head), at, &mut Budget::default())
             .await
+            .map(drop)
     }
 }
 
@@ -318,6 +319,49 @@ async fn a_newer_generation_refuses_every_proof_below_it() {
     );
 }
 
+#[tokio::test]
+async fn what_a_rule_admitted_stops_standing_once_a_newer_generation_arrives() {
+    let fixture = fixture().await;
+    let old = fixture.deploy_rule(3);
+    let claim = fixture.built(&old, fixture.attest());
+    let by = fixture
+        .machine
+        .admit_rule_deploy(
+            &want("service_container", "k1", &spec()),
+            &fixture.proof(&old, &claim, token_for(&claim, "old")),
+            &github(commit()),
+            now(),
+            &mut Budget::default(),
+        )
+        .await
+        .unwrap();
+    let standing = fixture.machine.standing();
+    assert_eq!(
+        standing.admits(&by, std::convert::identity).unwrap(),
+        Ok(())
+    );
+
+    let new = fixture.deploy_rule(4);
+    let claim4 = fixture.built(&new, fixture.attest());
+    fixture
+        .deploy(
+            want("service_container", "k2", &spec()),
+            &fixture.proof(&new, &claim4, token_for(&claim4, "new")),
+            commit(),
+            now(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        standing.admits(&by, std::convert::identity).unwrap(),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a generation"
+        }),
+        "a Container made under generation 3 neither starts nor is created once 4 arrived"
+    );
+}
+
 /// GitHub that answers the read at `at` only once `release` fires, telling `reached` it
 /// was asked.
 struct Slow {
@@ -384,10 +428,11 @@ async fn a_newer_generation_landing_during_the_head_read_refuses_the_older_one()
     let current = fixture.proof(&new, &claim4, token_for(&claim4, "new"));
     let slow = Slow::new(github(commit()), SlowAt::Head);
     let first = want("service_container", "k1", &spec());
+    let mut budget = Budget::default();
     let (in_flight, ()) = tokio::join!(
         fixture
             .machine
-            .admit_rule_deploy(&first, &stale, &slow, now()),
+            .admit_rule_deploy(&first, &stale, &slow, now(), &mut budget),
         async {
             slow.reached.notified().await;
             fixture
@@ -402,7 +447,7 @@ async fn a_newer_generation_landing_during_the_head_read_refuses_the_older_one()
             slow.release.notify_one();
         }
     );
-    assert_eq!(refused(in_flight), "a generation");
+    assert_eq!(refused(in_flight.map(drop)), "a generation");
 }
 
 #[tokio::test]
@@ -448,4 +493,51 @@ async fn a_changed_setting_is_refused_as_the_payload() {
         ),
         "a payload"
     );
+}
+
+#[tokio::test]
+async fn a_new_builds_token_is_charged_to_the_same_budget_as_the_rule() {
+    let fixture = fixture().await;
+    let rule = fixture.deploy_rule(3);
+    let claim = fixture.built(&rule, fixture.attest());
+    let proof = fixture.proof(&rule, &claim, token_for(&claim, "built-1"));
+    let attempt = |left: usize| {
+        let mut budget = Budget::default();
+        for _ in left..8 {
+            budget.reserve_one().unwrap();
+        }
+        budget
+    };
+    let mut one_left = attempt(1);
+    let result = fixture
+        .machine
+        .admit_rule_deploy(
+            &want("service_container", "k1", &spec()),
+            &proof,
+            &github(commit()),
+            now(),
+            &mut one_left,
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(Error::RuleDeployRefused(RuleDeployRefusal::Rule(
+                AuthorityRefusal::Overspent
+            )))
+        ),
+        "{result:?}"
+    );
+    let mut two_left = attempt(2);
+    fixture
+        .machine
+        .admit_rule_deploy(
+            &want("service_container", "k1", &spec()),
+            &proof,
+            &github(commit()),
+            now(),
+            &mut two_left,
+        )
+        .await
+        .unwrap();
 }

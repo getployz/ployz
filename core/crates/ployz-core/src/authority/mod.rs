@@ -21,6 +21,7 @@ pub mod rule_draft;
 pub mod shown;
 pub mod trusted_key;
 pub mod validity;
+pub mod version;
 
 pub use admission::{DataReach, needs_signature};
 pub use canonical::{CanonicalError, Timestamp};
@@ -49,3 +50,4 @@ pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKeys,
     TrustedPasskey,
 };
+pub use version::{Budget, ServiceVersion, VersionAdmitted, VersionFacts};
