@@ -204,6 +204,12 @@ pub struct NewContainer {
     pub image_prepared: bool,
     #[serde(default, skip_serializing_if = "AnswerWhen::is_started")]
     pub answer: AnswerWhen,
+    /// The image the Container must run, by its content. Only the pinned route takes
+    /// one, for a spec whose image is a tag; the Machine runs exactly this image or
+    /// refuses with [`ContainerRefusalReason::ImageDiffers`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub image_id: Option<crate::ImageDigest>,
 }
 
 /// When the Machine answers a new creation: once it starts, or once its health settles.
@@ -414,7 +420,8 @@ impl ContainerRefusal {
             | ContainerRefusalReason::OlderThanIn
             | ContainerRefusalReason::HeldByOtherRun
             | ContainerRefusalReason::RotationMismatch
-            | ContainerRefusalReason::InRotation => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::InRotation
+            | ContainerRefusalReason::ImageDiffers => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -451,6 +458,8 @@ pub enum ContainerRefusalReason {
     SealingKeyMissing,
     /// A Sealed value is bound elsewhere or does not open with this Cluster's key.
     SealedValueUnopenable,
+    /// The Container in the slot runs another image than the one the request pinned.
+    ImageDiffers,
     #[serde(other)]
     Unrecognized,
 }

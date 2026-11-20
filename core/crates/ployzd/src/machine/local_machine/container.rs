@@ -1289,6 +1289,7 @@ impl LocalMachine {
     ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
+        let pin = pinned(&want);
         let replan = self
             .switch
             .as_ref()
@@ -1306,11 +1307,25 @@ impl LocalMachine {
             }
             Some(_) | None => None,
         };
+        // The Container this request created, adopted or started, which the reply reads back.
+        let mut acted = None;
         let refusal = match step {
             ContainerStep::Done => {
-                return Ok(EnsuredContainer::Ensured {
-                    now: redacted(now),
-                    health: None,
+                let differs = match (&pin, now.present()) {
+                    (Some(pin), Some(observed)) => {
+                        self.image_differs(&observed.container_id, pin).await?
+                    }
+                    _ => None,
+                };
+                return Ok(match differs {
+                    None => EnsuredContainer::Ensured {
+                        now: redacted(now),
+                        health: None,
+                    },
+                    Some(refusal) => EnsuredContainer::Refused {
+                        now: redacted(now),
+                        refusal,
+                    },
                 });
             }
             ContainerStep::Refuse(refusal) => {
@@ -1320,16 +1335,27 @@ impl LocalMachine {
                 });
             }
             ContainerStep::CreateAndStart(new) => {
-                self.create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
-                    .await?
+                let (id, refusal) = self
+                    .create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
+                    .await?;
+                acted = id;
+                refusal
             }
-            ContainerStep::Start(id) => match fence {
-                Some((run, expect)) => self.start_routed(id, run, expect, switch).await?,
-                None => {
-                    self.start_container(id, switch).await?;
-                    None
+            ContainerStep::Start(id) => {
+                acted = Some(id);
+                match pin {
+                    Some(pin) if let Some(refusal) = self.image_differs(&id, &pin).await? => {
+                        Some(refusal)
+                    }
+                    Some(_) | None => match fence {
+                        Some((run, expect)) => self.start_routed(id, run, expect, switch).await?,
+                        None => {
+                            self.start_container(id, switch).await?;
+                            None
+                        }
+                    },
                 }
-            },
+            }
             ContainerStep::Stop { id, drain, stop } => {
                 self.finish_installed(move |local, installation| async move {
                     Ok(local
@@ -1408,11 +1434,32 @@ impl LocalMachine {
                 .await?
             }
         };
-        let now = redacted(self.container_now(&locator).await?);
+        // Read back the Container acted on, never whatever holds the slot by now: another
+        // request may have replaced it there since.
+        let read = acted.map_or(locator, ContainerLocator::Id);
+        let now = redacted(self.container_now(&read).await?);
         Ok(match refusal {
             None => EnsuredContainer::Ensured { now, health: None },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
+    }
+
+    /// Why `id` may not serve a request pinned to `pin`: it runs another image.
+    async fn image_differs(
+        &self,
+        id: &ContainerId,
+        pin: &ployz_core::ImageDigest,
+    ) -> Result<Option<ContainerRefusal>, Error> {
+        let runs = self.docker()?.lifecycle().image_of(id).await?;
+        Ok((runs.as_deref() != Some(pin.as_str())).then(|| {
+            refuse(
+                ContainerRefusalReason::ImageDiffers,
+                format!(
+                    "Container {id} runs image {}, not the pinned {pin}",
+                    runs.as_deref().unwrap_or("unknown")
+                ),
+            )
+        }))
     }
 
     async fn wait_for_admitted_work(&self) {
@@ -1458,10 +1505,11 @@ impl LocalMachine {
         fence: Option<StartFence>,
         admitted: AdmittedSpec,
         switch: Option<SwitchGuard>,
-    ) -> Result<Option<ContainerRefusal>, Error> {
+    ) -> Result<(Option<ContainerId>, Option<ContainerRefusal>), Error> {
         let outcome = self
             .finish_mutation(move |local| async move {
                 let _switch = switch;
+                let pin = new.image_id.clone();
                 let created = local
                     .create_container_admitted(CreationFacts {
                         kind: new.slot.kind,
@@ -1470,18 +1518,29 @@ impl LocalMachine {
                         creation_key: new.slot.creation_key.as_str().to_owned(),
                         deployment_id: new.deployment_id,
                         r#gen: new.r#gen,
-                        image: if new.image_prepared {
-                            ImagePull::Prepared
-                        } else {
-                            ImagePull::Policy(new.registry_auth.as_ref())
+                        image: match (&pin, new.image_prepared) {
+                            (Some(pin), _) => ImagePull::Pinned(pin),
+                            (None, true) => ImagePull::Prepared,
+                            (None, false) => ImagePull::Policy(new.registry_auth.as_ref()),
                         },
                         admitted,
                     })
                     .await;
                 let created = match created {
                     Ok(created) => created,
-                    Err(error) => return create_refusal(error).map(Some),
+                    // Nothing was made, so the reply reads the slot.
+                    Err(error) => {
+                        return create_refusal(error).map(|refusal| (None, Some(refusal)));
+                    }
                 };
+                let acted = Some(created.container_id);
+                // A create may adopt a Container another request made from the same spec,
+                // which may run another image: it never starts for a pinned request.
+                if let Some(pin) = &pin
+                    && let Some(refusal) = local.image_differs(&created.container_id, pin).await?
+                {
+                    return Ok((acted, Some(refusal)));
+                }
                 let containers = local.docker()?;
                 // A racing create adopted a hook another request already started: never run it twice.
                 if new.slot.kind == ContainerKind::PreDeployHook {
@@ -1490,28 +1549,29 @@ impl LocalMachine {
                         .inspect_managed(&created.container_id, &local.record().id())
                         .await?;
                     if !never_started(&adopted) {
-                        return Ok(None);
+                        return Ok((acted, None));
                     }
                     local
                         .approvals
                         .mark_hook_made(new.slot.creation_key.as_str())?;
                 }
                 if let Some((run, expect)) = fence {
-                    return rotation::start_fenced(
+                    let refusal = rotation::start_fenced(
                         &local,
                         containers,
                         &created.container_id,
                         run,
                         expect.as_ref(),
                     )
-                    .await;
+                    .await?;
+                    return Ok((acted, refusal));
                 }
                 // A create may adopt a Container another request made, so its start is
                 // checked as any other.
                 local
                     .start_checked(containers, &created.container_id)
                     .await?;
-                Ok(None)
+                Ok((acted, None))
             })
             .await?;
         Ok(outcome)
@@ -1984,6 +2044,21 @@ fn refuse(reason: ContainerRefusalReason, message: impl Into<String>) -> Contain
         reason,
         message: message.into(),
         capability: None,
+    }
+}
+
+/// The image a new creation is pinned to, which every Container it names must run.
+fn pinned(want: &ContainerWant) -> Option<ployz_core::ImageDigest> {
+    match want {
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } => new.image_id.clone(),
+        ContainerWant::Running { .. }
+        | ContainerWant::Stopped { .. }
+        | ContainerWant::Gone { .. }
+        | ContainerWant::Out { .. }
+        | ContainerWant::Held { .. } => None,
     }
 }
 

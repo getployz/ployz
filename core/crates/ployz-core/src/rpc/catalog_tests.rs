@@ -215,6 +215,14 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "EnsurePinnedContainer",
+        "ensure_pinned_container",
+        "ployz.container.ensure-pinned.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "UpdateContainerLimits",
         "update_container_limits",
         "ployz.container.limits.update.v1",

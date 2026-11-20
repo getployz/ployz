@@ -424,6 +424,23 @@ validated_string_newtype!(
     })
 );
 
+/// What follows a repository in the tag that keeps a pinned image from being pruned. A
+/// daemon of another version reads these tags, so the text does not change.
+pub const RETENTION_TAG: &str = ":ployz-sha256-";
+
+/// The tag a pinned `image` is kept under, `repository:ployz-sha256-<hex>`. A pin that also
+/// names a tag (`redis:7-alpine@sha256:…`) drops it, since a Docker reference holds one tag.
+/// A daemon prunes only these names, and a drain delivers a copied image under one.
+#[must_use]
+pub fn retention_tag(image: &str) -> Option<String> {
+    let (name, hex) = image.split_once("@sha256:")?;
+    let repository = match name.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => name,
+    };
+    Some(format!("{repository}{RETENTION_TAG}{hex}"))
+}
+
 /// An image Ployz runs on its own, such as a helper container or BuildKit, named by
 /// its content. A Machine's image store holds tags anyone with an image route can
 /// write, so a tag cannot say what one of these runs.

@@ -136,6 +136,7 @@ fn incomplete(report: &DrainReport) -> Error {
             | DrainOutcome::Failed {
                 failure:
                     MoveFailure::Refused {
+                        from: None,
                         reason: StayReason::LastIn,
                     },
                 ..
@@ -278,6 +279,16 @@ fn stay(service: &QualifiedService, reason: &StayReason) -> String {
     match reason {
         StayReason::LastIn => {
             format!("last copy in rotation; deploy {service} elsewhere first")
+        }
+        StayReason::NeedsUpgrade { servers } => {
+            let names = servers
+                .iter()
+                .map(|server| server.name.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "only {names} can take it; upgrade with `ployz server upgrade`, then drain again"
+            )
         }
         other @ (StayReason::Unobserved { .. }
         | StayReason::MidRollout

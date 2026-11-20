@@ -2,14 +2,14 @@
 
 use std::net::SocketAddr;
 
-use ployz_core::{ImageDigestReference, ImageIngestDestination, PeerImagePull};
+use ployz_core::{ImageDigestReference, ImageIngestDestination, PeerImagePull, retention_tag};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
     process::Command,
 };
 
-use super::{Error, LocalDocker, images::retention_tag};
+use super::{Error, LocalDocker};
 
 /// Pull an image from a peer Machine's ingest TCP destination into local Docker.
 ///
@@ -60,33 +60,69 @@ async fn pull_and_tag(
 ) -> Result<(), Error> {
     let result = async {
         docker_cli(docker, &["pull", "--platform", platform, pulled]).await?;
-        if let Some((_, digest)) = image.split_once('@') {
-            let descriptor = docker_cli(
-                docker,
-                &[
-                    "image",
-                    "inspect",
-                    pulled,
-                    "--format",
-                    "{{json .Descriptor}}",
-                ],
-            )
-            .await?;
-            let descriptor: serde_json::Value = serde_json::from_str(&descriptor)?;
-            if descriptor.get("digest").and_then(serde_json::Value::as_str) != Some(digest) {
-                return Err(Error::PeerPull(format!(
-                    "the image store did not retain {image}"
-                )));
-            }
+        if let Some((_, digest)) = image.split_once('@')
+            && descriptor_digest(docker, pulled).await?.as_deref() != Some(digest)
+        {
+            return Err(Error::PeerPull(format!(
+                "the image store did not retain {image}"
+            )));
+        }
+        let tag = tag.unwrap_or(image);
+        if let Some((_, hex)) = tag.split_once(ployz_core::RETENTION_TAG) {
+            retention_free(docker, pulled, tag, hex).await?;
         }
         // Verify before publishing the requested or retention tag: a failed
         // attempt must not leave a tag or remove one from an earlier delivery.
-        docker_cli(docker, &["tag", "--", pulled, tag.unwrap_or(image)]).await?;
+        docker_cli(docker, &["tag", "--", pulled, tag]).await?;
         Ok(())
     }
     .await;
     let _ = docker_cli(docker, &["image", "rm", pulled]).await;
     result
+}
+
+/// Refuse to write retention name `tag` unless `pulled` is the content it names, and
+/// the name is free or already names that content. Image Cleanup trusts these names, so
+/// no write, whatever its mode, moves one onto other content.
+async fn retention_free(
+    docker: &std::path::Path,
+    pulled: &str,
+    tag: &str,
+    hex: &str,
+) -> Result<(), Error> {
+    let digest = format!("sha256:{hex}");
+    if descriptor_digest(docker, pulled).await?.as_deref() != Some(digest.as_str()) {
+        return Err(Error::RetentionNameTaken(tag.to_owned()));
+    }
+    match descriptor_digest(docker, tag).await {
+        Ok(held) if held.as_deref() == Some(digest.as_str()) => Ok(()),
+        Ok(_) => Err(Error::RetentionNameTaken(tag.to_owned())),
+        Err(Error::PeerPull(printed)) if printed.contains("No such image") => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// The digest of the content Docker holds under `reference`.
+async fn descriptor_digest(
+    docker: &std::path::Path,
+    reference: &str,
+) -> Result<Option<String>, Error> {
+    let descriptor = docker_cli(
+        docker,
+        &[
+            "image",
+            "inspect",
+            reference,
+            "--format",
+            "{{json .Descriptor}}",
+        ],
+    )
+    .await?;
+    let descriptor: serde_json::Value = serde_json::from_str(&descriptor)?;
+    Ok(descriptor
+        .get("digest")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned))
 }
 
 fn localhost_registry_reference(port: u16, image: &str) -> String {
@@ -271,6 +307,80 @@ esac
                 assert!(
                     !calls.contains(&format!("image rm {retained}")),
                     "must preserve previously retained content"
+                );
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Image Cleanup keeps what a retention name holds, so a peer copy writes one only
+    /// where it is free or already names the copied content, and only for that content.
+    #[tokio::test]
+    async fn a_retention_name_is_never_moved_onto_other_content() {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+
+        let root = std::env::temp_dir().join(format!(
+            "ployz-retention-{}",
+            ployz_core::MachineId::random()
+        ));
+        fs::create_dir(&root).unwrap();
+        let docker = root.join("docker");
+        fs::write(
+            &docker,
+            r#"#!/bin/sh
+cd "$(dirname "$0")"
+printf '%s\n' "$*" >> calls
+case "$1 $2" in
+  'image inspect')
+    case "$3" in
+      127.0.0.1:*) cat pulled ;;
+      *) case "$(cat name)" in
+           free) echo "Error response from daemon: No such image: $3" >&2; exit 1 ;;
+           *) cat name ;;
+         esac ;;
+    esac ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+        let descriptor = |hex: char| {
+            serde_json::json!({"digest": format!("sha256:{}", hex.to_string().repeat(64))})
+                .to_string()
+        };
+        let image = format!("app@sha256:{}", "1".repeat(64));
+        let pulled = format!("127.0.0.1:1234/{image}");
+        let name = format!("app:ployz-sha256-{}", "1".repeat(64));
+        // What the pull delivered, what the name holds now, and whether it is written.
+        for (delivered, held, written) in [
+            ('1', None, true),
+            ('1', Some('1'), true),
+            ('1', Some('2'), false),
+            ('2', None, false),
+        ] {
+            fs::write(root.join("pulled"), descriptor(delivered)).unwrap();
+            fs::write(
+                root.join("name"),
+                held.map_or_else(|| "free".to_owned(), descriptor),
+            )
+            .unwrap();
+            fs::write(root.join("calls"), "").unwrap();
+            let result = pull_and_tag(&image, &pulled, Some(&name), "linux/amd64", &docker).await;
+            let calls = fs::read_to_string(root.join("calls")).unwrap();
+            assert_eq!(
+                calls.contains(&format!("tag -- {pulled} {name}")),
+                written,
+                "{delivered} over {held:?}: {calls}"
+            );
+            assert_eq!(
+                result.is_ok(),
+                written,
+                "{delivered} over {held:?}: {result:?}"
+            );
+            if held == Some('2') {
+                assert!(
+                    matches!(result, Err(Error::RetentionNameTaken(ref taken)) if *taken == name),
+                    "{result:?}"
                 );
             }
         }

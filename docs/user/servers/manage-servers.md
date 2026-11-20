@@ -399,6 +399,15 @@ Draining turns services off for the server and stops its global services there. 
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
 old container is taken out of routing and removed.
+
+The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
+another image on the other server by then. A service whose image is named by a tag therefore moves
+only to a server on this release of Ployz or later; one named by digest (`app@sha256:…`) can move
+to any server. The image is kept on the other server under a name like `app:ployz-sha256-…`, which
+image cleanup leaves alone while a container uses it. A drain from the CLI over SSH or on the
+server itself also gives the image its tag on the server you connected to, unless that server
+already has an image under that tag. A later deploy with `pull: never` runs whatever image the
+server holds under the tag.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
 the dialog is the approval. If a global service's last other copy stopped while the dialog was open,
 the drain doesn't start; open it again to see what stops now. Drains in one organization run one
@@ -428,13 +437,19 @@ A service stays running where it is, and is reported with the reason, when:
   doesn't count;
 - a server it involves can't be checked right now;
 - no other server can take it;
+- its image is named by a tag and only servers on an older Ployz could take it: upgrade them with
+  `ployz server upgrade` (the dashboard says **Upgrade web-3 to move it**), then drain again;
 - you stopped it with `ployz service stop`: start or remove it first;
 - its container here is the last one serving: deploy it to another server first.
 
 When the drain ends, the **Drain** row counts what moved, stopped, stayed and failed, and how many
 services no project owns it left alone. It lists each service with where it went or why it stayed.
 A drain that stops early marks the service it was moving **Interrupted** and the ones it never
-reached **Not attempted**; those still run on the server. If a server's proxy doesn't confirm the
+reached **Not attempted**; those still run on the server. When a container the drain didn't make
+holds the new container's place on the other server, as one an older CLI left mid-move, the move
+fails and names it: **Container 3f2a9c1d07b4 is in the way on web-3. Inspect it, remove it if
+it's a leftover, and drain again.** The drain removes nothing it didn't make, and the service
+keeps running where it was. If a server's proxy doesn't confirm the
 switch in time, the moved service's old container keeps running on the drained server and the row says
 so; the next drain removes it, along with any old container an earlier drain left there. While an old
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`

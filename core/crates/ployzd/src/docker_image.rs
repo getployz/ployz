@@ -13,6 +13,20 @@ pub(crate) enum ImagePull<'auth> {
     Policy(Option<&'auth RegistryAuth>),
     /// A deploy's pull phase already placed the image; creation uses it as is.
     Prepared,
+    /// A drain copied this image, by its content, here; creation runs exactly it, whatever
+    /// the spec's tag names now. Unsigned, it runs only once this Machine pulled it from
+    /// the spec's repository by digest, with no login.
+    Pinned(&'auth ployz_core::ImageDigest),
+}
+
+/// `image`'s repository, registry and port kept, pinned to `id`: `repo:tag` becomes
+/// `repo@sha256:…`.
+pub(crate) fn pinned_reference(image: &str, id: &ployz_core::ImageDigest) -> String {
+    let repository = match image.rsplit_once(':') {
+        Some((repository, tag)) if !tag.contains('/') => repository,
+        _ => image,
+    };
+    format!("{repository}@{id}")
 }
 
 /// Make `image` present as `policy` asks, pulling with `auth` for a private image.

@@ -19,6 +19,7 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveError> {
         &spec(Some(0), None, None),
         &machine(TO),
         (&machine(FROM), &container('a')),
+        None,
         &CancellationToken::new(),
     )
     .await
@@ -64,7 +65,7 @@ async fn relocate_with(
     let relocated = relocate(
         client,
         &test_namespace(),
-        &spec(Some(0), None, None),
+        (&spec(Some(0), None, None), None),
         &machine(TO),
         &old_copy(),
         &name,
@@ -297,6 +298,7 @@ async fn a_move_names_its_slot_by_its_old_copy_or_by_a_global_spec() {
             &spec,
             &machine(TO),
             (&machine(FROM), &container('a')),
+            None,
             &CancellationToken::new(),
         )
         .await
@@ -351,6 +353,84 @@ async fn an_unreadable_source_copy_starts_no_replacement() {
     client.assert_done();
 }
 
+/// A start answered without a Container, or refused because another holds the slot, left
+/// nothing of this move behind. Removing by slot would take whatever holds it.
+#[tokio::test]
+async fn a_start_that_made_nothing_removes_nothing() {
+    for (reply, occupant) in [
+        (Reply::Ok, None),
+        (
+            Reply::Refused(ContainerRefusalReason::SlotOccupied, Some(container('c'))),
+            Some(Some(container('c'))),
+        ),
+        (
+            Reply::Refused(ContainerRefusalReason::ImageDiffers, Some(container('c'))),
+            Some(Some(container('c'))),
+        ),
+    ] {
+        let client = moving(vec![Step(
+            Call::Run(machine(TO), ContainerKind::ServiceContainer),
+            reply,
+        )]);
+        let Err(MoveError {
+            end,
+            replacement_removed,
+        }) = move_with(&client).await
+        else {
+            panic!("nothing served");
+        };
+        match occupant {
+            None => assert!(matches!(end, MoveEnd::NotServing { .. }), "{end:?}"),
+            Some(occupant) => assert_eq!(end, MoveEnd::SlotOccupied { occupant }),
+        }
+        assert!(replacement_removed);
+        client.assert_done();
+    }
+}
+
+/// A start that answered with its Container and then failed, or whose drain was cancelled
+/// after the answer, removes that Container by its ID and nothing else.
+#[tokio::test]
+async fn a_failed_start_removes_only_the_container_it_answered() {
+    for cancelled in [false, true] {
+        let run = if cancelled {
+            created(
+                Call::Run(machine(TO), ContainerKind::ServiceContainer),
+                &container('b'),
+            )
+        } else {
+            unhealthy_run(machine(TO), &container('b'))
+        };
+        let mut client = moving(vec![run, ok(Call::Discard(machine(TO), container('b')))]);
+        let cancellation = CancellationToken::new();
+        if cancelled {
+            client.cancel_on = Some((
+                Call::Run(machine(TO), ContainerKind::ServiceContainer),
+                cancellation.clone(),
+            ));
+        }
+        let Err(MoveError {
+            end,
+            replacement_removed,
+        }) = move_container(
+            &client,
+            &test_namespace(),
+            &spec(Some(0), None, None),
+            &machine(TO),
+            (&machine(FROM), &container('a')),
+            None,
+            &cancellation,
+        )
+        .await
+        else {
+            panic!("nothing served");
+        };
+        assert_eq!(cancelled, end == MoveEnd::Cancelled, "{end:?}");
+        assert!(replacement_removed);
+        client.assert_done();
+    }
+}
+
 async fn cancelled_global_move(client: &Scripted) -> bool {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;
@@ -362,6 +442,7 @@ async fn cancelled_global_move(client: &Scripted) -> bool {
         &global,
         &to,
         (&from, &old),
+        None,
         &cancellation,
     );
     tokio::pin!(moving);

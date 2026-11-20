@@ -114,6 +114,8 @@ enum Reply {
     ObservedDoor(QualifiedService, ContainerRuntimeObservation),
     Pending,
     Error(RpcError),
+    /// A typed refusal, naming the Container in the slot when there is one.
+    Refused(ContainerRefusalReason, Option<ContainerId>),
 }
 
 struct Step(Call, Reply);
@@ -231,6 +233,8 @@ struct Scripted {
     observations: Option<Vec<ContainerObservation>>,
     observed_specs: BTreeMap<ContainerId, ResolvedServiceSpec>,
     slots: Mutex<Vec<SlotKey>>,
+    /// Whether each new creation went on the pinned route, and the image it pinned.
+    pins: Mutex<Vec<(bool, Option<ployz_core::ImageDigest>)>>,
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
     /// The run each In ask carried, by copy.
@@ -317,6 +321,7 @@ impl Scripted {
             observations: None,
             observed_specs: BTreeMap::new(),
             slots: Mutex::new(Vec::new()),
+            pins: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
             in_runs: Mutex::new(Vec::new()),
@@ -924,7 +929,8 @@ impl Scripted {
                     | Reply::CreatedAfter(..)
                     | Reply::OkAfter(_)
                     | Reply::Observed(..)
-                    | Reply::ObservedDoor(..) => {
+                    | Reply::ObservedDoor(..)
+                    | Reply::Refused(..) => {
                         panic!("scripted restart requires Ok, Settled or Error")
                     }
                 }
@@ -1083,7 +1089,8 @@ impl Scripted {
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
             | Reply::Pending
-            | Reply::Error(_) => None,
+            | Reply::Error(_)
+            | Reply::Refused(..) => None,
         };
         if let (Some((service, kind, r#gen, deploy, key)), Some(id)) = (created, container_id) {
             self.copies.lock().unwrap().insert(
@@ -1120,6 +1127,10 @@ impl Scripted {
                 ensured(ContainerNow::Absent { of }, None)
             }
             Reply::Error(error) => Err(error),
+            Reply::Refused(reason, occupant) => Ok(EnsuredContainer::Refused {
+                now: occupant.map_or(ContainerNow::Absent { of }, |id| present(&id)),
+                refusal: refusal(reason, "refused"),
+            }),
             Reply::Pending => std::future::pending().await,
             Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedDoor(..) => {
                 panic!("scripted ensure requires Created, Ok or Error")
@@ -1215,7 +1226,8 @@ impl CopyLifecycle for Scripted {
             | Reply::OkAfter(_)
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
-            | Reply::Pending => {
+            | Reply::Pending
+            | Reply::Refused(..) => {
                 panic!("scripted list requires Listed or Error")
             }
         }
@@ -1269,6 +1281,25 @@ impl CopyLifecycle for Scripted {
         want: ContainerWant,
     ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         self.converge(machine_id, want).await?.into_settled()
+    }
+
+    async fn ensure_new(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        pinned: bool,
+    ) -> Result<EnsuredContainer, RpcError> {
+        if let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = &want
+        {
+            self.pins
+                .lock()
+                .unwrap()
+                .push((pinned, new.image_id.clone()));
+        }
+        self.converge(machine_id, want).await
     }
 
     async fn ensure_unsettled(
@@ -1378,7 +1409,8 @@ impl CopyLifecycle for Scripted {
             | Reply::Created(_)
             | Reply::Settled(..)
             | Reply::CreatedAfter(..)
-            | Reply::OkAfter(_) => {
+            | Reply::OkAfter(_)
+            | Reply::Refused(..) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -1508,7 +1540,8 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::OkAfter(_)
         | Reply::Observed(..)
         | Reply::ObservedDoor(..)
-        | Reply::Pending => {
+        | Reply::Pending
+        | Reply::Refused(..) => {
             panic!("scripted mutation requires Ok or Error")
         }
     }

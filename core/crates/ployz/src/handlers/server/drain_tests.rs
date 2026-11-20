@@ -364,6 +364,7 @@ fn an_old_copy_refused_out_as_the_last_in_is_a_conflict() {
             DrainOutcome::Failed {
                 moves: Vec::new(),
                 failure: MoveFailure::Refused {
+                    from: None,
                     reason: StayReason::LastIn,
                 },
             },

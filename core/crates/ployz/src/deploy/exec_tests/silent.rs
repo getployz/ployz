@@ -245,6 +245,7 @@ async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
                 registry_auth: None,
                 image_prepared: true,
                 answer: AnswerWhen::Started,
+                image_id: None,
             }),
             rotation: RunRotation::Pending,
         },

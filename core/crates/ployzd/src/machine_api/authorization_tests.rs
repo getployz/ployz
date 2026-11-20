@@ -444,6 +444,25 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::ENSURE_CONTAINER_CAPABILITY, "create, reaches no data") => {
             unary::<op::EnsureContainer>(json!({"want": new_want("api", "nginx:1.29-alpine")}))
         }
+        (ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY, branch) => {
+            let want = match branch {
+                "create, reaches data" => pinned(mounting_want()),
+                "create, reaches no data" => pinned(new_want("api", "nginx:1.29-alpine")),
+                "digest spec" => {
+                    pinned(new_want("api", &format!("nginx@sha256:{}", "7".repeat(64))))
+                }
+                "no pin" => {
+                    let mut want = pinned(new_want("api", "nginx:1.29-alpine"));
+                    want.pointer_mut("/container/new")
+                        .and_then(Value::as_object_mut)
+                        .unwrap()
+                        .remove("image_id");
+                    want
+                }
+                other => panic!("EnsurePinnedContainer has no sample for {other:?}"),
+            };
+            unary::<op::EnsurePinnedContainer>(json!({"want": want}))
+        }
         (ployz_core::ENSURE_CONTAINER_CAPABILITY, branch) => {
             let id = running_container(machine).await;
             let want = match branch {
@@ -636,6 +655,22 @@ fn want_of(name: &str, resolved_spec: Value, image_prepared: bool) -> Value {
         "slot": {"namespace": "app", "service": name, "kind": "service_container",
                  "creation_key": "attacker-0001"},
         "resolved_spec": resolved_spec, "gen": 1, "image_prepared": image_prepared}}})
+}
+
+/// `want` as a drain sends it on the pinned route: answered once settled, its image
+/// prepared, and pinned to one image ID.
+fn pinned(mut want: Value) -> Value {
+    let new = want
+        .pointer_mut("/container/new")
+        .and_then(Value::as_object_mut)
+        .unwrap();
+    new.insert("image_prepared".into(), true.into());
+    new.insert("answer".into(), "settled".into());
+    new.insert(
+        "image_id".into(),
+        format!("sha256:{}", "7".repeat(64)).into(),
+    );
+    want
 }
 
 /// The image pulls Docker was asked for.

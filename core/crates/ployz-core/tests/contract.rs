@@ -1659,6 +1659,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 registry_auth: None,
                 image_prepared: false,
                 answer: AnswerWhen::Started,
+                image_id: None,
             }),
             rotation: RunRotation::Pending,
         },

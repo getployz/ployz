@@ -17,11 +17,13 @@ use std::fmt;
 
 use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, ready};
+use ployz_core::authority::deploy::content_addressed;
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerKind, ContainerObservation, ContainerRefusalReason,
-    CopyRotation, InspectContainerRequest, Machine, MachineId, MachineName, MachineTarget,
-    Namespace, PullPolicy, QualifiedService, RawVolumeSource, Region, RequestedServiceSpec,
-    ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
+    AnonymousVolumes, Claim, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRefusalReason, CopyRotation, ENSURE_PINNED_CONTAINER_CAPABILITY, ImageDigest,
+    InspectContainerRequest, Machine, MachineId, MachineName, MachineTarget, Namespace,
+    QualifiedService, RawVolumeSource, Region, RequestedServiceSpec, ResolvedServiceSpec,
+    ServiceMode, ServicePlacementEligibility, op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -175,6 +177,9 @@ pub enum StayReason {
     /// Its old copy refused Out: it is the last copy In. The replacement stays as it is
     /// on its destination.
     LastIn,
+    /// Only these Servers could take its next Container, and they predate the release
+    /// that copies a tag-named image by its ID.
+    NeedsUpgrade { servers: Vec<MachineRef> },
 }
 
 impl fmt::Display for StayReason {
@@ -187,6 +192,14 @@ impl fmt::Display for StayReason {
             Self::Volume { server } => write!(f, "its Volume is on {server}"),
             Self::NoDestination { detail } => write!(f, "no eligible Server: {detail}"),
             Self::LastIn => f.write_str("last copy in rotation; deploy it elsewhere first"),
+            Self::NeedsUpgrade { servers } => {
+                let names = servers
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "upgrade {names} to move it there")
+            }
         }
     }
 }
@@ -226,8 +239,21 @@ pub enum MoveFailure {
         to: MachineRef,
         replacement_removed: bool,
     },
+    /// Another Container holds the replacement's slot on `to`: `occupant`, when the
+    /// Server named it. Nothing was removed, since it may be another caller's.
+    SlotOccupied {
+        from: MachineRef,
+        to: MachineRef,
+        occupant: Option<ContainerId>,
+    },
     /// A fresh look refused the move before it started, or its old copy refused Out.
-    Refused { reason: StayReason },
+    /// `from` names the copy's Server when the refusal came from its move.
+    Refused {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        from: Option<MachineRef>,
+        reason: StayReason,
+    },
 }
 
 impl MoveFailure {
@@ -248,6 +274,11 @@ impl MoveFailure {
                 to,
                 replacement_removed,
             },
+            MoveEnd::NeedsUpgrade => Self::Refused {
+                from: Some(from),
+                reason: StayReason::NeedsUpgrade { servers: vec![to] },
+            },
+            MoveEnd::SlotOccupied { occupant } => Self::SlotOccupied { from, to, occupant },
         }
     }
 
@@ -259,13 +290,17 @@ impl MoveFailure {
             Self::NoDestination { from, .. }
             | Self::SourceTooOld { from }
             | Self::ReadImage { from, .. }
-            | Self::CopyImage { from, .. } => from.id != *server,
+            | Self::CopyImage { from, .. }
+            | Self::SlotOccupied { from, .. }
+            | Self::Refused {
+                from: Some(from), ..
+            } => from.id != *server,
             Self::NotServing {
                 from,
                 replacement_removed,
                 ..
             } => from.id != *server && *replacement_removed,
-            Self::Cancelled { .. } | Self::Refused { .. } => false,
+            Self::Cancelled { .. } | Self::Refused { from: None, .. } => false,
         }
     }
 }
@@ -286,7 +321,17 @@ impl fmt::Display for MoveFailure {
             Self::Cancelled { from, to, .. } => {
                 write!(f, "moving it from {from} to {to}: cancelled")
             }
-            Self::Refused { reason } => reason.fmt(f),
+            Self::SlotOccupied { to, occupant, .. } => match occupant {
+                Some(occupant) => write!(
+                    f,
+                    "Container {occupant} is in the way on {to}. Inspect it, remove it if it's a leftover, and drain again"
+                ),
+                None => write!(
+                    f,
+                    "another Container is in the way on {to}. Inspect its Containers, remove a leftover, and drain again"
+                ),
+            },
+            Self::Refused { reason, .. } => reason.fmt(f),
         }
     }
 }
@@ -360,7 +405,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
         if let Some(reason) = unobserved(&fresh) {
             return Converged::Failed {
                 moves,
-                failure: MoveFailure::Refused { reason },
+                failure: MoveFailure::Refused { from: None, reason },
             };
         }
         let stranded = movable(&fresh, service);
@@ -372,7 +417,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
         if let Some(reason) = refusal(&fresh, service, &stranded) {
             return Converged::Failed {
                 moves,
-                failure: MoveFailure::Refused { reason },
+                failure: MoveFailure::Refused { from: None, reason },
             };
         }
         match client.move_one(&fresh, container, cancellation).await {
@@ -416,11 +461,49 @@ fn refusal(
         return Some(reason);
     }
     let moved = kept_in_region(spec, machine(snapshot, &first.machine_id));
-    place_one(&moved, &service.namespace, snapshot)
-        .err()
-        .map(|error| StayReason::NoDestination {
-            detail: error_chain::row(&error),
-        })
+    destination(spec, &moved, &service.namespace, snapshot).err()
+}
+
+/// The Server for one more Container of `spec`. A spec whose image is a tag moves only
+/// to a Server that copies its image by ID, so a Server whose row lacks the pinned route
+/// is left out; when only such Servers fit, they need upgrading.
+fn destination(
+    spec: &ResolvedServiceSpec,
+    requested: &RequestedServiceSpec,
+    namespace: &Namespace,
+    snapshot: &DeploySnapshot,
+) -> Result<MachineId, StayReason> {
+    let no_destination = |error| StayReason::NoDestination {
+        detail: error_chain::row(&error),
+    };
+    if content_addressed(&spec.container.image) {
+        return place_one(requested, namespace, snapshot).map_err(no_destination);
+    }
+    let lacks = |observed: &ployz_core::MachineObservation| {
+        observed
+            .machine
+            .runtime
+            .claim(ENSURE_PINNED_CONTAINER_CAPABILITY)
+            == Claim::Lacks
+    };
+    let mut pinned = snapshot.clone();
+    pinned.machines.retain(|observed| !lacks(observed));
+    let error = match place_one(requested, namespace, &pinned) {
+        Ok(id) => return Ok(id),
+        Err(error) => error,
+    };
+    // Every Server that would fit, each one dropped once it is named.
+    let mut rest = snapshot.clone();
+    let mut servers = Vec::new();
+    while let Ok(id) = place_one(requested, namespace, &rest) {
+        servers.push(machine_ref(snapshot, &id));
+        rest.machines.retain(|observed| observed.machine.id != id);
+    }
+    if servers.is_empty() {
+        Err(no_destination(error))
+    } else {
+        Err(StayReason::NeedsUpgrade { servers })
+    }
 }
 
 fn kept_in_region(spec: &ResolvedServiceSpec, source: &Machine) -> RequestedServiceSpec {
@@ -598,7 +681,7 @@ pub(crate) enum Relocated {
 pub(crate) async fn relocate<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
-    spec: &ResolvedServiceSpec,
+    (spec, pin): (&ResolvedServiceSpec, Option<&ImageDigest>),
     to: &MachineId,
     old: &Copy,
     name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
@@ -610,6 +693,7 @@ pub(crate) async fn relocate<C: MachineOperations>(
         spec,
         to,
         (&old.machine_id, &old.container_id),
+        pin,
         cancellation,
     )
     .await?;
@@ -706,28 +790,57 @@ async fn move_one(
     let source = machine(snapshot, &container.machine_id);
     let from = MachineRef::from(source);
     let spec = &container.resolved_spec;
-    let dest = place_one(
+    let dest = destination(
+        spec,
         &kept_in_region(spec, source),
         &container.namespace,
         snapshot,
     )
-    .map_err(|error| MoveFailure::NoDestination {
-        from: from.clone(),
-        detail: error_chain::row(&error),
+    .map_err(|reason| match reason {
+        StayReason::NoDestination { detail } => MoveFailure::NoDestination {
+            from: from.clone(),
+            detail,
+        },
+        reason @ (StayReason::Unobserved { .. }
+        | StayReason::MidRollout
+        | StayReason::Global
+        | StayReason::BindMount { .. }
+        | StayReason::Volume { .. }
+        | StayReason::LastIn
+        | StayReason::NeedsUpgrade { .. }) => MoveFailure::Refused {
+            from: Some(from.clone()),
+            reason,
+        },
     })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
     let image_id = image_id(client, &container.container_id, &from, &to).await?;
-    crate::image::copy_running_image(client, source, dest, &spec.container.image, &image_id)
-        .await
-        .map_err(|error| MoveFailure::CopyImage {
-            from: from.clone(),
-            to: to.clone(),
-            detail: error_chain::row(&error),
-        })?;
-    // The image is on `dest` by now; a registry pull could fetch a different one.
-    let mut spec = spec.clone();
-    spec.container.pull_policy = PullPolicy::Never;
+    // A tag spec runs exactly this image on `dest`, whatever its tag names there by then.
+    let pin = if content_addressed(&spec.container.image) {
+        None
+    } else {
+        Some(
+            ImageDigest::parse(&image_id).map_err(|error| MoveFailure::ReadImage {
+                from: from.clone(),
+                to: to.clone(),
+                detail: error_chain::row(&error),
+            })?,
+        )
+    };
+    crate::image::copy_running_image(
+        client,
+        source,
+        dest,
+        &spec.container.image,
+        &image_id,
+        client.image_naming(&dest.id),
+    )
+    .await
+    .map_err(|error| MoveFailure::CopyImage {
+        from: from.clone(),
+        to: to.clone(),
+        detail: error_chain::row(&error),
+    })?;
     let old = Copy::observed(container);
     let known = snapshot
         .machines
@@ -737,7 +850,7 @@ async fn move_one(
     let relocated = relocate(
         &*client,
         &container.namespace,
-        &spec,
+        (spec, pin.as_ref()),
         &dest.id,
         &old,
         &|id| named(&known, id),
@@ -1259,3 +1372,7 @@ mod tests {
         .unwrap()
     }
 }
+
+#[cfg(test)]
+#[path = "placement_tests.rs"]
+mod destination_tests;

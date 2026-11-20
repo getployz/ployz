@@ -21,6 +21,7 @@ fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> N
         registry_auth: None,
         image_prepared: false,
         answer: ployz_core::AnswerWhen::Started,
+        image_id: None,
     }
 }
 

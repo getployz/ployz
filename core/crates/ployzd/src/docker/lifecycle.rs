@@ -13,9 +13,9 @@ use bollard::{
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
-    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServiceName, ServiceNetwork,
-    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
-    SlotKey,
+    MachineStorageObservation, Namespace, PullPolicy, ResolvedServiceSpec, ServiceName,
+    ServiceNetwork, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ServicePlacementUnknownReason, SlotKey,
 };
 
 #[cfg(test)]
@@ -367,11 +367,31 @@ impl Lifecycle {
             ..
         } = creating;
         let mut body = self.build_body(&creating).await?;
+        if let ImagePull::Pinned(id) = creating.image {
+            body.image = Some(id.to_string());
+        }
         if !creating.admitted.signed() {
             // The caller's word that the image is here, and its login, count for nothing.
-            self.images
-                .pull_free(&spec.container.image, spec.container.pull_policy)
-                .await?;
+            match creating.image {
+                ImagePull::Pinned(id) => {
+                    // A digest pull can't change what it names, so `always` asks nothing more.
+                    let policy = match spec.container.pull_policy {
+                        PullPolicy::Always => PullPolicy::Missing,
+                        policy @ (PullPolicy::Missing | PullPolicy::Never) => policy,
+                    };
+                    self.images
+                        .pull_free(
+                            &crate::docker_image::pinned_reference(&spec.container.image, id),
+                            policy,
+                        )
+                        .await?;
+                }
+                ImagePull::Policy(_) | ImagePull::Prepared => {
+                    self.images
+                        .pull_free(&spec.container.image, spec.container.pull_policy)
+                        .await?;
+                }
+            }
         } else if let ImagePull::Policy(registry_auth) = creating.image
             && let Err(error) = prepare_image(
                 &self.docker.client,
@@ -552,10 +572,15 @@ impl Lifecycle {
         })
     }
 
-    /// Whether the Container just made runs an image [`Images::pull_free`] placed. Its
-    /// image was resolved by name when Docker made it, after the pull, so a name another
-    /// caller moved in between is caught here, before the Container starts.
-    async fn runs_free_image(&self, container_id: &ContainerId) -> Result<bool, Error> {
+    /// The image ID `container_id` runs, as Docker resolved it when it made the Container.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub(crate) async fn image_of(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<String>, Error> {
         let made = self
             .docker
             .client
@@ -565,7 +590,17 @@ impl Lifecycle {
             )
             .await
             .map_err(Error::Docker)?;
-        Ok(made.image.is_some_and(|image| self.images.is_free(&image)))
+        Ok(made.image)
+    }
+
+    /// Whether the Container just made runs an image [`Images::pull_free`] placed. Its
+    /// image was resolved by name when Docker made it, after the pull, so a name another
+    /// caller moved in between is caught here, before the Container starts.
+    async fn runs_free_image(&self, container_id: &ContainerId) -> Result<bool, Error> {
+        Ok(self
+            .image_of(container_id)
+            .await?
+            .is_some_and(|image| self.images.is_free(&image)))
     }
 
     /// The Container an earlier create under `key` left behind, so a resend adopts it

@@ -240,6 +240,11 @@ pub(super) fn holds_as(store: &MachineImages, image: &str, image_id: &str) -> bo
     stored(store, image).is_some_and(|summary| summary.id == image_id)
 }
 
+/// Whether the store holds any image under the tag `image`.
+pub(super) fn holds_tag(store: &MachineImages, image: &str) -> bool {
+    stored(store, image).is_some()
+}
+
 fn stored<'store>(store: &'store MachineImages, image: &str) -> Option<&'store ImageSummary> {
     if !store.containerd_store {
         return None;

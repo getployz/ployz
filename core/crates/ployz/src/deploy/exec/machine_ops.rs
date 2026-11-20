@@ -112,6 +112,14 @@ pub(crate) trait CopyLifecycle: Session {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError>;
+    /// Create `want`'s new Container and keep the answer typed, refusals included.
+    /// `pinned` sends it on the pinned route, for a spec whose image is a tag.
+    async fn ensure_new(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        pinned: bool,
+    ) -> Result<EnsuredContainer, RpcError>;
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
@@ -341,16 +349,7 @@ impl CopyLifecycle for Client {
                 container: RunTarget::New(new),
                 ..
             } => {
-                if let Some(key) = self
-                    .retained_global_key(machine_id, &new.slot, &new.resolved_spec)
-                    .await?
-                {
-                    new.slot.creation_key = key;
-                }
-                // A replacement joining a named Deploy keeps that Deploy's label.
-                if new.deployment_id.is_none() {
-                    new.deployment_id.clone_from(&self.deploy.id);
-                }
+                self.prepare_new(machine_id, new).await?;
                 None
             }
             ContainerWant::Running { .. }
@@ -369,6 +368,26 @@ impl CopyLifecycle for Client {
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError> {
         Client::ensure_unsettled(self, machine_id, want, timeout).await
+    }
+
+    async fn ensure_new(
+        &self,
+        machine_id: &MachineId,
+        mut want: ContainerWant,
+        pinned: bool,
+    ) -> Result<EnsuredContainer, RpcError> {
+        if let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = &mut want
+        {
+            self.prepare_new(machine_id, new).await?;
+        }
+        if pinned {
+            Client::ensure_pinned(self, machine_id, want).await
+        } else {
+            Client::ensure_unsettled(self, machine_id, want, None).await
+        }
     }
 
     async fn inspect_container(
@@ -539,6 +558,26 @@ pub(super) fn omission_requires_observation(membership: Option<&MembershipObserv
 }
 
 impl Client {
+    /// What every new creation carries from this client: a retained Global's key, and
+    /// the label of the Deploy a replacement joins.
+    async fn prepare_new(
+        &self,
+        machine_id: &MachineId,
+        new: &mut ployz_core::NewContainer,
+    ) -> Result<(), RpcError> {
+        if let Some(key) = self
+            .retained_global_key(machine_id, &new.slot, &new.resolved_spec)
+            .await?
+        {
+            new.slot.creation_key = key;
+        }
+        // A replacement joining a named Deploy keeps that Deploy's label.
+        if new.deployment_id.is_none() {
+            new.deployment_id.clone_from(&self.deploy.id);
+        }
+        Ok(())
+    }
+
     /// The creation key of a retained Global replacement that a retry replans as a run,
     /// so the run starts that Container rather than making a second one.
     async fn retained_global_key(
