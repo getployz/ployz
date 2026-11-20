@@ -102,7 +102,7 @@ which a reboot clears.
 
 Each server keeps a removed container's output, and the variables it ran with, so its logs still
 read after a rollback or removal. Each log file stays up to 30 days after it was last written, so
-a container's older lines can go first. They go sooner when logs and metrics fill their share of
+a container's older lines can go first. They go sooner when logs fill their share of
 the disk, or when the disk drops below 10% free (at least 2 GiB).
 
 Everything Ployz captured from your app stays in those files, secrets included. The dashboard, an agent, and
@@ -126,7 +126,7 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   work serving those reads has a separate CPU cost.
 - **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
   so a service's card on an older deployment still shows its output. Ployz keeps up to 5% of the
-  disk for them and for metrics, between 512 MiB and 5 GiB. Logs stay 30 days, and the oldest go
+  disk for them, between 512 MiB and 5 GiB. Logs stay 30 days, and the oldest go
   first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,
