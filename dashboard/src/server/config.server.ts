@@ -359,7 +359,7 @@ const makeAppConfig = Effect.gen(function* () {
     marketingOrigin: raw.marketingOrigin,
     // Unset: Cloud keeps no logs, metrics or traces from Machines, and their OTLP posts get a 503.
     observeCollectorUrl: raw.observeCollectorUrl,
-    // Unset: Cloud keeps no log history to read, and the log viewer says so.
+    // Unset: Cloud keeps no log or metric history to read, and the log viewer and Metrics page say so.
     observeClickhouse,
     // Unset (Self-hosted Cloud): no uptime checker runs, so the dashboard shows no uptime.
     uptimeEnabled: raw.uptimeEnabled,

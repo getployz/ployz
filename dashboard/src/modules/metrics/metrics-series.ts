@@ -29,7 +29,6 @@ const bySeriesAndTime = (samples: readonly SeriesSample[]) => {
   return series;
 };
 
-/** One counter's growth between two of its consecutive buckets. */
 export type Delta = { readonly series: string; readonly at: number; readonly delta: number; readonly seconds: number };
 
 /**
@@ -49,14 +48,12 @@ export function counterDeltas(samples: readonly SeriesSample[]): Delta[] {
   return deltas;
 }
 
-/** Per-second growth of every counter in `samples` added together, by bucket. */
 export function counterRate(samples: readonly SeriesSample[]): Map<number, number> {
   const rates = new Map<number, number>();
   for (const { at, delta, seconds } of counterDeltas(samples)) rates.set(at, (rates.get(at) ?? 0) + delta / seconds);
   return rates;
 }
 
-/** Every gauge in `samples` added together, by bucket. */
 export function gaugeSum(samples: readonly SeriesSample[]): Map<number, number> {
   const sums = new Map<number, number>();
   for (const { at, value } of samples) sums.set(at, (sums.get(at) ?? 0) + value);

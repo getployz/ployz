@@ -96,7 +96,6 @@ fn append_lines(path: &Path, mut buf: Vec<u8>) -> io::Result<()> {
 /// A byte test every stored line a read keeps passes. Checking it first skips parsing
 /// the other rows.
 pub enum Prefilter {
-    /// Lines containing these bytes.
     Contains(Finder<'static>),
 }
 

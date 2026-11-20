@@ -17,7 +17,6 @@ const crashRow = Schema.Struct({
   service: Schema.String, reason: Schema.Literals(["out_of_memory", "exit_nonzero"]), exitCode: Schema.NullOr(Schema.Number),
 });
 
-/** Every value travels as a string `param_` binding. */
 const params = (values: Readonly<Record<string, string | number>>) => new Map(Object.entries(values).map(([name, value]) => [name, String(value)]));
 
 const names = (metrics: Readonly<Record<string, string>>) => Object.values(metrics).map((name) => `'${name}'`).join(", ");
@@ -31,7 +30,6 @@ const IN_RANGE = "TimeUnix >= fromUnixTimestamp64Milli({from:Int64}) AND TimeUni
 /** One bucket earlier than the range, so the first bucket in view has a predecessor to grow from. */
 const bounds = ({ window, stepMs }: StoreRange) => ({ from: window.from - stepMs, to: window.to, step: stepMs / 1000 });
 
-/** A Service's container series, on every Machine that runs it. */
 export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (organizationId: string, range: StoreRange, namespace: string, service: string) {
   return yield* queryObserveOrg(organizationId, `
     SELECT MetricName AS metric,
@@ -51,7 +49,6 @@ export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (
     ORDER BY bucket`, params({ ...bounds(range), namespace, service }), metricRow);
 });
 
-/** A Machine's own series: CPU time by state, memory, and network bytes by interface and direction. */
 export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organizationId: string, range: StoreRange, machine: string) {
   return yield* queryObserveOrg(organizationId, `
     SELECT MetricName AS metric,
@@ -72,7 +69,6 @@ export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organi
     ORDER BY bucket`, params({ ...bounds(range), machine }), metricRow);
 });
 
-/** A Machine's disk use by kind, as `ployz.disk.bytes` reports it. */
 export const readDiskRows = Effect.fn("MetricsStore.diskRows")(function* (organizationId: string, range: StoreRange, machine: string) {
   return yield* queryObserveOrg(organizationId, `
     SELECT ResourceAttributes['ployz.machine'] AS machine,
@@ -90,7 +86,6 @@ export const readDiskRows = Effect.fn("MetricsStore.diskRows")(function* (organi
 
 const RECENT_SECONDS = 60;
 
-/** Whether the Machine sent any metric in the last minute. */
 export const machineIsReporting = Effect.fn("MetricsStore.machineIsReporting")(function* (organizationId: string, machine: string) {
   const [row] = yield* queryObserveOrg(organizationId, `
     SELECT toUInt32(count()) AS recent

@@ -11,7 +11,7 @@ const markersOf = (read: MetricRead<ServiceHistory>) => serviceMetrics(read, NO_
 
 /**
  * An OOM kill in the last hour or a crash-looping replica of a Service, or null. Never suspends: loading, a failed read,
- * or Servers that need an upgrade or didn't answer leave the card as it was. Expiry runs against the clock, not the
+ * or Cloud keeping no metrics leave the card as it was. Expiry runs against the clock, not the
  * read, so a marker expires on time while refetches fail and the last read stays cached.
  */
 export function useContainerTrouble(scope: { organizationSlug: string; environmentId: string }, service: string) {

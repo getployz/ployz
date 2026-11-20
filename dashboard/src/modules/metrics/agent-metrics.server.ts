@@ -12,7 +12,6 @@ import { machineIsReporting, readCrashEvents, readDiskRows, readHostRows, readSe
 /** What the agent hears: the answer, or that Cloud keeps no metrics. */
 export type AgentMetrics = { readonly type: "not_configured" } | { readonly type: "answered"; readonly answer: MetricsAnswer };
 
-/** The newest events an answer lists. */
 const EVENT_LIMIT = 50;
 
 const eventOf = (crash: CrashEvent, names: ReadonlyMap<string, string>): MetricEvent => ({

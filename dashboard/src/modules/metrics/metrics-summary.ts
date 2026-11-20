@@ -61,7 +61,6 @@ export function serviceRows(metrics: ServiceMetrics, until: number): MetricRow[]
   ], until, metrics.stepMs);
 }
 
-/** The Server's table: CPU, memory, each own interface, and its disk by kind. */
 export function serverRows(metrics: ServerMetrics, until: number): MetricRow[] {
   const disk = (pick: (sample: ServerMetrics["disk"][number]) => number | undefined): Sample[] =>
     metrics.disk.flatMap((sample) => { const value = pick(sample); return value === undefined ? [] : [{ at: sample.at, value }]; });
@@ -88,7 +87,6 @@ const span = (ms: number): string => {
   return `${Math.floor(seconds / 86_400)}d`;
 };
 
-/** One note for the time in the range that no reading covers. */
 export function gapNotes(gaps: readonly Gap[]): string[] {
   const total = gaps.reduce((sum, gap) => sum + (gap.to - gap.from), 0);
   return total <= 0 ? [] : [`No readings for ${span(total)} of the range.`];

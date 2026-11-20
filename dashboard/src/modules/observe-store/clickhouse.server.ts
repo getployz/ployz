@@ -3,7 +3,6 @@ import { Effect, Redacted, Schema } from "effect";
 import { AppConfig } from "#/server/config.server";
 import { Unavailable } from "#/server/public-error";
 
-/** Where Cloud's ClickHouse answers, and who it reads as. */
 export type ClickhouseEndpoint = { readonly url: URL; readonly user: string; readonly password: Redacted.Redacted<string> };
 
 /** What a read says when this Cloud has no ClickHouse. The UI maps the status route's `history: false` to an off state. */

@@ -16,9 +16,7 @@ export type Marker = {
 export type MetricAvailability =
   | { readonly type: "normal" }
   | { readonly type: "no_readings" }
-  /** Cloud keeps no metrics: ClickHouse is not set up. */
   | { readonly type: "not_configured" }
-  /** A Server that is up sent nothing for the last minute. */
   | { readonly type: "not_reporting" };
 
 export type ServiceSeries = {
@@ -36,7 +34,7 @@ export type ServiceMetrics = {
   readonly availability: MetricAvailability;
   readonly window: MetricWindow;
   readonly stepMs: number | null;
-  /** Summed over every answering Server. */
+  /** Summed over every Server. */
   readonly all: ServiceSeries;
   readonly allGaps: readonly Gap[];
   readonly byServer: readonly { readonly server: ServerRef; readonly series: ServiceSeries; readonly gaps: readonly Gap[] }[];

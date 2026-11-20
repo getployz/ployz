@@ -9,13 +9,12 @@ use ts_rs::TS;
 
 use crate::{ContainerId, MachineId, QualifiedService, ServiceId};
 
-/// Something Docker did to a Service container, kept beside its samples.
+/// Something Docker did to a Service container.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct MetricMarker {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub service_id: ServiceId,
-    /// The Service's Namespace and name, which is how history selects it.
     pub service: QualifiedService,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -81,7 +80,6 @@ pub struct MetricRange {
 pub enum MetricScope {
     /// Every Ployz Service container.
     Machine,
-    /// Every container of one Service.
     Service { service: QualifiedService },
 }
 

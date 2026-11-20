@@ -28,7 +28,6 @@ const INTERVAL: Duration = Duration::from_secs(10);
 const SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const ENDPOINT: &str = "http://127.0.0.1:4320/v1/metrics";
 
-/// Emits until the task is dropped.
 pub(crate) async fn run(store: StoreRoot) {
     let (latest, slow) = watch::channel(SlowReading::default());
     let zfs = ZfsUsageReader::new(PathBuf::from("zfs"), ZFS_LIST_TIMEOUT);

@@ -1,5 +1,5 @@
 //! One reading of what running Ployz Service containers use, from Docker's stats, for
-//! `ployz metrics` on a Cluster that keeps no history.
+//! `ployz metrics`.
 
 use std::time::Duration;
 
@@ -119,7 +119,6 @@ fn live(
     }
 }
 
-/// CPUs busy between Docker's two samples, as `docker stats` computes it.
 fn cpu(stats: &ContainerStatsResponse) -> Option<f64> {
     let now = stats.cpu_stats.as_ref()?;
     let before = stats.precpu_stats.as_ref()?;

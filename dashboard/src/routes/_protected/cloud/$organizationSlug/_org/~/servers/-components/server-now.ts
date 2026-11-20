@@ -1,6 +1,6 @@
 import type { ServerMetrics } from "#/modules/metrics/metrics-model";
 
-/** The read that answers what a Server uses now: short enough to stay on the daemon's raw 10 second samples. */
+/** The read that answers what a Server uses now: short enough that each bucket is one 10 second Collector sample. */
 export const NOW_RANGE = { from: "5m", to: "now" } as const;
 
 export type Usage = { readonly used: number; readonly total: number };

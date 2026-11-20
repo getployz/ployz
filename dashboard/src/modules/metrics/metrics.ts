@@ -69,16 +69,13 @@ export type HostPoint = {
   readonly disk?: DiskUse;
 };
 
-/** A container that died, by the Server it ran on. */
 export type CrashMarker = { readonly kind: "oom" | "exit"; readonly at: number; readonly machine: string; readonly replica: string; readonly exitCode?: number };
 
-/** What one Server said about a Service: its own buckets, the spans it has no reading for, and its crashes. */
 export type ServiceOnServer = { readonly machine: string; readonly points: readonly ServicePoint[]; readonly gaps: readonly Gap[]; readonly markers: readonly CrashMarker[] };
 
 /** A Service's history: `points` sum every Server's, and each Server's own sit beside them. */
 export type ServiceHistory = { readonly stepMs: number; readonly points: readonly ServicePoint[]; readonly servers: readonly ServiceOnServer[] };
 
-/** A Server's own history. */
 export type HostHistory = { readonly stepMs: number; readonly points: readonly HostPoint[]; readonly gaps: readonly Gap[] };
 
 /** `at` is when the server read, so a chart anchors on the same instant when it renders and when it hydrates. */

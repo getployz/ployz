@@ -116,8 +116,8 @@ export const LOOP_QUIET_MS = 10 * 60_000;
 
 /**
  * Exit codes (128 + signal) of the signals a stop sends rather than a fault raises: SIGHUP, SIGINT, SIGQUIT, SIGKILL,
- * SIGUSR1, SIGUSR2 and SIGTERM. Docker never restarts a stopped container and an OOM kill has its own marker, so
- * these exits don't count as crashes. Faults such as SIGSEGV or SIGABRT stay crashes.
+ * SIGUSR1, SIGUSR2 and SIGTERM. An OOM kill has its own marker, so these exits don't count as crashes. Faults such as
+ * SIGSEGV or SIGABRT stay crashes.
  */
 const STOP_SIGNAL_EXITS: ReadonlySet<number> = new Set([129, 130, 131, 137, 138, 140, 143]);
 

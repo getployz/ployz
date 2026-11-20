@@ -51,7 +51,7 @@ export const DISK_METRIC = "ployz.disk.bytes";
 export const DISK_KINDS = { total: "total", free: "free", volumes: "volumes", mirrors: "mirror_slots", logsAndMetrics: "observe_store", other: "other" } as const;
 
 const NS_PER_SECOND = 1e9;
-/** `system.cpu.time` states that are not work. Idle includes iowait, as the old sampler counted it. */
+/** `system.cpu.time` states that are not work. Idle includes iowait. */
 const IDLE_STATES = new Set(["idle", "iowait"]);
 
 const samples = (rows: readonly MetricRow[], keep: (row: MetricRow) => boolean): SeriesSample[] =>
@@ -160,7 +160,6 @@ type Reading = { readonly window: SeriesWindow; readonly stepMs: number; readonl
 const machinesOf = (rows: readonly { readonly machine: string }[], crashes: readonly CrashEvent[]) =>
   [...new Set([...rows.map((row) => row.machine), ...crashes.map((event) => event.machine)])].filter((machine) => machine !== "").sort();
 
-/** A Service's rows as the history the charts render: summed over every Machine, with each Machine's own. */
 export function serviceHistory(rows: readonly MetricRow[], crashes: readonly CrashEvent[], { window, stepMs, at }: Reading): ServiceHistory {
   return {
     stepMs,
@@ -175,7 +174,6 @@ export function serviceHistory(rows: readonly MetricRow[], crashes: readonly Cra
   };
 }
 
-/** A Machine's rows as the history the charts render. */
 export function hostHistory(rows: readonly MetricRow[], disk: readonly DiskRow[], { window, stepMs, at }: Reading): HostHistory {
   const points = hostPoints(rows, disk, window, stepMs);
   return { stepMs, points, gaps: gapsBetween(bucketsOf(points), window, stepMs, at) };

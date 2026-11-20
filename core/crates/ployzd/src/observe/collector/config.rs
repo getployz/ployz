@@ -67,8 +67,8 @@ pub(super) fn endpoint(push_target: &Url) -> String {
     )
 }
 
-/// `docker_gid` owns the Docker socket. The socket is root-equivalent: the Collector reads
-/// container stats through it, and anyone who controls the Collector controls Docker.
+/// `docker_gid` owns the Docker socket. The read-only mount does not limit the Docker API: the
+/// Collector reads container stats through the socket, and anyone who controls it controls Docker.
 pub(super) fn body(paths: &Paths, endpoint: &str, docker_gid: u32) -> ContainerCreateBody {
     let mount = |source: &Path, target: &str, read_only: bool| Mount {
         typ: Some(MountType::BIND),
