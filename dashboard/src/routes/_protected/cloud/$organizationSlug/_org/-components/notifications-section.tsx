@@ -10,10 +10,16 @@ import {
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 
 export const EMAIL_SETUP_DOCS = "https://ployz.dev/docs/self-hosting#2-configure";
+export const LOG_SHIPPING_DOCS = "https://ployz.dev/docs/self-hosting#keep-logs-metrics-and-traces-in-cloud-optional";
+
+const LINK = "underline underline-offset-4 hover:text-foreground";
 
 const CHANNEL_LABELS = { email: "Email", none: "None" } satisfies Record<NotificationChannel, string>;
 
-/** One row per email type. With no Mailer the rows still show what each type would do, and can't be changed. */
+/**
+ * One row per email type. With no Mailer the rows still show what each type would do, and can't be changed. With no log
+ * shipping the crash row stays and says what to set up.
+ */
 export function NotificationsSection({ settings, onChange }: {
   settings: NotificationSettings;
   onChange: (change: SetNotificationChannel) => void;
@@ -23,17 +29,20 @@ export function NotificationsSection({ settings, onChange }: {
       id="notifications"
       title="Notifications"
       description={settings.mailOn ? undefined : (
-        <>Email isn't set up on this Cloud. <a href={EMAIL_SETUP_DOCS} target="_blank" rel="noreferrer" className="underline underline-offset-4 hover:text-foreground">Set up email</a></>
+        <>Email isn't set up on this Cloud. <a href={EMAIL_SETUP_DOCS} target="_blank" rel="noreferrer" className={LINK}>Set up email</a></>
       )}
     >
       {NOTIFICATION_TYPE_IDS.map((type) => {
         const channel = settings.channels[type];
         const { label, description } = NOTIFICATION_TYPES[type];
+        const needsShipping = type === "crash" && !settings.shippingOn;
         return (
           <SettingsRow
             key={type}
             label={label}
-            hint={description}
+            hint={needsShipping ? (
+              <>Crash emails need Cloud log shipping. <a href={LOG_SHIPPING_DOCS} target="_blank" rel="noreferrer" className={LINK}>Set up log shipping</a></>
+            ) : description}
             commit="change"
             control={(
               <Select

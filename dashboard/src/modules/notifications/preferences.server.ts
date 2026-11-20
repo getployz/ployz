@@ -25,7 +25,7 @@ export const getNotificationSettings = Effect.fn("Notifications.getSettings")(fu
     .where(eq(notificationPreference.userId, actor.userId));
   const chosen = new Map(rows.map((row) => [row.type, row.channel]));
   const channels = EffectRecord.map(NOTIFICATION_TYPES, (_, type) => chosen.get(type) ?? DEFAULT_NOTIFICATION_CHANNEL);
-  return { mailOn: config.mail !== null, channels } satisfies NotificationSettings;
+  return { mailOn: config.mail !== null, shippingOn: config.observeCollectorUrl !== undefined, channels } satisfies NotificationSettings;
 });
 
 export const setNotificationChannel = Effect.fn("Notifications.setChannel")(function* (

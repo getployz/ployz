@@ -47,8 +47,12 @@ export const SetNotificationChannel = Schema.Struct({
 });
 export type SetNotificationChannel = typeof SetNotificationChannel.Type;
 
-/** `mailOn` is false on a Cloud with no Mailer, where the choices show but can't be changed. */
+/**
+ * `mailOn` is false on a Cloud with no Mailer, where the choices show but can't be changed. `shippingOn` is false on a Cloud
+ * that keeps no observe data, where crash emails have nothing to send from.
+ */
 export type NotificationSettings = {
   readonly mailOn: boolean;
+  readonly shippingOn: boolean;
   readonly channels: Readonly<Record<NotificationType, NotificationChannel>>;
 };
