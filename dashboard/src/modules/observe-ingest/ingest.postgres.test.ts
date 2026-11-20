@@ -7,17 +7,12 @@ import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { observePushMessage, verifyObservePush } from "#/modules/observe-ingest/ingest.server";
-import { type RequestWireRow, visitorId } from "#/modules/observe-ingest/ingest";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { operationOutbox } from "#/modules/operations/tables";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { handleObservePush } from "#/routes/api/machines/-handlers";
-import { forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
-import { figures } from "#/modules/web-analytics/postgres/store";
-import { dayStart } from "#/modules/web-analytics/local-time";
+import { handleAnalyticsSalts, handleObservePush } from "#/routes/api/machines/-handlers";
 import { saltWindow, setSiteAnalytics, siteDay } from "#/modules/web-analytics/salts.server";
-import { analyticsRequest } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
@@ -94,7 +89,6 @@ it("the known-answer vector verifies, and not once its timestamp or body changes
 const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANALYTICS_ENABLED: "true" }) {
   const inngest = new Inngest({ id: "observe-ingest-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-  forgetPartitions();
   const services = yield* storeTestCloud({ inngest, env });
   const provide = <A, E>(effect: Effect.Effect<A, E, Database>) => effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
@@ -111,6 +105,13 @@ const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANA
     const init: RequestInit & { readonly duplex: "half" } = { method: "POST", body, headers, duplex: "half" };
     const request = new Request(`https://cloud.example.com/api/machines/${machine}/observe`, init);
     return handleObservePush(request, machine).pipe(Effect.provide(services));
+  };
+  const sendSalts = (body = "{}", signing: Signing = {}) => {
+    const machine = signing.machine ?? MACHINE;
+    const request = new Request(`https://cloud.example.com/api/machines/${machine}/analytics-salts`, {
+      method: "POST", body, headers: headersFor(body, signing),
+    });
+    return handleAnalyticsSalts(request, machine).pipe(Effect.provide(services));
   };
   const send = (body: string, signing: Signing = {}) => sendRaw(body, headersFor(body, signing), signing.machine);
   const identity = () => provide(Effect.gen(function* () {
@@ -153,26 +154,9 @@ const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANA
   }).pipe(Effect.provide(services), Effect.orDie);
   const breakSalts = () => provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`alter table analytics.site rename to site_gone`);
+    yield* drizzle.execute(sql`alter table analytics_site rename to site_gone`);
   }).pipe(Effect.orDie));
-  const corruptTimezone = () => provide(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`update analytics.site set timezone = 'Not/A_Zone'`);
-  }).pipe(Effect.orDie));
-  const stored = () => provide(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    return {
-      requests: (yield* drizzle.select().from(analyticsRequest).orderBy(asc(analyticsRequest.ts)))
-        .map(({ requestId, kind, botReason, visitorId, source, durationMs }) => ({ requestId, kind, botReason, visitorId, source, durationMs })),
-      cursor: (yield* drizzle.select().from(observeIngestCursor)).map(({ stream, seq }) => ({ stream, seq })),
-    };
-  }).pipe(Effect.orDie));
-  const web = (day: string) => provide(figures(
-    { environmentId: PRODUCTION, timezone: SYDNEY, range: { start: dayStart(SYDNEY, day), end: dayStart(SYDNEY, day, 1) }, filters: [] },
-    "day",
-    [],
-  ).pipe(Effect.orDie));
-  return { services, send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts, corruptTimezone, stored, web };
+  return { services, send, sendRaw, sendSalts, rows, identity, enrollElsewhere, sites, breakSalts };
 });
 
 it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
@@ -234,51 +218,45 @@ it.live("a batch that straddles the cursor keeps only the crashes it had not kep
   ]);
 }), 60_000);
 
-const EMPTY = JSON.stringify({ stream: "crash", seq: "0", dropped: 0, events: [] });
-
-it.live("an empty crash batch is a salt refresh: 200 with salts for on sites only", () => Effect.gen(function* () {
-  const { send, rows, sites } = yield* setup();
+it.live("a push answers 204 with no salts, so a Machine learns its salts only from the salts route", () => Effect.gen(function* () {
+  const { send, sites } = yield* setup();
   yield* sites();
-  const answer = yield* send(EMPTY);
+  const answer = yield* send(push([[10, WEB]]));
+  expect(answer.status).toBe(204);
+  expect(yield* Effect.promise(() => answer.text())).toBe("");
+}), 60_000);
+
+it.live("a signed salts request answers the salts of the sites that are on, the same on each ask", () => Effect.gen(function* () {
+  const { sendSalts, sites } = yield* setup();
+  yield* sites();
+  const answer = yield* sendSalts();
   expect(answer.status).toBe(200);
   expect(answer.headers.get("content-type")).toBe("application/json");
-  const now = Date.now();
-  const days = [0, 1, 2].map((offset) => siteDay("Australia/Sydney", now, offset));
-  expect(yield* Effect.promise(() => answer.json())).toEqual({
+  const days = [0, 1, 2].map((offset) => siteDay("Australia/Sydney", Date.now(), offset));
+  const body = yield* Effect.promise(() => answer.json());
+  expect(body).toEqual({
     sites: [{
       namespace: "shop-prod",
       salts: days.map((day) => ({ day, ...saltWindow(day, "Australia/Sydney"), salt: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) })),
     }],
   });
-  expect(yield* rows()).toEqual({ ...nothing, cursor: [{ stream: "crash", seq: 0n }] });
+  const again = yield* sendSalts();
+  expect(yield* Effect.promise(() => again.json())).toEqual(body);
 }), 60_000);
 
-it.live("a replay below the cursor carries the same salts", () => Effect.gen(function* () {
-  const { send, sites } = yield* setup();
+it.live("a salts request signed by another key answers 401 and issues nothing", () => Effect.gen(function* () {
+  const { sendSalts, sites } = yield* setup();
   yield* sites();
-  const first = yield* send(push([[10, WEB]]));
-  const replay = yield* send(EMPTY);
-  expect(replay.status).toBe(200);
-  expect(yield* Effect.promise(() => replay.json())).toEqual(yield* Effect.promise(() => first.json()));
+  const answer = yield* sendSalts("{}", { seed: OTHER_SEED });
+  expect(answer.status).toBe(401);
+  expect(yield* Effect.promise(() => answer.text())).not.toContain("salt");
 }), 60_000);
 
-it.live("a push Cloud kept but cannot issue salts for answers 204, which keeps the Machine's salts", () => Effect.gen(function* () {
-  const { send, rows, sites, breakSalts } = yield* setup();
+it.live("a salts request Cloud cannot issue answers 503, so the Machine keeps the salts it has", () => Effect.gen(function* () {
+  const { sendSalts, sites, breakSalts } = yield* setup();
   yield* sites();
   yield* breakSalts();
-  const answer = yield* send(push([[10, WEB]]));
-  expect(answer.status).toBe(204);
-  expect(yield* Effect.promise(() => answer.text())).toBe("");
-  expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
-}), 60_000);
-
-it.live("a push Cloud kept answers 204 even when issuing salts dies", () => Effect.gen(function* () {
-  const { send, rows, sites, corruptTimezone } = yield* setup();
-  yield* sites();
-  yield* corruptTimezone();
-  const answer = yield* send(push([[10, WEB]]));
-  expect(answer.status).toBe(204);
-  expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
+  expect((yield* sendSalts()).status).toBe(503);
 }), 60_000);
 
 it.live("a stream Cloud does not know answers 404 and writes nothing", () => Effect.gen(function* () {
@@ -410,114 +388,4 @@ it.live("a malformed push answers 422 and writes nothing", () => Effect.gen(func
     expect((yield* send(body)).status).toBe(422);
   }
   expect(yield* rows()).toEqual(nothing);
-}), 60_000);
-
-
-const SYDNEY = "Australia/Sydney";
-const VISITOR = "ab".repeat(32);
-const HOUR_MS = 3_600_000;
-const CHROME = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-const GOOGLEBOT = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
-
-const request = (ts: number, fields: Partial<RequestWireRow> = {}): RequestWireRow => ({
-  ts, namespace: "shop-prod", service: "web", host: "shop.example.com", method: "GET", path: "/", query: {},
-  status: 200, duration_us: 12_500, bytes_in: 0, bytes_out: 2048, request_id: `req-${ts}`, ua: CHROME,
-  referrer_host: null, language: "en", content_type: "text/html; charset=utf-8", sec_purpose: null, visitor: VISITOR, ...fields,
-});
-const requests = (seq: number, rows: ReadonlyArray<object>, dropped = 0) =>
-  JSON.stringify({ stream: "requests", seq: String(seq), dropped, rows });
-
-const nothingStored = { requests: [], cursor: [] };
-
-it("a visitor's id is the first 8 bytes of the Machine's hash, signed", () => {
-  expect(visitorId(VISITOR)).toBe(-6076574518398440533n);
-  expect(visitorId(`0123456789abcdef${"f".repeat(48)}`)).toBe(81985529216486895n);
-});
-
-it.live("a requests push stores pageviews, bots and the rest, advances the cursor, and the Web view counts the pageviews", () =>
-  Effect.gen(function* () {
-    const { send, stored, sites, web } = yield* setup();
-    yield* sites();
-    const at = Date.now() - HOUR_MS;
-    const answer = yield* send(requests(5, [
-      request(at, { query: { utm_source: "news", ref: "hn" }, referrer_host: "news.ycombinator.com" }),
-      request(at + 1000, { path: "/pricing", visitor: null, request_id: "" }),
-      request(at + 2000, { ua: GOOGLEBOT }),
-      request(at + 3000, { method: "POST", path: "/api/cart", content_type: "application/json", visitor: null, referrer_host: "shop.example.com" }),
-      request(at + 4000, { sec_purpose: "prefetch" }),
-    ], 2));
-    expect(answer.status).toBe(200);
-    const ack: { readonly sites: ReadonlyArray<{ readonly namespace: string }> } = yield* Effect.promise(() => answer.json());
-    expect(ack.sites.map(({ namespace }) => namespace)).toEqual(["shop-prod"]);
-    const id = visitorId(VISITOR);
-    expect(yield* stored()).toEqual({
-      requests: [
-        { requestId: `req-${at}`, kind: "pageview", botReason: null, visitorId: id, source: "news", durationMs: 12.5 },
-        { requestId: "5:1", kind: "pageview", botReason: null, visitorId: null, source: "", durationMs: 12.5 },
-        { requestId: `req-${at + 2000}`, kind: "bot", botReason: "google", visitorId: id, source: "", durationMs: 12.5 },
-        { requestId: `req-${at + 3000}`, kind: "other", botReason: null, visitorId: null, source: "shop.example.com", durationMs: 12.5 },
-        { requestId: `req-${at + 4000}`, kind: "other", botReason: null, visitorId: id, source: "", durationMs: 12.5 },
-      ],
-      cursor: [{ stream: "requests", seq: 5n }],
-    });
-    const day = siteDay(SYDNEY, at);
-    const figure = yield* web(day);
-    expect(figure.daily.map(({ pageviews, visitors }) => ({ pageviews, visitors }))).toEqual([{ pageviews: 1, visitors: 1 }]);
-    expect(figure.noSaltDays).toEqual([day]);
-  }), 60_000);
-
-it.live("a replayed requests batch stores nothing new", () => Effect.gen(function* () {
-  const { send, stored, sites } = yield* setup();
-  yield* sites();
-  const at = Date.now() - HOUR_MS;
-  const body = requests(5, [request(at), request(at + 1000, { request_id: "" })]);
-  expect((yield* send(body)).status).toBe(200);
-  const before = yield* stored();
-  expect(before.requests).toHaveLength(2);
-  expect((yield* send(body)).status).toBe(200);
-  expect(yield* stored()).toEqual(before);
-}), 60_000);
-
-it.live("rows for an unknown namespace, a site that is off, or outside retention are dropped", () => Effect.gen(function* () {
-  const { send, stored, sites } = yield* setup();
-  yield* sites();
-  const now = Date.now();
-  expect((yield* send(requests(7, [
-    request(now, { namespace: "elsewhere" }),
-    request(now + 1, { namespace: "shop-staging" }),
-    request(now - 40 * 24 * HOUR_MS),
-    request(now + 25 * HOUR_MS),
-  ]))).status).toBe(200);
-  expect(yield* stored()).toEqual({ requests: [], cursor: [{ stream: "requests", seq: 7n }] });
-}), 60_000);
-
-it.live("with analytics off a requests push stores no rows, acks no sites, and still advances the cursor", () => Effect.gen(function* () {
-  const { send, stored } = yield* setup({});
-  const answer = yield* send(requests(5, [request(Date.now())]));
-  expect(answer.status).toBe(200);
-  expect(yield* Effect.promise(() => answer.json())).toEqual({ sites: [] });
-  expect(yield* stored()).toEqual({ requests: [], cursor: [{ stream: "requests", seq: 5n }] });
-}), 60_000);
-
-it.live("with no site on a requests push stores no rows and still advances the cursor", () => Effect.gen(function* () {
-  const { send, stored } = yield* setup();
-  expect((yield* send(requests(5, [request(Date.now())]))).status).toBe(200);
-  expect(yield* stored()).toEqual({ requests: [], cursor: [{ stream: "requests", seq: 5n }] });
-}), 60_000);
-
-it.live("a malformed requests push answers 422 and stores nothing", () => Effect.gen(function* () {
-  const { send, stored, sites } = yield* setup();
-  yield* sites();
-  for (const row of [{ visitor: "ab" }, { status: 1000 }, { duration_us: -1 }, { ts: 1.5 }]) {
-    expect((yield* send(requests(5, [request(Date.now(), row)]))).status).toBe(422);
-  }
-  expect(yield* stored()).toEqual(nothingStored);
-}), 60_000);
-
-it.live("a beta.4 Machine's pageviews push answers 404 and stores nothing", () => Effect.gen(function* () {
-  const { send, stored, sites } = yield* setup();
-  yield* sites();
-  const answer = yield* send(JSON.stringify({ stream: "pageviews", seq: "5", dropped: 0, events: [] }));
-  expect(answer.status).toBe(404);
-  expect(yield* stored()).toEqual(nothingStored);
 }), 60_000);

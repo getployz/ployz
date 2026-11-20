@@ -67,6 +67,7 @@ import { Route as ApiCliSealingRecoveryRouteImport } from './routes/api/cli/seal
 import { Route as ApiCliSealingRotateRouteImport } from './routes/api/cli/sealing/rotate'
 import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
 import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/servers/enrollment'
+import { Route as ApiMachinesMachineAnalyticsSaltsRouteImport } from './routes/api/machines/$machine/analytics-salts'
 import { Route as ApiMachinesMachineObserveRouteImport } from './routes/api/machines/$machine/observe'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
@@ -396,6 +397,12 @@ const ApiCliServersEnrollmentRoute = ApiCliServersEnrollmentRouteImport.update({
   path: '/api/cli/servers/enrollment',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiMachinesMachineAnalyticsSaltsRoute =
+  ApiMachinesMachineAnalyticsSaltsRouteImport.update({
+    id: '/api/machines/$machine/analytics-salts',
+    path: '/api/machines/$machine/analytics-salts',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiMachinesMachineObserveRoute =
   ApiMachinesMachineObserveRouteImport.update({
     id: '/api/machines/$machine/observe',
@@ -682,6 +689,7 @@ export interface FileRoutesByFullPath {
   '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
+  '/api/machines/$machine/analytics-salts': typeof ApiMachinesMachineAnalyticsSaltsRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/$organizationSlug/': typeof ProtectedCloudOrganizationSlugIndexRoute
   '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
@@ -767,6 +775,7 @@ export interface FileRoutesByTo {
   '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
+  '/api/machines/$machine/analytics-salts': typeof ApiMachinesMachineAnalyticsSaltsRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -854,6 +863,7 @@ export interface FileRoutesById {
   '/api/cli/sealing/rotate': typeof ApiCliSealingRotateRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
+  '/api/machines/$machine/analytics-salts': typeof ApiMachinesMachineAnalyticsSaltsRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/_protected/cloud/$organizationSlug/': typeof ProtectedCloudOrganizationSlugIndexRoute
   '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
@@ -943,6 +953,7 @@ export interface FileRouteTypes {
     | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
+    | '/api/machines/$machine/analytics-salts'
     | '/api/machines/$machine/observe'
     | '/cloud/$organizationSlug/'
     | '/cloud/account/'
@@ -1028,6 +1039,7 @@ export interface FileRouteTypes {
     | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
+    | '/api/machines/$machine/analytics-salts'
     | '/api/machines/$machine/observe'
     | '/cloud/account'
     | '/cloud/$organizationSlug/new'
@@ -1114,6 +1126,7 @@ export interface FileRouteTypes {
     | '/api/cli/sealing/rotate'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
+    | '/api/machines/$machine/analytics-salts'
     | '/api/machines/$machine/observe'
     | '/_protected/cloud/$organizationSlug/'
     | '/_protected/cloud/account/'
@@ -1199,6 +1212,7 @@ export interface RootRouteChildren {
   ApiCliSealingRotateRoute: typeof ApiCliSealingRotateRoute
   ApiCliServersEnrollRoute: typeof ApiCliServersEnrollRoute
   ApiCliServersEnrollmentRoute: typeof ApiCliServersEnrollmentRoute
+  ApiMachinesMachineAnalyticsSaltsRoute: typeof ApiMachinesMachineAnalyticsSaltsRoute
   ApiMachinesMachineObserveRoute: typeof ApiMachinesMachineObserveRoute
   ApiMachinesOtlpV1LogsRoute: typeof ApiMachinesOtlpV1LogsRoute
   ApiMachinesOtlpV1MetricsRoute: typeof ApiMachinesOtlpV1MetricsRoute
@@ -1611,6 +1625,13 @@ declare module '@tanstack/react-router' {
       path: '/api/cli/servers/enrollment'
       fullPath: '/api/cli/servers/enrollment'
       preLoaderRoute: typeof ApiCliServersEnrollmentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/machines/$machine/analytics-salts': {
+      id: '/api/machines/$machine/analytics-salts'
+      path: '/api/machines/$machine/analytics-salts'
+      fullPath: '/api/machines/$machine/analytics-salts'
+      preLoaderRoute: typeof ApiMachinesMachineAnalyticsSaltsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/machines/$machine/observe': {
@@ -2103,6 +2124,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliSealingRotateRoute: ApiCliSealingRotateRoute,
   ApiCliServersEnrollRoute: ApiCliServersEnrollRoute,
   ApiCliServersEnrollmentRoute: ApiCliServersEnrollmentRoute,
+  ApiMachinesMachineAnalyticsSaltsRoute: ApiMachinesMachineAnalyticsSaltsRoute,
   ApiMachinesMachineObserveRoute: ApiMachinesMachineObserveRoute,
   ApiMachinesOtlpV1LogsRoute: ApiMachinesOtlpV1LogsRoute,
   ApiMachinesOtlpV1MetricsRoute: ApiMachinesOtlpV1MetricsRoute,

@@ -1,25 +1,14 @@
 import { Effect, Option, Result } from "effect";
-import { flow } from "effect/Function";
-import { crashPushInput, decodeCrashPush, decodePushHeader, decodeRequestPush, isObserveStream, requestPushInput } from "#/modules/observe-ingest/ingest";
-import { authenticateObservePush, ingestCrashPush, ingestRequestPush, type ObservePusher, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
+import { crashPushInput, decodeCrashPush, decodePushHeader } from "#/modules/observe-ingest/ingest";
+import { authenticateObservePush, ingestCrashPush, observePushCredentials, recordSaltFetch } from "#/modules/observe-ingest/ingest.server";
 import { authenticateMachineToken, forwardOtlp, type OtlpSignal } from "#/modules/observe-ingest/otlp.server";
-import type { ObserveStream } from "#/modules/observe-ingest/tables";
 import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { readCappedBody } from "#/server/capped-body";
 import { encodePublicError, NotFound, statusForPublicError, Validation } from "#/server/public-error";
 
 const noStore = { "cache-control": "no-store" };
 const MAX_PUSH_BYTES = 256 * 1024;
-
-type Ingest = ReturnType<typeof ingestCrashPush> | ReturnType<typeof ingestRequestPush>;
-type IngestRun = Effect.Effect<void, Effect.Error<Ingest>, Effect.Services<Ingest>>;
-
-const ingestStream = {
-  crash: (pusher: ObservePusher) =>
-    flow(decodeCrashPush, Option.flatMap(crashPushInput), Option.map((push): IngestRun => ingestCrashPush(pusher, push))),
-  requests: (pusher: ObservePusher) =>
-    flow(decodeRequestPush, Option.flatMap(requestPushInput), Option.map((push): IngestRun => ingestRequestPush(pusher, push))),
-} satisfies Record<ObserveStream, (pusher: ObservePusher) => (json: Parameters<typeof decodeCrashPush>[0]) => Option.Option<IngestRun>>;
+const MAX_SALTS_BYTES = 1024;
 
 function errorResponse(cause: unknown) {
   const publicError = encodePublicError(cause);
@@ -54,20 +43,33 @@ export function handleObservePush(request: Request, machineId: string) {
     const malformed = () => errorResponse(new Validation({ message: "Invalid observe push." }));
     const header = decodePushHeader(json);
     if (Option.isNone(header)) return malformed();
-    if (!isObserveStream(header.value.stream)) {
+    if (header.value.stream !== "crash") {
       return errorResponse(new NotFound({ message: `Unknown observe stream ${header.value.stream}.` }));
     }
-    const ingest = ingestStream[header.value.stream](pusher.success)(json);
-    if (Option.isNone(ingest)) return malformed();
-    const ingested = yield* Effect.result(ingest.value);
+    const push = Option.flatMap(decodeCrashPush(json), crashPushInput);
+    if (Option.isNone(push)) return malformed();
+    const ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
     if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
-    return yield* ackSalts(pusher.success.organizationId).pipe(
-      Effect.map((ack) => Response.json(ack, { headers: noStore })),
-      // An empty site list would read as every site turned off, so the Machine keeps its salts instead.
-      Effect.catchCause((cause) =>
-        Effect.logError("Cannot issue analytics salts; acked the push without them.", { ...pusher.success, cause }).pipe(
-          Effect.as(new Response(null, { status: 204, headers: noStore })),
-        )),
-    );
+    return new Response(null, { status: 204, headers: noStore });
+  });
+}
+
+/** A Machine asks for the salts of its Organization's sites, signed like a push with an empty JSON object as body. */
+export function handleAnalyticsSalts(request: Request, machineId: string) {
+  return Effect.gen(function* () {
+    const credentials = yield* Effect.result(observePushCredentials(machineId, request.headers));
+    if (Result.isFailure(credentials)) return errorResponse(credentials.failure);
+    const body = yield* Effect.tryPromise(() => readCappedBody(request, MAX_SALTS_BYTES)).pipe(Effect.orElseSucceed(() => new Uint8Array(0)));
+    if (body === null) return errorResponse(new Validation({ message: "Analytics salts request is over 1 KiB." }));
+    const pusher = yield* Effect.result(authenticateObservePush(credentials.success, body));
+    if (Result.isFailure(pusher)) return errorResponse(pusher.failure);
+    yield* Effect.result(recordSaltFetch(pusher.success));
+    const issued = yield* Effect.result(ackSalts(pusher.success.organizationId));
+    // An empty site list would read as every site turned off, so a failure answers an error and the Machine keeps its salts.
+    if (Result.isFailure(issued)) {
+      yield* Effect.logError("Cannot issue analytics salts.", { ...pusher.success, cause: issued.failure });
+      return Response.json({ error: "Cloud could not issue analytics salts." }, { status: 503, headers: noStore });
+    }
+    return Response.json(issued.success, { headers: noStore });
   });
 }
