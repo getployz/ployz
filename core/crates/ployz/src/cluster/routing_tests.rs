@@ -513,23 +513,21 @@ async fn the_reads_that_list_machines_without_a_deadline_wait_for_a_slow_daemon(
             .err()
             .map(|e| format!("{e:?}")),
     );
-    note(
-        "metric_history",
-        crate::sdk::metric_history(
+    let live = match client.machines().await {
+        Ok(machines) => crate::sdk::metrics_live(
             &client,
             crate::sdk::MetricSubject::Service {
                 service: ployz_core::QualifiedService::parse("prod/web").unwrap(),
             },
-            ployz_core::metrics::MetricRange {
-                since_nanos: 0,
-                until_nanos: 60_000_000_000,
-            },
-            None,
+            &machines,
         )
         .await
-        .err()
-        .map(|e| format!("{e:?}")),
-    );
+        .unanswered
+        .first()
+        .map(|failure| format!("{:?}", failure.error)),
+        Err(error) => Some(format!("{error:?}")),
+    };
+    note("metrics_live", live);
     assert!(gave_up.is_empty(), "{gave_up:#?}");
     server.abort();
 }

@@ -99,7 +99,7 @@ impl Client {
     /// Returns `invalid_argument` for a malformed query or Namespace, `unsupported`
     /// for one only Cloud answers, or the session's error.
     #[napi(
-        ts_return_type = "Promise<ServersAnswer | ContainersAnswer | LogsAnswer | MetricsAnswer>"
+        ts_return_type = "Promise<ServersAnswer | ContainersAnswer | LogsAnswer>"
     )]
     pub async fn agent_ask(
         &self,

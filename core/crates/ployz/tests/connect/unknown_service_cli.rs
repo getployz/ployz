@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use ployz_core::metrics::{MetricHistoryReply, MetricPoints, ServicePoint};
+use ployz_core::metrics::{LiveContainer, MetricsLiveReply};
 
 use super::*;
 
@@ -42,13 +42,8 @@ fn refusal(output: &std::process::Output, code: i32) -> Value {
         .unwrap()
 }
 
-fn readings(points: Vec<ServicePoint>) -> MetricHistoryReply {
-    MetricHistoryReply {
-        points: MetricPoints::Service(points),
-        step_nanos: 60_000_000_000,
-        gaps: Vec::new(),
-        markers: Vec::new(),
-    }
+fn readings(containers: Vec<LiveContainer>) -> MetricsLiveReply {
+    MetricsLiveReply { containers }
 }
 
 #[tokio::test]
@@ -102,10 +97,10 @@ async fn a_removed_service_still_reads_and_a_name_nothing_answers_for_is_refused
         "{output:?}"
     );
 
-    let now = chrono::Utc::now().timestamp_nanos_opt().unwrap();
-    let point = ServicePoint {
-        ts: now - 60_000_000_000,
-        cpu_usec: Some(1.0),
+    let point = LiveContainer {
+        container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+        service: ployz_core::QualifiedService::parse("production/gone").unwrap(),
+        cpu: Some(0.5),
         mem_bytes: Some(1_024),
         mem_limit: None,
         rx: None,

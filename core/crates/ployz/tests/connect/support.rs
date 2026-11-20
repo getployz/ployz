@@ -78,7 +78,7 @@ struct WatchHub {
 }
 
 type ContainerListOutcomes = BTreeMap<MachineId, VecDeque<Result<ContainerList, Status>>>;
-type MetricReplies = BTreeMap<MachineId, Result<ployz_core::metrics::MetricHistoryReply, Status>>;
+type MetricReplies = BTreeMap<MachineId, Result<ployz_core::metrics::MetricsLiveReply, Status>>;
 
 impl WatchHub {
     fn new() -> Self {
@@ -170,8 +170,6 @@ pub(super) struct DiscoveryService {
     pub(super) kept_services: Option<std::collections::BTreeSet<String>>,
     pub(super) tail_failure: Option<Status>,
     pub(super) metric_replies: Arc<Mutex<MetricReplies>>,
-    pub(super) metric_requests:
-        Arc<Mutex<Vec<(MachineId, ployz_core::metrics::MetricHistoryRequest)>>>,
     pub(super) watch_requests: Arc<Mutex<Vec<RuntimeWatchRequest>>>,
     pub(super) watch_accepts_gzip: Arc<AtomicBool>,
     watch: Arc<WatchHub>,
@@ -289,7 +287,6 @@ impl DiscoveryService {
             kept_services: None,
             tail_failure: None,
             metric_replies: Arc::default(),
-            metric_requests: Arc::default(),
             watch_requests: Arc::new(Mutex::new(Vec::new())),
             watch_accepts_gzip: Arc::new(AtomicBool::new(false)),
             watch: Arc::new(WatchHub::new()),
@@ -871,7 +868,7 @@ impl FakeMachine for DiscoveryService {
         ))
     }
 
-    async fn metric_history(
+    async fn metrics_live(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
@@ -881,15 +878,10 @@ impl FakeMachine for DiscoveryService {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| MachineId::parse(value).ok())
             .ok_or_else(|| Status::invalid_argument("expected a Machine Target"))?;
-        let RpcRequestBody::MetricHistory(asked) =
-            request.into_inner().decode_request().unwrap().body
+        let RpcRequestBody::MetricsLive(_) = request.into_inner().decode_request().unwrap().body
         else {
-            return Err(Status::invalid_argument("expected metric_history"));
+            return Err(Status::invalid_argument("expected metrics_live"));
         };
-        self.metric_requests
-            .lock()
-            .unwrap()
-            .push((machine_id, asked));
         let reply = match self.metric_replies.lock().unwrap().get(&machine_id) {
             Some(reply) => reply.clone()?,
             None => return Err(Status::unimplemented("no metrics for this Machine")),

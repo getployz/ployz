@@ -4,17 +4,14 @@
 
 use std::{io, path::PathBuf};
 
-use ployz_core::{
-    ContainerId, LogHistoryRequest, OpaquePayload,
-    metrics::{MetricHistoryReply, MetricHistoryRequest},
-};
+use ployz_core::{ContainerId, LogHistoryRequest, OpaquePayload};
 use tokio::{net::UnixStream, sync::mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 
 use super::{
     layout::RetainedEnv,
-    wire::{DEADLINE, EnvAnswer, MAX_ROW, MetricsAnswer, Request, read_frame, write_frame},
+    wire::{DEADLINE, EnvAnswer, MAX_ROW, Request, read_frame, write_frame},
 };
 use crate::logs::RpcStream;
 
@@ -52,34 +49,6 @@ impl ObserveClient {
             }
         });
         Ok(ReceiverStream::new(receiver))
-    }
-
-    /// Reads one metric history. A read the store cannot finish within 3 s
-    /// comes back as a `timeout` gap.
-    ///
-    /// # Errors
-    ///
-    /// Returns `InvalidArgument` for a request outside the contract, and
-    /// `Unavailable` when ployz-observe does not answer within 3 s or cannot
-    /// read its store.
-    pub async fn metrics(
-        &self,
-        request: MetricHistoryRequest,
-    ) -> Result<MetricHistoryReply, Status> {
-        let mut stream = self.send(&Request::Metrics(request)).await?;
-        let frame = deadline(read_frame(&mut stream, MAX_ROW))
-            .await?
-            .ok_or_else(|| Status::unavailable("ployz-observe closed without answering"))?;
-        match serde_json::from_slice(&frame) {
-            Ok(MetricsAnswer::Reply(reply)) => Ok(reply),
-            Ok(MetricsAnswer::Invalid(error)) => Err(Status::invalid_argument(error)),
-            Ok(MetricsAnswer::Failed(error)) => Err(Status::unavailable(format!(
-                "ployz-observe cannot read its metrics: {error}"
-            ))),
-            Err(error) => Err(Status::internal(format!(
-                "unreadable metrics answer: {error}"
-            ))),
-        }
     }
 
     /// Reads the env the store kept for a Container; `None` when it kept none.

@@ -1,7 +1,7 @@
 use crate::{
     InspectVolumeCopyRequest, SeedVolumeRequest, SetVolumeCopyReply, SetVolumeCopyRequest,
     SetVolumeSizeReply, SetVolumeSizeRequest, StorageCapacity, VolumeCopyView,
-    metrics::{MetricHistoryReply, MetricHistoryRequest},
+    metrics::{MetricsLiveReply, MetricsLiveRequest},
 };
 
 mod build_grant;
@@ -447,7 +447,7 @@ define_responses! {
     SealingKeyShared(SealingKeyShared) => "sealing_key_shared";
     Left(Left) => "left";
     Forgotten(Forgotten) => "forgotten";
-    MetricHistoryReply(MetricHistoryReply) => "metric_history";
+    MetricsLiveReply(MetricsLiveReply) => "metrics_live";
     RetainedEnvReply(RetainedEnvReply) => "retained_env";
     Error(RpcError) => "error";
 }

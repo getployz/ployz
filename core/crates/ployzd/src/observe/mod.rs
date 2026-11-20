@@ -50,8 +50,8 @@ const DOCKER_LOG_FILE: &str = "container.log";
 const LOCK_FILE: &str = "harvester.lock";
 
 /// Runs the harvester, which holds the log files of every Ployz container in
-/// the Log Store, and the metric sampler until SIGTERM. `data_dir` holds the
-/// Machine record the sampler stamps rows with.
+/// the Log Store, and the metric emitter until SIGTERM. `data_dir` holds the
+/// Machine record the harvester stamps markers with.
 ///
 /// # Errors
 ///
@@ -74,16 +74,7 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     let listener = bind_socket(&ployz_core::MachineLayout::observe_socket_in(run_dir))?;
     tracing::info!(store = %store.path().display(), "holding Ployz container logs");
     tokio::spawn(serve::serve(listener, store.clone()));
-    // The harvester's startup cleanup deletes raw hours older than a day, so
-    // a long downtime's hours are folded into rollups before it runs.
-    if let Err(error) = metrics::rollup::fold_pending(&store, std::time::SystemTime::now()) {
-        tracing::warn!(%error, "cannot fold metric hours");
-    }
-    tokio::spawn(metrics::sampler::run(
-        docker.clone(),
-        store.clone(),
-        data_dir.to_path_buf(),
-    ));
+    tokio::spawn(metrics::emit::run(store.clone()));
     let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds()));
     let crashes = ship::Outbox::open(&store)?;
     spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;

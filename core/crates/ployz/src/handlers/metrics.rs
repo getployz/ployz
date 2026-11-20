@@ -1,8 +1,8 @@
-//! `ployz metrics`: a Service's or a Server's metric history.
+//! `ployz metrics`: what a Service or a Server uses now, or its history through Cloud.
 
 use chrono::Utc;
 use clap::{ArgGroup, ArgMatches, Command};
-use ployz_core::{MachineTarget, QualifiedService, ServiceSelector, metrics::MetricRange};
+use ployz_core::{MachineTarget, QualifiedService, ServiceSelector};
 
 use super::{
     Error,
@@ -15,11 +15,11 @@ use super::{
 use crate::{
     cli::{
         base,
-        metrics::{Window, report},
+        metrics::{HISTORY_NOTE, report},
         positional, value,
     },
     operator::input::TIME_FORMATS,
-    sdk::{MetricSubject, metric_history, metrics_rows::behind_notes},
+    sdk::{MetricSubject, metrics_live},
     ui::{self, Gaps},
 };
 
@@ -37,7 +37,7 @@ pub(super) fn command(command: Command) -> Command {
     .arg(
         value("since", None)
             .default_value("1h")
-            .help(format!("Range start: {TIME_FORMATS}")),
+            .help(format!("Range start, for history in Ployz Cloud: {TIME_FORMATS}")),
     )
     .group(
         ArgGroup::new("subject")
@@ -46,7 +46,8 @@ pub(super) fn command(command: Command) -> Command {
     )
 }
 
-/// Print the subject's newest values and the range's average and peak.
+/// Print the subject's live numbers, or with a Cloud credential its newest values and the
+/// range's average and peak.
 pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let since = leaf
@@ -56,12 +57,7 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
     let now = Utc::now();
     let since_seconds = crate::operator::input::parse_log_time("since", &since, now.timestamp())?
         .ok_or_else(|| Error::usage("--since needs a time, such as 1h"))?;
-    let until_nanos = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
-    let range = MetricRange {
-        since_nanos: since_seconds.saturating_mul(1_000_000_000),
-        until_nanos,
-    };
-    if range.since_nanos >= range.until_nanos {
+    if since_seconds >= now.timestamp() {
         return Err(Error::usage(
             "--since is in the future; use 1h or an earlier time",
         ));
@@ -109,44 +105,24 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                     )
                 }
             };
-            let history = metric_history(client, subject, range, None).await?;
+            let live = metrics_live(client, subject, &machines).await;
             let mut gaps = Gaps::default().named(
                 machines
                     .iter()
                     .map(|observed| (observed.machine.id, &observed.machine.name)),
             );
-            gaps.extend(&history.unanswered, &[]);
-            let mut shown = report(
-                &history,
-                &name,
-                Window {
-                    since: &since,
-                    until_nanos,
-                },
-            );
-            shown
-                .notes
-                .extend(behind_notes(&history, until_nanos, |machine_id| {
-                    machines
-                        .iter()
-                        .find(|observed| observed.machine.id == machine_id)
-                        .map_or_else(
-                            || machine_id.to_string(),
-                            |observed| observed.machine.name.to_string(),
-                        )
-                }));
+            gaps.extend(&live.unanswered, &[]);
+            let table = report(&live, &name);
             if let Some(refusal) = unknown
-                && shown.table.is_empty()
+                && table.is_empty()
                 && gaps.outcome().is_ok()
             {
                 return Err(refusal);
             }
-            ui::finish_fanout("metrics", &history, &gaps, || {
-                ui::stream(&shown.heading);
-                ui::rows(&shown.table);
-                for note in &shown.notes {
-                    ui::note(note);
-                }
+            ui::finish_fanout("metrics", &live, &gaps, || {
+                ui::stream(&name);
+                ui::rows(&table);
+                ui::note(HISTORY_NOTE);
             })
         })
     })?;

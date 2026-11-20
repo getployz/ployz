@@ -13,6 +13,7 @@ pub use images::Images;
 mod lifecycle;
 pub use lifecycle::Lifecycle;
 mod limits;
+mod live_stats;
 mod managed_service;
 mod observe;
 pub(crate) use observe::published_spec;

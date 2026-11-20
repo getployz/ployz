@@ -3,15 +3,11 @@
 //!
 //! A request is one frame, `[u32 BE length][JSON]`. A query is answered with one frame
 //! per [`HistoryRow`](ployz_core::HistoryRow), a heartbeat each second while it reads, and
-//! `HistoryRow::End` last. A metrics request is answered with one [`MetricsAnswer`] frame,
-//! and an env request with one [`EnvAnswer`] frame.
+//! `HistoryRow::End` last. An env request is answered with one [`EnvAnswer`] frame.
 
 use std::{io, time::Duration};
 
-use ployz_core::{
-    ContainerId, LogHistoryRequest,
-    metrics::{MetricHistoryReply, MetricHistoryRequest},
-};
+use ployz_core::{ContainerId, LogHistoryRequest};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
@@ -20,11 +16,6 @@ use super::layout::RetainedEnv;
 /// How long either end waits to connect, to be sent a request, or to be sent an answer
 /// frame.
 pub(super) const DEADLINE: Duration = Duration::from_secs(3);
-/// What a metrics read leaves of [`DEADLINE`] for the answer to travel.
-const METRICS_MARGIN: Duration = Duration::from_millis(500);
-/// How long the store lets a metrics read take, so the client still hears it inside its
-/// own [`DEADLINE`].
-pub(super) const METRICS_DEADLINE: Duration = DEADLINE.saturating_sub(METRICS_MARGIN);
 pub(super) const MAX_REQUEST: usize = 64 << 10;
 /// A stored line is at most 8 MiB.
 const MAX_STORED_LINE: usize = 8 << 20;
@@ -36,7 +27,6 @@ pub(super) const MAX_ROW: usize = MAX_STORED_LINE + ROW_HEADER;
 #[serde(rename_all = "snake_case")]
 pub(super) enum Request {
     Query(LogHistoryRequest),
-    Metrics(MetricHistoryRequest),
     /// The env the store kept for one Container.
     Env(ContainerId),
 }
@@ -47,17 +37,6 @@ pub(super) enum Request {
 pub(super) enum EnvAnswer {
     /// `None` when the store kept no env for the Container.
     Reply(Option<RetainedEnv>),
-    /// The store could not be read.
-    Failed(String),
-}
-
-/// The one frame a metrics request is answered with.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum MetricsAnswer {
-    Reply(MetricHistoryReply),
-    /// The request is outside the contract.
-    Invalid(String),
     /// The store could not be read.
     Failed(String),
 }
@@ -96,34 +75,19 @@ pub(super) async fn read_frame(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{
-        ContainerId, LogHistoryRequest,
-        metrics::{MetricHistoryRequest, MetricRange, MetricScope},
-    };
+    use ployz_core::{ContainerId, LogHistoryRequest};
 
-    use super::{
-        DEADLINE, EnvAnswer, MAX_ROW, METRICS_DEADLINE, MetricsAnswer, Request, read_frame,
-        write_frame,
-    };
+    use super::{DEADLINE, EnvAnswer, MAX_ROW, Request, read_frame, write_frame};
 
     #[test]
     fn the_deadlines_and_limits_are_the_ones_a_release_behind_still_speaks() {
         assert_eq!(DEADLINE.as_millis(), 3_000);
-        assert_eq!(METRICS_DEADLINE.as_millis(), 2_500);
         assert_eq!(MAX_ROW, 9 << 20);
     }
 
     #[test]
     fn requests_and_answers_keep_their_json_shape() {
         let container = ContainerId::parse("ab".repeat(32)).unwrap();
-        let metrics = MetricHistoryRequest {
-            scope: MetricScope::Machine,
-            range: MetricRange {
-                since_nanos: 1,
-                until_nanos: 2,
-            },
-            step_nanos: None,
-        };
         for (json, shape) in [
             (
                 serde_json::to_string(&Request::Env(container)).unwrap(),
@@ -134,10 +98,6 @@ mod tests {
                 r#"{"query":{"namespace":null,"service":null,"deployment":null,"container_id":null,"since_nanos":null,"until_nanos":null,"direction":"forward","limit":0,"cursor":null}}"#,
             ),
             (
-                serde_json::to_string(&Request::Metrics(metrics)).unwrap(),
-                r#"{"metrics":{"scope":{"kind":"machine"},"range":{"since_nanos":1,"until_nanos":2}}}"#,
-            ),
-            (
                 serde_json::to_string(&EnvAnswer::Reply(None)).unwrap(),
                 r#"{"reply":null}"#,
             ),
@@ -145,21 +105,9 @@ mod tests {
                 serde_json::to_string(&EnvAnswer::Failed("x".into())).unwrap(),
                 r#"{"failed":"x"}"#,
             ),
-            (
-                serde_json::to_string(&MetricsAnswer::Invalid("x".into())).unwrap(),
-                r#"{"invalid":"x"}"#,
-            ),
-            (
-                serde_json::to_string(&MetricsAnswer::Failed("x".into())).unwrap(),
-                r#"{"failed":"x"}"#,
-            ),
         ] {
             assert_eq!(json, shape);
         }
-        assert!(matches!(
-            serde_json::from_str(r#"{"invalid":"x"}"#),
-            Ok(MetricsAnswer::Invalid(error)) if error == "x"
-        ));
     }
 
     #[tokio::test]

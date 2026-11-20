@@ -646,7 +646,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::ReadClusterName(_)
                     | RpcRequestBody::SetClusterName(_)
                     | RpcRequestBody::SetClusterDoors(_)
-                    | RpcRequestBody::MetricHistory(_)
+                    | RpcRequestBody::MetricsLive(_)
                     | RpcRequestBody::RetainedEnv(_)
                     | RpcRequestBody::LogHistory(_)
                     | RpcRequestBody::TailLogs(_)

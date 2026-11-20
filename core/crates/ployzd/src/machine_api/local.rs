@@ -12,7 +12,8 @@ use ployz_core::{
     ContractDescription, EndpointSelected, EnvironmentValues, Evidence, Gate, GateReason,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLayout, MachineLogService,
     MachineRpc, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest,
+    metrics::MetricsLiveReply, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -776,13 +777,19 @@ impl MachineRpc for MachineService {
         })))
     }
 
-    async fn metric_history(
+    async fn metrics_live(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::MetricHistory>(request)?;
-        request.validate().map_err(Status::invalid_argument)?;
-        respond(self.observe.metrics(request).await?)
+        let request = expect::<op::MetricsLive>(request)?;
+        let containers = self
+            .containers()
+            .map_err(|error| Status::unavailable(error.message))?
+            .local_docker()
+            .live_stats(&request.scope)
+            .await
+            .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))?;
+        respond(MetricsLiveReply { containers })
     }
 
     async fn retained_env(

@@ -415,9 +415,9 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
-        "MetricHistory",
-        "metric_history",
-        "ployz.metrics.history.v1",
+        "MetricsLive",
+        "metrics_live",
+        "ployz.metrics.live.v1",
         "Container",
         "Operator",
         "Unary",

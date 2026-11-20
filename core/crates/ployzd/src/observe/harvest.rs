@@ -35,7 +35,7 @@ use super::{
     hold::{Admitted, LogHolder, Noticed, Removed, Seen, foreign_log_driver, max_files},
     layout::{ContainerKind, ENV_FILE, NANOS_PER_SEC, RetainedEnv, StoreRoot},
     meta::{container_meta, write_meta},
-    metrics::sampler,
+    metrics,
     ship::Outbox,
     signal::stop_signal,
 };
@@ -311,7 +311,7 @@ impl Harvester {
     }
 
     fn mark(&mut self, id: ContainerId, message: &EventMessage) {
-        let Some(machine_id) = sampler::machine_id(&self.data_dir) else {
+        let Some(machine_id) = metrics::machine_id(&self.data_dir) else {
             return;
         };
         let Some((attributes, marker)) = service_event(machine_id, id, message) else {
@@ -1568,15 +1568,12 @@ mod tests {
                         .map(|line| serde_json::from_str::<Row>(line).unwrap())
                         .collect::<Vec<_>>()
                 })
-                .filter_map(|row| match row {
-                    Row::Marker(marker) => {
-                        assert_eq!(marker.service_id.as_str(), SERVICE_ID);
-                        assert_eq!(marker.service.to_string(), "default/web");
-                        assert_eq!(marker.replica, "web-1");
-                        assert_eq!(marker.deployment_id.as_deref(), Some("d1"));
-                        Some((marker.ts, marker.kind))
-                    }
-                    Row::Container(_) | Row::Host(_) => None,
+                .map(|Row::Marker(marker)| {
+                    assert_eq!(marker.service_id.as_str(), SERVICE_ID);
+                    assert_eq!(marker.service.to_string(), "default/web");
+                    assert_eq!(marker.replica, "web-1");
+                    assert_eq!(marker.deployment_id.as_deref(), Some("d1"));
+                    (marker.ts, marker.kind)
                 })
                 .collect();
             markers.sort_by_key(|(ts, _)| *ts);
