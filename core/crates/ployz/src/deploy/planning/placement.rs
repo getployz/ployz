@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, LOG_DRIVER,
-    MachineId, Namespace, PortPublication, Region, RegionWait, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
-    ServiceName, ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, MachineId, Namespace,
+    PortPublication, Region, RegionWait, RequestedServiceSpec, ResolvedServiceSpec,
+    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
+    ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder, compare_observed,
 };
 
@@ -437,10 +437,6 @@ fn reusable_global(
     !options.force_recreate
         && !super::super::is_active_runtime(&observation.runtime)
         && observation.creation_key().is_some()
-        && observation
-            .log_driver
-            .as_deref()
-            .is_none_or(|driver| driver == LOG_DRIVER)
         && observation.resolved_spec
             == resolve(
                 requested,
