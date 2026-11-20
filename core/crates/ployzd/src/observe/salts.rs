@@ -10,9 +10,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_core::Namespace;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
-use super::layout::{StoreRoot, create_store_dir};
-
-pub(super) const FRESH_FOR: Duration = Duration::from_secs(60 * 60);
+pub(super) const FRESH_FOR: Duration = Duration::from_secs(5 * 60);
 const SALT_BYTES: usize = 32;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -42,13 +40,6 @@ struct Persisted {
     sites: Vec<Site>,
 }
 
-#[derive(Debug, PartialEq)]
-pub(super) enum Lookup {
-    Off,
-    Gap,
-    Covered { day: String, salt: [u8; SALT_BYTES] },
-}
-
 #[derive(Debug, Default)]
 struct Cache {
     fetched: Option<i64>,
@@ -63,9 +54,8 @@ pub(super) struct Salts {
 
 impl Salts {
     /// Load the cached salts. A cache that cannot be read or created is an empty, stale one:
-    /// requests ship without a visitor until Cloud's next salts, and crash reports ship regardless.
-    pub(super) fn open(store: &StoreRoot, now: i64) -> Self {
-        let path = store.salts();
+    /// requests ship without a visitor until Cloud's next salts.
+    pub(super) fn open(path: PathBuf, now: i64) -> Self {
         let cache = match read(&path) {
             Ok(cache) => cache,
             Err(error) => {
@@ -144,25 +134,25 @@ impl Salts {
             .is_none_or(|fetched| now.saturating_sub(fetched) >= fresh_for)
     }
 
-    pub(super) fn lookup(&self, namespace: &Namespace, at: i64) -> Lookup {
+    /// Every site Cloud lists with its open salts, oldest first. A site with no open salt is on,
+    /// so its requests ship without a visitor until the next salts.
+    pub(super) fn sites(&self) -> Vec<(Namespace, Vec<Salt>)> {
         let cache = self.cache.read().unwrap_or_else(PoisonError::into_inner);
-        match cache.sites.get(namespace) {
-            None => Lookup::Off,
-            Some(salts) => salts
-                .iter()
-                .find(|salt| salt.start <= at && at < salt.end)
-                .map_or(Lookup::Gap, |salt| Lookup::Covered {
-                    day: salt.day.clone(),
-                    salt: salt.salt,
-                }),
-        }
+        let mut sites: Vec<_> = cache
+            .sites
+            .iter()
+            .map(|(namespace, salts)| {
+                let mut salts = salts.clone();
+                salts.sort_by_key(|salt| salt.start);
+                (namespace.clone(), salts)
+            })
+            .collect();
+        sites.sort_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()));
+        sites
     }
 }
 
 fn read(path: &Path) -> io::Result<Cache> {
-    if let Some(parent) = path.parent() {
-        create_store_dir(parent)?;
-    }
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Cache::default()),
@@ -229,12 +219,19 @@ mod tests {
 
     const SALT: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
-    fn store() -> (TestDir, StoreRoot) {
+    struct Store(PathBuf);
+
+    impl Store {
+        fn salts(&self) -> PathBuf {
+            self.0.clone()
+        }
+    }
+
+    fn store() -> (TestDir, Store) {
         let root = TestDir::new("ployzd-observe-salts");
         fs::create_dir_all(&root.0).unwrap();
-        let store = StoreRoot::under(&root.0);
-        store.prepare().unwrap();
-        (root, store)
+        let path = root.0.join("analytics-salts.json");
+        (root, Store(path))
     }
 
     fn ack(windows: &[(&str, i64, i64)]) -> Vec<u8> {
@@ -255,17 +252,21 @@ mod tests {
     }
 
     fn day_at(salts: &Salts, namespace: &Namespace, at: i64) -> Option<Option<String>> {
-        match salts.lookup(namespace, at) {
-            Lookup::Off => None,
-            Lookup::Gap => Some(None),
-            Lookup::Covered { day, .. } => Some(Some(day)),
-        }
+        let (_, open) = salts
+            .sites()
+            .into_iter()
+            .find(|(site, _)| site == namespace)?;
+        Some(
+            open.into_iter()
+                .find(|salt| salt.start <= at && at < salt.end)
+                .map(|salt| salt.day),
+        )
     }
 
     #[test]
     fn an_ack_replaces_the_cache_prunes_closed_salts_and_survives_a_restart() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0);
+        let salts = Salts::open(store.salts(), 0);
         assert!(salts.stale(0));
         salts.accept(
             &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
@@ -280,7 +281,7 @@ mod tests {
 
         let mode = fs::metadata(store.salts()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-        let reopened = Salts::open(&store, 160);
+        let reopened = Salts::open(store.salts(), 160);
         assert!(!reopened.stale(160));
         assert_eq!(
             day_at(&reopened, &acme(), 199),
@@ -294,7 +295,7 @@ mod tests {
     #[test]
     fn a_body_that_does_not_decode_leaves_the_cache_untouched() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0);
+        let salts = Salts::open(store.salts(), 0);
         salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10);
         for body in [&b""[..], b"not json", br#"{"sites":{}}"#] {
             salts.accept(body, 20);
@@ -306,7 +307,7 @@ mod tests {
     #[test]
     fn a_site_that_does_not_decode_is_skipped_and_the_rest_are_kept() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0);
+        let salts = Salts::open(store.salts(), 0);
         let body = serde_json::json!({ "sites": [
             { "namespace": "short", "salts": [{ "day": "2026-10-15", "start": 0, "end": 100, "salt": "c2hvcnQ" }] },
             { "namespace": "Not_A_Label", "salts": [] },
@@ -333,7 +334,7 @@ mod tests {
     #[test]
     fn closed_salts_are_forgotten_on_the_clock_without_cloud() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0);
+        let salts = Salts::open(store.salts(), 0);
         salts.accept(
             &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
             50,
@@ -360,11 +361,11 @@ mod tests {
     #[test]
     fn startup_forgets_salts_that_closed_while_the_daemon_was_down() {
         let (_root, store) = store();
-        Salts::open(&store, 0).accept(
+        Salts::open(store.salts(), 0).accept(
             &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
             50,
         );
-        let reopened = Salts::open(&store, 150);
+        let reopened = Salts::open(store.salts(), 150);
         let on_disk = String::from_utf8(fs::read(store.salts()).unwrap()).unwrap();
         assert!(!on_disk.contains("2026-10-14"), "{on_disk}");
         assert!(on_disk.contains("2026-10-15"), "{on_disk}");
@@ -378,7 +379,7 @@ mod tests {
     #[test]
     fn a_site_cloud_does_not_list_is_off() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0);
+        let salts = Salts::open(store.salts(), 0);
         salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10);
         assert_eq!(
             day_at(&salts, &Namespace::parse("other").unwrap(), 50),
@@ -389,8 +390,15 @@ mod tests {
     #[test]
     fn a_cache_directory_that_cannot_be_made_still_serves_the_salts_cloud_sends() {
         let (_root, store) = store();
-        fs::write(store.salts().parent().unwrap(), b"in the way").unwrap();
-        let salts = Salts::open(&store, 0);
+        fs::create_dir(store.salts().parent().unwrap().join("blocked")).unwrap();
+        let blocked = store.salts().parent().unwrap().join("blocked/in-the-way");
+        fs::write(
+            store.salts().parent().unwrap().join("blocked/in-the-way"),
+            b"x",
+        )
+        .unwrap();
+        let store = Store(blocked.join("salts.json"));
+        let salts = Salts::open(store.salts(), 0);
         assert!(salts.stale(0));
         assert_eq!(day_at(&salts, &acme(), 0), None);
         salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10);
@@ -401,9 +409,8 @@ mod tests {
     #[test]
     fn an_unreadable_cache_file_is_an_empty_stale_cache() {
         let (_root, store) = store();
-        create_store_dir(store.salts().parent().unwrap()).unwrap();
         fs::write(store.salts(), b"{").unwrap();
-        let salts = Salts::open(&store, 0);
+        let salts = Salts::open(store.salts(), 0);
         assert!(salts.stale(0));
         assert_eq!(day_at(&salts, &acme(), 0), None);
     }

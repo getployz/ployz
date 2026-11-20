@@ -13,13 +13,9 @@ use ployz_core::MachineId;
 use super::*;
 use crate::{
     machine::LocalMachineStore,
-    observe::{
-        layout::StoreRoot,
-        ship::{
-            crash::Outbox,
-            fixtures::{crash, held, store},
-            requests::RequestOutbox,
-        },
+    observe::ship::{
+        crash::Outbox,
+        fixtures::{crash, held, store},
     },
 };
 
@@ -35,12 +31,6 @@ fn pusher(url: &Url) -> Pusher {
         machine_id: MachineId::parse(KAT_MACHINE).unwrap(),
         secret: seeded(7),
     }
-}
-
-fn fresh_salts(store: &StoreRoot) -> Arc<Salts> {
-    let salts = Salts::open(store, 0);
-    salts.accept(br#"{"sites":[]}"#, unix_seconds());
-    Arc::new(salts)
 }
 
 #[test]
@@ -143,10 +133,7 @@ async fn entries_leave_the_outbox_only_when_cloud_acks_them() {
         (StatusCode::NO_CONTENT, None),
     ])
     .await;
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
+    let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
 
     for _ in 0..3 {
         assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
@@ -183,10 +170,7 @@ async fn cloud_turning_the_machine_away_warns_once_every_few_minutes() {
         (StatusCode::UNAUTHORIZED, None),
     ])
     .await;
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
+    let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
     let (journal, _journal) = crate::diag::test_support::capture();
 
     shipper.ship_once().await;
@@ -221,10 +205,7 @@ async fn a_batch_cloud_refuses_is_dropped_and_counted_and_the_next_one_ships() {
         (StatusCode::NO_CONTENT, None),
     ])
     .await;
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
+    let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
 
     outbox.push(crash(5)).unwrap();
     assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
@@ -255,10 +236,7 @@ async fn rate_limits_and_outages_keep_the_batch_and_pass_on_retry_after() {
         (StatusCode::BAD_GATEWAY, Some("3")),
     ])
     .await;
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
+    let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
 
     assert_eq!(
         shipper.ship_once().await,
@@ -286,10 +264,7 @@ async fn a_network_error_keeps_the_batch() {
         .parse()
         .unwrap();
     drop(listener);
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
+    let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
     assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
     assert_eq!(held(&outbox), [5]);
 }
@@ -301,10 +276,7 @@ async fn without_a_target_the_outbox_only_buffers() {
     outbox.push(crash(5)).unwrap();
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_path_buf();
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        push_target(&data_dir)
-    })
-    .unwrap();
+    let shipper = Shipper::new(outbox.clone(), move || push_target(&data_dir)).unwrap();
     assert_eq!(shipper.ship_once().await, Shipped::Idle);
     drop(LocalMachineStore::open(data.path()).unwrap());
     assert_eq!(shipper.ship_once().await, Shipped::Idle);
@@ -358,7 +330,7 @@ async fn a_push_is_signed_over_the_exact_bytes_cloud_receives() {
     let outbox = Outbox::open(&store).unwrap();
     outbox.push(crash(5)).unwrap();
     let (cloud, url) = Cloud::serve(vec![(StatusCode::NO_CONTENT, None)]).await;
-    let shipper = Shipper::new(outbox, fresh_salts(&store), move || Some(pusher(&url))).unwrap();
+    let shipper = Shipper::new(outbox, move || Some(pusher(&url))).unwrap();
     let before = unix_seconds();
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
 
@@ -384,213 +356,4 @@ async fn a_push_is_signed_over_the_exact_bytes_cloud_receives() {
     message.pop();
     message.push(b'!');
     assert!(public.verify(&message, &signature).is_err());
-}
-
-const ACK: &str = r#"{"sites":[{"namespace":"acme-prod","salts":[{"day":"2026-10-15","start":0,"end":9999999999,"salt":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}]}]}"#;
-
-fn acme_covered(salts: &Salts) -> bool {
-    let acme = ployz_core::Namespace::parse("acme-prod").unwrap();
-    matches!(
-        salts.lookup(&acme, unix_seconds()),
-        crate::observe::salts::Lookup::Covered { .. }
-    )
-}
-
-#[tokio::test]
-async fn a_200_ack_replaces_the_salts_and_a_204_or_an_odd_body_keeps_them() {
-    let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    let (_cloud, url) = Cloud::serve(vec![
-        (StatusCode::OK, Some(ACK)),
-        (StatusCode::NO_CONTENT, None),
-        (StatusCode::OK, Some("not json")),
-    ])
-    .await;
-    let salts = Arc::new(Salts::open(&store, 0));
-    let shipper = Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
-
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert!(acme_covered(&salts));
-    for ts in [5, 6] {
-        outbox.push(crash(ts)).unwrap();
-        assert_eq!(shipper.ship_once().await, Shipped::Progress);
-        assert!(acme_covered(&salts));
-    }
-    assert!(!salts.stale(unix_seconds()));
-    assert_eq!(held(&outbox), [] as [u64; 0]);
-}
-
-#[tokio::test]
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-async fn a_stale_cache_asks_with_an_empty_crash_batch_at_the_crash_cursor() {
-    let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    let (cloud, url) = Cloud::serve(vec![
-        (StatusCode::NO_CONTENT, None),
-        (StatusCode::NO_CONTENT, None),
-        (StatusCode::OK, Some(ACK)),
-    ])
-    .await;
-    let salts = Arc::new(Salts::open(&store, 0));
-    let shipper = Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
-
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert_eq!(shipper.ship_once().await, Shipped::Idle);
-    *shipper.salts_asked.lock().unwrap() = None;
-    outbox.push(crash(5)).unwrap();
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert!(!salts.stale(unix_seconds()));
-    assert_eq!(shipper.ship_once().await, Shipped::Idle);
-
-    let bodies = cloud.bodies();
-    let empty = |seq: &str| serde_json::json!({ "stream": "crash", "seq": seq, "dropped": 0, "events": [] });
-    assert_eq!(bodies.len(), 3);
-    assert_eq!(bodies[0], empty("0"));
-    assert_eq!(bodies[1], empty("5"));
-    assert_eq!(bodies[2]["seq"], "5");
-    assert_eq!(bodies[2]["events"][0]["seq"], "5");
-}
-
-#[tokio::test]
-async fn stale_salts_are_asked_for_while_a_crash_batch_is_held() {
-    let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
-    let (cloud, url) = Cloud::serve(vec![
-        (StatusCode::SERVICE_UNAVAILABLE, None),
-        (StatusCode::SERVICE_UNAVAILABLE, None),
-        (StatusCode::OK, Some(ACK)),
-    ])
-    .await;
-    let salts = Arc::new(Salts::open(&store, 0));
-    let shipper = Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
-
-    assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
-    assert!(salts.stale(unix_seconds()));
-    assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
-    *shipper.salts_asked.lock().unwrap() = None;
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert!(acme_covered(&salts));
-    assert_eq!(held(&outbox), [5]);
-    assert_eq!(
-        cloud
-            .bodies()
-            .iter()
-            .map(|body| body["events"].as_array().unwrap().len())
-            .collect::<Vec<_>>(),
-        [0, 1, 0]
-    );
-}
-
-fn requests(store: &StoreRoot, rows: usize) -> Arc<RequestOutbox> {
-    let outbox = RequestOutbox::open(store).unwrap();
-    for n in 0..rows {
-        outbox.push(&serde_json::json!({ "n": n })).unwrap();
-    }
-    outbox
-}
-
-#[tokio::test]
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-async fn requests_cloud_does_not_take_yet_stay_held_without_a_warning() {
-    let (_root, store) = store();
-    let outbox = requests(&store, 200);
-    let (cloud, url) = Cloud::serve(vec![
-        (StatusCode::NOT_FOUND, None),
-        (StatusCode::NOT_FOUND, None),
-        (StatusCode::NO_CONTENT, None),
-    ])
-    .await;
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
-    let (journal, _journal) = crate::diag::test_support::capture();
-
-    for _ in 0..2 {
-        assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
-        assert_eq!(outbox.held_rows(), 200);
-    }
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert_eq!(outbox.held_rows(), 0);
-    assert!(!journal.text().contains("WARN"), "{}", journal.text());
-
-    let bodies = cloud.bodies();
-    let last = bodies.last().unwrap();
-    assert_eq!(last["stream"], "requests");
-    assert_eq!(last["dropped"], 0);
-    assert_eq!(last["rows"].as_array().unwrap().len(), 200);
-    assert_eq!(last["rows"][199], serde_json::json!({ "n": 199 }));
-}
-
-#[tokio::test]
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-async fn requests_cloud_refuses_are_dropped_and_counted() {
-    let (_root, store) = store();
-    let outbox = requests(&store, 300);
-    let (cloud, url) = Cloud::serve(vec![
-        (StatusCode::UNPROCESSABLE_ENTITY, None),
-        (StatusCode::NO_CONTENT, None),
-    ])
-    .await;
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
-
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert_eq!(outbox.held_rows(), 0);
-    for n in 0..100 {
-        outbox.push(&serde_json::json!({ "n": n })).unwrap();
-    }
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert_eq!(outbox.held_rows(), 0);
-    assert_eq!(cloud.bodies()[1]["dropped"], 300);
-}
-
-#[tokio::test]
-async fn the_requests_shipper_never_asks_for_salts() {
-    let (_root, store) = store();
-    let outbox = requests(&store, 0);
-    let (cloud, url) = Cloud::serve(Vec::new()).await;
-    let salts = Arc::new(Salts::open(&store, 0));
-    let shipper = Shipper::new(outbox, salts, move || Some(pusher(&url))).unwrap();
-    assert_eq!(shipper.ship_once().await, Shipped::Idle);
-    assert!(cloud.bodies().is_empty());
-}
-
-fn cloud_source(path: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../dashboard/src")
-        .join(path);
-    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
-}
-
-fn cloud_constant(source: &str, name: &str) -> usize {
-    let value = source
-        .lines()
-        .find_map(|line| {
-            line.trim_start_matches("export ")
-                .strip_prefix(&format!("const {name} = "))
-        })
-        .unwrap_or_else(|| panic!("Cloud no longer declares {name}"));
-    value
-        .trim_end_matches(';')
-        .split('*')
-        .map(|factor| factor.trim().parse::<usize>().unwrap())
-        .product()
-}
-
-#[test]
-fn the_push_limits_are_the_numbers_cloud_checks() {
-    let handlers = cloud_source("routes/api/machines/-handlers.ts");
-    let ingest = cloud_source("modules/observe-ingest/ingest.ts");
-    assert_eq!(
-        PushLimits::CLOUD,
-        PushLimits {
-            rows: cloud_constant(&ingest, "MAX_PUSH_EVENTS"),
-            bytes: cloud_constant(&handlers, "MAX_PUSH_BYTES"),
-        }
-    );
 }

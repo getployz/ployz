@@ -1,19 +1,15 @@
-//! What leaves the Machine for Cloud: the crash stream and the requests stream, each queued
-//! in an outbox on disk and pushed by one [`Shipper`].
+//! What leaves the Machine for Cloud: the crash stream, queued in an outbox on disk and pushed
+//! by one [`Shipper`].
 
 mod crash;
 mod push;
-mod requests;
 mod store;
 
 #[cfg(test)]
 pub(super) use crash::CAP;
 pub(super) use crash::Outbox;
+pub(super) use push::Stream;
 pub use push::{Shipper, push_target};
-pub(super) use push::{Stream, unix_seconds};
-pub(super) use requests::RequestOutbox;
-#[cfg(test)]
-pub(super) use requests::dir_has;
 
 #[cfg(test)]
 mod fixtures {

@@ -20,7 +20,6 @@ pub mod layout;
 mod meta;
 pub(crate) mod metrics;
 mod query;
-mod request;
 mod salts;
 mod serve;
 mod settled;
@@ -84,33 +83,14 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         store.clone(),
         data_dir.to_path_buf(),
     ));
-    let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds()));
     let crashes = ship::Outbox::open(&store)?;
-    spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;
-    if let Err(error) = harvest_requests(&store, run_dir, data_dir, salts) {
-        tracing::warn!(%error, "cannot harvest requests; crash reports still ship");
-    }
+    spawn_shipper(crashes.clone(), data_dir)?;
     harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
 }
 
-fn harvest_requests(
-    store: &StoreRoot,
-    run_dir: &Path,
-    data_dir: &Path,
-    salts: Arc<salts::Salts>,
-) -> io::Result<()> {
-    let requests = ship::RequestOutbox::open(store)?;
-    spawn_shipper(requests.clone(), salts.clone(), data_dir)?;
-    request::spawn(run_dir, salts, requests)
-}
-
-fn spawn_shipper<S: ship::Stream>(
-    outbox: Arc<S>,
-    salts: Arc<salts::Salts>,
-    data_dir: &Path,
-) -> io::Result<()> {
+fn spawn_shipper<S: ship::Stream>(outbox: Arc<S>, data_dir: &Path) -> io::Result<()> {
     let machine_dir = data_dir.to_path_buf();
-    let shipper = ship::Shipper::new(outbox, salts, move || ship::push_target(&machine_dir))
+    let shipper = ship::Shipper::new(outbox, move || ship::push_target(&machine_dir))
         .map_err(io::Error::other)?;
     tokio::spawn(shipper.run());
     Ok(())

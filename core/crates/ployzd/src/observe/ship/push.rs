@@ -17,9 +17,7 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
-use crate::{
-    backoff::Doubling, machine::store, management::ManagementSecret, observe::salts::Salts,
-};
+use crate::{backoff::Doubling, machine::store, management::ManagementSecret};
 
 const TICK: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -27,33 +25,37 @@ const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(5 * 60);
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(60 * 60);
 const UNHEARD_WARN_EVERY: Duration = Duration::from_secs(5 * 60);
-const SALT_REFRESH_EVERY: Duration = Duration::from_secs(5 * 60);
 
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
-
-/// What Cloud takes in one push of any stream.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PushLimits {
-    pub(super) rows: usize,
-    pub(super) bytes: usize,
-}
-
-impl PushLimits {
-    /// Cloud answers 413 to a body past 256 KiB and 400 to more than 1000 events or rows.
-    /// `MAX_PUSH_BYTES` in `dashboard/src/routes/api/machines/-handlers.ts` and
-    /// `MAX_PUSH_EVENTS` in `dashboard/src/modules/observe-ingest/ingest.ts` are these
-    /// numbers.
-    pub(super) const CLOUD: Self = Self {
-        rows: 1000,
-        bytes: 256 * 1024,
-    };
-}
 
 pub struct Pusher {
     url: Url,
     machine_id: MachineId,
     secret: ManagementSecret,
+}
+
+impl Pusher {
+    /// Asks Cloud for the day salts of this Machine's sites. The body is `{}`, signed like a push.
+    pub(in crate::observe) async fn analytics_salts(
+        &self,
+        client: &reqwest::Client,
+    ) -> io::Result<Vec<u8>> {
+        let url = format!(
+            "{}/api/machines/{}/analytics-salts",
+            self.url.origin().ascii_serialization(),
+            self.machine_id
+        );
+        let response = authenticate(client.post(url), self, unix_seconds(), b"{}".to_vec())
+            .send()
+            .await
+            .map_err(io::Error::other)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(io::Error::other(format!("Cloud answered {status}")));
+        }
+        Ok(response.bytes().await.map_err(io::Error::other)?.to_vec())
+    }
 }
 
 /// Read from machine.json before every send, so Cloud setting or clearing
@@ -107,19 +109,8 @@ pub(in crate::observe) struct Held {
     pub(super) seqs: Vec<u64>,
 }
 
-/// What a 404 from Cloud tells a stream's shipper.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::observe) enum NotFound {
-    /// Cloud has lost this Machine. The journal hears it now and then.
-    Unheard,
-    /// Cloud predates the stream. The shipper holds the batch quietly until it takes it.
-    NotYetTaken,
-}
-
 pub(in crate::observe) trait Stream: Send + Sync + 'static {
     const NAME: &'static str;
-
-    const ON_NOT_FOUND: NotFound = NotFound::Unheard;
 
     fn next(&self) -> io::Result<Option<Held>>;
 
@@ -129,10 +120,6 @@ pub(in crate::observe) trait Stream: Send + Sync + 'static {
     fn refuse(&self, seqs: &[u64]) -> io::Result<()>;
 
     fn wake(&self) -> &Notify;
-
-    fn salt_refresh(&self) -> io::Result<Option<Held>> {
-        Ok(None)
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -144,26 +131,22 @@ enum Shipped {
 
 pub struct Shipper<S, T> {
     outbox: Arc<S>,
-    salts: Arc<Salts>,
     client: reqwest::Client,
     target: T,
     /// When the journal last heard that Cloud does not know this Machine.
     unheard_warned: Mutex<Option<Instant>>,
-    salts_asked: Mutex<Option<Instant>>,
 }
 
 impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
-    pub fn new(outbox: Arc<S>, salts: Arc<Salts>, target: T) -> reqwest::Result<Self> {
+    pub fn new(outbox: Arc<S>, target: T) -> reqwest::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()?;
         Ok(Self {
             outbox,
-            salts,
             client,
             target,
             unheard_warned: Mutex::new(None),
-            salts_asked: Mutex::new(None),
         })
     }
 
@@ -190,15 +173,7 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
         let Some(pusher) = (self.target)() else {
             return Shipped::Idle;
         };
-        let refresh = if self.asks_for_salts() {
-            self.outbox.salt_refresh().unwrap_or_else(|error| {
-                tracing::warn!(stream = S::NAME, %error, "cannot build a salt refresh");
-                None
-            })
-        } else {
-            None
-        };
-        let held = match refresh.map_or_else(|| self.outbox.next(), |held| Ok(Some(held))) {
+        let held = match self.outbox.next() {
             Ok(Some(held)) => held,
             Ok(None) => return Shipped::Idle,
             Err(error) => {
@@ -219,10 +194,6 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
         };
         let status = response.status();
         let settled = match status {
-            StatusCode::OK => {
-                self.accept_salts(response).await;
-                self.outbox.ack(&held.seqs)
-            }
             status if status.is_success() => self.outbox.ack(&held.seqs),
             StatusCode::BAD_REQUEST
             | StatusCode::PAYLOAD_TOO_LARGE
@@ -234,13 +205,6 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
                 return Shipped::Retry {
                     after: retry_after(&response),
                 };
-            }
-            StatusCode::NOT_FOUND if S::ON_NOT_FOUND == NotFound::NotYetTaken => {
-                tracing::debug!(
-                    stream = S::NAME,
-                    "Cloud does not take this stream yet; holding it"
-                );
-                return Shipped::Retry { after: None };
             }
             StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND => {
                 if self.warn_unheard() {
@@ -261,17 +225,6 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
             }
         }
     }
-
-    async fn accept_salts(&self, response: reqwest::Response) {
-        let body = match response.bytes().await {
-            Ok(body) => body,
-            Err(error) => {
-                tracing::debug!(%error, "cannot read Cloud's ack");
-                return;
-            }
-        };
-        self.salts.accept(&body, unix_seconds());
-    }
 }
 
 impl<S, T> Shipper<S, T> {
@@ -279,10 +232,6 @@ impl<S, T> Shipper<S, T> {
     /// lost keeps retrying, so the journal hears it once every few minutes.
     fn warn_unheard(&self) -> bool {
         once_every(&self.unheard_warned, UNHEARD_WARN_EVERY)
-    }
-
-    fn asks_for_salts(&self) -> bool {
-        self.salts.stale(unix_seconds()) && once_every(&self.salts_asked, SALT_REFRESH_EVERY)
     }
 }
 

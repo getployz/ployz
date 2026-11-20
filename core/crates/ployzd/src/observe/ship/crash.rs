@@ -204,11 +204,6 @@ impl Stream for Outbox {
     fn wake(&self) -> &Notify {
         &self.wake
     }
-
-    fn salt_refresh(&self) -> io::Result<Option<Held>> {
-        let (last_seq, _) = self.ledger();
-        self.batch(last_seq, &[]).map(Some)
-    }
 }
 
 /// A u64 as a decimal string: seqs are nanos, past what a JS number holds
