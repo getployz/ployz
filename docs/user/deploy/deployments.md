@@ -281,15 +281,11 @@ error: Upgrade web-1 first: it enforces device approval with an older ployz that
 next: ployz server upgrade beta web-1
 ```
 
-The upgrade it names keeps the `--context` or `--connect` you deployed through, so it reaches
-the same cluster.
-
-A server reached through another one can show no capabilities at all, as when the server
-passing its record on runs an older `ployz`. `ployz deploy` then asks that server itself. When
-it doesn't answer, the deploy signs nothing:
+When a server that enforces doesn't say whether it checks signed versions, and doesn't answer
+when asked, the deploy signs nothing:
 
 ```text
-error: Couldn't confirm that web-2 can check this device's signature, so nothing was signed or deployed. It enforces device approval but didn't answer when asked.
+error: Couldn't confirm web-2 can check this device's signature: it enforces device approval and didn't answer. Nothing signed or deployed.
 inspect: ployz status
 ```
 

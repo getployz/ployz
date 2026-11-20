@@ -222,9 +222,8 @@ fn unsigned_moves(matches: &ArgMatches, server: &str, services: &[QualifiedServi
     Error::detailed(
         RpcErrorCode::Unauthenticated,
         format!(
-            "Nothing was drained from {server}: {} {} a signed deploy to start on another \
-             server, and this ployz is signed out, so it can't read the signatures. Sign in, \
-             then drain again.",
+            "Nothing drained from {server}: {} {} a device's signature to start on another \
+             server, and a signed-out ployz can't read it.",
             named.join(", "),
             if named.len() == 1 {
                 "needs"

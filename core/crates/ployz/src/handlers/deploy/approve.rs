@@ -399,9 +399,10 @@ fn unverified(matches: &ArgMatches, servers: &[String]) -> Error {
     Error::detailed(
         RpcErrorCode::Unavailable,
         format!(
-            "Couldn't confirm that {} can check this device's signature, so nothing was signed              or deployed. {} enforces device approval but didn't answer when asked.",
+            "Couldn't confirm {} can check this device's signature: {} enforces device \
+             approval and didn't answer. Nothing signed or deployed.",
             listed(servers),
-            if servers.len() == 1 { "It" } else { "Each" },
+            if servers.len() == 1 { "it" } else { "each" },
         ),
         json!({
             "servers": servers,
