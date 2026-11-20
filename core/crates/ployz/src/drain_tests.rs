@@ -529,6 +529,7 @@ async fn another_server_s_failed_move_fails_this_drain_when_something_was_left()
                 to,
                 detail: "never became healthy".into(),
                 replacement_removed: false,
+                needs_upgrade: false,
             },
             nothing_left(),
         ),

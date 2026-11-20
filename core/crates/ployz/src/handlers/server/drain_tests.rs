@@ -163,6 +163,7 @@ fn every_other_outcome_keeps_its_line() {
         to: MachineRef::from(&web1),
         detail: "deploy cancelled".into(),
         replacement_removed: true,
+        needs_upgrade: false,
     };
     assert_eq!(
         [

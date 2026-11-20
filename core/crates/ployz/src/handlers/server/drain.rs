@@ -331,16 +331,6 @@ fn stay(service: &QualifiedService, reason: &StayReason) -> String {
         StayReason::LastIn => {
             format!("last copy in rotation; deploy {service} elsewhere first")
         }
-        StayReason::NeedsUpgrade { servers } => {
-            let names = servers
-                .iter()
-                .map(|server| server.name.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(
-                "only {names} can take it; upgrade with `ployz server upgrade`, then drain again"
-            )
-        }
         other @ (StayReason::Unobserved { .. }
         | StayReason::MidRollout
         | StayReason::Global

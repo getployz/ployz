@@ -79,9 +79,9 @@ fn a_tag_spec_moves_only_to_a_server_that_pins_its_image() {
     );
     assert_eq!(
         place("app:v1", vec![older.clone()]),
-        Err(StayReason::NeedsUpgrade {
-            servers: vec![MachineRef::from(&older.machine)]
-        })
+        Err(StayReason::needs_upgrade(vec![MachineRef::from(
+            &older.machine
+        )]))
     );
     // A digest names its content, so any Server runs it.
     let digest = format!("app@sha256:{}", "7".repeat(64));
@@ -123,4 +123,142 @@ fn an_unclaimed_server_that_turns_the_pin_down_needs_upgrading() {
     );
     assert!(!unsettled.clean_elsewhere(&unclaimed.machine.id));
     assert!(unsettled.to_string().contains("upgrade"), "{unsettled}");
+}
+
+/// The drain's report as the 0.3.18 CLI reads it from Cloud, copied from that tag. It has
+/// no fallback for a stage or reason it doesn't know, so one would lose the whole report.
+#[expect(
+    dead_code,
+    reason = "a decode-only copy of that CLI's types; only what fails to decode matters"
+)]
+mod v0_3_18 {
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    pub struct MachineRef {
+        pub name: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum StayReason {
+        Unobserved { server: MachineRef },
+        MidRollout,
+        Global,
+        BindMount { server: MachineRef },
+        Volume { server: MachineRef },
+        NoDestination { detail: String },
+        LastIn,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "stage", rename_all = "snake_case")]
+    pub enum MoveFailure {
+        NoDestination {
+            from: MachineRef,
+            detail: String,
+        },
+        SourceTooOld {
+            from: MachineRef,
+        },
+        ReadImage {
+            from: MachineRef,
+            to: MachineRef,
+            detail: String,
+        },
+        CopyImage {
+            from: MachineRef,
+            to: MachineRef,
+            detail: String,
+        },
+        NotServing {
+            from: MachineRef,
+            to: MachineRef,
+            detail: String,
+            replacement_removed: bool,
+        },
+        Cancelled {
+            from: MachineRef,
+            to: MachineRef,
+            replacement_removed: bool,
+        },
+        Refused {
+            reason: StayReason,
+        },
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "result", rename_all = "snake_case")]
+    pub enum DrainOutcome {
+        Failed {
+            moves: Vec<serde_json::Value>,
+            failure: MoveFailure,
+        },
+        Stays {
+            reason: StayReason,
+        },
+    }
+}
+
+/// A drain that needs a Server upgraded reports it in shapes the 0.3.18 CLI reads, so
+/// that CLI keeps the finished report Cloud hands it, with the upgrade in its words.
+#[test]
+fn a_needs_upgrade_report_reads_in_the_0_3_18_cli() {
+    let (from, to) = (
+        MachineRef::from(&server('d', Some(PINNED)).machine),
+        MachineRef::from(&server('c', None).machine),
+    );
+    let ended = |replacement_removed| {
+        MoveFailure::of(
+            MoveError {
+                end: MoveEnd::NeedsUpgrade,
+                replacement_removed,
+            },
+            from.clone(),
+            to.clone(),
+        )
+    };
+    let old = |outcome: crate::drain::DrainOutcome| {
+        serde_json::from_value::<v0_3_18::DrainOutcome>(serde_json::to_value(outcome).unwrap())
+            .unwrap()
+    };
+    let failed = |failure| crate::drain::DrainOutcome::Failed {
+        moves: Vec::new(),
+        failure,
+    };
+
+    let v0_3_18::DrainOutcome::Failed {
+        failure:
+            v0_3_18::MoveFailure::NotServing {
+                detail,
+                replacement_removed: false,
+                ..
+            },
+        ..
+    } = old(failed(ended(false)))
+    else {
+        panic!("a send that may have left a copy reads as not serving, with that copy");
+    };
+    assert!(detail.contains("upgrade server-c"), "{detail}");
+
+    let v0_3_18::DrainOutcome::Failed {
+        failure:
+            v0_3_18::MoveFailure::Refused {
+                reason: v0_3_18::StayReason::NoDestination { detail },
+            },
+        ..
+    } = old(failed(ended(true)))
+    else {
+        panic!("a refusal that left nothing reads as a refusal");
+    };
+    assert!(detail.contains("upgrade"), "{detail}");
+
+    let reason = place("app:v1", vec![server('a', Some(OLDER))]).unwrap_err();
+    let v0_3_18::DrainOutcome::Stays {
+        reason: v0_3_18::StayReason::NoDestination { detail },
+    } = old(crate::drain::DrainOutcome::Stays { reason })
+    else {
+        panic!("a Service only older Servers fit reads as staying for want of a Server");
+    };
+    assert!(detail.contains("server-a"), "{detail}");
 }

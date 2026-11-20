@@ -177,17 +177,38 @@ pub enum StayReason {
     BindMount { server: MachineRef },
     /// It mounts a Volume that lives on `server`.
     Volume { server: MachineRef },
-    /// No Server could take its next Container.
-    NoDestination { detail: String },
+    /// No Server could take its next Container. `upgrade` names the Servers that could
+    /// once upgraded to the release that copies a tag-named image by its ID. A release
+    /// before that field reads only `detail`, which says the same.
+    NoDestination {
+        detail: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(optional, as = "Option<Vec<MachineRef>>")]
+        upgrade: Vec<MachineRef>,
+    },
     /// Its old copy refused Out: it is the last copy In. The replacement stays as it is
     /// on its destination.
     LastIn,
-    /// Only these Servers could take its next Container, and they predate the release
-    /// that copies a tag-named image by its ID.
-    NeedsUpgrade { servers: Vec<MachineRef> },
     /// A reason a later release added, which this one reads without its details.
     #[serde(other)]
     Unrecognized,
+}
+
+impl StayReason {
+    /// Only `servers` could take its next Container, and each must be upgraded first.
+    fn needs_upgrade(servers: Vec<MachineRef>) -> Self {
+        let names = servers
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self::NoDestination {
+            detail: format!(
+                "only {names} can take it; upgrade with `ployz server upgrade`, then drain again"
+            ),
+            upgrade: servers,
+        }
+    }
 }
 
 impl fmt::Display for StayReason {
@@ -198,16 +219,8 @@ impl fmt::Display for StayReason {
             Self::Global => f.write_str("Global Services run on every Server that accepts them"),
             Self::BindMount { server } => write!(f, "Bind Mount on {server}"),
             Self::Volume { server } => write!(f, "its Volume is on {server}"),
-            Self::NoDestination { detail } => write!(f, "no eligible Server: {detail}"),
+            Self::NoDestination { detail, .. } => write!(f, "no eligible Server: {detail}"),
             Self::LastIn => f.write_str("last copy in rotation; deploy it elsewhere first"),
-            Self::NeedsUpgrade { servers } => {
-                let names = servers
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                write!(f, "upgrade {names} to move it there")
-            }
             Self::Unrecognized => f.write_str(UNRECOGNIZED),
         }
     }
@@ -235,16 +248,17 @@ pub enum MoveFailure {
         detail: String,
     },
     /// The new Container on `to` never served. `replacement_removed` says none is left
-    /// there; otherwise it may still be.
+    /// there; otherwise it may still be. `needs_upgrade` says `to` turned the move down
+    /// until it is upgraded; a release before that field reads it from `detail`.
     NotServing {
         from: MachineRef,
         to: MachineRef,
         detail: String,
         replacement_removed: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        needs_upgrade: bool,
     },
-    /// `to` must be upgraded to take the move, and a send of it may still have made a
-    /// Container there.
-    NeedsUpgrade { from: MachineRef, to: MachineRef },
     /// Cancelled before the new Container served.
     Cancelled {
         from: MachineRef,
@@ -276,6 +290,7 @@ impl MoveFailure {
                 to,
                 detail,
                 replacement_removed,
+                needs_upgrade: false,
             },
             MoveEnd::Cancelled => Self::Cancelled {
                 from,
@@ -284,11 +299,19 @@ impl MoveFailure {
             },
             MoveEnd::NeedsUpgrade if replacement_removed => Self::Refused {
                 from: Some(from),
-                reason: StayReason::NeedsUpgrade { servers: vec![to] },
+                reason: StayReason::needs_upgrade(vec![to]),
             },
             // A send may still have made a Container there, so the refusal can't say
-            // nothing is left.
-            MoveEnd::NeedsUpgrade => Self::NeedsUpgrade { from, to },
+            // nothing is left. It ends as `not_serving`, which every release reads.
+            MoveEnd::NeedsUpgrade => Self::NotServing {
+                detail: format!(
+                    "upgrade {to} to move it there; its new container may still be there"
+                ),
+                from,
+                to,
+                replacement_removed,
+                needs_upgrade: true,
+            },
         }
     }
 
@@ -309,10 +332,7 @@ impl MoveFailure {
                 replacement_removed,
                 ..
             } => from.id != *server && *replacement_removed,
-            Self::NeedsUpgrade { .. }
-            | Self::Cancelled { .. }
-            | Self::Refused { from: None, .. }
-            | Self::Unrecognized => false,
+            Self::Cancelled { .. } | Self::Refused { from: None, .. } | Self::Unrecognized => false,
         }
     }
 }
@@ -330,10 +350,6 @@ impl fmt::Display for MoveFailure {
             Self::NotServing {
                 from, to, detail, ..
             } => write!(f, "moving it from {from} to {to}: {detail}"),
-            Self::NeedsUpgrade { from, to } => write!(
-                f,
-                "moving it from {from} to {to}: upgrade {to} to move it there. Its new container may still be there"
-            ),
             Self::Cancelled { from, to, .. } => {
                 write!(f, "moving it from {from} to {to}: cancelled")
             }
@@ -569,6 +585,7 @@ fn destination(
 ) -> Result<MachineId, StayReason> {
     let no_destination = |error| StayReason::NoDestination {
         detail: error_chain::row(&error),
+        upgrade: Vec::new(),
     };
     if content_addressed(&spec.container.image) {
         return place_one(requested, namespace, snapshot).map_err(no_destination);
@@ -596,7 +613,7 @@ fn destination(
     if servers.is_empty() {
         Err(no_destination(error))
     } else {
-        Err(StayReason::NeedsUpgrade { servers })
+        Err(StayReason::needs_upgrade(servers))
     }
 }
 
@@ -971,17 +988,19 @@ async fn move_one(
         snapshot,
     )
     .map_err(|reason| match reason {
-        StayReason::NoDestination { detail } => MoveFailure::NoDestination {
-            from: from.clone(),
-            detail,
-        },
+        StayReason::NoDestination { detail, upgrade } if upgrade.is_empty() => {
+            MoveFailure::NoDestination {
+                from: from.clone(),
+                detail,
+            }
+        }
         reason @ (StayReason::Unobserved { .. }
         | StayReason::MidRollout
         | StayReason::Global
         | StayReason::BindMount { .. }
         | StayReason::Volume { .. }
+        | StayReason::NoDestination { .. }
         | StayReason::LastIn
-        | StayReason::NeedsUpgrade { .. }
         | StayReason::Unrecognized) => MoveFailure::Refused {
             from: Some(from.clone()),
             reason,
