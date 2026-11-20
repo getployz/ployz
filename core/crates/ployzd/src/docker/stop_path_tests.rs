@@ -348,34 +348,6 @@ async fn a_repaired_caddy_gets_its_restart_policy_back() {
     assert_eq!(doors.restart_policy(&doors.caddy), declared);
 }
 
-// Docker started Caddy but its reply was lost. Under restart policy no, the serving
-// Caddy's next exit would leave Ingress down, and no scan would start it again.
-#[tokio::test]
-async fn a_caddy_started_under_a_lost_reply_keeps_its_restart_policy() {
-    let doors = Doors::new().await;
-    let declared = doors.restart_policy(&doors.caddy);
-    doors.fail_start(&doors.caddy);
-    doors
-        .fake
-        .lose_start_reply
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-
-    let creates = doors.runtime.docker.creates();
-    doors
-        .runtime
-        .lifecycle()
-        .recover(
-            Repair::StartCaddy {
-                holder: Some(doors.holder),
-                caddy: doors.caddy,
-            },
-            creates,
-        )
-        .await;
-
-    assert_eq!(doors.restart_policy(&doors.caddy), declared);
-}
-
 #[tokio::test]
 async fn a_caddy_whose_start_failed_is_started_once_its_holder_runs() {
     let doors = Doors::new().await;

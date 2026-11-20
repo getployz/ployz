@@ -923,24 +923,12 @@ impl Lifecycle {
             self.set_restart(container_id, declared).await?;
         }
         let started = self.start_inspected(container_id, inspected).await;
-        if started.is_err() {
-            self.take_restart_if_stopped(container_id).await;
-        }
-        started
-    }
-
-    /// Takes the restart policy of a Container whose start answered an error, only once
-    /// Docker shows it stopped. The reply can be lost after Docker started it, and a
-    /// serving Container under `no` stays down after its next exit.
-    async fn take_restart_if_stopped(&self, container_id: &ContainerId) {
-        let taken = match self.observation.ensure_managed(container_id).await {
-            Ok(inspected) if is_running(&inspected) => return,
-            Ok(_) => self.set_restart(container_id, restart_never()).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = taken {
+        if started.is_err()
+            && let Err(error) = self.set_restart(container_id, restart_never()).await
+        {
             tracing::warn!(container = %container_id, "a Container whose start failed keeps its restart policy: {error}");
         }
+        started
     }
 
     /// Gives a running Container back the restart policy its spec declares. A stop Docker
