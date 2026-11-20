@@ -934,7 +934,7 @@ impl Lifecycle {
     /// serving Container under `no` stays down after its next exit.
     async fn take_restart_if_stopped(&self, container_id: &ContainerId) {
         let taken = match self.observation.ensure_managed(container_id).await {
-            Ok(inspected) if is_running(&inspected) => return,
+            Ok(inspected) if process_up(&inspected) => return,
             Ok(_) => self.set_restart(container_id, restart_never()).await,
             Err(error) => Err(error),
         };
@@ -953,7 +953,7 @@ impl Lifecycle {
         turn: impl Future<Output = G>,
     ) -> Result<(), Error> {
         let inspected = self.observation.ensure_managed(container_id).await?;
-        if !is_running(&inspected)
+        if !process_up(&inspected)
             || self
                 .taken_restart(container_id, &inspected)
                 .await?
@@ -967,7 +967,7 @@ impl Lifecycle {
 
     async fn restore_if_running(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.observation.ensure_managed(container_id).await?;
-        if is_running(&inspected)
+        if process_up(&inspected)
             && let Some(declared) = self.taken_restart(container_id, &inspected).await?
         {
             self.set_restart(container_id, declared).await?;
@@ -1473,6 +1473,22 @@ pub(super) fn failed_start(inspected: &ContainerInspectResponse) -> bool {
             .error
             .as_deref()
             .is_some_and(|error| !error.is_empty())
+    })
+}
+
+/// Docker holds a process for the Container: running, paused, or in restart backoff.
+/// A restart-policy write decides on this, not on whether a door can serve.
+fn process_up(inspected: &ContainerInspectResponse) -> bool {
+    inspected.state.as_ref().is_some_and(|state| {
+        state.running == Some(true)
+            || matches!(
+                state.status,
+                Some(
+                    ContainerStateStatusEnum::RUNNING
+                        | ContainerStateStatusEnum::RESTARTING
+                        | ContainerStateStatusEnum::PAUSED
+                )
+            )
     })
 }
 
