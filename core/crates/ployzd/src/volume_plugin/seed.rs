@@ -7,7 +7,8 @@ use std::process::Stdio;
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError, VolumeCopyView,
+    DockerVolumeName, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
+    VolumeCopyView,
 };
 use ployzd::{
     dataset_layout::DatasetLayout,
@@ -18,6 +19,7 @@ use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
+    holders::{Unheld, copy_held_for_other_data, copy_unlisted},
     inspect::{answering, internal},
     marks::{Mark, Marks},
     origin::Origin,
@@ -115,10 +117,30 @@ struct Copied {
 
 impl Copied {
     /// Makes the complete copy the root of `into`, marked with its point and unregistered
-    /// until Docker's Create adopts it.
-    async fn land(self, storage: &VolumeStorage, guid: SnapshotGuid) -> Result<(), RpcError> {
+    /// until Docker's Create adopts it. Every Container that already mounts `into` must
+    /// expect the origin the copy carries.
+    async fn land(
+        self,
+        storage: &VolumeStorage,
+        into: &DockerVolumeName,
+        guid: SnapshotGuid,
+    ) -> Result<(), RpcError> {
         let fs = &self.fs;
         storage.complete(&self.parent, fs).await.map_err(internal)?;
+        let carried = storage
+            .point(fs, &self.snapshot)
+            .await
+            .map_err(internal)?
+            .origin;
+        storage
+            .admit_holders(into, carried)
+            .await
+            .map_err(|unheld| match unheld {
+                Unheld::Foreign => SwitchError::Foreign.rpc_error(copy_held_for_other_data(into)),
+                Unheld::Unlisted(cause) => {
+                    SwitchError::DockerUnavailable.rpc_error(copy_unlisted(into, &cause))
+                }
+            })?;
         // The slot may be a mirror that pulled this point; landed, it is no received copy.
         storage
             .marks(fs)
@@ -204,7 +226,7 @@ impl VolumeStorage {
                 })
             }
             SeedProgress::Copied(copied) => {
-                copied.land(self, guid).await?;
+                copied.land(self, &request.into, guid).await?;
                 self.seeded(&pool, &into).await
             }
             SeedProgress::Stale(stale) => {

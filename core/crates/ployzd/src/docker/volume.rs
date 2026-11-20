@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bollard::{
     Docker,
-    models::{Volume, VolumeCreateRequest},
+    models::{Mount, MountType, MountVolumeOptionsDriverConfig, Volume, VolumeCreateRequest},
     query_parameters::{ListContainersOptionsBuilder, RemoveVolumeOptionsBuilder},
 };
 use futures_util::{StreamExt, stream};
@@ -117,6 +117,18 @@ impl Volumes {
                     Err(error) if volume_conflict(&error) => {
                         verify_volume(source, &self.inspect_volume(machine_id, name).await?)
                     }
+                    Err(error) if relays(&error, crate::volume_copy::DOCKER_NOT_ANSWERING) => {
+                        Err(Error::VolumeHoldersUnlisted(name.clone()))
+                    }
+                    Err(error) if relays(&error, crate::volume_copy::HELD_FOR_OTHER_DATA) => {
+                        Err(Error::ForeignVolume {
+                            name: name.clone(),
+                            found: format!(
+                                "{}, so no new data is made under its name until that Container is removed",
+                                crate::volume_copy::HELD_FOR_OTHER_DATA
+                            ),
+                        })
+                    }
                     Err(error) => Err(error),
                 }
             }
@@ -124,13 +136,68 @@ impl Volumes {
         }
     }
 
-    /// Refuse an External mount of a Volume carrying Ployz's managed label. External means
-    /// made outside Ployz, and under Device enforcement the only named Volumes an Operator
-    /// can make come from `PrepareVolumes`, which labels them, so a labelled one may hold
-    /// options nobody approved.
+    /// Refuses unless each mounted managed Volume carries the origin `spec` expects of it:
+    /// an Ordinary one by its `ployz.origin` label, a Provisioned one by its dataset, which
+    /// the plugin reads. A Volume that carries none is Legacy, which only a mount with no
+    /// birth expects.
     ///
     /// # Errors
-    /// Returns [`Error::VolumeShapeMismatch`] naming the Volume, or the inspection's error.
+    /// Returns [`Error::ForeignVolume`] naming the first Volume that differs, or the error
+    /// that kept its origin unread.
+    pub(super) async fn require_origins(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+        plugin: &crate::storage::Plugin,
+    ) -> Result<(), Error> {
+        let mut checked = BTreeSet::new();
+        for volume in spec.volume_graph().mounted_volumes() {
+            let source = &volume.source;
+            let Some(name) = source.docker_volume_name() else {
+                continue;
+            };
+            if !checked.insert(name) {
+                continue;
+            }
+            let carried = match source.kind() {
+                ployz_core::RawVolumeSource::Ordinary { .. } => {
+                    let observed = self.inspect_volume(machine_id, name).await?;
+                    match observed.labels.get(labels::VOLUME_ORIGIN) {
+                        None => None,
+                        Some(label) => {
+                            Some(ployz_core::VolumeOrigin::parse(label).map_err(|_| {
+                                Error::ForeignVolume {
+                                    name: name.clone(),
+                                    found: format!("has an unreadable origin label {label:?}"),
+                                }
+                            })?)
+                        }
+                    }
+                }
+                ployz_core::RawVolumeSource::Provisioned { .. } => {
+                    provisioned_origin(plugin, name).await?
+                }
+                ployz_core::RawVolumeSource::External { .. }
+                | ployz_core::RawVolumeSource::Bind { .. }
+                | ployz_core::RawVolumeSource::Tmpfs { .. } => continue,
+            };
+            let expected =
+                ployz_core::VolumeOrigin::expected(source.birth(), name).map_err(|error| {
+                    Error::InvalidContainerConfig(format!("mount origins: {error}"))
+                })?;
+            let carried = carried.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(name));
+            if carried != expected {
+                return Err(other_data(name));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse an External mount of a Volume Ployz made, early, before an image pull.
+    /// [`Self::pin_external_drivers`] repeats it where it counts, right before Docker's create.
+    ///
+    /// # Errors
+    /// Returns the refusal of [`external_driver`] naming the Volume, or the inspection's error.
     pub(crate) async fn refuse_managed_external(
         &self,
         machine_id: &MachineId,
@@ -141,16 +208,55 @@ impl Volumes {
                 continue;
             };
             // A missing one is the mount check's to name, after this.
+            match self.inspect_volume(machine_id, name).await {
+                Ok(observed) => external_driver(name, &observed).map(drop)?,
+                Err(error) if volume_not_found(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// Names in each External mount the driver Docker has for its Volume now, refusing one
+    /// Ployz made. Docker searches every driver for a mount that names none, and the volume
+    /// plugin answers for a root whose labels Docker lost, so an unpinned External mount
+    /// could open Provisioned data. A pinned one opens only the driver named here, at create
+    /// and at every later start, or Docker refuses the name.
+    ///
+    /// # Errors
+    /// Returns [`Error::ExternalVolumeNotFound`], the refusal of [`external_driver`], or the
+    /// inspection's error.
+    pub(super) async fn pin_external_drivers(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+        mounts: &mut [Mount],
+    ) -> Result<(), Error> {
+        let mut pinned = BTreeSet::new();
+        for volume in spec.volume_graph().mounted_volumes() {
+            let ployz_core::RawVolumeSource::External { name } = volume.source.kind() else {
+                continue;
+            };
+            if !pinned.insert(name) {
+                continue;
+            }
             let observed = match self.inspect_volume(machine_id, name).await {
                 Ok(observed) => observed,
-                Err(error) if volume_not_found(&error) => continue,
+                Err(error) if volume_not_found(&error) => {
+                    return Err(Error::ExternalVolumeNotFound(name.clone()));
+                }
                 Err(error) => return Err(error),
             };
-            if observed.labels.contains_key(ployz_core::labels::MANAGED) {
-                return Err(Error::VolumeShapeMismatch {
-                    name: name.clone(),
-                    reason: "an External mount names a Volume Ployz manages".into(),
-                });
+            let driver = external_driver(name, &observed)?;
+            for mount in mounts.iter_mut().filter(|mount| {
+                mount.typ == Some(MountType::VOLUME)
+                    && mount.source.as_deref() == Some(name.as_str())
+            }) {
+                mount.volume_options.get_or_insert_default().driver_config =
+                    Some(MountVolumeOptionsDriverConfig {
+                        name: Some(driver.to_owned()),
+                        options: None,
+                    });
             }
         }
         Ok(())
@@ -438,10 +544,83 @@ fn volume_in_use(holders: Vec<Option<QualifiedService>>) -> Error {
     }
 }
 
+/// The origin a Provisioned Volume's writable root carries, `None` for Legacy. A name with
+/// no root here has no data a Container could open, so it is refused as well.
+async fn provisioned_origin(
+    plugin: &crate::storage::Plugin,
+    name: &DockerVolumeName,
+) -> Result<Option<ployz_core::VolumeOrigin>, Error> {
+    let copy = plugin
+        .call::<Option<ployz_core::VolumeCopy>>(
+            crate::volume_copy::INSPECT_ROUTE,
+            &crate::volume_copy::CopyRequest { name: name.clone() },
+        )
+        .await
+        .map_err(|source| Error::VolumeOriginUnread {
+            name: name.clone(),
+            source: Box::new(source),
+        })?;
+    match copy {
+        Some(ployz_core::VolumeCopy::Root { origin, .. }) => Ok(origin),
+        Some(ployz_core::VolumeCopy::Slot { .. }) | None => {
+            Err(Error::VolumeNotWritable(name.clone()))
+        }
+    }
+}
+
+/// The driver an External mount may open `observed` through. External means made outside
+/// Ployz. Under Device enforcement the only named Volumes an Operator can make come from
+/// `PrepareVolumes`, which labels them, so a labelled one may hold options nobody approved.
+/// One the Provisioned plugin serves holds Ployz's own data whatever labels Docker kept, and
+/// only a Provisioned mount, whose origin the plugin checks, opens it.
+fn external_driver<'a>(
+    name: &DockerVolumeName,
+    observed: &'a DockerVolume,
+) -> Result<&'a str, Error> {
+    if observed.labels.contains_key(ployz_core::labels::MANAGED) {
+        return Err(Error::VolumeShapeMismatch {
+            name: name.clone(),
+            reason: "an External mount names a Volume Ployz manages".into(),
+        });
+    }
+    match observed.driver() {
+        ployz_core::PROVISIONED_VOLUME_DRIVER => Err(Error::ForeignVolume {
+            name: name.clone(),
+            found: "is a Ployz Provisioned Volume, and an External mount opens only a Volume made outside Ployz".to_owned(),
+        }),
+        driver => Ok(driver),
+    }
+}
+
+fn other_data(name: &DockerVolumeName) -> Error {
+    Error::ForeignVolume {
+        name: name.clone(),
+        found: "holds another Volume's data under the same name, not the data this Service was approved for".to_owned(),
+    }
+}
+
+/// Whether Docker refused a create with the volume plugin's `words`, which Docker relays
+/// only as text.
+fn relays(error: &Error, words: &str) -> bool {
+    matches!(
+        error,
+        Error::Docker(bollard::errors::Error::DockerResponseServerError { message, .. })
+            if message.contains(words)
+    )
+}
+
 fn verify_volume(source: &VolumeSource, observed: &DockerVolume) -> Result<(), Error> {
     let expected = source
         .to_create_volume_request()
         .expect("only managed Docker Volume sources are verified");
+    // An Ordinary Volume's origin is its label, so one that carries another origin than a
+    // born source names holds other data, which is no shape problem.
+    if matches!(source.kind(), ployz_core::RawVolumeSource::Ordinary { .. })
+        && let Some(origin) = expected.labels.get(labels::VOLUME_ORIGIN)
+        && observed.labels.get(labels::VOLUME_ORIGIN) != Some(origin)
+    {
+        return Err(other_data(&expected.name));
+    }
     if !source.matches_managed_volume(observed) {
         return Err(Error::VolumeShapeMismatch {
             name: expected.name,

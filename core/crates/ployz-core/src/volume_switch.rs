@@ -522,6 +522,15 @@ pub enum SwitchError {
     /// The restore point a seed asked for is no longer on the writer.
     RestorePointGone,
     NoCapacity,
+    /// A Container that mounts the new Volume expects data of another origin than the
+    /// seed carries.
+    Foreign,
+    /// Docker could not say which Containers mount the new Volume, so the seed stayed in
+    /// its slot.
+    DockerUnavailable,
+    /// A reason introduced after this build. This daemon never sends it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 impl SwitchError {
@@ -543,8 +552,10 @@ impl CodedRefusal for SwitchError {
             | Self::Busy
             | Self::VolumeSwitching
             | Self::NoWriter
-            | Self::RestorePointGone => RpcErrorCode::Conflict,
-            Self::NoCapacity => RpcErrorCode::Unavailable,
+            | Self::RestorePointGone
+            | Self::Foreign => RpcErrorCode::Conflict,
+            Self::NoCapacity | Self::DockerUnavailable => RpcErrorCode::Unavailable,
+            Self::Unrecognized => RpcErrorCode::Internal,
         }
     }
 }
@@ -897,9 +908,9 @@ mod tests {
         );
         assert_eq!(
             RpcError::conflict("m")
-                .with_details(serde_json::json!({ "reason": "unknown" }))
+                .with_details(serde_json::json!({ "reason": "from_a_later_release" }))
                 .evidence::<SwitchError>(),
-            None
+            Some(SwitchError::Unrecognized)
         );
     }
 }

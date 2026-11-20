@@ -408,7 +408,8 @@ impl ContainerRefusal {
             | ContainerRefusalReason::OlderThanIn
             | ContainerRefusalReason::HeldByOtherRun
             | ContainerRefusalReason::RotationMismatch
-            | ContainerRefusalReason::InRotation => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::InRotation
+            | ContainerRefusalReason::ForeignVolume => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -445,6 +446,8 @@ pub enum ContainerRefusalReason {
     SealingKeyMissing,
     /// A Sealed value is bound elsewhere or does not open with this Cluster's key.
     SealedValueUnopenable,
+    /// A Volume on this Machine carries data of another origin than the spec expects.
+    ForeignVolume,
     #[serde(other)]
     Unrecognized,
 }

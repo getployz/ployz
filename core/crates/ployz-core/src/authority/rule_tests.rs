@@ -816,3 +816,45 @@ fn a_build_by_a_builder_that_installs_a_lab_ployz_is_refused_under_a_rule_pinnin
         })
     );
 }
+
+/// A rule approves a template for its own Environment, and a Volume born elsewhere is
+/// refused before the template is compared.
+#[test]
+fn a_creation_naming_a_volume_born_in_another_environment_is_refused() {
+    let born_in = |namespace: &str| {
+        let mut spec = requested_json();
+        spec["volumes"] = json!([{"reference": "data", "source": {"kind": "provisioned",
+            "name": "data", "maximum_bytes": 1_073_741_824_u64,
+            "birth": {"namespace": namespace, "name": "data", "made_at": 1_762_178_640_000_u64,
+                "nonce": "00112233445566778899aabbccddeeff"}}}]);
+        spec["mounts"] = json!([{"volume": "data", "target": "/data"}]);
+        spec
+    };
+    let mut rule = approved_rule();
+    rule.services[0].template = template(
+        &requested(born_in("app")),
+        &Namespace::parse("app").unwrap(),
+    )
+    .unwrap();
+
+    assert!(
+        create(
+            &rule,
+            &built(),
+            born_in("app"),
+            ContainerKind::ServiceContainer
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        create(
+            &rule,
+            &built(),
+            born_in("other"),
+            ContainerKind::ServiceContainer
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a Volume's Environment"
+        })
+    );
+}
