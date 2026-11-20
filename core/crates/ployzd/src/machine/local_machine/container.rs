@@ -54,9 +54,6 @@ const WITHDRAWAL_PROPAGATION: Duration = Duration::from_secs(1);
 /// opened lost 70 to 90% of its lines at 0 s and none at 1 s or 2 s.
 const LOG_READ_GRACE: Duration = Duration::from_secs(2);
 
-/// What a removal waits after the stop. A removal with no drain is a hook or a discarded
-/// start, whose output nobody reads, and a Machine that ships no logs has no Collector
-/// to wait for.
 fn removal_wait(drain: Drain, ships_logs: bool) -> Duration {
     if drain == Drain::NONE || !ships_logs {
         return Duration::ZERO;
@@ -1432,8 +1429,6 @@ impl LocalMachine {
         })
     }
 
-    /// Whether the Collector runs here, which it does for as long as Cloud has a push
-    /// target for this Machine.
     fn ships_logs(&self) -> bool {
         self.record().push_target().is_some()
     }

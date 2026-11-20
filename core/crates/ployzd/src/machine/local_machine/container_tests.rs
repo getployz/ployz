@@ -1686,7 +1686,7 @@ mod stopped_on_request {
         }
 
         #[tokio::test]
-        async fn removing_a_hook_or_on_a_machine_without_cloud_does_not_wait() {
+        async fn a_removal_with_no_drain_or_no_cloud_does_not_wait() {
             let fixture = Fixture::start().await;
             connect(&fixture).await;
             let took = removed_in(&fixture, Drain::NONE).await;
