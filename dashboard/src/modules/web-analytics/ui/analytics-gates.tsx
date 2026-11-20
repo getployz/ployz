@@ -66,7 +66,7 @@ function SiteOff({ scope }: { scope: AnalyticsScope }) {
   return (
     <Gate title="Analytics are off for this site"
       action={<Button disabled={turnOn.isPending} onClick={() => turnOn.mutate()}>Turn on</Button>}>
-      Counts visits to this Environment&apos;s domains from the moment it is on, without cookies.
+      Counts visits to this Environment&apos;s domains, without cookies. Servers pick it up within five minutes.
     </Gate>
   );
 }
