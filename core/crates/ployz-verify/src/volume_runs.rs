@@ -49,8 +49,9 @@
 //!   writing its copy when it comes back, until it departs (`forgotten_fence.rs`,
 //!   `volume_plugin/departure.rs`), which parks its root in a slot;
 //! - a Deploy's lane at its real boundaries, sent to the Writer Cloud sees: Prepare
-//!   (`prepare_volumes`) admits a plain mount (`admit_plain_mount`) against the
-//!   Machine's replicated view, which may lag, then ensures the Volume; Create
+//!   (`prepare_volumes`) takes the switch lock, reads the forgotten record, then in a
+//!   step of its own admits a plain mount (`admit_plain_mount`) from the copy and the
+//!   Machine's replicated view, which may lag, and ensures the Volume; Create
 //!   (`create_container`) checks placement and ensures the Volume with no plain-mount
 //!   admission; and the start of a stopped kept Container mounts only a writable root
 //!   (`VolumeStorage::mountpoint`). No Deploy step reads a floor;
@@ -63,8 +64,9 @@
 //! keep late promotes to one Writer, and floors and the expected copy are a second
 //! fence: removing either alone keeps `never two Writers` on three Machines, and the
 //! floors' own break needs the owner checks gone too, on two. Prepare's
-//! `admit_plain_mount` and Create's forgotten-origin check are each the only fence for
-//! the late Deploy steps they stop.
+//! `admit_plain_mount`, Prepare's and Create's forgotten-origin checks, and the switch
+//! lock Prepare holds across its two reads are each the only fence for the late Deploy
+//! steps they stop.
 //!
 //! Out of scope: operator collisions, a forged step, a Deploy that takes over a Move's
 //! lane (`fenceTaken`, `fenceFollowed`), the rowless mirror sync, a demote, warm rounds
@@ -245,7 +247,7 @@ struct Host {
     floor: u8,
     holder: Holder,
     /// `MachineService::switch_mutation`, held by one request from its second floor
-    /// check to its reply.
+    /// check, or a Prepare from its first read, to its reply.
     switch: Option<usize>,
     /// The exclusive admission turn, held by `start_volume_holder` from its floor
     /// check to the start.
@@ -370,6 +372,11 @@ enum Progress {
     StartAdmit,
     /// `start_volume_holder` holds the turn past its floor check.
     StartRun,
+    /// A Deploy's Prepare read the forgotten record, under the switch lock; it reads its
+    /// copy and its view next.
+    PrepareRead {
+        forgot: bool,
+    },
     Replied(Reply),
     /// The daemon restarted under it; no reply comes.
     Lost,
@@ -733,6 +740,7 @@ impl State {
             | Progress::CutFlip
             | Progress::StartAdmit
             | Progress::StartRun
+            | Progress::PrepareRead { .. }
             | Progress::Lost => None,
         }
     }
@@ -981,6 +989,11 @@ struct Broken {
     start_gate: bool,
     /// Prepare skips `admit_plain_mount`.
     plain_mount: bool,
+    /// Prepare reads no forgotten record.
+    prepare_forgotten: bool,
+    /// Prepare takes no switch lock, so a Forget can land between its read of the
+    /// forgotten record and its read of the copy.
+    prepare_switch: bool,
     /// Create makes a fresh root on a Machine that forgot its copy.
     forgotten: bool,
 }
@@ -1292,16 +1305,23 @@ impl VolumeRuns {
         true
     }
 
-    fn can_step(state: &State, index: usize) -> bool {
+    fn can_step(&self, state: &State, index: usize) -> bool {
         let request = state.request(index);
         let host = state.host(request.to);
         if !host.here() {
             return false;
         }
         match request.progress {
-            // `switch_verb` queues `SetVolumeSize` on the switch lock.
+            // `switch_verb` queues `SetVolumeSize` on the switch lock, and
+            // `prepare_volumes` takes it before its admission turn.
             Progress::Sent if matches!(request.want, Want::Size { .. }) => host.switch.is_none(),
-            Progress::Sent | Progress::CutDrain | Progress::StartRun => true,
+            Progress::Sent if request.want == Want::Prepare && !self.broken.prepare_switch => {
+                host.switch.is_none()
+            }
+            Progress::Sent
+            | Progress::CutDrain
+            | Progress::StartRun
+            | Progress::PrepareRead { .. } => true,
             Progress::Admitted => host.switch.is_none(),
             Progress::CutStop | Progress::CutFlip | Progress::StartAdmit => host.turn.is_none(),
             Progress::Replied(_) | Progress::Lost => false,
@@ -1326,7 +1346,16 @@ impl VolumeRuns {
                     }
                     return;
                 }
-                if matches!(request.want, Want::Prepare | Want::Create | Want::Start) {
+                if request.want == Want::Prepare {
+                    // `forgot_here`, before `admit_plain_mount` reads the copy.
+                    let host = state.host_mut(to);
+                    if !self.broken.prepare_switch {
+                        host.switch = Some(index);
+                    }
+                    let forgot = host.forgotten && !self.broken.prepare_forgotten;
+                    return state.set_progress(index, Progress::PrepareRead { forgot });
+                }
+                if matches!(request.want, Want::Create | Want::Start) {
                     let reply = self.deploy_step(state, index, false);
                     return state.reply(index, reply);
                 }
@@ -1423,12 +1452,16 @@ impl VolumeRuns {
                 let copy = host.copy;
                 state.reply(index, Reply::Copy(copy));
             }
+            Progress::PrepareRead { .. } => {
+                let reply = self.deploy_step(state, index, false);
+                state.reply(index, reply);
+            }
             Progress::Replied(_) | Progress::Lost => {}
         }
     }
 
-    /// A Deploy's step on its Machine, whole: none takes the switch lock or reads a
-    /// floor. Prepare admits a plain mount only on this Machine's writable root, or on
+    /// A Deploy's step on its Machine, whole but for Prepare's first read: no step reads
+    /// a floor. Prepare admits a plain mount only on this Machine's writable root, or on
     /// nothing at all while its view lists no copy elsewhere; `lagging` reads that view
     /// as stale as it may be. Prepare and Create then ensure the Volume: `create_volume`
     /// refuses a name held in a slot and makes a fresh root for a name held nowhere.
@@ -1439,7 +1472,11 @@ impl VolumeRuns {
         let forgotten = held == Held::None && state.host(to).forgotten;
         match request.want {
             Want::Prepare => {
-                // `admit_plain_mount`, which reads this Machine's record before its view.
+                let Progress::PrepareRead { forgot } = request.progress else {
+                    unreachable!("Prepare admits after it reads the forgotten record")
+                };
+                let forgotten = held == Held::None && forgot;
+                // `admit_plain_mount`, which reads this Machine's copy before its view.
                 let admitted = self.broken.plain_mount
                     || match held {
                         Held::None => !forgotten && (lagging || !state.elsewhere(to)),
@@ -1752,7 +1789,10 @@ impl VolumeRuns {
             | Progress::CutStop
             | Progress::StartAdmit
             | Progress::StartRun => self.scenario.three(),
-            Progress::Sent | Progress::Replied(_) | Progress::Lost => false,
+            Progress::Sent
+            | Progress::PrepareRead { .. }
+            | Progress::Replied(_)
+            | Progress::Lost => false,
         }
     }
 
@@ -1805,7 +1845,8 @@ fn state_in_flight(progress: Progress) -> bool {
         | Progress::CutStop
         | Progress::CutFlip
         | Progress::StartAdmit
-        | Progress::StartRun => true,
+        | Progress::StartRun
+        | Progress::PrepareRead { .. } => true,
         Progress::Replied(_) | Progress::Lost => false,
     }
 }
@@ -2808,7 +2849,8 @@ fn resendable<S>(state: &State, driver: Driver<S>) -> bool {
         | Progress::CutStop
         | Progress::CutFlip
         | Progress::StartAdmit
-        | Progress::StartRun => driver.resends > 0,
+        | Progress::StartRun
+        | Progress::PrepareRead { .. } => driver.resends > 0,
     }
 }
 
@@ -2956,10 +2998,9 @@ impl Model for VolumeRuns {
 
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
         for (index, request) in state.requests.iter().enumerate() {
-            if Self::can_step(state, index) {
+            if self.can_step(state, index) {
                 actions.push(Action::Machine(index));
-                if request.want == Want::Prepare
-                    && request.progress == Progress::Sent
+                if matches!(request.progress, Progress::PrepareRead { .. })
                     && state.host(request.to).copy == Held::None
                     && state.elsewhere(request.to)
                     && state.stale_empty(request.to)
@@ -4000,6 +4041,28 @@ mod tests {
     fn prepare_admits_only_a_plain_mount_on_the_writer() {
         breaks_three(Broken {
             plain_mount: true,
+            ..Broken::default()
+        });
+    }
+
+    /// A dead Deploy's Prepare that lands after a mirror rm forgot its Machine's copy,
+    /// reading a view that lags, makes a fresh root beside the Writer unless it reads
+    /// the forgotten record.
+    #[test]
+    fn prepare_makes_no_fresh_root_of_data_its_machine_forgot() {
+        breaks_three(Broken {
+            prepare_forgotten: true,
+            ..Broken::default()
+        });
+    }
+
+    /// A Forget that lands between Prepare's read of the forgotten record and its read of
+    /// the copy leaves Prepare with neither, unless Prepare holds the switch lock the
+    /// Forget takes.
+    #[test]
+    fn prepare_reads_the_record_and_the_copy_under_one_switch_lock() {
+        breaks_three(Broken {
+            prepare_switch: true,
             ..Broken::default()
         });
     }

@@ -102,12 +102,21 @@ impl LocalMachine {
     }
 
     /// Recheck the complete local placement and secure all provisioned Volumes before applications start.
+    ///
+    /// Holds the switch lock, as a Forget does, from before the admission turn through
+    /// provisioning, so no Forget lands between the read of the forgotten record and
+    /// the read of the copy.
     pub(crate) async fn prepare_volumes(
         &self,
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::RawVolumeSource;
+        let switch = match &self.switch {
+            Some(lock) => Some(Arc::clone(lock).lock_owned().await),
+            None => None,
+        };
         self.finish_mutation(move |local| async move {
+            let _switch = switch;
             let containers = local.docker()?;
             let record = local.record();
             if !record.has_cluster_identity() {
