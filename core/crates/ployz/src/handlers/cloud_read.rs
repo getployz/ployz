@@ -15,6 +15,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 
 use super::{Error, operator::Scoped};
+use crate::operator::history::{self, StoredLine, StoredPage};
 use crate::{
     cloud_account::{self, Credential, StoreCallError},
     ui::{self, Table},
@@ -189,6 +190,60 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
             .collect::<BTreeSet<_>>(),
     )?;
     refusal.map_or(Ok(()), Err)
+}
+
+/// The newest `want` stored lines of the removed Services `removed`, from `since` up to
+/// `until`, oldest first. Cloud answers a page at a time from the newest, so this reads
+/// back only as far as `since` or `want` reach.
+pub(super) fn stored_logs(
+    credential: &Credential,
+    scoped: &Scoped,
+    removed: &[ServiceName],
+    want: usize,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> Result<Vec<StoredLine>, Error> {
+    let runtime = super::runtime()?;
+    let mut lines = Vec::new();
+    for name in removed {
+        let mut kept = Vec::new();
+        let mut cursor = None::<String>;
+        loop {
+            let limit = want.saturating_sub(kept.len()).clamp(1, history::PAGE);
+            let mut asked = json!({
+                "environment": {
+                    "project": scoped.project.to_string(),
+                    "environment": scoped.environment.to_string(),
+                },
+                "service": name.to_string(),
+                "limit": limit,
+            });
+            if let (Some(cursor), Some(asked)) = (&cursor, asked.as_object_mut()) {
+                asked.insert("cursor".into(), json!(cursor));
+            }
+            let page: StoredPage = runtime
+                .block_on(cloud_account::read_answer(credential, "logs/read", &asked))
+                .map_err(Error::from)?;
+            let oldest = page.lines.last().map(|line| line.timestamp);
+            kept.extend(
+                page.lines
+                    .into_iter()
+                    .filter(|line| until.is_none_or(|until| line.timestamp < until)),
+            );
+            let reached = since
+                .zip(oldest)
+                .is_some_and(|(since, oldest)| oldest < since);
+            cursor = page.cursor;
+            if reached || kept.len() >= want || cursor.is_none() {
+                break;
+            }
+        }
+        if kept.is_empty() {
+            return Err(scoped.no_service(name));
+        }
+        lines.extend(kept);
+    }
+    Ok(history::window(lines, since, until, want))
 }
 
 /// `metrics` for a Service, by its runtime name, or a Server, by name.

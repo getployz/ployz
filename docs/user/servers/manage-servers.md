@@ -757,7 +757,7 @@ send its own, and exits with code 3:
 
 ```text
 $ ployz logs api
-! Server web-2 needs a newer Ployz. It cannot serve ployz.logs.history.v2.
+! Server web-2 needs a newer Ployz. It cannot serve ployz.logs.tail.v1.
 ```
 
 With `--follow`, the command stops at the first server that can't stream its logs and exits with

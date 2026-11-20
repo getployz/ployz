@@ -37,13 +37,18 @@ See [Deployments](../deploy/deployments.md).
 
 ![A deployment's build card while it builds](../images/deployment-page-build.png)
 
-## Read retained logs from the CLI
+## Read logs from the CLI
 
-`ployz logs app/api` reads retained logs without asking Docker to list containers.
-This also works for a removed service. Every service argument must be qualified
-as `namespace/name`, either explicitly or through project or deployment scope.
-The command still needs a server observation and access to each selected server's
-log store. Servers that do not answer are named, and partial results exit with code 3.
+`ployz logs app/api` reads what the service's containers print from Docker on each server, with
+each [Sealed](../services/variables.md) value replaced by `[secret NAME]` on the server before it
+reaches you. A container Docker still has reads in full, including a replica that failed. Servers
+that don't answer are named, and partial results exit with code 3.
+
+A removed service has no container left on your servers. When your CLI is signed in to Ployz
+Cloud, `ployz logs` reads its lines from Cloud's log history instead, newest 30 days at most,
+and prints them oldest first. Without Cloud, it says the service's logs are not kept and exits
+with code 1. Connect the servers to Cloud to keep them; see
+[Logs sent to Ployz Cloud](#logs-sent-to-ployz-cloud).
 
 Read from your servers, `ployz logs` prints each line on the stream your app wrote it to, as
 `docker logs` does: what it wrote to stdout goes to stdout, and what it wrote to stderr goes to
@@ -52,13 +57,13 @@ in `ployz logs web 2>&1 | grep error`. With `--json`, every line goes to stdout,
 says which one your app wrote it to. Logs Ployz Cloud reads for a token without server access,
 and `--build` output, print every line on stdout, and their `--json` has no `stream`.
 
-A name the environment doesn't have now, and that no retained line matches, fails with
-`No Service named nosvc in Environment production` and lists the services you can name. This holds
-whether Ployz reads your servers or Ployz Cloud reads them for a token without server access. It
-exits with code 1, or with code 3 when lines for another name you gave already printed. When a
+A name the environment doesn't have now, and that Cloud's history has no line for, fails with
+`No Service named nosvc in Environment production` and lists the services you can name. It exits
+with code 1, or with code 3 when lines for another name you gave already printed. When a
 server doesn't answer, Ployz says so instead, since the missing lines may be on that server.
 `--follow` needs a service the environment has now, deployed or not yet deployed, so it refuses any
-other name before reading.
+other name before reading. Followed across a redeploy, it moves onto the new container within
+about 2 seconds.
 `ployz logs --follow --machine X` with no service named follows every service that runs on X and
 skips the rest.
 When a followed server stops answering, `--follow` names it within about 20 seconds and keeps following the
@@ -68,9 +73,6 @@ CLI connects through, every server whose lines came through it is named too. `pl
 --machine X` without `--follow` names a server the same way when its daemon restarts mid-read.
 It ends once none still answers, and exits with code 3. It doesn't pick the server up again when
 it comes back; run the command again.
-
-Unqualified names without scope, service IDs, container selectors, commands with
-no service arguments, and `--follow` still use live container discovery.
 
 ## Logs sent to Ployz Cloud
 
@@ -123,49 +125,34 @@ A removed service keeps its logs in Cloud history for 30 days, with each Sealed 
 `[secret NAME]`. Open them from **Logs** with the service selected. Cloud history holds only what
 a server sent while connected, so a service that never sent logs has none to show here.
 
-## Secrets in kept logs
+## Secrets in logs
 
-Each server keeps a removed container's output, and the variables it ran with, so its logs still
-read after a rollback or removal. Each log file stays up to 30 days after it was last written, so
-a container's older lines can go first. They go sooner when logs and metrics fill their share of
-the disk, or when the disk drops below 10% free (at least 2 GiB).
+Your servers keep no copy of what a container printed beyond Docker's own log files, which hold
+the line as your app wrote it, secrets included. `ployz logs` hides each Sealed value on the
+server before the line leaves it, and the dashboard and an agent read the lines Cloud stored
+already hidden. A value shorter than 6 bytes is hidden only where its name labels it, as in
+`PIN=4821`. A multiline Sealed value with a line of 1 to 5 bytes can't be hidden, so a deploy
+that uses one is refused. Hiding is best effort; see the list above for what can still show.
 
-Everything Ployz captured from your app stays in those files, secrets included. The dashboard, an agent, and
-`ployz logs` through Ployz Cloud hide Sealed values when they show a line. A value shorter than 6 bytes
-is hidden only where its name labels it, as in `PIN=4821`. A multiline Sealed value with a line
-of 1 to 5 bytes can't be hidden, so a deploy that uses one is refused. `ployz logs` run with
-server access, and the files on the server, keep the line as printed. They live in
-`/var/lib/docker/ployz-observe/v1/containers/<container id>/`, or under Docker's data directory
-if you moved it. The log files keep Docker's own permissions, `0640` and owned by root on a
-default Docker install. The `env.json` of variables is `0600`, and Ployz creates each container's
-folder as `0700`.
-
-Don't print secrets from your app. There's no setting today to delete kept logs early or keep them
-for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
-[#2688](https://github.com/getployz/ployz/issues/2688).
+Don't print secrets from your app.
 
 ## Good to know
 
-- **Log collection shares a CPU budget with retained-log reads.** By default, Ployz caps its log helper at
-  10% of one CPU core. Some historical reads can take several seconds. The main daemon's
-  work serving those reads has a separate CPU cost.
-- **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
-  so a service's card on an older deployment still shows its output. Ployz keeps up to 5% of the
-  disk for them and for metrics, between 512 MiB and 5 GiB. Logs stay 30 days, and the oldest go
-  first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
-  service.
-- **A replica that failed keeps its output.** Its exit code appears when the server observed it,
-  so you can see why it stopped. A replica that keeps restarting shows each exit, and an OOM kill
-  reads **killed out of memory**.
-- **Deleted environments and removed services keep their logs until retention removes them.**
+- **Logs end with the container on your servers.** A rollback or removal replaces a container, and
+  Docker drops its output with it. To keep logs longer, connect your servers to Cloud or
+  send them from your app to a log service.
+- **A replica that failed keeps its exit code.** The deploy output names the replica and the code
+  it exited with, read from Docker before the container is removed, so you can see why it
+  stopped. A replica that keeps restarting shows the code of its last run, and an OOM kill reads
+  **killed out of memory**. Its last lines stay readable for 2 seconds after it stops, so read
+  them from the deploy output.
+- **Removed services and deleted environments keep their lines in Cloud, not on your servers.**
   Recreating an environment with the same name can show its earlier logs. A service's card
   on a deployment shows only that deployment's output. Cloud's history doesn't cover a
   deployment's card yet, so there search reads only the lines loaded in the page.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't sent to Ployz Cloud until their next deploy. `ployz deploy` or **Redeploy** on
   the Logs page replaces them, even when nothing else about the service changed.
-- **Containers this release starts keep their output only while they exist.** The server keeps
-  nothing of a removed one yet, so a rollback or removal ends its logs.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
   timestamp, sets it. A line without one counts as **Info**, stderr included.
@@ -176,9 +163,6 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   logs. Lines it couldn't check, say because your servers couldn't read the service's variables,
   show as **Hidden: couldn’t check these lines for Sealed values.** When a server fails, the
   banner says **Container logs are unavailable.** instead of quoting the server's error.
-- **Detected gaps appear in the log**, saying the lines weren't captured or couldn't be read.
-  Missing output can have no gap record, such as when a container ran entirely while log
-  collection was down.
 - **A server that doesn't answer is named** in a banner above the log, and the other servers'
   lines still show.
 - **A server on an older Ployz shows no logs.** The page says **Upgrade web-1 to see its logs**

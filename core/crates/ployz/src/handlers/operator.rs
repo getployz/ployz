@@ -12,8 +12,8 @@ use clap::{ArgMatches, parser::ValueSource};
 use crossterm::terminal;
 use ployz_core::{
     ContainerId, ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame,
-    FanoutSelector, Hint, HistoryContainerKind, HistoryGapReason, HistoryStream, LogBody, LogEntry,
-    LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector, log_level, select_service,
+    FanoutSelector, Hint, LogBody, LogEntry, LogOrigin, LogsOptions, Namespace, RpcErrorCode,
+    ServiceSelector, log_level, select_service,
 };
 use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
@@ -24,15 +24,14 @@ use crate::{
     cloud_login::LoginError,
     context::Transport,
     operator::{
-        OperatorError, PreparedHistory, asked_machines, exec_container_stopped, exec_options,
-        history::{HistoryEvent, HistoryRecord, HistoryWindow, read_history},
-        history_selectors,
+        OperatorError, asked_machines, exec_container_stopped, exec_options,
+        history::{self, StoredLine, StoredStream},
         input::{
             ExecMode, ProxyPorts, ServiceArg, parse_log_time, parse_proxy_ports,
             parse_service_args, parse_tail,
         },
         merge_logs, observe_service_logs, open_exec, open_machine_logs, open_service_logs,
-        prepare_service_history, select_proxy_container,
+        select_proxy_container,
     },
 };
 
@@ -207,6 +206,7 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
 /// names they have now.
 #[derive(Clone)]
 pub(super) struct Scoped {
+    pub(super) project: ployz_store::ProjectName,
     /// The Environment's name, for a refusal that names it.
     pub(super) environment: ployz_store::EnvironmentName,
     pub(super) namespace: Namespace,
@@ -220,6 +220,7 @@ pub(super) struct Scoped {
 impl From<ployz_store::NamespaceView> for Scoped {
     fn from(view: ployz_store::NamespaceView) -> Self {
         Self {
+            project: view.environment.project,
             environment: view.environment.name,
             namespace: view.namespace,
             services: view.services,
@@ -251,18 +252,31 @@ impl Scoped {
         (!self.services.contains_key(&name) && !authored.contains(&name)).then_some(name)
     }
 
+    /// The refusal for a removed Service's logs when no Cloud keeps them.
+    pub(super) fn not_kept(&self, name: &ployz_core::ServiceName) -> Error {
+        Error::not_found(format!(
+            "{name} is not in Environment {}, and its logs are not kept. Ployz Cloud keeps the logs of removed Services; sign in to read them.",
+            self.environment
+        ))
+        .hint(self.valid_hint())
+    }
+
     pub(super) fn no_service(&self, name: &ployz_core::ServiceName) -> Error {
+        Error::not_found(format!(
+            "No Service named {name} in Environment {}",
+            self.environment
+        ))
+        .hint(self.valid_hint())
+    }
+
+    fn valid_hint(&self) -> Option<Hint> {
         let valid = self
             .services
             .keys()
             .chain(self.authored.iter().flatten())
             .map(ToString::to_string)
             .collect::<std::collections::BTreeSet<_>>();
-        Error::not_found(format!(
-            "No Service named {name} in Environment {}",
-            self.environment
-        ))
-        .hint((!valid.is_empty()).then(|| Hint::valid(valid)))
+        (!valid.is_empty()).then(|| Hint::valid(valid))
     }
 }
 
@@ -557,6 +571,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         (Some(id), Some(store)) => {
             let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
             Some(Scoped {
+                project: view.environment.project,
                 environment: view.environment.name,
                 namespace: view.namespace,
                 services: view.runtime_names,
@@ -566,20 +581,25 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         _ => scope(root)?,
     };
     let args = parse_service_args(&named)?;
-    // Unknown now, but a removed Service's retained lines may still read; a stream
-    // of one would never end, so --follow refuses it here.
-    let mut unknown = Vec::new();
-    if let Some(scoped) = &namespace {
-        for name in args.iter().filter_map(|arg| scoped.unknown(&arg.service)) {
-            let refusal = scoped.no_service(&name);
-            if options.follow {
-                return Err(refusal);
-            }
-            unknown.push((name.to_string(), refusal));
-        }
+    // A Service the Environment no longer has runs nothing for Docker to read; only Cloud
+    // keeps its lines, and a stream of them would never end.
+    let removed = namespace.as_ref().map_or_else(Vec::new, |scoped| {
+        args.iter()
+            .filter_map(|arg| scoped.unknown(&arg.service))
+            .collect::<Vec<_>>()
+    });
+    if let (Some(scoped), Some(name)) = (&namespace, removed.first())
+        && options.follow
+    {
+        return Err(scoped.no_service(name));
     }
     let args = args
         .into_iter()
+        .filter(|arg| {
+            namespace
+                .as_ref()
+                .is_none_or(|scoped| scoped.unknown(&arg.service).is_none())
+        })
         .map(|arg| {
             Ok(ServiceArg {
                 service: in_scope(arg.service, namespace.as_ref())?,
@@ -589,7 +609,10 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         .collect::<Result<Vec<_>, Error>>()?;
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
-    let window = history_window(leaf, &options);
+    let read = LogsOptions {
+        tail: docker_tail(leaf, &options),
+        ..options
+    };
     let fallback = super::cloud_read::LogsAsked {
         scoped: namespace.clone(),
         named: &named,
@@ -601,159 +624,207 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             || !machines.is_empty()
             || args.iter().any(|arg| !arg.containers.is_empty()),
     };
+    if args.is_empty() && !removed.is_empty() {
+        return removed_logs(root, namespace.as_ref(), &removed, &read, &machines, utc);
+    }
+    let (reading_read, reading_machines) = (read.clone(), machines.clone());
     let credential = with_reader(root, |client| {
         Box::pin(async move {
-            let started = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            if let Some(prepared) = prepare_service_history(
-                client,
-                &machines,
-                &args,
-                &options,
-                deployment.as_ref().map(DeploymentId::as_str),
-            )
-            .await?
-            {
-                let mut read = std::collections::BTreeSet::new();
-                print_prepared_history(client, &prepared, window, &cancellation, utc, &mut read)
-                    .await?;
-                return refuse_unread(unknown, &read);
-            }
-            let scope = observe_service_logs(client, &machines).await?;
-            let names = &scope.unanswered.names;
-            let named = || names.iter();
-            let mut gaps = crate::ui::Gaps::default().named(named());
-            gaps.extend(&scope.unanswered.failures, &scope.unanswered.omissions);
-            // Before reading, so a missing Service or Container still names the Server that did not answer.
-            gaps.warn();
-            let namespace = namespace.as_ref().map(|scoped| &scoped.namespace);
             let deployment = deployment.as_ref().map(DeploymentId::as_str);
-            let selectors = history_selectors(&scope, &args, namespace, deployment)?;
-            let mut printed = Printed::default();
-            let mut read = std::collections::BTreeSet::new();
-            let failures = read_history(
-                client,
-                &scope.answered(),
-                &selectors,
-                window,
-                &cancellation,
-                |record| {
-                    printed.record(&record);
-                    read.extend(record.container.service.clone());
-                    print_history(&record, utc)
-                },
-            )
-            .await?;
-            let mut missed = crate::ui::Gaps::default().named(named());
-            missed.extend(&failures, &[]);
-            missed.warn();
-            gaps.extend(&failures, &[]);
-            if crate::ui::json() && gaps.outcome().is_err() {
-                crate::ui::emit_line(&gaps)?;
-            }
-            if options.follow && !cancellation.is_cancelled() {
-                let since = printed
-                    .since(started)
-                    .max(options.since_nanos.unwrap_or(i64::MIN));
-                let live = LogsOptions {
-                    tail: -1,
-                    since_nanos: Some(since),
-                    ..options
-                };
-                let deployments = scope.deployments();
-                match open_service_logs(
-                    client,
-                    &scope,
-                    &args,
-                    namespace,
-                    live,
-                    cancellation.clone(),
-                    deployment,
-                )
-                .await
-                {
-                    Ok(inputs) => {
-                        let entries = merge_logs(inputs, cancellation);
-                        print_logs(entries, utc, &deployments, &mut gaps, |entry| {
-                            printed.covers(entry)
-                        })
-                        .await?;
-                    }
-                    // Nothing runs to follow; the history above is the whole log.
-                    Err(
-                        OperatorError::NoServices
-                        | OperatorError::NoDeploymentContainers
-                        | OperatorError::NoContainersOnMachines { .. }
-                        | OperatorError::NotRunning { .. },
-                    ) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-            gaps.outcome()?;
-            refuse_unread(unknown, &read)
+            let namespace = namespace.as_ref().map(|scoped| &scoped.namespace);
+            let reading = Reading {
+                machines: &reading_machines,
+                args: &args,
+                namespace,
+                deployment,
+                utc,
+            };
+            reading.run(client, reading_read, cancellation).await
         })
     })?;
-    credential.map_or(Ok(()), |credential| {
-        super::cloud_read::logs(&credential, fallback)
-    })
-}
-
-/// The first refusal whose Service no read line came from: the Environment does
-/// not have it and nothing retained says it ever ran.
-fn refuse_unread(
-    unknown: Vec<(String, Error)>,
-    read: &std::collections::BTreeSet<String>,
-) -> Result<(), Error> {
-    unknown
-        .into_iter()
-        .find(|(name, _)| !read.contains(name))
-        .map_or(Ok(()), |(_, refusal)| Err(refusal))
-}
-
-async fn print_prepared_history(
-    client: &crate::connect::Client,
-    prepared: &PreparedHistory,
-    window: HistoryWindow,
-    cancellation: &tokio_util::sync::CancellationToken,
-    utc: bool,
-    read: &mut std::collections::BTreeSet<String>,
-) -> Result<(), Error> {
-    let named = || {
-        prepared
-            .targets
-            .iter()
-            .chain(&prepared.omissions)
-            .map(|(id, name)| (*id, name))
-    };
-    let mut gaps = crate::ui::Gaps::default().named(named());
-    let omissions = prepared
-        .omissions
-        .iter()
-        .map(|(id, _)| *id)
-        .collect::<Vec<_>>();
-    gaps.extend(&[], &omissions);
-    gaps.warn();
-    let failures = read_history(
-        client,
-        &prepared.targets,
-        &prepared.selectors,
-        window,
-        cancellation,
-        |record| {
-            read.extend(record.container.service.clone());
-            print_history(&record, utc)
-        },
-    )
-    .await?;
-    let mut missed = crate::ui::Gaps::default().named(named());
-    missed.extend(&failures, &[]);
-    missed.warn();
-    gaps.extend(&failures, &[]);
-    if crate::ui::json() && gaps.outcome().is_err() {
-        crate::ui::emit_line(&gaps)?;
+    if let Some(credential) = credential {
+        return super::cloud_read::logs(&credential, fallback);
     }
-    gaps.outcome()
+    if removed.is_empty() {
+        return Ok(());
+    }
+    removed_logs(
+        root,
+        fallback.scoped.as_ref(),
+        &removed,
+        &read,
+        &machines,
+        utc,
+    )
+}
+
+/// The lines of Services the Environment no longer has: kept in Ployz Cloud, so without
+/// it they are not kept at all.
+fn removed_logs(
+    root: &ArgMatches,
+    scoped: Option<&Scoped>,
+    removed: &[ployz_core::ServiceName],
+    options: &LogsOptions,
+    machines: &[FanoutSelector],
+    utc: bool,
+) -> Result<(), Error> {
+    let scoped =
+        scoped.ok_or_else(|| Error::usage("Name the Environment with --project and --env"))?;
+    let runtime = super::runtime()?;
+    let Some(credential) = super::route::cloud_runs(&runtime, leaf_matches(root))? else {
+        return Err(scoped.not_kept(&removed[0]));
+    };
+    if !machines.is_empty() {
+        return Err(Error::usage(
+            "Ployz Cloud keeps the logs of a removed Service for the whole Environment; drop --machine",
+        ));
+    }
+    let want = usize::try_from(options.tail).map_or(history::READ_ALL, |lines| lines);
+    let until = options
+        .until_unix_seconds
+        .map(|until| until.saturating_mul(NANOS));
+    let lines = super::cloud_read::stored_logs(
+        &credential,
+        scoped,
+        removed,
+        want,
+        options.since_nanos,
+        until,
+    )?;
+    for line in &lines {
+        print_stored(line, utc)?;
+    }
+    Ok(())
+}
+
+/// What one `ployz logs` reads from Docker, across the Servers it asks.
+struct Reading<'a> {
+    machines: &'a [FanoutSelector],
+    args: &'a [ServiceArg],
+    namespace: Option<&'a Namespace>,
+    deployment: Option<&'a str>,
+    utc: bool,
+}
+
+/// How long `-f` waits between looks at which containers run.
+const FOLLOW_LOOK: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl Reading<'_> {
+    /// Print the lines, and with `--follow` carry on onto the containers that replace the
+    /// ones being read, until interrupted.
+    async fn run(
+        &self,
+        client: &mut crate::connect::Client,
+        mut options: LogsOptions,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<(), Error> {
+        let printed = std::cell::RefCell::new(Printed::default());
+        let mut gaps = crate::ui::Gaps::default();
+        let mut first = true;
+        loop {
+            let seen_at = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
+            let scope = observe_service_logs(client, self.machines).await?;
+            let names = &scope.unanswered.names;
+            if first {
+                gaps = crate::ui::Gaps::default().named(names.iter());
+            }
+            gaps.extend(&scope.unanswered.failures, &scope.unanswered.omissions);
+            if first {
+                // Before reading, so a missing Service or Container still names the Server that did not answer.
+                gaps.warn();
+            }
+            let running = scope.running();
+            let round = cancellation.child_token();
+            let _round = round.clone().drop_guard();
+            let opened = open_service_logs(
+                client,
+                &scope,
+                self.args,
+                self.namespace,
+                options.clone(),
+                round.clone(),
+                self.deployment,
+            )
+            .await;
+            let inputs = match opened {
+                Ok(inputs) => inputs,
+                Err(
+                    OperatorError::NoServices
+                    | OperatorError::NoDeploymentContainers
+                    | OperatorError::NoContainersOnMachines { .. }
+                    | OperatorError::NotRunning { .. },
+                ) if !first => Vec::new(),
+                Err(error) => return Err(error.into()),
+            };
+            let deployments = scope.deployments();
+            printed.borrow_mut().begin_round();
+            let print = print_logs(
+                merge_logs(inputs, round.clone()),
+                self.utc,
+                &deployments,
+                &mut gaps,
+                |entry| printed.borrow_mut().skip(entry),
+            );
+            if !options.follow {
+                print.await?;
+                return gaps.outcome();
+            }
+            {
+                tokio::pin!(print);
+                let changed = self.changed(client, &running, &cancellation);
+                tokio::pin!(changed);
+                let mut printing = true;
+                loop {
+                    tokio::select! {
+                        result = &mut print, if printing => {
+                            result?;
+                            printing = false;
+                        }
+                        () = &mut changed => break,
+                    }
+                }
+            }
+            if cancellation.is_cancelled() {
+                return gaps.outcome();
+            }
+            // What replaced a container was made after this look, so reading from it, or
+            // from where a running container left off, misses nothing; lines already
+            // printed are skipped.
+            let resume = printed
+                .borrow()
+                .resume_at(&running)
+                .map_or(seen_at, |last| last.min(seen_at));
+            options = LogsOptions {
+                tail: -1,
+                since_nanos: Some(resume),
+                ..options
+            };
+            first = false;
+        }
+    }
+
+    /// Resolves once the containers that run differ from `running`, or on interrupt.
+    async fn changed(
+        &self,
+        client: &mut crate::connect::Client,
+        running: &std::collections::BTreeSet<ContainerId>,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => return,
+                () = tokio::time::sleep(FOLLOW_LOOK) => {}
+            }
+            if observe_service_logs(client, self.machines)
+                .await
+                .is_ok_and(|scope| scope.running() != *running)
+            {
+                return;
+            }
+        }
+    }
 }
 
 /// Print Deployment `id`'s build logs: each Service in `named`, or every build.
@@ -996,138 +1067,88 @@ fn log_window(matches: &ArgMatches, now: i64) -> Result<LogsOptions, Error> {
     })
 }
 
-/// `-n` reads the last lines of the window; `--since` alone, or `-n all`,
-/// reads all of it.
-fn history_window(matches: &ArgMatches, options: &LogsOptions) -> HistoryWindow {
-    let since = options.since_nanos;
-    let until = options
-        .until_unix_seconds
-        .map(|until| until.saturating_mul(NANOS));
+/// `-n` reads the last lines of the window; `--since` alone, or `-n all`, reads all of it.
+fn docker_tail(matches: &ArgMatches, options: &LogsOptions) -> i32 {
     let explicit = matches.value_source("tail") == Some(ValueSource::CommandLine);
-    match usize::try_from(options.tail) {
-        Ok(lines) if explicit || since.is_none() => HistoryWindow::Last {
-            lines,
-            since,
-            until,
-        },
-        _ => HistoryWindow::All { since, until },
+    if explicit || options.since_nanos.is_none() {
+        options.tail
+    } else {
+        -1
     }
 }
 
-fn print_history(record: &HistoryRecord, utc: bool) -> Result<(), Error> {
+fn print_stored(line: &StoredLine, utc: bool) -> Result<(), Error> {
+    let container = line.container();
+    let view = LogLine {
+        time_ns: line.timestamp,
+        machine: line.machine_name.as_str(),
+        label: line.service.as_str(),
+        service: Some(line.service.as_str()),
+        container: container.as_ref(),
+        deployment: None,
+        hook: None,
+    };
+    let stderr = line.stream == StoredStream::Stderr;
     if crate::ui::json() {
-        crate::ui::emit_line(&history_line(record))?;
+        crate::ui::emit_line(&view.json(serde_json::json!({
+            "stream": if stderr { "stderr" } else { "stdout" },
+            "level": log_level(line.message.as_bytes()),
+            "line": line.message,
+            "message": format!("{}\n", line.message),
+        })))?;
         return Ok(());
     }
-    let prefix = LogLine::from_history(record).prefix(utc);
-    match &record.event {
-        HistoryEvent::Line { stream, text, .. } => {
-            let output: &mut dyn Write = if *stream == HistoryStream::Stderr {
-                &mut std::io::stderr()
-            } else {
-                &mut crate::ui::stdout_bytes()
-            };
-            output.write_all(prefix.as_bytes())?;
-            output.write_all(text)?;
-            output.write_all(b"\n")?;
-            crate::ui::printed();
-        }
-        HistoryEvent::Gap { to, reason, .. } => {
-            let why = match reason {
-                HistoryGapReason::NotCaptured => "not captured",
-                HistoryGapReason::Corrupt => "unreadable",
-            };
-            crate::ui::note(format_args!(
-                "{prefix}lines until {} are missing: {why}",
-                format_time(*to, utc)
-            ));
-        }
-        HistoryEvent::Exit {
-            exit_code,
-            oom_killed,
-            ..
-        } => {
-            let code =
-                exit_code.map_or_else(|| "an unknown code".to_owned(), |code| code.to_string());
-            let oom = if *oom_killed {
-                ", killed out of memory"
-            } else {
-                ""
-            };
-            crate::ui::note(format_args!("{prefix}exited with {code}{oom}"));
-        }
-    }
+    let output: &mut dyn Write = if stderr {
+        &mut std::io::stderr()
+    } else {
+        &mut crate::ui::stdout_bytes()
+    };
+    output.write_all(view.prefix(utc).as_bytes())?;
+    output.write_all(line.message.as_bytes())?;
+    output.write_all(b"\n")?;
+    crate::ui::printed();
     Ok(())
 }
 
-/// One `--json` history record. A line carries the live fields too.
-fn history_line(record: &HistoryRecord) -> serde_json::Value {
-    let container = &record.container;
-    let mut line = LogLine::from_history(record).json(serde_json::json!({
-        "namespace": container.namespace,
-        "replica": container.replica,
-    }));
-    let fields = match &record.event {
-        HistoryEvent::Line { stream, text, .. } => serde_json::json!({
-            "stream": stream,
-            "level": log_level(text),
-            "line": String::from_utf8_lossy(text),
-            "message": format!("{}\n", String::from_utf8_lossy(text)),
-        }),
-        HistoryEvent::Gap {
-            from, to, reason, ..
-        } => serde_json::json!({
-            "gap": { "from": json_time(*from), "to": json_time(*to), "reason": reason },
-        }),
-        HistoryEvent::Exit {
-            exit_code,
-            oom_killed,
-            ..
-        } => serde_json::json!({
-            "exit": { "code": exit_code, "oom_killed": oom_killed },
-        }),
-    };
-    if let (Some(line), serde_json::Value::Object(fields)) = (line.as_object_mut(), fields) {
-        line.extend(fields);
-    }
-    line
-}
-
-/// What history printed, so `-f` follows on without repeating or skipping a
-/// line. Each container resumes after its own last printed line: one Server's
-/// store can lag another's, so a single cut for all of them drops lines.
+/// What `-f` printed, so a read that starts again after a redeploy neither repeats nor
+/// skips a line. Each container resumes after its own last printed line.
 #[derive(Debug, Default)]
 struct Printed {
-    containers: HashMap<ContainerId, i64>,
-    first: Option<i64>,
+    last: HashMap<ContainerId, i64>,
+    /// `last` as this read began: what it must not print again.
+    covered: HashMap<ContainerId, i64>,
 }
 
 impl Printed {
-    fn record(&mut self, record: &HistoryRecord) {
-        if let HistoryEvent::Line { ts, .. } | HistoryEvent::Exit { ts, .. } = record.event {
-            let container = self
-                .containers
-                .entry(record.container.container_id)
-                .or_insert(ts);
-            *container = (*container).max(ts);
-            self.first = Some(self.first.map_or(ts, |first| first.min(ts)));
-        }
+    fn begin_round(&mut self) {
+        self.covered.clone_from(&self.last);
     }
 
-    /// Where the live read starts: the start of what history printed, so a
-    /// container whose store had none of its lines yet still shows them all.
-    fn since(&self, started: i64) -> i64 {
-        self.first.unwrap_or(started)
-    }
-
-    /// A live line history already printed. A container history printed
-    /// nothing from is never covered.
-    fn covers(&self, entry: &LogEntry) -> bool {
-        let printed = match &entry.metadata.origin {
-            LogOrigin::Service { container_id, .. } => self.containers.get(container_id),
-            LogOrigin::Machine { .. } => None,
+    /// Whether an earlier read printed `entry`; if not, it is printed now.
+    fn skip(&mut self, entry: &LogEntry) -> bool {
+        let LogOrigin::Service { container_id, .. } = &entry.metadata.origin else {
+            return false;
         };
-        printed.is_some_and(|ts| entry.timestamp_unix_nanos <= *ts)
+        let ts = entry.timestamp_unix_nanos;
+        if self
+            .covered
+            .get(container_id)
+            .is_some_and(|covered| ts <= *covered)
+        {
+            return true;
+        }
+        let last = self.last.entry(*container_id).or_insert(ts);
+        *last = (*last).max(ts);
+        false
+    }
+
+    /// Where the oldest of `running`'s containers left off, if one has printed.
+    fn resume_at(&self, running: &std::collections::BTreeSet<ContainerId>) -> Option<i64> {
+        running
+            .iter()
+            .filter_map(|container| self.last.get(container))
+            .min()
+            .copied()
     }
 }
 
@@ -1198,12 +1219,12 @@ fn log_line(
     )
 }
 
-/// What a live log entry and a history record both say about a line: when, from
+/// What a live log entry and a stored line both say about a line: when, from
 /// where, and under which hook. The prefix and the `--json` fields they share are
 /// built here once.
 struct LogLine<'a> {
     time_ns: i64,
-    machine: &'a ployz_core::MachineName,
+    machine: &'a str,
     /// What the prefix calls the source.
     label: &'a str,
     service: Option<&'a str>,
@@ -1213,22 +1234,6 @@ struct LogLine<'a> {
 }
 
 impl<'a> LogLine<'a> {
-    fn from_history(record: &'a HistoryRecord) -> Self {
-        let container = &record.container;
-        Self {
-            time_ns: record.ts(),
-            machine: &record.machine,
-            label: container
-                .service
-                .as_deref()
-                .unwrap_or(container.replica.as_str()),
-            service: container.service.as_deref(),
-            container: Some(&container.container_id),
-            deployment: container.deployment.as_deref(),
-            hook: (container.kind == HistoryContainerKind::PreDeployHook).then_some("pre-deploy"),
-        }
-    }
-
     fn from_live(entry: &'a LogEntry, deployments: &'a HashMap<ContainerId, String>) -> Self {
         let (service, container, hook) = match &entry.metadata.origin {
             LogOrigin::Service {
@@ -1241,7 +1246,7 @@ impl<'a> LogLine<'a> {
         };
         Self {
             time_ns: entry.timestamp_unix_nanos,
-            machine: &entry.metadata.machine_name,
+            machine: entry.metadata.machine_name.as_str(),
             label: service,
             service: Some(service),
             container,
@@ -1729,42 +1734,22 @@ mod scope_tests {
 
     #[test]
     fn since_reads_the_whole_window_and_tail_reads_its_end() {
-        let window = |args: &[&str]| {
+        let tail = |args: &[&str]| {
             let root = crate::cli::command().try_get_matches_from(args).unwrap();
             let leaf = leaf_matches(&root);
-            history_window(leaf, &log_options(leaf).unwrap())
+            docker_tail(leaf, &log_options(leaf).unwrap())
         };
+        assert_eq!(tail(&["ployz", "logs", "web"]), 100);
+        assert_eq!(tail(&["ployz", "logs", "web", "--since", "2h"]), -1);
         assert_eq!(
-            window(&["ployz", "logs", "web"]),
-            HistoryWindow::Last {
-                lines: 100,
-                since: None,
-                until: None
-            }
+            tail(&["ployz", "logs", "web", "--since", "2h", "-n", "5"]),
+            5
         );
-        let HistoryWindow::All {
-            since: Some(since), ..
-        } = window(&["ployz", "logs", "web", "--since", "2h"])
-        else {
-            panic!("--since alone reads the whole window");
-        };
-        assert_eq!(since % NANOS, 0);
-        assert!(matches!(
-            window(&["ployz", "logs", "web", "--since", "2h", "-n", "5"]),
-            HistoryWindow::Last {
-                lines: 5,
-                since: Some(_),
-                ..
-            }
-        ));
-        assert!(matches!(
-            window(&["ployz", "logs", "web", "-n", "all"]),
-            HistoryWindow::All { since: None, .. }
-        ));
+        assert_eq!(tail(&["ployz", "logs", "web", "-n", "all"]), -1);
     }
 
     #[test]
-    fn a_server_whose_history_failed_makes_the_command_partial() {
+    fn a_server_that_failed_makes_the_command_partial() {
         let mut gaps = crate::ui::Gaps::default();
         assert!(gaps.outcome().is_ok());
         let failure = ployz_core::MachineFailure {
@@ -1808,30 +1793,7 @@ mod scope_tests {
     #[test]
     fn follow_resumes_each_container_after_its_own_last_printed_line() {
         let container = |c: char| ContainerId::parse(c.to_string().repeat(64)).unwrap();
-        let machine = ployz_core::MachineName::parse("machine-1").unwrap();
-        let mut printed = Printed::default();
-        assert_eq!(printed.since(7), 7);
-        for (id, ts) in [('a', 100), ('b', 50)] {
-            printed.record(&HistoryRecord {
-                machine: machine.clone(),
-                container: std::sync::Arc::new(ployz_core::HistoryContainer {
-                    container_id: container(id),
-                    namespace: None,
-                    service: None,
-                    deployment: None,
-                    replica: String::new(),
-                    kind: HistoryContainerKind::Service,
-                }),
-                event: HistoryEvent::Line {
-                    ts,
-                    stream: HistoryStream::Stdout,
-                    text: Vec::new(),
-                },
-            });
-        }
-        // Live starts where history did, so a container it missed loses nothing.
-        assert_eq!(printed.since(7), 50);
-        let live = |id: char, ts: i64| LogEntry {
+        let line = |id: char, ts: i64| LogEntry {
             metadata: ployz_core::LogMetadata {
                 origin: LogOrigin::Service {
                     service_id: ployz_core::ServiceId::parse("1".repeat(32)).unwrap(),
@@ -1840,18 +1802,25 @@ mod scope_tests {
                     hook: None,
                 },
                 machine_id: ployz_core::MachineId::parse("2".repeat(32)).unwrap(),
-                machine_name: machine.clone(),
+                machine_name: ployz_core::MachineName::parse("machine-1").unwrap(),
             },
             timestamp_unix_nanos: ts,
             body: LogBody::Stdout(Vec::new()),
         };
-        assert!(!printed.covers(&live('b', 60)));
-        assert!(printed.covers(&live('b', 50)));
-        assert!(printed.covers(&live('a', 60)));
-        assert!(!printed.covers(&live('a', 101)));
-        // A container history printed nothing from shows every live line.
-        assert!(!printed.covers(&live('c', 50)));
-        assert!(!printed.covers(&live('c', 90)));
+        let mut printed = Printed::default();
+        printed.begin_round();
+        // Two lines with one timestamp are both new in the read that prints them.
+        for (id, ts) in [('a', 100), ('a', 100), ('b', 50)] {
+            assert!(!printed.skip(&line(id, ts)));
+        }
+        let running = std::collections::BTreeSet::from([container('a'), container('b')]);
+        assert_eq!(printed.resume_at(&running), Some(50));
+        printed.begin_round();
+        assert!(printed.skip(&line('b', 50)));
+        assert!(printed.skip(&line('a', 99)));
+        assert!(!printed.skip(&line('a', 101)));
+        // A container the first read never saw shows every line.
+        assert!(!printed.skip(&line('c', 50)));
     }
 
     /// The Namespace view a Store answers, as JSON, so an older Store's reply can
@@ -1913,25 +1882,6 @@ mod scope_tests {
         assert_eq!(resolve(&scoped, "api2").unwrap(), "shop-production/api");
     }
 
-    fn history_of(
-        service: Option<&str>,
-        kind: HistoryContainerKind,
-        event: HistoryEvent,
-    ) -> HistoryRecord {
-        HistoryRecord {
-            machine: ployz_core::MachineName::parse("machine-1").unwrap(),
-            container: std::sync::Arc::new(ployz_core::HistoryContainer {
-                container_id: ContainerId::parse("c".repeat(64)).unwrap(),
-                namespace: Some("shop-production".into()),
-                service: service.map(str::to_owned),
-                deployment: Some("12".into()),
-                replica: "web-replica".into(),
-                kind,
-            }),
-            event,
-        }
-    }
-
     fn live_of(hook: Option<&str>, body: LogBody) -> LogEntry {
         LogEntry {
             metadata: ployz_core::LogMetadata {
@@ -1951,130 +1901,33 @@ mod scope_tests {
 
     const TIME: i64 = 1_700_000_000_123_456_789;
 
-    fn shared(deployment: serde_json::Value, hook: serde_json::Value) -> serde_json::Value {
-        let id = "c".repeat(64);
-        serde_json::json!({
-            "timestamp": "2023-11-14T22:13:20.123456789+00:00",
-            "ts": "2023-11-14T22:13:20.123456789Z",
-            "machine": "machine-1",
-            "service": "web",
-            "container": id,
-            "container_id": id,
-            "deployment": deployment,
-            "hook": hook,
-        })
-    }
-
-    fn with(mut line: serde_json::Value, own: serde_json::Value) -> serde_json::Value {
-        if let (Some(line), serde_json::Value::Object(own)) = (line.as_object_mut(), own) {
-            line.extend(own);
+    #[test]
+    fn a_stored_line_and_a_live_line_name_the_same_json_fields() {
+        let id = ContainerId::parse("c".repeat(64)).unwrap();
+        let stored = LogLine {
+            time_ns: TIME,
+            machine: "machine-1",
+            label: "web",
+            service: Some("web"),
+            container: Some(&id),
+            deployment: None,
+            hook: None,
         }
-        line
-    }
-
-    #[test]
-    fn a_history_line_and_a_live_line_carry_the_same_json_fields_where_they_share_them() {
-        let output = serde_json::json!({
-            "stream": "stderr",
-            "level": log_level(b"boom"),
-            "line": "boom",
-            "message": "boom\n",
-        });
-        let history = history_line(&history_of(
-            Some("web"),
-            HistoryContainerKind::Service,
-            HistoryEvent::Line {
-                ts: TIME,
-                stream: HistoryStream::Stderr,
-                text: b"boom".to_vec(),
-            },
-        ));
-        let deployments =
-            HashMap::from([(ContainerId::parse("c".repeat(64)).unwrap(), "12".to_owned())]);
+        .json(serde_json::Value::Null);
         let live = log_line(
-            &live_of(None, LogBody::Stderr(b"boom\n".to_vec())),
-            &deployments,
-        )
-        .unwrap();
-        let common = shared("12".into(), serde_json::Value::Null);
-        assert_eq!(
-            history,
-            with(
-                with(
-                    common.clone(),
-                    serde_json::json!({ "namespace": "shop-production", "replica": "web-replica" })
-                ),
-                output.clone()
-            )
-        );
-        assert_eq!(
-            live,
-            with(
-                with(common, serde_json::json!({ "service_id": "1".repeat(32) })),
-                output
-            )
-        );
-    }
-
-    #[test]
-    fn a_pre_deploy_hook_is_named_the_same_in_both_json_lines() {
-        let history = history_line(&history_of(
-            None,
-            HistoryContainerKind::PreDeployHook,
-            HistoryEvent::Exit {
-                ts: TIME,
-                exit_code: Some(1),
-                oom_killed: false,
-            },
-        ));
-        let live = log_line(
-            &live_of(Some("pre-deploy"), LogBody::Stdout(b"hi\n".to_vec())),
+            &live_of(None, LogBody::Stdout(b"hi\n".to_vec())),
             &HashMap::new(),
         )
         .unwrap();
-        let hook = serde_json::json!("pre-deploy");
-        assert_eq!(
-            history,
-            with(
-                shared("12".into(), hook.clone()),
-                serde_json::json!({
-                    "service": null,
-                    "namespace": "shop-production",
-                    "replica": "web-replica",
-                    "exit": { "code": 1, "oom_killed": false },
-                })
-            )
-        );
-        assert_eq!(
-            live,
-            with(
-                shared(serde_json::Value::Null, hook),
-                serde_json::json!({
-                    "service_id": "1".repeat(32),
-                    "stream": "stdout",
-                    "level": log_level(b"hi"),
-                    "line": "hi",
-                    "message": "hi\n",
-                })
-            )
-        );
+        let shared = |line: &serde_json::Value| {
+            ["timestamp", "ts", "machine", "service", "container_id"]
+                .map(|field| line[field].clone())
+        };
+        assert_eq!(shared(&stored), shared(&live));
     }
 
     #[test]
     fn a_log_line_prefix_names_time_machine_service_container_and_hook() {
-        let history = history_of(
-            None,
-            HistoryContainerKind::PreDeployHook,
-            HistoryEvent::Exit {
-                ts: TIME,
-                exit_code: None,
-                oom_killed: false,
-            },
-        );
-        assert_eq!(
-            LogLine::from_history(&history).prefix(true),
-            "2023-11-14T22:13:20.123456789+00:00 machine-1 web-replica/cccccccccccc (pre-deploy) | "
-        );
         let live = live_of(Some("pre-deploy"), LogBody::Stdout(Vec::new()));
         assert_eq!(
             LogLine::from_live(&live, &HashMap::new()).prefix(true),

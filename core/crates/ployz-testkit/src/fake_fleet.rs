@@ -27,9 +27,8 @@ use ployz_core::{
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
     ContractDescription, CopyPlace, CopyRole, CopyRotation, DockerVolume, DockerVolumeId,
     DockerVolumeName, DockerVolumeStorageObservation, DoorChange, DoorOutcome, EnrollmentSnapshot,
-    EnsuredContainer, HealthObservation, HistoryContainer, HistoryContainerKind, HistoryRow,
-    HistoryStream, IngressDoors, IngressDoorsSet, LiveLogTarget, LocalMachinePhase, LogBody,
-    LogDirection, LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, Machine, MachineDetails,
+    EnsuredContainer, HealthObservation, IngressDoors, IngressDoorsSet, LiveLogTarget,
+    LocalMachinePhase, LogBody, LogEntry, LogMetadata, LogOrigin, Machine, MachineDetails,
     MachineId, MachineList, MachineName, MachineObservation, MachinePath, MachineRelease,
     MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt, MachineUpgradeOutcome,
     MachineVersion, MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR,
@@ -850,6 +849,7 @@ impl Fleet {
                         image_id: None,
                         last_check: None,
                         run: None,
+                        last_exit_code: None,
                         leaving: false,
                     }
                     .into(),
@@ -981,14 +981,6 @@ impl Fleet {
                 Ok(Reply::Frames {
                     frames: machine.log_frames(container, lines)?,
                     hold: options.follow,
-                })
-            }
-            RpcRequestBody::LogHistory(request) => {
-                request.validate().map_err(Status::invalid_argument)?;
-                let machine = self.by_id(target)?;
-                Ok(Reply::Frames {
-                    frames: machine.history_frames(&request)?,
-                    hold: false,
                 })
             }
             RpcRequestBody::RuntimeWatch(_) => {
@@ -1439,67 +1431,6 @@ impl MachineState {
             })
             .collect()
     }
-    fn history_frames(&self, request: &LogHistoryRequest) -> Result<Vec<OpaquePayload>, Status> {
-        let containers: Vec<&ContainerState> = self
-            .containers
-            .iter()
-            .filter(|container| {
-                request.container_id.is_none_or(|id| id == container.id)
-                    && request
-                        .namespace
-                        .as_deref()
-                        .is_none_or(|namespace| namespace == container.spec.namespace.as_str())
-                    && request
-                        .service
-                        .as_deref()
-                        .is_none_or(|service| service == container.spec.service.as_str())
-                    && request.deployment.as_deref().is_none_or(|deployment| {
-                        container.spec.deployment.map(|d| d.to_string()).as_deref()
-                            == Some(deployment)
-                    })
-            })
-            .collect();
-        let mut lines: Vec<(i64, &ContainerState, &String)> = containers
-            .iter()
-            .flat_map(|container| {
-                timed(&container.spec.logs).map(move |(nanos, line)| (nanos, *container, line))
-            })
-            .filter(|(nanos, _, _)| request.since_nanos.is_none_or(|since| *nanos >= since))
-            .filter(|(nanos, _, _)| request.until_nanos.is_none_or(|until| *nanos < until))
-            .collect();
-        lines.sort_by_key(|(nanos, _, _)| *nanos);
-        let limit = usize::from(request.limit);
-        if request.direction == LogDirection::Backward {
-            lines = lines.split_off(lines.len().saturating_sub(limit));
-        } else {
-            lines.truncate(limit);
-        }
-        let mut rows = Vec::new();
-        let mut announced = Vec::new();
-        for (nanos, container, line) in lines {
-            if !announced.contains(&container.id) {
-                announced.push(container.id);
-                rows.push(HistoryRow::Container(HistoryContainer {
-                    container_id: container.id,
-                    namespace: Some(container.spec.namespace.to_string()),
-                    service: Some(container.spec.service.to_string()),
-                    deployment: container.spec.deployment.map(|d| d.to_string()),
-                    replica: container.spec.name.clone(),
-                    kind: HistoryContainerKind::Service,
-                }));
-            }
-            rows.push(HistoryRow::Line {
-                container_id: container.id,
-                ts: nanos,
-                stream: HistoryStream::Stdout,
-                text: line.clone().into_bytes(),
-            });
-        }
-        rows.push(HistoryRow::End { next: None });
-        rows.iter()
-            .map(|row| row.encode().map_err(internal))
-            .collect()
-    }
 }
 
 /// Each fixture line with its timestamp, one second apart.
@@ -1621,7 +1552,6 @@ macro_rules! fleet_service {
         impl MachineRpc for FleetService {
             type ExecStream = FrameStream;
             type BuildStream = FrameStream;
-            type LogHistoryStream = FrameStream;
             type TailLogsStream = FrameStream;
             type RuntimeWatchStream = FrameStream;
 

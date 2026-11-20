@@ -1,6 +1,6 @@
 import type { Collection } from "@tanstack/react-db";
 import { Schema } from "effect";
-import type { LogExit, LogGap, LogRecord } from "@ployz/sdk";
+import type { LogRecord } from "@ployz/sdk";
 
 const timestamp = Schema.String.check(Schema.isPattern(/^-?\d+$/));
 const source = {
@@ -14,16 +14,16 @@ const source = {
 export const containerLogLineSchema = Schema.Struct({
   kind: Schema.Literal("line"),
   ...source,
-  channel: Schema.Literals(["stdout", "stderr", "lifecycle"]),
+  channel: Schema.Literals(["stdout", "stderr"]),
   level: Schema.Literals(["error", "warn", "info", "debug"]),
   message: Schema.String,
 });
-/** A stretch of one container's output the Log Store doesn't have, or that couldn't be checked for Sealed values; `timestamp` is where it starts. */
+/** A line the reader couldn't check for Sealed values; `timestamp` is where it starts. */
 export const containerLogGapSchema = Schema.Struct({
   kind: Schema.Literal("gap"),
   ...source,
   until: timestamp,
-  reason: Schema.Literals(["not_captured", "corrupt", "hidden"]),
+  reason: Schema.Literal("hidden"),
 });
 export const containerLogRowSchema = Schema.Union([containerLogLineSchema, containerLogGapSchema]);
 export type ContainerLogLine = typeof containerLogLineSchema.Type;
@@ -56,25 +56,6 @@ export function projectContainerLog(record: LogRecord): ContainerLogRow {
   return { kind: "line", ...source, channel: record.channel, level: record.level, message: record.message };
 }
 
-export function projectLogGap(gap: LogGap): ContainerLogRow {
-  return {
-    kind: "gap", id: `${gap.machineId}/${gap.containerId}/gap/${gap.fromNanos}`, timestamp: gap.fromNanos, until: gap.toNanos,
-    machineId: gap.machineId, machineName: gap.machineName, containerId: gap.containerId, serviceName: gap.serviceName, reason: gap.reason,
-  };
-}
-
-const OUT_OF_MEMORY = "Out of memory";
-
-export function projectLogExit(exit: LogExit): ContainerLogLine {
-  const code = exit.exitCode === null ? "" : ` (exit code ${exit.exitCode})`;
-  return {
-    kind: "line", id: `${exit.machineId}/${exit.containerId}/exit/${exit.timestampNanos}`, timestamp: exit.timestampNanos,
-    machineId: exit.machineId, machineName: exit.machineName, containerId: exit.containerId, serviceName: exit.serviceName,
-    channel: "lifecycle", level: exit.oomKilled || (exit.exitCode ?? 0) !== 0 ? "error" : "info",
-    message: exit.oomKilled ? `${OUT_OF_MEMORY}${code}` : exit.exitCode === null ? "Exited" : `Exited with code ${exit.exitCode}`,
-  };
-}
-
 export type ContainerLogs = Collection<ContainerLogRow, string>;
 
 const group = (row: ContainerLogRow) => `${row.machineId}/${row.containerId}/${row.timestamp}`;
@@ -86,7 +67,7 @@ function byGroup(rows: readonly ContainerLogRow[]) {
 
 /**
  * One insert for the whole batch: a live query recomputes once, not once per line. A live line whose timestamp group
- * the Log Store already answered is a repeat of it, as a reconnect's replayed tail is.
+ * Cloud's history already answered is a repeat of it, as a reconnect's replayed tail is.
  */
 export function appendContainerLogs(collection: ContainerLogs, rows: readonly ContainerLogRow[], stored: ReadonlySet<string> = new Set()) {
   const fresh = new Map(rows.filter(row => !collection.has(row.id) && !stored.has(group(row))).map(row => [row.id, row]));
@@ -130,7 +111,7 @@ export function restartContainerLogs(collection: ContainerLogs, waiting: readonl
 }
 
 /**
- * The live tail starts each container somewhere inside the Log Store's newest page, so the two overlap. The Store's
+ * The live tail starts each container somewhere inside Cloud's newest page of history, so the two overlap. The Store's
  * read of a timestamp group replaces the tail's copy of it, and `stored` remembers the group for later live lines.
  */
 export function mergeContainerHistory(collection: ContainerLogs, rows: readonly ContainerLogRow[], stored: Set<string>) {
@@ -139,12 +120,7 @@ export function mergeContainerHistory(collection: ContainerLogs, rows: readonly 
   const replaced = [...collection.values()].filter(row => row.kind === "line" && !page.has(row.id) && !stored.has(group(row)) && groups.has(group(row))).map(row => row.id);
   if (replaced.length) collection.delete(replaced);
   for (const key of groups) stored.add(key);
-  // An older daemon kept a die Docker sent again as a second exit row, and only one copy may have seen its OOM kill.
-  const fresh = new Map<string, ContainerLogRow>();
-  for (const row of rows) {
-    if (collection.has(row.id)) continue;
-    if (!fresh.has(row.id) || (row.kind === "line" && row.message.startsWith(OUT_OF_MEMORY))) fresh.set(row.id, row);
-  }
+  const fresh = new Map(rows.filter(row => !collection.has(row.id)).map(row => [row.id, row]));
   if (fresh.size) collection.insert([...fresh.values()]);
 }
 

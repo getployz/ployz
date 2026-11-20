@@ -1351,6 +1351,7 @@ impl CopyLifecycle for Scripted {
                     image_id: None,
                     last_check,
                     run: None,
+                    last_exit_code: None,
                     leaving: false,
                 })
             }
@@ -1368,6 +1369,7 @@ impl CopyLifecycle for Scripted {
                     image_id: None,
                     last_check: None,
                     run: None,
+                    last_exit_code: None,
                     leaving: false,
                 })
             }

@@ -1,17 +1,9 @@
-//! What a container's `meta.json` says, made from an inspect, and how it is
-//! saved.
-
-use std::{io, path::Path};
+//! What the harvester and the sampler know of a container, made from an inspect.
 
 use bollard::models::ContainerInspectResponse;
 use ployz_core::labels;
 
-use super::layout::{ContainerKind, ContainerMeta, META_FILE};
-
-pub(super) fn write_meta(dir: &Path, meta: &ContainerMeta) -> io::Result<()> {
-    let json = serde_json::to_vec(meta).map_err(io::Error::other)?;
-    crate::filesystem::atomic_write(&dir.join(META_FILE), &json, 0o600)
-}
+use super::layout::{ContainerKind, ContainerMeta};
 
 pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<ContainerMeta> {
     let labels = inspected.config.as_ref()?.labels.as_ref()?;
@@ -45,10 +37,7 @@ pub(super) fn container_meta(inspected: &ContainerInspectResponse) -> Option<Con
 #[cfg(test)]
 mod tests {
     use super::container_meta;
-    use crate::observe::{
-        fixtures::labelled,
-        layout::{ContainerKind, ContainerMeta},
-    };
+    use crate::observe::{fixtures::labelled, layout::ContainerKind};
 
     #[test]
     fn ingress_is_a_system_container_and_an_app_is_a_service() {
@@ -163,35 +152,6 @@ mod tests {
             classify(&[("ployz.service.hook", "pre-deploy")]),
             None,
             "a hook label alone does not make a container Ployz's"
-        );
-    }
-
-    #[test]
-    fn meta_json_names_each_container_kind_in_snake_case() {
-        let meta = |kind| ContainerMeta {
-            service: Some("web".to_owned()),
-            namespace: Some("app".to_owned()),
-            deployment: None,
-            replica: "web-1".to_owned(),
-            kind,
-            started_at: None,
-            finished_at: None,
-            exit_code: None,
-            oom_killed: false,
-        };
-        for (kind, name) in [
-            (ContainerKind::Service, "service"),
-            (ContainerKind::PreDeployHook, "pre_deploy_hook"),
-            (ContainerKind::System, "system"),
-        ] {
-            let json = serde_json::to_value(meta(kind)).unwrap();
-            assert_eq!(json.get("kind"), Some(&serde_json::json!(name)));
-            let back: ContainerMeta = serde_json::from_value(json).unwrap();
-            assert_eq!(back.kind, kind);
-        }
-        assert_eq!(
-            serde_json::to_string(&meta(ContainerKind::Service)).unwrap(),
-            r#"{"service":"web","namespace":"app","deployment":null,"replica":"web-1","kind":"service","started_at":null,"finished_at":null,"exit_code":null,"oom_killed":false}"#
         );
     }
 }

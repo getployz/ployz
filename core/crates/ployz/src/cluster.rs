@@ -1742,11 +1742,6 @@ impl StreamRpc for op::TailLogs {
     const CLIENT_STREAM: bool = false;
 }
 
-impl StreamRpc for op::LogHistory {
-    const PATH: &'static str = op::LogHistory::PATH;
-    const CLIENT_STREAM: bool = false;
-}
-
 impl StreamRpc for op::RuntimeWatch {
     const PATH: &'static str = op::RuntimeWatch::PATH;
     const CLIENT_STREAM: bool = false;

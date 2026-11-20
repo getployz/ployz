@@ -23,9 +23,9 @@ use ployz_core::{
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
     MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
     Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
-    ResolvedServiceSpec, ResolvedUpdateConfig, RetainedEnvReply, RotationEdge, RoutesRead,
-    RpcError, RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RotationEdge, RoutesRead, RpcError, RpcRequestBody,
+    RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use ployz_testkit::{
     fake_machine::{Fake, FakeMachine, FakeStream},
@@ -67,23 +67,14 @@ pub(super) struct DeployService {
     /// Once released, a Starting Container turns healthy and starts serving.
     health_release: Option<Arc<tokio::sync::watch::Sender<bool>>>,
     health_waits: Arc<tokio::sync::Notify>,
-    /// Docker restarted each Container after its exit, and the new run printed `booting`.
-    rebooted: bool,
-    /// Between that exit and `booting`, a run exited having printed nothing.
-    silent_run: bool,
     /// The Machine answers an In ask without a health verdict and leaves the copy where it was.
     unread_health: bool,
     effective_healthcheck: Option<HealthcheckSpec>,
     removed: Arc<Mutex<BTreeSet<ContainerId>>>,
-    pub(super) history_requests: Arc<Mutex<Vec<ployz_core::LogHistoryRequest>>>,
-    /// Machines whose Log Store answers with an error row, and its message.
-    pub(super) history_failures: BTreeMap<MachineId, String>,
     /// Containers the Machine can no longer inspect, as when one has been removed.
     pub(super) uninspectable: BTreeSet<ContainerId>,
     /// Containers whose inspect runs out of time, as when Docker stalls.
     pub(super) stalled_inspects: BTreeSet<ContainerId>,
-    /// The env the Log Store kept per Container; `None` is a daemon predating the route.
-    pub(super) retained_envs: Option<BTreeMap<ContainerId, BTreeMap<String, String>>>,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
     pub(super) listing_blocked: Option<Arc<tokio::sync::Notify>>,
@@ -183,16 +174,11 @@ impl DeployService {
             oom_killed: false,
             health_release: None,
             health_waits: Arc::new(tokio::sync::Notify::new()),
-            rebooted: false,
-            silent_run: false,
             unread_health: false,
             effective_healthcheck: None,
             removed: Arc::new(Mutex::new(BTreeSet::new())),
-            history_requests: Arc::new(Mutex::new(Vec::new())),
-            history_failures: BTreeMap::new(),
             uninspectable: BTreeSet::new(),
             stalled_inspects: BTreeSet::new(),
-            retained_envs: Some(BTreeMap::new()),
             start_error: None,
             listing_failures: Vec::new(),
             listing_blocked: None,
@@ -410,21 +396,6 @@ impl DeployService {
         self
     }
 
-    /// Containers crash, and Docker restarts them so each new run prints `booting`
-    /// after the stored exit.
-    pub(super) fn reboot_containers(mut self) -> Self {
-        self.runtime = ContainerRuntimeObservation::Restarting;
-        self.rebooted = true;
-        self
-    }
-
-    /// Like [`Self::reboot_containers`], with a run that exited printing nothing
-    /// between the crash and `booting`.
-    pub(super) fn reboot_containers_through_a_silent_run(mut self) -> Self {
-        self.silent_run = true;
-        self.reboot_containers()
-    }
-
     /// Containers exit 137 with Docker's inspect saying it OOM-killed them.
     pub(super) fn oom_kill_containers(mut self) -> Self {
         self.runtime = ContainerRuntimeObservation::Exited { code: 137 };
@@ -518,6 +489,21 @@ impl DeployService {
 
     pub(super) fn mutating_rpcs(&self) -> Arc<AtomicUsize> {
         self.mutating_rpcs.clone()
+    }
+
+    /// Every Machine runs `web` of `app` as Containers `c..c` and `d..d`, the ones whose
+    /// lines [`Self::tail_logs`] serves.
+    pub(super) fn with_web_containers(self) -> Self {
+        let spec = spec("web");
+        let containers = self
+            .machines
+            .iter()
+            .flat_map(|machine| {
+                ['c', 'd'].map(|id| running_container_in(machine, &spec, "app", id))
+            })
+            .collect::<Vec<_>>();
+        self.listed_containers.lock().unwrap().extend(containers);
+        self
     }
 
     pub(super) fn listed_containers(&self) -> Arc<Mutex<Vec<ployz_core::ContainerObservation>>> {
@@ -1044,21 +1030,6 @@ impl FakeMachine for DeployService {
         self.record_mutation();
         unused()
     }
-    async fn retained_env(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let Some(retained) = &self.retained_envs else {
-            return unused();
-        };
-        let RpcRequestBody::RetainedEnv(ask) = request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected retained_env"));
-        };
-        encoded(RpcResponse::from(RetainedEnvReply {
-            environment: retained.get(&ask.container_id).cloned(),
-        }))
-    }
     async fn inspect_container(
         &self,
         request: Request<OpaquePayload>,
@@ -1119,6 +1090,8 @@ impl FakeMachine for DeployService {
                 },
             )
             .unwrap(),
+            last_exit_code: matches!(self.runtime, ContainerRuntimeObservation::Restarting)
+                .then_some(1),
             leaving: false,
         }))
     }
@@ -1314,99 +1287,58 @@ impl FakeMachine for DeployService {
             tokio_stream::wrappers::ReceiverStream::new(receiver),
         )))
     }
+    /// Docker holds `line 1`..`line 10`, then a line printing its env's PLAIN and one
+    /// leaking its TOKEN. A Service-wide read interleaves Containers `d..d` (odd lines)
+    /// and `c..c` (even lines).
     async fn tail_logs(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<FakeStream>, Status> {
+        let machine_id = machine_from_metadata(&request)?;
         let RpcRequestBody::TailLogs(tail) = request.into_inner().decode_request().unwrap().body
         else {
             return Err(Status::invalid_argument("expected tail_logs"));
         };
-        if let ployz_core::LiveLogTarget::Container(id) = tail.target
-            && self.removed.lock().unwrap().contains(&id)
-        {
-            return Err(Status::not_found(format!("No such container: {id}")));
-        }
-        unused()
-    }
-    /// Every Container's Log Store holds `line 1`..`line 10`, then a line printing its
-    /// env's PLAIN and one leaking its TOKEN, then its exit, paged newest first. A
-    /// Service-wide read interleaves Containers `d..d` (odd lines) and `c..c` (even
-    /// lines).
-    async fn log_history(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<FakeStream>, Status> {
-        let machine = machine_from_metadata(&request)?;
-        let RpcRequestBody::LogHistory(history) =
-            request.into_inner().decode_request().unwrap().body
-        else {
-            return Err(Status::invalid_argument("expected log_history"));
+        let ployz_core::LiveLogTarget::Container(id) = tail.target else {
+            return unused();
         };
-        assert_eq!(history.direction, ployz_core::LogDirection::Backward);
-        self.history_requests.lock().unwrap().push(history.clone());
-        if let Some(message) = self.history_failures.get(&machine) {
-            let row = ployz_core::HistoryRow::Error(message.clone());
-            return Ok(Response::new(Box::pin(tokio_stream::iter(vec![Ok(row
-                .encode()
-                .unwrap())]))));
-        }
-        let service_wide = history.container_id.is_none();
-        let container_id = history
-            .container_id
-            .unwrap_or_else(|| ContainerId::parse("c".repeat(64)).unwrap());
         let other = ContainerId::parse("d".repeat(64)).unwrap();
-        let mut stored = (1..=12)
-            .map(|n| ployz_core::HistoryRow::Line {
-                container_id: if service_wide && n % 2 == 1 {
-                    other
-                } else {
-                    container_id
-                },
-                ts: n,
-                stream: ployz_core::HistoryStream::Stdout,
-                text: match n {
-                    11 => b"plain from-docker".to_vec(),
-                    12 => b"token=live-only-sentinel".to_vec(),
-                    _ => format!("line {n}").into_bytes(),
-                },
+        let mut stored = (1..=12_i64)
+            .filter(|n| (id == other) == (n % 2 == 1))
+            .map(|n| {
+                let text = match n {
+                    11 => "plain from-docker".to_owned(),
+                    12 => "token=live-only-sentinel".to_owned(),
+                    _ => format!("line {n}"),
+                };
+                (n, text)
             })
             .collect::<Vec<_>>();
-        stored.push(ployz_core::HistoryRow::Exit {
-            container_id,
-            ts: 13,
-            exit_code: Some(1),
-            oom_killed: false,
-        });
-        if self.silent_run {
-            stored.push(ployz_core::HistoryRow::Exit {
-                container_id,
-                ts: 14,
-                exit_code: Some(1),
-                oom_killed: false,
-            });
-        }
-        if self.rebooted {
-            stored.push(ployz_core::HistoryRow::Line {
-                container_id,
-                ts: 15,
-                stream: ployz_core::HistoryStream::Stdout,
-                text: b"booting".to_vec(),
-            });
-        }
-        stored.reverse();
-        let total = stored.len();
-        let from = history.cursor.map_or(0, |cursor| cursor.parse().unwrap());
-        let to = total.min(from + usize::from(history.limit));
-        let mut page = stored.drain(from..to).collect::<Vec<_>>();
-        page.push(ployz_core::HistoryRow::End {
-            next: (to < total).then(|| to.to_string()),
-        });
-        let mut payloads = Vec::new();
-        for row in &page {
-            payloads.push(Ok(row.encode().unwrap()));
-        }
-        Ok(Response::new(Box::pin(tokio_stream::iter(payloads))))
+        let keep = usize::try_from(tail.options.tail).unwrap_or(stored.len());
+        stored.drain(..stored.len().saturating_sub(keep));
+        let metadata = ployz_core::LogMetadata {
+            origin: ployz_core::LogOrigin::Service {
+                service_id: ServiceId::random(),
+                service_name: ployz_core::ServiceName::parse("web").unwrap(),
+                container_id: id,
+                hook: None,
+            },
+            machine_id,
+            machine_name: MachineName::parse("one").unwrap(),
+        };
+        let frames = stored
+            .into_iter()
+            .map(|(ts, text)| {
+                Ok(ployz_core::LogEntry {
+                    metadata: metadata.clone(),
+                    timestamp_unix_nanos: ts,
+                    body: ployz_core::LogBody::Stdout(format!("{text}\n").into_bytes()),
+                }
+                .encode()
+                .unwrap())
+            })
+            .collect::<Vec<_>>();
+        Ok(Response::new(Box::pin(tokio_stream::iter(frames))))
     }
     async fn list_images(
         &self,

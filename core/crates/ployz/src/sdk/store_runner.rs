@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
-    HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
-    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, RunnerOptions,
-    ServiceName,
+    ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome, DeployWarning,
+    ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
+    MachineObservation, Operator, QualifiedService, RemoveContainerPurpose, RequestedServiceSpec,
+    RpcError, RpcErrorCode, RunnerOptions, ServiceName,
 };
 use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::tools::{LogText, SealedValues, Withheld};
@@ -1228,7 +1228,7 @@ impl Run {
         self.record(RunEvidence::NotExecuted(failure)).await
     }
 
-    /// Gives a Container's stop its last run from the Log Store, read once per Container
+    /// Gives a Container's stop its last run from Docker, read once per Container
     /// into `stopped` with its row's log, so the row and the outcome say the same.
     async fn fill_last_run(
         &self,
@@ -1256,7 +1256,8 @@ impl Run {
         *last_run = Some(run.clone());
     }
 
-    /// The failed Container's scrubbed tail, and the run its newest stored exit ended.
+    /// The failed Container's scrubbed tail, and the run Docker says it ended: its exit code
+    /// from inspect, read before the Container is removed.
     async fn failed_log(
         &self,
         client: &Client,
@@ -1265,7 +1266,15 @@ impl Run {
         container: ContainerId,
     ) -> (LogText, LastRun) {
         let withheld = |why| (LogText::Withheld { why }, LastRun::default());
-        let Some(env) = super::container_env(client, machine, container).await else {
+        let Some(details) = super::inspect_container(client, machine, container).await else {
+            return withheld(Withheld::NoSecretContext);
+        };
+        let exit_code = match details.container.runtime {
+            ContainerRuntimeObservation::Exited { code } => Some(code),
+            ContainerRuntimeObservation::Restarting => details.last_exit_code,
+            _ => None,
+        };
+        let Some(env) = details.environment else {
             return withheld(Withheld::NoSecretContext);
         };
         let Ok(mut names) = self.sealed_names(&scrub.environment).await else {
@@ -1273,16 +1282,33 @@ impl Run {
         };
         names.extend(scrub.sealed_at_claim.iter().cloned());
         let Some(tail) = super::tail_frames(client, machine, container).await else {
-            return withheld(Withheld::Unanswered);
+            return (
+                LogText::Withheld {
+                    why: Withheld::Unanswered,
+                },
+                LastRun {
+                    exit_code,
+                    last_line: None,
+                },
+            );
         };
         match self.settled_sealed_names(&scrub.environment, names).await {
-            Some(names) => tail.scrubbed(&scrub.values(&names, env)),
+            Some(names) => {
+                let (text, last_line) = tail.scrubbed(&scrub.values(&names, env));
+                (
+                    text,
+                    LastRun {
+                        exit_code,
+                        last_line,
+                    },
+                )
+            }
             None => (
                 LogText::Withheld {
                     why: Withheld::NoSecretContext,
                 },
                 LastRun {
-                    exit_code: tail.exit_code(),
+                    exit_code,
                     last_line: None,
                 },
             ),

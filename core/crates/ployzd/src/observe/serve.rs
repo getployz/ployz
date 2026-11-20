@@ -1,47 +1,34 @@
-//! The store's side of `observe.sock`: history queries for ployzd. The protocol is in
-//! [`wire`]. A query answers with one frame per [`HistoryRow`], a heartbeat each second
-//! while it reads, and [`HistoryRow::End`] last.
+//! The observe process's side of `observe.sock`: metric history for ployzd. The protocol is
+//! in [`wire`].
 
-use std::{
-    io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{io, sync::Arc, time::Duration};
 
-use ployz_core::{ContainerId, HistoryRow, LogHistoryRequest, metrics::MetricHistoryRequest};
+use ployz_core::metrics::MetricHistoryRequest;
 use tokio::{
-    io::{AsyncWrite, AsyncWriteExt as _, BufWriter},
+    io::AsyncWriteExt as _,
     net::{UnixListener, UnixStream},
     sync::Semaphore,
 };
 
 use super::{
     clock::now_nanos,
-    layout::{RetainedEnv, StoreRoot},
+    layout::StoreRoot,
     metrics::history,
-    query::{self, Bounds, Query},
     wire::{
-        DEADLINE, EnvAnswer, MAX_REQUEST, METRICS_DEADLINE, MetricsAnswer, Request, read_frame,
-        write_frame,
+        DEADLINE, MAX_REQUEST, METRICS_DEADLINE, MetricsAnswer, Request, read_frame, write_frame,
     },
 };
 
-const HEARTBEAT: Duration = Duration::from_secs(1);
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
-/// Pages read at once. Each can hold a page's text plus the file it decodes,
-/// and the harvester shares the service's memory.
+/// Metric reads at once. The process shares the service's memory with the
+/// sampler and the shippers.
 const READERS: usize = 2;
-/// How long one written row may wait on a reader that stopped reading. Its
-/// page keeps a reader until it is written.
+/// How long the answer may wait on a reader that stopped reading.
 const STALL: Duration = Duration::from_secs(10);
 
 pub(super) async fn serve(listener: UnixListener, store: StoreRoot) {
     let reading = Reading {
         store,
-        bounds: Arc::new(Bounds::default()),
         readers: Arc::new(Semaphore::new(READERS)),
         stall: STALL,
     };
@@ -51,18 +38,17 @@ pub(super) async fn serve(listener: UnixListener, store: StoreRoot) {
                 tokio::spawn(answer(stream, reading.clone()));
             }
             Err(error) => {
-                tracing::warn!(%error, "cannot accept a history reader");
+                tracing::warn!(%error, "cannot accept a metrics reader");
                 tokio::time::sleep(ACCEPT_RETRY).await;
             }
         }
     }
 }
 
-/// What every query shares.
+/// What every read shares.
 #[derive(Clone)]
 struct Reading {
     store: StoreRoot,
-    bounds: Arc<Bounds>,
     readers: Arc<Semaphore>,
     stall: Duration,
 }
@@ -72,114 +58,26 @@ async fn answer(mut stream: UnixStream, reading: Reading) {
         Ok(Ok(Some(bytes))) => serde_json::from_slice::<Request>(&bytes),
         Ok(Ok(None)) => return,
         Ok(Err(error)) => {
-            tracing::warn!(%error, "cannot read a history request");
+            tracing::warn!(%error, "cannot read a metrics request");
             return;
         }
         Err(_) => {
-            tracing::warn!("a history reader sent no request within 3 s");
+            tracing::warn!("a metrics reader sent no request within 3 s");
             return;
         }
     };
     let result = match request {
-        Ok(Request::Query(request)) => answer_query(stream, reading, request).await,
         Ok(Request::Metrics(request)) => {
             answer_metrics(stream, reading, request, METRICS_DEADLINE).await
         }
-        Ok(Request::Env(container)) => answer_env(stream, &reading.store, container).await,
         Err(error) => {
-            let row = HistoryRow::Error(format!("unreadable history request: {error}"));
-            write_row(&mut stream, &row).await
+            let answer = MetricsAnswer::Invalid(format!("unreadable request: {error}"));
+            write_answer(&mut stream, reading.stall, &answer).await
         }
     };
     if let Err(error) = result {
-        tracing::info!(%error, "history reader went away");
+        tracing::info!(%error, "metrics reader went away");
     }
-}
-
-async fn answer_query(
-    stream: UnixStream,
-    shared: Reading,
-    request: LogHistoryRequest,
-) -> io::Result<()> {
-    let mut stream = BufWriter::new(stream);
-    let query = match Query::new(request) {
-        Ok(query) => query,
-        Err(error) => {
-            write_row(&mut stream, &HistoryRow::Error(error)).await?;
-            return stream.flush().await;
-        }
-    };
-    let cancel = Arc::new(AtomicBool::new(false));
-    let stall = shared.stall;
-    let reading = {
-        let cancel = Arc::clone(&cancel);
-        async move {
-            let permit = shared
-                .readers
-                .acquire_owned()
-                .await
-                .map_err(io::Error::other)?;
-            tokio::task::spawn_blocking(move || {
-                let page = query::page(&shared.store, &query, &shared.bounds, &cancel);
-                (page, permit)
-            })
-            .await
-            .map_err(io::Error::other)
-        }
-    };
-    tokio::pin!(reading);
-    let mut heartbeat = tokio::time::interval(HEARTBEAT);
-    heartbeat.tick().await;
-    let read = loop {
-        tokio::select! {
-            read = &mut reading => break read?,
-            _ = heartbeat.tick() => {
-                let beat = async {
-                    write_row(&mut stream, &HistoryRow::Heartbeat).await?;
-                    stream.flush().await
-                };
-                if let Err(error) = beat.await {
-                    cancel.store(true, Ordering::Relaxed);
-                    // The read stops at its next check and frees its reader then.
-                    tracing::info!(%error, "history reader went away; stopping the read");
-                    return Ok(());
-                }
-            }
-        }
-    };
-    // The permit lives until the page is written or dropped.
-    let (page, _permit) = read;
-    let page = match page {
-        Ok(page) => page,
-        Err(error) => {
-            write_row(&mut stream, &HistoryRow::Error(error.to_string())).await?;
-            return stream.flush().await;
-        }
-    };
-    let end = HistoryRow::End { next: page.next };
-    for row in page.rows.iter().chain([&end]) {
-        within(stall, write_row(&mut stream, row)).await?;
-    }
-    within(stall, stream.flush()).await
-}
-
-async fn answer_env(
-    mut stream: UnixStream,
-    store: &StoreRoot,
-    container: ContainerId,
-) -> io::Result<()> {
-    let dir = store.container(&container);
-    let read = tokio::task::spawn_blocking(move || RetainedEnv::read(&dir))
-        .await
-        .map_err(io::Error::other)
-        .and_then(std::convert::identity);
-    let answer = match read {
-        Ok(env) => EnvAnswer::Reply(env),
-        Err(error) => EnvAnswer::Failed(error.to_string()),
-    };
-    let bytes = serde_json::to_vec(&answer).map_err(io::Error::other)?;
-    write_frame(&mut stream, &bytes).await?;
-    stream.flush().await
 }
 
 /// Answers within `deadline`, waiting for a reader included. A read past it
@@ -219,8 +117,20 @@ async fn answer_metrics(
             }
         }
     };
-    let json = serde_json::to_vec(&answer).map_err(io::Error::other)?;
-    within(shared.stall, write_frame(&mut stream, &json)).await
+    write_answer(&mut stream, shared.stall, &answer).await
+}
+
+async fn write_answer(
+    stream: &mut UnixStream,
+    stall: Duration,
+    answer: &MetricsAnswer,
+) -> io::Result<()> {
+    let json = serde_json::to_vec(answer).map_err(io::Error::other)?;
+    within(stall, async {
+        write_frame(stream, &json).await?;
+        stream.flush().await
+    })
+    .await
 }
 
 async fn within(stall: Duration, write: impl Future<Output = io::Result<()>>) -> io::Result<()> {
@@ -232,126 +142,29 @@ async fn within(stall: Duration, write: impl Future<Output = io::Result<()>>) ->
     })?
 }
 
-async fn write_row(stream: &mut (impl AsyncWrite + Unpin), row: &HistoryRow) -> io::Result<()> {
-    let payload = row.encode().map_err(io::Error::other)?;
-    write_frame(stream, &payload.json).await
-}
-
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use ployz_core::{
-        ContainerId, HistoryRow, LogHistoryRequest, OpaquePayload,
-        metrics::{
-            MetricGap, MetricGapReason, MetricHistoryRequest, MetricPoints, MetricRange,
-            MetricScope,
-        },
+    use ployz_core::metrics::{
+        MetricGap, MetricGapReason, MetricHistoryRequest, MetricPoints, MetricRange, MetricScope,
     };
     use tokio::{
         net::{UnixListener, UnixStream},
         sync::Semaphore,
     };
 
-    use super::{Reading, STALL, answer_metrics, answer_query, serve};
+    use super::{Reading, STALL, answer_metrics, serve};
     use crate::observe::wire::{MetricsAnswer, read_frame};
     use crate::{
         observe::{
             ObserveClient,
             clock::now_nanos,
-            layout::{RetainedEnv, StoreRoot},
+            layout::StoreRoot,
             metrics::history::tests::{SEC, host, near, write},
-            query::tests::{Store, T0, line},
         },
         test_dir::TestDir,
     };
-
-    #[tokio::test]
-    async fn a_query_waits_for_a_free_reader() {
-        let dir = TestDir::new("ployzd-observe-serve");
-        std::fs::create_dir_all(&dir.0).unwrap();
-        let store = StoreRoot::under(&dir.0);
-        store.prepare().unwrap();
-        let readers = Arc::new(Semaphore::new(0));
-        let reading = Reading {
-            store,
-            bounds: Arc::default(),
-            readers: Arc::clone(&readers),
-            stall: STALL,
-        };
-        let (mut ours, theirs) = UnixStream::pair().unwrap();
-        let request = LogHistoryRequest {
-            namespace: Some("prod".into()),
-            limit: 10,
-            ..LogHistoryRequest::default()
-        };
-        let answering = tokio::spawn(answer_query(theirs, reading, request));
-
-        let early =
-            tokio::time::timeout(Duration::from_millis(300), read_frame(&mut ours, 1 << 20)).await;
-        assert!(early.is_err(), "answered with every reader busy");
-
-        readers.add_permits(1);
-        loop {
-            let json = read_frame(&mut ours, 1 << 20).await.unwrap().unwrap();
-            let row = HistoryRow::decode(&OpaquePayload { json }).unwrap();
-            match row {
-                HistoryRow::Heartbeat => {}
-                HistoryRow::End { next } => {
-                    assert_eq!(next, None);
-                    break;
-                }
-                other @ (HistoryRow::Container(_)
-                | HistoryRow::Line { .. }
-                | HistoryRow::Gap { .. }
-                | HistoryRow::Exit { .. }
-                | HistoryRow::Error(_)) => panic!("unexpected {other:?}"),
-            }
-        }
-        answering.await.unwrap().unwrap();
-        assert_eq!(readers.available_permits(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_page_keeps_its_reader_until_it_is_written() {
-        let store = Store::new();
-        let id = store.container('a', "web");
-        let text = "x".repeat(64 << 10);
-        let frames: Vec<_> = (0..64).map(|i| line(T0 + i, &text)).collect();
-        store.file(&id, 0, &frames);
-        let readers = Arc::new(Semaphore::new(1));
-        let reading = Reading {
-            store: store.root.clone(),
-            bounds: Arc::default(),
-            readers: Arc::clone(&readers),
-            stall: Duration::from_secs(2),
-        };
-        let (mut ours, theirs) = UnixStream::pair().unwrap();
-        let request = LogHistoryRequest {
-            namespace: Some("prod".into()),
-            limit: 100,
-            ..LogHistoryRequest::default()
-        };
-        let answering = tokio::spawn(answer_query(theirs, reading, request));
-
-        // The first row means the page is read; its 4 MiB outgrow the socket.
-        read_frame(&mut ours, 1 << 20).await.unwrap().unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(
-            readers.available_permits(),
-            0,
-            "a written page let go of its reader"
-        );
-
-        let error = tokio::time::timeout(Duration::from_secs(10), answering)
-            .await
-            .expect("a stalled reader kept its page")
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        assert_eq!(readers.available_permits(), 1);
-        drop(ours);
-    }
 
     fn machine_request(since: i64, until: i64) -> MetricHistoryRequest {
         MetricHistoryRequest {
@@ -396,30 +209,6 @@ mod tests {
         serving.abort();
     }
 
-    // Catches a store that answers a retained env for a Container it never held one for,
-    // or cannot hand back the one it kept.
-    #[tokio::test]
-    async fn a_retained_env_query_through_the_socket_answers_what_the_store_kept() {
-        let dir = TestDir::new("ployzd-observe-env");
-        std::fs::create_dir_all(&dir.0).unwrap();
-        let store = StoreRoot::under(&dir.0);
-        store.prepare().unwrap();
-        let kept = ContainerId::parse("a".repeat(64)).unwrap();
-        let never = ContainerId::parse("b".repeat(64)).unwrap();
-        let env =
-            RetainedEnv::from_inspected(&["TOKEN=live-only-sentinel".to_owned()], None).unwrap();
-        std::fs::create_dir_all(store.container(&kept)).unwrap();
-        env.write(&store.container(&kept)).unwrap();
-        let socket = dir.0.join("observe.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let serving = tokio::spawn(serve(listener, store));
-
-        let client = ObserveClient::new(socket);
-        assert_eq!(client.retained_env(kept).await.unwrap(), Some(env));
-        assert_eq!(client.retained_env(never).await.unwrap(), None);
-        serving.abort();
-    }
-
     #[tokio::test]
     async fn a_metrics_read_past_its_deadline_is_a_timeout_gap() {
         let dir = TestDir::new("ployzd-observe-metrics");
@@ -428,7 +217,6 @@ mod tests {
         store.prepare().unwrap();
         let reading = Reading {
             store,
-            bounds: Arc::default(),
             readers: Arc::new(Semaphore::new(0)),
             stall: STALL,
         };

@@ -104,6 +104,24 @@ pub(crate) async fn keyed_reply<T: DeserializeOwned>(
     )
 }
 
+/// Cloud's answer to a read at `/api/<path>`, outside the `/api/cli` commands.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal, or a Cloud failure.
+pub(crate) async fn read_answer<T: DeserializeOwned>(
+    credential: &Credential,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<T, StoreCallError> {
+    let url = format!("{}/api/{path}", credential.cloud());
+    let response =
+        http::approved_request(credential, Via::Cli, Method::POST, &url, body, None, None)
+            .map_err(StoreCallError::from)?;
+    let response = http::dispatch(credential.cloud(), response, Effect::Read).await?;
+    store_answer(credential, response, Effect::Read).await
+}
+
 /// Read the Cloud run at `/api/cli/<path>` every second until its `state` is neither
 /// `pending` nor `running`, and decode it then. `None` once `deadline` passes first.
 ///

@@ -3,8 +3,7 @@ use crate::connect::test_support::{LOG_ROUTES, rpc_routes};
 use crate::global_fixtures::{machine, running_on};
 use crate::sdk::SessionInner;
 use ployz_core::{
-    ContainerDetails, HistoryContainer, HistoryContainerKind, HistoryGapReason, HistoryStream,
-    LogDirection, LogOrigin, OpaquePayload, RpcRequestBody, RpcResponse, ServiceId, ServiceName,
+    ContainerDetails, LogOrigin, OpaquePayload, RpcRequestBody, RpcResponse, ServiceId, ServiceName,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -21,12 +20,6 @@ impl Frames {
     async fn err(&self, timestamp: i64, text: &str) {
         self.send(frame(timestamp, LogBody::Stderr(text.as_bytes().to_vec())))
             .await;
-    }
-
-    async fn rows(&self, rows: impl IntoIterator<Item = HistoryRow>) {
-        for row in rows {
-            self.send(row.encode().unwrap()).await;
-        }
     }
 
     async fn send(&self, payload: OpaquePayload) {
@@ -80,6 +73,7 @@ async fn fake<const STREAMS: usize>(env: Option<&str>) -> (Fake, [Frames; STREAM
                                 image_id: None,
                                 last_check: None,
                                 run: None,
+                                last_exit_code: None,
                                 leaving: false,
                             })
                             .encode()
@@ -157,26 +151,6 @@ fn frame(timestamp: i64, body: LogBody) -> OpaquePayload {
     .unwrap()
 }
 
-fn history_container() -> HistoryRow {
-    HistoryRow::Container(HistoryContainer {
-        container_id: container_id(),
-        namespace: Some("app".into()),
-        service: Some("api".into()),
-        deployment: None,
-        replica: "1".into(),
-        kind: HistoryContainerKind::Service,
-    })
-}
-
-fn history_line(ts: i64, text: &str) -> HistoryRow {
-    HistoryRow::Line {
-        container_id: container_id(),
-        ts,
-        stream: HistoryStream::Stdout,
-        text: text.as_bytes().to_vec(),
-    }
-}
-
 async fn live(fake: &Fake) -> ScrubbedLogStream {
     fake.session
         .scrubbed_logs(
@@ -191,39 +165,6 @@ async fn live(fake: &Fake) -> ScrubbedLogStream {
         )
         .await
         .unwrap()
-}
-
-async fn history(fake: &Fake) -> ScrubbedHistoryStream {
-    fake.session
-        .scrubbed_history(
-            LogHistoryInput {
-                machine_id: machine_id(),
-                namespace: Some("app".into()),
-                service: None,
-                deployment: None,
-                container_id: None,
-                since_nanos: None,
-                until_nanos: None,
-                direction: LogDirection::Forward,
-                limit: 200,
-                cursor: None,
-            },
-            &fake.names,
-        )
-        .await
-        .unwrap()
-}
-
-async fn page(reader: &ScrubbedHistoryStream) -> Vec<LogHistoryRecord> {
-    let mut records = Vec::new();
-    while let Some(record) = reader.next().await.unwrap() {
-        let end = matches!(record, LogHistoryRecord::End { .. });
-        records.push(record);
-        if end {
-            return records;
-        }
-    }
-    records
 }
 
 async fn shown(reader: &ScrubbedLogStream) -> Vec<LogLine> {
@@ -242,28 +183,6 @@ fn messages(lines: &[LogLine]) -> String {
             LogLine::Hidden => "<hidden>",
         })
         .collect()
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_history_page_never_shows_a_sealed_value() {
-    let value = "ERROR-0123456789abcd";
-    let (fake, [frames]) = fake(Some(value)).await;
-    *fake.answer.lock().unwrap() = Ok(sealed("TOKEN"));
-    let reader = history(&fake).await;
-    frames
-        .rows([
-            history_container(),
-            history_line(1, &format!("{value} connected")),
-            HistoryRow::End { next: None },
-        ])
-        .await;
-
-    let records = page(&reader).await;
-    let [_, LogHistoryRecord::Line { message, level, .. }, _] = records.as_slice() else {
-        panic!("expected a line, got {records:?}");
-    };
-    assert_eq!(message, "[secret TOKEN] connected");
-    assert_eq!(*level, LogLevel::Info);
 }
 
 #[tokio::test(start_paused = true)]
@@ -330,50 +249,10 @@ async fn unreadable_names_or_env_hide_the_lines() {
 
     let (env_unreadable, [frames]) = fake(None).await;
     *env_unreadable.answer.lock().unwrap() = Ok(sealed("TOKEN"));
-    let reader = history(&env_unreadable).await;
-    frames
-        .rows([
-            history_container(),
-            history_line(1, &format!("first {VALUE}")),
-            HistoryRow::Gap {
-                container_id: container_id(),
-                from: 2,
-                to: 3,
-                reason: HistoryGapReason::NotCaptured,
-            },
-            history_line(4, &format!("second {VALUE}")),
-            HistoryRow::End { next: None },
-        ])
-        .await;
-    assert!(matches!(
-        page(&reader).await.as_slice(),
-        [
-            LogHistoryRecord::Container(_),
-            LogHistoryRecord::Hidden { .. },
-            LogHistoryRecord::Gap { .. },
-            LogHistoryRecord::Hidden { .. },
-            LogHistoryRecord::End { .. },
-        ]
-    ));
-
-    let (history_failed, [frames]) = fake(Some(VALUE)).await;
-    *history_failed.answer.lock().unwrap() = Err(());
-    let reader = history(&history_failed).await;
-    frames
-        .rows([
-            history_container(),
-            history_line(1, &format!("stored {VALUE}")),
-            HistoryRow::End { next: None },
-        ])
-        .await;
-    assert!(matches!(
-        page(&reader).await.as_slice(),
-        [
-            LogHistoryRecord::Container(_),
-            LogHistoryRecord::Hidden { .. },
-            LogHistoryRecord::End { .. },
-        ]
-    ));
+    let reader = live(&env_unreadable).await;
+    frames.line(1, &format!("first {VALUE}\n")).await;
+    drop(frames);
+    assert!(matches!(shown(&reader).await.as_slice(), [LogLine::Hidden]));
 }
 
 #[tokio::test(start_paused = true)]

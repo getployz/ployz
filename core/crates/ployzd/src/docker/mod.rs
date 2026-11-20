@@ -957,6 +957,15 @@ impl Observation {
             };
         }
         let runtime = withdrawn(runtime, self.standing.is_withdrawn(container_id));
+        let last_exit_code = matches!(runtime, ContainerRuntimeObservation::Restarting)
+            .then(|| {
+                inspected
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.get("ExitCode"))
+                    .and_then(serde_json::Value::as_i64)
+            })
+            .flatten();
         let stopped = if matches!(runtime, ContainerRuntimeObservation::Exited { .. })
             && let Some(run) = &run
         {
@@ -1003,6 +1012,7 @@ impl Observation {
                 image_id: inspected.image,
                 last_check,
                 run,
+                last_exit_code,
                 leaving,
             },
             oom_killed,

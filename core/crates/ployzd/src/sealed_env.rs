@@ -2,8 +2,7 @@
 //! lets it hide them again in its own logs.
 
 use std::{
-    collections::{BTreeMap, VecDeque, btree_map::Entry},
-    future::Future,
+    collections::{BTreeMap, VecDeque},
     io,
     path::Path,
 };
@@ -11,17 +10,14 @@ use std::{
 use futures_util::StreamExt;
 use ployz_core::scrub::{self, Channel, FrameScrub, SealedForms, SealedValues};
 use ployz_core::{
-    Ciphertext, ContainerId, EnvPart, EnvValue, HistoryRow, OpaquePayload, OpenedSealed,
-    PlatformPurpose, SealedIdentity, SealedScope, SealedValue,
+    Ciphertext, ContainerId, EnvPart, EnvValue, OpenedSealed, PlatformPurpose, SealedIdentity,
+    SealedScope, SealedValue,
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::Status;
 use zeroize::Zeroizing;
 
 use crate::{
-    logs::{LogLineStream, LogSource, RawLogEntry, RpcStream},
+    logs::{LogLineStream, LogSource, RawLogEntry},
     machine::AdmittedSpec,
     sealing_key::SealingKey,
 };
@@ -233,76 +229,6 @@ impl Lines {
             Self::Withheld => None,
         }
     }
-
-    fn row(
-        &self,
-        payload: OpaquePayload,
-        row: HistoryRow,
-    ) -> Option<Result<OpaquePayload, Status>> {
-        match (self, row) {
-            (Self::Shown, _) => Some(Ok(payload)),
-            (Self::Withheld, _) => None,
-            (
-                Self::Scrubbed(forms),
-                HistoryRow::Line {
-                    container_id,
-                    ts,
-                    stream,
-                    text,
-                },
-            ) => Some(
-                HistoryRow::Line {
-                    container_id,
-                    ts,
-                    stream,
-                    text: forms.scrub_bytes(&text, &mut 0),
-                }
-                .encode()
-                .map_err(|error| ployz_core::rpc::caused_status(tonic::Code::Internal, &error)),
-            ),
-            (Self::Scrubbed(_), _) => Some(Ok(payload)),
-        }
-    }
-}
-
-pub(crate) fn scrub_history<F, Fut>(mut rows: RpcStream, lines_of: F) -> RpcStream
-where
-    F: Fn(ContainerId) -> Fut + Send + 'static,
-    Fut: Future<Output = Lines> + Send,
-{
-    let (sender, receiver) = mpsc::channel(256);
-    tokio::spawn(async move {
-        let mut containers = BTreeMap::new();
-        while let Some(payload) = rows.next().await {
-            let row = match payload {
-                Err(status) => Some(Err(status)),
-                Ok(payload) => match HistoryRow::decode(&payload) {
-                    Ok(row @ HistoryRow::Line { container_id, .. }) => {
-                        let lines = match containers.entry(container_id) {
-                            Entry::Occupied(known) => known.into_mut(),
-                            Entry::Vacant(first) => first.insert(lines_of(container_id).await),
-                        };
-                        lines.row(payload, row)
-                    }
-                    Ok(_) => Some(Ok(payload)),
-                    Err(error) => Some(Err(ployz_core::rpc::caused_status(
-                        tonic::Code::Internal,
-                        &error,
-                    ))),
-                },
-            };
-            let failed = matches!(row, Some(Err(_)));
-            if let Some(row) = row
-                && sender.send(row).await.is_err()
-            {
-                return;
-            }
-            if failed {
-                return;
-            }
-        }
-    });
-    ReceiverStream::new(receiver)
 }
 
 pub(crate) fn scrub_source(source: LogSource, forms: SealedForms) -> LogSource {
@@ -505,7 +431,7 @@ mod tests {
 
     use super::test_support::Cluster;
     use super::*;
-    use crate::{logs::JournalError, observe::layout::RetainedEnv, test_dir::TestDir};
+    use crate::{logs::JournalError, test_dir::TestDir};
 
     fn own() -> SealedScope {
         SealedScope::Service(Uuid::from_u128(2))
@@ -819,34 +745,6 @@ mod tests {
         cluster.open(env).unwrap().record.unwrap()
     }
 
-    #[test]
-    fn retained_env_keeps_an_opened_value_only_as_ciphertext() {
-        let cluster = Cluster::new();
-        let record = token_record(&cluster);
-        let label = serde_json::to_string(&record).unwrap();
-        let env = RetainedEnv::from_inspected(
-            &["TOKEN=hunter2-secret".to_owned(), "MODE=prod".to_owned()],
-            Some(&label),
-        )
-        .unwrap();
-        let dir = TestDir::new("sealed-env-retained");
-        std::fs::create_dir_all(&dir.0).unwrap();
-        env.write(&dir.0).unwrap();
-        let written = std::fs::read_dir(&dir.0)
-            .unwrap()
-            .map(|file| std::fs::read(file.unwrap().path()).unwrap())
-            .collect::<Vec<_>>()
-            .concat();
-        assert!(!String::from_utf8_lossy(&written).contains("hunter2-secret"));
-        let kept = RetainedEnv::read(&dir.0).unwrap().unwrap();
-        assert_eq!(kept.sealed(), Some(&record));
-        assert_eq!(
-            kept.into_values(),
-            BTreeMap::from([("MODE".to_owned(), "prod".to_owned())])
-        );
-        assert!(RetainedEnv::from_inspected(&[], Some("not json")).is_none());
-    }
-
     fn entry(ts: i64, message: &str) -> Result<RawLogEntry, JournalError> {
         Ok(RawLogEntry {
             stream: LogLineStream::Stdout,
@@ -888,118 +786,6 @@ mod tests {
         assert!(matches!(
             items.as_slice(),
             [Ok(_), Err(JournalError::Docker(_)), ..]
-        ));
-    }
-
-    fn line(container: u8, text: &str) -> OpaquePayload {
-        row(HistoryRow::Line {
-            container_id: ContainerId::parse(format!("{container:x}").repeat(64)).unwrap(),
-            ts: 1,
-            stream: ployz_core::stream::HistoryStream::Stdout,
-            text: text.as_bytes().to_vec(),
-        })
-    }
-
-    fn row(row: HistoryRow) -> OpaquePayload {
-        row.encode().unwrap()
-    }
-
-    async fn history(
-        rows: Vec<Result<OpaquePayload, Status>>,
-        lines_of: impl Fn(ContainerId) -> Lines + Send + Sync + 'static,
-    ) -> Vec<Result<HistoryRow, tonic::Code>> {
-        let (sender, receiver) = mpsc::channel(rows.len().max(1));
-        for row in rows {
-            sender.send(row).await.unwrap();
-        }
-        drop(sender);
-        let lines_of = std::sync::Arc::new(lines_of);
-        scrub_history(ReceiverStream::new(receiver), move |id| {
-            let lines_of = lines_of.clone();
-            async move { lines_of(id) }
-        })
-        .map(|row| {
-            row.map(|payload| HistoryRow::decode(&payload).unwrap())
-                .map_err(|status| status.code())
-        })
-        .collect()
-        .await
-    }
-
-    fn text(row: &Result<HistoryRow, tonic::Code>) -> Option<String> {
-        match row {
-            Ok(HistoryRow::Line { text, .. }) => Some(String::from_utf8(text.clone()).unwrap()),
-            _ => None,
-        }
-    }
-
-    #[tokio::test]
-    async fn history_scrubs_or_withholds_each_containers_lines() {
-        let cluster = Cluster::new();
-        let record = token_record(&cluster);
-        let key_dir = cluster.dir.0.clone();
-        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let seen = asked.clone();
-        let rows = history(
-            vec![
-                Ok(line(1, "token=hunter2-secret")),
-                Ok(line(2, "hunter2-secret leaked")),
-                Ok(line(3, "plain hunter2-secret")),
-                Ok(row(HistoryRow::Heartbeat)),
-                Ok(line(1, "again hunter2-secret")),
-            ],
-            move |id| {
-                seen.lock().unwrap().push(id);
-                let record = match id.as_str().chars().next() {
-                    Some('1') => Ok(Some(record.clone())),
-                    Some('2') => Err(Status::unavailable("no record")),
-                    _ => Ok(None),
-                };
-                Lines::new(id, record, Some(&key_dir))
-            },
-        )
-        .await;
-        assert!(matches!(rows.get(2), Some(Ok(HistoryRow::Heartbeat))));
-        assert_eq!(
-            rows.iter().map(text).collect::<Vec<_>>(),
-            [
-                Some("token=[secret TOKEN]".to_owned()),
-                Some("plain hunter2-secret".to_owned()),
-                None,
-                Some("again [secret TOKEN]".to_owned()),
-            ]
-        );
-        assert_eq!(asked.lock().unwrap().len(), 3);
-    }
-
-    #[tokio::test]
-    async fn history_withholds_lines_when_the_key_is_gone() {
-        let cluster = Cluster::new();
-        let record = token_record(&cluster);
-        let empty = TestDir::new("sealed-env-history-no-key");
-        std::fs::create_dir_all(&empty.0).unwrap();
-        let empty_dir = empty.0.clone();
-        let rows = history(vec![Ok(line(1, "hunter2-secret"))], move |id| {
-            Lines::new(id, Ok::<_, Status>(Some(record.clone())), Some(&empty_dir))
-        })
-        .await;
-        assert!(rows.is_empty());
-    }
-
-    #[tokio::test]
-    async fn history_ends_at_the_first_error() {
-        let rows = history(
-            vec![
-                Ok(line(1, "a")),
-                Err(Status::internal("broken")),
-                Ok(line(1, "b")),
-            ],
-            |_| Lines::Shown,
-        )
-        .await;
-        assert!(matches!(
-            rows.as_slice(),
-            [Ok(_), Err(tonic::Code::Internal)]
         ));
     }
 }

@@ -24,8 +24,8 @@ pub(crate) mod testing;
 mod transcript_tests;
 
 pub(crate) use calls::{
-    Settled, approved_answer, call, follow_operation, follow_run, keyed_reply, refusable,
-    refusable_operation, start_run,
+    Settled, approved_answer, call, follow_operation, follow_run, keyed_reply, read_answer,
+    refusable, refusable_operation, start_run,
 };
 pub(crate) use credential::{
     Credential, TokenFrom, acting_as, acting_in, credential, env_token, from_env, named_cloud,
