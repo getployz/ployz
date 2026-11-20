@@ -21,8 +21,7 @@ the requests. Without ClickHouse, **Analytics** says it needs ClickHouse and nam
 1. Open the Environment and click **Analytics**.
 2. Click **Turn on**. It takes an owner or admin of the Organization.
 
-Your servers pick up the switch within five minutes, and Ployz counts from then, in your
-browser's time zone. The zone stays the Environment's for
+Counting starts within five minutes of turning it on, in your browser's time zone. The zone stays the Environment's for
 good, so its days never shift under the numbers. Until the first visit lands, the page says so. If
 visits arrived but none could be counted, it says no visits were counted.
 
