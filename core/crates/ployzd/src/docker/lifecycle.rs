@@ -153,6 +153,71 @@ impl Lifecycle {
         Ok(self.specs.clear_floors().await?)
     }
 
+    /// Record that this Machine is forgetting its copy of `name`, which carries `origin`.
+    pub async fn forgot(
+        &self,
+        name: &ployz_core::DockerVolumeName,
+        origin: &ployz_core::VolumeOrigin,
+    ) -> Result<(), Error> {
+        Ok(self.specs.forgot(name, origin.to_string()).await?)
+    }
+
+    /// Whether the copy of `volume` this Machine last forgot carried the origin `volume`
+    /// expects: its data lives on another Server now.
+    ///
+    /// # Errors
+    /// Returns the read's error, or an origin `volume` can't name.
+    pub(crate) async fn forgot_here(
+        &self,
+        volume: &ployz_core::ServiceVolume,
+    ) -> Result<bool, Error> {
+        let Some(name) = volume.source.docker_volume_name() else {
+            return Ok(false);
+        };
+        let Some(forgotten) = self.specs.forgotten(name).await? else {
+            return Ok(false);
+        };
+        let expected = ployz_core::VolumeOrigin::expected(volume.source.birth(), name)
+            .map_err(|error| Error::InvalidContainerConfig(format!("mount origins: {error}")))?;
+        Ok(forgotten == expected.to_string())
+    }
+
+    /// Refuse a mounted Provisioned Volume this Machine forgot its copy of and holds no
+    /// copy of now. Its data lives on another Server, so a fresh root here would be a
+    /// second Writer. A Volume added again after `ployz volume rm` has a new birth, so
+    /// another origin, and starts empty as before.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeNotWritable`] for such a Volume, or the read's error.
+    pub(crate) async fn refuse_forgotten<'a>(
+        &self,
+        volumes: impl IntoIterator<Item = &'a ployz_core::ServiceVolume>,
+        plugin: &crate::storage::Plugin,
+    ) -> Result<(), Error> {
+        for volume in volumes {
+            let Some(name) = volume.source.docker_volume_name() else {
+                continue;
+            };
+            if !self.forgot_here(volume).await? {
+                continue;
+            }
+            let copy = plugin
+                .call::<Option<ployz_core::VolumeCopy>>(
+                    crate::volume_copy::INSPECT_ROUTE,
+                    &crate::volume_copy::CopyRequest { name: name.clone() },
+                )
+                .await
+                .map_err(|source| Error::VolumeOriginUnread {
+                    name: name.clone(),
+                    source: Box::new(source),
+                })?;
+            if copy.is_none() {
+                return Err(Error::VolumeNotWritable(name.clone()));
+            }
+        }
+        Ok(())
+    }
+
     /// Take the lock `remove` takes and read a copy's rotation under it, so no other
     /// rotation write or removal lands before the turn is spent.
     ///
@@ -338,7 +403,7 @@ impl Lifecycle {
             "create container"
         );
         require_eligible(
-            self.admit_and_ensure_volumes(machine, namespace, spec, storage)
+            self.admit_and_ensure_volumes(machine, namespace, spec, storage, plugin)
                 .await
                 .map_err(E::from)?,
         )
@@ -810,6 +875,7 @@ impl Lifecycle {
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         storage: impl Future<Output = Option<MachineStorageObservation>>,
+        plugin: &crate::storage::Plugin,
     ) -> Result<ServicePlacementEligibility, Error> {
         let storage = if spec.volume_graph().has_mounted_provisioned_volume() {
             storage.await
@@ -819,6 +885,8 @@ impl Lifecycle {
         let eligibility =
             spec.placement_eligibility_in_namespace(namespace, machine, storage.as_ref());
         if matches!(eligibility, ServicePlacementEligibility::Eligible) {
+            self.refuse_forgotten(spec.volume_graph().mounted_provisioned_volumes(), plugin)
+                .await?;
             self.volumes
                 .ensure_mounted_volumes(&machine.id, spec)
                 .await?;

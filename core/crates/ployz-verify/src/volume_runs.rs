@@ -1,6 +1,7 @@
 //! A resize of one Volume, a grow or a shrink, then a Move of it from A to B, the Release
 //! that takes it over, and every late `SetVolumeSize` and `SetVolumeCopy` the dead runs
-//! can still deliver.
+//! can still deliver. Then, on three Machines, a second Move to C, a Restore, and a
+//! Deploy's lane, each with every late step a dead run or a crash leaves.
 //!
 //! DESIGN.md bet 6 promises that a late step from a dead run leaves a Volume with at
 //! most one Writer. This model checks that promise, and what each run reports, over
@@ -34,16 +35,37 @@
 //!   moment of the Move, which covers a Machine that refuses from the first step. A start
 //!   of a Container the Machine kept is served.
 //!
+//! The three-Machine scenarios (`TwoMoves`, `Restore`) add, one run at a time under the
+//! row lock, with Cloud ending any row at any moment:
+//!
+//! - after the first Move's row ended, the `volume mirror rm` that `planMove` needs
+//!   before a second Move (`deleteMirror`: forget each other slot, then the Writer's
+//!   snapshots), and a second Move from the Writer to C, which snapshots the Writer
+//!   before its warm pull, with its own Release;
+//! - a Machine away for any stretch: nothing it was sent lands while it is away, and
+//!   every run that observes it waits and fails. Cloud may forget it while it is away
+//!   (`ployz server forget`); a `ployz volume restore` from the one copy Cloud still
+//!   sees (`restoreVolume`) then promotes that copy. The forgotten Machine keeps
+//!   writing its copy when it comes back, until it departs (`forgotten_fence.rs`,
+//!   `volume_plugin/departure.rs`), which parks its root in a slot;
+//! - a Deploy's lane at its real boundaries, sent to the Writer Cloud sees: Prepare
+//!   (`prepare_volumes`) admits a plain mount (`admit_plain_mount`) against the
+//!   Machine's replicated view, which may lag, then ensures the Volume; Create
+//!   (`create_container`) checks placement and ensures the Volume with no plain-mount
+//!   admission; and the start of a stopped kept Container mounts only a writable root
+//!   (`VolumeStorage::mountpoint`). No Deploy step reads a floor;
+//! - `ployzd` restarting between any floor write and the plugin step after it.
+//!
 //! The whole product is millions of states, so each `Scenario` checks one bounded
 //! slice of it.
 //!
-//! Out of scope: Deploy lanes, operator collisions, Machines that do not answer,
-//! warm rounds beyond that one pull, and a second takeover. Of the resize: real
-//! capacities and floors (one Machine either takes the target or not, and a floor
-//! never moves), ZFS (a bound is one value per copy), the Store's record transaction
-//! (one atomic step on the lock row), a second resize, a resize during or after the
-//! Move (a late `SetVolumeSize` may land during it), a Restore, and a Mirror made after
-//! the resize by anything but the Move's own pull.
+//! Out of scope: operator collisions, a forged step, a Deploy that takes over a Move's
+//! lane (`fenceTaken`, `fenceFollowed`), the rowless mirror sync, a demote, warm rounds
+//! beyond one pull, and a third takeover. Of the resize: real capacities and floors (one
+//! Machine either takes the target or not, and a floor never moves), ZFS (a bound is one
+//! value per copy), the Store's record transaction (one atomic step on the lock row), a
+//! second resize, a resize during or after the Move (a late `SetVolumeSize` may land
+//! during it), and a Mirror made after the resize by anything but a Move's own pull.
 
 use std::{net::Ipv6Addr, num::NonZeroU64};
 
@@ -55,28 +77,39 @@ use ployz_core::{
 use ployz_decide::volume_size::{Refused, SizeFacts, SizePlan, size_plan};
 use stateright::{Checker, Model, Property};
 
-/// The Move's lane `gen`, and the Release's after it.
-const MOVE_GEN: u8 = 1;
-const RELEASE_GEN: u8 = 2;
-/// A's Writer epoch before the Move, the Move's, and a warm Release's from `takeEpoch`.
+/// A's Writer epoch before the first Move.
 const OLD_EPOCH: u32 = 1;
-const MOVE_EPOCH: u32 = 2;
-const RELEASE_EPOCH: u32 = 3;
+/// The first Move, and the Release after it, take the next gen; a warm Release takes the
+/// epoch after its Move's.
+const FIRST_MOVE: MovePlan = MovePlan {
+    from: Machine::A,
+    to: Machine::B,
+    r#gen: 1,
+    epoch: 2,
+    held: OLD_EPOCH,
+    warm: Snap::Warm,
+    last: Snap::Final,
+};
+/// The `volume mirror rm` between the two Moves.
+const DROP_GEN: u8 = 3;
+/// The second Move's gen and epoch; its Release is the gen after.
+const SECOND_GEN: u8 = 4;
+const SECOND_EPOCH: u32 = 4;
+const RESTORE_GEN: u8 = 6;
+const RESTORE_EPOCH: u32 = 6;
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 enum Machine {
     A,
     B,
+    C,
 }
 
 impl Machine {
-    const ALL: [Self; 2] = [Self::A, Self::B];
+    const ALL: [Self; 3] = [Self::A, Self::B, Self::C];
 
-    fn other(self) -> Self {
-        match self {
-            Self::A => Self::B,
-            Self::B => Self::A,
-        }
+    const fn index(self) -> usize {
+        self as usize
     }
 }
 
@@ -135,11 +168,14 @@ enum Cramped {
     Copy(Machine),
 }
 
-/// The warm round's snapshot, which B already holds, and the cut's final `f-<epoch>`.
+/// The first Move's warm round snapshot, which B already holds, and its cut's final
+/// `f-<epoch>`; the second Move's snapshot before its warm pull, and its cut's.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Snap {
     Warm,
     Final,
+    Warm2,
+    Final2,
 }
 
 /// What a Machine holds of the Volume: `VolumeCopy` without the fields no step reads.
@@ -183,6 +219,17 @@ enum Holder {
     Running,
 }
 
+/// Whether a Machine answers.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Presence {
+    Here,
+    /// Down or cut off: nothing sent to it lands, and its Containers keep running.
+    Away,
+    /// It learnt the Cluster forgot it and left: its roots are parked in slots and its
+    /// Containers are gone.
+    Departed,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct Host {
     copy: Held,
@@ -198,6 +245,19 @@ struct Host {
     /// The copy's ZFS `refquota`, its root's or its slot parent's (`storage.rs`
     /// `bound()`). A cut and a promote keep it; `SetVolumeSize` and a pull raise it.
     bound: Size,
+    presence: Presence,
+    /// `volume_forgotten`: this Machine forgot a copy of the Volume, so its data lives on
+    /// another Server.
+    forgotten: bool,
+    /// Cloud lists the Machine as a Server: false for a C the two-Machine scenarios
+    /// never have, and for a Machine Cloud forgot.
+    member: bool,
+}
+
+impl Host {
+    fn here(&self) -> bool {
+        self.presence == Presence::Here
+    }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -205,6 +265,9 @@ enum Lane {
     Resize,
     Move,
     Release,
+    Drop,
+    Restore,
+    Deploy,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -231,6 +294,9 @@ enum Want {
         from: Option<Machine>,
         target: Snap,
     },
+    Snapshot {
+        at: Snap,
+    },
     Forget,
     Floor,
     /// `SetVolumeSize`, which carries no `gen` and checks no lane floor. A shrink run
@@ -239,6 +305,12 @@ enum Want {
         to: Size,
         allow_shrink: bool,
     },
+    /// A Deploy's `PrepareVolumes`: `admit_plain_mount`, then the Volume ensured.
+    Prepare,
+    /// A Deploy's Container create: placement, the Volume ensured, the Container made.
+    Create,
+    /// A Deploy's start of the Container it created or kept.
+    Start,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -254,6 +326,14 @@ enum Refusal {
     BelowFloor,
     /// The Machine refused an Operator's Writer start that creates a Container.
     Enforced,
+    /// `admit_plain_mount`: the data is elsewhere, or only in this Machine's slot.
+    NoWriter,
+    /// `create_volume`: the name is held in a slot.
+    InSlot,
+    /// The plugin's Mount: no writable root to mount.
+    Unmountable,
+    /// `refuse_forgotten`: this Machine forgot its copy, and holds none now.
+    NotWritable,
     Other,
 }
 
@@ -265,7 +345,7 @@ enum Reply {
     Refused(Refusal),
 }
 
-/// Where one `SetVolumeCopy` is on its Machine.
+/// Where one request is on its Machine.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Progress {
     /// On the wire. A resend leaves this copy here to land whenever it lands.
@@ -302,6 +382,8 @@ struct Request {
 /// A run's row in Cloud's `volume_run` table.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Row {
+    /// Planned and not yet started: the row lock is free until Cloud starts it.
+    Queued,
     Warm,
     Committed,
     Done,
@@ -329,7 +411,9 @@ enum ResizeStep {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum MoveStep {
-    /// The warm round's pull, run only when B held no copy when the grow ran.
+    /// The second Move's snapshot of the Writer before its warm pull (`runRounds`).
+    Snapshot,
+    /// The warm round's pull.
     Warm,
     Cut,
     Pull,
@@ -355,6 +439,31 @@ enum ReleaseStep {
     Over,
 }
 
+/// `deleteMirror`: forget each slot, then the Writer's snapshots.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum DropStep {
+    Forget(Machine),
+    Withdraw,
+    Finish,
+    Over,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum RestoreStep {
+    Promote,
+    Finish,
+    Over,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum DeployStep {
+    Prepare,
+    Create,
+    Start,
+    Finish,
+    Over,
+}
+
 /// One Inngest run: where it is, the request it waits on, and what retries it has left.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Driver<S> {
@@ -362,6 +471,17 @@ struct Driver<S> {
     waiting: Option<usize>,
     resends: u8,
     busy: u8,
+}
+
+impl<S> Driver<S> {
+    fn new(step: S, resends: u8) -> Self {
+        Self {
+            step,
+            waiting: None,
+            resends,
+            busy: 1,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -377,9 +497,86 @@ struct Release {
     row: Row,
     forward: bool,
     driver: Driver<ReleaseStep>,
-    views: [Option<Held>; 2],
+    views: [Option<Held>; 3],
     resume: Option<Resume>,
-    behind: Option<Machine>,
+    /// The slots at the resumed root's snapshot whose kept Containers go.
+    behind: [bool; 3],
+    /// The other slots a Release from slots inspects, forgetting each at its snapshot.
+    others: [bool; 3],
+}
+
+/// Where a Move goes and what it numbers its steps with.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct MovePlan {
+    from: Machine,
+    to: Machine,
+    r#gen: u8,
+    /// The epoch the Move gives `to`'s Writer.
+    epoch: u32,
+    /// The epoch of `from`'s Writer when the Move planned.
+    held: u32,
+    /// The snapshot the warm round pulls, and the cut's.
+    warm: Snap,
+    last: Snap,
+}
+
+impl MovePlan {
+    const fn release_gen(self) -> u8 {
+        self.r#gen + 1
+    }
+
+    /// `takeEpoch` for a warm Release: past every epoch the Move recorded.
+    const fn release_epoch(self) -> u32 {
+        self.epoch + 1
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct MoveRun {
+    plan: MovePlan,
+    row: Row,
+    driver: Driver<MoveStep>,
+    release: Option<Release>,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct DropRun {
+    row: Row,
+    driver: Driver<DropStep>,
+    /// The slots it forgets, by the snapshot each held when it planned.
+    slots: [Option<Snap>; 3],
+    writer: Machine,
+    writer_epoch: u32,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct RestoreRun {
+    row: Row,
+    driver: Driver<RestoreStep>,
+    on: Machine,
+    expect: Expect,
+    at: Snap,
+    epoch: u32,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct DeployRun {
+    row: Row,
+    on: Machine,
+    driver: Driver<DeployStep>,
+}
+
+/// Which run Cloud starts next once the row is free.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Stage {
+    /// Nothing has run yet.
+    Start,
+    /// The first Move, or its Release, still holds the row.
+    First,
+    /// The mirror rm holds the row.
+    Drop,
+    /// The second Move, or the Restore, has run or holds the row.
+    Second,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -404,18 +601,33 @@ impl Resize {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct State {
-    a: Host,
-    b: Host,
+    hosts: [Host; 3],
     requests: Vec<Request>,
     /// What the Store records, which Deploys and the planners read; apart from the
     /// target the resize sends, so the order of set and record is what gets checked.
     size: Size,
     resize: Resize,
     cramped: Option<Cramped>,
-    row: Row,
-    moving: Driver<MoveStep>,
-    release: Option<Release>,
+    /// The first Move, then the second.
+    moves: Vec<MoveRun>,
+    drop: Option<DropRun>,
+    restore: Option<RestoreRun>,
+    deploy: Option<DeployRun>,
+    stage: Stage,
     crashes: u8,
+    /// Deploys left to start.
+    deploys: u8,
+    /// Rows Cloud may still end early, on three Machines.
+    ends: u8,
+    /// Away stretches left to start.
+    aways: u8,
+    /// Each Machine has held no copy at some moment: a view lagging far enough reads it
+    /// so.
+    emptied: [bool; 3],
+    /// A Restore promoted a copy while Cloud had forgotten a Machine.
+    restored: bool,
+    /// A request from a run whose row had ended was refused as stale.
+    stale_landed: bool,
     /// Both Machines refuse an Operator's start that creates a Container.
     enforcing: bool,
     /// A Machine refused a Writer start.
@@ -424,19 +636,40 @@ struct State {
     unapproved_start: bool,
 }
 
+/// The entry of a per-Machine array for `machine`.
+fn at<T>(array: &[T; 3], machine: Machine) -> &T {
+    let [a, b, c] = array;
+    match machine {
+        Machine::A => a,
+        Machine::B => b,
+        Machine::C => c,
+    }
+}
+
+fn at_mut<T>(array: &mut [T; 3], machine: Machine) -> &mut T {
+    let [a, b, c] = array;
+    match machine {
+        Machine::A => a,
+        Machine::B => b,
+        Machine::C => c,
+    }
+}
+
 impl State {
+    fn run_mut(&mut self, k: usize) -> &mut MoveRun {
+        self.moves.get_mut(k).expect("an action names a Move")
+    }
+
     fn host(&self, machine: Machine) -> &Host {
-        match machine {
-            Machine::A => &self.a,
-            Machine::B => &self.b,
-        }
+        at(&self.hosts, machine)
     }
 
     fn host_mut(&mut self, machine: Machine) -> &mut Host {
-        match machine {
-            Machine::A => &mut self.a,
-            Machine::B => &mut self.b,
-        }
+        at_mut(&mut self.hosts, machine)
+    }
+
+    fn first(&self) -> &MoveRun {
+        self.moves.first().expect("every start has a first Move")
     }
 
     fn request(&self, index: usize) -> Request {
@@ -469,12 +702,7 @@ impl State {
         }
     }
 
-    fn send(&mut self, lane: Lane, to: Machine, expect: Expect, want: Want) -> usize {
-        let r#gen = match lane {
-            Lane::Resize => 0,
-            Lane::Move => MOVE_GEN,
-            Lane::Release => RELEASE_GEN,
-        };
+    fn send(&mut self, lane: Lane, r#gen: u8, to: Machine, expect: Expect, want: Want) -> usize {
         self.requests.push(Request {
             lane,
             to,
@@ -501,39 +729,110 @@ impl State {
         }
     }
 
-    fn writers(&self) -> usize {
+    /// The writable roots, but the one a Restore displaced on a forgotten Machine when
+    /// `exempt` (bet 6's accepted window), until it departs.
+    fn writers(&self, exempt: bool) -> usize {
         Machine::ALL
             .iter()
-            .filter(|machine| self.host(**machine).copy.is_writer())
+            .filter(|machine| {
+                self.host(**machine).copy.is_writer() && !self.displaced(**machine, exempt)
+            })
             .count()
     }
 
-    fn running(&self) -> usize {
+    fn running(&self, exempt: bool) -> usize {
         Machine::ALL
             .iter()
-            .filter(|machine| self.host(**machine).holder == Holder::Running)
+            .filter(|machine| {
+                self.host(**machine).holder == Holder::Running && !self.displaced(**machine, exempt)
+            })
             .count()
+    }
+
+    /// The copy an offline Restore displaced: on a Machine Cloud forgot, once a Restore
+    /// promoted another copy.
+    fn displaced(&self, machine: Machine, exempt: bool) -> bool {
+        exempt && self.restored && !self.host(machine).member
+    }
+
+    /// Whether `machine`'s fresh view lists a copy on another Machine.
+    fn elsewhere(&self, machine: Machine) -> bool {
+        Machine::ALL.iter().any(|other| {
+            *other != machine
+                && self.host(*other).copy != Held::None
+                && self.host(*other).presence != Presence::Departed
+        })
+    }
+
+    /// Whether a view lagging far enough could list no copy elsewhere: every other
+    /// Machine held none at some moment.
+    fn stale_empty(&self, machine: Machine) -> bool {
+        Machine::ALL
+            .iter()
+            .all(|other| *other == machine || *at(&self.emptied, *other))
+    }
+
+    fn note_emptied(&mut self) {
+        for machine in Machine::ALL {
+            let host = self.host(machine);
+            if host.copy == Held::None || host.presence == Presence::Departed {
+                *at_mut(&mut self.emptied, machine) = true;
+            }
+        }
+    }
+
+    /// Every index a driver or a lock holds, so a removal can shift them.
+    fn held_indices(&mut self) -> Vec<&mut Option<usize>> {
+        let mut held = vec![&mut self.resize.driver.waiting];
+        for run in &mut self.moves {
+            held.push(&mut run.driver.waiting);
+            if let Some(release) = run.release.as_mut() {
+                held.push(&mut release.driver.waiting);
+            }
+        }
+        if let Some(drop) = self.drop.as_mut() {
+            held.push(&mut drop.driver.waiting);
+        }
+        if let Some(restore) = self.restore.as_mut() {
+            held.push(&mut restore.driver.waiting);
+        }
+        if let Some(deploy) = self.deploy.as_mut() {
+            held.push(&mut deploy.driver.waiting);
+        }
+        for host in &mut self.hosts {
+            held.push(&mut host.switch);
+            held.push(&mut host.turn);
+        }
+        held
     }
 
     /// A request whose answer no run will read leaves the state, and every index past it
     /// moves down one.
     fn forget(&mut self, index: usize) {
         self.requests.remove(index);
-        let shift = |held: &mut Option<usize>| {
+        for held in self.held_indices() {
             if let Some(at) = held.as_mut()
                 && *at > index
             {
                 *at -= 1;
             }
-        };
-        shift(&mut self.resize.driver.waiting);
-        shift(&mut self.moving.waiting);
-        if let Some(release) = self.release.as_mut() {
-            shift(&mut release.driver.waiting);
         }
-        for host in [&mut self.a, &mut self.b] {
-            shift(&mut host.switch);
-            shift(&mut host.turn);
+    }
+
+    /// Answers no driver waits on leave the state, as `forget` does for each.
+    fn prune(&mut self) {
+        for index in (0..self.requests.len()).rev() {
+            let progress = self.request(index).progress;
+            let landed = matches!(progress, Progress::Replied(_) | Progress::Lost);
+            let read = self
+                .held_indices()
+                .into_iter()
+                .any(|held| *held == Some(index));
+            if landed && !read {
+                self.stale_landed |= self.request(index).lane == Lane::Move
+                    && progress == Progress::Replied(Reply::Refused(Refusal::Stale));
+                self.forget(index);
+            }
         }
     }
 
@@ -575,7 +874,7 @@ impl State {
     /// anything: the copies hold what the resize left them.
     fn resize_settled(&self) -> bool {
         self.resize.driver.step == ResizeStep::Over
-            && self.release.is_none()
+            && self.first().release.is_none()
             && self
                 .requests
                 .iter()
@@ -587,11 +886,52 @@ impl State {
     fn mirrors_keep_up(&self) -> bool {
         Machine::ALL.iter().all(|machine| {
             let host = self.host(*machine);
-            let writer = self.host(machine.other());
             !matches!(host.copy, Held::Slot { .. })
-                || !writer.copy.is_writer()
-                || writer.bound <= host.bound
+                || Machine::ALL.iter().all(|other| {
+                    let writer = self.host(*other);
+                    !writer.copy.is_writer() || writer.bound <= host.bound
+                })
         })
+    }
+
+    /// No run holds the row lock.
+    fn row_free(&self) -> bool {
+        let moves = self.moves.iter().all(|run| {
+            !run.row.running()
+                && run
+                    .release
+                    .as_ref()
+                    .is_none_or(|release| !release.row.running())
+        });
+        moves
+            && self.drop.is_none_or(|drop| !drop.row.running())
+            && self.restore.is_none_or(|restore| !restore.row.running())
+            && self.deploy.is_none_or(|deploy| !deploy.row.running())
+    }
+
+    /// The Machines Cloud lists, each answering, or `None` while one doesn't.
+    fn members(&self) -> Option<Vec<Machine>> {
+        let members: Vec<Machine> = Machine::ALL
+            .into_iter()
+            .filter(|machine| self.host(*machine).member)
+            .collect();
+        members
+            .iter()
+            .all(|machine| self.host(*machine).here())
+            .then_some(members)
+    }
+
+    /// The one writable root Cloud sees, where a Deploy places the Service.
+    fn writer_seen(&self) -> Option<Machine> {
+        let members = self.members()?;
+        let roots: Vec<Machine> = members
+            .into_iter()
+            .filter(|machine| matches!(self.host(*machine).copy, Held::Root { .. }))
+            .collect();
+        match roots.as_slice() {
+            [writer] if self.host(*writer).copy.is_writer() => Some(*writer),
+            _ => None,
+        }
     }
 }
 
@@ -631,10 +971,17 @@ struct Broken {
     shrink_keeps_refused_record: bool,
     /// A Machine admits an Operator's Writer start that creates a Container.
     start_gate: bool,
+    /// `plan` reads every request's expected copy as the copy the Machine holds.
+    expect: bool,
+    /// Prepare skips `admit_plain_mount`.
+    plain_mount: bool,
+    /// Create makes a fresh root on a Machine that forgot its copy.
+    forgotten: bool,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
-/// with every late step it sends, and the Move after it with every late step of its own.
+/// with every late step it sends, the Move after it with every late step of its own, and
+/// on three Machines the runs that follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Scenario {
     /// The resize alone from every start, its row ended at any moment, its resend and
@@ -645,6 +992,18 @@ enum Scenario {
     /// A resize on both copies whose row ends while a `SetVolumeSize` is on the wire;
     /// the Move starts at once, and the late request lands anywhere in it.
     LateResize,
+    /// On A, B and C: the first Move and its Release, the mirror rm, the second Move to
+    /// C and its Release, and one Deploy at any moment the row is free.
+    TwoMoves,
+    /// On A, B and C: the first Move and its Release, a Machine away and forgotten, a
+    /// Restore from the copy left, and one Deploy at any moment the row is free.
+    Restore,
+}
+
+impl Scenario {
+    const fn three(self) -> bool {
+        matches!(self, Self::TwoMoves | Self::Restore)
+    }
 }
 
 /// One start: which way the resize goes, whether B held a Mirror when it ran (else B
@@ -695,6 +1054,11 @@ impl Scenario {
                 start(Shrink, false, None),
             ],
             Self::LateResize => vec![start(Grow, true, None), start(Shrink, true, None)],
+            // No resize: the size never changes. B holds a Mirror before the Move, or
+            // joins at its warm pull.
+            Self::TwoMoves | Self::Restore => {
+                vec![start(Grow, true, None), start(Grow, false, None)]
+            }
         }
     }
 }
@@ -704,12 +1068,22 @@ struct VolumeRuns {
     scenario: Scenario,
     /// Only this direction's starts; `None` runs both.
     direction: Option<Direction>,
+    /// Only starts where B held a Mirror before the first Move, or only where it did not.
+    b_held: Option<bool>,
     /// Resends each run may make of a request still unanswered.
     resends: u8,
-    /// Daemon restarts during a cut's flip.
+    /// Daemon restarts: during a cut's flip, and on three Machines between any floor
+    /// write and the plugin step after it.
     crashes: u8,
     /// The Machines may begin refusing created starts at any moment after the resize.
     enforce: bool,
+    /// `never two Writers` leaves out the copy an offline Restore displaced.
+    exempt: bool,
+    /// On three Machines: Deploys Cloud may start, and stretches a Machine may be away.
+    deploys: u8,
+    aways: u8,
+    /// On three Machines: rows Cloud may end before their run ends them.
+    ends: u8,
     broken: Broken,
 }
 
@@ -718,9 +1092,14 @@ impl Default for VolumeRuns {
         Self {
             scenario: Scenario::ResizeThenMove,
             direction: None,
+            b_held: None,
             resends: 1,
             crashes: 1,
             enforce: false,
+            exempt: true,
+            deploys: 1,
+            aways: 1,
+            ends: 1,
             broken: Broken::default(),
         }
     }
@@ -730,14 +1109,18 @@ impl Default for VolumeRuns {
 enum Action {
     /// One step of request `n` on its Machine.
     Machine(usize),
-    /// The daemon restarts during request `n`'s flip, after `zfs` set the root read-only.
+    /// Request `n`'s Prepare reads a view lagging far enough to list no copy elsewhere.
+    Lagging(usize),
+    /// The daemon restarts during request `n`, losing every request on its Machine.
     Crash(usize),
-    Move,
-    MoveResend,
-    /// Cloud ends the Move's row: a cancel, the stale sweep, or a failed step.
-    EndMove,
-    Release,
-    ReleaseResend,
+    /// Move `k`'s next step, its resend, and Cloud ending its row.
+    Move(usize),
+    MoveResend(usize),
+    EndMove(usize),
+    /// Move `k`'s Release.
+    Release(usize),
+    ReleaseResend(usize),
+    EndRelease(usize),
     Resize,
     ResizeResend,
     /// Cloud ends the resize's row: a cancel, a Release taking the Volume, or a failed
@@ -745,6 +1128,23 @@ enum Action {
     EndResize,
     /// The Machines begin refusing created starts.
     Enforce,
+    /// Cloud starts the next run the row lock lets in.
+    Next,
+    Drop,
+    EndDrop,
+    Restore,
+    EndRestore,
+    /// Cloud starts a Deploy while the row is free.
+    StartDeploy,
+    Deploy,
+    DeployResend,
+    EndDeploy,
+    Away(Machine),
+    Back(Machine),
+    /// `ployz server forget` of a Machine that is away.
+    Forget(Machine),
+    /// A forgotten Machine learns it and leaves.
+    Depart(Machine),
 }
 
 // --- The real planner -------------------------------------------------------------
@@ -753,6 +1153,8 @@ fn snapshot(snap: Snap) -> Snapshot {
     let (name, guid) = match snap {
         Snap::Warm => ("w-1-0", 1),
         Snap::Final => ("f-2", 2),
+        Snap::Warm2 => ("w-4-0", 3),
+        Snap::Final2 => ("f-4", 4),
     };
     Snapshot {
         name: name.parse().expect("a valid snapshot name"),
@@ -765,6 +1167,7 @@ fn slot_id(machine: Machine) -> SlotId {
     SlotId::new(match machine {
         Machine::A => 10,
         Machine::B => 11,
+        Machine::C => 12,
     })
 }
 
@@ -827,9 +1230,14 @@ fn wanted(want: Want) -> WantedCopy {
             target: snapshot(target).name,
             drain: Drain::NONE,
         },
+        Want::Snapshot { at } => WantedCopy::Snapshot {
+            name: snapshot(at).name,
+        },
         Want::Forget => WantedCopy::Forget,
         Want::Floor => WantedCopy::Floor,
-        Want::Size { .. } => unreachable!("SetVolumeSize never asks plan"),
+        Want::Size { .. } | Want::Prepare | Want::Create | Want::Start => {
+            unreachable!("only SetVolumeCopy asks plan")
+        }
     }
 }
 
@@ -881,6 +1289,9 @@ impl VolumeRuns {
     fn can_step(state: &State, index: usize) -> bool {
         let request = state.request(index);
         let host = state.host(request.to);
+        if !host.here() {
+            return false;
+        }
         match request.progress {
             // `switch_verb` queues `SetVolumeSize` on the switch lock.
             Progress::Sent if matches!(request.want, Want::Size { .. }) => host.switch.is_none(),
@@ -908,6 +1319,10 @@ impl VolumeRuns {
                         state.forget(index);
                     }
                     return;
+                }
+                if matches!(request.want, Want::Prepare | Want::Create | Want::Start) {
+                    let reply = self.deploy_step(state, index, false);
+                    return state.reply(index, reply);
                 }
                 if matches!(
                     request.want,
@@ -980,7 +1395,7 @@ impl VolumeRuns {
                     return;
                 }
                 host.copy = Held::Slot {
-                    newest: Some(Snap::Final),
+                    newest: Some(cut_target(request)),
                 };
                 let copy = host.copy;
                 state.reply(index, Reply::Copy(copy));
@@ -1003,6 +1418,88 @@ impl VolumeRuns {
                 state.reply(index, Reply::Copy(copy));
             }
             Progress::Replied(_) | Progress::Lost => {}
+        }
+    }
+
+    /// A Deploy's step on its Machine, whole: none takes the switch lock or reads a
+    /// floor. Prepare admits a plain mount only on this Machine's writable root, or on
+    /// nothing at all while its view lists no copy elsewhere; `lagging` reads that view
+    /// as stale as it may be. Prepare and Create then ensure the Volume: `create_volume`
+    /// refuses a name held in a slot and makes a fresh root for a name held nowhere.
+    fn deploy_step(&self, state: &mut State, index: usize, lagging: bool) -> Reply {
+        let request = state.request(index);
+        let to = request.to;
+        let held = state.host(to).copy;
+        let forgotten = held == Held::None && state.host(to).forgotten;
+        match request.want {
+            Want::Prepare => {
+                // `admit_plain_mount`, which reads this Machine's record before its view.
+                let admitted = self.broken.plain_mount
+                    || match held {
+                        Held::None => !forgotten && (lagging || !state.elsewhere(to)),
+                        Held::Root { readonly, .. } => !readonly,
+                        Held::Slot { .. } => false,
+                    };
+                if !admitted {
+                    return Reply::Refused(Refusal::NoWriter);
+                }
+                match Self::ensure(state, to) {
+                    Ok(copy) => Reply::Copy(copy),
+                    Err(refused) => Reply::Refused(refused),
+                }
+            }
+            // `refuse_forgotten`, before the Volume is ensured.
+            Want::Create if forgotten && !self.broken.forgotten => {
+                Reply::Refused(Refusal::NotWritable)
+            }
+            Want::Create => match Self::ensure(state, to) {
+                Ok(copy) => {
+                    let host = state.host_mut(to);
+                    if host.holder == Holder::Absent {
+                        host.holder = Holder::Stopped;
+                    }
+                    Reply::Copy(copy)
+                }
+                Err(refused) => Reply::Refused(refused),
+            },
+            Want::Start => {
+                let host = state.host_mut(to);
+                match host.holder {
+                    Holder::Running => Reply::Copy(held),
+                    Holder::Stopped if held.is_writer() => {
+                        host.holder = Holder::Running;
+                        Reply::Copy(held)
+                    }
+                    Holder::Stopped | Holder::Absent => Reply::Refused(Refusal::Unmountable),
+                }
+            }
+            Want::Writer { .. }
+            | Want::Mirror { .. }
+            | Want::Snapshot { .. }
+            | Want::Forget
+            | Want::Floor
+            | Want::Size { .. } => unreachable!("a Deploy sends only its own steps"),
+        }
+    }
+
+    /// `ensure_volume_source` and the plugin's `create_volume`: a root is adopted
+    /// whatever it holds, a slot refuses, and nothing at all becomes a fresh root at the
+    /// Store's size.
+    fn ensure(state: &mut State, to: Machine) -> Result<Held, Refusal> {
+        let size = state.size;
+        let host = state.host_mut(to);
+        match host.copy {
+            Held::Root { .. } => Ok(host.copy),
+            Held::Slot { .. } => Err(Refusal::InSlot),
+            Held::None => {
+                host.copy = Held::Root {
+                    readonly: false,
+                    epoch: 0,
+                    newest: None,
+                };
+                host.bound = size;
+                Ok(host.copy)
+            }
         }
     }
 
@@ -1080,14 +1577,23 @@ impl VolumeRuns {
             } => Some(start_state(host.holder, kind)),
             Want::Writer { start: None, .. }
             | Want::Mirror { .. }
+            | Want::Snapshot { .. }
             | Want::Forget
             | Want::Floor
-            | Want::Size { .. } => None,
+            | Want::Size { .. }
+            | Want::Prepare
+            | Want::Create
+            | Want::Start => None,
+        };
+        let expect = if self.broken.expect {
+            expect_of(host.copy)
+        } else {
+            request.expect
         };
         let plan = ployz_core::plan(
             volume_copy(host.copy, to).as_ref(),
             start == Some(StartState::Running),
-            &expected(request.expect, to),
+            &expected(expect, to),
             &wanted(request.want),
         );
         let transition = match plan {
@@ -1119,6 +1625,13 @@ impl VolumeRuns {
                     epoch,
                     newest: host.copy.newest(),
                 };
+                if request.lane == Lane::Restore
+                    && Machine::ALL
+                        .iter()
+                        .any(|machine| !state.host(*machine).member)
+                {
+                    state.restored = true;
+                }
                 match start {
                     Some(_) => state.set_progress(index, Progress::StartAdmit),
                     None => state.reply(index, Reply::Copy(state.host(to).copy)),
@@ -1138,6 +1651,13 @@ impl VolumeRuns {
                         newest,
                     };
                 }
+                if request.lane == Lane::Restore
+                    && Machine::ALL
+                        .iter()
+                        .any(|machine| !state.host(*machine).member)
+                {
+                    state.restored = true;
+                }
                 let copy = state.host(to).copy;
                 // Read again: a holder can exit or go while the Writer route runs.
                 match start.map(|kind| start_state(state.host(to).holder, kind)) {
@@ -1148,12 +1668,36 @@ impl VolumeRuns {
                     Some(StartState::Stopped) => state.set_progress(index, Progress::StartAdmit),
                 }
             }
-            (
-                CopyTransition::WriterToForget
-                | CopyTransition::MirrorToForget
-                | CopyTransition::SeedToForget,
-                Want::Forget,
-            ) => {
+            (CopyTransition::WriterToSnapshot, Want::Snapshot { at }) => {
+                if let Held::Root {
+                    readonly, epoch, ..
+                } = host.copy
+                {
+                    state.host_mut(to).copy = Held::Root {
+                        readonly,
+                        epoch,
+                        newest: Some(at),
+                    };
+                }
+                state.reply(index, Reply::Copy(state.host(to).copy));
+            }
+            // `copy_forget`: a root keeps its data and loses its snapshots.
+            (CopyTransition::WriterToForget, Want::Forget) => {
+                if let Held::Root {
+                    readonly, epoch, ..
+                } = host.copy
+                {
+                    state.host_mut(to).copy = Held::Root {
+                        readonly,
+                        epoch,
+                        newest: None,
+                    };
+                }
+                state.reply(index, Reply::Copy(state.host(to).copy));
+            }
+            // `copy_destroy`: the slot parent goes, its origin recorded first.
+            (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, Want::Forget) => {
+                state.host_mut(to).forgotten = true;
                 state.host_mut(to).copy = Held::None;
                 state.reply(index, Reply::Copy(Held::None));
             }
@@ -1167,8 +1711,9 @@ impl VolumeRuns {
                 if let Err(refused) = self.raise_slot(state, to, from) {
                     return state.reply(index, refused);
                 }
-                // The pull lands in one step when the source holds the target.
-                if state.host(from).copy.newest() == Some(target) {
+                // The pull lands in one step when the source answers and holds the target.
+                let source = state.host(from);
+                if source.here() && source.copy.newest() == Some(target) {
                     let copy = Held::Slot {
                         newest: Some(target),
                     };
@@ -1192,16 +1737,37 @@ impl VolumeRuns {
             && (self.broken.floors || self.broken.cut_floor || request.r#gen >= host.floor)
     }
 
+    /// Whether a restart may land during request `index`. Two Machines restart only
+    /// mid-flip; three restart between any floor write and the plugin step after it.
+    fn crashes_at(&self, state: &State, index: usize) -> bool {
+        let request = state.request(index);
+        if state.crashes >= self.crashes || !state.host(request.to).here() {
+            return false;
+        }
+        match request.progress {
+            Progress::CutFlip => self.flips(state, index),
+            Progress::Admitted
+            | Progress::CutDrain
+            | Progress::CutStop
+            | Progress::StartAdmit
+            | Progress::StartRun => self.scenario.three(),
+            Progress::Sent | Progress::Replied(_) | Progress::Lost => false,
+        }
+    }
+
     /// The daemon restarts: every request on the Machine is lost with its locks. A cut
-    /// caught mid-`zfs` leaves its root read-only at the final snapshot.
+    /// caught mid-`zfs` leaves its root read-only at its snapshot.
     fn crash(state: &mut State, index: usize) {
-        let to = state.request(index).to;
+        let request = state.request(index);
+        let to = request.to;
         let host = state.host_mut(to);
-        if let Held::Root { epoch, .. } = host.copy {
+        if request.progress == Progress::CutFlip
+            && let Held::Root { epoch, .. } = host.copy
+        {
             host.copy = Held::Root {
                 readonly: true,
                 epoch,
-                newest: Some(Snap::Final),
+                newest: Some(cut_target(request)),
             };
         }
         host.switch = None;
@@ -1212,6 +1778,21 @@ impl VolumeRuns {
             }
         }
         state.crashes += 1;
+    }
+}
+
+/// The snapshot a cut flips its root to.
+fn cut_target(request: Request) -> Snap {
+    match request.want {
+        Want::Mirror { target, .. } => target,
+        Want::Writer { .. }
+        | Want::Snapshot { .. }
+        | Want::Forget
+        | Want::Floor
+        | Want::Size { .. }
+        | Want::Prepare
+        | Want::Create
+        | Want::Start => unreachable!("only a cut flips"),
     }
 }
 
@@ -1283,6 +1864,7 @@ impl VolumeRuns {
                 }
                 let sent = state.send(
                     Lane::Resize,
+                    0,
                     machine,
                     Expect::None,
                     Want::Size {
@@ -1339,88 +1921,107 @@ impl VolumeRuns {
         }
     }
 
-    /// `failAndRelease` and the cancel handler: end the running row and request the
-    /// Release, back to A while warm and forward to B once committed.
-    fn end_move(&self, state: &mut State) {
-        if !state.row.running() {
+    /// `failAndRelease` and the cancel handler: end Move `k`'s running row and request
+    /// the Release, back to `from` while warm and forward to `to` once committed.
+    fn end_move(&self, state: &mut State, k: usize) {
+        let run = &mut state.run_mut(k);
+        if !run.row.running() {
             return;
         }
-        let forward = state.row == Row::Committed;
-        state.row = Row::Failed;
-        state.release = Some(Release {
+        let forward = run.row == Row::Committed;
+        run.row = Row::Failed;
+        let first = Machine::ALL
+            .into_iter()
+            .find(|machine| state.host(*machine).member)
+            .unwrap_or(Machine::A);
+        state.run_mut(k).release = Some(Release {
             row: Row::Warm,
             forward,
-            driver: Driver {
-                step: if forward {
+            driver: Driver::new(
+                if forward {
                     ReleaseStep::Observe
                 } else {
-                    ReleaseStep::Floor(Machine::A)
+                    ReleaseStep::Floor(first)
                 },
-                waiting: None,
-                resends: self.resends,
-                busy: 1,
-            },
-            views: [None, None],
+                self.resends,
+            ),
+            views: [None; 3],
             resume: None,
-            behind: None,
+            behind: [false; 3],
+            others: [false; 3],
         });
     }
 
-    fn move_step(&self, state: &mut State) {
-        // Every Move step that talks to a Machine or the row checks ownership first.
-        if !state.row.running() && !self.broken.owner_checks {
-            state.moving.step = MoveStep::Over;
-            state.moving.waiting = None;
-            return;
-        }
-        let driver = state.moving;
-        let reply = state.replied(driver.waiting);
+    fn move_step(&self, state: &mut State, k: usize) {
+        let MoveRun {
+            plan, row, driver, ..
+        } = state.run_mut(k).clone();
+        let MovePlan { from, to, .. } = plan;
         let next = |state: &mut State, step: MoveStep| {
-            state.moving.step = step;
-            state.moving.waiting = None;
+            state.run_mut(k).driver.step = step;
+            state.run_mut(k).driver.waiting = None;
         };
+        // Every Move step that talks to a Machine or the row checks ownership first.
+        if !row.running() && !self.broken.owner_checks {
+            return next(state, MoveStep::Over);
+        }
+        let wait = |state: &mut State, sent: usize| state.run_mut(k).driver.waiting = Some(sent);
+        let reply = state.replied(driver.waiting);
         match (driver.step, driver.waiting, reply) {
+            (MoveStep::Snapshot, None, _) => {
+                let sent = state.send(
+                    Lane::Move,
+                    plan.r#gen,
+                    from,
+                    Expect::Writer { epoch: plan.held },
+                    Want::Snapshot { at: plan.warm },
+                );
+                wait(state, sent);
+            }
             (MoveStep::Warm, None, _) => {
                 let sent = state.send(
                     Lane::Move,
-                    Machine::B,
+                    plan.r#gen,
+                    to,
                     Expect::None,
                     Want::Mirror {
-                        from: Some(Machine::A),
-                        target: Snap::Warm,
+                        from: Some(from),
+                        target: plan.warm,
                     },
                 );
-                state.moving.waiting = Some(sent);
+                wait(state, sent);
             }
             (MoveStep::Cut, None, _) => {
                 let sent = state.send(
                     Lane::Move,
-                    Machine::A,
-                    Expect::Writer { epoch: OLD_EPOCH },
+                    plan.r#gen,
+                    from,
+                    Expect::Writer { epoch: plan.held },
                     Want::Mirror {
                         from: None,
-                        target: Snap::Final,
+                        target: plan.last,
                     },
                 );
-                state.moving.waiting = Some(sent);
+                wait(state, sent);
             }
             (MoveStep::Pull, None, _) => {
                 let sent = state.send(
                     Lane::Move,
-                    Machine::B,
-                    Expect::Mirror { newest: Snap::Warm },
+                    plan.r#gen,
+                    to,
+                    Expect::Mirror { newest: plan.warm },
                     Want::Mirror {
-                        from: Some(Machine::A),
-                        target: Snap::Final,
+                        from: Some(from),
+                        target: plan.last,
                     },
                 );
-                state.moving.waiting = Some(sent);
+                wait(state, sent);
             }
             (MoveStep::Commit, _, _) => {
                 // `commitMove`: only a row still running commits.
-                if state.row.running() || self.broken.owner_checks {
-                    if state.row == Row::Warm {
-                        state.row = Row::Committed;
+                if row.running() || self.broken.owner_checks {
+                    if row == Row::Warm {
+                        state.run_mut(k).row = Row::Committed;
                     }
                     next(state, MoveStep::Start);
                 } else {
@@ -1428,34 +2029,34 @@ impl VolumeRuns {
                 }
             }
             (MoveStep::Start, None, _) => {
-                // `startWriter`: a B already running the Service is left alone.
-                if state.b.holder == Holder::Running {
+                // `startWriter`: a `to` already running the Service is left alone.
+                if state.host(to).holder == Holder::Running {
                     next(state, MoveStep::Remove);
-                } else if state.a.holder == Holder::Stopped {
+                } else if state.host(from).holder == Holder::Stopped {
                     let sent = state.send(
                         Lane::Move,
-                        Machine::B,
-                        Expect::Mirror {
-                            newest: Snap::Final,
-                        },
+                        plan.r#gen,
+                        to,
+                        Expect::Mirror { newest: plan.last },
                         Want::Writer {
-                            at: Snap::Final,
-                            epoch: MOVE_EPOCH,
+                            at: plan.last,
+                            epoch: plan.epoch,
                             start: Some(StartKind::Create),
                         },
                     );
-                    state.moving.waiting = Some(sent);
+                    wait(state, sent);
                 } else {
-                    self.end_move(state);
+                    self.end_move(state, k);
                     next(state, MoveStep::Over);
                 }
             }
             (MoveStep::Remove, _, _) => {
-                // `removeKept` checks the run still owns its row, then removes A's
+                // `removeKept` checks the run still owns its row, then removes `from`'s
                 // stopped Container.
-                if state.row.running() {
-                    if state.a.holder == Holder::Stopped {
-                        state.a.holder = Holder::Absent;
+                if state.run_mut(k).row.running() {
+                    let host = state.host_mut(from);
+                    if host.holder == Holder::Stopped {
+                        host.holder = Holder::Absent;
                     }
                     next(state, MoveStep::Finish);
                 } else {
@@ -1463,72 +2064,88 @@ impl VolumeRuns {
                 }
             }
             (MoveStep::Finish, _, _) => {
-                if state.row.running() {
-                    state.row = Row::Done;
+                if state.run_mut(k).row.running() {
+                    state.run_mut(k).row = Row::Done;
                 }
                 next(state, MoveStep::Over);
             }
             (
-                MoveStep::Warm | MoveStep::Cut | MoveStep::Pull | MoveStep::Start,
+                MoveStep::Snapshot
+                | MoveStep::Warm
+                | MoveStep::Cut
+                | MoveStep::Pull
+                | MoveStep::Start,
                 Some(_),
                 Some(reply),
             ) => {
                 let advanced = match (driver.step, reply) {
-                    (
-                        MoveStep::Warm,
-                        Reply::Copy(Held::Slot {
-                            newest: Some(Snap::Warm),
-                        }),
-                    ) => Some(MoveStep::Cut),
-                    (
-                        MoveStep::Cut,
-                        Reply::Copy(Held::Slot {
-                            newest: Some(Snap::Final),
-                        }),
-                    ) => Some(MoveStep::Pull),
-                    (
-                        MoveStep::Pull,
-                        Reply::Copy(Held::Slot {
-                            newest: Some(Snap::Final),
-                        }),
-                    ) => Some(MoveStep::Commit),
+                    (MoveStep::Snapshot, Reply::Copy(Held::Root { newest, .. }))
+                        if newest == Some(plan.warm) =>
+                    {
+                        Some(MoveStep::Warm)
+                    }
+                    (MoveStep::Warm, Reply::Copy(Held::Slot { newest }))
+                        if newest == Some(plan.warm) =>
+                    {
+                        Some(MoveStep::Cut)
+                    }
+                    (MoveStep::Cut | MoveStep::Pull, Reply::Copy(Held::Slot { newest }))
+                        if newest == Some(plan.last) =>
+                    {
+                        Some(if driver.step == MoveStep::Cut {
+                            MoveStep::Pull
+                        } else {
+                            MoveStep::Commit
+                        })
+                    }
                     (MoveStep::Start, Reply::Copy(_)) => Some(MoveStep::Remove),
-                    (MoveStep::Warm | MoveStep::Cut | MoveStep::Pull | MoveStep::Start, _)
-                    | (
-                        MoveStep::Commit | MoveStep::Remove | MoveStep::Finish | MoveStep::Over,
-                        _,
-                    ) => None,
+                    _ => None,
                 };
                 match (advanced, reply) {
                     (Some(step), _) => next(state, step),
                     // A newer lane fenced this run: it touches nothing more.
                     (None, Reply::Refused(Refusal::Stale)) => next(state, MoveStep::Over),
                     (None, Reply::Refused(Refusal::Busy)) if driver.busy > 0 => {
-                        state.moving.busy -= 1;
-                        state.moving.waiting = None;
+                        state.run_mut(k).driver.busy -= 1;
+                        state.run_mut(k).driver.waiting = None;
                     }
                     (
                         None,
                         Reply::Refused(_) | Reply::PullFailed | Reply::Copy(_) | Reply::Bound(_),
                     ) => {
-                        self.end_move(state);
+                        self.end_move(state, k);
                         next(state, MoveStep::Over);
                     }
                 }
             }
-            (MoveStep::Warm | MoveStep::Cut | MoveStep::Pull | MoveStep::Start, Some(_), None)
+            // Its patience with a Machine that doesn't answer runs out (`settle`).
+            (_, Some(index), None) if stalled(state, index) => {
+                self.end_move(state, k);
+                next(state, MoveStep::Over);
+            }
+            (
+                MoveStep::Snapshot
+                | MoveStep::Warm
+                | MoveStep::Cut
+                | MoveStep::Pull
+                | MoveStep::Start,
+                Some(_),
+                None,
+            )
             | (MoveStep::Over, _, _) => {}
         }
     }
 
-    fn release_step(&self, state: &mut State) {
-        let Some(release) = state.release.clone() else {
+    fn release_step(&self, state: &mut State, k: usize) {
+        let Some(release) = state.run_mut(k).release.clone() else {
             return;
         };
+        let plan = state.run_mut(k).plan;
+        let r#gen = plan.release_gen();
         let driver = release.driver;
         let reply = state.replied(driver.waiting);
         let set = |state: &mut State, update: &dyn Fn(&mut Release)| {
-            if let Some(release) = state.release.as_mut() {
+            if let Some(release) = state.run_mut(k).release.as_mut() {
                 update(release);
             }
         };
@@ -1543,15 +2160,30 @@ impl VolumeRuns {
         };
         let fail = |state: &mut State| {
             set(state, &|release| {
-                release.row = Row::Failed;
+                if release.row.running() {
+                    release.row = Row::Failed;
+                }
                 release.driver.step = ReleaseStep::Over;
                 release.driver.waiting = None;
             });
         };
+        // A Release whose row Cloud ended sends nothing more.
+        if !release.row.running() {
+            return set(state, &|release| {
+                release.driver.step = ReleaseStep::Over;
+                release.driver.waiting = None;
+            });
+        }
+        if let Some(index) = driver.waiting
+            && reply.is_none()
+            && stalled(state, index)
+        {
+            return fail(state);
+        }
         let resume = release.resume;
         match (driver.step, driver.waiting) {
             (ReleaseStep::Floor(machine), None) => {
-                let sent = state.send(Lane::Release, machine, Expect::None, Want::Floor);
+                let sent = state.send(Lane::Release, r#gen, machine, Expect::None, Want::Floor);
                 wait(state, sent);
             }
             (ReleaseStep::Floor(machine), Some(_)) => {
@@ -1559,29 +2191,30 @@ impl VolumeRuns {
                     return;
                 };
                 set(state, &|release| {
-                    if let Some(view) = release.views.get_mut(machine as usize) {
+                    if let Some(view) = release.views.get_mut(machine.index()) {
                         *view = Some(held);
                     }
                 });
-                next(
-                    state,
-                    match machine {
-                        Machine::A => ReleaseStep::Floor(Machine::B),
-                        Machine::B => ReleaseStep::Plan,
-                    },
-                );
+                let after = Machine::ALL
+                    .into_iter()
+                    .find(|other| *other > machine && state.host(*other).member);
+                next(state, after.map_or(ReleaseStep::Plan, ReleaseStep::Floor));
             }
-            (ReleaseStep::Plan, _) => self.plan_release(state, &release),
+            (ReleaseStep::Plan, _) => self.plan_release(state, k, &release),
             (ReleaseStep::Inspect(machine), _) => {
                 let Some(plan) = resume else {
                     return fail(state);
                 };
+                if !state.host(machine).here() {
+                    return fail(state);
+                }
+                let after = next_other(&release, Some(machine), plan.on);
                 match state.host(machine).copy {
                     Held::Root { .. } => fail(state),
                     Held::Slot {
                         newest: Some(newest),
                     } if newest == plan.at => next(state, ReleaseStep::Forget(machine)),
-                    Held::Slot { .. } | Held::None => next(state, ReleaseStep::Resume(plan.on)),
+                    Held::Slot { .. } | Held::None => next(state, after),
                 }
             }
             (ReleaseStep::Forget(machine), None) => {
@@ -1590,6 +2223,7 @@ impl VolumeRuns {
                 };
                 let sent = state.send(
                     Lane::Release,
+                    r#gen,
                     machine,
                     Expect::Mirror { newest: plan.at },
                     Want::Forget,
@@ -1597,17 +2231,18 @@ impl VolumeRuns {
                 wait(state, sent);
             }
             (ReleaseStep::Resume(machine), None) => {
-                let Some(plan) = resume else {
+                let Some(resume) = resume else {
                     return fail(state);
                 };
                 let sent = state.send(
                     Lane::Release,
+                    r#gen,
                     machine,
-                    plan.expect,
+                    resume.expect,
                     Want::Writer {
-                        at: plan.at,
-                        epoch: RELEASE_EPOCH,
-                        start: plan.start,
+                        at: resume.at,
+                        epoch: plan.release_epoch(),
+                        start: resume.start,
                     },
                 );
                 wait(state, sent);
@@ -1619,12 +2254,10 @@ impl VolumeRuns {
                 None => {}
                 Some(Reply::Copy(_)) => {
                     let step = match driver.step {
-                        ReleaseStep::Forget(_) => {
-                            resume.map_or(ReleaseStep::Over, |plan| ReleaseStep::Resume(plan.on))
-                        }
-                        ReleaseStep::Resume(_) => release
-                            .behind
-                            .map_or(ReleaseStep::Finish, ReleaseStep::RemoveBehind),
+                        ReleaseStep::Forget(machine) => resume.map_or(ReleaseStep::Over, |plan| {
+                            next_other(&release, Some(machine), plan.on)
+                        }),
+                        ReleaseStep::Resume(_) => first_behind(&release, None),
                         ReleaseStep::Floor(_)
                         | ReleaseStep::Plan
                         | ReleaseStep::Inspect(_)
@@ -1650,18 +2283,18 @@ impl VolumeRuns {
                 if host.holder != Holder::Absent {
                     host.holder = Holder::Absent;
                 }
-                next(state, ReleaseStep::Finish);
+                next(state, first_behind(&release, Some(machine)));
             }
             (ReleaseStep::Observe, _) => {
-                if state.b.copy.newest().is_some() {
+                if state.host(plan.to).here() && state.host(plan.to).copy.newest().is_some() {
                     next(state, ReleaseStep::StartForward);
                 } else {
                     fail(state);
                 }
             }
             (ReleaseStep::StartForward, None) => {
-                // `commitAndStart` on the inherited commit, then `startWriter` to B.
-                let copy = state.b.copy;
+                // `commitAndStart` on the inherited commit, then `startWriter` to `to`.
+                let copy = state.host(plan.to).copy;
                 let Some(at) = copy.newest() else {
                     return fail(state);
                 };
@@ -1669,28 +2302,30 @@ impl VolumeRuns {
                 // `takeEpoch` keeps it.
                 let epoch = match copy {
                     Held::Root { epoch, .. } => epoch,
-                    Held::Slot { .. } | Held::None => MOVE_EPOCH,
+                    Held::Slot { .. } | Held::None => plan.epoch,
                 };
-                let start = if state.b.holder == Holder::Running {
+                let start = if state.host(plan.to).holder == Holder::Running {
                     return next(state, ReleaseStep::RemoveForward);
-                } else if state.a.holder == Holder::Stopped {
+                } else if state.host(plan.from).holder == Holder::Stopped {
                     Some(StartKind::Create)
-                } else if state.b.holder == Holder::Stopped {
+                } else if state.host(plan.to).holder == Holder::Stopped {
                     None
                 } else {
                     return fail(state);
                 };
                 let sent = state.send(
                     Lane::Release,
-                    Machine::B,
+                    r#gen,
+                    plan.to,
                     expect_of(copy),
                     Want::Writer { at, epoch, start },
                 );
                 wait(state, sent);
             }
             (ReleaseStep::RemoveForward, _) => {
-                if state.a.holder == Holder::Stopped {
-                    state.a.holder = Holder::Absent;
+                let host = state.host_mut(plan.from);
+                if host.holder == Holder::Stopped {
+                    host.holder = Holder::Absent;
                 }
                 next(state, ReleaseStep::Finish);
             }
@@ -1703,7 +2338,7 @@ impl VolumeRuns {
     }
 
     /// `planFromCopies` for a release, on the copies the floors answered.
-    fn plan_release(&self, state: &mut State, release: &Release) {
+    fn plan_release(&self, state: &mut State, k: usize, release: &Release) {
         let views: Vec<(Machine, Held)> = Machine::ALL
             .iter()
             .zip(release.views.iter())
@@ -1717,6 +2352,18 @@ impl VolumeRuns {
         let kept = |state: &State, machine: Machine| {
             (state.host(machine).holder != Holder::Absent).then_some(StartKind::Kept)
         };
+        let slots = |at: Option<Snap>, but: Machine| {
+            let mut found = [false; 3];
+            for (machine, held) in &views {
+                if *machine != but
+                    && let Held::Slot { newest } = held
+                    && (at.is_none() || *newest == at)
+                {
+                    *at_mut(&mut found, *machine) = true;
+                }
+            }
+            found
+        };
         let plan = match roots.as_slice() {
             [
                 (
@@ -1727,24 +2374,20 @@ impl VolumeRuns {
                         newest: Some(at),
                     },
                 ),
-            ] => {
-                let behind = (!readonly
-                    && matches!(
-                        release.views.get(machine.other() as usize),
-                        Some(Some(Held::Slot { .. }))
-                    ))
-                .then_some(machine.other());
-                Some((
-                    Resume {
-                        on: *machine,
-                        expect: Expect::Writer { epoch: *epoch },
-                        at: *at,
-                        start: kept(state, *machine),
-                    },
-                    behind,
-                    ReleaseStep::Resume(*machine),
-                ))
-            }
+            ] => Some((
+                Resume {
+                    on: *machine,
+                    expect: Expect::Writer { epoch: *epoch },
+                    at: *at,
+                    start: kept(state, *machine),
+                },
+                if *readonly {
+                    [false; 3]
+                } else {
+                    slots(Some(*at), *machine)
+                },
+                [false; 3],
+            )),
             [] => views
                 .iter()
                 .find(|(machine, held)| {
@@ -1753,15 +2396,6 @@ impl VolumeRuns {
                 })
                 .and_then(|(owner, held)| {
                     let at = held.newest()?;
-                    let other = owner.other();
-                    let next = if matches!(
-                        release.views.get(other as usize),
-                        Some(Some(Held::Slot { .. }))
-                    ) {
-                        ReleaseStep::Inspect(other)
-                    } else {
-                        ReleaseStep::Resume(*owner)
-                    };
                     Some((
                         Resume {
                             on: *owner,
@@ -1769,20 +2403,21 @@ impl VolumeRuns {
                             at,
                             start: Some(StartKind::Kept),
                         },
-                        None,
-                        next,
+                        [false; 3],
+                        slots(None, *owner),
                     ))
                 }),
             _ => None,
         };
-        let Some(release) = state.release.as_mut() else {
+        let Some(release) = state.run_mut(k).release.as_mut() else {
             return;
         };
         match plan {
-            Some((resume, behind, step)) => {
+            Some((resume, behind, others)) => {
                 release.resume = Some(resume);
                 release.behind = behind;
-                release.driver.step = step;
+                release.others = others;
+                release.driver.step = next_other(release, None, resume.on);
             }
             None => {
                 release.row = Row::Failed;
@@ -1790,6 +2425,373 @@ impl VolumeRuns {
             }
         }
     }
+
+    fn drop_step(state: &mut State) {
+        let Some(drop) = state.drop else {
+            return;
+        };
+        let set = |state: &mut State, step: DropStep| {
+            if let Some(drop) = state.drop.as_mut() {
+                drop.driver.step = step;
+                drop.driver.waiting = None;
+            }
+        };
+        let fail = |state: &mut State| {
+            if let Some(drop) = state.drop.as_mut() {
+                if drop.row.running() {
+                    drop.row = Row::Failed;
+                }
+                drop.driver.step = DropStep::Over;
+                drop.driver.waiting = None;
+            }
+        };
+        if !drop.row.running() {
+            return set(state, DropStep::Over);
+        }
+        let reply = state.replied(drop.driver.waiting);
+        if let Some(index) = drop.driver.waiting
+            && reply.is_none()
+        {
+            if stalled(state, index) {
+                fail(state);
+            } else if let Some(drop) = state.drop.as_mut() {
+                drop.driver.waiting = None;
+            }
+            return;
+        }
+        let after = |machine: Option<Machine>| {
+            Machine::ALL
+                .into_iter()
+                .find(|other| Some(*other) > machine && at(&drop.slots, *other).is_some())
+                .map_or(DropStep::Withdraw, DropStep::Forget)
+        };
+        match (drop.driver.step, reply) {
+            (DropStep::Forget(machine), None) => {
+                let Some(newest) = *at(&drop.slots, machine) else {
+                    return fail(state);
+                };
+                let sent = state.send(
+                    Lane::Drop,
+                    DROP_GEN,
+                    machine,
+                    Expect::Mirror { newest },
+                    Want::Forget,
+                );
+                if let Some(drop) = state.drop.as_mut() {
+                    drop.driver.waiting = Some(sent);
+                }
+            }
+            (DropStep::Forget(machine), Some(Reply::Copy(_))) => set(state, after(Some(machine))),
+            (DropStep::Withdraw, None) => {
+                let sent = state.send(
+                    Lane::Drop,
+                    DROP_GEN,
+                    drop.writer,
+                    Expect::Writer {
+                        epoch: drop.writer_epoch,
+                    },
+                    Want::Forget,
+                );
+                if let Some(drop) = state.drop.as_mut() {
+                    drop.driver.waiting = Some(sent);
+                }
+            }
+            // The slots are gone: a Writer that refuses is named as behind.
+            (DropStep::Withdraw, Some(_)) => set(state, DropStep::Finish),
+            (DropStep::Forget(_), Some(_)) => fail(state),
+            (DropStep::Finish, _) => {
+                if let Some(drop) = state.drop.as_mut() {
+                    drop.row = Row::Done;
+                    drop.driver.step = DropStep::Over;
+                }
+            }
+            (DropStep::Over, _) => {}
+        }
+    }
+
+    fn restore_step(state: &mut State) {
+        let Some(restore) = state.restore else {
+            return;
+        };
+        let end = |state: &mut State, row: Row| {
+            if let Some(restore) = state.restore.as_mut() {
+                if restore.row.running() {
+                    restore.row = row;
+                }
+                restore.driver.step = RestoreStep::Over;
+                restore.driver.waiting = None;
+            }
+        };
+        if !restore.row.running() {
+            return end(state, Row::Failed);
+        }
+        let reply = state.replied(restore.driver.waiting);
+        if let Some(index) = restore.driver.waiting
+            && reply.is_none()
+        {
+            if stalled(state, index) {
+                end(state, Row::Failed);
+            } else if let Some(restore) = state.restore.as_mut() {
+                restore.driver.waiting = None;
+            }
+            return;
+        }
+        match (restore.driver.step, reply) {
+            (RestoreStep::Promote, None) => {
+                let sent = state.send(
+                    Lane::Restore,
+                    RESTORE_GEN,
+                    restore.on,
+                    restore.expect,
+                    Want::Writer {
+                        at: restore.at,
+                        epoch: restore.epoch,
+                        start: None,
+                    },
+                );
+                if let Some(restore) = state.restore.as_mut() {
+                    restore.driver.waiting = Some(sent);
+                }
+            }
+            (RestoreStep::Promote, Some(Reply::Copy(_))) => {
+                if let Some(restore) = state.restore.as_mut() {
+                    restore.driver.step = RestoreStep::Finish;
+                    restore.driver.waiting = None;
+                }
+            }
+            (RestoreStep::Promote, Some(_)) => end(state, Row::Failed),
+            (RestoreStep::Finish, _) => end(state, Row::Done),
+            (RestoreStep::Over, _) => {}
+        }
+    }
+
+    fn deploy_driver(state: &mut State) {
+        let Some(deploy) = state.deploy else {
+            return;
+        };
+        let end = |state: &mut State, row: Row| {
+            if let Some(deploy) = state.deploy.as_mut() {
+                if deploy.row.running() {
+                    deploy.row = row;
+                }
+                deploy.driver.step = DeployStep::Over;
+                deploy.driver.waiting = None;
+            }
+        };
+        if !deploy.row.running() {
+            return end(state, Row::Failed);
+        }
+        let reply = state.replied(deploy.driver.waiting);
+        if let Some(index) = deploy.driver.waiting
+            && reply.is_none()
+        {
+            if stalled(state, index) {
+                end(state, Row::Failed);
+            } else if let Some(deploy) = state.deploy.as_mut() {
+                deploy.driver.waiting = None;
+            }
+            return;
+        }
+        let step = deploy.driver.step;
+        let want = match step {
+            DeployStep::Prepare => Want::Prepare,
+            DeployStep::Create => Want::Create,
+            DeployStep::Start => Want::Start,
+            DeployStep::Finish => return end(state, Row::Done),
+            DeployStep::Over => return,
+        };
+        match reply {
+            None => {
+                let sent = state.send(Lane::Deploy, 0, deploy.on, Expect::None, want);
+                if let Some(deploy) = state.deploy.as_mut() {
+                    deploy.driver.waiting = Some(sent);
+                }
+            }
+            Some(Reply::Copy(_)) => {
+                if let Some(deploy) = state.deploy.as_mut() {
+                    deploy.driver.step = match step {
+                        DeployStep::Prepare => DeployStep::Create,
+                        DeployStep::Create => DeployStep::Start,
+                        DeployStep::Start | DeployStep::Finish | DeployStep::Over => {
+                            DeployStep::Finish
+                        }
+                    };
+                    deploy.driver.waiting = None;
+                }
+            }
+            Some(_) => end(state, Row::Failed),
+        }
+    }
+
+    /// The run Cloud starts next once the row is free, as its planner would plan it, or
+    /// `None` when the planner refuses or nothing is left.
+    fn next_run(&self, state: &State) -> Option<State> {
+        if !self.scenario.three() || !state.row_free() {
+            return None;
+        }
+        let members = state.members()?;
+        let mut next = state.clone();
+        let roots: Vec<Machine> = members
+            .iter()
+            .copied()
+            .filter(|machine| matches!(state.host(*machine).copy, Held::Root { .. }))
+            .collect();
+        let slots: Vec<Machine> = members
+            .iter()
+            .copied()
+            .filter(|machine| matches!(state.host(*machine).copy, Held::Slot { .. }))
+            .collect();
+        match (self.scenario, state.stage) {
+            (_, Stage::Start) => {
+                let first = next.run_mut(0);
+                first.row = Row::Warm;
+                first.driver.step = if state.host(Machine::B).copy == Held::None {
+                    MoveStep::Warm
+                } else {
+                    MoveStep::Cut
+                };
+                next.stage = Stage::First;
+            }
+            // `planMove` refuses beside another slot, so `volume mirror rm` goes first.
+            (Scenario::TwoMoves, Stage::First) if !slots.is_empty() => {
+                let [writer] = roots.as_slice() else {
+                    return None;
+                };
+                let Held::Root {
+                    readonly: false,
+                    epoch,
+                    ..
+                } = state.host(*writer).copy
+                else {
+                    return None;
+                };
+                let mut forget = [None; 3];
+                for slot in &slots {
+                    *at_mut(&mut forget, *slot) = Some(state.host(*slot).copy.newest()?);
+                }
+                let first = Machine::ALL
+                    .into_iter()
+                    .find(|machine| at(&forget, *machine).is_some())?;
+                next.drop = Some(DropRun {
+                    row: Row::Warm,
+                    driver: Driver::new(DropStep::Forget(first), 0),
+                    slots: forget,
+                    writer: *writer,
+                    writer_epoch: epoch,
+                });
+                next.stage = Stage::Drop;
+            }
+            (Scenario::TwoMoves, Stage::First | Stage::Drop) => {
+                let ([writer], []) = (roots.as_slice(), slots.as_slice()) else {
+                    return None;
+                };
+                let Held::Root {
+                    readonly: false,
+                    epoch,
+                    ..
+                } = state.host(*writer).copy
+                else {
+                    return None;
+                };
+                // `findHolder`: a Move needs the Service it moves.
+                if *writer == Machine::C || state.host(*writer).holder == Holder::Absent {
+                    return None;
+                }
+                let plan = MovePlan {
+                    from: *writer,
+                    to: Machine::C,
+                    r#gen: SECOND_GEN,
+                    epoch: SECOND_EPOCH,
+                    held: epoch,
+                    warm: Snap::Warm2,
+                    last: Snap::Final2,
+                };
+                next.moves.push(MoveRun {
+                    plan,
+                    row: Row::Warm,
+                    driver: Driver::new(MoveStep::Snapshot, self.resends),
+                    release: None,
+                });
+                next.stage = Stage::Second;
+            }
+            // `planRestore`: the copy must be the only one Cloud sees, and not a Writer.
+            (Scenario::Restore, Stage::First) => {
+                let held: Vec<Machine> = members
+                    .iter()
+                    .copied()
+                    .filter(|machine| state.host(*machine).copy != Held::None)
+                    .collect();
+                let [on] = held.as_slice() else {
+                    return None;
+                };
+                let copy = state.host(*on).copy;
+                let at = copy.newest()?;
+                if copy.is_writer() {
+                    return None;
+                }
+                next.restore = Some(RestoreRun {
+                    row: Row::Warm,
+                    driver: Driver::new(RestoreStep::Promote, 0),
+                    on: *on,
+                    expect: expect_of(copy),
+                    at,
+                    epoch: match copy {
+                        Held::Root { epoch, .. } => epoch,
+                        Held::Slot { .. } | Held::None => RESTORE_EPOCH,
+                    },
+                });
+                next.stage = Stage::Second;
+            }
+            _ => return None,
+        }
+        Some(next)
+    }
+
+    /// A Deploy Cloud places on the Writer it sees: the start of the Container it kept
+    /// there, or a Prepare, a Create and a start.
+    fn start_deploy(state: &State) -> Option<State> {
+        if state.deploys == 0 || !state.row_free() {
+            return None;
+        }
+        let on = state.writer_seen()?;
+        let mut next = state.clone();
+        next.deploys -= 1;
+        let step = if state.host(on).holder == Holder::Stopped {
+            DeployStep::Start
+        } else {
+            DeployStep::Prepare
+        };
+        next.deploy = Some(DeployRun {
+            row: Row::Warm,
+            on,
+            driver: Driver::new(step, 0),
+        });
+        Some(next)
+    }
+}
+
+/// The first Machine after `after` a Release from slots inspects, else its resume.
+fn next_other(release: &Release, after: Option<Machine>, on: Machine) -> ReleaseStep {
+    Machine::ALL
+        .into_iter()
+        .find(|machine| Some(*machine) > after && *at(&release.others, *machine))
+        .map_or(ReleaseStep::Resume(on), ReleaseStep::Inspect)
+}
+
+/// The first Machine after `after` whose kept Container the Release removes, else its
+/// finish.
+fn first_behind(release: &Release, after: Option<Machine>) -> ReleaseStep {
+    Machine::ALL
+        .into_iter()
+        .find(|machine| Some(*machine) > after && *at(&release.behind, *machine))
+        .map_or(ReleaseStep::Finish, ReleaseStep::RemoveBehind)
+}
+
+/// The request `index` is unanswered on a Machine that is not here: the driver's
+/// patience runs out.
+fn stalled(state: &State, index: usize) -> bool {
+    let request = state.request(index);
+    state_in_flight(request.progress) && !state.host(request.to).here()
 }
 
 fn resendable<S>(state: &State, driver: Driver<S>) -> bool {
@@ -1810,39 +2812,69 @@ fn resendable<S>(state: &State, driver: Driver<S>) -> bool {
 }
 
 fn steps<S>(state: &State, driver: Driver<S>) -> bool {
-    driver.waiting.is_none() || state.replied(driver.waiting).is_some()
+    driver.waiting.is_none()
+        || state.replied(driver.waiting).is_some()
+        || driver.waiting.is_some_and(|index| stalled(state, index))
+}
+
+/// A driver that retries a step whose reply a restart lost, as an Inngest step does.
+fn retries<S>(state: &State, driver: Driver<S>) -> bool {
+    let lost = driver
+        .waiting
+        .is_some_and(|index| state.request(index).progress == Progress::Lost);
+    lost || steps(state, driver)
+}
+
+/// The resend: the driver stops waiting on its request, which may still land.
+fn resend<S>(state: &State, driver: &mut Driver<S>) {
+    if let Some(index) = driver.waiting
+        && state.request(index).progress != Progress::Lost
+    {
+        driver.resends -= 1;
+    }
+    driver.waiting = None;
 }
 
 impl VolumeRuns {
+    fn host_at(copy: Held, holder: Holder, bound: Size, member: bool) -> Host {
+        Host {
+            copy,
+            floor: 0,
+            holder,
+            switch: None,
+            turn: None,
+            bound,
+            presence: Presence::Here,
+            forgotten: false,
+            member,
+        }
+    }
+
     fn initial(&self, start: Origin) -> State {
+        let three = self.scenario.three();
         let from = start.direction.from();
-        State {
-            a: Host {
-                copy: Held::Root {
-                    readonly: false,
-                    epoch: OLD_EPOCH,
-                    newest: Some(Snap::Warm),
-                },
-                floor: 0,
-                holder: Holder::Running,
-                switch: None,
-                turn: None,
-                bound: from,
-            },
-            b: Host {
-                copy: if start.b_held {
-                    Held::Slot {
+        let b = if start.b_held {
+            Held::Slot {
+                newest: Some(Snap::Warm),
+            }
+        } else {
+            Held::None
+        };
+        let mut state = State {
+            hosts: [
+                Self::host_at(
+                    Held::Root {
+                        readonly: false,
+                        epoch: OLD_EPOCH,
                         newest: Some(Snap::Warm),
-                    }
-                } else {
-                    Held::None
-                },
-                floor: 0,
-                holder: Holder::Absent,
-                switch: None,
-                turn: None,
-                bound: from,
-            },
+                    },
+                    Holder::Running,
+                    from,
+                    true,
+                ),
+                Self::host_at(b, Holder::Absent, from, true),
+                Self::host_at(Held::None, Holder::Absent, from, three),
+            ],
             requests: Vec::new(),
             size: from,
             resize: Resize {
@@ -1852,7 +2884,10 @@ impl VolumeRuns {
                     waiting: None,
                     resends: match self.scenario {
                         Scenario::Resize => self.resends,
-                        Scenario::ResizeThenMove | Scenario::LateResize => 0,
+                        Scenario::ResizeThenMove
+                        | Scenario::LateResize
+                        | Scenario::TwoMoves
+                        | Scenario::Restore => 0,
                     },
                     busy: 1,
                 },
@@ -1862,23 +2897,45 @@ impl VolumeRuns {
                 cut_short: false,
             },
             cramped: start.cramped,
-            row: Row::Warm,
-            moving: Driver {
-                step: if start.b_held {
-                    MoveStep::Cut
-                } else {
-                    MoveStep::Warm
-                },
-                waiting: None,
-                resends: self.resends,
-                busy: 1,
-            },
-            release: None,
+            moves: vec![MoveRun {
+                plan: FIRST_MOVE,
+                row: Row::Warm,
+                driver: Driver::new(
+                    if start.b_held {
+                        MoveStep::Cut
+                    } else {
+                        MoveStep::Warm
+                    },
+                    self.resends,
+                ),
+                release: None,
+            }],
+            drop: None,
+            restore: None,
+            deploy: None,
+            stage: Stage::First,
             crashes: 0,
+            deploys: if three { self.deploys } else { 0 },
+            aways: if three { self.aways } else { 0 },
+            ends: self.ends,
+            emptied: [false; 3],
+            restored: false,
+            stale_landed: false,
             enforcing: false,
             refused_start: false,
             unapproved_start: false,
+        };
+        if three {
+            // No resize on three Machines: the size never changes. A Deploy may come before
+            // the first Move.
+            state.resize.row = Row::Failed;
+            state.resize.driver.step = ResizeStep::Over;
+            state.stage = Stage::Start;
+            state.run_mut(0).row = Row::Queued;
+            state.run_mut(0).driver.step = MoveStep::Over;
         }
+        state.note_emptied();
+        state
     }
 }
 
@@ -1891,6 +2948,7 @@ impl Model for VolumeRuns {
             .starts()
             .into_iter()
             .filter(|start| self.direction.is_none_or(|only| only == start.direction))
+            .filter(|start| self.b_held.is_none_or(|only| only == start.b_held))
             .map(|start| self.initial(start))
             .collect()
     }
@@ -1899,11 +2957,16 @@ impl Model for VolumeRuns {
         for (index, request) in state.requests.iter().enumerate() {
             if Self::can_step(state, index) {
                 actions.push(Action::Machine(index));
+                if request.want == Want::Prepare
+                    && request.progress == Progress::Sent
+                    && state.host(request.to).copy == Held::None
+                    && state.elsewhere(request.to)
+                    && state.stale_empty(request.to)
+                {
+                    actions.push(Action::Lagging(index));
+                }
             }
-            if request.progress == Progress::CutFlip
-                && state.crashes < self.crashes
-                && self.flips(state, index)
-            {
+            if self.crashes_at(state, index) {
                 actions.push(Action::Crash(index));
             }
         }
@@ -1918,7 +2981,7 @@ impl Model for VolumeRuns {
             }
             let ends = match self.scenario {
                 Scenario::Resize => true,
-                Scenario::ResizeThenMove => false,
+                Scenario::ResizeThenMove | Scenario::TwoMoves | Scenario::Restore => false,
                 Scenario::LateResize => {
                     resize.driver.waiting.is_some()
                         && state.replied(resize.driver.waiting).is_none()
@@ -1935,84 +2998,216 @@ impl Model for VolumeRuns {
         if self.enforce && !state.enforcing && !at_rest_but_enforce(self, state) {
             actions.push(Action::Enforce);
         }
-        // A Move whose row ended stops whenever its step next runs or retries, leaving
-        // what it sent in flight.
-        let stopped = !state.row.running() && !self.broken.owner_checks;
-        if state.moving.step != MoveStep::Over && (stopped || steps(state, state.moving)) {
-            actions.push(Action::Move);
-        }
-        if state.moving.step != MoveStep::Over
-            && (state.row.running() || self.broken.owner_checks)
-            && resendable(state, state.moving)
-        {
-            actions.push(Action::MoveResend);
-        }
-        if state.row.running() {
-            actions.push(Action::EndMove);
-        }
-        if let Some(release) = &state.release
-            && release.driver.step != ReleaseStep::Over
-        {
-            if steps(state, release.driver) {
-                actions.push(Action::Release);
+        let three = self.scenario.three();
+        for (k, run) in state.moves.iter().enumerate() {
+            // A Move whose row ended stops whenever its step next runs or retries, leaving
+            // what it sent in flight.
+            let stopped = !run.row.running() && !self.broken.owner_checks;
+            if run.driver.step != MoveStep::Over && (stopped || steps(state, run.driver)) {
+                actions.push(Action::Move(k));
             }
-            if resendable(state, release.driver) {
-                actions.push(Action::ReleaseResend);
+            if run.driver.step != MoveStep::Over
+                && (run.row.running() || self.broken.owner_checks)
+                && resendable(state, run.driver)
+            {
+                actions.push(Action::MoveResend(k));
+            }
+            if run.row.running() && (!three || state.ends > 0) {
+                actions.push(Action::EndMove(k));
+            }
+            if let Some(release) = &run.release
+                && release.driver.step != ReleaseStep::Over
+            {
+                if !release.row.running() || steps(state, release.driver) {
+                    actions.push(Action::Release(k));
+                }
+                if release.row.running() && resendable(state, release.driver) {
+                    actions.push(Action::ReleaseResend(k));
+                }
+                if three && release.row.running() && state.ends > 0 {
+                    actions.push(Action::EndRelease(k));
+                }
+            }
+        }
+        if !three {
+            return;
+        }
+        if let Some(drop) = state.drop
+            && drop.driver.step != DropStep::Over
+        {
+            if !drop.row.running() || retries(state, drop.driver) {
+                actions.push(Action::Drop);
+            }
+            if drop.row.running() && state.ends > 0 {
+                actions.push(Action::EndDrop);
+            }
+        }
+        if let Some(restore) = state.restore
+            && restore.driver.step != RestoreStep::Over
+        {
+            if !restore.row.running() || retries(state, restore.driver) {
+                actions.push(Action::Restore);
+            }
+            if restore.row.running() && state.ends > 0 {
+                actions.push(Action::EndRestore);
+            }
+        }
+        if let Some(deploy) = state.deploy
+            && deploy.driver.step != DeployStep::Over
+        {
+            if !deploy.row.running() || retries(state, deploy.driver) {
+                actions.push(Action::Deploy);
+            }
+            if deploy.row.running() && resendable(state, deploy.driver) {
+                actions.push(Action::DeployResend);
+            }
+            if deploy.row.running() && state.ends > 0 {
+                actions.push(Action::EndDeploy);
+            }
+        }
+        if self.next_run(state).is_some() {
+            actions.push(Action::Next);
+        }
+        if Self::start_deploy(state).is_some() {
+            actions.push(Action::StartDeploy);
+        }
+        for machine in Machine::ALL {
+            let host = state.host(machine);
+            match host.presence {
+                Presence::Here if state.aways > 0 && host.copy != Held::None => {
+                    actions.push(Action::Away(machine));
+                }
+                Presence::Here if !host.member => actions.push(Action::Depart(machine)),
+                Presence::Away => {
+                    actions.push(Action::Back(machine));
+                    if host.member && self.scenario == Scenario::Restore {
+                        actions.push(Action::Forget(machine));
+                    }
+                }
+                Presence::Here | Presence::Departed => {}
             }
         }
     }
 
     fn next_state(&self, last: &State, action: Action) -> Option<State> {
         let mut state = last.clone();
+        if self.scenario.three()
+            && matches!(
+                action,
+                Action::EndMove(_)
+                    | Action::EndRelease(_)
+                    | Action::EndDrop
+                    | Action::EndRestore
+                    | Action::EndDeploy
+            )
+        {
+            state.ends -= 1;
+        }
         match action {
             Action::Machine(index) => self.step_machine(&mut state, index),
-            Action::Crash(index) => Self::crash(&mut state, index),
-            Action::Move => self.move_step(&mut state),
-            Action::MoveResend => {
-                if let Some(index) = state.moving.waiting
-                    && state.request(index).progress != Progress::Lost
-                {
-                    state.moving.resends -= 1;
-                }
-                state.moving.waiting = None;
+            Action::Lagging(index) => {
+                let reply = self.deploy_step(&mut state, index, true);
+                state.reply(index, reply);
             }
-            Action::EndMove => self.end_move(&mut state),
+            Action::Crash(index) => Self::crash(&mut state, index),
+            Action::Move(k) => self.move_step(&mut state, k),
+            Action::MoveResend(k) => {
+                let mut driver = state.run_mut(k).driver;
+                resend(&state, &mut driver);
+                state.run_mut(k).driver = driver;
+            }
+            Action::EndMove(k) => self.end_move(&mut state, k),
+            Action::Release(k) => self.release_step(&mut state, k),
+            Action::ReleaseResend(k) => {
+                if let Some(mut driver) = state
+                    .run_mut(k)
+                    .release
+                    .as_ref()
+                    .map(|release| release.driver)
+                {
+                    resend(&state, &mut driver);
+                    if let Some(release) = state.run_mut(k).release.as_mut() {
+                        release.driver = driver;
+                    }
+                }
+            }
+            Action::EndRelease(k) => {
+                if let Some(release) = state.run_mut(k).release.as_mut() {
+                    release.row = Row::Failed;
+                }
+            }
             Action::Resize => self.resize_step(&mut state),
             Action::ResizeResend => {
-                if let Some(index) = state.resize.driver.waiting
-                    && state.request(index).progress != Progress::Lost
-                {
-                    state.resize.driver.resends -= 1;
-                }
-                state.resize.driver.waiting = None;
+                let mut driver = state.resize.driver;
+                resend(&state, &mut driver);
+                state.resize.driver = driver;
             }
             Action::EndResize => {
                 state.resize.row = Row::Failed;
                 state.resize.cut_short = true;
             }
             Action::Enforce => state.enforcing = true,
-            Action::Release => self.release_step(&mut state),
-            Action::ReleaseResend => {
-                let lost = state
-                    .release
-                    .as_ref()
-                    .and_then(|release| release.driver.waiting)
-                    .is_some_and(|index| state.request(index).progress == Progress::Lost);
-                if let Some(release) = state.release.as_mut() {
-                    if !lost {
-                        release.driver.resends -= 1;
-                    }
-                    release.driver.waiting = None;
+            Action::Next => state = self.next_run(&state)?,
+            Action::Drop => Self::drop_step(&mut state),
+            Action::EndDrop => {
+                if let Some(drop) = state.drop.as_mut() {
+                    drop.row = Row::Failed;
                 }
             }
+            Action::Restore => Self::restore_step(&mut state),
+            Action::EndRestore => {
+                if let Some(restore) = state.restore.as_mut() {
+                    restore.row = Row::Failed;
+                }
+            }
+            Action::StartDeploy => state = Self::start_deploy(&state)?,
+            Action::Deploy => Self::deploy_driver(&mut state),
+            Action::DeployResend => {
+                if let Some(mut driver) = state.deploy.map(|deploy| deploy.driver) {
+                    resend(&state, &mut driver);
+                    if let Some(deploy) = state.deploy.as_mut() {
+                        deploy.driver = driver;
+                    }
+                }
+            }
+            Action::EndDeploy => {
+                if let Some(deploy) = state.deploy.as_mut() {
+                    deploy.row = Row::Failed;
+                }
+            }
+            Action::Away(machine) => {
+                state.aways -= 1;
+                state.host_mut(machine).presence = Presence::Away;
+            }
+            Action::Back(machine) => state.host_mut(machine).presence = Presence::Here,
+            Action::Forget(machine) => state.host_mut(machine).member = false,
+            // `departure.rs` seals every root into a slot; the Machine leaves the Cluster.
+            Action::Depart(machine) => {
+                let host = state.host_mut(machine);
+                if let Held::Root { newest, .. } = host.copy {
+                    host.copy = Held::Slot { newest };
+                }
+                host.holder = Holder::Absent;
+                host.presence = Presence::Departed;
+                host.switch = None;
+                host.turn = None;
+            }
+        }
+        if self.scenario.three() {
+            state.prune();
+            state.note_emptied();
         }
         Some(state)
     }
 
     fn properties(&self) -> Vec<Property<Self>> {
         let mut properties = vec![
-            Property::always(NEVER_TWO_WRITERS, |_, state: &State| state.writers() <= 1),
-            Property::always(ONE_SERVICE, |_, state: &State| state.running() <= 1),
+            Property::always(NEVER_TWO_WRITERS, |model: &Self, state: &State| {
+                state.writers(model.exempt) <= 1
+            }),
+            Property::always(ONE_SERVICE, |model: &Self, state: &State| {
+                state.running(model.exempt) <= 1
+            }),
             Property::always(SERVICE_ON_WRITER, |_, state: &State| {
                 Machine::ALL.iter().all(|machine| {
                     let host = state.host(*machine);
@@ -2020,26 +3215,7 @@ impl Model for VolumeRuns {
                 })
             }),
             Property::always(NOTHING_STUCK, |model: &Self, state: &State| {
-                !at_rest(model, state)
-                    || (state.resize.driver.step == ResizeStep::Over
-                        && (model.scenario == Scenario::Resize
-                            || state.moving.step == MoveStep::Over)
-                        && state
-                            .release
-                            .as_ref()
-                            .is_none_or(|release| release.driver.step == ReleaseStep::Over))
-            }),
-            Property::always(DONE_HOLDS, |model: &Self, state: &State| {
-                !at_rest(model, state) || done_holds(state)
-            }),
-            // A Release whose start a Machine refused can't finish.
-            Property::always(RELEASE_WINS, |model: &Self, state: &State| {
-                !at_rest(model, state)
-                    || state.refused_start
-                    || state
-                        .release
-                        .as_ref()
-                        .is_none_or(|release| release.row == Row::Done)
+                !at_rest(model, state) || all_over(model, state)
             }),
             Property::always(ENFORCED_STARTS_NOTHING, |_, state: &State| {
                 !state.unapproved_start
@@ -2057,12 +3233,53 @@ impl Model for VolumeRuns {
                 !state.resize_settled() || state.mirrors_keep_up()
             }),
         ];
+        if !self.scenario.three() {
+            properties.push(Property::always(
+                DONE_HOLDS,
+                |model: &Self, state: &State| !at_rest(model, state) || done_holds(state),
+            ));
+            // A Release whose start a Machine refused can't finish.
+            properties.push(Property::always(
+                RELEASE_WINS,
+                |model: &Self, state: &State| {
+                    !at_rest(model, state)
+                        || state.refused_start
+                        || state
+                            .first()
+                            .release
+                            .as_ref()
+                            .is_none_or(|release| release.row == Row::Done)
+                },
+            ));
+        }
         properties.extend(self.reached());
         if self.enforce {
             properties.extend(enforced_reached());
         }
         properties
     }
+}
+
+/// Every run's driver has stopped.
+fn all_over(model: &VolumeRuns, state: &State) -> bool {
+    state.resize.driver.step == ResizeStep::Over
+        && (model.scenario == Scenario::Resize
+            || state.moves.iter().all(|run| {
+                run.driver.step == MoveStep::Over
+                    && run
+                        .release
+                        .as_ref()
+                        .is_none_or(|release| release.driver.step == ReleaseStep::Over)
+            }))
+        && state
+            .drop
+            .is_none_or(|drop| drop.driver.step == DropStep::Over)
+        && state
+            .restore
+            .is_none_or(|restore| restore.driver.step == RestoreStep::Over)
+        && state
+            .deploy
+            .is_none_or(|deploy| deploy.driver.step == DeployStep::Over)
 }
 
 /// What refusing created starts mid-Move must reach: each such start a Move or its Release
@@ -2073,8 +3290,9 @@ fn enforced_reached() -> Vec<Property<VolumeRuns>> {
             "a Release back to A starts its kept Container while Machines refuse created starts",
             |_, state: &State| {
                 state.enforcing
-                    && state.a.holder == Holder::Running
+                    && state.host(Machine::A).holder == Holder::Running
                     && state
+                        .first()
                         .release
                         .as_ref()
                         .is_some_and(|release| !release.forward && release.row == Row::Done)
@@ -2084,8 +3302,9 @@ fn enforced_reached() -> Vec<Property<VolumeRuns>> {
             "a Machine refuses a committed Move's start and its Release forward",
             |_, state: &State| {
                 state.refused_start
-                    && state.running() == 0
+                    && state.running(false) == 0
                     && state
+                        .first()
                         .release
                         .as_ref()
                         .is_some_and(|release| release.forward && release.row == Row::Failed)
@@ -2097,20 +3316,23 @@ fn enforced_reached() -> Vec<Property<VolumeRuns>> {
 impl VolumeRuns {
     /// What each scenario must reach, so no property passes because the model can't get
     /// there.
+    #[expect(clippy::too_many_lines, reason = "one list of rows per scenario")]
     fn reached(&self) -> Vec<Property<Self>> {
         let move_ends = || {
             vec![
                 Property::<Self>::sometimes("a Move finishes", |_, state: &State| {
-                    state.row == Row::Done
+                    state.first().row == Row::Done
                 }),
                 Property::sometimes("a Release back to A finishes", |_, state: &State| {
                     state
+                        .first()
                         .release
                         .as_ref()
                         .is_some_and(|release| !release.forward && release.row == Row::Done)
                 }),
                 Property::sometimes("a Release forward to B finishes", |_, state: &State| {
                     state
+                        .first()
                         .release
                         .as_ref()
                         .is_some_and(|release| release.forward && release.row == Row::Done)
@@ -2118,12 +3340,13 @@ impl VolumeRuns {
                 Property::sometimes(
                     "a dead Move's late request is refused as stale",
                     |_, state: &State| {
-                        !state.row.running()
-                            && state.requests.iter().any(|request| {
-                                request.lane == Lane::Move
-                                    && request.progress
-                                        == Progress::Replied(Reply::Refused(Refusal::Stale))
-                            })
+                        !state.first().row.running()
+                            && (state.stale_landed
+                                || state.requests.iter().any(|request| {
+                                    request.lane == Lane::Move
+                                        && request.progress
+                                            == Progress::Replied(Reply::Refused(Refusal::Stale))
+                                }))
                     },
                 ),
             ]
@@ -2134,8 +3357,8 @@ impl VolumeRuns {
                     "a resize settles with a Mirror held and nothing else sent",
                     |_, state: &State| {
                         state.resize_settled()
-                            && state.a.copy.is_writer()
-                            && matches!(state.b.copy, Held::Slot { .. })
+                            && state.host(Machine::A).copy.is_writer()
+                            && matches!(state.host(Machine::B).copy, Held::Slot { .. })
                     },
                 ),
                 Property::sometimes("a grow finishes", |_, state: &State| {
@@ -2147,7 +3370,7 @@ impl VolumeRuns {
                         grow(state)
                             && state.resize.refused
                             && state.size == Size::Small
-                            && state.b.bound == Size::Large
+                            && state.host(Machine::B).bound == Size::Large
                     },
                 ),
                 Property::sometimes(
@@ -2155,8 +3378,8 @@ impl VolumeRuns {
                     |_, state: &State| {
                         shrink(state)
                             && state.resize.row == Row::Done
-                            && state.a.bound == Size::Small
-                            && state.b.bound == Size::Small
+                            && state.host(Machine::A).bound == Size::Small
+                            && state.host(Machine::B).bound == Size::Small
                     },
                 ),
                 Property::sometimes(
@@ -2166,8 +3389,8 @@ impl VolumeRuns {
                             && state.resize.refused
                             && state.resize.driver.step == ResizeStep::Over
                             && state.size == Size::Small
-                            && state.a.bound == Size::Small
-                            && state.b.bound == Size::Large
+                            && state.host(Machine::A).bound == Size::Small
+                            && state.host(Machine::B).bound == Size::Large
                     },
                 ),
             ]
@@ -2189,8 +3412,8 @@ impl VolumeRuns {
                             && state.resize.driver.step == ResizeStep::Over
                             && !state.resize.cut_short
                             && state.size == Size::Large
-                            && state.a.bound == Size::Large
-                            && state.b.bound == Size::Large
+                            && state.host(Machine::A).bound == Size::Large
+                            && state.host(Machine::B).bound == Size::Large
                     },
                 ));
                 reached.push(Property::sometimes(
@@ -2201,7 +3424,7 @@ impl VolumeRuns {
                             && state.resize.driver.step == ResizeStep::Over
                             && state.resize.cut_short
                             && state.size == Size::Small
-                            && state.a.bound == Size::Large
+                            && state.host(Machine::A).bound == Size::Large
                     },
                 ));
                 reached
@@ -2214,8 +3437,9 @@ impl VolumeRuns {
                     |_, state: &State| {
                         grow(state)
                             && state.size == Size::Large
-                            && state.a.copy.is_writer()
+                            && state.host(Machine::A).copy.is_writer()
                             && state
+                                .first()
                                 .release
                                 .as_ref()
                                 .is_some_and(|release| !release.forward && release.row == Row::Done)
@@ -2226,7 +3450,7 @@ impl VolumeRuns {
                     |_, state: &State| {
                         grow(state)
                             && state.size == Size::Large
-                            && state.row == Row::Done
+                            && state.first().row == Row::Done
                             && state.requests.iter().any(|request| {
                                 request.lane == Lane::Move
                                     && matches!(
@@ -2243,9 +3467,9 @@ impl VolumeRuns {
                     "a Move after a shrink finishes on the lowered copy",
                     |_, state: &State| {
                         shrink(state)
-                            && state.row == Row::Done
-                            && state.b.copy.is_writer()
-                            && state.b.bound == Size::Small
+                            && state.first().row == Row::Done
+                            && state.host(Machine::B).copy.is_writer()
+                            && state.host(Machine::B).bound == Size::Small
                     },
                 ));
                 reached.push(Property::sometimes(
@@ -2253,9 +3477,9 @@ impl VolumeRuns {
                     |_, state: &State| {
                         shrink(state)
                             && state.resize.refused
-                            && state.row == Row::Done
-                            && state.b.copy.is_writer()
-                            && state.b.bound == Size::Large
+                            && state.first().row == Row::Done
+                            && state.host(Machine::B).copy.is_writer()
+                            && state.host(Machine::B).bound == Size::Large
                             && state.size == Size::Small
                     },
                 ));
@@ -2279,15 +3503,138 @@ impl VolumeRuns {
                     "a dead shrink's request lowers the Writer the Move made",
                     |_, state: &State| {
                         shrink(state)
-                            && state.row == Row::Done
-                            && state.b.copy.is_writer()
-                            && state.b.bound == Size::Small
+                            && state.first().row == Row::Done
+                            && state.host(Machine::B).copy.is_writer()
+                            && state.host(Machine::B).bound == Size::Small
                     },
                 ));
                 reached
             }
+            Scenario::TwoMoves => {
+                let mut reached = move_ends();
+                reached.extend(second_move_ends());
+                reached
+            }
+            Scenario::Restore => {
+                let mut reached = move_ends();
+                reached.extend(restore_ends());
+                reached
+            }
         }
     }
+}
+
+fn second(state: &State) -> Option<&MoveRun> {
+    state.moves.get(1)
+}
+
+fn second_move_ends() -> Vec<Property<VolumeRuns>> {
+    vec![
+        Property::sometimes("a mirror rm forgets the old copy", |_, state: &State| {
+            state.drop.is_some_and(|drop| drop.row == Row::Done)
+        }),
+        Property::sometimes(
+            "a second Move finishes on C with its Service running",
+            |_, state: &State| {
+                second(state).is_some_and(|run| run.row == Row::Done)
+                    && state.host(Machine::C).copy.is_writer()
+                    && state.host(Machine::C).holder == Holder::Running
+            },
+        ),
+        Property::sometimes(
+            "the second Move's Release goes back to its Writer",
+            |_, state: &State| {
+                second(state).is_some_and(|run| {
+                    run.release
+                        .as_ref()
+                        .is_some_and(|release| !release.forward && release.row == Row::Done)
+                })
+            },
+        ),
+        Property::sometimes(
+            "the second Move's Release goes forward to C",
+            |_, state: &State| {
+                second(state).is_some_and(|run| {
+                    run.release
+                        .as_ref()
+                        .is_some_and(|release| release.forward && release.row == Row::Done)
+                })
+            },
+        ),
+        Property::sometimes(
+            "a second Move starts from A after the first one's Release came back",
+            |_, state: &State| second(state).is_some_and(|run| run.plan.from == Machine::A),
+        ),
+        Property::sometimes(
+            "a Deploy prepares, creates and starts on the Writer",
+            |_, state: &State| {
+                state.deploy.is_some_and(|deploy| {
+                    deploy.row == Row::Done && state.host(deploy.on).holder == Holder::Running
+                })
+            },
+        ),
+        Property::sometimes(
+            "a dead Deploy's Prepare lands after its Machine lost the Writer and is refused",
+            |_, state: &State| {
+                state.requests.iter().any(|request| {
+                    request.want == Want::Prepare
+                        && request.progress == Progress::Replied(Reply::Refused(Refusal::NoWriter))
+                }) || state.deploy.is_some_and(|deploy| {
+                    deploy.row == Row::Failed && !state.host(deploy.on).copy.is_writer()
+                })
+            },
+        ),
+        Property::sometimes(
+            "a Machine away mid-Move ends it, and it comes back",
+            |_, state: &State| {
+                state.aways == 0
+                    && Machine::ALL
+                        .iter()
+                        .all(|machine| state.host(*machine).here())
+                    && state
+                        .requests
+                        .iter()
+                        .any(|request| request.progress == Progress::Sent)
+                    && state.first().release.is_some()
+            },
+        ),
+    ]
+}
+
+fn restore_ends() -> Vec<Property<VolumeRuns>> {
+    vec![
+        Property::sometimes(
+            "a Restore promotes the copy left once Cloud forgot the Writer",
+            |_, state: &State| {
+                state.restored
+                    && state
+                        .restore
+                        .is_some_and(|restore| restore.row == Row::Done)
+            },
+        ),
+        Property::sometimes(
+            "the forgotten old copy comes back writable beside the restored Writer",
+            |_, state: &State| {
+                state.restored
+                    && Machine::ALL.iter().any(|machine| {
+                        let host = state.host(*machine);
+                        !host.member && host.here() && host.copy.is_writer()
+                    })
+            },
+        ),
+        Property::sometimes(
+            "the forgotten old copy departs and a Deploy runs the Service on the restored Writer",
+            |_, state: &State| {
+                state.restored
+                    && Machine::ALL
+                        .iter()
+                        .any(|machine| state.host(*machine).presence == Presence::Departed)
+                    && state.deploy.is_some_and(|deploy| {
+                        deploy.row == Row::Done && state.host(deploy.on).holder == Holder::Running
+                    })
+            },
+        ),
+    ]
 }
 
 const NEVER_TWO_WRITERS: &str = "never two Writers";
@@ -2314,7 +3661,7 @@ fn shrink(state: &State) -> bool {
 
 /// A dead resize's `SetVolumeSize` is still unlanded once the Move cut A.
 fn on_the_wire(state: &State) -> bool {
-    matches!(state.a.copy, Held::Slot { .. })
+    matches!(state.host(Machine::A).copy, Held::Slot { .. })
         && state
             .requests
             .iter()
@@ -2343,21 +3690,21 @@ fn done_holds(state: &State) -> bool {
     let serving = |machine: Machine, started: bool| {
         let host = state.host(machine);
         host.copy.is_writer()
-            && state.writers() == 1
+            && state.writers(false) == 1
             && (!started || host.holder == Holder::Running)
     };
-    match &state.release {
+    let first = state.first();
+    match &first.release {
         Some(release) if release.row == Row::Done => match (release.forward, release.resume) {
             (true, _) => serving(Machine::B, false),
             (false, Some(resume)) => serving(resume.on, resume.start.is_some()),
             (false, None) => false,
         },
         Some(_) => true,
-        None => state.row != Row::Done || serving(Machine::B, true),
+        None => first.row != Row::Done || serving(Machine::B, true),
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::harness::{check, discoveries};
@@ -2599,5 +3946,87 @@ mod tests {
             },
             &[STORE_FITS],
         );
+    }
+
+    /// A slice on three Machines: a restart, a Deploy, a Machine away and one row Cloud
+    /// ends early. A request a restart lost is sent again; no other is resent.
+    fn three(scenario: Scenario) -> VolumeRuns {
+        VolumeRuns {
+            scenario,
+            resends: 0,
+            ..VolumeRuns::default()
+        }
+    }
+
+    /// Three Machines, every run one at a time under the row lock, Cloud ending a row at
+    /// any moment, every late step, a restart anywhere, a Machine away, and one Deploy.
+    #[test]
+    fn three_machine_runs_hold() {
+        for model in [
+            three(Scenario::TwoMoves),
+            VolumeRuns {
+                ends: 2,
+                aways: 0,
+                ..three(Scenario::TwoMoves)
+            },
+            three(Scenario::Restore),
+        ] {
+            let checker = check(model);
+            println!(
+                "{:?} ends {} aways {}: {} states",
+                model.scenario,
+                model.ends,
+                model.aways,
+                checker.unique_state_count()
+            );
+            checker.assert_properties();
+        }
+    }
+
+    fn breaks_three(broken: Broken) {
+        let checker = discoveries(
+            VolumeRuns {
+                broken,
+                ..three(Scenario::TwoMoves)
+            },
+            &[NEVER_TWO_WRITERS],
+        );
+        let path = checker.assert_any_discovery(NEVER_TWO_WRITERS);
+        println!("{NEVER_TWO_WRITERS} breaks with {broken:?}:\n{path}");
+    }
+
+    #[test]
+    fn prepare_admits_only_a_plain_mount_on_the_writer() {
+        breaks_three(Broken {
+            plain_mount: true,
+            ..Broken::default()
+        });
+    }
+
+    /// A dead Deploy's Create that lands after a Move took the Volume off its Machine and
+    /// a mirror rm forgot the copy it left there makes a fresh root beside the Writer the
+    /// Move made, unless the Machine refuses a root of the origin it forgot.
+    #[test]
+    fn a_machine_makes_no_fresh_root_of_data_it_forgot() {
+        breaks_three(Broken {
+            forgotten: true,
+            ..Broken::default()
+        });
+    }
+
+    /// The old Writer Cloud forgot while it was away comes back writable beside the copy
+    /// a Restore promoted, until it departs: bet 6's accepted window, and the only copy
+    /// `never two Writers` leaves out.
+    #[test]
+    fn a_restored_copy_and_the_returning_old_one_are_the_accepted_window() {
+        let checker = discoveries(
+            VolumeRuns {
+                exempt: false,
+                ..three(Scenario::Restore)
+            },
+            &[NEVER_TWO_WRITERS],
+        );
+        let path = checker.assert_any_discovery(NEVER_TWO_WRITERS);
+        println!("{NEVER_TWO_WRITERS} without the window:\n{path}");
     }
 }
