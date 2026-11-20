@@ -1240,12 +1240,18 @@ fn print_stored(line: &StoredLine, utc: bool) -> Result<(), Error> {
         hook: None,
     };
     let stderr = line.stream == StoredStream::Stderr;
+    let text = line
+        .message
+        .strip_suffix('\n')
+        .map_or(line.message.as_str(), |text| {
+            text.strip_suffix('\r').unwrap_or(text)
+        });
     if crate::ui::json() {
         crate::ui::emit_line(&view.json(serde_json::json!({
             "stream": if stderr { "stderr" } else { "stdout" },
-            "level": log_level(line.message.as_bytes()),
-            "line": line.message,
-            "message": format!("{}\n", line.message),
+            "level": log_level(text.as_bytes()),
+            "line": text,
+            "message": format!("{text}\n"),
         })))?;
         return Ok(());
     }
@@ -1255,7 +1261,7 @@ fn print_stored(line: &StoredLine, utc: bool) -> Result<(), Error> {
         &mut crate::ui::stdout_bytes()
     };
     output.write_all(view.prefix(utc).as_bytes())?;
-    output.write_all(line.message.as_bytes())?;
+    output.write_all(text.as_bytes())?;
     output.write_all(b"\n")?;
     crate::ui::printed();
     Ok(())
