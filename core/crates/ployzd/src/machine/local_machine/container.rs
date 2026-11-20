@@ -54,11 +54,20 @@ const WITHDRAWAL_PROPAGATION: Duration = Duration::from_secs(1);
 /// opened lost 70 to 90% of its lines at 0 s and none at 1 s or 2 s.
 const LOG_READ_GRACE: Duration = Duration::from_secs(2);
 
-fn removal_wait(drain: Drain, ships_logs: bool) -> Duration {
-    if drain == Drain::NONE || !ships_logs {
-        return Duration::ZERO;
+fn removal_wait(logs_to_read: bool, ships_logs: bool) -> Duration {
+    if logs_to_read && ships_logs {
+        LOG_READ_GRACE
+    } else {
+        Duration::ZERO
     }
-    LOG_READ_GRACE
+}
+
+/// Whether the container ran a Service's process, whose last lines a removal must not
+/// cut off. A failed start's lines are the ones that say why it did not come up, so the
+/// drain does not matter. A hook's output reaches its caller in the reply, and a
+/// container Docker never started has no lines.
+fn has_logs_to_read(observed: &ContainerObservation) -> bool {
+    observed.kind == ContainerKind::ServiceContainer && !never_started(observed)
 }
 
 /// Where a test holds an `ensure_container` call so a Leave can run against it.
@@ -1375,6 +1384,7 @@ impl LocalMachine {
                 id,
                 drain,
                 anonymous_volumes,
+                logs_to_read,
             } => {
                 self.finish_installed(move |local, installation| async move {
                     match local
@@ -1388,7 +1398,8 @@ impl LocalMachine {
                         .await
                     {
                         Ok(Ok(_)) => {
-                            tokio::time::sleep(removal_wait(drain, local.ships_logs())).await;
+                            tokio::time::sleep(removal_wait(logs_to_read, local.ships_logs()))
+                                .await;
                         }
                         Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
@@ -1407,8 +1418,14 @@ impl LocalMachine {
                 })
                 .await?
             }
-            ContainerStep::Remove(id, anonymous_volumes) => {
-                self.finish_mutation(move |local| async move {
+            ContainerStep::Remove {
+                id,
+                anonymous_volumes,
+                logs_to_read,
+            } => {
+                self.finish_installed(move |local, _installation| async move {
+                    tokio::time::sleep(removal_wait(logs_to_read, local.ships_logs())).await;
+                    let _turn = local.exclusive_turn().await;
                     let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
@@ -1770,8 +1787,13 @@ enum ContainerStep {
         id: ContainerId,
         drain: Drain,
         anonymous_volumes: AnonymousVolumes,
+        logs_to_read: bool,
     },
-    Remove(ContainerId, AnonymousVolumes),
+    Remove {
+        id: ContainerId,
+        anonymous_volumes: AnonymousVolumes,
+        logs_to_read: bool,
+    },
 }
 
 /// What [`LocalMachine::start_container`] holds of the switch lock.
@@ -1871,7 +1893,11 @@ fn plan_container(
             // The remove helper deletes a spec Docker no longer has a Container for. A slot
             // names no spec row without Docker, so an absent Key is already gone.
             None => match container {
-                ContainerLocator::Id(id) => ContainerStep::Remove(id, anonymous_volumes),
+                ContainerLocator::Id(id) => ContainerStep::Remove {
+                    id,
+                    anonymous_volumes,
+                    logs_to_read: false,
+                },
                 ContainerLocator::Key(_) => ContainerStep::Done,
             },
             Some(observed) if in_rotation(observed.rotation(), &RotationTarget::Gone) => {
@@ -1884,8 +1910,13 @@ fn plan_container(
                 id: observed.container_id,
                 drain,
                 anonymous_volumes,
+                logs_to_read: has_logs_to_read(observed),
             },
-            Some(observed) => ContainerStep::Remove(observed.container_id, anonymous_volumes),
+            Some(observed) => ContainerStep::Remove {
+                id: observed.container_id,
+                anonymous_volumes,
+                logs_to_read: has_logs_to_read(observed),
+            },
         },
         ContainerWant::Out { .. } | ContainerWant::Held { .. } => {
             unreachable!("a rotation want moves no Docker state")

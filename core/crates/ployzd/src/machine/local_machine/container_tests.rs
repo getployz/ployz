@@ -577,7 +577,11 @@ mod plan {
                 ContainerNow::Absent {
                     of: ContainerLocator::Id(id('a')),
                 },
-                ContainerStep::Remove(id('a'), AnonymousVolumes::Keep),
+                ContainerStep::Remove {
+                    id: id('a'),
+                    anonymous_volumes: AnonymousVolumes::Keep,
+                    logs_to_read: false,
+                },
             ),
             (
                 gone(),
@@ -586,12 +590,17 @@ mod plan {
                     id: id('a'),
                     drain: Drain::DEFAULT,
                     anonymous_volumes: AnonymousVolumes::Remove,
+                    logs_to_read: true,
                 },
             ),
             (
                 gone(),
                 exited("img"),
-                ContainerStep::Remove(id('a'), AnonymousVolumes::Remove),
+                ContainerStep::Remove {
+                    id: id('a'),
+                    anonymous_volumes: AnonymousVolumes::Remove,
+                    logs_to_read: true,
+                },
             ),
             (
                 run_hook(),
@@ -612,6 +621,48 @@ mod plan {
             let shown = format!("{want:?} / {now:?}");
             assert_eq!(plan_container(want, &now, participating), step, "{shown}");
         }
+    }
+
+    #[test]
+    fn a_removal_waits_for_the_log_of_a_service_that_ran_and_of_no_hook_or_unstarted_container() {
+        let participating = &LocalMachinePhase::Participating;
+        let discarded = |drain| ContainerWant::Gone {
+            container: ContainerLocator::Key(slot()),
+            drain,
+            anonymous_volumes: AnonymousVolumes::Remove,
+        };
+        let logs_to_read = |want, now: ContainerNow| {
+            let step = plan_container(want, &now, participating);
+            let (ContainerStep::StopThenRemove { logs_to_read, .. }
+            | ContainerStep::Remove { logs_to_read, .. }) = step
+            else {
+                panic!("expected a removal, got {step:?}");
+            };
+            logs_to_read
+        };
+        let service = |runtime| present_as(ContainerKind::ServiceContainer, runtime, "img");
+        let exited = ContainerRuntimeObservation::Exited { code: 1 };
+        let running = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        };
+
+        assert!(
+            logs_to_read(discarded(Drain::NONE), service(running.clone())),
+            "a running start discarded with no drain"
+        );
+        assert!(
+            logs_to_read(discarded(Drain::NONE), service(exited.clone())),
+            "a start that crashed before its discard"
+        );
+        assert!(
+            !logs_to_read(
+                discarded(Drain::NONE),
+                service(ContainerRuntimeObservation::Created)
+            ),
+            "a start Docker never ran has no lines"
+        );
+        assert!(!logs_to_read(discarded(Drain::NONE), hook(running)));
+        assert!(!logs_to_read(discarded(Drain::NONE), hook(exited)));
     }
 
     #[test]
@@ -660,7 +711,11 @@ mod plan {
             );
             assert_eq!(
                 plan_container(gone(), &exited("img"), &phase),
-                ContainerStep::Remove(id('a'), AnonymousVolumes::Remove)
+                ContainerStep::Remove {
+                    id: id('a'),
+                    anonymous_volumes: AnonymousVolumes::Remove,
+                    logs_to_read: true,
+                }
             );
         }
         assert_eq!(
@@ -1686,13 +1741,18 @@ mod stopped_on_request {
         }
 
         #[tokio::test]
-        async fn a_removal_with_no_drain_or_no_cloud_does_not_wait() {
+        async fn a_discarded_start_waits_too_whatever_its_drain() {
             let fixture = Fixture::start().await;
             connect(&fixture).await;
-            let took = removed_in(&fixture, Drain::NONE).await;
-            assert!(took < GRACE, "a removal with no drain took {took:?}");
-            fixture.finish();
 
+            let took = removed_in(&fixture, Drain::NONE).await;
+
+            assert!(took >= GRACE, "discarded after {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn a_removal_with_no_cloud_does_not_wait() {
             let fixture = Fixture::start().await;
             let took = removed_in(&fixture, Drain::try_from(1).unwrap()).await;
             assert!(took < GRACE, "a removal with no Collector took {took:?}");
