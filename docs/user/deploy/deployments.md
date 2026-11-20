@@ -289,6 +289,16 @@ error: Couldn't confirm web-2 can check this device's signature: it enforces dev
 inspect: ployz status
 ```
 
+### After a server upgrade, deploy each service once
+
+A server that enforces device approval starts a container only from a deploy an approved device
+signed. A container made before the server upgraded has no record of one, so the server won't
+start it again. If a service stops, or a deploy that stops the old copy first fails, the old copy
+stays stopped. The line reads `Could not restore the old Container.`, and a start from the
+dashboard is refused too: `This container was made before this server's upgrade ...`. Deploy
+the service again with a current `ployz`, which signs it, and the new copy runs.
+Deploy each service once after you upgrade its server, so a restart never needs it.
+
 ### Deploy from the dashboard
 
 **Deploy** at the bottom of an environment signs nothing. A server runs it for three kinds of
