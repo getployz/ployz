@@ -72,8 +72,7 @@ async fn a_removed_service_still_reads_and_a_name_nothing_answers_for_is_refused
         "details": { "valid_children": ["api"] },
     });
 
-    // Without Ployz Cloud nothing keeps the lines of a removed Service, and a name that
-    // never was one reads the same.
+    // Without Ployz Cloud a name that never was a Service reads like a removed one.
     let kept = json!({
         "code": "not_found",
         "message": "nosvc is not in Environment production, and its logs are not kept. Ployz Cloud keeps the logs of removed Services; sign in to read them.",

@@ -2,8 +2,7 @@
 //! and the Docker events loop that settles each container exit.
 //!
 //! It only observes this Machine: it never places, moves, restarts or removes a
-//! container, and no Deploy waits on it. Log lines are not kept here; the
-//! Collector ships them to Cloud and `ployz logs` reads Docker.
+//! container, and no Deploy waits on it.
 
 pub mod cleanup;
 mod client;

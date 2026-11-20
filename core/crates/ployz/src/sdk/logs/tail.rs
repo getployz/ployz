@@ -17,7 +17,6 @@ pub(crate) struct Tail {
 }
 
 impl Tail {
-    /// The tail scrubbed of `sealed`, and its last line.
     pub(crate) fn scrubbed(self, sealed: &SealedValues) -> (LogText, Option<String>) {
         let excerpt = LogExcerpt::scrub(
             self.frames,

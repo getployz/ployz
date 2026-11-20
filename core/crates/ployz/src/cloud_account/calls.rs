@@ -105,10 +105,6 @@ pub(crate) async fn keyed_reply<T: DeserializeOwned>(
 }
 
 /// Cloud's answer to a read at `/api/<path>`, outside the `/api/cli` commands.
-///
-/// # Errors
-///
-/// Returns Cloud's refusal, or a Cloud failure.
 pub(crate) async fn read_answer<T: DeserializeOwned>(
     credential: &Credential,
     path: &str,

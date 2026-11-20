@@ -145,7 +145,6 @@ pub(crate) async fn container_env(
         .environment
 }
 
-/// One line Docker holds for a Container: when it was written and its bytes.
 pub(super) struct DockerLine {
     pub(super) timestamp_nanos: i64,
     pub(super) text: Vec<u8>,

@@ -1,6 +1,3 @@
-//! On-demand Container log transport for SDK readers: `stream` reads Docker, `tail` the
-//! failed Container's last lines for a deploy, `agent` the lines an agent reads.
-
 mod agent;
 mod stream;
 mod tail;

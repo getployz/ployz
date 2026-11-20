@@ -40,8 +40,7 @@ impl From<LogText> for AgentTail {
 /// read here and never leaves, and not at all when `sealed` names nothing. A Container
 /// whose env cannot be read has its lines left out and is named in
 /// [`AgentTail::withheld`], labelled under `service`; the text is withheld when no
-/// Container's env can be read. None when no Container holds a line in range. The error
-/// says why the Machine did not answer in time.
+/// Container's env can be read. None when no Container holds a line in range.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
@@ -121,7 +120,6 @@ pub(crate) async fn service_tail(
     in_time("its Docker logs", read).await
 }
 
-/// Lines as frames in the order given.
 fn frames(lines: impl Iterator<Item = Vec<u8>>) -> Vec<String> {
     lines
         .map(|text| String::from_utf8_lossy(&text).into_owned())

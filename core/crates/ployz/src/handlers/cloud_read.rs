@@ -193,8 +193,7 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
 }
 
 /// The newest `want` stored lines of the removed Services `removed`, from `since` up to
-/// `until`, oldest first. Cloud answers a page at a time from the newest, so this reads
-/// back only as far as `since` or `want` reach.
+/// `until`, oldest first.
 pub(super) fn stored_logs(
     credential: &Credential,
     scoped: &Scoped,

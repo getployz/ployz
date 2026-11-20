@@ -1,5 +1,4 @@
-//! `ployz logs` for a Service that no longer runs: the lines Ployz Cloud kept, read a page
-//! at a time from the newest. A Service that still has a container reads from Docker.
+//! `ployz logs` for a Service that no longer runs: the lines Ployz Cloud kept.
 
 use ployz_core::ContainerId;
 use serde::{Deserialize, Deserializer};
@@ -9,7 +8,6 @@ pub const READ_ALL: usize = 5_000;
 /// What Cloud's `limit` allows one page.
 pub const PAGE: usize = 1_000;
 
-/// Which stream a stored line came from.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum StoredStream {
@@ -17,7 +15,6 @@ pub enum StoredStream {
     Stderr,
 }
 
-/// One line Cloud kept.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredLine {
@@ -81,9 +78,6 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
-    /// The Docker path of `ployz logs` for a Service that still has a container: the Machine
-    /// serves lines it has already masked, the CLI prints them as they come, and no history
-    /// route is asked, so nothing reads them unmasked from anywhere else.
     #[tokio::test]
     #[expect(
         clippy::result_large_err,

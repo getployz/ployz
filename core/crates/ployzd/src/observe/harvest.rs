@@ -194,9 +194,8 @@ impl Harvester {
         Box::pin(self.docker.events(Some(options.build())))
     }
 
-    /// Lists Docker's managed containers, drops what is kept of those it no
-    /// longer has, and inspects the ones met for the first time: an inspect
-    /// is where a container's stop signal is read.
+    /// Inspects the containers met for the first time: an inspect is where a
+    /// container's stop signal is read.
     async fn rescan(&mut self) {
         let Some(present) = list_managed(&self.docker).await else {
             return;
@@ -206,8 +205,6 @@ impl Harvester {
         }
     }
 
-    /// Forgets what is kept of containers Docker no longer lists, and returns the ones
-    /// listed for the first time.
     fn meet(&mut self, present: HashSet<ContainerId>) -> Vec<ContainerId> {
         self.delivered.retain(|(id, _), _| present.contains(id));
         self.ledger.keep_present(&present);

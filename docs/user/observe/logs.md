@@ -84,7 +84,8 @@ its containers wrote before that, up to what each still has on disk.
 
 Each service keeps up to 30 MB of its own output on the server, in three files of 10 MB. If Cloud
 can't be reached, the collector resumes where it stopped and sends the lines it missed, unless
-more than 30 MB were written in the meantime.
+more than 30 MB were written in the meantime. A hard power cut on the server can lose one log
+record, the one the collector hadn't saved yet.
 
 Hiding secrets is best effort. A line can still show:
 
@@ -152,7 +153,9 @@ Don't print secrets from your app.
   deployment's card yet, so there search reads only the lines loaded in the page.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't sent to Ployz Cloud until their next deploy. `ployz deploy` or **Redeploy** on
-  the Logs page replaces them, even when nothing else about the service changed.
+  the Logs page replaces them, even when nothing else about the service changed. The Ingress
+  Proxy is no service of yours, so `ployz deploy` never replaces it: its container keeps Docker's
+  old log settings, and its logs aren't sent to Cloud until Ployz replaces it.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
   timestamp, sets it. A line without one counts as **Info**, stderr included.

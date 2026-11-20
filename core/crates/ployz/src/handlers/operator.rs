@@ -252,7 +252,6 @@ impl Scoped {
         (!self.services.contains_key(&name) && !authored.contains(&name)).then_some(name)
     }
 
-    /// The refusal for a removed Service's logs when no Cloud keeps them.
     pub(super) fn not_kept(&self, name: &ployz_core::ServiceName) -> Error {
         Error::not_found(format!(
             "{name} is not in Environment {}, and its logs are not kept. Ployz Cloud keeps the logs of removed Services; sign in to read them.",
@@ -581,8 +580,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         _ => scope(root)?,
     };
     let args = parse_service_args(&named)?;
-    // A Service the Environment no longer has runs nothing for Docker to read; only Cloud
-    // keeps its lines, and a stream of them would never end.
+    // Only Cloud keeps a removed Service's lines, and a stream of them would never end.
     let removed = namespace.as_ref().map_or_else(Vec::new, |scoped| {
         args.iter()
             .filter_map(|arg| scoped.unknown(&arg.service))
@@ -660,8 +658,6 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-/// The lines of Services the Environment no longer has: kept in Ployz Cloud, so without
-/// it they are not kept at all.
 fn removed_logs(
     root: &ArgMatches,
     scoped: Option<&Scoped>,
@@ -711,7 +707,6 @@ struct Reading<'a> {
     utc: bool,
 }
 
-/// How long `-f` waits between looks at which containers run.
 const FOLLOW_LOOK: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Reading<'_> {
@@ -1070,7 +1065,6 @@ fn log_window(matches: &ArgMatches, now: i64) -> Result<LogsOptions, Error> {
     })
 }
 
-/// `-n` reads the last lines of the window; `--since` alone, or `-n all`, reads all of it.
 fn docker_tail(matches: &ArgMatches, options: &LogsOptions) -> i32 {
     let explicit = matches.value_source("tail") == Some(ValueSource::CommandLine);
     if explicit || options.since_nanos.is_none() {
@@ -1114,7 +1108,7 @@ fn print_stored(line: &StoredLine, utc: bool) -> Result<(), Error> {
 }
 
 /// What `-f` printed, so a read that starts again after a redeploy neither repeats nor
-/// skips a line. Each container resumes after its own last printed line.
+/// skips a line.
 #[derive(Debug, Default)]
 struct Printed {
     last: HashMap<ContainerId, i64>,
@@ -1145,7 +1139,6 @@ impl Printed {
         false
     }
 
-    /// Where the oldest of `running`'s containers left off, if one has printed.
     fn resume_at(&self, running: &std::collections::BTreeSet<ContainerId>) -> Option<i64> {
         running
             .iter()
@@ -1812,7 +1805,6 @@ mod scope_tests {
         };
         let mut printed = Printed::default();
         printed.begin_round();
-        // Two lines with one timestamp are both new in the read that prints them.
         for (id, ts) in [('a', 100), ('a', 100), ('b', 50)] {
             assert!(!printed.skip(&line(id, ts)));
         }
@@ -1822,7 +1814,6 @@ mod scope_tests {
         assert!(printed.skip(&line('b', 50)));
         assert!(printed.skip(&line('a', 99)));
         assert!(!printed.skip(&line('a', 101)));
-        // A container the first read never saw shows every line.
         assert!(!printed.skip(&line('c', 50)));
     }
 

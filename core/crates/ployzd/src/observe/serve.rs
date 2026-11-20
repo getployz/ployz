@@ -45,7 +45,6 @@ pub(super) async fn serve(listener: UnixListener, store: StoreRoot) {
     }
 }
 
-/// What every read shares.
 #[derive(Clone)]
 struct Reading {
     store: StoreRoot,

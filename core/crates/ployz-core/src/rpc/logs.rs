@@ -1,5 +1,3 @@
-//! Log tail request DTOs.
-
 use serde::{Deserialize, Serialize};
 
 use crate::{ContainerId, MachineLogService};

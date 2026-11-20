@@ -688,7 +688,6 @@ fn not_running(
 }
 
 impl LogScope {
-    /// The running containers on the asked Servers.
     #[must_use]
     pub fn running(&self) -> std::collections::BTreeSet<ContainerId> {
         self.live
