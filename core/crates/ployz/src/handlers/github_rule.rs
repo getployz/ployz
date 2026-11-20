@@ -295,6 +295,7 @@ fn show(environment: &str, summary: &RuleSummary) {
         "Approving automatic deploys for {}:",
         Shown::text(environment)
     ));
+    crate::ui::stream(format_args!("  namespace   {}", summary.namespace));
     crate::ui::stream(format_args!(
         "  repository  {} on {}",
         summary.repository, summary.branch

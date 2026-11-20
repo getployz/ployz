@@ -137,6 +137,8 @@ pub struct RuleDraft {
 /// What a person reads before they sign a rule, taken from the body itself.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct RuleSummary {
+    /// The Namespace the rule deploys into, which every Server checks.
+    pub namespace: String,
     pub repository: String,
     pub branch: String,
     pub workflow: String,
@@ -293,8 +295,13 @@ impl AutoDeployRule {
         let (repository, branch, repository_id) = basis.one_branch(names)?;
         // The client's random ID for a new rule, which no rule keeps when it extends one,
         // keys each nonce, so every approval mints births no other one can.
+        // Only the specs this rule approves get births, so the Store records none for a
+        // Volume no Service of the rule mounts.
         basis.minted = birth::mint(
-            &mut basis.target,
+            basis
+                .target
+                .iter_mut()
+                .filter(|spec| names.contains(&spec.name)),
             (&basis.namespace, &basis.volumes),
             terms.issued_at,
             |name| birth::nonce(terms.new_rule.as_bytes(), name),
@@ -387,6 +394,7 @@ impl AutoDeployRule {
     pub fn summary(&self, basis: &RuleBasis) -> RuleSummary {
         let kept = basis.kept().filter(|kept| kept.rule == self.rule);
         let mounts = Mounts {
+            namespace: &self.namespace,
             volumes: &basis.volumes,
             minted: &basis.minted,
             now: self.issued_at,
@@ -394,6 +402,7 @@ impl AutoDeployRule {
         let builder = &self.source.builder;
         let sha = builder.sha.to_string();
         RuleSummary {
+            namespace: self.namespace.to_string(),
             repository: Shown::text(&self.source.repository).into(),
             branch: Shown::text(&self.source.branch).into(),
             workflow: Shown::text(&self.source.workflow).into(),
@@ -515,8 +524,8 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
 }
 
 /// The settings a person reads before approving: each variable, Sealed parts by name only,
-/// the pre-deploy command, a line for each mount of a plain managed Volume naming the data
-/// it holds, then every other field a statement signs whose value is not the spec's
+/// the pre-deploy command, a line for each mount of a managed or Docker volume naming the
+/// data it holds with the settings it signs, then every other field a statement signs whose value is not the spec's
 /// default, by its wire name. The run fields Cloud picks are not shown, since they are not
 /// signed. A field added to the spec later shows without a change here, and a value shows
 /// whenever it signs differently from the default, so no two specs that sign differently
@@ -592,42 +601,32 @@ fn leave_out_mounts(
     shown: &[String],
 ) {
     let graph = spec.volume_graph();
-    let lined = |reference: &str| {
+    let lined = |target: &str| shown.iter().any(|shown| shown == target);
+    let only_lined = |reference: &str| {
         let mut mounts = graph
             .mounts()
             .iter()
             .filter(|mount| mount.volume.as_str() == reference)
             .peekable();
-        mounts.peek().is_some()
-            && mounts.all(|mount| shown.iter().any(|target| target == mount.target.as_str()))
+        mounts.peek().is_some() && mounts.all(|mount| lined(mount.target.as_str()))
     };
-    let target = |mount: &Value| {
-        mount
-            .get("target")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    };
-    let reference = |volume: &Value| {
-        volume
-            .get("reference")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    };
-    for (field, keep) in [
-        (
-            "mounts",
-            &(|mount: &Value| target(mount).is_none_or(|target| !shown.contains(&target)))
-                as &dyn Fn(&Value) -> bool,
-        ),
-        ("volumes", &|volume: &Value| {
-            reference(volume).is_none_or(|reference| !lined(&reference))
-        }),
-    ] {
-        if let Some(Value::Array(items)) = fields.get_mut(field) {
-            items.retain(|item| keep(item));
-            if items.is_empty() {
-                fields.remove(field);
-            }
+    let field =
+        |item: &Value, name: &str| item.get(name).and_then(Value::as_str).map(str::to_owned);
+    if let Some(Value::Array(mounts)) = fields.get_mut("mounts") {
+        mounts.retain(|mount| field(mount, "target").is_none_or(|target| !lined(&target)));
+    }
+    if let Some(Value::Array(volumes)) = fields.get_mut("volumes") {
+        volumes.retain(|volume| {
+            field(volume, "reference").is_none_or(|reference| !only_lined(&reference))
+        });
+    }
+    for name in ["mounts", "volumes"] {
+        if fields
+            .get(name)
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            fields.remove(name);
         }
     }
 }

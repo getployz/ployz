@@ -11,8 +11,8 @@ use ployz_core::authority::{
     ApprovedChange, Mounts, ServiceVersion, SignerKey, Timestamp, birth, deploy::content_addressed,
 };
 use ployz_core::{
-    Claim, Hint, MachineId, MachineObservation, MachineTarget, RequestedServiceSpec, RpcErrorCode,
-    SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName, cluster_sealing_key,
+    Claim, Hint, MachineId, MachineObservation, MachineTarget, Namespace, RequestedServiceSpec,
+    RpcErrorCode, SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName, cluster_sealing_key,
 };
 use ployz_store::{EnvironmentRef, PlanQuery, PostedVersion, TagPin};
 use serde_json::json;
@@ -132,6 +132,7 @@ pub(in crate::handlers) fn sign(
         )
     })?;
     let mounts = Mounts {
+        namespace: &namespace,
         volumes: &plan.volumes,
         minted: &minted,
         now: signed_at,
@@ -147,9 +148,11 @@ pub(in crate::handlers) fn sign(
         .flatten()
         .copied()
         .unwrap_or(false);
-    consent(&approved, yes, |question, refusal, declined| {
-        crate::ui::confirm(question, || refusal, declined)
-    })?;
+    consent(
+        (&namespace, &approved),
+        yes,
+        |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
+    )?;
     let signer = SignerKey::Device(signing.device_key());
     let versions = approved
         .iter()
@@ -185,12 +188,13 @@ pub(in crate::handlers) fn sign(
     }))
 }
 
-/// What a person says to signing `approved`, asked after its lines show: Cloud relays the
-/// plan, so a setting it planted must be refusable before this Device signs it. `--yes`
+/// What a person says to signing `approved` in `namespace`, asked after its lines show:
+/// Cloud relays the plan, so a setting it planted, or another Environment's Namespace, must
+/// be refusable before this Device signs it. `--yes`
 /// answers for a run nobody watches; without it, a run that can't ask refuses before
 /// signing, and a person who says no deploys nothing.
 fn consent(
-    approved: &[ApprovedChange],
+    (namespace, approved): (&Namespace, &[ApprovedChange]),
     yes: bool,
     confirm: impl FnOnce(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -210,7 +214,7 @@ fn consent(
     )
     .hint(Hint::Retry(super::super::typed_with(&["--yes"])));
     confirm(
-        &format!("Approve {}?", services.join(", ")),
+        &format!("Approve {} in namespace {namespace}?", services.join(", ")),
         refusal,
         "Cancelled. Nothing signed or deployed.",
     )

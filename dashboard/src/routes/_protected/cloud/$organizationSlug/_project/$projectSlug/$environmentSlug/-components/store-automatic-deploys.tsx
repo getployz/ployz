@@ -167,6 +167,10 @@ function RuleSummaryList({ summary }: { summary: RuleDraft["summary"] }) {
   return (
     <dl className="flex flex-col gap-3 text-sm">
       <div className="flex flex-col gap-1">
+        <dt className="text-muted-foreground">Namespace</dt>
+        <dd className="font-mono">{summary.namespace}</dd>
+      </div>
+      <div className="flex flex-col gap-1">
         <dt className="text-muted-foreground">Repository</dt>
         <dd><span className="font-mono">{summary.repository}</span> on <span className="font-mono">{summary.branch}</span></dd>
       </div>

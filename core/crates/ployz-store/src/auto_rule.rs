@@ -58,6 +58,7 @@ pub struct RuleView {
     /// Services the rule covers whose Saved settings it no longer approves.
     pub changed: Vec<ServiceName>,
     /// The latest Saved revision's Volumes, by the name `target` declares each under.
+    #[serde(default)]
     pub volumes: PlannedVolumes,
 }
 

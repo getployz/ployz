@@ -42,7 +42,12 @@ fn change(spec: &RequestedServiceSpec, pins: &BTreeMap<ServiceName, String>) -> 
         std::slice::from_ref(spec),
         &Namespace::parse("app").unwrap(),
         pins,
-        &ployz_core::authority::Mounts::unnamed(ployz_core::authority::Timestamp::now()),
+        &ployz_core::authority::Mounts {
+            namespace: &Namespace::parse("app").unwrap(),
+            volumes: &BTreeMap::new(),
+            minted: &BTreeMap::new(),
+            now: ployz_core::authority::Timestamp::now(),
+        },
     )
     .unwrap()
     .try_into()
@@ -356,9 +361,11 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
 #[test]
 fn yes_signs_without_asking() {
     let approved = [approved(&spec(PINNED))];
-    consent(&approved, true, |question, _, _| {
-        panic!("--yes asked {question:?}")
-    })
+    consent(
+        (&Namespace::parse("app").unwrap(), &approved),
+        true,
+        |question, _, _| panic!("--yes asked {question:?}"),
+    )
     .unwrap();
 }
 
@@ -367,9 +374,11 @@ fn yes_signs_without_asking() {
 #[test]
 fn no_terminal_refuses_before_signing_and_names_yes() {
     let approved = [approved(&spec(PINNED))];
-    let error = consent(&approved, false, |question, refusal, declined| {
-        crate::ui::confirm(question, || refusal, declined)
-    })
+    let error = consent(
+        (&Namespace::parse("app").unwrap(), &approved),
+        false,
+        |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
+    )
     .unwrap_err();
     let rpc = error.report();
     assert_eq!(rpc.code, ployz_core::RpcErrorCode::ConfirmationRequired);
@@ -389,20 +398,25 @@ fn no_terminal_refuses_before_signing_and_names_yes() {
     );
 }
 
-/// A person asked names each Service, and their no fails the deploy before it signs.
+/// A person asked names each Service and the Namespace they sign for, and their no fails
+/// the deploy before it signs.
 #[test]
 fn declining_signs_nothing_and_fails() {
     let approved = [approved(&spec(PINNED))];
     let mut asked = None;
-    let error = consent(&approved, false, |question, _, declined| {
-        asked = Some((question.to_owned(), declined));
-        Err(crate::handlers::Error::cancelled())
-    })
+    let error = consent(
+        (&Namespace::parse("app").unwrap(), &approved),
+        false,
+        |question, _, declined| {
+            asked = Some((question.to_owned(), declined));
+            Err(crate::handlers::Error::cancelled())
+        },
+    )
     .unwrap_err();
     assert_eq!(
         asked,
         Some((
-            "Approve web?".to_owned(),
+            "Approve web in namespace app?".to_owned(),
             "Cancelled. Nothing signed or deployed."
         ))
     );

@@ -13,8 +13,8 @@ use ts_rs::TS;
 
 use super::{canonical::Timestamp, shown::Shown};
 use crate::{
-    BirthNonce, DockerVolumeName, Namespace, RawVolumeSource, RequestedServiceSpec, ServiceMount,
-    ServiceName, VolumeBirth,
+    BirthNonce, DockerVolumeName, Namespace, RawVolumeSource, RequestedServiceSpec, ServiceName,
+    VolumeBirth, VolumeDriver,
 };
 
 /// A Volume a plan's specs mount, as the Config Store names it.
@@ -38,28 +38,25 @@ pub type Births = BTreeMap<DockerVolumeName, VolumeBirth>;
 /// Why a spec can't be signed with the births it carries.
 #[derive(Debug, thiserror::Error)]
 pub enum BirthError {
-    #[error(
-        "{0} mounts a volume another environment began, and no server runs that here. \
-         Nothing signed."
-    )]
+    #[error("{0} mounts a volume from another environment. Nothing signed.")]
     OtherEnvironment(ServiceName),
 }
 
-/// Give every mount in `target` of a Volume `volumes` lists as unborn, and whose spec
-/// carries no birth for it, a birth minted now: one per Volume, named as `volumes` names
+/// Give every mount in `target`'s specs of a Volume `volumes` lists as unborn, and whose
+/// spec carries no birth for it, a birth minted now: one per Volume, named as `volumes` names
 /// it and made in `namespace`, with the nonce `nonce` gives it.
 ///
 /// # Errors
 /// Returns [`BirthError::OtherEnvironment`] for a spec carrying a birth from another
 /// Namespace, which every Server refuses.
-pub fn mint(
-    target: &mut [RequestedServiceSpec],
+pub fn mint<'a>(
+    target: impl IntoIterator<Item = &'a mut RequestedServiceSpec>,
     (namespace, volumes): (&Namespace, &PlannedVolumes),
     made_at: Timestamp,
     mut nonce: impl FnMut(&DockerVolumeName) -> BirthNonce,
 ) -> Result<Births, BirthError> {
     let mut births = Births::new();
-    for spec in target.iter_mut() {
+    for spec in target {
         if !spec.volume_graph().born_in(namespace) {
             return Err(BirthError::OtherEnvironment(spec.name.clone()));
         }
@@ -118,61 +115,73 @@ pub fn carried(spec: &RequestedServiceSpec, minted: &Births) -> Births {
 /// What the approver's client knows about the Volumes a spec mounts beyond the spec.
 #[derive(Clone, Copy, Debug)]
 pub struct Mounts<'a> {
+    /// The Namespace the approval signs for, which names each Volume on its Servers.
+    pub namespace: &'a Namespace,
     pub volumes: &'a PlannedVolumes,
     /// The births this approval minted, the only ones that read as new.
     pub minted: &'a Births,
     pub now: Timestamp,
 }
 
-static NONE_PLANNED: PlannedVolumes = BTreeMap::new();
-static NONE_MINTED: Births = BTreeMap::new();
-
 impl Mounts<'_> {
-    /// A spec's mounts with no names from the Store and no birth minted.
-    #[must_use]
-    pub fn unnamed(now: Timestamp) -> Self {
-        Mounts {
-            volumes: &NONE_PLANNED,
-            minted: &NONE_MINTED,
-            now,
-        }
-    }
-
-    /// One line for each mount of `spec` that a plain managed Volume backs, such as
-    /// `mounts previews at /srv/previews, read-write: a new, empty volume`, and the targets
-    /// of those mounts. Every other mount shows with the spec's other settings.
+    /// One line for each mount of `spec` that a managed or Docker volume backs, such as
+    /// `mounts managed volume previews at /srv/previews, read-write: a new, empty volume`,
+    /// and the targets of those mounts. Each line names the data its Servers check: the
+    /// birth, or for data from before births, the name the Volume has on its Servers. It
+    /// carries every other setting the mount signs. Every other mount shows with the
+    /// spec's other settings.
     #[must_use]
     pub fn lines(&self, spec: &RequestedServiceSpec) -> (Vec<Shown>, Vec<String>) {
         let graph = spec.volume_graph();
         let mut lines = Vec::new();
         let mut shown = Vec::new();
         for mount in graph.mounts() {
-            let Some((declared, birth)) = plain(graph.volume_for(mount).source.kind(), mount)
-            else {
+            let Some(volume) = Lined::of(graph.volume_for(mount).source.kind()) else {
                 continue;
             };
-            let planned = self
+            let called = self
                 .volumes
-                .get(declared)
+                .get(volume.name)
                 .map(|planned| planned.name.as_str());
-            let called = planned.unwrap_or(declared.as_str());
-            let name = birth.map_or(called, |birth| birth.name.as_str());
-            let line = Shown::words("mounts ")
-                .and_text(name)
-                .and_words(" at ")
-                .and_text(mount.target.as_str())
-                .and_words(match mount.read_only {
-                    true => ", read-only: ",
-                    false => ", read-write: ",
-                });
-            lines.push(line.and(match birth {
-                Some(birth) if self.minted.get(declared) == Some(birth) => {
+            let line = Shown::words(match volume.driver {
+                None => "mounts managed volume ",
+                Some(_) => "mounts Docker volume ",
+            });
+            let line = match volume.birth {
+                Some(birth) => line.and_text(&birth.name),
+                None => line.and_text(self.namespace.volume_name(volume.name).as_str()),
+            };
+            let mut line = line.and_words(" at ").and_text(mount.target.as_str());
+            if let Some(subpath) = &mount.subpath {
+                line = line.and_words(", subpath ").and_text(subpath);
+            }
+            if mount.no_copy {
+                line = line.and_words(", no initial copy");
+            }
+            if !volume.labels.is_empty() {
+                line = line.and_words(", labels ").and_value(volume.labels);
+            }
+            if let Some(driver) = volume
+                .driver
+                .filter(|driver| driver.name() != "local" || !driver.options().is_empty())
+            {
+                line = line.and_words(", driver ").and_value(driver);
+            }
+            let line = line.and_words(match mount.read_only {
+                true => ", read-only: ",
+                false => ", read-write: ",
+            });
+            lines.push(line.and(match volume.birth {
+                Some(birth) if self.minted.get(volume.name) == Some(birth) => {
                     Shown::words("a new, empty volume")
                 }
-                Some(birth) => self.made(birth, planned),
-                None => {
-                    Shown::words("data from before this version of Ployz recorded where data began")
-                }
+                Some(birth) => self.made(birth, called),
+                None => calls(
+                    Shown::words(
+                        "data from before this version of Ployz recorded where data began",
+                    ),
+                    called,
+                ),
             }));
             shown.push(mount.target.as_str().to_owned());
         }
@@ -205,46 +214,59 @@ impl Mounts<'_> {
                 .and_words(" days ago"),
             None => made,
         };
-        match called {
-            Some(called) if called != birth.name => made
-                .and_words(" (Ployz Cloud calls it ")
-                .and_text(called)
-                .and_words(")"),
-            _ => made,
-        }
+        calls(made, called.filter(|called| *called != birth.name))
     }
 }
 
-/// The declared name and birth of a mount whose line says all it signs: a managed Volume
-/// with no labels, Docker's plain `local` driver for an ordinary one, and a mount of the
-/// whole Volume with Docker's first copy on.
-fn plain<'a>(
-    source: &'a RawVolumeSource,
-    mount: &ServiceMount,
-) -> Option<(&'a DockerVolumeName, Option<&'a VolumeBirth>)> {
-    if mount.subpath.is_some() || mount.no_copy {
-        return None;
+/// `shown`, then the name Ployz Cloud gives the Volume, when it gives one.
+fn calls(shown: Shown, called: Option<&str>) -> Shown {
+    match called {
+        Some(called) => shown
+            .and_words(" (Ployz Cloud calls it ")
+            .and_text(called)
+            .and_words(")"),
+        None => shown,
     }
-    match source {
-        RawVolumeSource::Ordinary {
-            name,
-            driver,
-            labels,
-            birth,
-        } if labels.is_empty() && driver.name() == "local" && driver.options().is_empty() => {
-            Some((name, birth.as_ref()))
+}
+
+/// A managed or Docker volume a mount's line names, with the settings it signs.
+struct Lined<'a> {
+    name: &'a DockerVolumeName,
+    birth: Option<&'a VolumeBirth>,
+    labels: &'a BTreeMap<String, String>,
+    /// A Docker volume's driver; `None` for a managed volume.
+    driver: Option<&'a VolumeDriver>,
+}
+
+impl<'a> Lined<'a> {
+    fn of(source: &'a RawVolumeSource) -> Option<Self> {
+        match source {
+            RawVolumeSource::Ordinary {
+                name,
+                driver,
+                labels,
+                birth,
+            } => Some(Self {
+                name,
+                birth: birth.as_ref(),
+                labels,
+                driver: Some(driver),
+            }),
+            RawVolumeSource::Provisioned {
+                name,
+                labels,
+                birth,
+                ..
+            } => Some(Self {
+                name,
+                birth: birth.as_ref(),
+                labels,
+                driver: None,
+            }),
+            RawVolumeSource::External { .. }
+            | RawVolumeSource::Bind { .. }
+            | RawVolumeSource::Tmpfs { .. } => None,
         }
-        RawVolumeSource::Provisioned {
-            name,
-            labels,
-            birth,
-            ..
-        } if labels.is_empty() => Some((name, birth.as_ref())),
-        RawVolumeSource::Ordinary { .. }
-        | RawVolumeSource::Provisioned { .. }
-        | RawVolumeSource::External { .. }
-        | RawVolumeSource::Bind { .. }
-        | RawVolumeSource::Tmpfs { .. } => None,
     }
 }
 
