@@ -151,11 +151,7 @@ fn drop_other_sites(sites: &[(Namespace, Vec<Salt>)]) -> String {
 
 /// Cuts by character, so a clipped value stays valid UTF-8, which the OTLP encoding needs.
 fn clip(to: &str, from: &str, max: usize) -> String {
-    let pattern = format!("^(?s)(?P<v>.{{0,{max}}})");
-    format!(
-        "set(attributes[\"{to}\"], ExtractPatterns({from}, {})[\"v\"])",
-        quoted(&pattern)
-    )
+    format!("set(attributes[\"{to}\"], {})", clip_value(from, max))
 }
 
 fn statements(windows: &[Window<'_>]) -> Vec<String> {
