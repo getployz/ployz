@@ -34,6 +34,12 @@ pub const SEALING_KEY_BACKUP: &[u8] = b"ployz-sealing-key-backup-v1";
 /// HKDF label of the key a joiner's confirmation is a MAC under.
 pub const JOIN_CONFIRMATION: &[u8] = b"ployz-join-confirmation-v1";
 
+/// HKDF label of the key a verified build is a MAC under.
+pub const VERIFIED_BUILD_KEY: &[u8] = b"ployz-verified-build-key-v1";
+
+/// What a verified build's MAC input starts with.
+pub const VERIFIED_BUILD: &[u8] = b"ployz-verified-build/v1\n";
+
 /// Digest prefix of the code that names a joining Machine.
 pub const JOIN_CODE: &[u8] = b"ployz-join-v1\n";
 
@@ -63,7 +69,7 @@ pub const AUTHORITY_SIGNING: &[u8] = b"ployz-authority/v1\n";
 mod tests {
     use super::*;
 
-    const ALL: [(&str, &[u8]); 16] = [
+    const ALL: [(&str, &[u8]); 18] = [
         ("SEALED_VALUE", SEALED_VALUE),
         ("PLATFORM_SEALED", PLATFORM_SEALED),
         ("BUILD_SECRETS", BUILD_SECRETS),
@@ -72,6 +78,8 @@ mod tests {
         ("BUILD_SECRETS_ATTEST", BUILD_SECRETS_ATTEST),
         ("SEALING_KEY_BACKUP", SEALING_KEY_BACKUP),
         ("JOIN_CONFIRMATION", JOIN_CONFIRMATION),
+        ("VERIFIED_BUILD_KEY", VERIFIED_BUILD_KEY),
+        ("VERIFIED_BUILD", VERIFIED_BUILD),
         ("JOIN_CODE", JOIN_CODE),
         ("FOUNDING_CLAIM", FOUNDING_CLAIM),
         ("WIREGUARD_KEY_DIGEST", WIREGUARD_KEY_DIGEST),
@@ -96,7 +104,7 @@ mod tests {
 
     #[test]
     fn each_string_is_the_bytes_old_machines_and_stored_rows_know() {
-        let expected: [&[u8]; 16] = [
+        let expected: [&[u8]; 18] = [
             b"ployz-sealed-v1",
             b"ployz-platform-sealed-v1",
             b"ployz build secrets v1",
@@ -105,6 +113,8 @@ mod tests {
             b"ployz build-secrets attest v1",
             b"ployz-sealing-key-backup-v1",
             b"ployz-join-confirmation-v1",
+            b"ployz-verified-build-key-v1",
+            b"ployz-verified-build/v1\n",
             b"ployz-join-v1\n",
             b"ployz founding claim v1\0",
             b"ployz-wireguard-key-v1\n",

@@ -259,6 +259,12 @@ pub enum EnsuredContainer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         health: Option<HealthVerdict>,
+        /// What this Machine issued for the rule build it checked online to admit this
+        /// creation, which the caller keeps so a later creation of that build needs no
+        /// GitHub token. `None` for any other change, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        verified: Option<crate::authority::VerifiedBuild>,
     },
     Refused {
         now: ContainerNow,
@@ -370,7 +376,7 @@ impl EnsuredContainer {
     /// The observed Container with its health verdict, or the refusal as an error.
     pub fn into_settled(self) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         match self {
-            Self::Ensured { now, health } => Ok((now, health)),
+            Self::Ensured { now, health, .. } => Ok((now, health)),
             Self::Refused { refusal, .. } => Err(refusal.into_error()),
         }
     }

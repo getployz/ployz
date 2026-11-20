@@ -16,7 +16,7 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
-    deploy::{Creation, PayloadDigest, content_addressed},
+    deploy::{Creation, PayloadDigest, content_addressed, placement_signed},
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
     open::the_signer,
     refusal::{AuthorityRefusal, field, first_mismatch},
@@ -163,6 +163,12 @@ const RETIRED_BUILDERS: [&str; 6] = [
 ];
 
 impl Builder {
+    /// Whether this is a commit Ployz retired, whose builds no Server runs.
+    #[must_use]
+    pub fn retired(&self) -> bool {
+        RETIRED_BUILDERS.contains(&self.sha.to_string().as_str())
+    }
+
     /// `getployz/build`'s reusable workflow at [`BUILDER_SHA`].
     #[must_use]
     pub fn pinned() -> Self {
@@ -370,9 +376,10 @@ impl RuleSource {
         claims: &GithubClaims,
         git_ref: &str,
     ) -> Result<(), AuthorityRefusal> {
-        let sha = self.builder.sha.to_string();
-        if RETIRED_BUILDERS.contains(&sha.as_str()) {
-            return Err(AuthorityRefusal::RetiredBuilder { sha });
+        if self.builder.retired() {
+            return Err(AuthorityRefusal::RetiredBuilder {
+                sha: self.builder.sha.to_string(),
+            });
         }
         first_mismatch([
             ("repository_id", claims.repository_id == self.repository_id),
@@ -546,15 +553,13 @@ pub fn template(
 }
 
 /// What a creation under a rule carries in place of a signed version: the signed rule,
-/// the pinned builder's image token, and the claim whose audience it names. Cloud relays
-/// all of it; a Machine trusts the claim only once the token's audience is its hash.
+/// the evidence that its build is authentic, and the claim that evidence names. Cloud
+/// relays all of it; a Machine trusts the claim only once the evidence checks.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuleProof {
-    #[ts(type = "unknown")]
     pub rule: Signed<AutoDeployRule>,
-    /// The raw GitHub Actions OIDC token whose audience is `claim`'s.
-    pub token: GithubToken,
+    pub evidence: RuleEvidence,
     pub claim: BuildClaim,
     /// A token that may read the repository's branch head, such as an installation
     /// token narrowed to `contents: read`. `None` reads a public repository.
@@ -563,8 +568,51 @@ pub struct RuleProof {
     pub reader: Option<GithubToken>,
 }
 
-/// What a Machine knows when it checks a rule against a deploy request: its own facts and
-/// the branch head it read from GitHub just now.
+/// Why a Machine may take a rule's claim as a build the rule covers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleEvidence {
+    /// The pinned builder's raw GitHub Actions OIDC token, whose audience is the claim's.
+    /// The Machine also reads the branch head, which must still be the claim's commit.
+    Online(GithubToken),
+    /// A verified build: what a Machine of this Cluster answered once that online check
+    /// passed. It stands for any commit, the head or not, while the rule's signer is
+    /// trusted and its generation is the newest a Machine has seen.
+    Verified(VerifiedBuild),
+}
+
+hex_newtype!(
+    /// HMAC-SHA256, under a key every Machine of the Cluster derives from its Sealing Key
+    /// and nothing else can, over [`VerifiedBuild::input`]. Only a Machine whose online
+    /// check of a rule's build passed makes one.
+    VerifiedBuild, "verified build", 32, "", "64 lowercase hex digits"
+);
+
+impl VerifiedBuild {
+    /// The bytes a verified build is a MAC of: a fixed prefix, the SHA-256 of the signed
+    /// rule's body in hex, a newline, and the claim in canonical JSON. So one build of one
+    /// commit of one Service, under one approval of one rule in one Cluster.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the claim has no canonical form.
+    pub fn input(
+        rule: &Signed<AutoDeployRule>,
+        claim: &BuildClaim,
+    ) -> Result<Vec<u8>, CanonicalError> {
+        let mut input = crate::separation::VERIFIED_BUILD.to_vec();
+        let mut body = String::with_capacity(64);
+        for byte in Sha256::digest(rule.body.as_bytes()) {
+            write!(body, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        input.extend(body.as_bytes());
+        input.push(b'\n');
+        input.extend(canonical::to_canonical(claim)?.as_bytes());
+        Ok(input)
+    }
+}
+
+/// What a Machine knows when it checks a rule against a deploy request: its own facts and,
+/// for a build checked online, the branch head it read from GitHub just now.
 #[derive(Clone, Copy, Debug)]
 pub struct RuleFacts<'a> {
     /// The Sealing public key this Machine holds.
@@ -576,22 +624,39 @@ pub struct RuleFacts<'a> {
     pub namespace: &'a Namespace,
     /// The Service the request creates or acts on.
     pub service: &'a ServiceName,
-    pub head: CommitSha,
+    /// The branch head, read online; `None` for a verified build, which needs none.
+    pub head: Option<CommitSha>,
 }
 
 impl AutoDeployRule {
-    /// Check this rule covers a build of the branch head for one Service: the rule's
-    /// Cluster, Machines, Environment and Service, a live generation, and `claim` naming
-    /// this rule's build of the head. `claim` must already be authentic: its audience is a
-    /// GitHub token's, or this Machine accepted it before.
+    /// Check a new Container under this rule: the rule's Cluster, Environment and Service,
+    /// a live generation, a builder Ployz still trusts, `claim` naming this rule's build of
+    /// the head when `facts` read one, an image built with secrets sealed from this
+    /// Machine's attest key, a spec that runs exactly that image, and that the spec with
+    /// its image left out is the template the rule approves. A spec whose placement is
+    /// signed, because it reads data a Server keeps or reaches the host, also needs this
+    /// Machine among the rule's. `claim` must already be authentic: a GitHub token names
+    /// its audience, or a verified build holds for it. Returns the image.
     ///
     /// # Errors
-    /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
-    pub fn verify_claim(
+    /// Returns [`AuthorityRefusal::RetiredBuilder`] for a retired builder, and
+    /// [`AuthorityRefusal::Mismatch`] naming the first other fact that does not hold.
+    pub fn verify_creation(
         &self,
         claim: &BuildClaim,
         facts: &RuleFacts<'_>,
-    ) -> Result<(), AuthorityRefusal> {
+        creation: Creation<'_>,
+    ) -> Result<ImageDigest, AuthorityRefusal> {
+        let mismatch = |field| AuthorityRefusal::Mismatch { field };
+        if creation.service != facts.service || &creation.spec.name != facts.service {
+            return Err(mismatch("a Service"));
+        }
+        if self.source.builder.retired() {
+            return Err(AuthorityRefusal::RetiredBuilder {
+                sha: self.source.builder.sha.to_string(),
+            });
+        }
+        let requested = creation.spec.to_requested();
         let policy = self
             .service(facts.service)
             .map(|service| PolicyDigest::of(&service.policy));
@@ -600,7 +665,10 @@ impl AutoDeployRule {
                 field::CLUSTER,
                 self.cluster == facts.cluster && claim.cluster == facts.cluster,
             ),
-            ("a Machine", self.machines.contains(facts.machine)),
+            (
+                "a Machine",
+                !placement_signed(&requested) || self.machines.contains(facts.machine),
+            ),
             (field::ENVIRONMENT, &self.namespace == facts.namespace),
             ("an ended rule", !self.ended),
             (
@@ -613,28 +681,11 @@ impl AutoDeployRule {
                 "a policy",
                 policy.is_some_and(|policy| policy.ok() == Some(claim.policy)),
             ),
-            ("a commit", claim.commit == facts.head),
-        ])
-    }
-
-    /// Check a new Container under this rule: everything [`Self::verify_claim`] checks,
-    /// then that `claim` reports an image built with secrets sealed from this Machine's
-    /// attest key, that the spec runs exactly that image, and that the spec with its
-    /// image left out is the template the rule approves. Returns the image.
-    ///
-    /// # Errors
-    /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
-    pub fn verify_creation(
-        &self,
-        claim: &BuildClaim,
-        facts: &RuleFacts<'_>,
-        creation: Creation<'_>,
-    ) -> Result<ImageDigest, AuthorityRefusal> {
-        let mismatch = |field| AuthorityRefusal::Mismatch { field };
-        if creation.service != facts.service || &creation.spec.name != facts.service {
-            return Err(mismatch("a Service"));
-        }
-        self.verify_claim(claim, facts)?;
+            (
+                "a commit",
+                facts.head.is_none_or(|head| claim.commit == head),
+            ),
+        ])?;
         let (image, attest) = match claim.stage {
             BuildStage::Built { image, attest } => (image, attest),
             BuildStage::Grant { .. } => return Err(mismatch("a stage")),
@@ -659,8 +710,7 @@ impl AutoDeployRule {
             .service(facts.service)
             .map(|service| service.template)
             .ok_or_else(|| mismatch("a Service"))?;
-        let template = template(&creation.spec.to_requested(), facts.namespace)
-            .map_err(|_| mismatch("a payload"))?;
+        let template = template(&requested, facts.namespace).map_err(|_| mismatch("a payload"))?;
         if template != approved {
             return Err(mismatch("a payload"));
         }

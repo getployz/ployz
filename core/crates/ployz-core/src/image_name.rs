@@ -41,11 +41,17 @@ pub fn retained_digest(tag: &str) -> Option<ImageDigest> {
 /// `ghcr.io/app:v1` are other repositories. A name Docker can't parse matches nothing.
 #[must_use]
 pub fn same_image_name(left: &str, right: &str) -> bool {
-    let whole = |name: &str| {
-        name.parse::<oci_spec::distribution::Reference>()
-            .map(|reference| reference.whole())
-    };
-    matches!((whole(left), whole(right)), (Ok(left), Ok(right)) if left == right)
+    matches!((whole_image_name(left), whole_image_name(right)), (Some(left), Some(right)) if left == right)
+}
+
+/// `name` as Docker reads it, so two spellings of one reference are one string: Docker
+/// Hub's host and `library/` filled in, and `latest` when it names no tag or digest.
+/// `None` when Docker can't parse it.
+#[must_use]
+pub fn whole_image_name(name: &str) -> Option<String> {
+    name.parse::<oci_spec::distribution::Reference>()
+        .ok()
+        .map(|reference| reference.whole())
 }
 
 #[cfg(test)]

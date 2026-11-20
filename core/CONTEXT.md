@@ -188,6 +188,10 @@ _Avoid_: Build as an execution identity, Deploy Attempt
 A Machine-minted permission to push one Build's image into that Machine and nothing else. Its one push is recorded when that image's digest-named tag lands, or when the Machine confirms it already holds exactly that tag at that digest. It ends when that Build finishes or is cancelled, and it grants no Machine RPC access.
 _Avoid_: CI credential, push token, Management Capability
 
+**Verified build**:
+A MAC a Machine issues over one rule build's claim and the exact rule approval it ran under, only after it checked that build with GitHub. Every Machine holding the Sealing Key checks it with its own key, so the build deploys again after its GitHub token expired or its branch moved on, while the rule's signer is trusted and no newer approval of the rule reached that Machine.
+_Avoid_: Build Receipt, accepted build
+
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow; its record is a Deployment.
 _Avoid_: Deployment (the record), reconciliation loop

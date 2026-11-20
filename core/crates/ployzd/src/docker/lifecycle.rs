@@ -458,9 +458,13 @@ impl Lifecycle {
                         .await?;
                 }
                 ImagePull::Policy(_) | ImagePull::Prepared => {
-                    self.images
+                    // By ID: the spec's tag here may name what a caller with Full access
+                    // put under it, which this creation must not run.
+                    let id = self
+                        .images
                         .pull_free(&spec.container.image, spec.container.pull_policy)
                         .await?;
+                    body.image = Some(id);
                 }
             }
         } else if let ImagePull::Policy(registry_auth) = creating.image

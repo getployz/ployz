@@ -70,6 +70,7 @@ async fn listing(machines: Vec<MachineObservation>) -> Fleet {
                                 of: ContainerLocator::Id(crate::global_fixtures::container_id('c')),
                             },
                             health: None,
+                            verified: None,
                         })
                     }
                     other => panic!("unexpected RPC: {other:?}"),

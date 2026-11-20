@@ -911,6 +911,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::Healthy),
+                    ..
                 }
             ),
             "expected a Healthy verdict, got {reply:?}"
@@ -937,6 +938,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: None,
+                    ..
                 }
             ),
             "expected no verdict, got {reply:?}"
@@ -955,6 +957,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::Healthy),
+                    ..
                 }
             ),
             "expected a Healthy verdict, got {reply:?}"
@@ -988,6 +991,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::Healthy),
+                    ..
                 }
             ),
             "an inspect slower than the one-second deadline still answers, got {reply:?}"
@@ -1130,6 +1134,7 @@ mod settled {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(_),
             health: Some(HealthVerdict::Failed { observation, .. }),
+            ..
         } = reply
         else {
             panic!("expected a Failed verdict, got {reply:?}");
@@ -1156,6 +1161,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::TimedOut { .. }),
+                    ..
                 }
             ),
             "expected a TimedOut verdict, got {reply:?}"
@@ -1352,6 +1358,71 @@ mod settled {
                 .any(|(_, path)| { path.ends_with("/images/create") })
         );
         std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A tag built or pulled with Full access is what a later Full start runs, with the
+    /// Service's data. An Operator's start pulls its own image and must leave that tag.
+    #[tokio::test]
+    async fn an_operator_start_runs_its_own_pull_and_leaves_the_tag() {
+        for policy in [
+            ployz_core::PullPolicy::Missing,
+            ployz_core::PullPolicy::Always,
+        ] {
+            let Settling {
+                local,
+                fake,
+                data_dir,
+            } = settling().await;
+            let built = Some(format!("sha256:{}", "b".repeat(64)));
+            let served = format!("sha256:{}", "e".repeat(64));
+            fake.images
+                .lock()
+                .unwrap()
+                .insert("nginx:1.29-alpine".into(), built.clone());
+            fake.registry
+                .lock()
+                .unwrap()
+                .insert("nginx:1.29-alpine".into(), served.clone());
+            let mut new = new_container("settled");
+            new.resolved_spec.update.monitor_millis = Some(0);
+            new.resolved_spec.container.image = "nginx:1.29-alpine".into();
+            new.resolved_spec.container.pull_policy = policy;
+            let want = run(new);
+            let admitted = local
+                .admit_spec(
+                    &want,
+                    crate::machine::Presented::Operator {
+                        rule: None,
+                        versions: &[],
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));
+
+            let reply = local.ensure_container(want, admitted).await.unwrap();
+
+            let EnsuredContainer::Ensured {
+                now: ContainerNow::Present(observed),
+                ..
+            } = reply
+            else {
+                panic!("{policy:?}: expected the Container, got {reply:?}");
+            };
+            let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
+            let made = containers
+                .values()
+                .find(|container| container["Id"] == observed.container_id.as_str())
+                .unwrap();
+            assert_eq!(made["Image"], served.as_str(), "{policy:?}");
+            drop(containers);
+            assert_eq!(
+                fake.images.lock().unwrap().get("nginx:1.29-alpine"),
+                Some(&built),
+                "{policy:?}: the tag moved"
+            );
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
     }
 
     #[tokio::test]

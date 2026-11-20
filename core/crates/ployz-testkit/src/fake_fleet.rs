@@ -1047,7 +1047,11 @@ impl Fleet {
             .ok_or_else(|| Status::internal("the changed Container vanished"))?;
         let now = ContainerNow::Present(machine.observe(observed)?);
         Ok(match decided {
-            Ok(_) => EnsuredContainer::Ensured { now, health: None },
+            Ok(_) => EnsuredContainer::Ensured {
+                now,
+                health: None,
+                verified: None,
+            },
             Err(refusal) => EnsuredContainer::Refused { now, refusal },
         }
         .into())

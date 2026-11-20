@@ -887,6 +887,133 @@ async fn a_runner_names_its_entry_after_a_plain_transport_failure() {
     server.abort();
 }
 
+/// A creation of `kind` for the Service `spec` names, in slot `key`.
+fn creation(
+    spec: &ployz_core::ResolvedServiceSpec,
+    kind: ployz_core::ContainerKind,
+    key: &str,
+) -> ployz_core::ContainerWant {
+    ployz_core::ContainerWant::Running {
+        container: ployz_core::RunTarget::New(ployz_core::NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
+            slot: ployz_core::SlotKey {
+                namespace: ployz_core::Namespace::parse("app").unwrap(),
+                service: spec.name.clone(),
+                kind,
+                creation_key: key.to_owned().try_into().unwrap(),
+            },
+            resolved_spec: spec.clone(),
+            deployment_id: None,
+            registry_auth: None,
+            image_prepared: false,
+            image_id: None,
+            answer: ployz_core::AnswerWhen::Started,
+        }),
+        rotation: ployz_core::RunRotation::Pending,
+    }
+}
+
+/// The proof a rule's build carries before any Server checked it: the image token.
+fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
+    use ployz_core::authority::rule::{Builder, RuleEvent, Runner};
+    use ployz_core::authority::{
+        AttestKey, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest,
+        PolicyDigest, RuleEvidence, RuleId, RuleProof, RuleSource, Signed, Signer, SignerKey,
+        Timestamp,
+    };
+    let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let signer = Signer::from_seed(&[1; 32]);
+    let rule = AutoDeployRule {
+        cluster,
+        rule: RuleId::from_bytes([9; 16]),
+        generation: 1,
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        machines: Vec::new(),
+        source: RuleSource {
+            repository_id: 11,
+            owner_id: 1,
+            repository: "acme/web".into(),
+            branch: "main".into(),
+            workflow: ".github/workflows/ployz-build.yml".into(),
+            events: vec![RuleEvent::Push],
+            builder: Builder::pinned(),
+            runner: Runner::GithubHosted,
+        },
+        services: Vec::new(),
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended: false,
+        signer: SignerKey::Device(signer.public().into()),
+    };
+    RuleProof {
+        rule: Signed::sign(&rule, &signer).unwrap(),
+        evidence: RuleEvidence::Online(ployz_core::GithubToken::new("image-token".to_owned())),
+        claim: BuildClaim {
+            cluster,
+            rule: rule.rule,
+            generation: 1,
+            service: service.clone(),
+            policy: PolicyDigest::from_bytes([0; 32]),
+            commit: CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+            authority: CommitAuthority::Head,
+            stage: BuildStage::Built {
+                image: ImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+                attest: AttestKey::from_bytes([0x55; 32]),
+            },
+        },
+        reader: None,
+    }
+}
+
+// A pre-deploy hook can outlast the image token. The Server that admits the hook answers
+// a verified build, and the Service the same Deploy creates next must carry it, since the
+// token has expired by then. The run keeps the same verified build for later Deployments.
+#[tokio::test]
+async fn a_service_created_after_its_hook_carries_the_verified_build_the_hook_got() {
+    use crate::sdk::test_support as support;
+    use ployz_core::ContainerKind;
+    let one = support::machine('a', "one");
+    let issued = ployz_core::authority::VerifiedBuild::from_bytes([0x5a; 32]);
+    let service = support::DeployService::new(one.clone()).checking_rules(issued);
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let spec = crate::global_fixtures::requested(ployz_core::ServiceMode::Global)
+        .to_resolved(
+            crate::global_fixtures::service_id('a'),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let proofs = crate::cluster::RuleProofs {
+        rules: BTreeMap::from([(spec.name.clone(), online_proof(&spec.name))]),
+        ..Default::default()
+    };
+    let client = session.client().unwrap().with_rule_proofs(proofs.clone());
+
+    for (kind, key) in [
+        (ContainerKind::PreDeployHook, "hook:test"),
+        (ContainerKind::ServiceContainer, "global:test"),
+    ] {
+        let created = client
+            .ensure_unsettled(&one.machine.id, creation(&spec, kind, key), None)
+            .await;
+        assert!(
+            matches!(created, Ok(ployz_core::EnsuredContainer::Ensured { .. })),
+            "the {kind} is created: {created:?}"
+        );
+    }
+    assert_eq!(
+        proofs.issued().get(&spec.name).map(|kept| kept.verified),
+        Some(issued)
+    );
+
+    session.close().await;
+    server.abort();
+}
+
 fn lines(log: &LogText) -> Vec<String> {
     match log {
         LogText::Shown(excerpt) => excerpt.lines().to_vec(),

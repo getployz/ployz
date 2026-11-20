@@ -13,7 +13,8 @@ use ployz_core::{
     Start,
     authority::{
         Approver, AuthorityRefusal, Budget, RuleId, RuleProof, ServiceVersion, Signed,
-        SigningPublicKey, TrustedKeys, VersionFacts, deploy::Creation, needs_signature, version,
+        SigningPublicKey, TrustedKeys, VerifiedBuild, VersionFacts, deploy::Creation,
+        needs_signature, version,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -139,6 +140,8 @@ pub(crate) struct AdmittedSpec {
     spec: [u8; 32],
     by: AdmittedBy,
     standing: Option<Standing>,
+    /// What this Machine issued for a rule build it checked online to admit the spec.
+    verified: Option<VerifiedBuild>,
 }
 
 impl std::fmt::Debug for AdmittedSpec {
@@ -169,6 +172,7 @@ impl AdmittedSpec {
             spec: Self::hash(namespace, spec).map_err(Error::DeployRefused)?,
             by: AdmittedBy::Local,
             standing: None,
+            verified: None,
         })
     }
 
@@ -179,6 +183,10 @@ impl AdmittedSpec {
 
     pub(crate) fn by(&self) -> &AdmittedBy {
         &self.by
+    }
+
+    pub(crate) fn verified(&self) -> Option<VerifiedBuild> {
+        self.verified
     }
 
     /// Whether the admission still holds, checked again right before Docker creates the
@@ -218,6 +226,7 @@ impl AdmittedSpec {
                 AdmittedBy::Free
             },
             standing: None,
+            verified: None,
         }
     }
 }
@@ -273,11 +282,12 @@ impl LocalMachine {
             Error::DeployRefused(refusal)
         };
         let spec = AdmittedSpec::hash(&new.slot.namespace, &new.resolved_spec).map_err(refused)?;
-        let admitted = |by| {
+        let admitted = |by, verified| {
             Ok(Some(AdmittedSpec {
                 spec,
                 by,
                 standing: Some(self.standing()),
+                verified,
             }))
         };
         let (rule, versions) = match presented {
@@ -289,25 +299,25 @@ impl LocalMachine {
         let mut unapproved = None;
         if !versions.is_empty() {
             match self.approved_versions(new, versions, &mut budget) {
-                Ok(keys) => return admitted(AdmittedBy::Keys { keys }),
+                Ok(keys) => return admitted(AdmittedBy::Keys { keys }, None),
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
         if matches!(presented, Presented::FullAccess { .. }) {
-            return admitted(self.full_access()?);
+            return admitted(self.full_access()?, None);
         }
         if let Some(rule) = rule {
-            let by = self
+            let admitted_rule = self
                 .admit_rule_deploy_online(want, rule, &mut budget)
                 .await?;
-            return admitted(by);
+            return admitted(admitted_rule.by, admitted_rule.verified);
         }
         match needs_signature(creation(new), new.registry_auth.is_some()) {
             Some(reach) => Err(refused(
                 unapproved.unwrap_or(AuthorityRefusal::NeedsSignature { reach }),
             )),
             // A spec that reaches no data runs whatever came with it.
-            None => admitted(AdmittedBy::Free),
+            None => admitted(AdmittedBy::Free, None),
         }
     }
 
@@ -436,6 +446,7 @@ impl LocalMachine {
                     spec,
                     by: self.full_access()?,
                     standing: Some(self.standing()),
+                    verified: None,
                 }))
             }
         }

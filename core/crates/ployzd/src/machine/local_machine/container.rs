@@ -15,9 +15,9 @@ use ployz_core::{
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
     ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
-    PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest, QualifiedService,
-    ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation,
-    RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
+    PruneImagesRequest, PullFreeImageRequest, PullImageFromMachineRequest, PullImageRequest,
+    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal,
+    RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
@@ -780,6 +780,29 @@ impl LocalMachine {
         .await
     }
 
+    /// Pull one image as an unsigned creation does, under shared admission like
+    /// [`Self::pull_image`].
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the pull is refused or
+    /// fails.
+    pub(crate) async fn pull_free_image(
+        &self,
+        request: PullFreeImageRequest,
+    ) -> Result<ImagePulled, Error> {
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, move |local| async move {
+            let exposed_ports = local
+                .docker()?
+                .images()
+                .pull_free_image(&request.image, request.policy)
+                .await?;
+            Ok(ImagePulled { exposed_ports })
+        })
+        .await
+    }
+
     /// Pull one image from peer ingest under shared admission: transfers run side by
     /// side, and exclusive work, such as Reset or image removal, waits for them.
     ///
@@ -952,6 +975,7 @@ impl LocalMachine {
             Ok(EnsuredContainer::Ensured {
                 now,
                 health: Some(mut health),
+                ..
             }) if health != HealthVerdict::Healthy => {
                 if let HealthVerdict::Failed { departing, .. }
                 | HealthVerdict::TimedOut { departing, .. } = &mut health
@@ -961,6 +985,7 @@ impl LocalMachine {
                 Ok(EnsuredContainer::Ensured {
                     now,
                     health: Some(health),
+                    verified: None,
                 })
             }
             other => other,
@@ -1017,6 +1042,7 @@ impl LocalMachine {
             (Some(proxy), None) => Ok(EnsuredContainer::Ensured {
                 now: ContainerNow::Present(proxy.now),
                 health: None,
+                verified: None,
             }),
             (_, failure) => {
                 let message = failure.map_or_else(
@@ -1113,6 +1139,7 @@ impl LocalMachine {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health: None,
+            ..
         } = ensured
         else {
             return Ok(ensured);
@@ -1123,6 +1150,7 @@ impl LocalMachine {
         Ok(EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health: Some(health),
+            verified: None,
         })
     }
 
@@ -1340,6 +1368,7 @@ impl LocalMachine {
                     None => EnsuredContainer::Ensured {
                         now: redacted(now),
                         health: None,
+                        verified: None,
                     },
                     Some(refusal) => EnsuredContainer::Refused {
                         now: redacted(now),
@@ -1461,7 +1490,11 @@ impl LocalMachine {
         let read = acted.map_or(locator, ContainerLocator::Id);
         let now = redacted(self.container_now(&read).await?);
         Ok(match refusal {
-            None => EnsuredContainer::Ensured { now, health: None },
+            None => EnsuredContainer::Ensured {
+                now,
+                health: None,
+                verified: None,
+            },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
     }
