@@ -1684,6 +1684,7 @@ mod stopped_on_request {
 
     mod removal_wait {
         use super::*;
+        use crate::machine::local_machine::container::log_read_remaining;
 
         const GRACE: Duration = Duration::from_secs(2);
 
@@ -1748,6 +1749,45 @@ mod stopped_on_request {
             let took = removed_in(&fixture, Drain::NONE).await;
 
             assert!(took >= GRACE, "discarded after {took:?}");
+            fixture.finish();
+        }
+
+        #[test]
+        fn the_wait_is_what_remains_of_the_grace_after_the_exit() {
+            let now = chrono::Utc::now();
+            let ago = |millis| Some(now - chrono::Duration::milliseconds(millis));
+            for (exited_at, wait) in [
+                (ago(0), GRACE),
+                (ago(500), Duration::from_millis(1_500)),
+                (ago(2_000), Duration::ZERO),
+                (ago(60_000), Duration::ZERO),
+                (ago(-1_000), GRACE),
+                (None, GRACE),
+            ] {
+                assert_eq!(
+                    log_read_remaining(exited_at, now),
+                    wait,
+                    "exited {exited_at:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_container_that_exited_long_ago_is_removed_without_waiting() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+            fixture.docker_sets(&[
+                ("/State/Status", json!("exited")),
+                ("/State/Running", json!(false)),
+                (
+                    "/State/FinishedAt",
+                    json!((chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339()),
+                ),
+            ]);
+
+            let took = removed_in(&fixture, Drain::NONE).await;
+
+            assert!(took < GRACE, "removed after {took:?}");
             fixture.finish();
         }
 
