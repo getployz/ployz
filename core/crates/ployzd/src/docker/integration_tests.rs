@@ -1413,6 +1413,7 @@ fn fixture_observation(
         container_id,
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }

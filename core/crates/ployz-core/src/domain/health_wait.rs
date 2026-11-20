@@ -470,6 +470,7 @@ mod tests {
             labels: Default::default(),
             stopped: false,
             run: None,
+            log_driver: None,
         })
         .unwrap();
         ContainerDetails {

@@ -954,6 +954,11 @@ impl Observation {
                     .collect(),
                 stopped,
                 run: run.clone(),
+                log_driver: inspected
+                    .host_config
+                    .as_ref()
+                    .and_then(|host| host.log_config.as_ref())
+                    .and_then(|log| log.typ.clone()),
             })?;
         let oom_killed = inspected
             .state
@@ -1103,6 +1108,19 @@ struct RawContainerInspect {
     config: Option<RawContainerConfig>,
     state: Option<serde_json::Value>,
     network_settings: Option<RawNetworkSettings>,
+    host_config: Option<RawHostConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct RawHostConfig {
+    log_config: Option<RawLogConfig>,
+}
+
+#[derive(Deserialize)]
+struct RawLogConfig {
+    #[serde(rename = "Type")]
+    typ: Option<String>,
 }
 
 impl RawContainerInspect {

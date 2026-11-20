@@ -7,7 +7,7 @@ use ployz_core::{
     PortPublication, Region, RegionWait, RequestedServiceSpec, ResolvedServiceSpec,
     ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder, compare_specs,
+    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder, compare_observed,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -632,7 +632,7 @@ impl<'a> Spread<'a> {
         if !observation.runtime.may_serve() || !serving_rotation(observation) {
             return Standing::NotServing;
         }
-        match compare_specs(&observation.resolved_spec, self.requested) {
+        match compare_observed(observation, self.requested) {
             SpecChange::UpToDate | SpecChange::NeedsPlacementUpdate => Standing::Settled,
             SpecChange::NeedsUpdate | SpecChange::NeedsRecreate => Standing::Outdated,
         }
@@ -1348,7 +1348,7 @@ fn container_fate(
     {
         return ContainerFate::Replace;
     }
-    match compare_specs(&observation.resolved_spec, requested) {
+    match compare_observed(observation, requested) {
         SpecChange::UpToDate => ContainerFate::Keep,
         SpecChange::NeedsUpdate if landing == Landing::InPlace => {
             ContainerFate::Update(InPlaceChange::Limits)

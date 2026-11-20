@@ -230,6 +230,9 @@ impl fmt::Display for ContainerKind {
     }
 }
 
+/// The Docker log driver every Container runs on, so Machine Collectors can read its files.
+pub const LOG_DRIVER: &str = "json-file";
+
 /// Raw facts for admitting one Container observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[ts(rename = "ContainerObservation")]
@@ -271,6 +274,10 @@ pub struct ContainerObservationParts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub run: Option<crate::ContainerRun>,
+    /// Docker's log driver for this Container. `None` from daemons that do not report it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub log_driver: Option<String>,
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.
@@ -1281,6 +1288,7 @@ mod tests {
             labels: BTreeMap::new(),
             stopped: false,
             run: None,
+            log_driver: None,
         })
         .unwrap()
     }

@@ -1931,6 +1931,7 @@ fn status_keeps_a_down_server_past_a_slow_first_use_and_routes_read() {
                     labels: Default::default(),
                     stopped: false,
                     run: None,
+                    log_driver: None,
                 })
                 .unwrap();
             service.listed_containers.lock().unwrap().push(copy);
