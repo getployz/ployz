@@ -9259,6 +9259,49 @@ fn a_rollback_to_a_deployment_from_before_pins_were_kept_borrows_no_later_pin() 
 }
 
 #[test]
+fn a_rollback_across_the_upgrade_runs_the_pin_a_device_approved_after_the_tag_moved() {
+    let (store, who, url, dir) = own_shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    apply(&store, 1);
+    // #1 as a Store before signed versions kept it: a Device's approval pinned web's tag
+    // to P1, and nothing recorded what it ran.
+    let approval = json!({
+        "body": json!({
+            "namespace": "shop-production",
+            "services": [{
+                "name": "web",
+                "digest": signed_spec(&store, &who, "web", P1),
+                "image": P1,
+            }],
+        })
+        .to_string(),
+        "signatures": [],
+    });
+    for sql in [
+        "DROP TABLE config_service_version".to_owned(),
+        "ALTER TABLE config_deployment DROP COLUMN ran".to_owned(),
+        "DELETE FROM config_migration WHERE name = '0049_service_version'".to_owned(),
+        format!(
+            "UPDATE config_deployment SET deploy_approval = '{approval}' WHERE id = '{}'",
+            id(1)
+        ),
+    ] {
+        backend::execute(&url, &sql);
+    }
+    drop(store);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+
+    // The tag moved to P2, and a Device deployed it.
+    set_replicas(&store, &who, "web", 2);
+    admit_signed(&store, &who, 2, vec![posted(&store, &who, "web", P2)]);
+    apply(&store, 2);
+
+    retry(&store, &who, 3, 1).unwrap();
+    assert_eq!(web_runs(&store, 3), Some((P1.to_owned(), 0)));
+    drop(dir);
+}
+
+#[test]
 fn two_services_with_one_signer_keep_their_own_pins() {
     let (store, who) = shop();
     admit_signed(

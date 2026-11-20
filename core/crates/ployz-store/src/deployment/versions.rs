@@ -285,6 +285,77 @@ pub(super) fn pinned(
         .collect()
 }
 
+/// The part of a Device's deploy approval, as `config_deployment.deploy_approval` kept it
+/// before signed versions, that says what each Service ran.
+#[derive(Deserialize)]
+struct KeptApproval {
+    body: String,
+}
+
+#[derive(Deserialize)]
+struct ApprovalBody {
+    services: Vec<ApprovedService>,
+}
+
+#[derive(Deserialize)]
+struct ApprovedService {
+    name: ServiceName,
+    digest: PayloadDigest,
+    image: Option<String>,
+}
+
+/// Record in `ran`, for each Deployment a Device approved before the Store kept what
+/// each one ran, the digest and pin its approval named for each Service it ships, as a
+/// claim read them from the approval: a retry or rollback of it then runs that pin, not
+/// whatever its tag names now. A Deployment whose approval doesn't read or whose Saved
+/// revision no longer lowers keeps none, and runs its tag as before.
+///
+/// # Errors
+/// Returns a storage error.
+pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT id, deploy_approval FROM config_deployment WHERE deploy_approval IS NOT NULL",
+        &[],
+    )?;
+    for row in &rows {
+        let id = row.parse::<DeploymentId>(0, "Deployment")?;
+        let Some(approved) = serde_json::from_str::<KeptApproval>(row.text(1)?)
+            .ok()
+            .and_then(|kept| serde_json::from_str::<ApprovalBody>(&kept.body).ok())
+        else {
+            continue;
+        };
+        let Some(target) = super::load(tx, &id).ok().and_then(|stored| {
+            let saved = super::held_revision(tx, &stored).ok()?;
+            super::lowered(tx, &stored, &saved).ok()
+        }) else {
+            continue;
+        };
+        let mut record = record_of(tx, &id)?;
+        for spec in &target.intent.target {
+            let Some(approved) = approved
+                .services
+                .iter()
+                .find(|service| service.name == spec.name)
+            else {
+                continue;
+            };
+            record
+                .services
+                .entry(spec.name.clone())
+                .or_insert_with(|| RanService {
+                    digest: approved.digest,
+                    pin: approved.image.clone().map(|image| TagPin {
+                        tag: spec.container.image.clone(),
+                        image,
+                    }),
+                });
+        }
+        write_record(tx, &id, &record)?;
+    }
+    Ok(())
+}
+
 /// What the Deployment that last applied `spec`'s Service node ran, when `spec` with
 /// that pin has the digest it ran: the same tag, and only run fields changed.
 fn reused(
