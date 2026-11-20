@@ -1846,6 +1846,7 @@ fn unhealthy_run(machine: MachineId, container_id: &ContainerId) -> Step {
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                last_exit_code: None,
                 departing: None,
             },
         ),
@@ -1888,6 +1889,7 @@ fn exited_leaving() -> HealthVerdict {
         observation: exited(0),
         last_check: None,
         oom_killed: false,
+        last_exit_code: None,
         departing: Some(departure()),
     }
 }

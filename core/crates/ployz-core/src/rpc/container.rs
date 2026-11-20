@@ -283,6 +283,12 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         oom_killed: bool,
+        /// The code of the run that just ended, read in the inspect that saw the Container
+        /// restarting: Docker shows it only for the wait before the next run, and the
+        /// Container is removed soon after. `None` otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_exit_code: Option<i64>,
         /// The Leave that was removing the Server as it answered, so what the copy did
         /// since was the Leave's doing. `None` from older daemons.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +330,15 @@ impl HealthVerdict {
         match self {
             Self::Healthy => false,
             Self::Failed { oom_killed, .. } | Self::TimedOut { oom_killed, .. } => *oom_killed,
+        }
+    }
+
+    /// The code of the run a restarting Container just ended, when the Machine saw it.
+    #[must_use]
+    pub const fn last_exit_code(&self) -> Option<i64> {
+        match self {
+            Self::Failed { last_exit_code, .. } => *last_exit_code,
+            Self::Healthy | Self::TimedOut { .. } => None,
         }
     }
 

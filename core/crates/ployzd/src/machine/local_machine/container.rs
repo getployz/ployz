@@ -1179,6 +1179,7 @@ impl LocalMachine {
                         observation,
                         last_check,
                         oom_killed: inspected.oom_killed,
+                        last_exit_code: inspected.details.last_exit_code,
                         departing: None,
                     });
                 }

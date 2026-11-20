@@ -46,8 +46,6 @@ const CANCEL_POLL: Duration = Duration::from_secs(2);
 
 /// How often a build's new log output is recorded.
 const LOG_FLUSH: Duration = Duration::from_secs(3);
-const RESTART_LOOKS: usize = 10;
-const RESTART_LOOK: Duration = Duration::from_millis(200);
 
 /// Each Git Service's checkout at its pinned commit, by runtime Service name, and the
 /// Deployment's upload, if Cloud still holds it; or why Cloud could not read them.
@@ -1242,24 +1240,30 @@ impl Run {
     ) {
         let ExecutionError::Health {
             container_id,
-            failure: HealthFailure::Runtime { observation, .. },
+            failure: HealthFailure::Runtime { .. },
             last_run,
             ..
         } = error
         else {
             return;
         };
-        let restarting = matches!(observation, ContainerRuntimeObservation::Restarting);
         let (_, run) = match stopped.entry(*container_id) {
             std::collections::btree_map::Entry::Occupied(read) => read.into_mut(),
-            std::collections::btree_map::Entry::Vacant(unread) => unread.insert(
-                self.failed_log_after(client, scrub, machine, *container_id, restarting)
-                    .await,
-            ),
+            std::collections::btree_map::Entry::Vacant(unread) => {
+                unread.insert(self.failed_log(client, scrub, machine, *container_id).await)
+            }
         };
-        *last_run = Some(run.clone());
+        let seen = last_run.as_ref().and_then(|seen| seen.exit_code);
+        *last_run = Some(LastRun {
+            exit_code: seen.or(run.exit_code),
+            last_line: run.last_line.clone(),
+        });
     }
 
+    /// The failed Container's scrubbed tail, and the run Docker says it ended: its exit code
+    /// from inspect, read before the Container is removed. The code the Machine saw when it
+    /// judged a restarting Container, which Docker stops showing once it runs again, wins in
+    /// `fill_last_run`.
     async fn failed_log(
         &self,
         client: &Client,
@@ -1267,39 +1271,10 @@ impl Run {
         machine: MachineId,
         container: ContainerId,
     ) -> (LogText, LastRun) {
-        self.failed_log_after(client, scrub, machine, container, false)
-            .await
-    }
-
-    /// The failed Container's scrubbed tail, and the run Docker says it ended: its exit code
-    /// from inspect, read before the Container is removed. Docker reports a restarting
-    /// Container's last exit code only while it waits to restart and 0 once it runs again,
-    /// so a Container seen restarting is inspected again, for up to `RESTART_LOOKS` looks,
-    /// until a wait shows the code.
-    async fn failed_log_after(
-        &self,
-        client: &Client,
-        scrub: &Scrub,
-        machine: MachineId,
-        container: ContainerId,
-        restarting: bool,
-    ) -> (LogText, LastRun) {
         let withheld = |why| (LogText::Withheld { why }, LastRun::default());
-        let Some(mut details) = super::inspect_container(client, machine, container).await else {
+        let Some(details) = super::inspect_container(client, machine, container).await else {
             return withheld(Withheld::NoSecretContext);
         };
-        if restarting {
-            for _ in 0..RESTART_LOOKS {
-                if details.last_exit_code.is_some() {
-                    break;
-                }
-                tokio::time::sleep(RESTART_LOOK).await;
-                match super::inspect_container(client, machine, container).await {
-                    Some(fresh) => details = fresh,
-                    None => break,
-                }
-            }
-        }
         let exit_code = match details.container.runtime {
             ContainerRuntimeObservation::Exited { code } => Some(code),
             ContainerRuntimeObservation::Restarting

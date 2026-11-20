@@ -10,7 +10,7 @@ use crate::deploy::progress::Progress;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
     ContainerWant, CopyRotation, DeploymentLogId, Drain, ExecutionError, Gen, HealthVerdict,
-    MachineAction, MachineId, Namespace, NewContainer, OperationPhase, OutOfMemory,
+    LastRun, MachineAction, MachineId, Namespace, NewContainer, OperationPhase, OutOfMemory,
     QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey,
     error_chain,
 };
@@ -437,13 +437,17 @@ pub(super) fn started_container(
     };
     let out_of_memory = out_of_memory(&health, spec);
     let departing = health.departing().cloned();
+    let last_run = health.last_exit_code().map(|code| LastRun {
+        exit_code: Some(code),
+        last_line: None,
+    });
     match health.into_failure() {
         None => Ok(container_id),
         Some(failure) => Err(ExecutionError::Health {
             container_id,
             failure,
             out_of_memory,
-            last_run: None,
+            last_run,
             departing,
         }),
     }

@@ -352,6 +352,7 @@ impl DeployService {
                 observation,
                 last_check: None,
                 oom_killed: self.oom_killed,
+                last_exit_code: None,
                 departing: None,
             };
         };
@@ -380,6 +381,7 @@ impl DeployService {
                 observation,
                 last_check: None,
                 oom_killed: self.oom_killed,
+                last_exit_code: None,
                 departing: None,
             }
         }
