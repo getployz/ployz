@@ -227,10 +227,15 @@ pub(super) fn metrics(
             let only = MachineName::parse(named.as_str())
                 .map_err(|_| Error::usage(format!("{named:?} is not a Server name")))?;
             let servers: ServersAnswer = ask(credential, CloudQuery::Servers { only: Some(only) })?;
-            let server = servers
-                .servers
-                .first()
-                .ok_or_else(|| Error::usage(format!("No Server is named {named:?}")))?;
+            let server = match servers.servers.as_slice() {
+                [] => return Err(Error::usage(format!("No Server is named {named:?}"))),
+                [server] => server,
+                [_, _, ..] => {
+                    return Err(Error::usage(format!(
+                        "More than one Server is named {named:?}"
+                    )));
+                }
+            };
             (
                 MetricsSubject::Server {
                     server: server.reference(),
