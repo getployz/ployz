@@ -1,34 +1,32 @@
 # Branches
 
-A Branch is a copy of a parent Environment that a user changes freely, then saves back to the parent. Behavior: `docs/user/environments/environments.md`.
+A Branch is a copy of a parent Environment that holds only the services a user picked; the rest run live from the parent. A user changes it freely, then syncs it into the parent, where the changes wait as the parent's changes to deploy. Behavior: `docs/user/environments/environments.md`.
 
 ## Sub-features
 
-- Branch canvas: only the copied services, each marked "New Not deployed"; a link to the parent in the breadcrumb ("Parent: production")
-- `link "Branch: N to save"` opens the review at `/<branch>/review`
-- Review inspector: link to the parent, button "N changes to save <services>" (expands the diff), **Save to production** (opens the Save sheet)
-- **Branch actions** menu: "Keep this branch" (checkbox), "Close fix-api…"
-- New branch: `/<env>/new-branch`
+- Branch canvas: the copied services, each `link "<service>, New, Not deployed"`; services read from the parent as `link "production's redis"`. Breadcrumb `link "Parent: production"` and `button "Environment: fix-api"`.
+- `button "Sync · N"` opens `dialog "Make production match fix-api"` ("These become production's changes to deploy."): combobox `Place to sync into`, one region per service with a ticked checkbox per change (`checkbox "LOG_LEVEL"`, `checkbox "Start command New"`), checkbox `Close fix-api after syncing` (on by default, shown only for a Branch that isn't kept), **Cancel**, **Sync N changes**. Unticking a change shows **Never sync** on its row and counts the button down.
+- After syncing, the parent's **Details** has `region "Included"` (`Actions for fix-api`) above the synced rows.
+- `button "More sync actions"`: `menuitemcheckbox "Keep fix-api"`, `menuitem "Close fix-api…"`
+- New branch: `/<env>/new-branch`, or the `button "Environment: production"` menu → "New branch of production". Panel: textbox `Name`, **Only what changes** / **Everything**, a `<resource>: Not included. Change` button per resource, switch `Keep it after syncing into production`; submit reads "Pick something to change" (disabled) until a resource is included.
 
 ## How to get to it (user POV)
 
-From production, use **Create** or the Environment breadcrumb to branch. Open the Branch, then click "Branch: N to save" to review and save.
+From production, open the Environment breadcrumb and pick "New branch of production". Open the Branch, then click **Sync** to bring its changes into production.
 
 ## Driving it with agent-browser
 
 ```bash
 agent-browser --session $S open http://localhost:<port>/cloud/ada/shop/fix-api
-agent-browser --session $S snapshot -i               # link "Branch: 2 to save" [ref=eN]
-agent-browser --session $S click @eN                  # → /cloud/ada/shop/fix-api/review
-agent-browser --session $S snapshot -i               # button "Save to production" [ref=eM]
-agent-browser --session $S click @eM                  # opens the Save sheet
+agent-browser --session $S snapshot -i               # button "Sync · 2" [ref=eN]
+agent-browser --session $S click @eN                  # dialog "Make production match fix-api"
+agent-browser --session $S snapshot -i               # button "Sync 2 changes" [ref=eM]
+agent-browser --session $S click @eM                  # syncs, closes fix-api, lands on /cloud/ada/shop/production
 ```
-
-The Save sheet ("2 changes for production") has one region per service, a "Leave out <service> · <setting>" button per change, a switch "Delete fix-api after saving" (on by default), and **Save to production** / **Close**.
 
 ## Gotchas
 
-- Seeded state: fix-api copies api and web, with 2 changes to save (api `LOG_LEVEL`, web start command). Production moved on after the branch was made.
-- The service order in "2 changes to save api, web" changes between runs; match on "changes to save".
-- After **Save to production**, verify on the production canvas through **Details**. The saved values arrive there as unpublished changes.
-- Code: `ENV/-components/branch-review/` (StoreBranchPanel, SaveSheet), `ENV/_canvas/review.tsx`, `ENV/_canvas/new-branch.tsx`.
+- Seeded state: fix-api copies api and web, with 2 changes (api `LOG_LEVEL`, web start command). Production moved on after the branch was made. staging (kept, api and worker) and search (a Branch of staging, synced into it then changed again) are also seeded.
+- Region order in the Sync dialog changes between runs; match on the service name.
+- **Sync N changes** with "Close fix-api after syncing" on deletes fix-api; reseed (`up.sh`) to get it back.
+- Code: `ENV/-components/sync/` (SyncButton, SyncDialog, branch-close), `ENV/_canvas/new-branch.tsx`, `ENV/-components/new-branch/StoreNewBranchPanel.tsx`, `dashboard/src/components/environment-breadcrumbs.tsx`.
