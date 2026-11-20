@@ -329,7 +329,7 @@ A server checks these itself, whoever asks. Ployz Cloud carries a signature but 
   The dashboard's **Deploy** signs nothing. It sends the signature of a version a device
   signed, for a rollback or a change of only replicas, placement or limits. A server runs any
   other only for a service that reaches none of those.
-  It refuses any other container with `ployz.container.deploy-approval.v1` and names
+  It refuses any other container with `ployz.container.signed-version.v1` and names
   `ployz deploy from an approved device`.
 - **Builds.** A server refuses a build Ployz Cloud starts with
   `This server runs only builds an approved device starts.`, before the build opens any

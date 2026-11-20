@@ -208,22 +208,30 @@ counting when you remove every device that signed it.
 Ployz Cloud keeps every version you sign, and each deployment records the image each signed
 service ran. **Roll back** or **Redeploy** runs the images that deployment ran and sends their
 signatures, so every server runs them, even one that never ran that version, and even after
-the tag moved. A service that deployment ran unsigned runs its tag again, as the tag points
-now. A deploy that changes only how many copies run, where they run or their CPU and memory
-limits runs the image the service last ran, with its signature, as long as your settings still
-name the same tag. Change anything else, such as a variable, and it runs the image your
+the tag moved. A service that deployment ran unsigned runs the image its settings named
+then: a digest as written, or a tag as it points now. A deploy that changes only how many
+copies run, where they run or their CPU and memory limits runs the image the service last
+ran, with its signature, as long as your settings still name the same tag. Change anything else, such as a variable, and it runs the image your
 settings name now. Ployz Cloud can replay a version you signed, but it can't sign one.
 
-A deployment made before Ployz Cloud kept signed versions recorded no images. Rolling back to
-it, or redeploying it, runs each service's tag as it points now and sends no signature, so a
-server refuses any of its services that reaches data. Run `ployz deploy` on an approved device
-to sign them again.
+A deployment made before Ployz Cloud kept signed versions has no signature to send. What a
+rollback or redeploy of it runs depends on how it was signed:
 
-A `ployz` from before signed versions sends a kind of signature servers no longer read. Ployz
-Cloud refuses its deploy before anything is queued and names the update to run:
+- **Signed on a device with an older `ployz`.** Ployz Cloud kept the image that deploy pinned
+  each service to, so a rollback runs those images even after the tag moved. It has no
+  signature to send with them, so a server refuses any of its services that reaches data.
+  This holds for every deployment an older `ployz` signed, however recent.
+- **Not signed by a device.** Nothing recorded the images it ran. Each service runs the image
+  your settings named then: an image written by digest runs that digest, and a tag runs the
+  image it points to now. A server refuses any of these services that reaches data.
+
+Run `ployz deploy` on an approved device to sign the services a server refused.
+
+A `ployz` from before signed versions sends a kind of signature Ployz Cloud no longer keeps.
+Ployz Cloud refuses its deploy before anything is queued and names the update to run:
 
 ```text
-This version of ployz signs deploys in a form servers no longer accept, so nothing was deployed. Update ployz, then deploy again.
+This ployz signs deploys in an older form this Config Store no longer takes, so nothing was deployed. Update ployz, then deploy again.
 next: curl -fsSL https://ployz.sh | sh -s -- beta
 ```
 
@@ -257,6 +265,20 @@ servers refuse the build with `This server runs only builds an approved device s
 
 If `ployz deploy` can't reach your servers before it signs, it warns and deploys
 without signing, and the servers refuse it.
+
+### Upgrade servers before you sign
+
+A server on 0.4.0-beta.2 or earlier that enforces device approval reads only the older kind
+of signature, so it refuses every version a newer `ployz` signs, and every rollback or
+redeploy Ployz Cloud sends it. Upgrade each such server first, then update `ployz` on your
+devices. Before it signs, `ployz deploy` asks every server whether it checks signed versions,
+which a server advertises as `ployz.container.signed-version.v1`. When one that enforces
+doesn't, the deploy signs nothing and names the server to upgrade:
+
+```text
+error: Upgrade web-1 first: it enforces device approval with an older ployz that can't check this device's signature, so it would refuse this deploy. Nothing signed or deployed.
+next: ployz server upgrade beta web-1
+```
 
 ### Deploy from the dashboard
 
