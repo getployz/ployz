@@ -151,8 +151,9 @@ configs:
     content: CREATE DATABASE inngest;
   # Cloud stamps tenancy: the web service sets x-ployz-org from the verified Machine token and
   # x-ployz-retention-days itself. transform/strip removes every ployz.org and ployz.retention_days
-  # the sender put on a record (OTLP allows repeated keys, and a single delete removes only one),
-  # then the two stamp processors set them from the request headers. ClickHouse derives OrgId from
+  # the sender put on a record's resource, scope and own attributes (OTLP allows repeated keys, and a
+  # single delete removes only one), then the stamp processors set them from the request headers.
+  # Span event, link and exemplar attributes keep the sender's values; only OrgId is tenancy. ClickHouse derives OrgId from
   # the ployz.org resource attribute; the tables come from `npm run observe:migrate`, so the
   # exporter never creates them.
   observe-collector:

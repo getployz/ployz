@@ -197,7 +197,7 @@ kept only on a Machine is gone when its Server is.
 **Red flags.** Cloud-held runtime truth, a connection catalog treated as
 membership, transport failure used to forget or reset a Cluster, a Cluster
 operation whose correctness needs Cloud, a Machine shipping a Sealed value it
-knows unmasked, Cloud trusting a sender's labels for tenancy.
+knows unmasked, Cloud trusting a sender's labels to say which Organization a record belongs to.
 
 **Test.** If Cloud vanished mid-operation, is every Machine still correct?
 
