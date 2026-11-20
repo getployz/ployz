@@ -44,6 +44,7 @@ const notOrganizationOwned = {
   rate_limit: "Request counts per caller and path for auth rate limiting; it belongs to no Organization.",
   checkin_rate_limit: "Check-in counts per Fleet Token and source address for rate limiting; no view reads it, so it needs no change log.",
   rate_limit_event: "One admitted request per key, such as an agent signup's source address; it belongs to no Organization.",
+  analytics_goal: "A path an Environment counts as a goal, keyed by its Environment and read as a Remote Read through it; it has no organization_id column.",
 } satisfies Record<string, string>;
 
 const organizationOwnedWithoutChangeLog = {
@@ -81,6 +82,8 @@ const organizationOwnedWithoutChangeLog = {
   fleet_token_join: "A Fleet Token's joined hosts, kept past the enrollment sweep and read only to count its used total; no view reads it, so it needs no change log.",
   fleet_token_attempt: "The hosts a Fleet Token has started an enrollment for, kept past their waiting rows and read only to refuse a second arrival; no view reads it, so it needs no change log.",
   anonymous_teardown: "How long a lapsed agent sandbox has waited on its Servers, read only by its teardown; no view reads it, so it needs no change log.",
+  analytics_site: "Each Environment's analytics switch and time zone, read by the Analytics page and the salts route as Remote Reads; no view reads it, so it needs no change log.",
+  analytics_salt: "The daily salts that hash visitors, read only by the salts route and the sweep that forgets closed days; no view reads it, so it needs no change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;

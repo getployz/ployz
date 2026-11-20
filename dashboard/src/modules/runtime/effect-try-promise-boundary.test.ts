@@ -6,6 +6,7 @@ const SRC = join(process.cwd(), "src");
 
 const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/runtime/ployz.server.ts",
+  "modules/observe-store/clickhouse.server.ts",
   "modules/billing/polar-provider.server.ts",
   "modules/mail/mailer.server.ts",
   "modules/analytics/posthog.server.ts",
