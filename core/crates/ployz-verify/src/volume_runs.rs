@@ -646,6 +646,9 @@ struct State {
     emptied: [bool; 3],
     /// A Restore promoted a copy while Cloud had forgotten a Machine.
     restored: bool,
+    /// The copies a Restore displaced: each forgotten Machine's copy when the Restore
+    /// promoted, kept while that Machine holds it, through any late promote of it.
+    displaced: [bool; 3],
     /// A request from a run whose row had ended was refused as stale.
     stale_landed: bool,
     /// Both Machines refuse an Operator's start that creates a Container.
@@ -770,10 +773,24 @@ impl State {
             .count()
     }
 
-    /// The copy an offline Restore displaced: on a Machine Cloud forgot, once a Restore
-    /// promoted another copy.
+    /// The copy an offline Restore displaced: the one a Machine Cloud forgot held when a
+    /// Restore promoted another copy, for as long as it holds it. A fresh root that
+    /// Machine makes once that copy is gone is not it.
     fn displaced(&self, machine: Machine, exempt: bool) -> bool {
-        exempt && self.restored && !self.host(machine).member
+        exempt && *at(&self.displaced, machine)
+    }
+
+    fn note_restored(&mut self) {
+        for machine in Machine::ALL {
+            let Host { member, copy, .. } = *self.host(machine);
+            if member {
+                continue;
+            }
+            self.restored = true;
+            if copy != Held::None {
+                *at_mut(&mut self.displaced, machine) = true;
+            }
+        }
     }
 
     /// Whether `machine`'s fresh view lists a copy on another Machine.
@@ -796,8 +813,12 @@ impl State {
     fn note_emptied(&mut self) {
         for machine in Machine::ALL {
             let host = self.host(machine);
-            if host.copy == Held::None || host.presence == Presence::Departed {
+            let gone = host.copy == Held::None;
+            if gone || host.presence == Presence::Departed {
                 *at_mut(&mut self.emptied, machine) = true;
+            }
+            if gone {
+                *at_mut(&mut self.displaced, machine) = false;
             }
         }
     }
@@ -1670,12 +1691,8 @@ impl VolumeRuns {
                     epoch,
                     newest: host.copy.newest(),
                 };
-                if request.lane == Lane::Restore
-                    && Machine::ALL
-                        .iter()
-                        .any(|machine| !state.host(*machine).member)
-                {
-                    state.restored = true;
+                if request.lane == Lane::Restore {
+                    state.note_restored();
                 }
                 match start {
                     Some(_) => state.set_progress(index, Progress::StartAdmit),
@@ -1696,12 +1713,8 @@ impl VolumeRuns {
                         newest,
                     };
                 }
-                if request.lane == Lane::Restore
-                    && Machine::ALL
-                        .iter()
-                        .any(|machine| !state.host(*machine).member)
-                {
-                    state.restored = true;
+                if request.lane == Lane::Restore {
+                    state.note_restored();
                 }
                 let copy = state.host(to).copy;
                 // Read again: a holder can exit or go while the Writer route runs.
@@ -3013,6 +3026,7 @@ impl VolumeRuns {
             ends: self.ends,
             emptied: [false; 3],
             restored: false,
+            displaced: [false; 3],
             stale_landed: false,
             enforcing: false,
             refused_start: false,
