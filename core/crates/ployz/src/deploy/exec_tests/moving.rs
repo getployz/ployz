@@ -464,6 +464,95 @@ async fn a_failed_start_removes_only_the_container_it_answered() {
     }
 }
 
+/// A start's answer that is lost may have made a Container. A later refusal speaks only for
+/// its own send, so the move discards its slot as any unanswered start's, and never says
+/// the occupant is merely in the way.
+#[tokio::test(start_paused = true)]
+async fn a_refusal_after_a_lost_answer_discards_the_slot() {
+    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
+    let lost = || RpcError::unavailable("connection lost").reply_lost_from(&machine(TO));
+    let refused_redial = RpcError::unauthenticated("the entry refused this client");
+    for (resend, redial) in [
+        (
+            Reply::Refused(ContainerRefusalReason::SlotOccupied, Some(container('b'))),
+            None,
+        ),
+        (
+            Reply::Error(RpcError::internal("could not record the admission").unacted()),
+            None,
+        ),
+        (
+            Reply::Error(crate::connect::closed_session_error()),
+            Some(Err(RedialFailure::Refused(refused_redial.clone()))),
+        ),
+    ] {
+        let mut client = moving(vec![
+            Step(run(), Reply::Error(lost())),
+            Step(run(), resend),
+            ok(Call::DiscardSlot(
+                machine(TO),
+                ContainerKind::ServiceContainer,
+            )),
+        ]);
+        client.redial = redial;
+        let Err(MoveError {
+            end,
+            replacement_removed,
+        }) = move_with(&client).await
+        else {
+            panic!("nothing served");
+        };
+        assert!(matches!(end, MoveEnd::NotServing { .. }), "{end:?}");
+        assert!(replacement_removed);
+        client.assert_done();
+    }
+}
+
+/// An error the Machine marked as refused before it acted made nothing, so the move
+/// removes nothing: the slot may hold another caller's Container. A refusal after the
+/// create carries no mark, and the Container that create made is discarded.
+#[tokio::test]
+async fn only_a_refusal_before_the_create_leaves_the_slot_alone() {
+    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
+    let gated = || {
+        RpcError::new(
+            RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+            "the spec's signer was revoked",
+        )
+        .with_details(serde_json::json!({ "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY }))
+    };
+    let before = moving(vec![Step(
+        run(),
+        Reply::Error(RpcError::internal("could not record the admission").unacted()),
+    )]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&before).await
+    else {
+        panic!("nothing served");
+    };
+    assert!(replacement_removed);
+    before.assert_done();
+
+    let after = moving(vec![
+        Step(run(), Reply::Error(gated())),
+        ok(Call::DiscardSlot(
+            machine(TO),
+            ContainerKind::ServiceContainer,
+        )),
+    ]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&after).await
+    else {
+        panic!("nothing served");
+    };
+    assert!(replacement_removed);
+    after.assert_done();
+}
+
 async fn cancelled_global_move(client: &Scripted) -> bool {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;

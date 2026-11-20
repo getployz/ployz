@@ -1255,9 +1255,22 @@ impl MachineService {
         };
         let admitted = match local.admit_spec(&request.want, presented).await {
             Ok(admitted) => admitted,
-            Err(error) => return local_error(error),
+            Err(error) => return unacted(error),
         };
         finish(local.ensure_container(request.want, admitted).await)
+    }
+}
+
+/// `error`, refused before the request acted on anything, marked so: a caller that sent a
+/// creation then knows nothing of it was made. Any later error says nothing of that.
+#[expect(
+    clippy::result_large_err,
+    reason = "tonic::Status is the RPC error type"
+)]
+fn unacted(error: LocalMachineError) -> Result<Response<OpaquePayload>, Status> {
+    match local_failure(error) {
+        Ok(error) => respond(error.unacted()),
+        Err(status) => Err(ployz_core::rpc::marked_status(status, &ployz_core::Unacted)),
     }
 }
 
@@ -1314,9 +1327,11 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
 }
 
 fn pinned_refusal(message: &str) -> RpcError {
-    RpcError::invalid_argument(message).with_details(
-        serde_json::json!({ "capability": ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY }),
-    )
+    RpcError::invalid_argument(message)
+        .with_details(
+            serde_json::json!({ "capability": ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY }),
+        )
+        .unacted()
 }
 
 #[expect(

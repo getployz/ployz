@@ -163,6 +163,23 @@ impl Mark for Unreached {
     }
 }
 
+/// The target Machine refused the call before it acted on it, so the call made nothing
+/// there. Only the target that refused writes it; a peer's error without it says nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unacted;
+
+impl Mark for Unacted {
+    const CREATES_OBJECT: bool = true;
+
+    fn insert(&self, fields: &mut Map<String, Value>) {
+        fields.insert("acted".into(), Value::Bool(false));
+    }
+
+    fn read(details: &Value) -> Option<Self> {
+        (details.get("acted").and_then(Value::as_bool) == Some(false)).then_some(Self)
+    }
+}
+
 /// A router could not dial the target of an unanswered call, so only small packets went
 /// its way. It marks an unanswered-target error and never makes details of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

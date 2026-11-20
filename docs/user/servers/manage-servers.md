@@ -453,7 +453,9 @@ reached **Not attempted**; those still run on the server. When a container the d
 holds the new container's place on the other server, as one an older CLI left mid-move, the move
 fails and names it: **Container 3f2a9c1d07b4 is in the way on web-3. Inspect it, remove it if
 it's a leftover, and drain again.** The drain removes nothing it didn't make, and the service
-keeps running where it was. If a server's proxy doesn't confirm the
+keeps running where it was. One exception: if the connection to the other server drops before it
+answers, the drain can't tell whether it made a container there, so it removes whatever holds that
+place, as a failed deploy does. If a server's proxy doesn't confirm the
 switch in time, the moved service's old container keeps running on the drained server and the row says
 so; the next drain removes it, along with any old container an earlier drain left there. While an old
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`

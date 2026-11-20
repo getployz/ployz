@@ -3,7 +3,7 @@ use super::machine_ops::CopyLifecycle;
 use super::machine_ops::Creation;
 use super::machine_ops::MachineOperations;
 use super::stop_first::{Withdrawn, leave_unstopped};
-use super::transport::{RESTART_WAIT, RestartTolerant};
+use super::transport::{RESTART_WAIT, RestartTolerant, heard};
 use super::{Left, Rows, SlotPolicy, left_by, machine_error, stop};
 use crate::connect::{ConnectError, TransportError};
 use crate::deploy::cleanup::EmptyPolicy;
@@ -16,7 +16,7 @@ use ployz_core::{
     QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey,
     error_chain,
 };
-use ployz_decide::drain_start::{self, Heard, Leftover};
+use ployz_decide::drain_start::{Earlier, Heard, Outcome};
 use tokio_util::sync::CancellationToken;
 
 /// The owner refuses Gone on a copy that already came In. With `hold`, that
@@ -193,8 +193,10 @@ impl From<ExecutionError> for MoveEnd {
 /// Create the replacement of `old` on `to` and wait for its health. `image` is the image
 /// ID the old copy runs. A spec whose image is a tag goes on the pinned route, pinned to
 /// it, so whatever the tag names on `to` never decides what runs; any other spec goes on
-/// ensure.v1 as it is. After an answer, only the Container that answer named is ever
-/// removed; with no answer, the slot is discarded as any failed start's.
+/// ensure.v1 as it is. Only the Container an answer named is ever removed by its ID. When
+/// every send was refused or answered that nothing is left, nothing is removed. When any
+/// send may have acted unanswered, even one a later refusal followed, the slot is discarded
+/// as any failed start's.
 pub(crate) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
@@ -239,9 +241,9 @@ pub(crate) async fn move_container<C: MachineOperations>(
         }),
         rotation: RunRotation::Pending,
     };
-    let answered = tokio::select! {
-        answered = client.ensure_new(to, want) => Some(answered),
-        () = cancellation.cancelled() => None,
+    let (answered, earlier) = tokio::select! {
+        (answered, earlier) = client.ensure_new_sent(to, want) => (Some(answered), earlier),
+        () = cancellation.cancelled() => (None, Earlier::Nothing),
     };
     let (end, heard) = match answered {
         Some(Ok(Creation::Answered(EnsuredContainer::Ensured {
@@ -304,21 +306,17 @@ pub(crate) async fn move_container<C: MachineOperations>(
         ),
         Some(Ok(Creation::Unsent(error))) => (
             machine_error(MachineAction::CreateContainer, error).into(),
-            Heard::Refused,
+            Heard::Unsent,
         ),
         Some(Err(error))
             if error.refusal().is_some_and(|refusal| {
                 refusal.capability == ENSURE_PINNED_CONTAINER_CAPABILITY
             }) =>
         {
-            (MoveEnd::NeedsUpgrade, Heard::Refused)
+            (MoveEnd::NeedsUpgrade, heard(&error))
         }
         Some(Err(error)) => {
-            let heard = if refused_before_acting(&error) {
-                Heard::Refused
-            } else {
-                Heard::Unanswered
-            };
+            let heard = heard(&error);
             (
                 machine_error(MachineAction::CreateContainer, error).into(),
                 heard,
@@ -326,11 +324,19 @@ pub(crate) async fn move_container<C: MachineOperations>(
         }
         None => (MoveEnd::Cancelled, Heard::Unanswered),
     };
+    let outcome = Outcome::of(earlier, heard);
+    // An end that says nothing of this move was made holds only when no send of it may
+    // have made one.
+    let end = if outcome == Outcome::Unknown {
+        unsettled(end)
+    } else {
+        end
+    };
     let keep = adopts || (global && !cancellation.is_cancelled());
-    let replacement_removed = match drain_start::leftover(heard) {
-        Leftover::Nothing => true,
+    let replacement_removed = match outcome {
+        Outcome::Absent | Outcome::Refused => true,
         _ if keep => false,
-        Leftover::Id(id) => {
+        Outcome::Present(id) => {
             let removed = cleanup::gone(
                 &client,
                 to,
@@ -345,7 +351,7 @@ pub(crate) async fn move_container<C: MachineOperations>(
                 Ok(Ok(cleanup::Gone::Removed))
             )
         }
-        Leftover::Unknown => discard_attempt(&client, to, slot).await.is_ok(),
+        Outcome::Unknown => discard_attempt(&client, to, slot).await.is_ok(),
     };
     Err(MoveError {
         end,
@@ -353,20 +359,22 @@ pub(crate) async fn move_container<C: MachineOperations>(
     })
 }
 
-/// Whether the Machine refused a creation before acting on it: it refused the request's
-/// authority, or a refusal names the capability it was refused under, as every refusal of a
-/// catalogued route does. Any other error says nothing of what the Machine did.
-fn refused_before_acting(error: &RpcError) -> bool {
-    error.code == RpcErrorCode::Unauthenticated
-        || [
-            ployz_core::FORBIDDEN_CODE,
-            ployz_core::APPROVAL_REQUIRED_CODE,
-        ]
-        .contains(&error.code.as_str())
-        || error
-            .details
-            .get("capability")
-            .is_some_and(serde_json::Value::is_string)
+/// `end`, for a move one of whose sends may have made a Container: a refusal of a later
+/// send no longer says nothing of this move was made.
+fn unsettled(end: MoveEnd) -> MoveEnd {
+    let refused = match end {
+        MoveEnd::SlotOccupied {
+            occupant: Some(occupant),
+        } => format!("Container {occupant} holds its slot"),
+        MoveEnd::SlotOccupied { occupant: None } => "another Container holds its slot".to_owned(),
+        MoveEnd::NeedsUpgrade => "it lacks the pinned route".to_owned(),
+        end @ (MoveEnd::Cancelled | MoveEnd::NotServing { .. }) => return end,
+    };
+    MoveEnd::NotServing {
+        detail: format!(
+            "the Machine refused a resend after an earlier send's answer was lost: {refused}"
+        ),
+    }
 }
 
 /// What a failed Global creation leaves on its Machine. A stop-first replacement

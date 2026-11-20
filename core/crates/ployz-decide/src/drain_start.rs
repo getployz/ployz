@@ -1,40 +1,72 @@
-//! What a drain removes after its start of the new copy on the destination failed.
+//! What a drain's start of its new copy on the destination says of that Server, read from
+//! every send of it, and so what the drain removes after the start failed.
 
-/// What the drain heard back from its start of the new copy.
+/// What one send of the start heard back.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Heard<Id> {
     /// An answer naming the Container the Machine acted on.
     Present(Id),
     /// An answer that the Container it acted on is gone, or that it made none.
     Absent,
-    /// A refusal: the Machine's typed answer, an error by which it refused before acting,
-    /// or the client's own refusal before it sent anything.
+    /// The Machine's own answer that this send made nothing: a typed refusal, an error the
+    /// Machine marked as refused before it acted, or its refusal of the route itself.
     Refused,
-    /// Nothing that says what happened: a lost answer, a timeout, a daemon error, or a
-    /// cancel before the answer.
+    /// The send never reached the Machine: the client refused it before sending, or the
+    /// connection refused it first.
+    Unsent,
+    /// The send may have reached the Machine and nothing says what it did: a lost answer,
+    /// a timeout, a cancel before the answer, or any error the Machine didn't mark.
     Unanswered,
 }
 
-/// What a failed start may have left on the destination.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum Leftover<Id> {
-    /// The slot may hold this attempt's Container, or one still coming. It is discarded by
-    /// the slot's key.
-    Unknown,
-    /// Nothing of this attempt, so nothing is removed.
+/// What the start's sends before its last one may have done.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum Earlier {
+    /// There were none, or each was answered, refused before acting, or never sent.
+    #[default]
     Nothing,
-    /// The Container the answer named, removed by its ID.
-    Id(Id),
+    /// One may have reached the Machine and went unanswered, so it may have made a
+    /// Container no later answer speaks for.
+    MaybeActed,
 }
 
-/// After any answer only the Container it named is removed. A refusal removes nothing, not
-/// even an occupant it reports: the slot's key is the caller's to choose, so that occupant
-/// may be another caller's Container. Only a start with no answer discards by key.
-#[must_use]
-pub fn leftover<Id>(heard: Heard<Id>) -> Leftover<Id> {
-    match heard {
-        Heard::Present(id) => Leftover::Id(id),
-        Heard::Absent | Heard::Refused => Leftover::Nothing,
-        Heard::Unanswered => Leftover::Unknown,
+impl Earlier {
+    /// `self`, after a send that heard `heard` and was sent again.
+    #[must_use]
+    pub fn then<Id>(self, heard: &Heard<Id>) -> Self {
+        match heard {
+            Heard::Unanswered => Self::MaybeActed,
+            Heard::Present(_) | Heard::Absent | Heard::Refused | Heard::Unsent => self,
+        }
+    }
+}
+
+/// What the whole start says of the destination: its last answer, read against every send
+/// before it.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum Outcome<Id> {
+    /// The Container the answer named. A resend that finds the Container a lost send made
+    /// adopts it by its creation key, so this names it too.
+    Present(Id),
+    /// Nothing of this start is left: the Container it acted on is gone.
+    Absent,
+    /// Nothing of this start was made: every send was refused or never sent.
+    Refused,
+    /// The slot may hold this start's Container, or one still coming.
+    Unknown,
+}
+
+impl<Id> Outcome<Id> {
+    /// The outcome of a start whose last send heard `last`. Only `Present` speaks for a send
+    /// before it that may have acted unanswered: an answer that made nothing says nothing
+    /// of what that send made.
+    #[must_use]
+    pub fn of(earlier: Earlier, last: Heard<Id>) -> Self {
+        match (earlier, last) {
+            (_, Heard::Present(id)) => Self::Present(id),
+            (_, Heard::Unanswered) | (Earlier::MaybeActed, _) => Self::Unknown,
+            (Earlier::Nothing, Heard::Absent) => Self::Absent,
+            (Earlier::Nothing, Heard::Refused | Heard::Unsent) => Self::Refused,
+        }
     }
 }
