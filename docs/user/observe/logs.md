@@ -146,8 +146,9 @@ Don't print secrets from your app.
 - **A replica that failed keeps its exit code.** The deploy output names the replica and the code
   it exited with, read from Docker before the container is removed, so you can see why it
   stopped. A replica that keeps restarting shows the code of its last run, and an OOM kill reads
-  **killed out of memory**. Its last lines stay readable for 2 seconds after it stops, so read
-  them from the deploy output.
+  **killed out of memory**. A replica that failed to start is removed at once, so its lines are
+  only in Ployz Cloud, which `ployz logs` reads for a service with no container left when your
+  CLI is signed in to Cloud.
 - **Removed services and deleted environments keep their lines in Cloud, not on your servers.**
   Recreating an environment with the same name can show its earlier logs. A service's card
   on a deployment shows only that deployment's output. Cloud's history doesn't cover a

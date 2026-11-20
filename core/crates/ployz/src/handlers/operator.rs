@@ -632,6 +632,13 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         return removed_logs(root, namespace.as_ref(), &removed, &read, &machines, utc);
     }
     let (reading_read, reading_machines) = (read.clone(), machines.clone());
+    let names = args
+        .iter()
+        .filter_map(|arg| ployz_core::QualifiedService::parse(arg.service.as_str()).ok())
+        .map(|qualified| qualified.name)
+        .collect::<Vec<_>>();
+    let nothing_running = std::rc::Rc::new(std::cell::Cell::new(false));
+    let reading_nothing = nothing_running.clone();
     let credential = with_reader(root, |client| {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
@@ -644,10 +651,26 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 namespace,
                 deployment,
                 utc,
+                nothing_running: &reading_nothing,
             };
             reading.run(client, reading_read, cancellation).await
         })
-    })?;
+    });
+    let credential = match credential {
+        Err(error) if nothing_running.get() && !fallback.unservable && !names.is_empty() => {
+            // A Service the Environment has whose containers are gone, as a failed deploy
+            // leaves it: Cloud may still hold what it printed.
+            return match fallback
+                .scoped
+                .as_ref()
+                .map(|scoped| kept_in_cloud(root, scoped, &names, &read, utc))
+            {
+                Some(Ok(Some(outcome))) => outcome,
+                Some(Ok(None) | Err(_)) | None => Err(error),
+            };
+        }
+        credential => credential?,
+    };
     if let Some(credential) = credential {
         return super::cloud_read::logs(&credential, fallback);
     }
@@ -719,6 +742,41 @@ fn removed_logs(
     Err(crate::failure::Failure::partial())
 }
 
+/// Print what Ployz Cloud kept of `names`, when it holds a line. `None` when this CLI has no
+/// Cloud or Cloud holds nothing, so the caller's own error stands.
+fn kept_in_cloud(
+    root: &ArgMatches,
+    scoped: &Scoped,
+    names: &[ployz_core::ServiceName],
+    options: &LogsOptions,
+    utc: bool,
+) -> Result<Option<Result<(), Error>>, Error> {
+    let runtime = super::runtime()?;
+    let Some(credential) = super::route::cloud_runs(&runtime, leaf_matches(root))? else {
+        return Ok(None);
+    };
+    let want = usize::try_from(options.tail).map_or(history::READ_ALL, |lines| lines);
+    let stored = super::cloud_read::stored_logs(
+        &credential,
+        scoped,
+        names,
+        want,
+        options.since_nanos,
+        None,
+    )?;
+    if stored.lines.is_empty() {
+        return Ok(None);
+    }
+    for line in &stored.lines {
+        print_stored(line, utc)?;
+    }
+    Ok(Some(if stored.missing.is_empty() {
+        Ok(())
+    } else {
+        Err(crate::failure::Failure::partial())
+    }))
+}
+
 /// What one `ployz logs` reads from Docker, across the Servers it asks.
 struct Reading<'a> {
     machines: &'a [FanoutSelector],
@@ -726,6 +784,8 @@ struct Reading<'a> {
     namespace: Option<&'a Namespace>,
     deployment: Option<&'a str>,
     utc: bool,
+    /// Set when the first look found no container to read, so the caller may ask Cloud.
+    nothing_running: &'a std::cell::Cell<bool>,
 }
 
 const FOLLOW_LOOK: std::time::Duration = std::time::Duration::from_secs(2);
@@ -782,7 +842,19 @@ impl Reading<'_> {
                     }
                     Vec::new()
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    self.nothing_running.set(
+                        first
+                            && matches!(
+                                error,
+                                OperatorError::NotRunning { .. }
+                                    | OperatorError::Selector(_)
+                                    | OperatorError::NoServices
+                                    | OperatorError::NoContainersOnMachines { .. }
+                            ),
+                    );
+                    return Err(error.into());
+                }
             };
             let deployments = scope.deployments();
             printed.borrow_mut().begin_round();
@@ -800,33 +872,59 @@ impl Reading<'_> {
                 print.await?;
                 return gaps.outcome();
             }
+            let until_in = options.until_unix_seconds.map(|until| {
+                std::time::Duration::from_secs(
+                    u64::try_from(until.saturating_sub(Utc::now().timestamp())).unwrap_or(0),
+                )
+                .saturating_add(std::time::Duration::from_secs(1))
+            });
+            let mut fault = None;
             {
                 tokio::pin!(print);
                 let changed = self.changed(client, &running, &cancellation);
                 tokio::pin!(changed);
+                let until_reached = async {
+                    match until_in {
+                        Some(wait) => tokio::time::sleep(wait).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::pin!(until_reached);
                 let mut printing = true;
                 loop {
                     tokio::select! {
-                        result = &mut print, if printing => {
-                            result?;
-                            printing = false;
-                        }
+                        result = &mut print, if printing => match result {
+                            Ok(()) => printing = false,
+                            Err(error) => {
+                                fault = Some(error);
+                                break;
+                            }
+                        },
                         () = &mut changed => break,
+                        () = &mut until_reached => break,
                     }
                 }
             }
-            if cancellation.is_cancelled() {
+            if cancellation.is_cancelled()
+                || options
+                    .until_unix_seconds
+                    .is_some_and(|until| Utc::now().timestamp() >= until)
+            {
                 return gaps.outcome();
+            }
+            // A container removed under the stream reads as an error; a replacement that
+            // shows up in the next few looks makes it the end of that container's lines.
+            if let Some(error) = fault
+                && !self.replaced(client, &running, &cancellation).await
+            {
+                if cancellation.is_cancelled() {
+                    return gaps.outcome();
+                }
+                return Err(error);
             }
             // What replaced a container was made after this look, so reading from it, or
             // from where a running container left off, misses nothing; lines already
             // printed are skipped.
-            if options
-                .until_unix_seconds
-                .is_some_and(|until| Utc::now().timestamp() >= until)
-            {
-                return gaps.outcome();
-            }
             options = LogsOptions {
                 tail: -1,
                 since_nanos: Some(seen_at),
@@ -834,6 +932,28 @@ impl Reading<'_> {
             };
             first = false;
         }
+    }
+
+    /// Whether the containers that run differ from `running` within a few looks.
+    async fn replaced(
+        &self,
+        client: &mut crate::connect::Client,
+        running: &std::collections::BTreeSet<ContainerId>,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> bool {
+        for _ in 0..12 {
+            tokio::select! {
+                () = cancellation.cancelled() => return false,
+                () = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            }
+            if observe_service_logs(client, self.machines)
+                .await
+                .is_ok_and(|scope| scope.running() != *running)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Resolves once the containers that run differ from `running`, or on interrupt.
