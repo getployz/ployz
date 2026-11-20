@@ -1149,7 +1149,7 @@ export function switchErrorOf(error: PloyzSdkError): SwitchReason | null {
   return Option.isSome(decoded) ? decoded.value.details.reason : null;
 }
 
-/** `fenced` names the Volume whose floor refused a Stale request: the run's own, except a Seed's `into`. */
+/** `fenced` names the Volume a Stale or Foreign refusal is about: the run's own, except a Seed's `into`. */
 export function switchFailureMessage(
   reason: SwitchReason,
   ctx: Pick<RunContext, "volumeName">,
@@ -1180,7 +1180,7 @@ export function switchFailureMessage(
     case "stale":
       return `a newer run took ${fenced} on ${machine.name}`;
     case "foreign":
-      return `${name} on ${machine.name} is mounted by a Service approved for other data`;
+      return `${fenced} on ${machine.name} is mounted by a Service approved for other data`;
     case "docker_unavailable":
       return `Docker isn't answering on ${machine.name}`;
     case "busy":

@@ -1636,6 +1636,18 @@ describe("volume runs", () => {
       expect(seeds).toHaveLength(1);
       expect(await rows()).toEqual([expect.objectContaining({ id: run.id, kind: "seed", state: "failed", message: "a newer run took data-copy on fsn-1" })]);
     });
+
+    it("a Foreign reply fails the run naming into, the Volume another Service holds", async () => {
+      failNext.set("seed@fsn-1", "foreign");
+      const run = await requested(seed);
+
+      const output = await execute(run.id);
+
+      expect(output.error).toBeDefined();
+      expect(await rows()).toEqual([expect.objectContaining({
+        id: run.id, kind: "seed", state: "failed", message: "data-copy on fsn-1 is mounted by a Service approved for other data",
+      })]);
+    });
   });
 
   describe("commit", () => {
