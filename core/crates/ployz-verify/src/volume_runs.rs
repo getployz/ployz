@@ -41,7 +41,9 @@
 //! - after the first Move's row ended, the `volume mirror rm` that `planMove` needs
 //!   before a second Move (`deleteMirror`: forget each other slot, then the Writer's
 //!   snapshots), and a second Move from the Writer to C, which snapshots the Writer
-//!   before its warm pull, with its own Release;
+//!   before its warm pull, with its own Release. `planMove` refuses a Move while no
+//!   Machine holds a root, since a Release that ended mid-promote may still make a
+//!   slot the Writer;
 //! - a Machine away for any stretch: nothing it was sent lands while it is away, and
 //!   every run that observes it waits and fails. Cloud may forget it while it is away
 //!   (`ployz server forget`); a `ployz volume restore` from the one copy Cloud still
@@ -432,6 +434,9 @@ enum MoveStep {
     Warm,
     Cut,
     Pull,
+    /// A Move planned from a lone slot pulls that slot's snapshot to a `to` holding
+    /// nothing, with no cut (`planMove`'s `final` before it refused a Move from slots).
+    Final,
     Commit,
     Start,
     Remove,
@@ -996,6 +1001,8 @@ struct Broken {
     prepare_switch: bool,
     /// Create makes a fresh root on a Machine that forgot its copy.
     forgotten: bool,
+    /// `planMove` plans a Move from a lone slot while no Machine holds a root.
+    move_from_slots: bool,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
@@ -2059,6 +2066,19 @@ impl VolumeRuns {
                 );
                 wait(state, sent);
             }
+            (MoveStep::Final, None, _) => {
+                let sent = state.send(
+                    Lane::Move,
+                    plan.r#gen,
+                    to,
+                    Expect::None,
+                    Want::Mirror {
+                        from: Some(from),
+                        target: plan.last,
+                    },
+                );
+                wait(state, sent);
+            }
             (MoveStep::Commit, _, _) => {
                 // `commitMove`: only a row still running commits.
                 if row.running() || self.broken.owner_checks {
@@ -2116,6 +2136,7 @@ impl VolumeRuns {
                 | MoveStep::Warm
                 | MoveStep::Cut
                 | MoveStep::Pull
+                | MoveStep::Final
                 | MoveStep::Start,
                 Some(_),
                 Some(reply),
@@ -2131,15 +2152,14 @@ impl VolumeRuns {
                     {
                         Some(MoveStep::Cut)
                     }
-                    (MoveStep::Cut | MoveStep::Pull, Reply::Copy(Held::Slot { newest }))
-                        if newest == Some(plan.last) =>
-                    {
-                        Some(if driver.step == MoveStep::Cut {
-                            MoveStep::Pull
-                        } else {
-                            MoveStep::Commit
-                        })
-                    }
+                    (
+                        MoveStep::Cut | MoveStep::Pull | MoveStep::Final,
+                        Reply::Copy(Held::Slot { newest }),
+                    ) if newest == Some(plan.last) => Some(if driver.step == MoveStep::Cut {
+                        MoveStep::Pull
+                    } else {
+                        MoveStep::Commit
+                    }),
                     (MoveStep::Start, Reply::Copy(_)) => Some(MoveStep::Remove),
                     _ => None,
                 };
@@ -2170,6 +2190,7 @@ impl VolumeRuns {
                 | MoveStep::Warm
                 | MoveStep::Cut
                 | MoveStep::Pull
+                | MoveStep::Final
                 | MoveStep::Start,
                 Some(_),
                 None,
@@ -2693,6 +2714,35 @@ impl VolumeRuns {
                     MoveStep::Cut
                 };
                 next.stage = Stage::First;
+            }
+            // `planMove` refuses a Move while no Machine holds a root, so a Release makes
+            // one Writer first. Broken, it moves from the lone slot onto C.
+            (Scenario::TwoMoves, Stage::First | Stage::Drop)
+                if self.broken.move_from_slots && roots.is_empty() =>
+            {
+                let [source] = slots.as_slice() else {
+                    return None;
+                };
+                if *source == Machine::C || state.host(*source).holder == Holder::Absent {
+                    return None;
+                }
+                let plan = MovePlan {
+                    from: *source,
+                    to: Machine::C,
+                    r#gen: SECOND_GEN,
+                    epoch: SECOND_EPOCH,
+                    // A Move from a slot sends no step that expects a Writer.
+                    held: 0,
+                    warm: Snap::Warm2,
+                    last: state.host(*source).copy.newest()?,
+                };
+                next.moves.push(MoveRun {
+                    plan,
+                    row: Row::Warm,
+                    driver: Driver::new(MoveStep::Final, self.resends),
+                    release: None,
+                });
+                next.stage = Stage::Second;
             }
             // `planMove` refuses beside another slot, so `volume mirror rm` goes first.
             (Scenario::TwoMoves, Stage::First) if !slots.is_empty() => {
@@ -4076,6 +4126,28 @@ mod tests {
             forgotten: true,
             ..Broken::default()
         });
+    }
+
+    /// A Release that ends while its promote of A's slot is on the wire leaves A a slot
+    /// that may still become the Writer. A Move from that slot onto C commits C, and the
+    /// promote landing late makes A a second Writer, unless `planMove` refuses a Move
+    /// while no Machine holds a root.
+    #[test]
+    fn no_move_starts_from_slots_alone() {
+        let checker = discoveries(
+            VolumeRuns {
+                ends: 2,
+                aways: 0,
+                broken: Broken {
+                    move_from_slots: true,
+                    ..Broken::default()
+                },
+                ..three(Scenario::TwoMoves)
+            },
+            &[NEVER_TWO_WRITERS],
+        );
+        let path = checker.assert_any_discovery(NEVER_TWO_WRITERS);
+        println!("{NEVER_TWO_WRITERS} breaks with a Move from slots:\n{path}");
     }
 
     /// The old Writer Cloud forgot while it was away comes back writable beside the copy

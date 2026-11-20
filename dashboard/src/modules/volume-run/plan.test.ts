@@ -170,6 +170,9 @@ describe("plan_from_copies_table", () => {
     ["move onto a Server not in the cluster", move("z"), [member("a", "writer")], "refuse invalid"],
     ["move with a Server unanswered", move("b"), [member("a", "cut"), member("b", "mirror"), member("c", "unanswered")], "refuse unanswered"],
     ["move with no copy", move("b"), [member("a", "empty"), member("b", "mirror")], "refuse no_writer"],
+    // A Release that ended mid-promote may still make A's slot a Writer, so no Move starts from it.
+    ["move from a lone slot to another Server", move("c"), [member("a", "final"), member("b", "empty"), member("c", "empty")], "refuse no_writer"],
+    ["move onto a slot at the lone slot's snapshot", move("b"), [member("a", "final"), member("b", "final")], "refuse no_writer"],
 
     ["release a writer with its mirror at the writer's newest", release, [member("a", "writer"), member("b", "mirror")], "release writer a behind b"],
     ["release a writer with its mirror behind", release, [member("a", "writer"), member("b", "behind")], "release writer a behind none"],

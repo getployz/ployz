@@ -25,10 +25,10 @@ export type RefusalCode =
   | "deploying";
 
 /**
- * Where a Move continues from the copies it finds. `rounds` and `cut` start on A's root; `final` pulls the cut's
- * snapshot to B; `start` makes B the writer and removes A's kept Container. From `start` on a Move only goes forward.
+ * Where a Move continues from the copies it finds. `rounds` and `cut` start on A's root; `start` makes B the writer
+ * and removes A's kept Container. From `start` on a Move only goes forward.
  */
-export type MoveStart = "rounds" | "cut" | "final" | "start";
+export type MoveStart = "rounds" | "cut" | "start";
 
 /** `next` is the one command that clears the refusal; the CLI prints it on its own line. */
 export type Refusal = { readonly code: RefusalCode; readonly message: string; readonly next?: string };
@@ -289,12 +289,13 @@ const midRun = (name: string, slots: readonly AnsweredMember[], lone?: AnsweredM
   : refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
 
 /**
- * A Move is read from the copies alone. A is the root, or with no root the one slot besides B; G is A's newest once
- * A is a slot. The Move needs B's Writer while B's slot holds G, and is done but for A's Container once B is the writer
- * at G. Then A is whichever slot at G keeps the stopped Container, which only the run can see.
+ * A Move is read from the copies alone. A is the root, and the Move is done but for A's Container once B is the writer
+ * at A's newest. Then A is whichever slot at that snapshot keeps the stopped Container, which only the run can see.
+ *
+ * A Move never starts from slots alone. A Release that ended while its promote of a slot was on the wire may still
+ * make that slot a Writer, so a Move from it could commit a second Writer elsewhere. Release makes one Writer first.
  */
 function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly AnsweredMember[], root: AnsweredMember | null): Planned {
-  const named = (member: Member) => copyName(name, member.machine.name);
   const { to } = args;
   const target = answered.find((member) => isDestination(args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
@@ -317,12 +318,10 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
     return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
   }
 
-  const [source, second] = others;
-  if (source === undefined) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
-  if (second !== undefined) return refuse("second_mirror", `${name} has copies on ${others.map(named).join(" and ")}; ployz volume release ${name} first`);
-  const at = newestGuid(source.view.copy);
-  if (at === null) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
-  return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
+  const slots = answered.filter((member) => member.view.copy?.kind === "slot");
+  if (slots.length === 0) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
+  if (others.length > 1) return refuse("second_mirror", `${name} has copies on ${others.map((member) => copyName(name, member.machine.name)).join(" and ")}; ployz volume release ${name} first`);
+  return refuse("no_writer", `${name} has no writer; ployz volume release ${name} first`);
 }
 
 /** mirror rm refuses beside a stopped cut, so its step goes first; a step that needs server rm too is no one command. */
