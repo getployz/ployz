@@ -148,7 +148,7 @@ async fn repair_door(runtime: &Lifecycle, repair: &Repair, creates: u64) -> Resu
             if !failed_start(&inspected) || !runtime.docker.created_nothing_since(creates) {
                 return Ok(false);
             }
-            runtime.start_inspected(container_id, &inspected).await?;
+            runtime.start_declared(container_id, &inspected).await?;
             Ok(true)
         }
         Repair::StartCaddy {
@@ -162,7 +162,7 @@ async fn repair_door(runtime: &Lifecycle, repair: &Repair, creates: u64) -> Resu
             {
                 return Ok(false);
             }
-            runtime.start_inspected(caddy, &inspected).await?;
+            runtime.start_declared(caddy, &inspected).await?;
             Ok(true)
         }
         Repair::Rejoin { owner, joined } => {

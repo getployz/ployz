@@ -72,6 +72,16 @@ impl Doors {
             .to_owned()
     }
 
+    fn set_restart_policy(&self, id: &ContainerId, name: &str) {
+        let mut containers = self.containers.lock().unwrap();
+        let container = containers
+            .values_mut()
+            .find(|container| container["Id"] == id.as_str())
+            .unwrap();
+        *container.pointer_mut("/HostConfig/RestartPolicy").unwrap() =
+            serde_json::json!({"Name": name});
+    }
+
     fn set_state(&self, id: &ContainerId, state: serde_json::Value) {
         let mut containers = self.containers.lock().unwrap();
         let container = containers
@@ -290,6 +300,52 @@ async fn a_requested_stop_holds_the_door_and_a_requested_start_lifts_the_hold() 
             "POST /containers/caddy/start",
         ]),
     );
+}
+
+// A copy Docker would not stop serves on. Under restart policy no, its next exit or a
+// reboot would leave it down.
+#[tokio::test]
+async fn a_stop_docker_refuses_leaves_the_running_container_its_restart_policy() {
+    let doors = Doors::new().await;
+    let declared = doors.restart_policy(&doors.caddy);
+    doors
+        .fake
+        .refuse_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    doors
+        .runtime
+        .lifecycle()
+        .stop(&doors.caddy, None, None)
+        .await
+        .unwrap_err();
+
+    assert_eq!(doors.restart_policy(&doors.caddy), declared);
+}
+
+// A failed start takes the door's restart policy. The repair that starts it gives the
+// policy back, or a later crash of the serving Caddy would leave Ingress down.
+#[tokio::test]
+async fn a_repaired_caddy_gets_its_restart_policy_back() {
+    let doors = Doors::new().await;
+    let declared = doors.restart_policy(&doors.caddy);
+    doors.fail_start(&doors.caddy);
+    doors.set_restart_policy(&doors.caddy, "no");
+
+    let creates = doors.runtime.docker.creates();
+    doors
+        .runtime
+        .lifecycle()
+        .recover(
+            Repair::StartCaddy {
+                holder: Some(doors.holder),
+                caddy: doors.caddy,
+            },
+            creates,
+        )
+        .await;
+
+    assert_eq!(doors.restart_policy(&doors.caddy), declared);
 }
 
 #[tokio::test]

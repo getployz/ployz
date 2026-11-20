@@ -1309,6 +1309,7 @@ impl LocalMachine {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
         let pin = pinned(&want);
+        let runs = matches!(want, ContainerWant::Running { .. });
         let replan = self
             .switch
             .as_ref()
@@ -1336,6 +1337,13 @@ impl LocalMachine {
                     }
                     _ => None,
                 };
+                if runs
+                    && differs.is_none()
+                    && let Some(observed) = now.present()
+                    && is_running(&observed.runtime)
+                {
+                    self.restore_restart(&observed.container_id).await?;
+                }
                 return Ok(match differs {
                     None => EnsuredContainer::Ensured {
                         now: redacted(now),
@@ -1464,6 +1472,20 @@ impl LocalMachine {
             None => EnsuredContainer::Ensured { now, health: None },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
+    }
+
+    /// A copy wanted running that still runs gets back the restart policy a stop that
+    /// never happened took. A failure to write it leaves the copy serving as it was.
+    async fn restore_restart(&self, id: &ContainerId) -> Result<(), Error> {
+        let restored = self
+            .docker()?
+            .lifecycle()
+            .restore_running_restart(id, self.exclusive_turn())
+            .await;
+        if let Err(error) = restored {
+            tracing::warn!(container = %id, "a running Container keeps restart policy no: {error}");
+        }
+        Ok(())
     }
 
     /// Why `id` may not serve a request pinned to `pin`: it runs another image.
