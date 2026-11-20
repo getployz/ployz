@@ -301,7 +301,6 @@ const RESOURCE_CHARTS = [
 const MARKER_WORDS = {
   oom: () => "OOM",
   exit: (marker: Marker) => marker.exitCode === undefined ? "Exit" : `Exit ${marker.exitCode}`,
-  restart: () => "Restart",
 } satisfies Record<Marker["kind"], (marker: Marker) => string>;
 
 const latestOf = (values: readonly (number | null)[]) => values.filter((value) => value !== null).at(-1) ?? null;

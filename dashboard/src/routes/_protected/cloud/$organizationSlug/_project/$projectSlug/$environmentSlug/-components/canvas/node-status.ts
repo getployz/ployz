@@ -111,38 +111,36 @@ export type ContainerTrouble = "OOM" | "Restarting";
 /** How long a marker counts toward the ⚠ after it happened. */
 export const TROUBLE_WINDOW_MS = 60 * 60_000;
 
-/** How long a crash loop stays Restarting after its latest restart. Docker waits at most a minute between restarts. */
+/** The longest pause between two crashes of one replica that is still one crash loop, and how long a loop stays Restarting after its latest crash. Docker waits at most a minute between restarts. */
 export const LOOP_QUIET_MS = 10 * 60_000;
 
 /**
  * Exit codes (128 + signal) of the signals a stop sends rather than a fault raises: SIGHUP, SIGINT, SIGQUIT, SIGKILL,
- * SIGUSR1, SIGUSR2 and SIGTERM. Docker never restarts a stopped container and an OOM kill has its own marker, so a
- * restart after one of these was asked for. Faults such as SIGSEGV or SIGABRT stay crashes.
+ * SIGUSR1, SIGUSR2 and SIGTERM. Docker never restarts a stopped container and an OOM kill has its own marker, so
+ * these exits don't count as crashes. Faults such as SIGSEGV or SIGABRT stay crashes.
  */
 const STOP_SIGNAL_EXITS: ReadonlySet<number> = new Set([129, 130, 131, 137, 138, 140, 143]);
 
+const isCrash = (marker: Pick<Marker, "kind" | "exitCode">) =>
+  marker.kind === "exit" && marker.exitCode !== undefined && marker.exitCode !== 0 && !STOP_SIGNAL_EXITS.has(marker.exitCode);
+
 /**
  * What `markers` say at `now` (Unix milliseconds): only those in the hour before it count, however old the read is.
- * A replica's crash loop is its run of restarts that each followed a crash: a non-zero exit not from a signal a stop sends. Any
- * other exit, as a Deploy or a requested restart leaves, ends the run, and so does staying up for `LOOP_QUIET_MS`. The
- * replica is Restarting while its run is two or more.
+ * A replica is a container id, which Docker keeps across restart-policy restarts, so a replica crashing again and again
+ * is a crash loop: two or more crashes (a non-zero exit not from a signal a stop sends), each within `LOOP_QUIET_MS` of
+ * the one before. A longer pause starts the count over. The replica is Restarting while its latest crash is within
+ * `LOOP_QUIET_MS` of `now`.
  */
 export function containerTrouble(markers: readonly Pick<Marker, "kind" | "at" | "server" | "replica" | "exitCode">[], now: number): ContainerTrouble | null {
   const recent = markers.filter((marker) => marker.at > now - TROUBLE_WINDOW_MS).sort((a, b) => a.at - b.at);
   if (recent.some((marker) => marker.kind === "oom")) return "OOM";
-  const loops = new Map<string, { crashed: boolean; restarts: number; last: number }>();
-  for (const marker of recent) {
+  const loops = new Map<string, { crashes: number; last: number }>();
+  for (const marker of recent.filter(isCrash)) {
     const replica = `${marker.server.id}/${marker.replica}`;
-    const loop = loops.get(replica) ?? { crashed: false, restarts: 0, last: 0 };
-    if (marker.kind === "exit") {
-      if (marker.exitCode !== undefined && marker.exitCode !== 0 && !STOP_SIGNAL_EXITS.has(marker.exitCode)) loops.set(replica, { ...loop, crashed: true });
-      else loops.delete(replica);
-    } else if (marker.kind === "restart" && loop.crashed) {
-      const restarts = marker.at - loop.last > LOOP_QUIET_MS ? 1 : loop.restarts + 1;
-      loops.set(replica, { crashed: false, restarts, last: marker.at });
-    }
+    const loop = loops.get(replica);
+    loops.set(replica, { crashes: loop !== undefined && marker.at - loop.last <= LOOP_QUIET_MS ? loop.crashes + 1 : 1, last: marker.at });
   }
-  return [...loops.values()].some((loop) => loop.restarts >= 2 && loop.last > now - LOOP_QUIET_MS) ? "Restarting" : null;
+  return [...loops.values()].some((loop) => loop.crashes >= 2 && loop.last > now - LOOP_QUIET_MS) ? "Restarting" : null;
 }
 
 /**

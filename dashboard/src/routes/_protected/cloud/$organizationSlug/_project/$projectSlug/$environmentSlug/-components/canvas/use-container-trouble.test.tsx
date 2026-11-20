@@ -19,12 +19,16 @@ const scope = { organizationSlug: "acme", environmentId: "env" };
 const machine = machineId("a");
 
 const oomAt = (at: number): CrashMarker => ({ kind: "oom", at, machine, replica: "web-1" });
-const readWith = (marker: CrashMarker): MetricRead<ServiceHistory> => ({
-  type: "history",
-  window: { from: marker.at - MINUTE, to: marker.at + MINUTE },
-  at: marker.at,
-  history: { stepMs: 60 * MINUTE, points: [], servers: [{ machine, points: [], gaps: [], markers: [marker] }] },
-});
+const exitAt = (at: number): CrashMarker => ({ kind: "exit", at, machine, replica: "web-1", exitCode: 1 });
+const readWith = (first: CrashMarker, ...rest: CrashMarker[]): MetricRead<ServiceHistory> => {
+  const last = rest.at(-1) ?? first;
+  return {
+    type: "history",
+    window: { from: first.at - MINUTE, to: last.at + MINUTE },
+    at: last.at,
+    history: { stepMs: 60 * MINUTE, points: [], servers: [{ machine, points: [], gaps: [], markers: [first, ...rest] }] },
+  };
+};
 
 function render(read: MetricRead<ServiceHistory>, updatedAt: number) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -49,5 +53,19 @@ it("shows a fresh OOM, then drops it an hour after it happened without another r
   act(() => vi.advanceTimersByTime(29 * MINUTE));
   expect(result.current).toBe("OOM");
   act(() => vi.advanceTimersByTime(2 * MINUTE));
+  expect(result.current).toBeNull();
+});
+
+it("shows Restarting for a replica that crashed twice, then drops it ten minutes after its latest crash without another read", () => {
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+  const now = Date.now();
+  const { result } = render(readWith(exitAt(now - 8 * MINUTE), exitAt(now - 6 * MINUTE)), now);
+  expect(result.current).toBe("Restarting");
+  const minutes = (count: number) => {
+    for (let minute = 0; minute < count; minute++) act(() => vi.advanceTimersByTime(MINUTE));
+  };
+  minutes(3);
+  expect(result.current).toBe("Restarting");
+  minutes(2);
   expect(result.current).toBeNull();
 });

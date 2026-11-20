@@ -6,7 +6,7 @@ export type ServerRef = { readonly id: string; readonly name: string | null };
 export type Sample = { readonly at: number; readonly value: number };
 export type { Gap };
 export type Marker = {
-  readonly kind: "oom" | "exit" | "restart";
+  readonly kind: "oom" | "exit";
   readonly at: number;
   readonly server: ServerRef;
   readonly replica: string;
