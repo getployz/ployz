@@ -43,7 +43,7 @@ describe("serverNow", () => {
       memoryTotal: [{ at: TO - 40_000, value: 64 }],
       // Disk is sampled once a minute, so a two-minute-old reading is still its latest.
       disk: [{ at: TO - 120_000, total: 100, free: 77 }],
-      gaps: [{ from: TO - 270_000, to: TO, reason: "not_sampled" }],
+      gaps: [{ from: TO - 270_000, to: TO }],
     }, 0);
     expect(now).toEqual({ type: "meters", cpu: null, memory: null, disk: { used: 23, total: 100 } });
   });

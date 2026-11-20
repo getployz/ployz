@@ -1,60 +1,34 @@
-import type { HostPoint, MachineId, MetricHistory, MetricHistoryReply, MetricMarker, ServicePoint } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import type { MetricRead } from "./metrics";
-import { containerId, machineId, serviceId } from "#/test/ids";
+import type { CrashMarker, HostHistory, HostPoint, MetricRead, ServiceHistory, ServiceOnServer, ServicePoint } from "./metrics";
 import { serverMetrics, serviceMetrics } from "./metrics-model";
 
-const A = machineId("a");
-const B = machineId("b");
-const C = machineId("c");
-const D = machineId("d");
+const [A, B, C, D] = ["a", "b", "c", "d"];
 const names = new Map([[A, "web-10"], [B, "web-2"], [C, "db-1"]]);
 const window = { from: 0, to: 10_000 };
-const ms = (value: number) => value * 1e6;
 
-const reply = (points: MetricHistoryReply["points"], extra: Partial<MetricHistoryReply> = {}): MetricHistoryReply =>
-  ({ points, step_nanos: ms(1000), gaps: [], ...extra });
-// What Cloud answers for a Server without the Service: no points, one gap over the range.
-const nothing = (): MetricHistoryReply =>
-  reply({ service: [] }, { gaps: [{ from: ms(window.from), to: ms(window.to), reason: "not_sampled" }] });
-const read = (history: Partial<MetricHistory>): MetricRead => ({
-  type: "history",
-  window,
-  at: window.to,
-  history: { step_nanos: ms(1000), points: { service: [] }, machines: [], unanswered: [], ...history },
+const onServer = (machine: string, points: readonly ServicePoint[], extra: Partial<ServiceOnServer> = {}): ServiceOnServer =>
+  ({ machine, points, gaps: [], markers: [], ...extra });
+/** What a Server that runs no readings of the Service reports: no points, and a gap over the range. */
+const nothing = (machine: string, extra: Partial<ServiceOnServer> = {}) => onServer(machine, [], { gaps: [{ from: window.from, to: window.to }], ...extra });
+const readService = (history: Partial<ServiceHistory>): MetricRead<ServiceHistory> => ({
+  type: "history", window, at: window.to, history: { stepMs: 1000, points: [], servers: [], ...history },
 });
-const answering = (machine: MachineId, value: MetricHistoryReply) => ({ machine_id: machine, value });
-const servicePoint = (atMs: number, fields: Omit<ServicePoint, "ts"> = {}): ServicePoint => ({ ts: ms(atMs), ...fields });
-type MarkerFields =
-  | { readonly kind: "oom" | "restart"; readonly deployment_id?: string }
-  | { readonly kind: "exit"; readonly exit_code?: number; readonly deployment_id?: string };
-const marker = (machine: MachineId, atMs: number, fields: MarkerFields): MetricMarker => ({
-  machine_id: machine,
-  container_id: containerId("c"),
-  service_id: serviceId("s"),
-  service: "ns/web",
-  replica: "web-1",
-  ts: ms(atMs),
-  ...(fields.kind === "exit" ? { oom: false, stopped: false, ...fields } : fields),
+const readServer = (history: Partial<HostHistory>): MetricRead<HostHistory> => ({
+  type: "history", window, at: window.to, history: { stepMs: 1000, points: [], gaps: [], ...history },
 });
+const marker = (machine: string, at: number, fields: Pick<CrashMarker, "kind"> & { exitCode?: number }): CrashMarker => ({ machine, at, replica: "web-1", ...fields });
 
 describe("serviceMetrics availability", () => {
-  const point = { service: [servicePoint(0, { cpu_usec: 1 })] };
+  const point = [{ at: 0, cpu: 1 }];
 
   it("is normal when every Server answers with readings", () => {
-    expect(serviceMetrics(read({ points: point, machines: [answering(A, reply(point))] }), names).availability).toEqual({ type: "normal" });
+    expect(serviceMetrics(readService({ points: point, servers: [onServer(A, point)] }), names).availability).toEqual({ type: "normal" });
   });
 
-
-
-
-
-
   it("has no readings when no Server is asked, or every answer is empty", () => {
-    expect(serviceMetrics(read({}), names).availability).toEqual({ type: "no_readings" });
-    expect(serviceMetrics(read({ machines: [answering(A, nothing()), answering(B, nothing())] }), names).availability).toEqual({ type: "no_readings" });
-    const empty = { service: [servicePoint(0)] };
-    expect(serviceMetrics(read({ points: empty, machines: [answering(A, reply(empty))] }), names).availability).toEqual({ type: "no_readings" });
+    expect(serviceMetrics(readService({}), names).availability).toEqual({ type: "no_readings" });
+    expect(serviceMetrics(readService({ servers: [nothing(A), nothing(B)] }), names).availability).toEqual({ type: "no_readings" });
+    expect(serviceMetrics(readService({ points: [{ at: 0 }], servers: [onServer(A, [{ at: 0 }])] }), names).availability).toEqual({ type: "no_readings" });
   });
 
   it("has empty series over the window when Cloud keeps no metrics or the Server is silent", () => {
@@ -73,12 +47,12 @@ describe("serviceMetrics availability", () => {
 });
 
 describe("serviceMetrics series", () => {
-  it("converts nanoseconds to milliseconds and microseconds per second to vCPUs, skipping missing fields", () => {
-    const points = { service: [
-      servicePoint(1000, { cpu_usec: 1_500_000, mem_bytes: 512, mem_limit: 1024, rx: 10, tx: 20, io_r: 30, io_w: 40 }),
-      servicePoint(2000, { cpu_usec: 250_000 }),
-    ] };
-    const metrics = serviceMetrics(read({ points, machines: [answering(A, reply(points))] }), names);
+  it("carries each field into its series and skips a field a bucket lacks", () => {
+    const points = [
+      { at: 1000, cpu: 1.5, memory: 512, memoryLimit: 1024, netIn: 10, netOut: 20, diskRead: 30, diskWrite: 40 },
+      { at: 2000, cpu: 0.25 },
+    ];
+    const metrics = serviceMetrics(readService({ points, servers: [onServer(A, points)] }), names);
     expect(metrics.stepMs).toBe(1000);
     expect(metrics.all).toEqual({
       cpu: [{ at: 1000, value: 1.5 }, { at: 2000, value: 0.25 }],
@@ -91,101 +65,85 @@ describe("serviceMetrics series", () => {
     });
   });
 
-  const cpu = (t: number, usec = 1_000_000) => servicePoint(t, { cpu_usec: usec });
-  const every = (from: number, to: number, usec?: number) => Array.from({ length: (to - from) / 1000 }, (_, index) => cpu(from + index * 1000, usec));
+  const cpu = (at: number, value = 1): ServicePoint => ({ at, cpu: value });
+  const every = (from: number, to: number, value?: number) => Array.from({ length: (to - from) / 1000 }, (_, index) => cpu(from + index * 1000, value));
 
   it("keeps a Service's readings when another Server answers that it has none", () => {
-    const onA = { service: every(0, 10_000, 500_000) };
-    const metrics = serviceMetrics(read({ points: onA, machines: [answering(A, reply(onA)), answering(B, nothing())] }), names);
+    const onA = every(0, 10_000, 0.5);
+    const metrics = serviceMetrics(readService({ points: onA, servers: [onServer(A, onA), nothing(B)] }), names);
     expect(metrics.availability).toEqual({ type: "normal" });
     expect(metrics.allGaps).toEqual([]);
-    expect(metrics.all.cpu).toEqual(onA.service.map((point) => ({ at: point.ts / 1e6, value: 0.5 })));
+    expect(metrics.all.cpu).toEqual(onA.map((point) => ({ at: point.at, value: 0.5 })));
     expect(metrics.byServer.map((entry) => entry.server.id)).toEqual([A]);
   });
 
   it("keeps the early readings of one Server when another starts mid-range", () => {
-    const onA = every(0, 10_000);
-    const onB = every(5000, 10_000);
-    const top = { service: [...every(0, 5000), ...every(5000, 10_000, 2_000_000)] };
-    const metrics = serviceMetrics(read({
+    const top = [...every(0, 5000), ...every(5000, 10_000, 2)];
+    const metrics = serviceMetrics(readService({
       points: top,
-      machines: [
-        answering(A, reply({ service: onA })),
-        answering(B, reply({ service: onB }, { gaps: [{ from: ms(0), to: ms(5000), reason: "not_sampled" }] })),
-      ],
+      servers: [onServer(A, every(0, 10_000)), onServer(B, every(5000, 10_000), { gaps: [{ from: 0, to: 5000 }] })],
     }), names);
     expect(metrics.allGaps).toEqual([]);
     expect(metrics.all.cpu.map((sample) => sample.value)).toEqual([1, 1, 1, 1, 1, 2, 2, 2, 2, 2]);
-    expect(metrics.byServer.find((entry) => entry.server.id === B)?.gaps).toEqual([{ from: 0, to: 5000, reason: "not_sampled" }]);
+    expect(metrics.byServer.find((entry) => entry.server.id === B)?.gaps).toEqual([{ from: 0, to: 5000 }]);
   });
 
-  it("gaps the sum where one Server timed out only where no other Server has data", () => {
-    const top = { service: [cpu(0), cpu(1000), cpu(2000), cpu(2600), cpu(3000), cpu(4000)] };
-    const metrics = serviceMetrics(read({
+  it("gaps the sum only where no Server has data", () => {
+    const top = [cpu(0), cpu(1000), cpu(2000), cpu(2600), cpu(3000), cpu(4000)];
+    const metrics = serviceMetrics(readService({
       points: top,
-      machines: [
-        answering(A, reply({ service: [cpu(0), cpu(3000), cpu(4000)] }, { gaps: [{ from: ms(1000), to: ms(3000), reason: "not_sampled" }] })),
-        answering(B, reply({ service: [cpu(0), cpu(1000), cpu(2000)] }, { gaps: [{ from: ms(2500), to: ms(10_000), reason: "timeout" }] })),
+      servers: [
+        onServer(A, [cpu(0), cpu(3000), cpu(4000)], { gaps: [{ from: 1000, to: 3000 }] }),
+        onServer(B, [cpu(0), cpu(1000), cpu(2000)], { gaps: [{ from: 2500, to: 10_000 }] }),
       ],
     }), names);
     expect(metrics.availability).toEqual({ type: "normal" });
-    expect(metrics.allGaps).toEqual([{ from: 2500, to: 3000, reason: "timeout" }]);
+    expect(metrics.allGaps).toEqual([{ from: 2500, to: 3000 }]);
     expect(metrics.all.cpu.map((sample) => sample.at)).toEqual([0, 1000, 2000, 3000, 4000]);
     const a = metrics.byServer.find((entry) => entry.server.id === A);
-    expect(a?.gaps).toEqual([{ from: 1000, to: 3000, reason: "not_sampled" }]);
+    expect(a?.gaps).toEqual([{ from: 1000, to: 3000 }]);
     expect(a?.series.cpu.map((sample) => sample.at)).toEqual([0, 3000, 4000]);
   });
 
-
-
-  it("lists answering Servers with readings or markers, by name with numbers in order", () => {
-    const some = { service: [servicePoint(0, { mem_bytes: 1 })] };
-    const metrics = serviceMetrics(read({
+  it("lists Servers with readings or markers, by name with numbers in order", () => {
+    const some = [{ at: 0, memory: 1 }];
+    const metrics = serviceMetrics(readService({
       points: some,
-      machines: [
-        answering(A, reply(some)),
-        answering(C, nothing()),
-        answering(D, reply({ service: [servicePoint(0)] })),
-        answering(B, { ...nothing(), markers: [marker(B, 0, { kind: "restart" })] }),
-      ],
+      servers: [onServer(A, some), nothing(C), onServer(D, [{ at: 0 }]), nothing(B, { markers: [marker(B, 0, { kind: "oom" })] })],
     }), names);
     expect(metrics.byServer.map((entry) => entry.server.name)).toEqual(["web-2", "web-10"]);
     expect(metrics.byServer[1]?.series.memory).toEqual([{ at: 0, value: 1 }]);
   });
 
-  it("collects markers from every reply in time order with their Server", () => {
-    const metrics = serviceMetrics(read({
-      machines: [
-        answering(A, reply({ service: [] }, { markers: [marker(A, 3000, { kind: "exit", exit_code: 137, deployment_id: "dep-1" })] })),
-        answering(B, reply({ service: [] }, { markers: [marker(B, 1000, { kind: "oom" }), marker(B, 2000, { kind: "exit" })] })),
+  it("collects markers from every Server in time order with their Server", () => {
+    const metrics = serviceMetrics(readService({
+      servers: [
+        onServer(A, [], { markers: [marker(A, 3000, { kind: "exit", exitCode: 137 })] }),
+        onServer(B, [], { markers: [marker(B, 1000, { kind: "oom" }), marker(B, 2000, { kind: "exit" })] }),
       ],
     }), names);
     expect(metrics.markers).toEqual([
       { kind: "oom", at: 1000, server: { id: B, name: "web-2" }, replica: "web-1" },
       { kind: "exit", at: 2000, server: { id: B, name: "web-2" }, replica: "web-1" },
-      { kind: "exit", at: 3000, server: { id: A, name: "web-10" }, replica: "web-1", exitCode: 137, deploymentId: "dep-1" },
+      { kind: "exit", at: 3000, server: { id: A, name: "web-10" }, replica: "web-1", exitCode: 137 },
     ]);
   });
 });
 
 describe("serverMetrics", () => {
-  const host = (atMs: number, fields: Omit<HostPoint, "ts">): HostPoint => ({ ts: ms(atMs), ...fields });
-
   it("projects CPU, used memory, visible interfaces and disk, skipping missing fields and gapped samples", () => {
-    const points = { machine: [
-      host(0, {
-        cpu_busy: 0.25,
+    const points: HostPoint[] = [
+      {
+        at: 0,
+        cpuBusy: 0.25,
         memory: { total: 100, available: 40 },
         interfaces: { lo: { rx: 1, tx: 1 }, eth1: { rx: 5, tx: 6 }, eth0: { rx: 3, tx: 4 }, veth12: { rx: 1, tx: 1 }, docker0: { rx: 1, tx: 1 }, "br-abc": { rx: 1, tx: 1 } },
-        disk: { total: 1000, free: 400, volumes: 300, mirror_slots: 100, observe_store: 50, other: 150 },
-      }),
-      host(1000, { cpu_busy: 0.9 }),
-      host(2000, { disk: { total: 1000, free: 390 } }),
-    ] };
-    const metrics = serverMetrics(read({
-      points,
-      machines: [answering(A, reply(points, { gaps: [{ from: ms(1000), to: ms(2000), reason: "timeout" }] }))],
-    }), names);
+        disk: { total: 1000, free: 400, volumes: 300, mirrors: 100, logsAndMetrics: 50, other: 150 },
+      },
+      { at: 1000, cpuBusy: 0.9 },
+      { at: 2000, disk: { total: 1000, free: 390 } },
+    ];
+    const metrics = serverMetrics(readServer({ points, gaps: [{ from: 1000, to: 2000 }] }));
     expect(metrics).toEqual({
       availability: { type: "normal" },
       window,
@@ -201,26 +159,13 @@ describe("serverMetrics", () => {
         { at: 0, total: 1000, free: 400, volumes: 300, mirrors: 100, logsAndMetrics: 50, other: 150 },
         { at: 2000, total: 1000, free: 390 },
       ],
-      gaps: [{ from: 1000, to: 2000, reason: "timeout" }],
+      gaps: [{ from: 1000, to: 2000 }],
     });
   });
 
-  it("merges overlapping gaps as a timeout when either one is", () => {
-    const metrics = serverMetrics(read({
-      points: { machine: [] },
-      machines: [answering(A, reply({ machine: [] }, { gaps: [
-        { from: ms(0), to: ms(1500), reason: "not_sampled" },
-        { from: ms(1000), to: ms(2000), reason: "timeout" },
-        { from: ms(5000), to: ms(6000), reason: "not_sampled" },
-      ] }))],
-    }), names);
-    expect(metrics.gaps).toEqual([{ from: 0, to: 2000, reason: "timeout" }, { from: 5000, to: 6000, reason: "not_sampled" }]);
-  });
-
   it("has no readings for a Server with nothing in range, and names the off states", () => {
-    expect(serverMetrics(read({ points: { machine: [] }, machines: [answering(A, reply({ machine: [] }))] }), names).availability)
-      .toEqual({ type: "no_readings" });
-    expect(serverMetrics({ type: "not_reporting", window, at: window.to }, names).availability).toEqual({ type: "not_reporting" });
-    expect(serverMetrics({ type: "not_configured", window, at: window.to }, names).availability).toEqual({ type: "not_configured" });
+    expect(serverMetrics(readServer({})).availability).toEqual({ type: "no_readings" });
+    expect(serverMetrics({ type: "not_reporting", window, at: window.to }).availability).toEqual({ type: "not_reporting" });
+    expect(serverMetrics({ type: "not_configured", window, at: window.to }).availability).toEqual({ type: "not_configured" });
   });
 });

@@ -1,9 +1,9 @@
+import type { Gap } from "./metrics";
+
 /** What one series said in one bucket: a counter's last value, or a gauge's average. `at` is the bucket start in Unix milliseconds. */
 export type SeriesSample = { readonly series: string; readonly at: number; readonly value: number };
 
 export type SeriesWindow = { readonly from: number; readonly to: number };
-
-export type Gap = { readonly from: number; readonly to: number; readonly reason: "not_sampled" | "timeout" };
 
 const SECOND_MS = 1000;
 /** Both collectors sample every 10 seconds, so no bucket is narrower. */
@@ -92,7 +92,7 @@ export function gapsBetween(buckets: ReadonlySet<number>, window: SeriesWindow, 
   let open: number | null = null;
   for (let start = first; start <= end; start += stepMs) {
     if (buckets.has(start)) {
-      if (open !== null) gaps.push({ from: open, to: start, reason: "not_sampled" });
+      if (open !== null) gaps.push({ from: open, to: start });
       open = null;
     } else if (open === null) {
       open = start;

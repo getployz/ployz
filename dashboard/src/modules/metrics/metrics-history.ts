@@ -1,5 +1,5 @@
-import type { ContainerId, HostPoint, MachineId, MetricGap, MetricHistory, MetricHistoryReply, MetricMarker, ServiceId, ServicePoint } from "@ployz/sdk";
-import { counterRate, counterShare, gapsBetween, gaugeSum, type Gap, type SeriesSample, type SeriesWindow } from "./metrics-series";
+import type { CrashMarker, DiskUse, HostHistory, HostPoint, ServiceHistory, ServicePoint } from "./metrics";
+import { counterRate, counterShare, gapsBetween, gaugeSum, type SeriesSample, type SeriesWindow } from "./metrics-series";
 
 /** One series in one bucket, as ClickHouse returns it. `bucket` is the bucket start in Unix seconds. */
 export type MetricRow = {
@@ -14,7 +14,7 @@ export type MetricRow = {
   readonly value: number;
 };
 
-/** One `ployz.disk.bytes` reading of a kind of disk use, in one bucket. */
+/** One `ployz.disk.bytes` reading of a part of the disk, in one bucket. `kind` is the part's name in `DISK_KINDS`. */
 export type DiskRow = { readonly machine: string; readonly kind: string; readonly bucket: number; readonly value: number };
 
 /** A crash event with the machine it happened on. `at` is Unix milliseconds. */
@@ -46,8 +46,11 @@ export const HOST_METRICS = {
 } as const;
 
 export const DISK_METRIC = "ployz.disk.bytes";
-const NS_PER_MS = 1e6;
-const NS_PER_USEC = 1000;
+
+/** The `kind` attribute of `ployz.disk.bytes`: the whole disk, what is free, and the parts of what is used. */
+export const DISK_KINDS = { total: "total", free: "free", volumes: "volumes", mirrors: "mirror_slots", logsAndMetrics: "observe_store", other: "other" } as const;
+
+const NS_PER_SECOND = 1e9;
 /** `system.cpu.time` states that are not work. Idle includes iowait, as the old sampler counted it. */
 const IDLE_STATES = new Set(["idle", "iowait"]);
 
@@ -61,7 +64,7 @@ const timeline = (maps: readonly ReadonlyMap<number, unknown>[], from: number): 
 
 const firstBucket = (window: SeriesWindow, stepMs: number) => Math.floor(window.from / stepMs) * stepMs;
 
-/** The Service's buckets: CPU in microseconds per second, memory in bytes, network and block IO in bytes per second. */
+/** The Service's buckets: CPU in vCPUs, memory in bytes, network and block IO in bytes per second. */
 export function servicePoints(rows: readonly MetricRow[], window: SeriesWindow, stepMs: number): ServicePoint[] {
   const cpu = counterRate(samples(rows, named(SERVICE_METRICS.cpu)));
   const memory = gaugeSum(samples(rows, named(SERVICE_METRICS.memory)));
@@ -74,19 +77,39 @@ export function servicePoints(rows: readonly MetricRow[], window: SeriesWindow, 
     const [cpuRate, memoryBytes, limitBytes] = [cpu.get(at), memory.get(at), limit.get(at)];
     const [received, sent, readRate, writeRate] = [rx.get(at), tx.get(at), read.get(at), write.get(at)];
     return {
-      ts: at * NS_PER_MS,
-      ...(cpuRate !== undefined && { cpu_usec: cpuRate / NS_PER_USEC }),
-      ...(memoryBytes !== undefined && { mem_bytes: Math.round(memoryBytes) }),
-      ...(limitBytes !== undefined && { mem_limit: Math.round(limitBytes) }),
-      ...(received !== undefined && { rx: received }),
-      ...(sent !== undefined && { tx: sent }),
-      ...(readRate !== undefined && { io_r: readRate }),
-      ...(writeRate !== undefined && { io_w: writeRate }),
+      at,
+      ...(cpuRate !== undefined && { cpu: cpuRate / NS_PER_SECOND }),
+      ...(memoryBytes !== undefined && { memory: Math.round(memoryBytes) }),
+      ...(limitBytes !== undefined && { memoryLimit: Math.round(limitBytes) }),
+      ...(received !== undefined && { netIn: received }),
+      ...(sent !== undefined && { netOut: sent }),
+      ...(readRate !== undefined && { diskRead: readRate }),
+      ...(writeRate !== undefined && { diskWrite: writeRate }),
     };
   });
 }
 
-/** The Machine's buckets: busy share of CPU, memory, bytes per second by interface, and the disk breakdown. */
+/** The disk of one bucket. Without `total` and `free` there is no disk to draw. */
+function diskOf(kinds: ReadonlyMap<string, number>): DiskUse | undefined {
+  const total = kinds.get(DISK_KINDS.total);
+  const free = kinds.get(DISK_KINDS.free);
+  if (total === undefined || free === undefined) return undefined;
+  const part = (kind: string) => {
+    const bytes = kinds.get(kind);
+    return bytes === undefined ? undefined : Math.round(bytes);
+  };
+  const [volumes, mirrors, logsAndMetrics, other] = [part(DISK_KINDS.volumes), part(DISK_KINDS.mirrors), part(DISK_KINDS.logsAndMetrics), part(DISK_KINDS.other)];
+  return {
+    total: Math.round(total),
+    free: Math.round(free),
+    ...(volumes !== undefined && { volumes }),
+    ...(mirrors !== undefined && { mirrors }),
+    ...(logsAndMetrics !== undefined && { logsAndMetrics }),
+    ...(other !== undefined && { other }),
+  };
+}
+
+/** The Machine's buckets: busy share of CPU, memory, bytes per second by interface, and the disk. */
 export function hostPoints(rows: readonly MetricRow[], disk: readonly DiskRow[], window: SeriesWindow, stepMs: number): HostPoint[] {
   const cpu = counterShare(
     samples(rows, (row) => row.metric === HOST_METRICS.cpu && !IDLE_STATES.has(row.state)),
@@ -114,92 +137,55 @@ export function hostPoints(rows: readonly MetricRow[], disk: readonly DiskRow[],
       return received === undefined && sent === undefined ? [] : [[entry.device, { rx: received ?? 0, tx: sent ?? 0 }] as const];
     }));
     const breakdown = kinds.get(at);
+    const diskUse = breakdown === undefined ? undefined : diskOf(breakdown);
     return {
-      ts: at * NS_PER_MS,
-      ...(busy !== undefined && { cpu_busy: busy }),
+      at,
+      ...(busy !== undefined && { cpuBusy: busy }),
       ...(totalBytes !== undefined && availableBytes !== undefined && { memory: { total: Math.round(totalBytes), available: Math.round(availableBytes) } }),
       ...(Object.keys(rates).length > 0 && { interfaces: rates }),
-      ...(breakdown !== undefined && { disk: diskOf(breakdown) }),
+      ...(diskUse !== undefined && { disk: diskUse }),
     };
   });
 }
 
-const diskOf = (breakdown: ReadonlyMap<string, number>): NonNullable<HostPoint["disk"]> => {
-  const free = breakdown.get("free") ?? 0;
-  const used = [...breakdown.entries()].filter(([kind]) => kind !== "free").reduce((sum, [, bytes]) => sum + bytes, 0);
-  const volumes = breakdown.get("volumes");
-  const logs = breakdown.get("logs");
-  const rest = (breakdown.get("images") ?? 0) + (breakdown.get("ployz") ?? 0) + (breakdown.get("other") ?? 0);
-  return {
-    total: Math.round(used + free),
-    free: Math.round(free),
-    ...(volumes !== undefined && { volumes: Math.round(volumes) }),
-    ...(logs !== undefined && { observe_store: Math.round(logs) }),
-    ...(rest > 0 && { other: Math.round(rest) }),
-  };
-};
-
-/** ClickHouse holds ids as text. Each one was written by a Machine that sent a well-formed id, so the brand is restored here. */
-// SAFETY: `machine` is Cloud's own stamp from the verified token, so it is always a well-formed Machine id.
-const machineId = (value: string) => value as MachineId;
-
-const toNanoGap = ({ from, to, reason }: Gap): MetricGap => ({ from: from * NS_PER_MS, to: to * NS_PER_MS, reason });
-
-// SAFETY: the ids are the ones the Machine's own crash event carried. The charts only compare them and never parse them.
-const markerOf = (event: CrashEvent): MetricMarker => ({
-  machine_id: machineId(event.machine), container_id: event.container as ContainerId, service_id: event.serviceId as ServiceId, service: `${event.namespace}/${event.service}`,
-  replica: event.container.slice(0, 12), ts: event.at * NS_PER_MS,
-  ...(event.reason === "out_of_memory"
-    ? { kind: "oom" as const }
-    : { kind: "exit" as const, ...(event.exitCode !== null && { exit_code: event.exitCode }), oom: false, stopped: false }),
+const markerOf = (event: CrashEvent): CrashMarker => ({
+  at: event.at, machine: event.machine, replica: event.container.slice(0, 12),
+  ...(event.reason === "out_of_memory" ? { kind: "oom" as const } : { kind: "exit" as const, ...(event.exitCode !== null && { exitCode: event.exitCode }) }),
 });
 
-const bucketsOf = (points: readonly { readonly ts: number }[]) => new Set(points.map((point) => point.ts / NS_PER_MS));
-
-const reply = (points: MetricHistoryReply["points"], stepMs: number, gaps: readonly Gap[], markers: readonly MetricMarker[]): MetricHistoryReply => ({
-  points, step_nanos: stepMs * NS_PER_MS, gaps: gaps.map(toNanoGap), ...(markers.length > 0 && { markers: [...markers] }),
-});
+const bucketsOf = (points: readonly { readonly at: number }[]) => new Set(points.map((point) => point.at));
 
 type Reading = { readonly window: SeriesWindow; readonly stepMs: number; readonly at: number };
 
-/** A Service's rows as the history the charts render: summed over every Machine, with each Machine's own reply. */
-export function serviceHistory(rows: readonly MetricRow[], crashes: readonly CrashEvent[], { window, stepMs, at }: Reading): MetricHistory {
-  const machines = [...new Set([...rows.map((row) => row.machine), ...crashes.map((event) => event.machine)])].filter((machine) => machine !== "").sort();
-  const markers = crashes.map((event) => markerOf(event));
+const machinesOf = (rows: readonly { readonly machine: string }[], crashes: readonly CrashEvent[]) =>
+  [...new Set([...rows.map((row) => row.machine), ...crashes.map((event) => event.machine)])].filter((machine) => machine !== "").sort();
+
+/** A Service's rows as the history the charts render: summed over every Machine, with each Machine's own. */
+export function serviceHistory(rows: readonly MetricRow[], crashes: readonly CrashEvent[], { window, stepMs, at }: Reading): ServiceHistory {
   return {
-    step_nanos: stepMs * NS_PER_MS,
-    points: { service: servicePoints(rows, window, stepMs) },
-    machines: machines.map((machine) => {
-      const own = servicePoints(rows.filter((row) => row.machine === machine), window, stepMs);
-      const gaps = gapsBetween(bucketsOf(own), window, stepMs, at);
-      return { machine_id: machineId(machine), value: reply({ service: own }, stepMs, gaps, markers.filter((marker) => marker.machine_id === machineId(machine))) };
+    stepMs,
+    points: servicePoints(rows, window, stepMs),
+    servers: machinesOf(rows, crashes).map((machine) => {
+      const points = servicePoints(rows.filter((row) => row.machine === machine), window, stepMs);
+      return {
+        machine, points, gaps: gapsBetween(bucketsOf(points), window, stepMs, at),
+        markers: crashes.filter((event) => event.machine === machine).map(markerOf),
+      };
     }),
-    unanswered: [],
   };
 }
 
 /** A Machine's rows as the history the charts render. */
-export function hostHistory(machine: string, rows: readonly MetricRow[], disk: readonly DiskRow[], { window, stepMs, at }: Reading): MetricHistory {
+export function hostHistory(rows: readonly MetricRow[], disk: readonly DiskRow[], { window, stepMs, at }: Reading): HostHistory {
   const points = hostPoints(rows, disk, window, stepMs);
-  const gaps = gapsBetween(bucketsOf(points), window, stepMs, at);
-  return {
-    step_nanos: stepMs * NS_PER_MS,
-    points: { machine: points },
-    machines: [{ machine_id: machineId(machine), value: reply({ machine: points }, stepMs, gaps, []) }],
-    unanswered: [],
-  };
+  return { stepMs, points, gaps: gapsBetween(bucketsOf(points), window, stepMs, at) };
 }
 
-/** A Service's crash events as markers alone, for the canvas card. Every Machine's markers sit in its own reply. */
-export function markersOnlyHistory(crashes: readonly CrashEvent[], { stepMs }: Reading): MetricHistory {
-  const machines = [...new Set(crashes.map((event) => event.machine))].filter((machine) => machine !== "").sort();
+/** A Service's crash events as markers alone, for the canvas card. */
+export function markersOnlyHistory(crashes: readonly CrashEvent[], { stepMs }: Reading): ServiceHistory {
   return {
-    step_nanos: stepMs * NS_PER_MS,
-    points: { service: [] },
-    machines: machines.map((machine) => ({
-      machine_id: machineId(machine),
-      value: reply({ service: [] }, stepMs, [], crashes.filter((event) => event.machine === machine).map((event) => markerOf(event))),
-    })),
-    unanswered: [],
+    stepMs,
+    points: [],
+    servers: machinesOf([], crashes).map((machine) => ({ machine, points: [], gaps: [], markers: crashes.filter((event) => event.machine === machine).map(markerOf) })),
   };
 }

@@ -36,14 +36,13 @@ const SEGMENT_COLORS = {
  */
 export function ServerResources({ organizationSlug, server }: { organizationSlug: string; server: { id: string; name: string; version: string } }) {
   const [range, setRange] = useState<Range>("1h");
-  const names = new Map([[server.id, server.name]]);
   const query = useQuery({
     ...serverMetricsQueryOptions({ organizationSlug, machineId: server.id, from: range, to: "now" }),
     placeholderData: keepPreviousData,
   });
   const nowRead = useQuery(serverMetricsQueryOptions({ organizationSlug, machineId: server.id, ...NOW_RANGE }));
-  const metrics = query.data ? serverMetrics(query.data, names) : null;
-  const now = nowRead.data && !nowRead.isError ? serverMetrics(nowRead.data, names) : null;
+  const metrics = query.data ? serverMetrics(query.data) : null;
+  const now = nowRead.data && !nowRead.isError ? serverMetrics(nowRead.data) : null;
   const availability = metrics?.availability.type;
 
   return (

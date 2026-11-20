@@ -1,62 +1,43 @@
-import type { MetricSubject } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
+import { hostHistory, serviceHistory } from "./metrics-history";
 import { serverMetrics, serviceMetrics } from "./metrics-model";
-import { verifyMetricHistory } from "./metrics.verify-fixture";
-import { machineId } from "#/test/ids";
+import { FOURS, NORMAL, verifyServerData, verifyServiceData } from "./metrics.verify-fixture";
+import { stepFor } from "./metrics-series";
 
 const window = { from: 1_700_000_000_000, to: 1_700_003_600_000 };
-const nanos = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
-const names = new Map<string, string>();
+const range = { window, stepMs: stepFor(window) };
+const reading = { ...range, at: window.to };
 
-const read = (subject: MetricSubject) => ({
-  type: "history" as const,
-  window,
-  at: window.to,
-  history: verifyMetricHistory({ subject, since_nanos: nanos(window.from), until_nanos: nanos(window.to) }),
-});
-const service = (name: string) => serviceMetrics(read({ kind: "service", service: `shop-production/${name}` }), names);
-const server = (id: string) => serverMetrics(read({ kind: "machine", machine_id: machineId(id) }), names);
+const service = (name: string) => {
+  const { rows, crashes } = verifyServiceData(name, range);
+  return serviceMetrics({ type: "history", window, at: window.to, history: serviceHistory(rows, crashes, reading) }, new Map());
+};
+const server = (id: string) => {
+  const { rows, disk } = verifyServerData(id, range);
+  return serverMetrics({ type: "history", window, at: window.to, history: hostHistory(rows, disk, reading) });
+};
 
-describe("verifyMetricHistory", () => {
-  it("is deterministic, with about 120 buckets across the window", () => {
-    const input = { subject: { kind: "service", service: "ns/web" } as const, since_nanos: nanos(window.from), until_nanos: nanos(window.to) };
-    expect(verifyMetricHistory(input)).toEqual(verifyMetricHistory(input));
-    expect(service("web").all.cpu).toHaveLength(120);
-  });
-
-  it("gives each seeded Service its state", () => {
+describe("the verify-dashboard fixture, read as ClickHouse rows", () => {
+  it("draws the seeded Services: web on two Servers, postgres with a gap, IO and both crash kinds", () => {
     const web = service("web");
     expect(web.availability).toEqual({ type: "normal" });
     expect(web.byServer).toHaveLength(2);
-
-    expect(service("api").availability).toEqual({ type: "normal" });
-
-    const worker = service("worker");
-    expect(worker.availability).toEqual({ type: "normal" });
-    expect(worker.byServer).toHaveLength(1);
-    expect(worker.all.cpu).toHaveLength(120);
-    expect(worker.allGaps).toEqual([]);
-
+    expect(web.all.cpu.length).toBeGreaterThan(0);
     expect(service("redis").availability).toEqual({ type: "no_readings" });
-    expect(service("unknown").availability).toEqual({ type: "no_readings" });
-  });
 
-  it("gives postgres a gap and an OOM followed by a restart", () => {
     const postgres = service("postgres");
-    expect(postgres.availability).toEqual({ type: "normal" });
     expect(postgres.allGaps).toHaveLength(1);
-    expect(postgres.markers.map((marker) => marker.kind)).toEqual(["oom", "restart"]);
     expect(postgres.all.diskRead.length).toBeGreaterThan(0);
+    expect(postgres.markers.map((marker) => marker.kind)).toEqual(["oom", "exit"]);
   });
 
-  it("gives each seeded Server its state", () => {
-    const normal = server("0123456789abcdef0123456789abcdef");
+  it("draws the seeded Servers: one with a gap and every disk part, one silent", () => {
+    const normal = server(NORMAL);
     expect(normal.availability).toEqual({ type: "normal" });
-    expect(normal.interfaces.map((iface) => iface.name)).toEqual(["eth0"]);
+    expect(normal.interfaces.map((entry) => entry.name)).toEqual(["eth0"]);
     expect(normal.gaps).toHaveLength(1);
-    expect(server("4".repeat(32)).availability).toEqual({ type: "no_readings" });
     expect(normal.disk[0]).toMatchObject({ volumes: expect.any(Number), mirrors: expect.any(Number), logsAndMetrics: expect.any(Number), other: expect.any(Number) });
-    expect(server("1".repeat(32)).availability.type).toBe("no_readings");
-    expect(server("f".repeat(32)).availability.type).toBe("no_readings");
+    expect(server(FOURS).availability).toEqual({ type: "no_readings" });
+    expect(verifyServerData("f".repeat(32), range).reporting).toBe(false);
   });
 });

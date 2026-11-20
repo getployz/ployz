@@ -57,7 +57,7 @@ describe("serverRows", () => {
 
 describe("gapNotes", () => {
   it("adds up the spans nothing covers", () => {
-    expect(gapNotes([{ from: 0, to: 600_000, reason: "not_sampled" }, { from: 700_000, to: 1_000_000, reason: "not_sampled" }]))
+    expect(gapNotes([{ from: 0, to: 600_000 }, { from: 700_000, to: 1_000_000 }]))
       .toEqual(["No readings for 15m of the range."]);
     expect(gapNotes([])).toEqual([]);
   });

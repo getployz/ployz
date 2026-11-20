@@ -5,7 +5,7 @@ import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } fr
 import type { MachineId } from "@ployz/sdk";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as functions from "#/modules/metrics/metrics.functions";
-import type { MetricRead } from "#/modules/metrics/metrics";
+import type { HostHistory, MetricRead } from "#/modules/metrics/metrics";
 import { serverMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import { ServerResources } from "./server-resources";
 import { NOW_RANGE } from "./server-now";
@@ -16,24 +16,18 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const SYD_1 = "1".repeat(32) as MachineId;
 const HOUR = 3_600_000;
 const KB = 1024;
-const nanos = (ms: number) => ms * 1e6;
 const history = serverMetricsQueryOptions({ organizationSlug: "acme", machineId: SYD_1, from: "1h", to: "now" });
 const short = serverMetricsQueryOptions({ organizationSlug: "acme", machineId: SYD_1, ...NOW_RANGE });
 
-function readAt(to: number, from: number): MetricRead {
-  const points = { machine: [{
-    ts: nanos(to - 10_000),
-    cpu_busy: 0.37,
+function readAt(to: number, from: number): MetricRead<HostHistory> {
+  const points = [{
+    at: to - 10_000,
+    cpuBusy: 0.37,
     memory: { total: 64 * KB * KB, available: 48 * KB * KB },
     interfaces: { eth0: { rx: KB, tx: 2 * KB }, eth1: { rx: 3 * KB, tx: 4 * KB } },
     disk: { total: 100 * KB * KB, free: 77 * KB * KB },
-  }] };
-  return {
-    type: "history",
-    window: { from, to },
-    at: to,
-    history: { step_nanos: nanos(10_000), points, machines: [{ machine_id: SYD_1, value: { points, step_nanos: nanos(10_000), gaps: [] } }], unanswered: [] },
-  };
+  }];
+  return { type: "history", window: { from, to }, at: to, history: { stepMs: 10_000, points, gaps: [] } };
 }
 
 async function show(landedAt: number) {
@@ -82,8 +76,8 @@ it("doesn't call an hour-old cached read current while its refresh is out", asyn
 async function showOff(type: "not_configured" | "not_reporting") {
   const now = Date.now();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(history.queryKey, { type, window: { from: now - HOUR, to: now }, at: now } satisfies MetricRead, { updatedAt: now });
-  client.setQueryData(short.queryKey, { type, window: { from: now - 300_000, to: now }, at: now } satisfies MetricRead, { updatedAt: now });
+  client.setQueryData(history.queryKey, { type, window: { from: now - HOUR, to: now }, at: now } satisfies MetricRead<HostHistory>, { updatedAt: now });
+  client.setQueryData(short.queryKey, { type, window: { from: now - 300_000, to: now }, at: now } satisfies MetricRead<HostHistory>, { updatedAt: now });
   const root = createRootRoute({
     loader: () => ({ timeZone: "UTC" }),
     component: () => <ServerResources organizationSlug="acme" server={{ id: SYD_1, name: "syd-1", version: "0.4.0" }} />,

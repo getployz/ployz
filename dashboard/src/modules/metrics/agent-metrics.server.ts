@@ -58,7 +58,7 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
     if (rows.length === 0 && disk.length === 0 && !(yield* machineIsReporting(organizationId, machine))) {
       notes.push(`${subject.server.name} isn’t sending metrics.`);
     } else {
-      const charts = serverMetrics({ type: "history", window, at: now, history: hostHistory(machine, rows, disk, reading) }, new Map());
+      const charts = serverMetrics({ type: "history", window, at: now, history: hostHistory(rows, disk, reading) });
       metrics = serverRows(charts, window.to);
       notes.push(...gapNotes(charts.gaps));
     }
