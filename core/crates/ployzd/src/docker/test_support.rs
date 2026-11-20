@@ -355,6 +355,10 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         .unwrap(),
                 );
             }
+            if method == Method::POST && path.ends_with("/update") {
+                take_restart_policy(containers.get_mut(&name).unwrap(), &body);
+                return Json(serde_json::json!({"Warnings": []})).into_response();
+            }
             if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
                 if fake.refuse_stop.load(Ordering::SeqCst) && path.ends_with("/stop") {
                     return (
@@ -709,6 +713,11 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             }
             (StatusCode::CREATED, response)
         }
+    } else if method == Method::POST && path.contains("/containers/") && path.ends_with("/update") {
+        if let Some(container) = fake.existing_container.lock().unwrap().as_mut() {
+            take_restart_policy(container, &body);
+        }
+        (StatusCode::OK, serde_json::json!({"Warnings": []}))
     } else if method == Method::POST && (path.ends_with("/start") || path.ends_with("/stop")) {
         if path.ends_with("/start")
             && let Some(barrier) = &fake.start_barrier
@@ -778,6 +787,16 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         )
     };
     (response.0, Json(response.1)).into_response()
+}
+
+/// Docker's update keeps every setting the body leaves out.
+fn take_restart_policy(container: &mut serde_json::Value, body: &Bytes) {
+    let policy = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|body| body.get("RestartPolicy").cloned());
+    if let Some(policy) = policy {
+        container["HostConfig"]["RestartPolicy"] = policy;
+    }
 }
 
 pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {

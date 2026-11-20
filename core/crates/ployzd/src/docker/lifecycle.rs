@@ -4,8 +4,9 @@ use std::future::Future;
 use bollard::{
     errors::Error as DockerError,
     models::{
-        ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum, Mount, MountType,
-        NetworkConnectRequest,
+        ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum,
+        ContainerUpdateBody, Mount, MountType, NetworkConnectRequest, RestartPolicy,
+        RestartPolicyNameEnum,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -902,10 +903,66 @@ impl Lifecycle {
         Ok(self.specs.admitted_by(container_id).await?)
     }
 
+    /// Gives the Container back the restart policy its spec declares, which a stop took,
+    /// then starts it. A start that fails takes the policy again, so the Container stays
+    /// stopped through a dockerd restart.
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.observation.ensure_managed(container_id).await?;
         self.recovery.release(container_id).await;
-        self.start_inspected(container_id, &inspected).await
+        let declared = self.declared_restart(container_id, &inspected).await?;
+        let held = inspected
+            .host_config
+            .as_ref()
+            .and_then(|host| host.restart_policy.as_ref());
+        if !held.is_some_and(|held| same_restart(held, &declared)) {
+            self.set_restart(container_id, declared).await?;
+        }
+        let started = self.start_inspected(container_id, &inspected).await;
+        if started.is_err()
+            && let Err(error) = self.set_restart(container_id, restart_never()).await
+        {
+            tracing::warn!(container = %container_id, "a Container whose start failed keeps its restart policy: {error}");
+        }
+        started
+    }
+
+    async fn declared_restart(
+        &self,
+        container_id: &ContainerId,
+        inspected: &ContainerInspectResponse,
+    ) -> Result<RestartPolicy, Error> {
+        let kind = ServiceLabels::parse(
+            inspected
+                .config
+                .as_ref()
+                .and_then(|config| config.labels.as_ref())
+                .ok_or(Error::NotManaged)?,
+        )?
+        .kind;
+        let spec = self
+            .specs
+            .get(container_id)
+            .await?
+            .ok_or(Error::SpecNotFound(*container_id))?;
+        Ok(create::declared_restart(kind, &spec))
+    }
+
+    async fn set_restart(
+        &self,
+        container_id: &ContainerId,
+        policy: RestartPolicy,
+    ) -> Result<(), Error> {
+        self.docker
+            .client
+            .update_container(
+                container_id.as_str(),
+                ContainerUpdateBody {
+                    restart_policy: Some(policy),
+                    ..ContainerUpdateBody::default()
+                },
+            )
+            .await
+            .map_err(|error| docker_error(container_id, error))
     }
 
     pub(super) async fn start_inspected(
@@ -997,6 +1054,10 @@ impl Lifecycle {
             plan.proceed();
         }
         managed?;
+        // Docker starts a stopped `always` Container, and an `on-failure` one the stop
+        // left with a non-zero code, whenever dockerd restarts. One Ployz stopped beside
+        // the Container that replaced it would then run with it on one Volume.
+        self.set_restart(container_id, restart_never()).await?;
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -1228,6 +1289,19 @@ async fn docker_config_mounts(
         });
     }
     Ok(mounts)
+}
+
+fn restart_never() -> RestartPolicy {
+    RestartPolicy {
+        name: Some(RestartPolicyNameEnum::NO),
+        maximum_retry_count: None,
+    }
+}
+
+/// Docker reports a policy with no retry count as a count of zero.
+fn same_restart(held: &RestartPolicy, wanted: &RestartPolicy) -> bool {
+    held.name == wanted.name
+        && held.maximum_retry_count.unwrap_or(0) == wanted.maximum_retry_count.unwrap_or(0)
 }
 
 pub(super) fn idempotent_lifecycle_result(
