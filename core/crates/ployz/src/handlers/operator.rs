@@ -674,7 +674,10 @@ fn removed_logs(
         scoped.ok_or_else(|| Error::usage("Name the Environment with --project and --env"))?;
     let runtime = super::runtime()?;
     let Some(credential) = super::route::cloud_runs(&runtime, leaf_matches(root))? else {
-        return Err(scoped.not_kept(&removed[0]));
+        return Err(removed.first().map_or_else(
+            || Error::usage("Name a Service"),
+            |name| scoped.not_kept(name),
+        ));
     };
     if !machines.is_empty() {
         return Err(Error::usage(

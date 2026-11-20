@@ -85,6 +85,10 @@ mod tests {
     /// serves lines it has already masked, the CLI prints them as they come, and no history
     /// route is asked, so nothing reads them unmasked from anywhere else.
     #[tokio::test]
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the stream's error"
+    )]
     async fn an_existing_containers_lines_come_back_masked_through_docker() {
         let first = machine_observation(MACHINE_ONE, "machine-1");
         let machine_id = first.machine.id;
@@ -98,7 +102,11 @@ mod tests {
                 hook: None,
             },
             machine_id,
-            machine_name: machines[0].machine.name.clone(),
+            machine_name: machines
+                .iter()
+                .map(|machine| machine.machine.name.clone())
+                .next()
+                .unwrap(),
         };
         let (mut client, server) = crate::connect::test_support::rpc_routes(
             move |rpc: tonic::Request<ployz_core::OpaquePayload>| {
@@ -165,7 +173,8 @@ mod tests {
         .await
         .unwrap();
         let mut printed = Vec::new();
-        while let Some(entry) = inputs[0].stream.next().await {
+        let mut input = inputs.pop().unwrap();
+        while let Some(entry) = input.stream.next().await {
             let LogBody::Stdout(bytes) = entry.unwrap().body else {
                 panic!("a masked line is stdout");
             };
@@ -202,9 +211,12 @@ mod tests {
             "cursor": "1700000000123456789.42",
         }))
         .unwrap();
-        assert_eq!(page.lines[0].timestamp, 1_700_000_000_123_456_789);
-        assert_eq!(page.lines[0].stream, StoredStream::Stderr);
-        assert!(page.lines[0].container().is_some());
+        let [stored] = page.lines.as_slice() else {
+            panic!("one line");
+        };
+        assert_eq!(stored.timestamp, 1_700_000_000_123_456_789);
+        assert_eq!(stored.stream, StoredStream::Stderr);
+        assert!(stored.container().is_some());
         assert_eq!(page.cursor.as_deref(), Some("1700000000123456789.42"));
     }
 

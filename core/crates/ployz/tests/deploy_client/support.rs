@@ -1329,16 +1329,18 @@ impl FakeMachine for DeployService {
         let frames = stored
             .into_iter()
             .map(|(ts, text)| {
-                Ok(ployz_core::LogEntry {
+                ployz_core::LogEntry {
                     metadata: metadata.clone(),
                     timestamp_unix_nanos: ts,
                     body: ployz_core::LogBody::Stdout(format!("{text}\n").into_bytes()),
                 }
                 .encode()
-                .unwrap())
+                .unwrap()
             })
             .collect::<Vec<_>>();
-        Ok(Response::new(Box::pin(tokio_stream::iter(frames))))
+        Ok(Response::new(Box::pin(tokio_stream::iter(
+            frames.into_iter().map(Ok),
+        ))))
     }
     async fn list_images(
         &self,

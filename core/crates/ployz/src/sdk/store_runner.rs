@@ -1272,7 +1272,12 @@ impl Run {
         let exit_code = match details.container.runtime {
             ContainerRuntimeObservation::Exited { code } => Some(code),
             ContainerRuntimeObservation::Restarting => details.last_exit_code,
-            _ => None,
+            ContainerRuntimeObservation::Created
+            | ContainerRuntimeObservation::Running { .. }
+            | ContainerRuntimeObservation::Paused
+            | ContainerRuntimeObservation::Removing
+            | ContainerRuntimeObservation::Dead
+            | ContainerRuntimeObservation::Unknown { .. } => None,
         };
         let Some(env) = details.environment else {
             return withheld(Withheld::NoSecretContext);

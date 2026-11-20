@@ -130,7 +130,7 @@ pub fn run(store: &StoreRoot, limits: &Limits, disk: Disk, now: SystemTime) -> R
         |age: Duration| i64::try_from(now_secs.saturating_sub(age.as_secs())).unwrap_or(i64::MAX);
     let raw_age_limit = hour_age_limit(RETENTION.raw);
     let rollup_age_limit = hour_age_limit(RETENTION.rollup);
-    candidates.sort_by(|left, right| left.order.cmp(&right.order));
+    candidates.sort_by_key(|candidate| candidate.order);
     let mut held: u64 = candidates.iter().map(|candidate| candidate.size).sum();
     let mut released: u64 = 0;
     for candidate in &candidates {
