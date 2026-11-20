@@ -36,7 +36,8 @@ if grep -q '^impl VolumeOrigin' "$root/crates/ployz-core/src/domain/volume.rs"; 
         echo "tag '$tag' carries Volume origins, but the catalog does not declare ployz.volume.origin.v1" >&2
         exit 1
     fi
-    if ! grep -Eq '^const CLAIMS_ORIGIN: bool = true;$' "$root/crates/ployzd/src/volume_plugin/transfer.rs"; then
+    claims="$root/crates/ployzd/src/volume_plugin/transfer.rs"
+    if [ "$(grep -Ec 'CLAIMS_ORIGIN: bool' "$claims")" != 1 ] || ! grep -Eq '^const CLAIMS_ORIGIN: bool = true;$' "$claims"; then
         echo "tag '$tag' carries Volume origins, but its pulls do not claim ployz.volume.origin.v1 in every build" >&2
         exit 1
     fi
