@@ -965,13 +965,16 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         Some(published_port.to_string().as_str())
     );
     let log_config = host_config.log_config.as_ref().unwrap();
-    assert_eq!(log_config.typ.as_deref(), Some("local"));
+    assert_eq!(log_config.typ.as_deref(), Some("json-file"));
     assert_eq!(
         log_config.config.as_ref().unwrap(),
         &HashMap::from([
             ("max-size".to_owned(), "10m".to_owned()),
             ("max-file".to_owned(), "3".to_owned()),
-            ("compress".to_owned(), "false".to_owned()),
+            (
+                "labels".to_owned(),
+                "ployz.namespace,ployz.service.name,ployz.service.id,ployz.service.hook".to_owned()
+            ),
         ])
     );
     assert_eq!(

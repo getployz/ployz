@@ -25,13 +25,25 @@ pub(super) use healthcheck::{docker_healthcheck, effective_healthcheck};
 
 pub(super) const TCP_MIGRATE_REQ: &str = "net.ipv4.tcp_migrate_req";
 
+/// `json-file` rather than `local`: the Machine's Collector reads these files, and `local` is
+/// binary. The `labels` opt copies the named labels onto every line so the Collector can
+/// say whose it is.
 pub(crate) fn container_log_config() -> HostConfigLogConfig {
     HostConfigLogConfig {
-        typ: Some("local".into()),
+        typ: Some(ployz_core::LOG_DRIVER.into()),
         config: Some(HashMap::from([
             ("max-size".into(), "10m".into()),
             ("max-file".into(), "3".into()),
-            ("compress".into(), "false".into()),
+            (
+                "labels".into(),
+                [
+                    labels::NAMESPACE,
+                    labels::SERVICE_NAME,
+                    labels::SERVICE_ID,
+                    labels::HOOK,
+                ]
+                .join(","),
+            ),
         ])),
     }
 }
@@ -497,16 +509,20 @@ mod tests {
     use super::container_log_config;
 
     #[test]
-    fn container_log_config_is_local_uncompressed_rotation() {
+    fn container_log_config_is_json_file_rotation_with_the_ployz_labels() {
         let log_config = container_log_config();
 
-        assert_eq!(log_config.typ.as_deref(), Some("local"));
+        assert_eq!(log_config.typ.as_deref(), Some("json-file"));
         assert_eq!(
             log_config.config,
             Some(HashMap::from([
                 ("max-size".to_string(), "10m".to_string()),
                 ("max-file".to_string(), "3".to_string()),
-                ("compress".to_string(), "false".to_string()),
+                (
+                    "labels".to_string(),
+                    "ployz.namespace,ployz.service.name,ployz.service.id,ployz.service.hook"
+                        .to_string()
+                ),
             ]))
         );
     }
