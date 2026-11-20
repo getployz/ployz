@@ -10,10 +10,10 @@ const SCOPED = "scoped AS (SELECT * FROM otel.ployz_request WHERE OrgId = {org:S
 /** Counts and sums come back as numbers; the bot hashes travel as strings because a 64-bit hash outruns a JS number. */
 const SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0, max_memory_usage = 6000000000";
 
-const ESCAPES: Record<string, string> = {
-  "\\": "\\\\", "'": "\\'", "\n": "\\n", "\t": "\\t", "\r": "\\r", "\0": "\\0", "\b": "\\b", "\f": "\\f",
-};
-const escapeText = (value: string) => value.replace(/[\\'\n\t\r\0\b\f]/g, (char) => ESCAPES[char] ?? char);
+const ESCAPES = new Map([
+  ["\\", "\\\\"], ["'", "\\'"], ["\n", "\\n"], ["\t", "\\t"], ["\r", "\\r"], ["\0", "\\0"], ["\b", "\\b"], ["\f", "\\f"],
+]);
+const escapeText = (value: string) => value.replace(/[\\'\n\t\r\0\b\f]/g, (char) => ESCAPES.get(char) ?? char);
 
 /**
  * A statement's values. Each `bind` names its value `{pN:Type}` for the SQL to hold, so no statement text is built
@@ -52,7 +52,10 @@ export const readRequests = Effect.fn("WebAnalytics.read")(function* <Row>(
   select: string,
   row: Schema.Decoder<Row>,
 ) {
-  if (scope.namespaces.length === 0) return [] as Array<Row>;
+  if (scope.namespaces.length === 0) {
+    const none: Array<Row> = [];
+    return none;
+  }
   const text = `WITH ${[SCOPED, ...ctes].join(",\n")}\n${select}\n${SETTINGS}`;
   if (/\botel\./.test([...ctes, select].join(" "))) return yield* Effect.die(new Error("A request read selects from `scoped`, never from an otel table."));
   const values = new Map(params.values);

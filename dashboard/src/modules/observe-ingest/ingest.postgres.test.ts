@@ -162,10 +162,8 @@ const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANA
 it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
   const answer = yield* send(push([[10, WEB], [11, WEB, 0], [12, API, 137]]));
-  expect(answer.status).toBe(200);
+  expect(answer.status).toBe(204);
   expect(answer.headers.get("cache-control")).toBe("no-store");
-  expect(answer.headers.get("content-type")).toBe("application/json");
-  expect(yield* Effect.promise(() => answer.json())).toEqual({ sites: [] });
   expect(yield* rows()).toEqual({
     crashes: [
       { seq: 10n, serviceId: WEB, serviceName: "prod/web", exitCode: 1, oom: false },
@@ -184,18 +182,18 @@ it.live("a push keeps every event the Machine shipped, advances the cursor, and 
 it.live("a replayed seq answers 200 and writes nothing", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
   const body = push([[10, WEB], [12, WEB]]);
-  expect((yield* send(body)).status).toBe(200);
+  expect((yield* send(body)).status).toBe(204);
   const before = yield* rows();
   expect(before.crashes.map(({ seq }) => seq)).toEqual([10n, 12n]);
   expect(before.events).toHaveLength(1);
-  expect((yield* send(body)).status).toBe(200);
+  expect((yield* send(body)).status).toBe(204);
   expect(yield* rows()).toEqual(before);
 }), 60_000);
 
 it.live("crashes behind a cursor that went backwards are kept and mailed, and the cursor stays ahead", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
-  expect((yield* send(push([[20, WEB]]))).status).toBe(200);
-  expect((yield* send(push([[5, API]]))).status).toBe(200);
+  expect((yield* send(push([[20, WEB]]))).status).toBe(204);
+  expect((yield* send(push([[5, API]]))).status).toBe(204);
   const { crashes, cursor, events } = yield* rows();
   expect(crashes.map(({ seq }) => seq)).toEqual([5n, 20n]);
   expect(cursor).toEqual([{ stream: "crash", seq: 20n }]);
@@ -207,8 +205,8 @@ it.live("crashes behind a cursor that went backwards are kept and mailed, and th
 
 it.live("a batch that straddles the cursor keeps only the crashes it had not kept", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
-  expect((yield* send(push([[10, WEB], [12, WEB]]))).status).toBe(200);
-  expect((yield* send(push([[12, WEB], [13, API]]))).status).toBe(200);
+  expect((yield* send(push([[10, WEB], [12, WEB]]))).status).toBe(204);
+  expect((yield* send(push([[12, WEB], [13, API]]))).status).toBe(204);
   const { crashes, cursor, events } = yield* rows();
   expect(crashes.map(({ seq }) => seq)).toEqual([10n, 12n, 13n]);
   expect(cursor).toEqual([{ stream: "crash", seq: 13n }]);
@@ -288,8 +286,8 @@ it.live("a push signed more than five minutes away from now answers 401 and writ
   expect((yield* send(push([[10, WEB]]), { at: now - 301 })).status).toBe(401);
   expect((yield* send(push([[10, WEB]]), { at: now + 301 })).status).toBe(401);
   expect(yield* rows()).toEqual(nothing);
-  expect((yield* send(push([[10, WEB]]), { at: now - 300 })).status).toBe(200);
-  expect((yield* send(push([[10, WEB]]), { at: now + 300 })).status).toBe(200);
+  expect((yield* send(push([[10, WEB]]), { at: now - 300 })).status).toBe(204);
+  expect((yield* send(push([[10, WEB]]), { at: now + 300 })).status).toBe(204);
 }).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))), 60_000);
 
 it.live("a push with no signature, a malformed one, or a stale timestamp answers 401 before its body or the database is read", () =>
@@ -364,7 +362,7 @@ it.live("a push from a Machine no Organization enrolled answers 401 and writes n
 it.live("a Machine enrolled before Cloud kept its key gets the key from its capability on its first push", () => Effect.gen(function* () {
   const { send, identity } = yield* setup();
   expect(yield* identity()).toEqual([{ organizationId: ORGANIZATION, managementIdentity: null }]);
-  expect((yield* send(push([[10, WEB]]))).status).toBe(200);
+  expect((yield* send(push([[10, WEB]]))).status).toBe(204);
   expect(yield* identity()).toEqual([{ organizationId: ORGANIZATION, managementIdentity: PUBLIC_KEY }]);
 }), 60_000);
 
