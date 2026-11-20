@@ -105,6 +105,8 @@ export type Member =
       readonly floorless?: boolean;
       /** For a resize, the copy's bound in the Runtime Watch frame; null when the frame shows no sized copy here. */
       readonly boundBytes?: number | null;
+      /** The Server checks where a copy's data began, so it may send or take a born Volume's copy. */
+      readonly checksOrigins?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

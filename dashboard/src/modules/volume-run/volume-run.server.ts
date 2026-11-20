@@ -52,7 +52,7 @@ import { type DeploymentsSeen, deployingMessage, gb, resizeRequirements, sizeDir
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { originBlockers, originUpgradeMessage } from "#/modules/volume-placement/daemon-release";
+import { checksOrigins, originBlockers, originUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import {
   ACTIVE_VOLUME_RUN_STATES,
   type AnsweredMember,
@@ -574,7 +574,7 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
     return { ok: false, refusal: yield* laneRefusal(lane, input.kind) } satisfies VolumeRunPlan;
   }
   if ((input.kind === "mirror" || input.kind === "move") && born) {
-    const refusal = yield* originRefusal(organizationId, volume.volumeName, input.args);
+    const refusal = yield* originRefusal(organizationId, volume, input.args);
     if (refusal !== null) return { ok: false, refusal } satisfies VolumeRunPlan;
   }
   const { owed: pending } = yield* commitment(input.volumeId);
@@ -589,15 +589,24 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   return planned.ok ? { ...planned, environment } : planned;
 });
 
-/** Why a born Volume can't go to `to`: its Ployz can't check where a copy's data began. Null when it can, or isn't listed. */
-const originRefusal = Effect.fn("VolumeRun.originRefusal")(function* (organizationId: string, volumeName: string, to: VolumeRunArgs["mirror"]) {
+/**
+ * Why a born Volume can't go to `to`: its Ployz, or the Ployz of a Server that holds a copy now, can't check where a
+ * copy's data began. A Server the frame doesn't know refuses too. Null when every one can.
+ */
+const originRefusal = Effect.fn("VolumeRun.originRefusal")(function* (
+  organizationId: string, volume: { readonly volumeName: string; readonly dockerVolume: string }, to: VolumeRunArgs["mirror"],
+) {
   const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
   if (frame === null) return unanswered;
   const machines = frame.machines.map(({ machine }) => ({ id: machine.id, name: machine.name, capabilities: machine.runtime.capabilities ?? [] }));
   const target = machines.find((machine) => to.machine === undefined ? machine.name === to.to : machine.id === to.machine);
-  const blockers = target === undefined ? [] : originBlockers(machines, [target.id]);
+  if (target === undefined) {
+    return { code: "invalid_argument", message: `${to.to} is not a Server of this cluster`, details: null } satisfies StoreRefusal;
+  }
+  const holders = frame.volumes.filter((entry) => entry.id.name === volume.dockerVolume).map((entry) => entry.id.machine_id);
+  const blockers = originBlockers(machines, [target.id, ...holders]);
   if (blockers.length === 0) return null;
-  return { code: "upgrade_required", message: originUpgradeMessage(volumeName, blockers), details: { servers: blockers } } satisfies StoreRefusal;
+  return { code: "upgrade_required", message: originUpgradeMessage(volume.volumeName, blockers), details: { servers: blockers } } satisfies StoreRefusal;
 });
 
 /**
@@ -752,7 +761,7 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
   if ((input.kind === "mirror" || input.kind === "move") && born) {
-    const refusal = yield* originRefusal(caller.organizationId, volume.volumeName, input.args);
+    const refusal = yield* originRefusal(caller.organizationId, volume, input.args);
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
   const resolved = input.kind === "delete_mirror" && input.args.slot !== null && input.args.machine === undefined
@@ -1606,6 +1615,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           answered: true,
           view,
           floorless,
+          checksOrigins: checksOrigins(capabilities),
           ...sized,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),

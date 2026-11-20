@@ -1,4 +1,5 @@
 import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import { originUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, copyName, heardFrom, type Member, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
@@ -119,8 +120,23 @@ const refuse = (code: RefusalCode, message: string, next?: string): Planned => (
  */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
-  if (!planned.ok || (planned.phase.kind !== "move" && planned.phase.kind !== "landed")) return planned;
+  if (!planned.ok) return planned;
+  const unchecked = originUnchecked(planned.phase);
+  if (unchecked.length > 0) return refuse("server_lacks", originUpgradeMessage(input.volumeName, unchecked));
+  if (planned.phase.kind !== "move" && planned.phase.kind !== "landed") return planned;
   return refuse("server_lacks", moveOffMessage(input.volumeName, planned.phase.target.machine.name));
+}
+
+/**
+ * The Servers at either end of a copy of a born Volume that can't check where its data began, by name. A run that
+ * would send it refuses on them before its first step, so a full sync never forgets a Mirror it can't replace.
+ */
+function originUnchecked(phase: Extract<Planned, { ok: true }>["phase"]): string[] {
+  const ends = phase.kind === "mirror" || phase.kind === "move"
+    ? [phase.writer, phase.target]
+    : phase.kind === "sync" ? [phase.writer, phase.mirror] : [];
+  if (!ends.some((member) => member.view.copy?.origin != null)) return [];
+  return ends.filter((member) => member.checksOrigins !== true).map((member) => member.machine.name);
 }
 
 /**

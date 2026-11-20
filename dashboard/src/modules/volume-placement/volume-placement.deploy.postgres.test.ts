@@ -651,6 +651,21 @@ describe("deploying a Volume placement", () => {
       run(refreshMirrors(organizationId, null, () => Effect.succeed(copies), () => Effect.succeed(blockers), () => Effect.succeed(members), ask));
     const runKinds = async () => (await harness.pool.query(`select kind from volume_run`)).rows.map((row) => row.kind);
 
+    it("pulls no born Volume's copy onto a Server that can't check where its data began", async () => {
+      const born = (server: string, copy: "writer" | "mirror", checks: boolean): Member => {
+        const each = member(server, copy);
+        if (!each.answered || each.view.copy === null) throw new Error("a copy");
+        return { ...each, view: { copy: { ...each.view.copy, origin: "a".repeat(64) } }, checksOrigins: checks };
+      };
+      members = [born("web-1", "writer", true), born("web-2", "mirror", false)];
+      expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toMatchObject([{
+        lines: ["skipped data: Upgrade web-2 first. data needs a newer Ployz on every Server that holds it."],
+      }]);
+      expect(asked).toEqual([]);
+      members = [born("web-1", "writer", true), born("web-2", "mirror", true)];
+      expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toMatchObject([{ lines: ["data-web-2 is pulling w-1-5"] }]);
+    });
+
     it("syncs a copy the dashboard has no record for, as the CLI made it a mirror, and inserts no run", async () => {
       members = [member("web-1", "writer"), member("web-2", "mirror")];
       expect(await refresh([copy("web-1", "writer"), copy("web-2", "slot")])).toMatchObject([{ lines: ["data-web-2 is pulling w-1-5"] }]);

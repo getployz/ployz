@@ -2379,6 +2379,20 @@ describe("volume runs", () => {
       expect(await request({ kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
     });
 
+    it("mirror: a born Volume's copy refuses while the Server holding it now can't check origins, or the destination is unknown", async () => {
+      storeVolumes = [{ id: volumeId, name: "data", storage: { kind: "provisioned", maximumBytes: 5_000_000 }, born: true }];
+      const origins = [...ON_PLOYZ_04, requirements.volumeOrigin.capability];
+      machines = [{ name: "fsn-1", pool: true, copy: writerCopy(), bound: 5_000_000 }, { name: "fsn-2", pool: true, copy: null, capabilities: origins }];
+      expect(await request({ kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: false, refusal: {
+        code: "upgrade_required", message: "Upgrade fsn-1 first. data needs a newer Ployz on every Server that holds it.",
+      } });
+      expect(await request({ kind: "mirror", args: { to: "fsn-9" } })).toMatchObject({ ok: false, refusal: { code: "invalid_argument" } });
+      expect(await rows()).toEqual([]);
+
+      machines[0] = { name: "fsn-1", pool: true, copy: writerCopy(), bound: 5_000_000, capabilities: origins };
+      expect(await request({ kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
+    });
+
     it("mirror: a Legacy Volume mirrors onto a Server that can't check origins", async () => {
       expect(await request({ kind: "mirror", args: { to: "fsn-2" } })).toMatchObject({ ok: true });
     });

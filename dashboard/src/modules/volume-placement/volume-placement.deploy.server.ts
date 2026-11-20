@@ -320,18 +320,27 @@ export const unlessPlacementRefused = <A, E, R>(organizationId: string, write: E
     return yield* write;
   });
 
-/** The Servers a born Volume would be held on that can't check where its data began, by name. Legacy Volumes name none. */
-export type OriginReader = (organizationId: string, servers: readonly MachineId[]) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
+/**
+ * Which of `servers`, and of the Servers that hold a copy of `dockerVolume` now, can't check where a born Volume's data
+ * began, by name. The copy's data comes from one of those holders, so its Ployz has to check too.
+ */
+export type OriginReader = (
+  organizationId: string, servers: readonly MachineId[], dockerVolume: string | null,
+) => Effect.Effect<readonly string[], unknown, OrganizationRuntime>;
 
-export const readOriginBlockers: OriginReader = (organizationId, servers) => firstRuntimeFrame(organizationId).pipe(
-  Effect.flatMap((frame) => frame === null ? Effect.fail("no Server answered") : Effect.succeed(originBlockers(frame.machines.map((entry) => ({
-    id: entry.machine.id, name: entry.machine.name, capabilities: entry.machine.runtime.capabilities ?? [],
-  })), servers))),
+export const readOriginBlockers: OriginReader = (organizationId, servers, dockerVolume) => firstRuntimeFrame(organizationId).pipe(
+  Effect.flatMap((frame) => {
+    if (frame === null) return Effect.fail("no Server answered");
+    const holders = frame.volumes.filter((entry) => entry.id.name === dockerVolume).map((entry) => entry.id.machine_id);
+    return Effect.succeed(originBlockers(frame.machines.map((entry) => ({
+      id: entry.machine.id, name: entry.machine.name, capabilities: entry.machine.runtime.capabilities ?? [],
+    })), [...servers, ...holders]));
+  }),
 );
 
 /**
- * `write` runs only once every Server in `placement` can hold Volume `volumeId`: any Server for a Legacy Volume, and only
- * one that checks where a copy's data began for a born one.
+ * `write` runs only once every Server in `placement`, and every one that holds a copy now, can hold Volume `volumeId`:
+ * any Server for a Legacy Volume, and only one that checks where a copy's data began for a born one.
  */
 export const unlessOriginRefused = <A, E, R>(
   organizationId: string,
@@ -339,10 +348,13 @@ export const unlessOriginRefused = <A, E, R>(
   write: Effect.Effect<A, E, R>,
   read: OriginReader = readOriginBlockers,
 ) => Effect.gen(function* () {
-  const { volumes } = yield* readStore(organizationId, { query: "volumes", environment });
+  const { environment: summary, volumes } = yield* readStore(organizationId, { query: "volumes", environment });
   const volume = volumes.find((entry) => entry.id === volumeId);
   if (volume?.born !== true) return yield* write;
-  const blockers = yield* read(organizationId, [placement.primary, ...placement.mirrors]).pipe(Effect.catch(() => Effect.succeed(null)));
+  const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
+  const owned = namespaces.find((entry) => entry.project === summary.project && entry.environment === summary.name);
+  const dockerVolume = owned === undefined ? null : dockerVolumeName(owned.namespace, volumeId);
+  const blockers = yield* read(organizationId, [placement.primary, ...placement.mirrors], dockerVolume).pipe(Effect.catch(() => Effect.succeed(null)));
   if (blockers === null) return { ok: false, refusal: UNANSWERED } as const;
   if (blockers.length === 0) return yield* write;
   const refusal: StoreRefusal = { code: "upgrade_required", message: originUpgradeMessage(volume.name, blockers), details: { servers: [...blockers] } };
@@ -451,9 +463,9 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
       blocked.push({ volume: volume.name, upgrade: to?.machine.name ?? null });
       continue;
     }
-    // A born Volume moves only onto Servers that check where its data began.
+    // A born Volume moves only between Servers that check where its data began, the one it leaves included.
     const unchecked = volume.born
-      ? yield* origins(organizationId, [staged.primary, ...staged.mirrors]).pipe(Effect.catch(() => Effect.succeed(null)))
+      ? yield* origins(organizationId, [server, staged.primary, ...staged.mirrors], volume.dockerVolume).pipe(Effect.catch(() => Effect.succeed(null)))
       : [];
     if (unchecked === null || unchecked.length > 0) {
       stuck.push(volume.name);

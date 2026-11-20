@@ -56,6 +56,30 @@ function outcome(input: PlanInput, members: Member[]) {
   }
 }
 
+describe("a born Volume's copies", () => {
+  const born = (server: string, copy: "writer" | "mirror" | "empty", checks: boolean): Member => {
+    const each = member(server, copy);
+    if (!each.answered) throw new Error("answered");
+    const view = each.view.copy === null ? each.view : { copy: { ...each.view.copy, origin: "a".repeat(64) } };
+    return { ...each, view, checksOrigins: checks };
+  };
+
+  it("refuses a mirror when the receiver or the writer can't check where its data began", () => {
+    const refused = planFromCopies(mirror("db-2"), [born("db-1", "writer", true), born("db-2", "empty", false)]);
+    expect(refused).toEqual({ ok: false, refusal: { code: "server_lacks", message: "Upgrade db-2 first. data needs a newer Ployz on every Server that holds it." } });
+    expect(outcome(mirror("db-2"), [born("db-1", "writer", false), born("db-2", "empty", true)])).toBe("refuse server_lacks");
+    expect(outcome(mirror("db-2"), [born("db-1", "writer", true), born("db-2", "empty", true)])).toBe("mirror db-1->db-2");
+  });
+
+  it("refuses a full sync to a Mirror whose Server can't check origins, so the run forgets nothing", () => {
+    expect(outcome(sync(true), [born("db-1", "writer", true), born("db-2", "mirror", false)])).toBe("refuse server_lacks");
+  });
+
+  it("leaves a Legacy Volume's copies to any Server", () => {
+    expect(outcome(mirror("db-2"), [member("db-1", "writer"), member("db-2", "empty")])).toBe("mirror db-1->db-2");
+  });
+});
+
 describe("roleOf", () => {
   it.each<[Copy, Role]>([
     ["writer", "writer"],
@@ -599,6 +623,7 @@ describe("follow every next step a refusal names", () => {
   type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
   const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
     machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null,
+    checksOrigins: !floorless,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;
