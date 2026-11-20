@@ -3,7 +3,10 @@
 
 use std::time::Duration;
 
-use bollard::{models::ContainerStatsResponse, query_parameters::StatsOptionsBuilder};
+use bollard::{
+    models::{ContainerMemoryStats, ContainerStatsResponse},
+    query_parameters::StatsOptionsBuilder,
+};
 use futures_util::{StreamExt as _, future::join_all};
 use ployz_core::{
     ContainerId, QualifiedService, labels,
@@ -101,22 +104,27 @@ fn live(
         container_id,
         service,
         cpu: cpu(stats),
-        // As `docker stats` shows it: page cache the kernel can drop is not in use.
-        mem_bytes: memory.and_then(|memory| {
-            let inactive = memory
-                .stats
-                .as_ref()
-                .and_then(|stats| stats.get("inactive_file"))
-                .copied()
-                .unwrap_or(0);
-            Some(memory.usage?.saturating_sub(inactive))
-        }),
+        mem_bytes: memory.and_then(in_use),
         mem_limit: memory.and_then(|memory| memory.limit),
         rx: network(|network| network.rx_bytes),
         tx: network(|network| network.tx_bytes),
         io_r: blkio("read"),
         io_w: blkio("write"),
     }
+}
+
+/// Memory as `docker stats` shows it: page cache the kernel can drop is not in use. Its
+/// count is `total_inactive_file` under cgroup v1 and `inactive_file` under v2.
+fn in_use(memory: &ContainerMemoryStats) -> Option<u64> {
+    let usage = memory.usage?;
+    let stats = memory.stats.as_ref();
+    let inactive = stats
+        .and_then(|stats| stats.get("total_inactive_file"))
+        .or_else(|| stats.and_then(|stats| stats.get("inactive_file")))
+        .copied()
+        .filter(|inactive| *inactive < usage)
+        .unwrap_or(0);
+    Some(usage - inactive)
 }
 
 fn cpu(stats: &ContainerStatsResponse) -> Option<f64> {
@@ -135,4 +143,27 @@ fn cpu(stats: &ContainerStatsResponse) -> Option<f64> {
     }
     #[expect(clippy::cast_precision_loss, reason = "a ratio of nanosecond counters")]
     Some(used as f64 / elapsed as f64 * f64::from(now.online_cpus?))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use bollard::models::ContainerMemoryStats;
+
+    use super::in_use;
+
+    fn memory(stat: &str) -> ContainerMemoryStats {
+        ContainerMemoryStats {
+            usage: Some(500),
+            stats: Some(HashMap::from([(stat.to_owned(), 400)])),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn page_cache_is_left_out_under_cgroup_v1_and_v2() {
+        assert_eq!(in_use(&memory("total_inactive_file")), Some(100));
+        assert_eq!(in_use(&memory("inactive_file")), Some(100));
+    }
 }
