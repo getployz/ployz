@@ -131,6 +131,16 @@ services:
       clickhouse:
         condition: service_healthy
 
+  # One-shot: the Collector runs as user 10001 and a new volume belongs to root.
+  observe-collector-queue-init:
+    profiles: [observe]
+    image: busybox:1.37
+    restart: 'no'
+    user: '0'
+    command: [chown, '10001:10001', /queue]
+    volumes:
+      - observe-collector-queue:/queue
+
   observe-collector:
     profiles: [observe]
     # 0.147.0 or newer: Machines run the same Collector line.
@@ -142,8 +152,12 @@ services:
     configs:
       - source: observe-collector
         target: /etc/otelcol/config.yaml
+    volumes:
+      - observe-collector-queue:/queue
     depends_on:
       observe-migrate:
+        condition: service_completed_successfully
+      observe-collector-queue-init:
         condition: service_completed_successfully
 
 configs:
@@ -156,6 +170,10 @@ configs:
   # Span event, link and exemplar attributes keep the sender's values; only OrgId is tenancy. ClickHouse derives OrgId from
   # the ployz.org resource attribute; the tables come from `npm run observe:migrate`, so the
   # exporter never creates them.
+  # The 200 a Machine gets means the batch is in the exporter's queue on the observe-collector-queue volume
+  # (fsync'd, so it survives a crash); batching happens behind that queue, not before it, and retries never
+  # give up, so the queue holds a batch until ClickHouse takes it. A full queue refuses with 503 and the
+  # Machine sends again. Keep `batch.min_size` at or below `queue_size`.
   observe-collector:
     content: |
       receivers:
@@ -194,8 +212,10 @@ configs:
         attributes/org:
           actions:
             - { key: ployz.org, from_context: metadata.x-ployz-org, action: upsert }
-        batch:
-          timeout: 2s
+      extensions:
+        file_storage/queue:
+          directory: /queue
+          fsync: true
       exporters:
         clickhouse:
           endpoint: tcp://clickhouse:9000
@@ -203,17 +223,25 @@ configs:
           password: $${env:CLICKHOUSE_PASSWORD}
           database: otel
           create_schema: false
-          sending_queue: { enabled: true, queue_size: 1000 }
-          retry_on_failure: { enabled: true, max_elapsed_time: 60s }
+          sending_queue:
+            enabled: true
+            storage: file_storage/queue
+            sizer: bytes
+            queue_size: 2147483648
+            block_on_overflow: false
+            batch: { flush_timeout: 2s, min_size: 1048576, max_size: 16777216, sizer: bytes }
+          retry_on_failure: { enabled: true, max_elapsed_time: 0 }
       service:
+        extensions: [file_storage/queue]
         telemetry:
           metrics: { level: none }
         pipelines:
-          logs: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org, batch], exporters: [clickhouse] }
-          metrics: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org, batch], exporters: [clickhouse] }
-          traces: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org, batch], exporters: [clickhouse] }
+          logs: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org], exporters: [clickhouse] }
+          metrics: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org], exporters: [clickhouse] }
+          traces: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org], exporters: [clickhouse] }
 
 volumes:
   postgres-data:
   redis-data:
   clickhouse-data:
+  observe-collector-queue:

@@ -248,9 +248,11 @@ they do.
 
 Ployz Cloud keeps each record for 30 days from the time the server stamped on it, and files it
 under the organization that owns the server that sent it. A server can't claim another
-organization's name. Cloud answers a server once its Collector has taken a batch, before
-ClickHouse has written it, so a restart of the Collector or a long ClickHouse outage can lose
-batches a server believes were kept. Back up the
+organization's name. Cloud answers a server once its Collector has put the batch on disk, in the
+`observe-collector-queue` volume. A restart of the Collector or a ClickHouse outage loses nothing:
+the Collector sends the batch when ClickHouse is back. The queue holds up to 2 GiB. When it is
+full, Cloud answers `503` and the server keeps the batch and sends it again. Keep that volume
+through upgrades, since it holds what ClickHouse hasn't written yet. Back up the
 `ployz-cloud-self-host_clickhouse-data` volume if you want to keep the history.
 
 Ployz masks the values it sealed from what a server sends, but only on a best-effort basis.

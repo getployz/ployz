@@ -199,7 +199,7 @@ The set of target platforms a service image must cover for one Deployment, deriv
 _Avoid_: Organization Cluster architecture, global build platform, builder architecture
 
 **Cloud Collector**:
-The OpenTelemetry Collector inside Cloud that takes a Machine's logs, metrics and traces after Cloud's web service has verified the Machine's token. It stamps every record with the Organization that verification found, whatever labels the sender put on it, and writes to Cloud's ClickHouse. The `OrgId` column is the only tenancy: attribute maps hold what the sender put, except the stamped keys on a record's resource, scope and own attributes, so a reader filters on `OrgId` and never on an attribute. No Machine reaches it directly, and without it Cloud keeps no observe data.
+The OpenTelemetry Collector inside Cloud that takes a Machine's logs, metrics and traces after Cloud's web service has verified the Machine's token. It stamps every record with the Organization that verification found, whatever labels the sender put on it, and writes to Cloud's ClickHouse. The `OrgId` column is the only tenancy: attribute maps hold what the sender put, except the stamped keys on a record's resource, scope and own attributes, so a reader filters on `OrgId` and never on an attribute. It answers a Machine only once the batch is on its own disk, and keeps it there until ClickHouse has written it; when that queue is full it answers with a refusal and the Machine retries. No Machine reaches it directly, and without it Cloud keeps no observe data.
 _Avoid_: ingest gateway, telemetry proxy
 
 **Machine token**:
