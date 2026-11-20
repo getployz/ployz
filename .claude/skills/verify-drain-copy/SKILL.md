@@ -10,7 +10,7 @@ The model in `core/crates/ployz-verify/src/drain_copy.rs` explores every interle
 - **the handler** (`MachineService::ensure`, then `converge_now` and `create_and_start`) reads the slot its request names. It removes a half-made Container of that key (`matching_creation`), then creates the Container, or adopts one a name conflict finds when it has the same spec. It checks the image by ID, starts, reads the Container it acted on, and answers. Any step may end in an error instead. It runs once, and again after a lost answer or a first send the entry couldn't dial, unless the entry refuses to dial again for the resend.
 - **the planter**, an honest other caller (an older CLI's move, a hand-written ensure.v1, a second drain), acts at most twice in `move:{old}` or in a second drain's minted slot. It creates a Container of either spec and either image, half-made or started, stops one, or removes one by key. It never acts in this move's minted slot. Only a forger can name that slot, which is an accepted residual.
 - **a Machine restore**, once, gives the move's own Container a new ID under the same key. The move stays its creator.
-- **the drain** (`move_container`) mints its slot once, sends, may cancel at any point (the resend wait included), and waits out health. After any end but a healthy Container it sends one Gone by its slot's key. It reports the replacement removed only when that Gone emptied the slot and no send went out without an answer (`Outstanding`).
+- **the drain** (`move_container`) mints its slot once, sends, may cancel at any point (the resend wait included), and waits out health. After any end but a healthy Container it sends one Gone by its slot's key, resent while the Machine restarts. It reports the replacement removed only when that Gone read the slot back empty and no send went out without an answer (`Outstanding`).
 
 The drain's cleanup has no branch, so the model calls no production decision. Every step is a hand copy of the code it names, so it drifts unless you keep it in step.
 
@@ -62,6 +62,7 @@ The model leaves these out:
 
 - a second destination;
 - a forger that names this move's minted key;
+- a resent Gone, which removes nothing the first did not, and a Gone that reads back a Container, which the drain reports as not removed;
 - rotation and every step after a healthy answer (`relocate`, `bring_in`, `wait_listed`, `retire_old`), the rerun that takes over a promoted copy included;
 - who signed the spec, and the peer image copy.
 

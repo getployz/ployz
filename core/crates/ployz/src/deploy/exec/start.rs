@@ -9,10 +9,11 @@ use crate::deploy::cleanup::EmptyPolicy;
 use crate::deploy::progress::Progress;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerWant, CopyRotation, DeploymentLogId, Drain, ENSURE_PINNED_CONTAINER_CAPABILITY,
-    EnsuredContainer, ExecutionError, Gen, HealthVerdict, ImageDigest, MachineAction, MachineId,
-    Namespace, NewContainer, OperationPhase, OutOfMemory, QualifiedService, ResolvedServiceSpec,
-    RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey, error_chain,
+    ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
+    ENSURE_PINNED_CONTAINER_CAPABILITY, EnsuredContainer, ExecutionError, Gen, HealthVerdict,
+    ImageDigest, MachineAction, MachineId, Namespace, NewContainer, OperationPhase, OutOfMemory,
+    QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey,
+    error_chain,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -197,8 +198,13 @@ pub(crate) struct Started {
 
 impl Started {
     /// Remove the replacement by the move's slot, and say whether none of it is left.
-    pub(crate) async fn discard<C: CopyLifecycle>(self, client: &C) -> bool {
-        emptied(client, &self.to, self.slot).await && !self.unsettled
+    pub(crate) async fn discard<C: CopyLifecycle>(
+        self,
+        client: &C,
+        cancellation: &CancellationToken,
+    ) -> bool {
+        let client = RestartTolerant::new(client, cancellation);
+        emptied(&client, &self.to, self.slot).await && !self.unsettled
     }
 }
 
@@ -209,8 +215,8 @@ impl Started {
 ///
 /// Every send of one move carries the slot it mints, `move:{old}:{nonce}`, which no other
 /// caller names, so a resend adopts what an earlier send made. After any end but a healthy
-/// Container, the move removes that slot by key once: it can take only what its own sends
-/// made, whatever an error says the Machine did.
+/// Container, the move asks that slot Gone by key, resent only while the Machine restarts:
+/// it can take only what its own sends made, whatever an error says the Machine did.
 pub(crate) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
@@ -220,7 +226,6 @@ pub(crate) async fn move_container<C: MachineOperations>(
     image: &ImageDigest,
     cancellation: &CancellationToken,
 ) -> Result<Started, MoveError> {
-    let once = client;
     let client = RestartTolerant::new(client, cancellation);
     let policy = SlotPolicy::of(ContainerKind::ServiceContainer, &spec.mode);
     let global = policy.keyed_by_spec();
@@ -313,28 +318,34 @@ pub(crate) async fn move_container<C: MachineOperations>(
         None => MoveEnd::Cancelled,
     };
     let keep = adopts || (global && !cancellation.is_cancelled());
-    let replacement_removed = !keep && emptied(once, to, slot).await && !outstanding.any();
+    let replacement_removed = !keep && emptied(&client, to, slot).await && !outstanding.any();
     Err(MoveError {
         end,
         replacement_removed,
     })
 }
 
-/// Send one Gone for `slot` on `machine_id`, and say whether it left the slot empty. A
-/// removal unanswered for as long as a restart takes may not have happened.
-async fn emptied<C: CopyLifecycle>(client: &C, machine_id: &MachineId, slot: SlotKey) -> bool {
-    let gone = cleanup::gone(
-        client,
-        machine_id,
-        ContainerLocator::Key(slot),
-        Drain::NONE,
-        AnonymousVolumes::Remove,
-        Some(RESTART_WAIT),
-    );
-    matches!(
-        tokio::time::timeout(RESTART_WAIT, gone).await,
-        Ok(Ok(cleanup::Gone::Removed))
-    )
+/// Ask `slot` on `machine_id` Gone, sent again while the Machine restarts, and say whether
+/// the Machine answered that nothing of it is there. A removal unanswered for as long as a
+/// restart takes may not have happened, and one that reads back a Container left one.
+async fn emptied<C: CopyLifecycle>(
+    client: &RestartTolerant<'_, C>,
+    machine_id: &MachineId,
+    slot: SlotKey,
+) -> bool {
+    let want = ContainerWant::Gone {
+        container: ContainerLocator::Key(slot),
+        drain: Drain::NONE,
+        anonymous_volumes: AnonymousVolumes::Remove,
+    };
+    let gone = client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT));
+    match tokio::time::timeout(RESTART_WAIT, gone).await {
+        Ok(Ok(EnsuredContainer::Ensured { now, .. })) => now.present().is_none(),
+        Ok(Ok(EnsuredContainer::Refused { now, refusal })) => {
+            refusal.reason == ContainerRefusalReason::NotFound && now.present().is_none()
+        }
+        Ok(Err(_)) | Err(_) => false,
+    }
 }
 
 /// What a failed Global creation leaves on its Machine. A stop-first replacement

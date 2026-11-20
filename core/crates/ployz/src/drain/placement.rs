@@ -242,6 +242,9 @@ pub enum MoveFailure {
         detail: String,
         replacement_removed: bool,
     },
+    /// `to` must be upgraded to take the move, and a send of it may still have made a
+    /// Container there.
+    NeedsUpgrade { from: MachineRef, to: MachineRef },
     /// Cancelled before the new Container served.
     Cancelled {
         from: MachineRef,
@@ -285,15 +288,7 @@ impl MoveFailure {
             },
             // A send may still have made a Container there, so the refusal can't say
             // nothing is left.
-            MoveEnd::NeedsUpgrade => Self::NotServing {
-                detail: StayReason::NeedsUpgrade {
-                    servers: vec![to.clone()],
-                }
-                .to_string(),
-                from,
-                to,
-                replacement_removed,
-            },
+            MoveEnd::NeedsUpgrade => Self::NeedsUpgrade { from, to },
         }
     }
 
@@ -314,7 +309,10 @@ impl MoveFailure {
                 replacement_removed,
                 ..
             } => from.id != *server && *replacement_removed,
-            Self::Cancelled { .. } | Self::Refused { from: None, .. } | Self::Unrecognized => false,
+            Self::NeedsUpgrade { .. }
+            | Self::Cancelled { .. }
+            | Self::Refused { from: None, .. }
+            | Self::Unrecognized => false,
         }
     }
 }
@@ -332,6 +330,10 @@ impl fmt::Display for MoveFailure {
             Self::NotServing {
                 from, to, detail, ..
             } => write!(f, "moving it from {from} to {to}: {detail}"),
+            Self::NeedsUpgrade { from, to } => write!(
+                f,
+                "moving it from {from} to {to}: upgrade {to} to move it there. Its new container may still be there"
+            ),
             Self::Cancelled { from, to, .. } => {
                 write!(f, "moving it from {from} to {to}: cancelled")
             }
@@ -538,16 +540,22 @@ fn promoted<'a>(
             && copy.machine_id != old.machine_id
             && copy.creation_key().is_some_and(made_by_move)
             && copy.resolved_spec.serving_shape() == old.resolved_spec.serving_shape()
-            && matches!(
-                copy.runtime,
-                ContainerRuntimeObservation::Running {
-                    health: HealthObservation::Healthy | HealthObservation::NotConfigured,
-                }
-            )
+            && serves_healthy(&copy.runtime)
             && !stranded
                 .iter()
                 .any(|other| other.container_id == copy.container_id)
     })
+}
+
+/// Whether a copy runs and passes its health check, or has none. A rerun lets only such
+/// a copy stand in for the one it retires.
+fn serves_healthy(runtime: &ContainerRuntimeObservation) -> bool {
+    matches!(
+        runtime,
+        ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy | HealthObservation::NotConfigured,
+        }
+    )
 }
 
 /// The Server for one more Container of `spec`. A spec whose image is a tag moves only
@@ -832,15 +840,15 @@ pub(crate) async fn relocate<C: MachineOperations>(
     if let Some(detail) = not_in {
         return Err(MoveError {
             end: MoveEnd::NotServing { detail },
-            replacement_removed: started.discard(client).await,
+            replacement_removed: started.discard(client, cancellation).await,
         });
     }
     Ok(listed(client, &new, name, cancellation).await)
 }
 
 /// Confirm `new`, the copy an earlier move of `old` brought In, in `old`'s place: it runs
-/// `old`'s image, is still In, and every proxy lists it. Nothing is created or removed.
-/// Whatever can't be confirmed leaves `old` serving beside it.
+/// `old`'s image, is still In and healthy, and every proxy lists it. Nothing is created
+/// or removed. Whatever can't be confirmed leaves `old` serving beside it.
 pub(crate) async fn confirm_promoted<C: MachineOperations>(
     client: &C,
     old: &Copy,
@@ -864,6 +872,12 @@ pub(crate) async fn confirm_promoted<C: MachineOperations>(
     if source.image_id.is_none() || copy.image_id != source.image_id {
         return unconfirmed(format!(
             "Container {} came In for it on {server}, but runs another image",
+            new.container_id
+        ));
+    }
+    if !serves_healthy(&copy.container.runtime) {
+        return unconfirmed(format!(
+            "Container {} came In for it on {server}, but isn't healthy",
             new.container_id
         ));
     }

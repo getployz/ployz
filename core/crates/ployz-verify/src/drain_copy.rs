@@ -39,6 +39,11 @@
 //!   replacement removed only when that Gone left the slot empty and no send of it went out
 //!   without an answer (`Outstanding`).
 //!
+//! The model's Gone is one atomic step. The code resends it while the Machine restarts, and
+//! a resend by the same key removes nothing the first did not, so the resends come to this
+//! one removal. The atomic step always reads its slot back empty; the code reports a Gone
+//! that reads back a Container as not removed, which can only make the report more careful.
+//!
 //! The drain's cleanup has no branch, so the model calls no production decision. The key
 //! choice is a transition, and `Key` switches it back to the designs it replaced.
 //!

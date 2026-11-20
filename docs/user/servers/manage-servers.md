@@ -461,15 +461,16 @@ services no project owns it left alone. It lists each service with where it went
 A drain that stops early marks the service it was moving **Interrupted** and the ones it never
 reached **Not attempted**; those still run on the server. Each move names its new container with a
 key no one else uses, and keeps that key when it has to ask the other server again. When a move
-fails, the drain removes the container under that key once and nothing else, so a container another
+fails, the drain removes the container under that key and nothing else, so a container another
 tool or an older CLI left on the other server stays where it is. When a request to the other server
 got no answer, or the drain stopped while one was out, the dashboard's row says the new container
 **may still be there**: that server can still make it after the drain ends. With `--json`, a failed
-move's `replacement_removed` is `true` only when the drain removed its new container and no request
-can still make one. When a drain stopped after the new container came into service but before the old
-one was retired, drain again: it finds that container, starts no second one, and retires the old
-one. If that container runs another image or has left service, the old one keeps serving and the row
-says why.
+move's `replacement_removed` is `true` only when the other server confirmed the new container is gone
+and no request can still make one. When a drain stopped after the new container came into service but
+before the old one was retired, drain again: it finds that container, starts no second one, and
+retires the old one. If that container runs another image or is failing its health check, the old one
+keeps serving and the row says why. If that container has already left service, the drain moves the
+old one again from the start.
 If a server's proxy doesn't confirm the switch in time, the moved service's old container keeps
 running on the drained server and the row says so; the next drain removes it, along with any old container an earlier drain left there. While an old
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`

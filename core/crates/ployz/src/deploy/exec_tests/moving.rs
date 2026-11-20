@@ -543,6 +543,57 @@ async fn a_resend_removes_what_its_lost_send_made() {
     client.assert_done();
 }
 
+/// The cleanup's Gone is sent again while the destination restarts, so a restart there
+/// doesn't leave the move's copy behind.
+#[tokio::test(start_paused = true)]
+async fn a_failed_moves_cleanup_waits_out_a_destination_restart() {
+    let client = moving(vec![
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        Step(
+            Call::DiscardSlot(machine(TO), ContainerKind::ServiceContainer),
+            Reply::Error(RpcError::unavailable("restarting")),
+        ),
+        discarded(),
+    ]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&client).await
+    else {
+        panic!("nothing served");
+    };
+    assert!(replacement_removed);
+    client.assert_done();
+}
+
+/// A Gone the Machine answers by reading back a Container, as one a restore brought back
+/// in the slot, did not leave it empty.
+#[tokio::test]
+async fn a_cleanup_that_reads_back_a_container_says_it_may_still_be_there() {
+    let client = moving(vec![
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        Step(
+            Call::DiscardSlot(machine(TO), ContainerKind::ServiceContainer),
+            Reply::Created(container('d')),
+        ),
+    ]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&client).await
+    else {
+        panic!("nothing served");
+    };
+    assert!(!replacement_removed);
+    client.assert_done();
+}
+
 /// Two drains moving the same copy at once: one fails while the other's new Container
 /// waits on its health. The failed one's cleanup leaves the other's Container alone.
 #[tokio::test(start_paused = true)]
@@ -574,7 +625,8 @@ async fn a_failed_move_leaves_a_concurrent_moves_copy() {
 
 /// A rerun of a drain whose earlier move brought its copy In, but never retired the old
 /// one, creates nothing: it confirms that copy runs the old copy's image and is listed,
-/// then retires the old copy. A copy of another image leaves the old copy serving.
+/// then retires the old copy. A copy of another image, or one failing its health check
+/// though every proxy still lists it, leaves the old copy serving.
 #[tokio::test]
 async fn a_rerun_retires_the_old_copy_behind_the_copy_an_earlier_move_brought_in() {
     let promoted = Copy {
@@ -583,10 +635,24 @@ async fn a_rerun_retires_the_old_copy_behind_the_copy_an_earlier_move_brought_in
         container_id: container('b'),
         rotation: CopyRotation::In,
     };
-    for (image, end) in [
-        ("a", OldCopyEnd::Stopped),
+    for (image, health, end) in [
+        ("a", healthy(), OldCopyEnd::Stopped),
+        (
+            "a",
+            failing(),
+            OldCopyEnd::In {
+                unconfirmed: Unconfirmed::Failed {
+                    detail: format!(
+                        "Container {} came In for it on {}, but isn't healthy",
+                        container('b'),
+                        name(&machine(TO))
+                    ),
+                },
+            },
+        ),
         (
             "c",
+            healthy(),
             OldCopyEnd::In {
                 unconfirmed: Unconfirmed::Failed {
                     detail: format!(
@@ -600,7 +666,7 @@ async fn a_rerun_retires_the_old_copy_behind_the_copy_an_earlier_move_brought_in
     ] {
         let mut steps = vec![
             observed(Call::Inspect(machine(FROM), container('a')), running()),
-            observed(Call::Inspect(machine(TO), container('b')), running()),
+            observed(Call::Inspect(machine(TO), container('b')), health),
         ];
         if end == OldCopyEnd::Stopped {
             steps.push(ok(Call::Remove(machine(FROM), container('a'))));

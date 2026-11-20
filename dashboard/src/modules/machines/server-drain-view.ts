@@ -254,6 +254,8 @@ export function failureWords(failure: MoveFailure, drained: string): string {
       return `Couldn't copy its image to ${failure.to.name}. ${stillOn(failure.from)}`;
     case "not_serving":
       return `Its new container on ${failure.to.name} didn't become healthy${failure.replacement_removed ? "" : ", and may still be there"}. ${stillOn(failure.from)}`;
+    case "needs_upgrade":
+      return `Upgrade ${failure.to.name} to move it there. ${stillOn(failure.from)} Its new container on ${failure.to.name} may still be there.`;
     case "cancelled":
       return `The drain stopped mid-move. ${stillOn(failure.from)}${failure.replacement_removed ? "" : ` Its new container on ${failure.to.name} may still be there.`}`;
     case "refused": {
