@@ -149,6 +149,12 @@ it("searches a Windows path with backslashes as written", async () => {
   expect((await read({ search: path })).rows.map((row) => row.message)).toEqual([`opened ${path}`]);
 }, 60_000);
 
+it("searches a line holding a real tab, newline and carriage return as written", async () => {
+  const body = "step one\tdone\nstep two\rdone";
+  await insert([{ org: ACME, at: second(41), body }]);
+  expect((await read({ search: "one\tdone\nstep two\rdone" })).rows.map((row) => row.message)).toEqual([body]);
+}, 60_000);
+
 it("keeps a value that looks like SQL a value", async () => {
   const hostile = "x') OR 1=1; DROP TABLE otel.otel_logs; --";
   expect((await read({ search: hostile })).rows).toEqual([]);
