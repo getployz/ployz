@@ -136,6 +136,7 @@ Each property that holds on the shipped code was seen failing on a scratch chang
 | A whole Wait with a met and a short region names only the met one (`plan_one_service`'s filter keeps the away regions not in `regions`) | "a Wait names only regions still short" and the shortfall property (Plain) |
 | `plan_one_service` returns an empty plan for one count of 2 with a constraint and 2 running | the shortfall property (Plain), as fsn stays at 1 of 2 with no Wait |
 | `outside_region` returns `VolumeServerTakesNoServices` in place of `VolumeOutsideRegion`, while `one` takes services | the shortfall property (Volume) |
+| `shared_elsewhere` refuses whenever the Volume is outside the Service's region, with no sharer kept elsewhere (drop `&& plan.kept_elsewhere(name, region)`) | "refused only when ... can never meet" (Shared), "a Refusal clears only with a config change" (Volume) |
 | `Broken::all_waiting_needs_unattempted` in the model | "reads nothing applied and does not move Live" |
 
 The other six fail on the shipped code. The stale-spec break now also fails the shortfall property in Volume, since a replacement left on the old version leaves its region short.
@@ -162,7 +163,7 @@ The model calls these as they are, so a change to them is checked as written. Re
 
 - `core/crates/ployz/src/deploy/planning.rs`: `preview_deploy`, `plan_operations`, `assemble_plan` (the errors it blocks), `plan_one_service`, `place_service`, `spread_machines`, `eligible_machines`, `placement_error`, `configured_regions`.
 - `core/crates/ployz/src/deploy/planning/placement.rs`: `Spread` (`of`, `wait_for`, `hold`, `standing`, `replicas`, `supplied`), `Quota`, `select_replicated`, `plan_replicated`, `withdraw`, `remove_unused`.
-- `core/crates/ployz/src/deploy/planning/volumes.rs`: `refuse_kept_apart`, `reserve_shared`, `place`, `constrain_candidates`, `planned_volume_constraints`.
+- `core/crates/ployz/src/deploy/planning/volumes.rs`: `refuse_kept_apart`, `shared_elsewhere`, `reserve_shared`, `place`, `constrain_candidates`, `planned_volume_constraints`.
 - `core/crates/ployz/src/deploy.rs`: `PlanError::blocked_kind`.
 - `core/crates/ployz-core/src/domain/deploy.rs`: `DeployPreview::waits`, `WaitingReplicas`, `RegionWait`.
 
@@ -172,4 +173,4 @@ These the model copies, and they drift unless you keep them in step:
 - `core/crates/ployz-store/src/rules.rs`: `Problem::Regions` in `problems` (`counts_menu`).
 - `core/crates/ployz-store/src/deployment/outcomes.rs` `node_outcomes`, `deployment/record.rs` `record` (a Refusal ends the Deployment Failed), `deployment/mod.rs` `all_waiting` and `NodeStatus::advances`, `deployment/history.rs` `live` (`Verdict::advanced`, `applied`, `all_waiting`, `live`).
 
-Sync commit: `b07db92772ca172331e8b60f74d02c3efd704c1b`, the `main` this model was checked against, with R4 (#4360) and R5 (#4334) in it. Code in the lists above that changed after it has not been rechecked.
+Sync commit: `48582970f957293b4e37d63c7620a5d620b4a24b`, the `main` this model was last checked against, with R4 (#4360), R5 (#4334) and R6 (#4374) in it. R6 changed only the wording and details of shared-Volume Refusals (`VolumeInOtherRegion` folded into `VolumeSharedAcrossRegions` with a `SharedHome`), which the model reads by `BlockedKind` alone. Code in the lists above that changed after it has not been rechecked.
