@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { it } from "@effect/vitest";
 import { Effect } from "effect";
+import { isbot } from "isbot";
 import { afterAll, describe, expect } from "vitest";
 import { testConfigLayer } from "#/test/config-environment";
 import * as analytics from "../adapter";
@@ -194,6 +195,49 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
       expect(filtered.overview.pageviews).toBe(1);
       expect(filtered.values("page")).toEqual([{ value: path, pageviews: 1, visitors: 1 }]);
     }
+  }).pipe(Effect.provide(config)), 60_000);
+  it.live("reads thousands of distinct crawler agents and counts none of them", () => Effect.gen(function* () {
+    const org = randomUUID();
+    yield* Effect.promise(() => seed(org, "crawlers", Array.from({ length: 8192 }, (_, i) => ({ at: at(first, "09:00:00"), visitor: i + 1, ua: `${GOOGLEBOT} ${i}` }))));
+    const answer = yield* analytics.figures(query(org), "day", ["page"]);
+    expect(answer.overview.pageviews).toBe(0);
+    expect((yield* analytics.api(query(org))).routes).toEqual([]);
+  }).pipe(Effect.provide(config)), 60_000);
+  it.live("leaves out a crawler however many other agents the range holds", () => Effect.gen(function* () {
+    const org = randomUUID();
+    yield* Effect.promise(() => seed(org, "crowd", Array.from({ length: 20_001 }, (_, i) => ({
+      at: at(first, "09:00:00"), path: i === 20_000 ? "/crawler" : "/", visitor: i + 1, ua: i === 20_000 ? "zzz Googlebot/2.1" : `${BROWSER} ${i}`,
+    }))));
+    const answer = yield* analytics.figures(query(org), "day", ["page"]);
+    expect(answer.overview.pageviews).toBe(20_000);
+    expect(answer.values("page").map((row) => row.value)).toEqual(["/"]);
+  }).pipe(Effect.provide(config)), 60_000);
+  it.live("calls the agents bots that isbot calls bots", () => Effect.gen(function* () {
+    const fragments = [
+      "google", "Google", "news", "sapphire", "wv", "app", "/google", " pixel", " channel/", "google/", "bot", "bots", "Bot_", " cu", "cam", "scan",
+      "lib", "http", ";", "java", "x", "Mozilla/5.0 ", " ", "/", "(", ")", "1.0", "a", "curl/8", "\n", "é", "search",
+    ];
+    let state = 12345;
+    const next = (bound: number) => {
+      state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+      return state % bound;
+    };
+    const agents = [
+      "", BROWSER, GOOGLEBOT, "curl/8.5.0", "Mozilla/5.0 (Linux; Android 10; Pixel 4) AppleWebKit/537.36 Chrome/141.0 Mobile Safari/537.36",
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) GSA/300.0 Mobile/15E148 Safari/604.1",
+      // Each of these ends a browser agent where only one of isbot's lookaround patterns decides.
+      ...[" newssapphirex", " newsfoo", " camscancam", " libhttpx", " cam cubot", " cubot", " libjava;", " wvjava;", " java;x", " googlewv", " google pixel",
+        " googleapp", " channel/google/_", " ;google/google", " googlex"].map((tail) => BROWSER + tail),
+      ...Array.from({ length: 4000 }, (_, i) => (i % 2 === 0 ? BROWSER + " " : "") + Array.from({ length: 1 + next(6) }, () => fragments[next(fragments.length)]).join("")),
+    ];
+    const org = randomUUID();
+    yield* Effect.promise(() => seed(org, "parity", agents.map((ua, i) => ({ at: at(first, "09:00:00"), path: `/${i}`, visitor: i + 1, ua }))));
+    const answer = yield* analytics.figures({ ...query(org), limit: agents.length }, "day", ["page"]);
+    const counted = new Set(answer.values("page").map((row) => row.value));
+    const disagree = agents.flatMap((ua, i) => (counted.has(`/${i}`) === isbot(ua) ? [ua] : []));
+    expect(disagree).toEqual([]);
+    expect(counted.size).toBeGreaterThan(100);
+    expect(counted.size).toBeLessThan(agents.length - 100);
   }).pipe(Effect.provide(config)), 60_000);
   it.live("lists every Service that took a request, before and after one is picked", () => Effect.gen(function* () {
     const org = randomUUID();

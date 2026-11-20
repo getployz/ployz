@@ -3,7 +3,7 @@ import { dayStart, hourStart, localDay, SESSION_GAP_SECONDS } from "../local-tim
 import {
   type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Interval, type Range, SESSION_DIMS, type ValueRow,
 } from "../model";
-import { botHashes } from "./bots";
+import { notBot } from "./bots";
 import { Params, readPageviews, type Scope } from "./statement";
 
 export type FigureQuery = Scope & {
@@ -83,7 +83,7 @@ const field = (columns: ReadonlyArray<string>, tuple: string, column: string) =>
  * of the visit that passes. Only a visitor with a pageview passing each eq filter can have a selected visit, so only
  * theirs are sessionized; a visitor's visits never depend on another visitor's pageviews.
  */
-const visitCtes = (query: FigureQuery, params: Params, window: Range, bots: ReadonlyArray<string>, columns: ReadonlyArray<string>) => {
+const visitCtes = (query: FigureQuery, params: Params, window: Range, columns: ReadonlyArray<string>) => {
   const { range } = query;
   const picks = pageFilters(query);
   const row = (key: FilterKey) => COLUMN[key];
@@ -105,7 +105,7 @@ const visitCtes = (query: FigureQuery, params: Params, window: Range, bots: Read
         UtmTerm AS utm_term, UtmContent AS utm_content, Source AS source
       FROM scoped
       WHERE Timestamp >= ${params.instant(window.start)} AND Timestamp < ${params.instant(window.end)}
-        AND Visitor IS NOT NULL AND cityHash64(Ua) NOT IN ${params.hashes(bots)})`,
+        AND Visitor IS NOT NULL AND ${notBot(params)})`,
     `counted AS (SELECT * FROM base${candidates.length === 0 ? "" : ` WHERE ${candidates.join(" AND ")}`})`,
     `visits AS (
       SELECT visitor, visit, ${at("visit[1]", "us")} AS start_us, ${at("visit[-1]", "us")} AS end_us, length(visit) AS n, ${heads},
@@ -189,19 +189,18 @@ const toBucket = (bucket: Date, row: { pageviews: number; visitors: number; visi
 export const figures = Effect.fn("WebAnalytics.figures")(function* (query: FigureQuery, interval: Interval, dims: ReadonlyArray<FilterKey>) {
   const { range, timezone } = query;
   const window = sessionWindow(timezone, range);
-  const bots = yield* botHashes(query, window, true);
   const columns = pageviewColumns(query, dims);
 
   const grouped = Effect.gen(function* () {
     const params = new Params();
-    const ctes = visitCtes(query, params, window, bots, columns);
+    const ctes = visitCtes(query, params, window, columns);
     return yield* readPageviews(query, params, ctes, groupedFigures(query, dims, timezone, params), GroupRow);
   });
 
   const pages = Effect.gen(function* () {
     if (!dims.includes("page")) return [];
     const params = new Params();
-    const ctes = [...visitCtes(query, params, window, bots, columns), rowsCte(query, params, columns)];
+    const ctes = [...visitCtes(query, params, window, columns), rowsCte(query, params, columns)];
     return yield* readPageviews(query, params, ctes, "SELECT path AS key, count() AS pageviews, uniqExact(visitor) AS visitors FROM rows GROUP BY path", PageRow);
   });
 
@@ -209,7 +208,7 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
     if (query.goals.length === 0) return [];
     const params = new Params();
     const ctes = [
-      ...visitCtes(query, params, window, bots, columns),
+      ...visitCtes(query, params, window, columns),
       rowsCte(query, params, columns),
       `goals AS (SELECT arrayJoin(arrayZip(${params.strings(query.goals.map((goal) => goal.id))}, ${params.strings(query.goals.map((goal) => likePattern(goal.pathPattern)))})) AS goal)`,
       "matched AS (SELECT goal.1 AS id, path FROM goals CROSS JOIN (SELECT DISTINCT path FROM rows) AS paths WHERE path LIKE goal.2)",
@@ -222,7 +221,7 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
     if (interval !== "hour") return [];
     const params = new Params();
     const zone = params.string(timezone);
-    const ctes = [...visitCtes(query, params, window, bots, columns), rowsCte(query, params, columns)];
+    const ctes = [...visitCtes(query, params, window, columns), rowsCte(query, params, columns)];
     const part = (pageviews: string, visitors: string, visits: string, bounces: string, duration: string, hour: string, source: string, where = "") =>
       `SELECT ${hour} AS hour, ${pageviews} AS pageviews, ${visitors} AS visitors, ${visits} AS visits, ${bounces} AS bounces, ${duration} AS duration FROM ${source} ${where} GROUP BY hour`;
     return yield* readPageviews(query, params, ctes, `
@@ -237,7 +236,7 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
     return yield* readPageviews(query, params, [], `
       SELECT DISTINCT toString(toDate(Timestamp, ${params.string(timezone)})) AS day FROM scoped
       WHERE Timestamp >= ${params.instant(range.start)} AND Timestamp < ${params.instant(range.end)}
-        AND Visitor IS NULL AND cityHash64(Ua) NOT IN ${params.hashes(bots)}
+        AND Visitor IS NULL AND ${notBot(params)}
       ORDER BY day`, DayRow);
   });
 
@@ -270,12 +269,11 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
 const SeenRow = Schema.Struct({ day: Schema.String, counted: Count });
 
 export const seenVisitors = Effect.fn("WebAnalytics.seen")(function* (query: Scope & { readonly timezone: string; readonly kept: Range }) {
-  const bots = yield* botHashes(query, query.kept, true);
   const params = new Params();
   const rows = yield* readPageviews(query, params, [], `
     SELECT toString(toDate(Timestamp, ${params.string(query.timezone)})) AS day, countIf(Visitor IS NOT NULL) AS counted FROM scoped
     WHERE Timestamp >= ${params.instant(query.kept.start)} AND Timestamp < ${params.instant(query.kept.end)}
-      AND cityHash64(Ua) NOT IN ${params.hashes(bots)}
+      AND ${notBot(params)}
     GROUP BY day ORDER BY day`, SeenRow);
   return { seen: rows.some((row) => row.counted > 0), lostDays: rows.filter((row) => row.counted === 0).map((row) => row.day) };
 });

@@ -9,7 +9,7 @@ type Table = "ployz_request" | "ployz_pageview";
  */
 const scopedOf = (table: Table, namespaces: string) => `scoped AS (SELECT * FROM otel.${table} WHERE OrgId = {org:String} AND Namespace IN ${namespaces})`;
 
-/** Counts and sums come back as numbers; the bot hashes travel as strings because a 64-bit hash outruns a JS number. */
+/** Counts and sums come back as numbers, not as the quoted strings ClickHouse gives 64-bit integers. */
 const SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0, max_memory_usage = 6000000000";
 
 /**
@@ -30,8 +30,6 @@ export class Params {
   int(value: number) { return this.#bind("Int64", String(Math.trunc(value))); }
   /** An array of one `String` binding per item. ClickHouse reads an `Array(String)` param without unescaping it, so the reader's escaping would corrupt a value inside one. */
   strings(value: ReadonlyArray<string>) { return `[${value.map((item) => this.string(item)).join(", ")}]`; }
-  /** Decimal digits of 64-bit hashes. */
-  hashes(value: ReadonlyArray<string>) { return this.#bind("Array(UInt64)", `[${value.join(",")}]`); }
   instant(value: Date) { return `fromUnixTimestamp64Milli(${this.int(value.getTime())}, 'UTC')`; }
 
   get values(): ReadonlyMap<string, string> { return this.#values; }

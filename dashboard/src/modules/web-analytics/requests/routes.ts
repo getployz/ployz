@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { hourStart, retentionCutoff } from "../local-time";
 import type { Range } from "../model";
-import { botHashes } from "./bots";
+import { notBot } from "./bots";
 import { Params, readRequests, type Scope } from "./statement";
 
 export type RouteQuery = Scope & {
@@ -72,12 +72,12 @@ const toSample = (row: SampleRow): RequestSample => ({ ...row, ts: new Date(row.
 
 const SAMPLE_COLUMNS = "RequestId AS requestId, toUnixTimestamp64Milli(Timestamp) AS ts, Service AS service, Method AS method, Path AS path, Status AS status, duration_ms AS durationMs";
 
-const requestsCte = (query: RouteQuery, params: Params, bots: ReadonlyArray<string>, service: string | undefined) => `
+const requestsCte = (query: RouteQuery, params: Params, service: string | undefined) => `
   rows AS (
     SELECT ${routeOf("Path")} AS route, Timestamp, RequestId, Service, Method, Path, Status, DurationUs / 1000 AS duration_ms
     FROM scoped
     WHERE Timestamp >= ${params.instant(query.range.start)} AND Timestamp < ${params.instant(query.range.end)}
-      AND cityHash64(Ua) NOT IN ${params.hashes(bots)}${service === undefined ? "" : ` AND Service = ${params.string(service)}`})`;
+      AND ${notBot(params)}${service === undefined ? "" : ` AND Service = ${params.string(service)}`})`;
 
 const TOP = `top AS (SELECT route FROM rows GROUP BY route ORDER BY count() DESC, route LIMIT ${ROUTE_LIMIT})`;
 const TOP_FAILED = `top AS (SELECT route FROM rows WHERE Status >= 400 GROUP BY route ORDER BY count() DESC, route LIMIT ${ROUTE_LIMIT})`;
@@ -87,9 +87,9 @@ const named = `if(route IN (SELECT route FROM top), route, '${OTHER_ROUTE}')`;
 const ServiceRow = Schema.Struct({ service: Schema.String });
 
 /** The Services that took a request in range, whatever Service a view is narrowed to. */
-const services = Effect.fn("WebAnalytics.services")(function* (query: RouteQuery, bots: ReadonlyArray<string>) {
+const services = Effect.fn("WebAnalytics.services")(function* (query: RouteQuery) {
   const params = new Params();
-  const rows = yield* readRequests(query, params, [requestsCte(query, params, bots, undefined)],
+  const rows = yield* readRequests(query, params, [requestsCte(query, params, undefined)],
     "SELECT DISTINCT Service AS service FROM rows ORDER BY service", ServiceRow);
   return rows.map((row) => row.service);
 });
@@ -97,10 +97,9 @@ const services = Effect.fn("WebAnalytics.services")(function* (query: RouteQuery
 const RouteAnswer = Schema.Struct({ route: Schema.String, requests: Count, errors: Count, quantiles: Schema.Array(Count) });
 
 export const api = Effect.fn("WebAnalytics.api")(function* (query: RouteQuery) {
-  const bots = yield* botHashes(query, query.range, false);
   const run = <Row>(select: (params: Params) => string, row: Schema.Decoder<Row>, withTop = false) => Effect.gen(function* () {
     const params = new Params();
-    return yield* readRequests(query, params, [requestsCte(query, params, bots, query.service), ...(withTop ? [TOP] : [])], select(params), row);
+    return yield* readRequests(query, params, [requestsCte(query, params, query.service), ...(withTop ? [TOP] : [])], select(params), row);
   });
   const [routes, slowest, serviceNames] = yield* Effect.all([
     run(() => `
@@ -108,7 +107,7 @@ export const api = Effect.fn("WebAnalytics.api")(function* (query: RouteQuery) {
         quantilesExactInclusive(0.5, 0.95, 0.99)(duration_ms) AS quantiles
       FROM rows GROUP BY route ORDER BY requests DESC, route`, RouteAnswer, true),
     run(() => `SELECT ${SAMPLE_COLUMNS} FROM rows ORDER BY duration_ms DESC, Timestamp DESC LIMIT ${SLOWEST}`, Sample),
-    services(query, bots),
+    services(query),
   ], { concurrency: "unbounded" });
   return {
     routes: routes.map((row): RouteRow => ({
@@ -123,10 +122,9 @@ const HourAnswer = Schema.Struct({ hour: Count, client: Count, server: Count });
 const FailedRoute = Schema.Struct({ route: Schema.String, status: Count, requests: Count });
 
 export const errors = Effect.fn("WebAnalytics.errors")(function* (query: RouteQuery) {
-  const bots = yield* botHashes(query, query.range, false);
   const run = <Row>(select: (params: Params) => string, row: Schema.Decoder<Row>, withTop = false) => Effect.gen(function* () {
     const params = new Params();
-    return yield* readRequests(query, params, [requestsCte(query, params, bots, query.service), ...(withTop ? [TOP_FAILED] : [])], select(params), row);
+    return yield* readRequests(query, params, [requestsCte(query, params, query.service), ...(withTop ? [TOP_FAILED] : [])], select(params), row);
   });
   const seconds = "intDiv(toUnixTimestamp64Milli(Timestamp), 1000)";
   const [hourly, byRoute, newest, serviceNames] = yield* Effect.all([
@@ -138,7 +136,7 @@ export const errors = Effect.fn("WebAnalytics.errors")(function* (query: RouteQu
       SELECT ${named} AS route, Status AS status, count() AS requests
       FROM rows WHERE Status >= 400 GROUP BY route, status ORDER BY requests DESC, route, status`, FailedRoute, true),
     run(() => `SELECT ${SAMPLE_COLUMNS} FROM rows WHERE Status >= 400 ORDER BY Timestamp DESC LIMIT ${FAILURES}`, Sample),
-    services(query, bots),
+    services(query),
   ], { concurrency: "unbounded" });
   return {
     hourly: hourly.map((row): StatusBucket => ({ bucket: hourStart(query.timezone, new Date(row.hour * 1000)), clientErrors: row.client, serverErrors: row.server })),
