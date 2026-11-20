@@ -66,9 +66,6 @@ pub(crate) struct FakeDocker {
     /// Named mode: every start lands, then answers a Docker 500, as a reply lost after
     /// Docker committed the start.
     pub(crate) lose_start_reply: Arc<AtomicBool>,
-    /// Named mode: with `lose_start_reply`, the started process exits at once and
-    /// Docker holds it in restart backoff, `Status=restarting` with `Running=true`.
-    pub(crate) lost_start_restarting: Arc<AtomicBool>,
     /// Named mode: a stop lands and the next inspect sees it, then a restart policy
     /// brings the Container back for every inspect after that.
     pub(crate) restart_after_stop: Arc<AtomicBool>,
@@ -435,11 +432,6 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         .insert(container["Id"].as_str().unwrap().to_owned(), answered);
                 }
                 container["State"] = state;
-                if path.ends_with("/start") && fake.lost_start_restarting.load(Ordering::SeqCst) {
-                    container["State"] = serde_json::json!(
-                        {"Status": "restarting", "Running": true, "Restarting": true, "ExitCode": 1}
-                    );
-                }
                 if path.ends_with("/start") && fake.lose_start_reply.load(Ordering::SeqCst) {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,

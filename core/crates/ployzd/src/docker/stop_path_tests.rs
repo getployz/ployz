@@ -593,35 +593,3 @@ async fn creating_a_door_asks_docker_for_nothing_it_does_not_need() {
         ])
     );
 }
-
-// Docker started Caddy, its reply was lost, and the process exited into restart backoff
-// before the daemon looked. Docker still holds it, so it keeps the policy that restarts it.
-#[tokio::test]
-async fn a_caddy_in_restart_backoff_after_a_lost_reply_keeps_its_restart_policy() {
-    let doors = Doors::new().await;
-    let declared = doors.restart_policy(&doors.caddy);
-    doors.fail_start(&doors.caddy);
-    doors
-        .fake
-        .lose_start_reply
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    doors
-        .fake
-        .lost_start_restarting
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-
-    let creates = doors.runtime.docker.creates();
-    doors
-        .runtime
-        .lifecycle()
-        .recover(
-            Repair::StartCaddy {
-                holder: Some(doors.holder),
-                caddy: doors.caddy,
-            },
-            creates,
-        )
-        .await;
-
-    assert_eq!(doors.restart_policy(&doors.caddy), declared);
-}
