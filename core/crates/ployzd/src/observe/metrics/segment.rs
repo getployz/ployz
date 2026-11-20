@@ -22,7 +22,7 @@ use std::{
 use memchr::memmem::Finder;
 use nix::fcntl::OFlag;
 use ployz_core::metrics::{MetricMarker, MetricRange};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 use crate::observe::layout::{self, METRICS_DIR, SegmentName, StoreRoot};
 
@@ -33,12 +33,7 @@ pub enum Row {
     Marker(MetricMarker),
 }
 
-/// A stored metric row, which a range read keeps or drops by its `ts`.
-pub trait Stamped {
-    fn ts(&self) -> i64;
-}
-
-impl Stamped for Row {
+impl Row {
     fn ts(&self) -> i64 {
         match self {
             Self::Marker(marker) => marker.ts,
@@ -114,11 +109,11 @@ impl Prefilter {
 ///
 /// Returns an error when `dir` exists but cannot be listed. A file that cannot be read
 /// is logged and skipped.
-pub fn find<R: DeserializeOwned + Stamped>(
+pub fn find(
     dir: &Path,
     range: MetricRange,
     prefilter: &Prefilter,
-    mut found: impl FnMut(&R) -> bool,
+    mut found: impl FnMut(&Row) -> bool,
 ) -> io::Result<bool> {
     scan_until(dir, range, prefilter, |row| {
         if found(&row) {
@@ -130,11 +125,11 @@ pub fn find<R: DeserializeOwned + Stamped>(
 }
 
 /// Whether `visit` broke off the scan.
-fn scan_until<R: DeserializeOwned + Stamped>(
+fn scan_until(
     dir: &Path,
     range: MetricRange,
     prefilter: &Prefilter,
-    mut visit: impl FnMut(R) -> ControlFlow<()>,
+    mut visit: impl FnMut(Row) -> ControlFlow<()>,
 ) -> io::Result<bool> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -172,11 +167,11 @@ fn overlaps(name: SegmentName, range: MetricRange) -> bool {
 
 /// Visits the rows of one segment in `range`. Returns how many lines did not parse, a
 /// torn last line included, and whether `visit` broke off.
-fn read_segment<R: DeserializeOwned + Stamped>(
+fn read_segment(
     path: &Path,
     range: MetricRange,
     prefilter: &Prefilter,
-    visit: &mut impl FnMut(R) -> ControlFlow<()>,
+    visit: &mut impl FnMut(Row) -> ControlFlow<()>,
 ) -> io::Result<(usize, bool)> {
     let file = fs::OpenOptions::new()
         .read(true)
@@ -196,7 +191,7 @@ fn read_segment<R: DeserializeOwned + Stamped>(
         if !prefilter.keeps(complete) {
             continue;
         }
-        match serde_json::from_slice::<R>(complete) {
+        match serde_json::from_slice::<Row>(complete) {
             Ok(row) if (range.since_nanos..range.until_nanos).contains(&row.ts()) => {
                 if visit(row).is_break() {
                     return Ok((skipped, true));
