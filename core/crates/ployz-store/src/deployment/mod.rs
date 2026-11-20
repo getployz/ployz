@@ -653,6 +653,9 @@ pub struct Claimed {
     pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
     /// The image token each Service's GitHub build under `rule` reported.
     pub image_tokens: BTreeMap<ServiceName, crate::ImageToken>,
+    /// What a Server issued for each Service's image under `rule` once it checked it
+    /// online: sent in place of the image token, which may have expired.
+    pub verified: BTreeMap<ServiceName, crate::VerifiedClaim>,
     /// What each target Service runs, by runtime name, with the signed versions kept for
     /// it. A Service without one sends its Saved image and no statement.
     pub ran: BTreeMap<ServiceName, Pinned>,

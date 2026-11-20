@@ -596,6 +596,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                             now: ContainerNow::Absent {
                                 of: ContainerLocator::Id(container('a')),
                             },
+                            verified: None,
                         })
                     }
                     other @ (RpcRequestBody::DescribeContract(_)
@@ -951,6 +952,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             RpcResponse::from(EnsuredContainer::Ensured {
                                 health: None,
                                 now: ContainerNow::Present(stopped.clone()),
+                                verified: None,
                             })
                         }
                         // Restoring v1 fails too, so the retry replans the candidate as a run.
@@ -979,6 +981,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                 RpcResponse::from(EnsuredContainer::Ensured {
                                     health: None,
                                     now: ContainerNow::Present(existing.clone()),
+                                    verified: None,
                                 })
                             } else {
                                 let mut candidate = observation(

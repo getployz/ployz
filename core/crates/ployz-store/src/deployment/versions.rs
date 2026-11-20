@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    Births, PayloadDigest, ProposalRef, Purpose, ServiceVersion, Signed, SignerKey, Statement,
-    Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
+    Births, ImageDigest, PayloadDigest, ProposalRef, Purpose, RuleProof, ServiceVersion, Signed,
+    SignerKey, Statement, Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
 };
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
@@ -266,12 +266,22 @@ pub struct VersionsQuery {
     pub namespace: Namespace,
     pub service: ServiceName,
     pub digest: PayloadDigest,
+    /// The image the spec runs, when it names its content: a rule's build of it may
+    /// stand in for a signed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub image: Option<ImageDigest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VersionsView {
     /// Newest first, and at most as many as one request carries.
     pub versions: Vec<Signed<ServiceVersion>>,
+    /// The newest verified build kept for `image` under the Environment's rule, which a
+    /// Server takes in place of a signed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub rule: Option<Box<RuleProof>>,
 }
 
 pub(crate) fn versions(
@@ -279,13 +289,17 @@ pub(crate) fn versions(
     who: &Actor,
     query: &VersionsQuery,
 ) -> Result<VersionsView, RpcError> {
-    versions_for(
-        tx,
-        who.organization.as_str(),
-        (&query.namespace, &query.service),
-        query.digest,
-    )
-    .map(|versions| VersionsView { versions })
+    let organization = who.organization.as_str();
+    let service = (&query.namespace, &query.service);
+    let versions = versions_for(tx, organization, service, query.digest)?;
+    let rule = match query.image {
+        Some(image) => crate::build::verified_proof(tx, organization, service, image)?,
+        None => None,
+    };
+    Ok(VersionsView {
+        versions,
+        rule: rule.map(Box::new),
+    })
 }
 
 /// What each Service of `target` runs in Deployment `id`, written back so a retry of `id`

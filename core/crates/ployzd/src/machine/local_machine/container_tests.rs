@@ -911,6 +911,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::Healthy),
+                    ..
                 }
             ),
             "expected a Healthy verdict, got {reply:?}"
@@ -937,6 +938,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: None,
+                    ..
                 }
             ),
             "expected no verdict, got {reply:?}"
@@ -955,6 +957,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::Healthy),
+                    ..
                 }
             ),
             "expected a Healthy verdict, got {reply:?}"
@@ -988,6 +991,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::Healthy),
+                    ..
                 }
             ),
             "an inspect slower than the one-second deadline still answers, got {reply:?}"
@@ -1130,6 +1134,7 @@ mod settled {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(_),
             health: Some(HealthVerdict::Failed { observation, .. }),
+            ..
         } = reply
         else {
             panic!("expected a Failed verdict, got {reply:?}");
@@ -1156,6 +1161,7 @@ mod settled {
                 EnsuredContainer::Ensured {
                     now: ContainerNow::Present(_),
                     health: Some(HealthVerdict::TimedOut { .. }),
+                    ..
                 }
             ),
             "expected a TimedOut verdict, got {reply:?}"

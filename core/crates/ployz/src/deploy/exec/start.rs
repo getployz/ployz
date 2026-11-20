@@ -270,6 +270,7 @@ pub(crate) async fn move_container<C: MachineOperations>(
         Some(Ok(EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health,
+            ..
         })) => {
             let id = observed.container_id;
             let failed = if cancellation.is_cancelled() {

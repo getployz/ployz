@@ -74,7 +74,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRun, ImageToken, RunEnd,
+    GithubRun, ImageToken, RunEnd, VerifiedClaim,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -399,6 +399,40 @@ impl ConfigStore {
                 digest,
             )
         })
+    }
+
+    /// The newest verified build `organization` keeps for `image` of `service` in
+    /// `namespace`, as the proof a Server takes in place of a token, under the rule its
+    /// Environment keeps now: what a drain sends with a copy a rule built. In-process
+    /// only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn verified_proof(
+        &self,
+        organization: &OrganizationId,
+        (namespace, service): (&ployz_core::Namespace, &ployz_core::ServiceName),
+        image: ployz_core::authority::ImageDigest,
+    ) -> Result<Option<ployz_core::authority::RuleProof>, RpcError> {
+        self.storage.read(|tx| {
+            build::verified_proof(tx, organization.as_str(), (namespace, service), image)
+        })
+    }
+
+    /// Keep what the Servers issued for the images Deployment `deployment` ran, by
+    /// runtime Service, for a later Deployment or drain of the same image. In-process
+    /// only.
+    ///
+    /// # Errors
+    /// Returns `conflict` when another runner holds the Deployment, or a storage error.
+    pub fn keep_verified(
+        &self,
+        deployment: &DeploymentId,
+        runner: &RunnerId,
+        kept: &std::collections::BTreeMap<ployz_core::ServiceName, VerifiedClaim>,
+    ) -> Result<(), RpcError> {
+        self.storage
+            .write(|tx| build::keep_verified(tx, deployment, runner, kept))
     }
 
     /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes

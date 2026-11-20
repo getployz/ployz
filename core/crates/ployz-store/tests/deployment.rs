@@ -9404,6 +9404,7 @@ fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_on
                 namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
                 service: ServiceName::parse("web").unwrap(),
                 digest,
+                image: None,
             },
         )
         .unwrap()

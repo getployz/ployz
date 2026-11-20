@@ -566,7 +566,11 @@ impl JoinDaemon {
     reason = "MachineRpc uses tonic::Status as the error type"
 )]
 fn ensured(now: ContainerNow) -> Result<Response<OpaquePayload>, Status> {
-    rpc_ok(EnsuredContainer::Ensured { now, health: None })
+    rpc_ok(EnsuredContainer::Ensured {
+        now,
+        health: None,
+        verified: None,
+    })
 }
 
 #[expect(

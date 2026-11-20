@@ -194,6 +194,7 @@ impl CopyLifecycle for Cluster {
                 Ok(EnsuredContainer::Ensured {
                     now: ContainerNow::Present(copy.clone()),
                     health: None,
+                    verified: None,
                 })
             }
             ContainerWant::Gone { container, .. } => {
@@ -205,6 +206,7 @@ impl CopyLifecycle for Cluster {
                 Ok(EnsuredContainer::Ensured {
                     now: ContainerNow::Absent { of: container },
                     health: None,
+                    verified: None,
                 })
             }
             other @ (ContainerWant::Running { .. }

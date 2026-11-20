@@ -2,12 +2,18 @@
 //! credentials of its Services, and the signatures every Server gets with a Container
 //! change.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, NewContainer, RegistryAuth, RunTarget,
     ServiceName,
-    authority::{PayloadDigest, RuleProof, ServiceVersion, Signed, version::MAX_PRESENTED},
+    authority::{
+        ImageDigest, PayloadDigest, RuleProof, ServiceVersion, Signed, VerifiedBuild,
+        version::MAX_PRESENTED,
+    },
 };
 use ployz_store::{Ask as _, ConfigStore, OrganizationId, VersionsQuery, View};
 
@@ -83,17 +89,19 @@ impl KeptVersions {
         }
     }
 
-    /// Every version kept for the spec `new` asks for, by the digest its Server checks.
-    /// A Store that doesn't answer gives none, and a Server that needs one refuses.
-    async fn of(&self, new: &NewContainer) -> Vec<Signed<ServiceVersion>> {
+    /// Every version kept for the spec `new` asks for, by the digest its Server checks,
+    /// and the newest verified build of its image when a rule built it. A Store that
+    /// doesn't answer gives none, and a Server that needs one refuses.
+    async fn of(&self, new: &NewContainer) -> Carried {
         let Ok(digest) = PayloadDigest::of(&new.resolved_spec.to_requested(), &new.slot.namespace)
         else {
-            return Vec::new();
+            return Carried::none();
         };
         let query = VersionsQuery {
             namespace: new.slot.namespace.clone(),
             service: new.slot.service.clone(),
             digest,
+            image: image_of(&new.resolved_spec.container.image),
         };
         let read = match self {
             Self::Local {
@@ -102,7 +110,16 @@ impl KeptVersions {
             } => {
                 let organization = organization.clone();
                 crate::sdk::store_call(store, move |store| {
-                    store.versions_for(&organization, (&query.namespace, &query.service), digest)
+                    let service = (&query.namespace, &query.service);
+                    let versions = store.versions_for(&organization, service, digest)?;
+                    let rule = match query.image {
+                        Some(image) => store.verified_proof(&organization, service, image)?,
+                        None => None,
+                    };
+                    Ok(ployz_store::VersionsView {
+                        versions,
+                        rule: rule.map(Box::new),
+                    })
                 })
                 .await
                 .map_err(Failure::from)
@@ -116,21 +133,58 @@ impl KeptVersions {
             )
             .await
             .map_err(Failure::from)
-            .and_then(|view| VersionsQuery::view(view).map_err(Failure::from))
-            .map(|view| view.versions),
+            .and_then(|view| VersionsQuery::view(view).map_err(Failure::from)),
         };
-        read.unwrap_or_else(|error| {
-            tracing::warn!(%error, service = %new.slot.service, "could not read a copy's signed versions");
-            Vec::new()
-        })
+        match read {
+            Ok(view) => Carried {
+                rule: view.rule,
+                versions: view.versions,
+            },
+            Err(error) => {
+                tracing::warn!(%error, service = %new.slot.service, "could not read a copy's signed versions");
+                Carried::none()
+            }
+        }
     }
 }
 
+/// The content digest `image` names, when it names one.
+fn image_of(image: &str) -> Option<ImageDigest> {
+    let digest = image.rsplit_once('@').map_or(image, |(_, digest)| digest);
+    ImageDigest::parse(digest).ok()
+}
+
 /// The proof each Service an automatic deploy rule built carries to every Server, in
-/// place of a person's signed version.
+/// place of a person's signed version, and the verified builds the Servers issued for
+/// them, which every clone of the Deploy's client shares.
 #[derive(Clone, Debug, Default)]
 pub struct RuleProofs {
     pub rules: BTreeMap<ServiceName, RuleProof>,
+    pub issued: Arc<Mutex<BTreeMap<ServiceName, VerifiedBuild>>>,
+}
+
+impl RuleProofs {
+    /// The verified build a Server issued for each Service, with the claim it covers.
+    #[must_use]
+    pub fn issued(&self) -> BTreeMap<ServiceName, ployz_store::VerifiedClaim> {
+        let issued = self
+            .issued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        issued
+            .iter()
+            .filter_map(|(service, verified)| {
+                let proof = self.rules.get(service)?;
+                Some((
+                    service.clone(),
+                    ployz_store::VerifiedClaim {
+                        claim: proof.claim.clone(),
+                        verified: *verified,
+                    },
+                ))
+            })
+            .collect()
+    }
 }
 
 /// What a Container change carries to the Server: the signed versions and the proofs for
@@ -152,6 +206,19 @@ impl Carried {
 impl DeployContext {
     pub(super) fn set_proofs(&mut self, proofs: RuleProofs) {
         Arc::make_mut(&mut self.approvals).proofs = proofs;
+    }
+
+    /// Keep the verified build a Server issued for a creation of `service`, when the
+    /// Deploy carried that Service's proof.
+    pub(super) fn note_issued(&self, service: &ServiceName, verified: VerifiedBuild) {
+        let proofs = &self.approvals.proofs;
+        if proofs.rules.contains_key(service) {
+            proofs
+                .issued
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(service.clone(), verified);
+        }
     }
 
     /// Hand each Service's creations the versions signed for their spec, newest last.
@@ -202,7 +269,7 @@ impl DeployContext {
                     ..
                 },
                 Versions::Kept(kept),
-            ) => kept.of(new).await,
+            ) => return kept.of(new).await,
             (
                 ContainerWant::Running { .. }
                 | ContainerWant::Held { .. }

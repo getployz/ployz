@@ -603,6 +603,23 @@ fn ingress_failure_message<'a>(
 }
 
 impl Run {
+    /// Keep the verified builds the Servers issued during the run, so a later Deployment
+    /// or drain of the same image needs no token. Failing to keep them costs only that.
+    async fn keep_verified(&self, proofs: &crate::cluster::RuleProofs) {
+        let kept = proofs.issued();
+        if kept.is_empty() {
+            return;
+        }
+        let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
+        let stored = super::store_call(&self.store, move |store| {
+            store.keep_verified(&deployment, &runner, &kept)
+        })
+        .await;
+        if let Err(error) = stored {
+            tracing::warn!(%error, "could not keep the verified builds the Servers issued");
+        }
+    }
+
     /// Claim the Deployment, with the Intent's options this runner plans it with,
     /// driving it as `operator`.
     async fn claim(&self, operator: Operator) -> Result<Claimed, RpcError> {
@@ -679,6 +696,7 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
+        let issued = rules.clone();
         let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, rules, versions) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
@@ -688,6 +706,7 @@ impl Run {
                 running.abort()
             })
             .await;
+        self.keep_verified(&issued).await;
         match outcome {
             Ok((outcome, progress, mut warnings)) => {
                 match self.standing().await {
@@ -1496,10 +1515,11 @@ fn targets(
 }
 
 /// The proof each Service built under `claimed`'s automatic deploy rule creates with:
-/// the rule, its image token, and the claim the token's audience names, rebuilt from
+/// the rule, and the verified build a Server issued for the image it runs, with the claim
+/// that build covers; else the image token and the claim its audience names, rebuilt from
 /// the rule, the pinned commit, the image the Machine received, the Cluster's keys, and
-/// the generation and authority the token was built under. A Service without all of
-/// them gets none, and a Server refuses it.
+/// the generation and authority the token was built under. A Service without either
+/// gets none, and a Server refuses it.
 async fn rule_proofs(
     session: &Session,
     claimed: &Claimed,
@@ -1507,12 +1527,31 @@ async fn rule_proofs(
     reader: Option<&ployz_core::GithubToken>,
 ) -> crate::cluster::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleProof,
+        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleEvidence, RuleProof,
     };
     let mut proofs = crate::cluster::RuleProofs::default();
-    let (Some(signed), false) = (&claimed.rule, claimed.image_tokens.is_empty()) else {
+    let Some(signed) = &claimed.rule else {
         return proofs;
     };
+    for (service, kept) in &claimed.verified {
+        let runs = receipts
+            .get(service)
+            .and_then(|receipt| ImageDigest::parse(&receipt.image.reference).ok());
+        if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
+            proofs.rules.insert(
+                service.clone(),
+                RuleProof {
+                    rule: signed.clone(),
+                    evidence: RuleEvidence::Verified(kept.verified),
+                    claim: kept.claim.clone(),
+                    reader: None,
+                },
+            );
+        }
+    }
+    if claimed.image_tokens.is_empty() {
+        return proofs;
+    }
     let Ok(rule) = signed.open() else {
         return proofs;
     };
@@ -1529,6 +1568,9 @@ async fn rule_proofs(
         return proofs;
     };
     for (service, token) in &claimed.image_tokens {
+        if proofs.rules.contains_key(service) {
+            continue;
+        }
         let approved = rule.service(service);
         let receipt = receipts.get(service);
         let commit = claimed
@@ -1563,7 +1605,7 @@ async fn rule_proofs(
             service.clone(),
             RuleProof {
                 rule: signed.clone(),
-                token,
+                evidence: RuleEvidence::Online(token),
                 claim,
                 reader: reader.cloned(),
             },

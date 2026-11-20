@@ -2306,6 +2306,81 @@ fn a_persons_redeploy_of_a_rule_built_image_carries_the_rule_and_its_token() {
     );
 }
 
+/// What a Server issued for a rule-built image outlives the build's token: a rollback
+/// carries its source's, and a drain finds the newest for a copy's own image under the
+/// Environment's rule, and none for another image.
+#[test]
+fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
+    use ployz_core::authority::{
+        AttestKey, BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest, PayloadDigest,
+        PolicyDigest, RuleEvidence, RuleId, VerifiedBuild,
+    };
+    let (store, who) = shop();
+    let image = format!("ployz-build/web@sha256:{}", "d".repeat(64));
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    let pushed = system(&store, &push(None, Some(H1), None)).admitted[0]
+        .deployment
+        .id
+        .clone();
+    built_on_github(&store, &build_id(&pushed, "web"), 41, "token-1", &image);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&pushed, &runner).unwrap();
+    let namespace = claimed.rule.as_ref().unwrap().open().unwrap().namespace;
+    let web = ServiceName::parse("web").unwrap();
+    let kept = ployz_store::VerifiedClaim {
+        claim: BuildClaim {
+            cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+            rule: RuleId::from_bytes([9; 16]),
+            generation: 1,
+            service: web.clone(),
+            policy: PolicyDigest::from_bytes([1; 32]),
+            commit: CommitSha::parse(H1).unwrap(),
+            authority: CommitAuthority::Head,
+            stage: BuildStage::Built {
+                image: ImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+                attest: AttestKey::from_bytes([5; 32]),
+            },
+        },
+        verified: VerifiedBuild::from_bytes([0x5a; 32]),
+    };
+    store
+        .keep_verified(&pushed, &runner, &[(web.clone(), kept.clone())].into())
+        .unwrap();
+    backend::finish(&store, &pushed, claimed);
+
+    let back = redeploy(3, &pushed);
+    store
+        .write_trusted(
+            &person(),
+            &ployz_store::Admit::Retry(back.clone()),
+            &permitted(),
+        )
+        .unwrap();
+    reused(&store, &build_id(&back.id, "web"), &image);
+    let claimed = store.claim(&back.id, &runner).unwrap();
+    assert_eq!(claimed.verified.get(&web), Some(&kept));
+
+    let drained = |image: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::VersionsQuery {
+                    namespace: namespace.clone(),
+                    service: web.clone(),
+                    digest: PayloadDigest::from_bytes([0; 32]),
+                    image: Some(ImageDigest::parse(&format!("sha256:{image}")).unwrap()),
+                },
+            )
+            .unwrap()
+            .rule
+    };
+    let proof = drained(&"d".repeat(64)).expect("the copy's image has a verified build");
+    assert_eq!(proof.evidence, RuleEvidence::Verified(kept.verified));
+    assert_eq!(proof.claim, kept.claim);
+    assert_eq!(drained(&"c".repeat(64)), None);
+}
+
 #[test]
 fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
     use ployz_core::authority::CommitAuthority;

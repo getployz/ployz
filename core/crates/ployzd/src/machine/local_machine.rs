@@ -792,13 +792,17 @@ impl LocalMachine {
         &self,
         phase: LocalMachinePhase,
     ) -> Option<ployz_core::authority::AttestKey> {
+        self.held_sealing_key(phase)
+            .map(|key| key.attest().attest())
+    }
+
+    /// The Sealing Key this Machine's file holds, on the phases [`Self::held_sealing`]
+    /// reports one.
+    pub(crate) fn held_sealing_key(&self, phase: LocalMachinePhase) -> Option<SealingKey> {
         if !has_cluster_identity(&phase) {
             return None;
         }
-        SealingKey::load(self.owner.data_dir())
-            .ok()
-            .flatten()
-            .map(|key| key.attest().attest())
+        SealingKey::load(self.owner.data_dir()).ok().flatten()
     }
 
     /// The key this Machine's file holds, or, when it holds none, the key a recovery

@@ -1709,6 +1709,7 @@ mod ingress_doors {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(caddy),
             health: None,
+            ..
         } = &first
         else {
             panic!("expected the joined Caddy, got {first:?}");
@@ -5029,6 +5030,7 @@ mod ensure_container {
                     of: serde_json::from_value(json!({"key":slot("k1")})).unwrap(),
                 },
                 health: None,
+                verified: None,
             }
         );
         let later = requests_since(&fake, seen);
@@ -5176,6 +5178,7 @@ mod ensure_container {
                     of: serde_json::from_value(json!({"id":id})).unwrap(),
                 },
                 health: None,
+                verified: None,
             }
         );
 

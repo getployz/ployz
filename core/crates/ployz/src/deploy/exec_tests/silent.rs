@@ -472,6 +472,7 @@ async fn live_and_second(
                     RpcResponse::from(ployz_core::EnsuredContainer::Ensured {
                         now: ployz_core::ContainerNow::Present(now),
                         health: None,
+                        verified: None,
                     })
                 }
                 other => panic!("unexpected request: {other:?}"),

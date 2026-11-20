@@ -22,8 +22,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        LocalMachine, LocalMachineError, LocalMachineRecord, Presented, RecoveryError,
-        SealingError, StoreError,
+        AdmittedSpec, LocalMachine, LocalMachineError, LocalMachineRecord, Presented,
+        RecoveryError, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -1257,7 +1257,18 @@ impl MachineService {
             Ok(admitted) => admitted,
             Err(error) => return local_error(error),
         };
-        finish(local.ensure_container(request.want, admitted).await)
+        let issued = admitted.as_ref().and_then(AdmittedSpec::verified);
+        let ensured = local.ensure_container(request.want, admitted).await;
+        finish(ensured.map(|ensured| match ensured {
+            ployz_core::EnsuredContainer::Ensured { now, health, .. } => {
+                ployz_core::EnsuredContainer::Ensured {
+                    now,
+                    health,
+                    verified: issued,
+                }
+            }
+            refused @ ployz_core::EnsuredContainer::Refused { .. } => refused,
+        }))
     }
 }
 

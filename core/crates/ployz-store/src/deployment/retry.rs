@@ -294,13 +294,13 @@ pub(crate) fn retry(
             ],
         )?;
         // A retry builds the commits its source pinned, and may reuse the image its
-        // source built, with that image's token.
+        // source built, with that image's token and verified build.
         tx.execute(
             "INSERT INTO config_build \
              (deployment_id, service, organization_id, commit_sha, status, message, log, \
-              receipt, image_token) \
+              receipt, image_token, verified) \
              SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
-              image_token \
+              image_token, verified \
              FROM config_build WHERE deployment_id = ?2",
             &[id.as_str().into(), source.as_str().into()],
         )?;

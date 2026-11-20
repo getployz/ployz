@@ -737,6 +737,7 @@ impl DeployService {
                 Err(EnsuredContainer::Ensured {
                     now: observed(),
                     health: None,
+                    verified: None,
                 })
             }
             Ok(RotationEdge::Write(CopyRotation::In)) => {
@@ -748,6 +749,7 @@ impl DeployService {
                     Err(EnsuredContainer::Ensured {
                         now: observed(),
                         health: Some(health),
+                        verified: None,
                     })
                 }
             }
@@ -1286,7 +1288,11 @@ impl FakeMachine for DeployService {
         } else {
             turned_health
         };
-        encoded(RpcResponse::from(EnsuredContainer::Ensured { now, health }))
+        encoded(RpcResponse::from(EnsuredContainer::Ensured {
+            now,
+            health,
+            verified: None,
+        }))
     }
     async fn exec(
         &self,
