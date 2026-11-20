@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { type ClickhouseEndpoint, queryObserveOrgAt } from "#/modules/observe-store/clickhouse.server";
 
-/** One Service's logs, for one Organization. `organizationId` leads every query's WHERE. */
 export type LogHistoryScope = {
   readonly organizationId: string;
   readonly namespace: string;
@@ -30,10 +29,6 @@ export type LogHistoryPage = { readonly rows: ReadonlyArray<LogHistoryRow>; read
 /** The place after a page's last line: its timestamp and tie-break hash, both decimal digits. */
 export const logHistoryCursor = Schema.String.check(Schema.isPattern(/^[0-9]{1,19}\.[0-9]{1,20}$/));
 
-/**
- * A read looks back this far from where it starts and widens only when that holds fewer lines than the page, so a
- * busy Service's newest page never scans its whole retention.
- */
 const WINDOWS_SECONDS = [3_600, 86_400, 7 * 86_400, 30 * 86_400] as const;
 const NANOS = 1_000_000_000n;
 

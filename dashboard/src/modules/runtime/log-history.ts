@@ -2,7 +2,6 @@ import { queryOptions } from "@tanstack/react-query";
 import { Schema } from "effect";
 import type { RuntimeContainerRecord } from "./runtime.collection";
 
-/** A Machine that has sent no logs for this long reads as not reporting. */
 export const NOT_REPORTING_MS = 5 * 60_000;
 const STATUS_POLL_MS = 30_000;
 
@@ -13,7 +12,6 @@ export const logHistoryStatusSchema = Schema.Struct({
 });
 export type LogHistoryStatus = typeof logHistoryStatusSchema.Type;
 
-/** Whether this Cloud keeps log history, and when each Machine last sent any. */
 export function logHistoryStatusQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: ["log-history-status", organizationSlug] as const,
@@ -30,11 +28,6 @@ export function logHistoryStatusQueryOptions(organizationSlug: string) {
 export type SilentMachine = { readonly machineId: string; readonly silentMs: number | null };
 const NONE: readonly SilentMachine[] = [];
 
-/**
- * What is off about a Service's logs, from where its containers run. A container still on Docker's `local` driver
- * is one a 0.3 daemon started: its logs never reach Cloud until it is redeployed, so its Machine is not also called
- * quiet. A container whose driver was not reported is neither. A Machine whose running containers send through the Collector but has sent nothing for five minutes is.
- */
 export function logOffStates(input: {
   status: LogHistoryStatus | undefined;
   containers: readonly RuntimeContainerRecord[];

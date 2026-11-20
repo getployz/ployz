@@ -32,7 +32,6 @@ export const authenticateMachineToken = Effect.fn("ObserveIngest.otlpToken")(fun
   return { organizationId, machineId: machine };
 });
 
-/** A Machine's last report is kept to within this, so a steady stream of batches writes its row twice a minute. */
 const SEEN_GRANULARITY_SECONDS = 30;
 
 export const recordMachineSeen = Effect.fn("ObserveIngest.machineSeen")(function* (sender: OtlpSender) {
@@ -90,7 +89,6 @@ export const forwardOtlp = Effect.fn("ObserveIngest.otlpForward")(function* (
       try: () => upstream.arrayBuffer(),
       catch: (cause) => new Unavailable({ message: "Cloud's observe Collector is not answering.", userFacing: true, cause }),
     });
-    // The batch is already queued; a failed write here only makes the Machine look quiet a little longer.
     yield* recordMachineSeen(sender).pipe(Effect.catchCause((cause) => Effect.logWarning("Cannot record a Machine's last report.", { cause })));
     return new Response(reply, {
       status: 200,

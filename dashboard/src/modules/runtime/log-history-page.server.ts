@@ -27,7 +27,6 @@ export type LogHistoryRequest = typeof logHistorySchema.Type;
 
 export const historyStatusSchema = Schema.Struct({ organizationSlug: organizationSlugSchema });
 
-/** The viewer's line for one stored row, shaped as a live line is so a line seen both ways is one. */
 export function projectHistoryRow(row: LogHistoryRow, machineName: string): ContainerLogLine {
   return {
     kind: "line", id: `${row.machineId}/${row.containerId}/${row.timestamp}/h${row.hash}`, timestamp: row.timestamp,
@@ -56,10 +55,6 @@ const authorizeHistory = Effect.fn("Runtime.authorizeHistory")(function* (reques
   return access.organization.id;
 });
 
-/**
- * A page of the selection's stored lines, read from ClickHouse for this Organization alone. It needs no Machine to be
- * connected, so a removed Service's lines read the same as a running one's. A Cloud without ClickHouse has none.
- */
 export const readHistoryPage = Effect.fn("Runtime.readHistoryPage")(function* (request: Request, input: LogHistoryRequest) {
   const organizationId = yield* authorizeHistory(request, input.organizationSlug);
   const endpoint = yield* clickhouseEndpoint;

@@ -60,7 +60,6 @@ const seedLine = async (org: string, namespace: string, body: string) => {
   if (!response.ok) throw new Error(await response.text());
 };
 
-/** Organization `id` with a `shop/production` Environment and a member who owns it, as a Store write makes it. */
 const organizationWithShop = Effect.fn(function* (id: string, slug: string, owner: string) {
   yield* callStoreAsMember({ userId: owner }, slug, {
     operation: "write", command: { command: "create_project", id: randomUUID(), name: "shop", default_environment: randomUUID() },
@@ -80,7 +79,6 @@ it.live("reads the caller's Organization's lines only, and only with logs:read",
       const otherOwner = bo?.id ?? expect.fail("no user");
       yield* drizzle.insert(organization).values({ id: OTHER, name: "Other", slug: "other" });
       yield* drizzle.insert(member).values({ userId: otherOwner, organizationId: OTHER, role: "owner" });
-      // Two Organizations' "shop/production" share one namespace, so the Organization is all that tells their lines apart.
       const namespace = yield* organizationWithShop(ACME, "acme", acmeOwner);
       expect(yield* organizationWithShop(OTHER, "other", otherOwner)).toBe(namespace);
       yield* Effect.promise(async () => {
@@ -107,7 +105,6 @@ it.live("reads the caller's Organization's lines only, and only with logs:read",
       const noLogs = yield* tokenFor(ACME, acmeOwner, { permissions: ["changes:deploy"], environments: null });
 
       expect(yield* post(acme, { environment: production })).toEqual({ status: 200, messages: ["acme order paid"] });
-      // Other's token reads its own Environment, which holds only its own line, and the body can't name another Organization.
       expect(yield* post(other, { environment: production })).toEqual({ status: 200, messages: ["other order paid"] });
       expect(yield* post(other, { environment: production, organizationId: ACME, organizationSlug: "acme" }))
         .toEqual({ status: 200, messages: ["other order paid"] });

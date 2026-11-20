@@ -13,7 +13,6 @@ const MAX_REQUEST_BYTES = 16 * 1024;
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1_000;
 
-/** What the CLI asks of an Environment's stored logs. The Organization is the caller's, never the body's. */
 const logsReadSchema = Schema.Struct({
   environment: Schema.Struct({ project: Schema.String, environment: Schema.String }),
   /** One Service by its runtime name, which a removed Service still has in the stored lines. */

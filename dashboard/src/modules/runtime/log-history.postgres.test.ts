@@ -97,7 +97,6 @@ it("never returns another Organization's lines, even for the same namespace, Ser
 it("pages a Service's last day newest first with no gap or repeat, through lines that share a nanosecond", async () => {
   const lines: Seed[] = [];
   for (let n = 0; n < 230; n++) {
-    // Every tenth second holds four lines at one instant, spread over two containers: a cursor must land between them.
     const at = second(1_000 + Math.floor(n / 4) * 10) + BigInt(Math.floor(n / 4));
     lines.push({ org: ACME, at, body: `page line ${n}`, container: n % 2 === 0 ? "c-one" : "c-two", machine: n % 3 === 0 ? "m-one" : "m-two" });
   }

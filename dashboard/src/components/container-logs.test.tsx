@@ -10,7 +10,6 @@ import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { ContainerLogs, sourceTag } from "./container-logs";
 
-/** The viewer also asks whether Cloud keeps log history; these tests count the reads of lines. */
 const withHistoryOff = (history: (url: string, init: RequestInit) => Promise<Response>) => (url: string, init: RequestInit) =>
   url.includes("log-history-status") ? Promise.resolve(Response.json({ history: false, machines: [] })) : history(url, init);
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };

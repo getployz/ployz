@@ -3,23 +3,18 @@ import { Effect, Redacted, Schema } from "effect";
 import { AppConfig } from "#/server/config.server";
 import { Unavailable } from "#/server/public-error";
 
-/** Where Cloud's ClickHouse answers, and who it reads as. */
 export type ClickhouseEndpoint = { readonly url: URL; readonly user: string; readonly password: Redacted.Redacted<string> };
 
-/** What a read says when this Cloud has no ClickHouse. The UI maps the status route's `history: false` to an off state. */
 export const OBSERVE_NOT_CONFIGURED = "This Cloud keeps no observe data.";
 
 const QUERY_SECONDS = 20;
-/** Every statement filters the caller's Organization first, as `OrgId = {org:String}`. */
 const ORG_FILTER = /\bWHERE\s+OrgId\s*=\s*\{org:String\}/;
 
-/** ClickHouse as this Cloud is configured to reach it, or undefined where it keeps no observe data. */
 export const clickhouseEndpoint = Effect.gen(function* () {
   const { observeClickhouse } = yield* AppConfig;
   return observeClickhouse;
 });
 
-/** Whether this Cloud keeps observe data, for a read that shows an off state instead of failing. */
 export const observeConfigured = Effect.map(clickhouseEndpoint, (endpoint) => endpoint !== undefined);
 
 /**

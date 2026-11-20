@@ -112,7 +112,6 @@ const rawFields = {
   mailFrom: optional(Config.nonEmptyString("MAIL_FROM")),
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   observeCollectorUrl: optional(Config.url("OBSERVE_COLLECTOR_URL")),
-  // Compose sets this empty unless the observe profile's ClickHouse is on, so empty reads as unset.
   observeClickhouseUrl: Config.string("OBSERVE_CLICKHOUSE_URL").pipe(Config.withDefault("")),
   observeClickhouseUser: Config.nonEmptyString("CLICKHOUSE_USER").pipe(Config.withDefault("default")),
   observeClickhousePassword: Config.schema(Schema.Redacted(Schema.String), "CLICKHOUSE_PASSWORD").pipe(Config.withDefault(Redacted.make(""))),

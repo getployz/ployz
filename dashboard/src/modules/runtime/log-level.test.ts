@@ -1,7 +1,6 @@
 import { expect, it } from "vitest";
 import { type LogLevel, logLevel } from "./log-level";
 
-// The same lines the Machine's reader is tested on, so Cloud shows the level `ployz logs` shows.
 it.each<[string, LogLevel]>([
   [`{"level":"error","msg":"x"}`, "error"],
   [`{"lvl":"WARN"}`, "warn"],

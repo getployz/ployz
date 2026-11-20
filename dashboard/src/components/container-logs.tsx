@@ -22,7 +22,6 @@ import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSl
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
-/** How a self-hosted Cloud gets the ClickHouse that keeps log history. */
 const LOG_HISTORY_DOCS = "https://ployz.dev/docs/self-hosting";
 
 const LEVELS = ["error", "warn", "info", "debug"] as const;
@@ -55,7 +54,6 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const [search, setSearch] = useState(searching);
   const status = useQuery(logHistoryStatusQueryOptions(selection.organizationSlug)).data;
   const historyOn = status?.history === true;
-  // Stored history answers the search, so it covers more than what is loaded; without it only the loaded lines can be searched.
   useEffect(() => {
     if (!historyOn) return;
     const wait = setTimeout(() => stream.search(search), 350);
@@ -206,7 +204,6 @@ function LogFilter({ label, value, onChange, options }: { label: string; value: 
   </Select>;
 }
 
-/** Starts a Deploy of the Service's Environment, which recreates its containers on the logging driver Cloud reads. */
 function Redeploy({ selection }: { selection: ContainerLogSelection }) {
   const writer = useStoreWriter(selection.organizationSlug);
   const navigate = useNavigate();
@@ -217,14 +214,10 @@ function Redeploy({ selection }: { selection: ContainerLogSelection }) {
     if (!projectSlug || !environmentSlug) return;
     const id = crypto.randomUUID();
     setStarting(true);
-    try {
-      await writer.commit({ command: "admit", admit: "deploy", id, environment: { project: projectSlug, environment: environmentSlug }, services: [], version: null, accept_volume_loss: [] });
-      void navigate(deploymentDestination({ organizationSlug: selection.organizationSlug, projectSlug, environmentSlug }, id));
-    } catch {
-      // The writer says why it was refused.
-    } finally {
-      setStarting(false);
-    }
+    const started = await writer.commit({ command: "admit", admit: "deploy", id, environment: { project: projectSlug, environment: environmentSlug }, services: [], version: null, accept_volume_loss: [] })
+      .then(() => true, () => false);
+    setStarting(false);
+    if (started) void navigate(deploymentDestination({ organizationSlug: selection.organizationSlug, projectSlug, environmentSlug }, id));
   }
   return <Button variant="outline" size="sm" disabled={starting} onClick={() => void start()}>Redeploy</Button>;
 }

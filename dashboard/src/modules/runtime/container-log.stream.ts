@@ -112,7 +112,6 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
               land();
               if (cursor === undefined && collection.size < SHORT_TAIL) void loadOlder();
             },
-            // Stored history needs no connected Server, so a removed Service's lines read the same with every Server offline.
             offline: () => {
               publish({ ...snapshot, opened: true, offline: true, refused: false });
               if (cursor === undefined) void loadOlder();

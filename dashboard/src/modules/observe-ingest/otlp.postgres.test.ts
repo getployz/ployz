@@ -115,7 +115,6 @@ it.live("records when a Machine's batch was last accepted, and not for one Cloud
   expect((yield* post(mint())).status).toBe(200);
   const first = yield* seenAt;
   expect(first?.getTime()).toBeGreaterThanOrEqual(before - 1_000);
-  // Within thirty seconds a second batch writes nothing, so a busy Machine costs no row update per batch.
   expect((yield* post(mint())).status).toBe(200);
   expect((yield* seenAt)?.getTime()).toBe(first?.getTime());
 }), 60_000);
