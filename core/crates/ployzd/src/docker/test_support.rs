@@ -107,6 +107,9 @@ pub(crate) struct FakeDocker {
     /// the digest or image ID it names, or one made from its name. A digest never
     /// follows a tag.
     pub(crate) images: Arc<Mutex<BTreeMap<String, Option<String>>>>,
+    /// What the registry serves for each tag, by ID. A tag listed nowhere serves the ID
+    /// made from its name. A pull of a tag writes it into [`Self::images`].
+    pub(crate) registry: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl FakeDocker {
@@ -115,6 +118,15 @@ impl FakeDocker {
             Some(held) => held.clone(),
             None => Some(image_id(reference)),
         }
+    }
+
+    fn served(&self, tag: &str) -> String {
+        self.registry
+            .lock()
+            .unwrap()
+            .get(tag)
+            .cloned()
+            .unwrap_or_else(|| image_id(tag))
     }
 }
 
@@ -539,9 +551,26 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     .replace("%40", "@")
             })
             .unwrap_or_default();
+        let id = if pulled.contains('@') {
+            image_id(&pulled)
+        } else {
+            let id = fake.served(&pulled);
+            fake.images.lock().unwrap().insert(pulled, Some(id.clone()));
+            id
+        };
         (
             StatusCode::OK,
-            serde_json::json!({"status": format!("Digest: {}", image_id(&pulled))}),
+            serde_json::json!({"status": format!("Digest: {id}")}),
+        )
+    } else if method == Method::GET && path.contains("/distribution/") {
+        let tag = path
+            .split("/distribution/")
+            .nth(1)
+            .unwrap_or_default()
+            .trim_end_matches("/json");
+        (
+            StatusCode::OK,
+            serde_json::json!({"Descriptor": {"digest": fake.served(tag)}, "Platforms": []}),
         )
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {

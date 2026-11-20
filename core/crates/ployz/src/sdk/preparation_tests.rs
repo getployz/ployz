@@ -645,12 +645,13 @@ async fn deploy_pulls_only_from_a_peer_that_holds_the_destinations_variant() {
     let destination = observed('a', "destination", "x86_64");
     let partial = observed('b', "partial", "aarch64");
     let complete = observed('c', "complete", "x86_64");
-    let image = "docker.io/library/busybox:1.37.0";
+    // By digest: a client copies a tag only to the Server it enters with Full access.
+    let image = &format!("docker.io/library/busybox@sha256:{}", "4".repeat(64));
     let store = |platforms: &[&str]| MachineImages {
         containerd_store: true,
         images: vec![ployz_core::ImageSummary {
             id: format!("sha256:{}", "4".repeat(64)),
-            repo_tags: vec![image.into()],
+            repo_tags: vec!["docker.io/library/busybox:1.37.0".into()],
             created: 0,
             size: 1,
             containers: 0,
@@ -662,7 +663,7 @@ async fn deploy_pulls_only_from_a_peer_that_holds_the_destinations_variant() {
         }],
         docker_root: None,
     };
-    // The tag is visible on both peers; only one holds the AMD64 content.
+    // The image is listed on both peers; only one holds the AMD64 content.
     builds
         .stores
         .lock()
@@ -684,7 +685,7 @@ async fn deploy_pulls_only_from_a_peer_that_holds_the_destinations_variant() {
     .unwrap();
     assert!(
         builds.pulls.lock().unwrap().is_empty(),
-        "a tag without the destination's variant is not a source"
+        "an image without the destination's variant is not a source"
     );
 
     builds

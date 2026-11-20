@@ -4,7 +4,7 @@ use std::future::Future;
 use ployz_core::{
     FanoutSelector, ImageIngestReason, ImagePulled, Machine, MachineFailure, MachineId,
     MachineImages, MachineSuccess, MachineTarget, PULL_IMAGE_CAPABILITY, PartialResult,
-    PeerImagePull, PullImageRequest, PullPolicy, RegistryAuth, RpcError, op,
+    PeerImagePull, PullFreeImageRequest, PullImageRequest, PullPolicy, RegistryAuth, RpcError, op,
     resolve_machine_selectors,
 };
 use thiserror::Error;
@@ -208,8 +208,10 @@ pub(crate) async fn ensure_cluster_image(
 }
 
 /// Make `image` present on `dest` as `policy` asks before a Deploy changes any
-/// Container. A peer that holds the image serves it as [`ensure_cluster_image`]
-/// does; `dest` then pulls from its registry as `policy` asks and confirms it holds
+/// Container. A tag is copied from a peer only where this client may name images
+/// ([`Naming::UserTags`]); anywhere else `dest` pulls it as its own creation will read it.
+/// Otherwise a peer that holds the image serves it as [`ensure_cluster_image`]
+/// does, and `dest` then pulls from its registry as `policy` asks and confirms it holds
 /// the image, so `Never` fails here for an absent image. Answers what `dest` reports
 /// of the image, such as the ports it exposes.
 ///
@@ -224,7 +226,33 @@ pub(crate) async fn pull_cluster_image(
     policy: PullPolicy,
     registry_auth: Option<RegistryAuth>,
 ) -> Result<ImagePulled, RpcError> {
-    ensure_cluster_image(client, dest, image, policy).await?;
+    let target = MachineTarget::from(dest);
+    if !ployz_core::authority::deploy::content_addressed(image)
+        && client.image_naming(dest) == Naming::Retention
+    {
+        // Pulled as the creation will be, so the ports reported are the image that runs.
+        let pulled = client
+            .clone()
+            .call::<op::PullFreeImage>(
+                PullFreeImageRequest {
+                    image: image.to_owned(),
+                    policy,
+                    registry_auth: registry_auth.clone(),
+                },
+                Call::keyed().to(&target),
+            )
+            .await
+            .map_err(|error| answered_by(dest, error).pulling(image, policy));
+        match pulled {
+            Err(error)
+                if error.refusal().is_some_and(|refusal| {
+                    refusal.capability == ployz_core::PULL_FREE_IMAGE_CAPABILITY
+                }) => {}
+            pulled => return pulled,
+        }
+    } else {
+        ensure_cluster_image(client, dest, image, policy).await?;
+    }
     client
         .clone()
         .call::<op::PullImage>(
@@ -233,7 +261,7 @@ pub(crate) async fn pull_cluster_image(
                 policy,
                 registry_auth,
             },
-            Call::keyed().to(&MachineTarget::from(dest)),
+            Call::keyed().to(&target),
         )
         .await
         .or_else(|error| pulls_on_create(answered_by(dest, error).pulling(image, policy)))
@@ -241,7 +269,8 @@ pub(crate) async fn pull_cluster_image(
 
 /// A daemon older than [`PULL_IMAGE_CAPABILITY`] pulls when it creates the Container,
 /// with the same policy and credentials, so its refusal is not a failure. It reports
-/// no exposed ports.
+/// no exposed ports. A newer one refuses an Operator's tag the same way, and its unsigned
+/// creation pulls the image itself.
 fn pulls_on_create(error: RpcError) -> Result<ImagePulled, RpcError> {
     match error.refusal() {
         Some(refusal) if refusal.capability == PULL_IMAGE_CAPABILITY => Ok(ImagePulled::default()),

@@ -335,6 +335,14 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "PullFreeImage",
+        "pull_free_image",
+        "ployz.image.pull-free.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "PullImageFromMachine",
         "pull_image_from_machine",
         "ployz.image.pull-from-machine.v1",
