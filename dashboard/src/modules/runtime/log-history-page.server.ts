@@ -37,7 +37,7 @@ export function projectHistoryRow(row: LogHistoryRow, machineName: string): Cont
 
 const decodeMachineId = Schema.decodeUnknownOption(rustMachineIdSchema);
 
-const machineNames = Effect.fn("Runtime.historyMachineNames")(function* (organizationId: string, machineIds: ReadonlyArray<string>) {
+export const machineNames = Effect.fn("Runtime.historyMachineNames")(function* (organizationId: string, machineIds: ReadonlyArray<string>) {
   const known = machineIds.flatMap((id) => Option.toArray(decodeMachineId(id)));
   if (known.length === 0) return new Map<string, string>();
   const { drizzle } = yield* Database;
@@ -77,16 +77,17 @@ export const readHistoryPage = Effect.fn("Runtime.readHistoryPage")(function* (r
 });
 
 /**
- * Whether this Cloud keeps log history, and when each Machine that has sent anything last did. The viewer decides from
- * it which Machines of a Service have gone quiet.
+ * Whether this Cloud keeps log history, and when each Machine that has sent anything last did, by Cloud's own clock
+ * (`now`) so the viewer's clock cannot make a Machine look quiet. The viewer decides from it which Machines of a Service
+ * have gone quiet.
  */
 export const readHistoryStatus = Effect.fn("Runtime.readHistoryStatus")(function* (request: Request, organizationSlug: string) {
   const organizationId = yield* authorizeHistory(request, organizationSlug);
   const endpoint = yield* clickhouseEndpoint;
-  if (endpoint === undefined) return { history: false, machines: [] };
+  if (endpoint === undefined) return { history: false, now: Date.now(), machines: [] };
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({ machineId: organizationMachine.machineId, seenAt: organizationMachine.observeSeenAt })
     .from(organizationMachine)
     .where(and(eq(organizationMachine.organizationId, organizationId), isNotNull(organizationMachine.observeSeenAt)));
-  return { history: true, machines: rows.flatMap((row) => row.seenAt === null ? [] : [{ machineId: row.machineId, seenAt: row.seenAt.getTime() }]) };
+  return { history: true, now: Date.now(), machines: rows.flatMap((row) => row.seenAt === null ? [] : [{ machineId: row.machineId, seenAt: row.seenAt.getTime() }]) };
 });

@@ -12,10 +12,14 @@ build output, so you can see why a build failed.
 2. Click **Logs** in the sidebar.
 
 Lines from every service arrive as they're written. **All services** and **All servers** narrow
-the list, **Search loaded logs** filters it, and **Error**, **Warn**, **Info** and **Debug** show
-only lines at the levels you pick. Scroll up for older lines, back to the oldest your servers kept;
-the page holds up to 30,000 lines at once.
-New lines wait while you're scrolled up; **Latest** brings you back to the end and shows them.
+the list, and **Error**, **Warn**, **Info** and **Debug** show only lines at the levels you pick.
+Scroll up for older lines, back to the oldest Ployz Cloud kept; the page holds up to 30,000 lines
+at once. New lines wait while you're scrolled up; **Latest** brings you back to the end and
+shows them.
+
+**Search logs** looks through every line Cloud kept for what you selected, across all its servers,
+and shows the matches newest first. Clear the search to follow live logs again. Without log
+history, it filters only the lines loaded in the page.
 
 For one service, click it on the canvas and open its **Logs** tab.
 
@@ -98,6 +102,27 @@ learn it before the new container starts, so the container's first line is alrea
 collector keeps the list of your Sealed values in a file only root can read under `/run/ployz`,
 which a reboot clears.
 
+## When logs are off
+
+Live output always streams from your servers. Older lines and search come from Ployz Cloud's log
+history, and the Logs page says when something keeps them from arriving:
+
+- **Log history isn’t set up.** This Cloud has no ClickHouse. On
+  [self-hosted](../self-hosting.md#keep-logs-metrics-and-traces-in-cloud-optional) Cloud, set
+  `CLICKHOUSE_PASSWORD` and start with `--profile observe`. Live output still works, and search
+  covers only the lines loaded in the page.
+- **This service isn’t sending logs yet.** A container started before this release still uses
+  Docker's old log settings, so its logs never reach Cloud. Click **Redeploy** to replace it.
+  It deploys the whole environment.
+- **A server hasn’t sent logs for 5 minutes.** Its log collector may be stopped or unable to reach
+  Cloud, or the service may just be quiet. The page links to the server. Cloud can't tell a quiet
+  service from a stopped collector yet, so a server that prints little can show this too. It goes
+  away when the server sends a line.
+
+A removed service keeps its logs in Cloud history for 30 days, with each Sealed value shown as
+`[secret NAME]`. Open them from **Logs** with the service selected. Cloud history holds only what
+a server sent while connected, so a service that never sent logs has none to show here.
+
 ## Secrets in kept logs
 
 Each server keeps a removed container's output, and the variables it ran with, so its logs still
@@ -136,8 +161,8 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   Recreating an environment with the same name can show its earlier logs. A service's card
   on a deployment shows only that deployment's output.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
-  their logs aren't sent to Ployz Cloud until their next deploy. `ployz deploy` replaces them,
-  even when nothing else about the service changed.
+  their logs aren't sent to Ployz Cloud until their next deploy. `ployz deploy` or **Redeploy** on
+  the Logs page replaces them, even when nothing else about the service changed.
 - **Containers this release starts keep their output only while they exist.** The server keeps
   nothing of a removed one yet, so a rollback or removal ends its logs.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or

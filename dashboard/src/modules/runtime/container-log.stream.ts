@@ -13,14 +13,15 @@ export type ContainerLogSelection = { organizationSlug: string; projectSlug?: st
  * `refused`: the last connect got an error response; it keeps retrying until one opens.
  * `hidden`: the Organization hides its container logs from Ployz support; the stream closes and asks no more.
  * `missing`: Servers whose logs aren't here, by ID, with why; the live stream's and the last history page's.
+ * `searching`: the text the stored history is being searched for. The live stream is closed while it is set.
  */
 type LogStreamState = {
   opened: boolean; offline: boolean; refused: boolean; hidden: boolean;
   missing: { live: Record<string, { machineName: string; failed: Readonly<Record<string, MissingReason>> }>; history: readonly MissingServer[] };
-  historyPending: boolean; historyError: boolean;
+  historyPending: boolean; historyError: boolean; searching: string;
 };
 
-const INITIAL: LogStreamState = { opened: false, offline: false, refused: false, hidden: false, missing: { live: {}, history: [] }, historyPending: false, historyError: false };
+const INITIAL: LogStreamState = { opened: false, offline: false, refused: false, hidden: false, missing: { live: {}, history: [] }, historyPending: false, historyError: false, searching: "" };
 /** Fewer lines than this from the live tail, as an old Deployment's stopped containers give, reads the Log Store at once. */
 const SHORT_TAIL = 200;
 /** Pages whose lines the live tail already had, read before giving the viewer older ones. */
@@ -111,7 +112,11 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
               land();
               if (cursor === undefined && collection.size < SHORT_TAIL) void loadOlder();
             },
-            offline: () => publish({ ...snapshot, opened: true, offline: true, refused: false }),
+            // Stored history needs no connected Server, so a removed Service's lines read the same with every Server offline.
+            offline: () => {
+              publish({ ...snapshot, opened: true, offline: true, refused: false });
+              if (cursor === undefined) void loadOlder();
+            },
             hidden: () => {
               link.close();
               publish({ ...snapshot, opened: true, hidden: true, refused: false });
@@ -136,7 +141,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         let stop: (() => void) | null = null;
         link = {
           open: () => {
-            if (stop || viewers === 0 || snapshot.hidden) return;
+            if (stop || viewers === 0 || snapshot.hidden || snapshot.searching) return;
             controller = new AbortController();
             stop = open();
           },
@@ -169,6 +174,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     if (controller.signal.aborted || snapshot.historyPending || cursor === null || collection.size >= SCROLLBACK_LIMIT) return;
     const streamSignal = controller.signal;
     const begun = generation;
+    const term = snapshot.searching;
     const cancelHistory = () => { void scope.queryClient.cancelQueries({ queryKey: [id, "history"] }); };
     streamSignal.addEventListener("abort", cancelHistory, { once: true });
     publish({ ...snapshot, historyPending: true, historyError: false });
@@ -180,11 +186,11 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       for (let read = 0; read < OVERLAP_PAGES && cursor !== null; read++) {
         const from = cursor;
         const page: typeof containerLogPageSchema.Type = await scope.queryClient.fetchQuery({
-          queryKey: [id, "history", from ?? null],
+          queryKey: [id, "history", term, from ?? null],
           staleTime: query => from !== undefined && query.state.data?.failures.length === 0 ? Infinity : 0,
           queryFn: async ({ signal }) => {
             const response = await fetch("/api/runtime/logs", {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from }), signal: AbortSignal.any([signal, streamSignal]),
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from, contains: term || undefined }), signal: AbortSignal.any([signal, streamSignal]),
             });
             if (!response.ok) throw new Error("Could not load older logs.");
             return Schema.decodeUnknownSync(containerLogPageSchema)(await response.json());
@@ -205,8 +211,28 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       streamSignal.removeEventListener("abort", cancelHistory);
     }
   }
+  /**
+   * Searches the stored history of every Server in the selection, newest first, in place of the live tail. An empty
+   * term clears it and the live tail comes back.
+   */
+  function search(raw: string) {
+    const term = raw.trim();
+    if (term === snapshot.searching) return;
+    link.close();
+    resetHistory();
+    restartContainerLogs(collection, []);
+    replace = false;
+    controller.abort();
+    controller = new AbortController();
+    publish({ ...snapshot, searching: term, missing: { ...snapshot.missing, history: [] }, historyPending: false, historyError: false });
+    if (term) void loadOlder();
+    else {
+      following = true;
+      link.open();
+    }
+  }
   return {
-    collection, loadOlder,
+    collection, loadOlder, search,
     /** A viewer on screen keeps the stream open; it closes once the last one leaves. Returns the leave. */
     view() {
       viewers++;

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import { Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { LogOffState } from "./log-off-state";
 import { LatestButton, LOG_TIME_COLUMN, LogEmpty, LogHeader, LogSkeleton, useLogScroll } from "./log-scroll";
 import { cn } from "#/lib/utils";
 import { logTimestamp, useTimeZone } from "#/utils/time-zone";
@@ -12,9 +14,16 @@ import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { logHistoryStatusQueryOptions, logOffStates } from "#/modules/runtime/log-history";
+import { getRuntimeCollections, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
+
+/** How a self-hosted Cloud gets the ClickHouse that keeps log history. */
+const LOG_HISTORY_DOCS = "https://ployz.dev/docs/self-hosting";
 
 const LEVELS = ["error", "warn", "info", "debug"] as const;
 const levelTone = { error: "text-destructive", warn: "text-warning", info: null, debug: "text-muted-foreground" } as const;
@@ -36,13 +45,22 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const { collection } = stream;
   useEffect(() => stream.view(), [stream]);
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
-  const { opened, offline: streamOffline, refused: streamRefused, hidden, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const { opened, offline: streamOffline, refused: streamRefused, hidden, missing, historyPending, historyError, searching } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
   // The log stream connects apart from the Runtime Watch, so it says the servers are offline only when the watch agrees.
-  const watched = useRuntimeLens(selection.organizationSlug).status === "observed";
+  const lens = useRuntimeLens(selection.organizationSlug);
+  const watched = lens.status === "observed";
   const offline = streamOffline && !watched;
   const refused = streamRefused || (streamOffline && watched);
   const timestamp = logTimestamp(useTimeZone());
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(searching);
+  const status = useQuery(logHistoryStatusQueryOptions(selection.organizationSlug)).data;
+  const historyOn = status?.history === true;
+  // Stored history answers the search, so it covers more than what is loaded; without it only the loaded lines can be searched.
+  useEffect(() => {
+    if (!historyOn) return;
+    const wait = setTimeout(() => stream.search(search), 350);
+    return () => clearTimeout(wait);
+  }, [stream, historyOn, search]);
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
   const [levels, setLevels] = useState<readonly string[]>([]);
@@ -84,8 +102,15 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     title: `Upgrade ${lacking.length} servers to see their logs`, note: `${lacking.length} servers need an upgrade to show their logs.`,
     link: <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className={linkClass}>Open Servers</Link>,
   };
+  const runtimeServices = useLiveQuery(getRuntimeCollections(selection.organizationSlug, scope).services).data ?? [];
+  const containers = selection.serviceId === undefined ? [] : runtimeServices.map(projectRuntimeServiceRecord)
+    .filter(service => service.serviceId === selection.serviceId).flatMap(service => service.containers);
+  const off = logOffStates({ status, containers, now: Date.now() });
+  const serverNames = new Map(lens.machines.map(server => [server.id, server.name]));
   const empty = hidden ? <LogEmpty title="Container logs are hidden from Ployz support." />
     : rows.length ? null
+    : searching ? (historyPending && !loaded.length ? <LogSkeleton label="Searching logs" time={LOG_TIME_COLUMN.container} />
+      : historyError ? null : <LogEmpty title="No logs match your search">Search covers every log Cloud kept for this selection.</LogEmpty>)
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened || (historyPending && !loaded.length) ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
@@ -95,13 +120,24 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
   return <div className="flex min-h-0 grow flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">
-      <Input aria-label="Search loaded logs" placeholder="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
+      <Input aria-label={historyOn ? "Search logs" : "Search loaded logs"} placeholder={historyOn ? "Search logs" : "Search loaded logs"} value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
       {servicesVary ? <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} /> : null}
       {machinesVary ? <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} /> : null}
       <ToggleGroup multiple variant="outline" size="sm" spacing={0} aria-label="Levels" value={[...levels]} onValueChange={setLevels}>
         {LEVELS.map(level => <ToggleGroupItem key={level} value={level} className="capitalize">{level}</ToggleGroupItem>)}
       </ToggleGroup>
     </div>
+    {status && !historyOn ? <LogOffState title="Log history isn’t set up" action={<a href={LOG_HISTORY_DOCS} target="_blank" rel="noreferrer" className={linkClass}>Set up log history</a>}>
+      Live output still works. Add ClickHouse to keep logs and search them.
+    </LogOffState> : null}
+    {off.onLocal ? <LogOffState title="This service isn’t sending logs yet" action={<Redeploy selection={selection} />}>
+      It started before logs were kept. Redeploy it to start sending them.
+    </LogOffState> : null}
+    {off.silent.map(server => <LogOffState key={server.machineId} title={`${serverNames.get(server.machineId) ?? "A server"} ${server.silentMs === null ? "hasn’t sent logs yet" : `hasn’t sent logs for ${Math.floor(server.silentMs / 60_000)} minutes`}`}
+      action={<Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug: selection.organizationSlug, serverId: server.machineId }} className={linkClass}>Open {serverNames.get(server.machineId) ?? "server"}</Link>}>
+      Its log collector may be stopped or unable to reach Cloud, or the service may be quiet. Live output still works.
+    </LogOffState>)}
+    {searching ? <p className="text-muted-foreground">Showing stored logs that match. Clear the search to follow live logs.</p> : null}
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
     {lack && loaded.length > 0 ? <p className="text-muted-foreground">{lack.note} {lack.link}</p> : null}
@@ -168,4 +204,27 @@ function LogFilter({ label, value, onChange, options }: { label: string; value: 
     <SelectTrigger aria-label={label}><SelectValue>{options.find(([key]) => key === value)?.[1] ?? label}</SelectValue></SelectTrigger>
     <SelectContent><SelectGroup><SelectItem value="">{label}</SelectItem>{options.filter(([key]) => key).map(([key, name]) => <SelectItem key={key} value={key}>{name}</SelectItem>)}</SelectGroup></SelectContent>
   </Select>;
+}
+
+/** Starts a Deploy of the Service's Environment, which recreates its containers on the logging driver Cloud reads. */
+function Redeploy({ selection }: { selection: ContainerLogSelection }) {
+  const writer = useStoreWriter(selection.organizationSlug);
+  const navigate = useNavigate();
+  const [starting, setStarting] = useState(false);
+  const { projectSlug, environmentSlug } = selection;
+  if (!projectSlug || !environmentSlug) return null;
+  async function start() {
+    if (!projectSlug || !environmentSlug) return;
+    const id = crypto.randomUUID();
+    setStarting(true);
+    try {
+      await writer.commit({ command: "admit", admit: "deploy", id, environment: { project: projectSlug, environment: environmentSlug }, services: [], version: null, accept_volume_loss: [] });
+      void navigate(deploymentDestination({ organizationSlug: selection.organizationSlug, projectSlug, environmentSlug }, id));
+    } catch {
+      // The writer says why it was refused.
+    } finally {
+      setStarting(false);
+    }
+  }
+  return <Button variant="outline" size="sm" disabled={starting} onClick={() => void start()}>Redeploy</Button>;
 }

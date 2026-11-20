@@ -77,7 +77,12 @@ const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { OBS
     const { drizzle } = yield* Database;
     yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.machineId, MACHINE));
   }).pipe(Effect.provide(services), Effect.orDie);
-  return { post, collector, enrollElsewhere, removeMachine };
+  const seenAt = Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.select({ seenAt: organizationMachine.observeSeenAt }).from(organizationMachine).where(eq(organizationMachine.machineId, MACHINE));
+    return row?.seenAt ?? null;
+  }).pipe(Effect.provide(services), Effect.orDie);
+  return { post, collector, enrollElsewhere, removeMachine, seenAt };
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -93,7 +98,26 @@ it.live("a verified Machine's batch reaches the Collector stamped with its Organ
     "content-type": "application/json",
     "x-ployz-org": ORGANIZATION,
     "x-ployz-retention-days": "30",
+    "x-ployz-machine": MACHINE,
   });
+}), 60_000);
+
+it.live("records when a Machine's batch was last accepted, and not for one Cloud refused", () => Effect.gen(function* () {
+  const { post, collector, seenAt } = yield* setup();
+  // Each answer is read once, so each batch gets its own.
+  collector.mockImplementation(async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+  expect(yield* seenAt).toBeNull();
+  expect((yield* post("Bearer nonsense")).status).toBe(401);
+  collector.mockResolvedValueOnce(new Response("bad", { status: 400 }));
+  expect((yield* post(mint())).status).toBe(400);
+  expect(yield* seenAt).toBeNull();
+  const before = Date.now();
+  expect((yield* post(mint())).status).toBe(200);
+  const first = yield* seenAt;
+  expect(first?.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+  // Within thirty seconds a second batch writes nothing, so a busy Machine costs no row update per batch.
+  expect((yield* post(mint())).status).toBe(200);
+  expect((yield* seenAt)?.getTime()).toBe(first?.getTime());
 }), 60_000);
 
 it.live("a token another Machine's key signed, an expired one, one from the future, and a malformed one get 401 and reach no Collector", () => Effect.gen(function* () {

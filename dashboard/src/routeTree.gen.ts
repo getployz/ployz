@@ -45,6 +45,7 @@ import { Route as ApiEnrollReportRouteImport } from './routes/api/enroll/report'
 import { Route as ApiGithubCallbackRouteImport } from './routes/api/github/callback'
 import { Route as ApiGithubConnectRouteImport } from './routes/api/github/connect'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
+import { Route as ApiLogsReadRouteImport } from './routes/api/logs/read'
 import { Route as ApiMailUnsubscribeRouteImport } from './routes/api/mail/unsubscribe'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
@@ -281,6 +282,11 @@ const ApiGithubConnectRoute = ApiGithubConnectRouteImport.update({
 const ApiGithubWebhookRoute = ApiGithubWebhookRouteImport.update({
   id: '/api/github/webhook',
   path: '/api/github/webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLogsReadRoute = ApiLogsReadRouteImport.update({
+  id: '/api/logs/read',
+  path: '/api/logs/read',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiMailUnsubscribeRoute = ApiMailUnsubscribeRouteImport.update({
@@ -666,6 +672,7 @@ export interface FileRoutesByFullPath {
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/logs/read': typeof ApiLogsReadRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
@@ -751,6 +758,7 @@ export interface FileRoutesByTo {
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/logs/read': typeof ApiLogsReadRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
@@ -838,6 +846,7 @@ export interface FileRoutesById {
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/logs/read': typeof ApiLogsReadRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
@@ -930,6 +939,7 @@ export interface FileRouteTypes {
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
+    | '/api/logs/read'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
@@ -1015,6 +1025,7 @@ export interface FileRouteTypes {
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
+    | '/api/logs/read'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
@@ -1101,6 +1112,7 @@ export interface FileRouteTypes {
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
+    | '/api/logs/read'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
@@ -1190,6 +1202,7 @@ export interface RootRouteChildren {
   ApiGithubCallbackRoute: typeof ApiGithubCallbackRoute
   ApiGithubConnectRoute: typeof ApiGithubConnectRoute
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
+  ApiLogsReadRoute: typeof ApiLogsReadRoute
   ApiMailUnsubscribeRoute: typeof ApiMailUnsubscribeRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
@@ -1471,6 +1484,13 @@ declare module '@tanstack/react-router' {
       path: '/api/github/webhook'
       fullPath: '/api/github/webhook'
       preLoaderRoute: typeof ApiGithubWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/logs/read': {
+      id: '/api/logs/read'
+      path: '/api/logs/read'
+      fullPath: '/api/logs/read'
+      preLoaderRoute: typeof ApiLogsReadRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/mail/unsubscribe': {
@@ -2099,6 +2119,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiGithubCallbackRoute: ApiGithubCallbackRoute,
   ApiGithubConnectRoute: ApiGithubConnectRoute,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
+  ApiLogsReadRoute: ApiLogsReadRoute,
   ApiMailUnsubscribeRoute: ApiMailUnsubscribeRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,

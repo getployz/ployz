@@ -41,6 +41,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "routes/api/config/-config.handler.ts",
   "routes/api/enroll/-handlers.ts",
   "routes/api/github/-webhook.handler.ts",
+  "routes/api/logs/-logs.handler.ts",
   "routes/api/machines/-handlers.ts",
 ]);
 
