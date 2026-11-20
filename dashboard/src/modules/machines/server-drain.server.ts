@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { type DrainReport, type DrainScope, type MachineName, type QualifiedService, RpcError, type RuntimeWatchView } from "@ployz/sdk";
+import type { DrainReport, DrainScope, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schedule } from "effect";
 import type { MachineId } from "#/db/tables";
@@ -26,7 +26,7 @@ import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { deployDialOf } from "#/modules/config-store/config-store.server";
-import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { clusterRead, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -408,14 +408,12 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   const [claimed] = yield* drizzle.update(serverDrainAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"))).returning({ id: serverDrainAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
-  const end = yield* Effect.tryPromise({
-    try: () => store.drainMachine(request.organizationId, request.machineId, scope, connections, expect),
-    catch: (cause) => cause,
-  }).pipe(
+  const end = yield* storeTry(() => store.drainMachine(request.organizationId, request.machineId, scope, connections, expect)).pipe(
     Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), endCode: null, refusalMessage: null }) as const),
     // The Engine's own error comes from its input checks, the dial or its preflight, before anything moved. Anything
     // else may come after copies moved, so what the drain did is unknown.
-    Effect.catch((cause) => Effect.succeed(cause instanceof RpcError ? refused(refusalMessage(cause)) : ended("lost"))),
+    Effect.catch((refusal) => Effect.succeed(refused(refusalMessage(refusal)))),
+    Effect.catchDefect(() => Effect.succeed(ended("lost"))),
     Effect.timeoutOrElse({ duration: DRAIN_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),
   );
   // The answer is in hand: the write is retried here rather than by asking the Engine again.
