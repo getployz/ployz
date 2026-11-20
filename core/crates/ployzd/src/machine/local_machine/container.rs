@@ -1334,13 +1334,16 @@ impl LocalMachine {
                     refusal,
                 });
             }
-            ContainerStep::CreateAndStart(new) => {
-                let (id, refusal) = self
-                    .create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
-                    .await?;
-                acted = id;
-                refusal
-            }
+            ContainerStep::CreateAndStart(new) => match self
+                .create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
+                .await?
+            {
+                Made::Refused(refusal) => Some(refusal),
+                Made::Acted(id, refusal) => {
+                    acted = Some(id);
+                    refusal
+                }
+            },
             ContainerStep::Start(id) => {
                 acted = Some(id);
                 match pin {
@@ -1505,7 +1508,7 @@ impl LocalMachine {
         fence: Option<StartFence>,
         admitted: AdmittedSpec,
         switch: Option<SwitchGuard>,
-    ) -> Result<(Option<ContainerId>, Option<ContainerRefusal>), Error> {
+    ) -> Result<Made, Error> {
         let outcome = self
             .finish_mutation(move |local| async move {
                 let _switch = switch;
@@ -1529,17 +1532,15 @@ impl LocalMachine {
                 let created = match created {
                     Ok(created) => created,
                     // Nothing was made, so the reply reads the slot.
-                    Err(error) => {
-                        return create_refusal(error).map(|refusal| (None, Some(refusal)));
-                    }
+                    Err(error) => return create_refusal(error).map(Made::Refused),
                 };
-                let acted = Some(created.container_id);
+                let acted = |refusal| Made::Acted(created.container_id, refusal);
                 // A create may adopt a Container another request made from the same spec,
                 // which may run another image: it never starts for a pinned request.
                 if let Some(pin) = &pin
                     && let Some(refusal) = local.image_differs(&created.container_id, pin).await?
                 {
-                    return Ok((acted, Some(refusal)));
+                    return Ok(acted(Some(refusal)));
                 }
                 let containers = local.docker()?;
                 // A racing create adopted a hook another request already started: never run it twice.
@@ -1549,7 +1550,7 @@ impl LocalMachine {
                         .inspect_managed(&created.container_id, &local.record().id())
                         .await?;
                     if !never_started(&adopted) {
-                        return Ok((acted, None));
+                        return Ok(acted(None));
                     }
                     local
                         .approvals
@@ -1564,14 +1565,14 @@ impl LocalMachine {
                         expect.as_ref(),
                     )
                     .await?;
-                    return Ok((acted, refusal));
+                    return Ok(acted(refusal));
                 }
                 // A create may adopt a Container another request made, so its start is
                 // checked as any other.
                 local
                     .start_checked(containers, &created.container_id)
                     .await?;
-                Ok((acted, None))
+                Ok(acted(None))
             })
             .await?;
         Ok(outcome)
@@ -1656,6 +1657,14 @@ impl LocalMachine {
                 Error::DeployRefused(refusal)
             })
     }
+}
+
+/// What a creation did with the slot.
+enum Made {
+    /// It made nothing, so the reply reads the slot.
+    Refused(ContainerRefusal),
+    /// It made or adopted this Container, and refused to go on with it when it says why.
+    Acted(ContainerId, Option<ContainerRefusal>),
 }
 
 /// What a stop checks around its drain and its exclusive turn.

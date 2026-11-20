@@ -1,6 +1,6 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, pin_on_ensure, pinned_shape, store_error, withhold_opened};
+use super::{MachineService, store_error, withhold_opened};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
@@ -6492,51 +6492,5 @@ mod cluster_doors {
         assert_eq!(service.local.declared_doors().await, None);
         task.abort();
         std::fs::remove_dir_all(dir).ok();
-    }
-}
-
-/// The pinned route makes one thing: a drain's Pending Service Container of a tag spec, run
-/// from one image ID with nothing pulled for the caller. Anything else is refused before
-/// admission, naming the route, so a caller can never reach more through it than ensure.v1.
-#[test]
-fn the_pinned_route_refuses_every_other_shape() {
-    let valid = serde_json::json!({"state":"running", "rotation":"pending", "container":{"new":{
-        "slot": {"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"move:a"},
-        "resolved_spec": {"service_id": ServiceId::random(), "name":"api",
-            "mode":{"mode":"replicated", "replicas":1},
-            "container":{"image":"nginx:1.29-alpine", "pull_policy":"missing"}},
-        "gen": 1, "image_prepared": true, "answer": "settled",
-        "image_id": format!("sha256:{}", "7".repeat(64))}}});
-    assert!(pinned_shape(&serde_json::from_value(valid.clone()).unwrap()).is_none());
-    // ensure.v1 never takes a pin, so an older client's create can't carry one there.
-    assert!(pin_on_ensure(&serde_json::from_value(valid.clone()).unwrap()).is_some());
-    let removal =
-        serde_json::json!({"state":"gone", "container":{"id": "c".repeat(64)}, "drain":0});
-    assert!(pinned_shape(&serde_json::from_value(removal).unwrap()).is_some());
-    let digest = format!("nginx@sha256:{}", "7".repeat(64));
-    for (pointer, value) in [
-        ("/container/new/image_id", serde_json::Value::Null),
-        (
-            "/container/new/resolved_spec/container/image",
-            digest.into(),
-        ),
-        ("/container/new/slot/kind", "pre_deploy_hook".into()),
-        ("/container/new/answer", "started".into()),
-        ("/container/new/slot/service", "web".into()),
-        ("/container/new/image_prepared", false.into()),
-    ] {
-        let mut want = valid.clone();
-        *want.pointer_mut(pointer).unwrap() = value;
-        let refusal = pinned_shape(&serde_json::from_value(want).unwrap())
-            .unwrap_or_else(|| panic!("{pointer} was let through"));
-        assert_eq!(refusal.code, RpcErrorCode::InvalidArgument, "{pointer}");
-        assert_eq!(
-            refusal
-                .details
-                .get("capability")
-                .and_then(|name| name.as_str()),
-            Some(ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY),
-            "{pointer}"
-        );
     }
 }

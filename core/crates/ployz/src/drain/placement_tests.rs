@@ -108,14 +108,7 @@ fn an_unclaimed_server_that_turns_the_pin_down_needs_upgrading() {
             replacement_removed: true,
         },
         from.clone(),
-        to.clone(),
-    );
-    assert_eq!(
-        failure,
-        MoveFailure::Refused {
-            from: Some(from.clone()),
-            reason: StayReason::NeedsUpgrade { servers: vec![to] },
-        }
+        to,
     );
     assert!(failure.clean_elsewhere(&unclaimed.machine.id));
     assert!(!failure.clean_elsewhere(&from.id));

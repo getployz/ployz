@@ -57,10 +57,9 @@ impl CopyLifecycle for Recording {
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-        pinned: bool,
-    ) -> Result<EnsuredContainer, RpcError> {
+    ) -> Result<Creation, RpcError> {
         self.wants.lock().unwrap().push(want.clone());
-        self.fake.ensure_new(machine_id, want, pinned).await
+        self.fake.ensure_new(machine_id, want).await
     }
 
     async fn ensure_unsettled(

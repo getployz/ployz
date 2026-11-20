@@ -1136,25 +1136,28 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
-        self.ensure_on::<op::EnsureContainer>(machine_id, want, timeout)
+        let request = self.ensure_request_to(machine_id, want).await?;
+        self.send_ensure::<op::EnsureContainer>(machine_id, request, timeout)
             .await
     }
 
-    /// Create one Container on the pinned route, which runs exactly the image ID `want`
-    /// names. A daemon from before it answers Unsupported, naming the route.
-    pub(crate) async fn ensure_pinned(
+    /// The request a Deploy sends to create or settle `want` on `machine_id`, with the
+    /// Deploy's approvals. Failing here, nothing was sent.
+    pub(crate) async fn ensure_request_to(
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
-        self.ensure_on::<op::EnsurePinnedContainer>(machine_id, want, None)
+    ) -> Result<EnsureContainerRequest, RpcError> {
+        self.ensure_request(&MachineTarget::from(machine_id), want, Carry::Approvals)
             .await
     }
 
-    async fn ensure_on<R>(
+    /// Send `request` on route `R`: ensure.v1, or the pinned route, which runs exactly the
+    /// image ID its Container names and which a daemon from before it refuses by name.
+    pub(crate) async fn send_ensure<R>(
         &self,
         machine_id: &MachineId,
-        want: ContainerWant,
+        request: EnsureContainerRequest,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError>
     where
@@ -1163,14 +1166,15 @@ impl Client {
                 Response = ployz_core::EnsuredContainer,
             >,
     {
-        let target = MachineTarget::from(machine_id);
-        let request = self.ensure_request(&target, want, Carry::Approvals).await?;
         let payload = R::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(timeout, self.send::<R>(payload, Some(&target)))
-            .await
-            .map_err(|error| answered_by(machine_id, error))
+        apply_timeout(
+            timeout,
+            self.send::<R>(payload, Some(&MachineTarget::from(machine_id))),
+        )
+        .await
+        .map_err(|error| answered_by(machine_id, error))
     }
 
     /// Converge one Container as a joiner's catch-up does, which carries no Deploy's

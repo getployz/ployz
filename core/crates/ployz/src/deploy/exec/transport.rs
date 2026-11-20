@@ -12,7 +12,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::machine_ops::{
-    CopyLifecycle, DeployOperations, Listed, ProxyPlacement, RedialFailure, Session,
+    CopyLifecycle, Creation, DeployOperations, Listed, ProxyPlacement, RedialFailure, Session,
 };
 
 pub(super) const RESTART_WAIT: Duration = Duration::from_secs(60);
@@ -101,7 +101,7 @@ restart_policy! {
         once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
         wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
         wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
-        wait fn ensure_new(&self, machine_id: &MachineId, want: ContainerWant, pinned: bool) -> Result<EnsuredContainer, RpcError>;
+        wait fn ensure_new(&self, machine_id: &MachineId, want: ContainerWant) -> Result<Creation, RpcError>;
         wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
         wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
         wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;

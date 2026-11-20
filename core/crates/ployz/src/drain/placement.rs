@@ -681,7 +681,7 @@ pub(crate) enum Relocated {
 pub(crate) async fn relocate<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
-    (spec, pin): (&ResolvedServiceSpec, Option<&ImageDigest>),
+    (spec, image): (&ResolvedServiceSpec, &ImageDigest),
     to: &MachineId,
     old: &Copy,
     name: &(dyn Fn(&MachineId) -> MachineRef + Sync),
@@ -693,7 +693,7 @@ pub(crate) async fn relocate<C: MachineOperations>(
         spec,
         to,
         (&old.machine_id, &old.container_id),
-        pin,
+        image,
         cancellation,
     )
     .await?;
@@ -815,18 +815,11 @@ async fn move_one(
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
     let image_id = image_id(client, &container.container_id, &from, &to).await?;
-    // A tag spec runs exactly this image on `dest`, whatever its tag names there by then.
-    let pin = if content_addressed(&spec.container.image) {
-        None
-    } else {
-        Some(
-            ImageDigest::parse(&image_id).map_err(|error| MoveFailure::ReadImage {
-                from: from.clone(),
-                to: to.clone(),
-                detail: error_chain::row(&error),
-            })?,
-        )
-    };
+    let image = ImageDigest::parse(&image_id).map_err(|error| MoveFailure::ReadImage {
+        from: from.clone(),
+        to: to.clone(),
+        detail: error_chain::row(&error),
+    })?;
     crate::image::copy_running_image(
         client,
         source,
@@ -850,7 +843,7 @@ async fn move_one(
     let relocated = relocate(
         &*client,
         &container.namespace,
-        (spec, pin.as_ref()),
+        (spec, &image),
         &dest.id,
         &old,
         &|id| named(&known, id),

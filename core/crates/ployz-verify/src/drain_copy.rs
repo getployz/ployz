@@ -14,19 +14,21 @@
 //!
 //! The actors, each step its own transition:
 //!
-//! - the handler, `converge_now` and `create_and_start`
-//!   (ployzd/src/machine/local_machine/container.rs): it reads the slot and plans
-//!   (`ContainerStep::{Done, Start, CreateAndStart}`), creates or adopts the Container a
-//!   name conflict finds, checks the image by ID (`image_differs`) before it starts or
-//!   answers, starts, then reads the Container it acted on (`container_now` of
-//!   `ContainerLocator::Id(acted)`) and answers. One request, and one resend after a lost
-//!   answer (`RestartTolerant`, ployz/src/deploy/exec/transport.rs);
+//! - the handler, `MachineService::ensure` (ployzd/src/machine_api/local.rs), then
+//!   `converge_now` and `create_and_start` (ployzd/src/machine/local_machine/container.rs):
+//!   admission may refuse the request before anything else, as an error; otherwise it reads
+//!   the slot and plans (`ContainerStep::{Done, Start, CreateAndStart}`), creates or adopts
+//!   the Container a name conflict finds, checks the image by ID (`image_differs`) before it
+//!   starts or answers, starts, then reads the Container it acted on (`container_now` of
+//!   `ContainerLocator::Id(acted)`) and answers. `Done` answers what its plan read. One
+//!   request, and one resend after a lost answer (`RestartTolerant`,
+//!   ployz/src/deploy/exec/transport.rs);
 //! - the planter, an ensure.v1 caller on the drain's key `move:{old}`, acting at most twice:
 //!   it creates and starts a Container of either spec and either image while the slot is
 //!   empty, stops the slot's Container by ID, or removes it by key;
 //! - the drain, `move_container` (ployz/src/deploy/exec/start.rs): it sends, may cancel
-//!   before the answer, reads the answer's class, waits out health, and cleans up by its
-//!   `Leftover`.
+//!   before the answer, reads what it heard, waits out health, and cleans up by the
+//!   `Leftover` that `ployz_decide::drain_start::leftover` gives it, which the model calls.
 //!
 //! Bounds: one destination slot, Container IDs up to 4, two specs, two images.
 //!
@@ -38,6 +40,7 @@
 
 use std::fmt::Write as _;
 
+use ployz_decide::drain_start::{Heard, Leftover, leftover};
 use stateright::{Model, Property};
 
 /// The spec a Container was made from: the drain's own, or another.
@@ -80,6 +83,9 @@ enum Refusal {
     SlotOccupied,
     /// `ContainerRefusalReason::ImageDiffers`: the Container runs another image.
     ImageDiffers,
+    /// Admission refused the request before the slot was read. It arrives as an error that
+    /// names its gate, which `refused_before_acting` reads as a refusal.
+    Admission,
 }
 
 /// What came back to the drain, as `EnsuredContainer` reads.
@@ -136,6 +142,8 @@ struct Handler {
     failed: bool,
     /// The Container the first run made, so a resend that adopts it shows.
     first_made: Option<u8>,
+    /// What the plan read when it found the request done, which `Done` answers.
+    planned: Option<Container>,
 }
 
 /// Where the drain is.
@@ -193,6 +201,8 @@ enum Action {
     /// The drain is cancelled before any answer.
     Cancel,
     Handler,
+    /// Admission refuses the request.
+    Refuse,
     /// The answer reaches the drain.
     Deliver,
     /// The answer is lost on the way; `RestartTolerant` resends once.
@@ -239,13 +249,15 @@ enum Check {
 /// How the drain cleans up.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 enum Cleanup {
-    /// By the answer's class: the named ID, nothing, or the key with no answer.
+    /// By what it heard: the named ID, nothing, or the key with no answer.
     #[default]
     ByAnswer,
     /// By the slot's key after any failure, as main's `discard_attempt` did.
     BySlot,
     /// As `ByAnswer`, and also removes the occupant a refusal names.
     RefusedOccupant,
+    /// As `ByAnswer`, but an error that refused the request is read as no answer.
+    RefusalAsUnanswered,
 }
 
 #[derive(Clone, Debug)]
@@ -297,6 +309,7 @@ impl DrainCopy {
                     Some(occupant) => {
                         handler.acted = Some(occupant.id);
                         let then = if occupant.running {
+                            handler.planned = Some(occupant);
                             Then::Answer
                         } else {
                             Then::Start
@@ -402,11 +415,17 @@ impl DrainCopy {
         if handler.failed {
             return None;
         }
-        let read = match self.switches.reply {
-            ReplyBy::Acted => handler.acted.map_or(state.slot, |id| state.container(id)),
-            ReplyBy::Slot => state.slot,
+        let read = match (handler.planned, self.switches.reply) {
+            (Some(planned), _) => Some(planned),
+            (None, ReplyBy::Acted) => handler.acted.map_or(state.slot, |id| state.container(id)),
+            (None, ReplyBy::Slot) => state.slot,
         };
         Some(match handler.refusal {
+            // An error carries no read of the slot.
+            Some(Refusal::Admission) => Answer::Refused {
+                refusal: Refusal::Admission,
+                occupant: None,
+            },
             Some(refusal) => Answer::Refused {
                 refusal,
                 occupant: read.map(|container| container.id),
@@ -419,23 +438,27 @@ impl DrainCopy {
         })
     }
 
-    /// The removal the drain sends for what it was told, if any.
+    /// The removal the drain sends for what it heard, if any.
     fn removal(&self, drain: Drain) -> Option<Removal> {
-        let Some(answer) = drain.answer else {
-            return Some(Removal::Key);
+        let cleanup = self.switches.cleanup;
+        let heard = match drain.answer {
+            None => Heard::Unanswered,
+            Some(_) if cleanup == Cleanup::BySlot => return Some(Removal::Key),
+            Some(Answer::Present { id, .. }) => Heard::Present(id),
+            Some(Answer::Absent) => Heard::Absent,
+            Some(Answer::Refused {
+                occupant: Some(id), ..
+            }) if cleanup == Cleanup::RefusedOccupant => return Some(Removal::Id(id)),
+            Some(Answer::Refused {
+                refusal: Refusal::Admission,
+                ..
+            }) if cleanup == Cleanup::RefusalAsUnanswered => Heard::Unanswered,
+            Some(Answer::Refused { .. }) => Heard::Refused,
         };
-        match (self.switches.cleanup, answer) {
-            (_, Answer::Present { id, .. }) if self.switches.cleanup != Cleanup::BySlot => {
-                Some(Removal::Id(id))
-            }
-            (Cleanup::BySlot, _) => Some(Removal::Key),
-            (
-                Cleanup::RefusedOccupant,
-                Answer::Refused {
-                    occupant: Some(id), ..
-                },
-            ) => Some(Removal::Id(id)),
-            (Cleanup::ByAnswer | Cleanup::RefusedOccupant, _) => None,
+        match leftover(heard) {
+            Leftover::Unknown => Some(Removal::Key),
+            Leftover::Nothing => None,
+            Leftover::Id(id) => Some(Removal::Id(id)),
         }
     }
 }
@@ -455,6 +478,7 @@ impl Model for DrainCopy {
                 refusal: None,
                 failed: false,
                 first_made: None,
+                planned: None,
             },
             planter_acts: 0,
             drain: Drain {
@@ -486,7 +510,8 @@ impl Model for DrainCopy {
         match state.handler.step {
             Step::Idle | Step::Done => {}
             Step::Answer => actions.extend([Action::Deliver, Action::Lose]),
-            Step::Plan | Step::Create | Step::Check { .. } | Step::Start { .. } => {
+            Step::Plan => actions.extend([Action::Handler, Action::Refuse]),
+            Step::Create | Step::Check { .. } | Step::Start { .. } => {
                 actions.push(Action::Handler);
             }
         }
@@ -519,6 +544,10 @@ impl Model for DrainCopy {
             }
             Action::Cancel => state.drain.phase = Phase::Unanswered,
             Action::Handler => self.handle(&mut state),
+            Action::Refuse => {
+                state.handler.refusal = Some(Refusal::Admission);
+                state.handler.step = Step::Answer;
+            }
             Action::Deliver | Action::Lose => {
                 let answer = self.answer(&state);
                 let handler = &mut state.handler;
@@ -531,6 +560,7 @@ impl Model for DrainCopy {
                         refusal: None,
                         failed: false,
                         first_made: handler.first_made,
+                        planned: None,
                     };
                 } else {
                     handler.step = Step::Done;
@@ -637,6 +667,19 @@ impl Model for DrainCopy {
                 },
             ),
             Property::sometimes(
+                "an admission refusal leaves the planter's Container in place",
+                |_, state: &State| {
+                    matches!(
+                        state.drain.answer,
+                        Some(Answer::Refused {
+                            refusal: Refusal::Admission,
+                            ..
+                        })
+                    ) && state.drain.phase == Phase::Finished
+                        && state.slot.is_some_and(|o| o.made_by == Maker::Planter)
+                },
+            ),
+            Property::sometimes(
                 "the handler makes a Container after the drain removed by key",
                 |_, state: &State| state.made_after_discard,
             ),
@@ -702,6 +745,7 @@ fn reads_as(action: Action, before: &State) -> String {
     match action {
         Action::Send => "drain: move_container sends the start (ensure_new)".to_owned(),
         Action::Cancel => "drain: cancelled before any answer".to_owned(),
+        Action::Refuse => "handler: admit_spec refuses the request".to_owned(),
         Action::Handler => match before.handler.step {
             Step::Plan => "handler: converge_now reads the slot and plans".to_owned(),
             Step::Create => {
@@ -754,8 +798,8 @@ mod tests {
 
     /// As shipped, every property holds and every `sometimes` is reached: a fresh answer,
     /// a resend that adopts its own Container, an Absent answer beside the planter's
-    /// Container, a refusal that leaves the planter's occupant, and a late create after a
-    /// removal by key.
+    /// Container, a refusal that leaves the planter's occupant, an admission refusal that
+    /// leaves the planter's Container, and a late create after a removal by key.
     #[test]
     fn the_drain_s_start_answers_and_cleans_up_only_its_own_container() {
         let checker = check(switched(Switches::default()));
@@ -846,6 +890,31 @@ mod tests {
         assert!(matches!(
             last.drain.removal,
             Some((Removal::Id(_), Some(_)))
+        ));
+    }
+
+    /// Read as no answer, admission's refusal sends the drain's removal by key, which takes
+    /// the Container another caller left in the slot.
+    #[test]
+    fn a_refusal_read_as_no_answer_removes_another_caller_s_container() {
+        let model = switched(Switches {
+            cleanup: Cleanup::RefusalAsUnanswered,
+            ..Switches::default()
+        });
+        let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
+            matches!(last(path).drain.removal, Some((Removal::Key, Some(_))))
+        });
+        println!(
+            "{CLEANUP_BY_ID} fails on a refusal read as no answer:\n{}",
+            model.story(&path)
+        );
+        let last = last(&path);
+        assert!(matches!(
+            last.drain.answer,
+            Some(Answer::Refused {
+                refusal: Refusal::Admission,
+                ..
+            })
         ));
     }
 }

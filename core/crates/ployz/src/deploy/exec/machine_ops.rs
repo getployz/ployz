@@ -60,6 +60,19 @@ pub(crate) enum RedialFailure {
     Refused(RpcError),
 }
 
+/// How a new Container's creation ended, short of failing on its way.
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one per creation, as the `Result<EnsuredContainer, RpcError>` it replaces"
+)]
+pub(crate) enum Creation {
+    /// The Machine answered, a refusal included.
+    Answered(EnsuredContainer),
+    /// This client refused it before sending anything, so nothing reached the Machine.
+    Unsent(RpcError),
+}
+
 /// What every Machine call rides on: the one entry connection.
 pub(crate) trait Session {
     /// Dial the entry Machine again on the same connection, after the session a call
@@ -112,14 +125,13 @@ pub(crate) trait CopyLifecycle: Session {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError>;
-    /// Create `want`'s new Container and keep the answer typed, refusals included.
-    /// `pinned` sends it on the pinned route, for a spec whose image is a tag.
+    /// Create `want`'s new Container and keep the answer typed, refusals included. A
+    /// Container pinned to an image ID goes on the pinned route.
     async fn ensure_new(
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-        pinned: bool,
-    ) -> Result<EnsuredContainer, RpcError>;
+    ) -> Result<Creation, RpcError>;
     async fn inspect_container(
         &self,
         machine_id: &MachineId,
@@ -374,20 +386,30 @@ impl CopyLifecycle for Client {
         &self,
         machine_id: &MachineId,
         mut want: ContainerWant,
-        pinned: bool,
-    ) -> Result<EnsuredContainer, RpcError> {
+    ) -> Result<Creation, RpcError> {
+        let mut pinned = false;
         if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
         } = &mut want
         {
-            self.prepare_new(machine_id, new).await?;
+            if let Err(error) = self.prepare_new(machine_id, new).await {
+                return Ok(Creation::Unsent(error));
+            }
+            pinned = new.image_id.is_some();
         }
-        if pinned {
-            Client::ensure_pinned(self, machine_id, want).await
+        let request = match self.ensure_request_to(machine_id, want).await {
+            Ok(request) => request,
+            Err(error) => return Ok(Creation::Unsent(error)),
+        };
+        let answered = if pinned {
+            self.send_ensure::<op::EnsurePinnedContainer>(machine_id, request, None)
+                .await
         } else {
-            Client::ensure_unsettled(self, machine_id, want, None).await
-        }
+            self.send_ensure::<op::EnsureContainer>(machine_id, request, None)
+                .await
+        };
+        answered.map(Creation::Answered)
     }
 
     async fn inspect_container(

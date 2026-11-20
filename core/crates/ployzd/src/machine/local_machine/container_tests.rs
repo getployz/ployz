@@ -721,14 +721,13 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
             .count()
     };
 
-    assert_eq!(
+    assert!(matches!(
         local
             .create_and_start(new.clone(), None, admitted.clone(), None)
             .await
-            .unwrap()
-            .1,
-        None
-    );
+            .unwrap(),
+        super::Made::Acted(_, None)
+    ));
     assert_eq!(starts(), 1);
     // The first request's hook ran and exited; a second request that saw the slot empty
     // reaches the create and adopts it.
@@ -742,14 +741,13 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     {
         container["State"] = json!({"Status":"exited", "ExitCode":0});
     }
-    assert_eq!(
+    assert!(matches!(
         local
             .create_and_start(new, None, admitted, None)
             .await
-            .unwrap()
-            .1,
-        None
-    );
+            .unwrap(),
+        super::Made::Acted(_, None)
+    ));
     assert_eq!(starts(), 1, "the adopted hook is not run again");
     std::fs::remove_dir_all(data_dir).unwrap();
 }

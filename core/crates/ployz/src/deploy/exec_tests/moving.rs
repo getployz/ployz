@@ -12,6 +12,11 @@ use crate::drain::placement::{
 const FROM: char = '1';
 const TO: char = '2';
 
+/// The image ID the old copy runs.
+fn source_image() -> ployz_core::ImageDigest {
+    ployz_core::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap()
+}
+
 async fn move_with(client: &Scripted) -> Result<ContainerId, MoveError> {
     move_container(
         client,
@@ -19,7 +24,7 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveError> {
         &spec(Some(0), None, None),
         &machine(TO),
         (&machine(FROM), &container('a')),
-        None,
+        &source_image(),
         &CancellationToken::new(),
     )
     .await
@@ -65,7 +70,7 @@ async fn relocate_with(
     let relocated = relocate(
         client,
         &test_namespace(),
-        (&spec(Some(0), None, None), None),
+        (&spec(Some(0), None, None), &source_image()),
         &machine(TO),
         &old_copy(),
         &name,
@@ -76,6 +81,34 @@ async fn relocate_with(
         Relocated::Listed => retire_old(client, &old_copy(), &name, cancellation).await,
         Relocated::Unlisted(unconfirmed) => Ok(OldCopyEnd::In { unconfirmed }),
     })
+}
+
+/// A tag spec starts on the pinned route, pinned to the image its old copy runs, so the
+/// tag never decides what runs there. A digest spec already names its content and goes on
+/// ensure.v1 with the old copy's spec as it is, its pull policy included.
+#[tokio::test]
+async fn only_a_tag_spec_is_pinned_and_neither_spec_is_rewritten() {
+    let digest = format!("alpine@sha256:{}", "b".repeat(64));
+    for (image, pin) in [
+        ("alpine:3.23.3", Some(source_image())),
+        (digest.as_str(), None),
+    ] {
+        let mut spec = spec(Some(0), None, None);
+        spec.container.image = image.to_owned();
+        let client = moving(served());
+        move_container(
+            &client,
+            &test_namespace(),
+            &spec,
+            &machine(TO),
+            (&machine(FROM), &container('a')),
+            &source_image(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(*client.pins.lock().unwrap(), [(pin, spec)], "{image}");
+    }
 }
 
 #[tokio::test]
@@ -298,7 +331,7 @@ async fn a_move_names_its_slot_by_its_old_copy_or_by_a_global_spec() {
             &spec,
             &machine(TO),
             (&machine(FROM), &container('a')),
-            None,
+            &source_image(),
             &CancellationToken::new(),
         )
         .await
@@ -418,7 +451,7 @@ async fn a_failed_start_removes_only_the_container_it_answered() {
             &spec(Some(0), None, None),
             &machine(TO),
             (&machine(FROM), &container('a')),
-            None,
+            &source_image(),
             &cancellation,
         )
         .await
@@ -436,13 +469,14 @@ async fn cancelled_global_move(client: &Scripted) -> bool {
     global.mode = ployz_core::ServiceMode::Global;
     let cancellation = CancellationToken::new();
     let (namespace, to, from, old) = (test_namespace(), machine(TO), machine(FROM), container('a'));
+    let image = source_image();
     let moving = move_container(
         client,
         &namespace,
         &global,
         &to,
         (&from, &old),
-        None,
+        &image,
         &cancellation,
     );
     tokio::pin!(moving);

@@ -233,8 +233,8 @@ struct Scripted {
     observations: Option<Vec<ContainerObservation>>,
     observed_specs: BTreeMap<ContainerId, ResolvedServiceSpec>,
     slots: Mutex<Vec<SlotKey>>,
-    /// Whether each new creation went on the pinned route, and the image it pinned.
-    pins: Mutex<Vec<(bool, Option<ployz_core::ImageDigest>)>>,
+    /// The image ID each new creation was pinned to, and the spec it sent.
+    pins: Mutex<Vec<(Option<ployz_core::ImageDigest>, ResolvedServiceSpec)>>,
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
     /// The run each In ask carried, by copy.
@@ -1287,8 +1287,7 @@ impl CopyLifecycle for Scripted {
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-        pinned: bool,
-    ) -> Result<EnsuredContainer, RpcError> {
+    ) -> Result<Creation, RpcError> {
         if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
@@ -1297,9 +1296,11 @@ impl CopyLifecycle for Scripted {
             self.pins
                 .lock()
                 .unwrap()
-                .push((pinned, new.image_id.clone()));
+                .push((new.image_id.clone(), new.resolved_spec.clone()));
         }
-        self.converge(machine_id, want).await
+        self.converge(machine_id, want)
+            .await
+            .map(Creation::Answered)
     }
 
     async fn ensure_unsettled(

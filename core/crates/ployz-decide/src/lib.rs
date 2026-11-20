@@ -11,6 +11,7 @@
 
 pub mod bridge;
 pub mod caddy_load;
+pub mod drain_start;
 pub mod fate;
 pub mod github_build;
 pub mod issuance;

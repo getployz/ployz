@@ -1,5 +1,6 @@
 use super::cleanup;
 use super::machine_ops::CopyLifecycle;
+use super::machine_ops::Creation;
 use super::machine_ops::MachineOperations;
 use super::stop_first::{Withdrawn, leave_unstopped};
 use super::transport::{RESTART_WAIT, RestartTolerant};
@@ -15,6 +16,7 @@ use ployz_core::{
     QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey,
     error_chain,
 };
+use ployz_decide::drain_start::{self, Heard, Leftover};
 use tokio_util::sync::CancellationToken;
 
 /// The owner refuses Gone on a copy that already came In. With `hold`, that
@@ -188,27 +190,18 @@ impl From<ExecutionError> for MoveEnd {
     }
 }
 
-/// What a move's create may have left on its destination, by the answer it got.
-enum Leftover {
-    /// No answer came: the slot may hold this attempt's Container, or one still coming.
-    Unknown,
-    /// The answer said this attempt left nothing, or named another caller's Container.
-    Nothing,
-    /// The answer named the Container this attempt made or adopted.
-    Id(ContainerId),
-}
-
-/// Create the replacement of `old` on `to` and wait for its health. A spec whose image is
-/// a tag goes on the pinned route with `pin`, the image ID the old copy runs. After an
-/// answer, only the Container that answer named is ever removed; with no answer, the
-/// slot is discarded as any failed start's.
+/// Create the replacement of `old` on `to` and wait for its health. `image` is the image
+/// ID the old copy runs. A spec whose image is a tag goes on the pinned route, pinned to
+/// it, so whatever the tag names on `to` never decides what runs; any other spec goes on
+/// ensure.v1 as it is. After an answer, only the Container that answer named is ever
+/// removed; with no answer, the slot is discarded as any failed start's.
 pub(crate) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     to: &MachineId,
     (from, old): (&MachineId, &ContainerId),
-    pin: Option<&ImageDigest>,
+    image: &ImageDigest,
     cancellation: &CancellationToken,
 ) -> Result<(ContainerId, Option<DeploymentLogId>), MoveError> {
     let client = RestartTolerant::new(client, cancellation);
@@ -241,19 +234,20 @@ pub(crate) async fn move_container<C: MachineOperations>(
             registry_auth: None,
             image_prepared: true,
             answer: AnswerWhen::Settled,
-            image_id: pin.cloned(),
+            image_id: (!ployz_core::authority::deploy::content_addressed(&spec.container.image))
+                .then(|| image.clone()),
         }),
         rotation: RunRotation::Pending,
     };
     let answered = tokio::select! {
-        answered = client.ensure_new(to, want, pin.is_some()) => Some(answered),
+        answered = client.ensure_new(to, want) => Some(answered),
         () = cancellation.cancelled() => None,
     };
-    let (end, leftover) = match answered {
-        Some(Ok(EnsuredContainer::Ensured {
+    let (end, heard) = match answered {
+        Some(Ok(Creation::Answered(EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health,
-        })) => {
+        }))) => {
             let id = observed.container_id;
             let failed = if cancellation.is_cancelled() {
                 Some(MoveEnd::Cancelled)
@@ -264,22 +258,22 @@ pub(crate) async fn move_container<C: MachineOperations>(
             };
             match failed {
                 None => return Ok((id, deploy)),
-                Some(end) => (end, Leftover::Id(id)),
+                Some(end) => (end, Heard::Present(id)),
             }
         }
-        Some(Ok(EnsuredContainer::Ensured {
+        Some(Ok(Creation::Answered(EnsuredContainer::Ensured {
             now: ContainerNow::Absent { .. },
             ..
-        })) => (
+        }))) => (
             MoveEnd::NotServing {
                 detail: format!(
                     "the Machine started no Container for slot {}",
                     slot.creation_key.as_str()
                 ),
             },
-            Leftover::Nothing,
+            Heard::Absent,
         ),
-        Some(Ok(EnsuredContainer::Refused { now, refusal })) => (
+        Some(Ok(Creation::Answered(EnsuredContainer::Refused { now, refusal }))) => (
             match refusal.reason {
                 ContainerRefusalReason::SlotOccupied | ContainerRefusalReason::ImageDiffers => {
                     MoveEnd::SlotOccupied {
@@ -306,43 +300,73 @@ pub(crate) async fn move_container<C: MachineOperations>(
                     )),
                 },
             },
-            Leftover::Nothing,
+            Heard::Refused,
+        ),
+        Some(Ok(Creation::Unsent(error))) => (
+            machine_error(MachineAction::CreateContainer, error).into(),
+            Heard::Refused,
         ),
         Some(Err(error))
             if error.refusal().is_some_and(|refusal| {
                 refusal.capability == ENSURE_PINNED_CONTAINER_CAPABILITY
             }) =>
         {
-            (MoveEnd::NeedsUpgrade, Leftover::Nothing)
+            (MoveEnd::NeedsUpgrade, Heard::Refused)
         }
-        Some(Err(error)) => (
-            machine_error(MachineAction::CreateContainer, error).into(),
-            Leftover::Unknown,
-        ),
-        None => (MoveEnd::Cancelled, Leftover::Unknown),
+        Some(Err(error)) => {
+            let heard = if refused_before_acting(&error) {
+                Heard::Refused
+            } else {
+                Heard::Unanswered
+            };
+            (
+                machine_error(MachineAction::CreateContainer, error).into(),
+                heard,
+            )
+        }
+        None => (MoveEnd::Cancelled, Heard::Unanswered),
     };
     let keep = adopts || (global && !cancellation.is_cancelled());
-    let replacement_removed = match leftover {
+    let replacement_removed = match drain_start::leftover(heard) {
         Leftover::Nothing => true,
         _ if keep => false,
-        Leftover::Id(id) => matches!(
-            cleanup::gone(
+        Leftover::Id(id) => {
+            let removed = cleanup::gone(
                 &client,
                 to,
                 ContainerLocator::Id(id),
                 Drain::NONE,
                 AnonymousVolumes::Remove,
                 None,
+            );
+            // Unanswered for as long as a restart takes, the replacement may remain.
+            matches!(
+                tokio::time::timeout(RESTART_WAIT, removed).await,
+                Ok(Ok(cleanup::Gone::Removed))
             )
-            .await,
-            Ok(cleanup::Gone::Removed)
-        ),
+        }
         Leftover::Unknown => discard_attempt(&client, to, slot).await.is_ok(),
     };
     Err(MoveError {
         end,
         replacement_removed,
     })
+}
+
+/// Whether the Machine refused a creation before acting on it: it refused the request's
+/// authority, or a refusal names the capability it was refused under, as every refusal of a
+/// catalogued route does. Any other error says nothing of what the Machine did.
+fn refused_before_acting(error: &RpcError) -> bool {
+    error.code == RpcErrorCode::Unauthenticated
+        || [
+            ployz_core::FORBIDDEN_CODE,
+            ployz_core::APPROVAL_REQUIRED_CODE,
+        ]
+        .contains(&error.code.as_str())
+        || error
+            .details
+            .get("capability")
+            .is_some_and(serde_json::Value::is_string)
 }
 
 /// What a failed Global creation leaves on its Machine. A stop-first replacement

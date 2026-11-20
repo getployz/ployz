@@ -46,7 +46,7 @@ pub(crate) use machine_ops::MachineOperations;
 use machine_ops::Unanswered;
 pub(crate) use machine_ops::{CopyLifecycle, ProxyPlacement};
 #[cfg(test)]
-pub(crate) use machine_ops::{RedialFailure, Session};
+pub(crate) use machine_ops::{Creation, RedialFailure, Session};
 use publish::{
     Done, GroupCopies, Published, ack_tick, gaps_still_routing, old_copies, publish_group,
     rolling_step, route_new,
