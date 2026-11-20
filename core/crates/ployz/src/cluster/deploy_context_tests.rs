@@ -51,6 +51,7 @@ async fn a_new_copy_carries_only_the_versions_of_the_spec_it_runs() {
                 deployment_id: None,
                 registry_auth: None,
                 image_prepared: false,
+                image_id: None,
                 answer: ployz_core::AnswerWhen::Started,
             }),
             rotation: RunRotation::Pending,
