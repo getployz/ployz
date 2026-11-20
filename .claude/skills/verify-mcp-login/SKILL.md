@@ -1,55 +1,56 @@
 ---
 name: verify-mcp-login
-description: Model-check `ployz mcp login`, which mints the agent token `ployz mcp` acts with and keeps it in mcp.json beside the config, against a second login stepping between any two of its reads, Cloud calls and writes, Cloud answering a token of kind cli, a save that fails before or after its rename, and a list or DELETE that fails, from six start files, with the Stateright model in core/crates/ployz-verify/src/mcp_login.rs. Use when a change touches core/crates/ployz/src/handlers/mcp/login.rs (login, stored, save, Saved, fate, revoke, warnings, Left, Stored, ActingAs, path, LIFETIME_DAYS), core/crates/ployz-decide/src/fate.rs (fate, Previous, Durability, Why, Fate), the callers of ActingAs::resolve in core/crates/ployz/src/handlers/mcp.rs (publishing_setup, agent), in_cloud in core/crates/ployz/src/handlers/account.rs, new_token, credentials or remove_token in core/crates/ployz/src/cloud_account/token.rs, or Cloud's /api/cli/tokens routes (POST tokens, GET tokens, DELETE tokens/:id and pendingRevocation in dashboard/src/routes/api/cli/-cli.handler.ts; createOrganizationToken, mintOrganizationTokenUnchecked, listCredentials and revokeCredential in dashboard/src/modules/identity/organization-token.server.ts).
+description: Model-check `ployz mcp login`, which mints the agent token `ployz mcp` acts with and keeps it in mcp.json beside the config, against a second login stepping between any two of its reads, Cloud calls and writes, Cloud answering a token of kind cli, a save that fails before or after its rename, and a list or DELETE that fails, from six start files, with the Stateright model in core/crates/ployz-verify/src/mcp_login.rs. Use when a change touches core/crates/ployz/src/handlers/mcp/login.rs (login, stored, save, Saved, fate, revoke, warnings, Left, Stored, ActingAs, path, LIFETIME_DAYS), core/crates/ployz-decide/src/fate.rs (fate, Previous, Durability, Why, Fate), the callers of ActingAs::resolve in core/crates/ployz/src/handlers/mcp.rs (publishing_setup, agent, reporting_as), in_cloud in core/crates/ployz/src/handlers/account.rs, new_token, credentials or remove_token in core/crates/ployz/src/cloud_account/token.rs, or Cloud's /api/cli/tokens routes (POST tokens, GET tokens, DELETE tokens/:id and pendingRevocation in dashboard/src/routes/api/cli/-cli.handler.ts; createOrganizationToken, mintOrganizationTokenUnchecked, listCredentials and revokeCredential in dashboard/src/modules/identity/organization-token.server.ts).
 ---
 
 # Verify the MCP login token
 
-The model in `core/crates/ployz-verify/src/mcp_login.rs` explores every interleaving of two `ployz mcp login` processes that read and write `mcp.json` and the Organization Tokens of kind `agent` it names (`dashboard/CONTEXT.md:100-102`). A bare `:n` below is a line of the file named just before it in the same parentheses, and otherwise of `core/crates/ployz/src/handlers/mcp/login.rs`. Every path is written in full from the repo root. Every command runs from the repo root.
+The model in `core/crates/ployz-verify/src/mcp_login.rs` explores every interleaving of two `ployz mcp login` processes that read and write `mcp.json` and the Organization Tokens of kind `agent` it names (`dashboard/CONTEXT.md:101-103`). A bare `:n` below is a line of the file named just before it in the same parentheses, and otherwise of `core/crates/ployz/src/handlers/mcp/login.rs`. Every path is written in full from the repo root. Every command runs from the repo root.
 
 ## What the model copies
 
-**The processes.** Each login is its own `ployz mcp login` process. `login` reads `mcp.json` (`:92`) and reports (`:160-178`) on its own thread. Its Cloud calls and its `save` (`:101-158`) run inside `in_cloud`, whose `block_on` holds that thread (`core/crates/ployz/src/handlers/account.rs:133-142`) on a current-thread runtime (`runtime`, `core/crates/ployz/src/handlers/mod.rs:472-476`). So one login's steps run in order, and the other login can step between any two of them. The model runs two, Login A and Login B (`MAX_LOGINS`).
+**The processes.** Each login is its own `ployz mcp login` process. `login` reads `mcp.json` (`:93`) and reports (`:161-179`) on its own thread. Its Cloud calls and its `save` (`:101-160`) run inside `in_cloud`, whose `block_on` holds that thread (`core/crates/ployz/src/handlers/account.rs:135-144`) on a current-thread runtime (`runtime`, `core/crates/ployz/src/handlers/mod.rs:491-495`). So one login's steps run in order, and the other login can step between any two of them. The model runs two, Login A and Login B (`MAX_LOGINS`).
 
 **One login, step by step.** Each row is one model step (`Pc`), and the step does exactly what its lines do.
 
 | Step | Lines | What it touches others can see |
 |---|---|---|
-| `Idle`: `stored` reads `mcp.json`; a `Corrupt` file warns "… is unreadable. Replacing it." and goes on with none | `:92-99`, `:48-57` | `mcp.json`, read |
-| `Minting`: `in_cloud`'s credential load, then `new_token`'s `POST /api/cli/tokens` | `core/crates/ployz/src/handlers/account.rs:139`, `:101-108` | a new token row |
-| `Saving`: the kind check, `save` (temp file, `sync_all`, rename, directory flush), then `fate` | `:109-124`, `:66-88`, `:140-141`, `ployz_decide::fate::fate` | `mcp.json`, written by the rename |
-| `Unmaking`: `remove_token` of the token just made, and the failed-save warning if it fails | `:125-137` | that token's row |
-| `Listing`: `revoke`'s `GET /api/cli/tokens` and its listed-as-agent check | `:255-262` | token rows, read |
-| `Deleting`: `revoke`'s `DELETE /api/cli/tokens/<id>` | `:263` | the token before's row |
-| `Reporting`: the warnings, the note and "Revoked …" | `:160-178`, `:181-199` | nothing |
+| `Idle`: `stored` reads `mcp.json`; a `Corrupt` file warns "… is unreadable. Replacing it." and goes on with none | `:93-100`, `:49-58` | `mcp.json`, read |
+| `Minting`: `in_cloud`'s credential load, then `new_token`'s `POST /api/cli/tokens` | `core/crates/ployz/src/handlers/account.rs:141`, `:102-109` | a new token row |
+| `Saving`: the kind check, `save` (temp file, `sync_all`, rename, directory flush), then `fate` | `:110-125`, `:67-89`, `:141-142`, `ployz_decide::fate::fate` | `mcp.json`, written by the rename |
+| `Unmaking`: `remove_token` of the token just made, and the failed-save warning if it fails | `:126-138` | that token's row |
+| `Listing`: `revoke`'s `GET /api/cli/tokens` and its listed-as-agent check | `:256-263` | token rows, read |
+| `Deleting`: `revoke`'s `DELETE /api/cli/tokens/<id>` | `:264` | the token before's row |
+| `Reporting`: the warnings, the note and "Revoked …" | `:161-179`, `:182-200` | nothing |
 
 **Why each step is one step.**
-- **`mcp.json` is one file beside the config** (`path`, `:40-42`). A read is one `std::fs::read` (`:50`), and a replace is one rename (`file.persist`, `:79`). So a reader sees the old file or the new one.
-- **Cloud is the CLI's `/api/cli/tokens` routes** (`dashboard/src/routes/api/cli/-cli.handler.ts:202-233`). `POST` inserts one row (`mintOrganizationTokenUnchecked`, `dashboard/src/modules/identity/organization-token.server.ts:34-56`). `GET` reads the rows (`listCredentials`, `dashboard/src/modules/identity/organization-token.server.ts:119-168`). `DELETE` is one `DELETE … RETURNING` (`dashboard/src/modules/identity/organization-token.server.ts:174-177`), and when it deletes no row, `pendingRevocation` answers (`dashboard/src/routes/api/cli/-cli.handler.ts:229-230`, `:572-577`). Each call's statement is atomic, and the CLI acts only on the reply, so each call is one step.
+- **`mcp.json` is one file beside the config** (`path`, `:41-43`). A read is one `std::fs::read` (`:51`), and a replace is one rename (`file.persist`, `:80`). So a reader sees the old file or the new one.
+- **Cloud is the CLI's `/api/cli/tokens` routes** (`dashboard/src/routes/api/cli/-cli.handler.ts:203-233`). `POST` inserts one row (`mintOrganizationTokenUnchecked`, `dashboard/src/modules/identity/organization-token.server.ts:34-56`). `GET` reads the rows (`listCredentials`, `dashboard/src/modules/identity/organization-token.server.ts:119-168`). `DELETE` is one `DELETE … RETURNING` (`dashboard/src/modules/identity/organization-token.server.ts:174-177`), and when it deletes no row, `pendingRevocation` answers (`dashboard/src/routes/api/cli/-cli.handler.ts:230-231`, `:588-592`). Each call's statement is atomic, and the CLI acts only on the reply, so each call is one step.
 - **Merged steps touch only their own process.** `Saving` joins the kind check, the temp file's write and `sync_all`, the rename, the directory flush and `fate`. No other process reads a temp file, the directory flush changes only what survives a crash (which no step models), and `fate` reads only the token read and the `Saved` answer. So only the rename is seen, and it is atomic. `Minting` joins the credential load, which reads `cloud.json`, a file no modelled step writes (`cloud.json` is `.claude/skills/verify-sign-in-store/SKILL.md`'s model), with the `POST`.
 
 **The reads, audited against the other login's steps.**
-- **`stored` at `:92` against the other's rename (`:79`).** The rename can land just before the read or just after it, and between the read and this login's own rename. The read and the rename are separate steps, so the model reaches each order. The rename reads nothing (`:79`), so the model's rename reads nothing: it never compares `mcp.json` with what its login read.
-- **The list at `:255` against the other's `DELETE`.** The `DELETE` can land before the list, so the list misses the token (`Ok(false)`, `:147`), or between the list and this login's `DELETE` (a 404). Both are separate steps, and both orders are reached (two `is_shipped` rows).
-- **The `DELETE` at `:263` against the other's `DELETE`.** Each is one statement. The second finds no row and gets a 404.
+- **`stored` at `:93` against the other's rename (`:80`).** The rename can land just before the read or just after it, and between the read and this login's own rename. The read and the rename are separate steps, so the model reaches each order. The rename reads nothing (`:80`), so the model's rename reads nothing: it never compares `mcp.json` with what its login read.
+- **The list at `:256` against the other's `DELETE`.** The `DELETE` can land before the list, so the list misses the token (`Ok(false)`, `:148`), or between the list and this login's `DELETE` (a 404). Both are separate steps, and both orders are reached (two `is_shipped` rows).
+- **The `DELETE` at `:264` against the other's `DELETE`.** Each is one statement. The second finds no row and gets a 404.
 
 **Every writer and reader of `mcp.json`.** This grep lists them:
 
 ```
-git grep -E 'ActingAs::resolve\((config|&self)|stored\(&?config\)|^\s+save\($' -- core/crates/ployz/src
+git grep -E 'ActingAs::resolve\((config|&config, token|&self)|stored\(&?config\)|^\s+save\($' -- core/crates/ployz/src
 ```
 
-At the sync commit it prints five lines:
+At the sync commit it prints six lines:
 
 ```
 core/crates/ployz/src/handlers/mcp.rs:    match ActingAs::resolve(config, token) {
 core/crates/ployz/src/handlers/mcp.rs:        match ActingAs::resolve(&self.account.config, self.account.token.as_deref()) {
+core/crates/ployz/src/handlers/mcp.rs:            match ActingAs::resolve(&config, token.as_deref()) {
 core/crates/ployz/src/handlers/mcp/login.rs:    let previous = match stored(&config) {
 core/crates/ployz/src/handlers/mcp/login.rs:            save(
 core/crates/ployz/src/handlers/mcp/login.rs:        Ok(stored(config)?.map_or(Self::LoggedOut, Self::Login))
 ```
 
-`save` is the one writer, and `login`'s call at `:110` is its one call. `publishing_setup` and `agent` (both in `core/crates/ployz/src/handlers/mcp.rs`) read it through `ActingAs::resolve`, the one place that decides between `PLOYZ_TOKEN` and the stored login, and write nothing; `agent` reads it on each call. So readers are left out: they change no state a login reads. A hand edit of `mcp.json` is left out too, except as a start file.
+`save` is the one writer, and `login`'s call at `:111` is its one call. `publishing_setup`, `agent` and `reporting_as` (all in `core/crates/ployz/src/handlers/mcp.rs`) read it through `ActingAs::resolve`, the one place that decides between `PLOYZ_TOKEN` and the stored login, and write nothing; `agent` reads it on each call, and `reporting_as` on each call report it sends Cloud. So readers are left out: they change no state a login reads. A hand edit of `mcp.json` is left out too, except as a start file.
 
 **Every writer of a token row.** This grep lists them:
 
@@ -66,9 +67,9 @@ dashboard/src/modules/identity/organization-token.server.ts:175:    .delete(orga
 dashboard/src/modules/organization/membership.server.ts:44:    yield* drizzle.delete(organizationToken)
 ```
 
-The model copies the insert (through the CLI's `POST`) and the `DELETE … RETURNING` (through the CLI's `DELETE`). It leaves out the other callers of that `DELETE` and the other two writers: the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:243-268`), a member's removal (`dashboard/src/modules/organization/membership.server.ts:44-45`), and a sandbox claim's `update` (`dashboard/src/modules/identity/claim.server.ts:131-133`).
+The model copies the insert (through the CLI's `POST`) and the `DELETE … RETURNING` (through the CLI's `DELETE`). It leaves out the other callers of that `DELETE` and the other two writers: the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:242-269`), a member's removal (`dashboard/src/modules/organization/membership.server.ts:44-45`), and a sandbox claim's `update` (`dashboard/src/modules/identity/claim.server.ts:131-133`).
 
-**What Cloud answers.** This checkout's Cloud sets a new token's kind to `caller.via === "agent" ? "agent" : (input.kind ?? "cli")` (`dashboard/src/modules/identity/organization-token.server.ts:70`), so it answers kind `agent` whenever the CLI asks for it, as `ployz mcp login` does (`:104`). The model still lets Cloud answer kind `cli` once (`CLI_ANSWERS`), because the kind check (`:109`, `:119-124`) guards against a Cloud that ignores `kind`. It claims nothing about which Cloud releases do that.
+**What Cloud answers.** This checkout's Cloud sets a new token's kind to `caller.via === "agent" ? "agent" : (input.kind ?? "cli")` (`dashboard/src/modules/identity/organization-token.server.ts:70`), so it answers kind `agent` whenever the CLI asks for it, as `ployz mcp login` does (`:105`). The model still lets Cloud answer kind `cli` once (`CLI_ANSWERS`), because the kind check (`:110`, `:120-125`) guards against a Cloud that ignores `kind`. It claims nothing about which Cloud releases do that.
 
 **The start files** (`Start`, `STARTS`). Each needs a row, and dropping it turns tests red (K19 to K24):
 - no `mcp.json`;
@@ -80,7 +81,7 @@ The model copies the insert (through the CLI's `POST`) and the `DELETE … RETUR
 
 **Failures, each a one-off** (`How::Fails`, `How::Unflushed`, and the bounds). A save fails before its rename (`SAVE_FAILURES`). A save renames, then its directory flush fails (`FLUSH_FAILURES`). `revoke`'s list fails (`LIST_FAILURES`). A `DELETE` fails, `revoke`'s or the one of a token just made (`DELETE_FAILURES`, shared). A failed Cloud call is "Could not reach Cloud", which leaves the row as it was.
 
-A lasting failure differs, as the code shows. If every list or every `DELETE` fails, each login that reaches `revoke` leaves its token before live and names it in a `Left` warning (`:148-154`). The next login's token before is then the last login's own token, not the earlier ones, so the earlier ones stay live with only their old warning naming them. If every directory flush fails, each login leaves its token before live for the Unflushed arm (`:229-235`) and warns twice (`:185-197`).
+A lasting failure differs, as the code shows. If every list or every `DELETE` fails, each login that reaches `revoke` leaves its token before live and names it in a `Left` warning (`:149-155`). The next login's token before is then the last login's own token, not the earlier ones, so the earlier ones stay live with only their old warning naming them. If every directory flush fails, each login leaves its token before live for the Unflushed arm (`:243-248`) and warns twice (`:186-198`).
 
 **The properties.** All five are `always`.
 
@@ -95,11 +96,11 @@ A lasting failure differs, as the code shows. If every list or every `DELETE` fa
 A `COVERAGE` row prints its `name`.
 
 What grounds each:
-- **`EVERY_TOKEN_ACCOUNTED`** comes from `docs/user/cli/overview.md:116`: "Running `ployz mcp login` again makes a new one and revokes the old." It watches every agent token: `P`, and each one a login made (`counts`), not only the last. "Revoked" is a row gone from Cloud. Only two warnings name a token: the `Left` warning, "The agent token {} this replaced is still live: {}. To revoke it, {}." (`:192-197`), and the failed-save warning, "Could not revoke the token {} just made: {revoking}" then "Run \`ployz token rm {}\`." (`:129-135`). The Unflushed warning names a path, not a token (`:185-191`), so it doesn't count. A token of kind `cli` is not an agent token, and the property doesn't count it. `accounted` and `counts` are the predicate, and `a_token_is_accounted_only_when_held_revoked_or_named` pins each edge.
-- **`NOTE_HOLDS_WHEN_PRINTED`** comes from the note, "\`ployz mcp\` now acts with its own agent token {} in Organization {}, expiring {}." (`:172`), and from `docs/user/cli/overview.md:364-365`, where `ployz token ls` lists "`agent` for the one `ployz mcp login` made". `save` is the one writer, and a login prints its note only after its own rename, so it breaks exactly when another login's rename lands between this login's rename (`:79`) and its note (`:171-174`). It reads the note from `State::took`, so it adds no state. `--json` prints no note (`:163-170`), and the model follows the human output.
-- **`REVOKED_ONLY_WHEN_DURABLE`** comes from the comment "Durable before the caller revokes the token this replaces." (`:75`) and `fate`'s doc comment "The agent token \`mcp.json\` held before is revoked with this login's sign-in only in the Cloud and Organization that sign-in acts in, and only once the new token is durable." (`:209-210`). It reads `Login::flushes`, the facts of what the login's save did, not `Saved`, the code's answer, so it doesn't read the guard it tests. The durability bookkeeping follows the code's own comments (`:59-64`, `:75`, `:81`, `:209-210`); no step models a power loss, and no lane checks one.
-- **`ONLY_AGENT_TOKEN_HELD`** comes from `login_command`'s about, "Give \`ployz mcp\` its own agent token, which answers no approval" (`:19`), and `docs/user/cli/overview.md:118`, "An agent token can't answer an approval, so the agent can't approve its own calls through \`ployz mcp\`." It speaks of a rename, not of what `mcp.json` holds, because the edited start file holds a `cli` token before any login runs.
-- **`NO_CLI_TOKEN_REVOKED`** comes from `revoke`'s doc comment, "Revoke the token \`ployz mcp\` held before, only while this Organization lists it as an agent token, so an edited \`mcp.json\` never revokes a CLI token." (`:252-253`). A login's revoke of the token it just made (`:128`) is not covered.
+- **`EVERY_TOKEN_ACCOUNTED`** comes from `docs/user/cli/overview.md:135`: "Running `ployz mcp login` again makes a new one and revokes the old." It watches every agent token: `P`, and each one a login made (`counts`), not only the last. "Revoked" is a row gone from Cloud. Only two warnings name a token: the `Left` warning, "The agent token {} this replaced is still live: {}. To revoke it, {}." (`:193-198`), and the failed-save warning, "Could not revoke the token {} just made: {revoking}" then "Run \`ployz token rm {}\`." (`:130-136`). The Unflushed warning names a path, not a token (`:186-192`), so it doesn't count. A token of kind `cli` is not an agent token, and the property doesn't count it. `accounted` and `counts` are the predicate, and `a_token_is_accounted_only_when_held_revoked_or_named` pins each edge.
+- **`NOTE_HOLDS_WHEN_PRINTED`** comes from the note, "\`ployz mcp\` now acts with its own agent token {} in Organization {}, expiring {}." (`:173`), and from `docs/user/cli/overview.md:390-391`, where `ployz token ls` lists "`agent` for the one `ployz mcp login` made". `save` is the one writer, and a login prints its note only after its own rename, so it breaks exactly when another login's rename lands between this login's rename (`:80`) and its note (`:172-175`). It reads the note from `State::took`, so it adds no state. `--json` prints no note (`:164-171`), and the model follows the human output.
+- **`REVOKED_ONLY_WHEN_DURABLE`** comes from the comment "Durable before the caller revokes the token this replaces." (`:76`) and `fate`'s doc comment "The agent token \`mcp.json\` held before is revoked with this login's sign-in only in the Cloud and Organization that sign-in acts in, and only once the new token is durable." (`:210-211`). It reads `Login::flushes`, the facts of what the login's save did, not `Saved`, the code's answer, so it doesn't read the guard it tests. The durability bookkeeping follows the code's own comments (`:60-65`, `:76`, `:82`, `:210-211`); no step models a power loss, and no lane checks one.
+- **`ONLY_AGENT_TOKEN_HELD`** comes from `login_command`'s about, "Give \`ployz mcp\` its own agent token, which answers no approval" (`:20`), and `docs/user/cli/overview.md:137`, "An agent token can't answer an approval, so the agent can't approve its own calls through \`ployz mcp\`." It speaks of a rename, not of what `mcp.json` holds, because the edited start file holds a `cli` token before any login runs.
+- **`NO_CLI_TOKEN_REVOKED`** comes from `revoke`'s doc comment, "Revoke the token \`ployz mcp\` held before, only while this Organization lists it as an agent token, so an edited \`mcp.json\` never revokes a CLI token." (`:253-254`). A login's revoke of the token it just made (`:129`) is not covered.
 
 **Bookkeeping no step reads.** `State::renames`, `Login::saw` and `State::raced` keep the race in the state for the negative searches. `renames` counts the renames so far, `saw` is that count at a login's read, and `raced` turns on, and stays on, when a login renames after another login's rename that landed after its own read. None of them is a step of the code: the rename at `:79` reads nothing, and `raced` is not a compare it makes. `breaks_where` sees only the first path to each state, so a filter must read a fact the state holds, such as `raced`, not one only the path shows.
 
@@ -108,29 +109,29 @@ What grounds each:
 Two logins read the same token before, and both mint. The first rename's token is replaced by the second's. It stays live in Cloud, and no login revokes it or names it. Both return `Ok`, and its login prints that `ployz mcp` now acts with it.
 
 `two_logins_that_read_the_same_token_orphan_the_first_rename` replays it from `P` here:
-1. A reads `P` (`:92`), and B reads `P` (`:92`);
-2. A mints TA, and B mints TB (`:101-108`);
-3. A's save renames TA over `P`, and B's renames TB over TA, each without reading the file again (`:79`);
-4. A lists `P` as an agent token and deletes it (`:255-263`). B lists after that `DELETE`, finds no `P`, and says nothing (`:147`);
-5. both return `Ok`, and each prints its note (`:171-174`).
+1. A reads `P` (`:93`), and B reads `P` (`:93`);
+2. A mints TA, and B mints TB (`:102-109`);
+3. A's save renames TA over `P`, and B's renames TB over TA, each without reading the file again (`:80`);
+4. A lists `P` as an agent token and deletes it (`:256-264`). B lists after that `DELETE`, finds no `P`, and says nothing (`:148`);
+5. both return `Ok`, and each prints its note (`:172-175`).
 
 `mcp.json` holds TB. TA is live in Cloud, and no login revoked it or named it. A's note said `ployz mcp` now acts with TA while `mcp.json` held TB. Both properties break: `EVERY_TOKEN_ACCOUNTED` and `NOTE_HOLDS_WHEN_PRINTED`.
 
-How far this departs from the docs (`docs/user/cli/overview.md:116`): a login that runs alone, whose token before is an agent token in this Cloud and Organization, and whose save, list and `DELETE` all succeed, makes a new token and revokes the old one. Otherwise a lone login leaves the old token live: `fate` leaves one in another Cloud or Organization, or after an Unflushed save (`:213-235`), a failed list or `DELETE` leaves it (`:148-154`), and each of these names it in a warning; `revoke` leaves a `cli` token and says nothing (`:256-261`). The model reaches each of these with one login. The finding is about the new token of an overlapping login, which no warning names.
+How far this departs from the docs (`docs/user/cli/overview.md:135`): a login that runs alone, whose token before is an agent token in this Cloud and Organization, and whose save, list and `DELETE` all succeed, makes a new token and revokes the old one. Otherwise a lone login leaves the old token live: `fate` leaves one in another Cloud or Organization, or after an Unflushed save (`:216-250`), a failed list or `DELETE` leaves it (`:149-155`), and each of these names it in a warning; `revoke` leaves a `cli` token and says nothing (`:257-262`). The model reaches each of these with one login. The finding is about the new token of an overlapping login, which no warning names.
 
-**Its timing condition.** B's read (`:92`) lands before A's rename (`:79`), and B's rename lands after A's. The login whose rename lands first loses its token, whichever finished first. A login's window from its read to its rename holds `in_cloud`'s credential load (`core/crates/ployz/src/handlers/account.rs:139`), `new_token`'s `POST` (`:101-108`), and the temp file's write and `sync_all` (`:71-78`). The model has no clock: it shows the schedules that break, not how often they happen.
+**Its timing condition.** B's read (`:93`) lands before A's rename (`:80`), and B's rename lands after A's. The login whose rename lands first loses its token, whichever finished first. A login's window from its read to its rename holds `in_cloud`'s credential load (`core/crates/ployz/src/handlers/account.rs:141`), `new_token`'s `POST` (`:102-109`), and the temp file's write and `sync_all` (`:72-79`). The model has no clock: it shows the schedules that break, not how often they happen.
 
 **The first-login route.** With no `mcp.json`, both logins read none, both mint, and A then B renames. No revoke runs, and TA is live and unnamed (`two_first_logins_orphan_the_first_rename`).
 
 **The second route to a stale note, which orphans no token.** B reads after A's rename, so it reads TA as its token before, and B's rename lands before A's note. B then revokes TA, so every token is accounted; only A's note was false when printed (`a_login_that_reads_the_other_s_token_makes_its_note_stale`). Keep it apart from the race: its condition is B's read after A's rename and B's rename before A's note.
 
 **The revoke-side misreport.** When both logins read `P`, the second to act on `P` misreports it, in one of two ways, by its condition:
-- its list lands after the first `DELETE`: it finds no `P` and says nothing (`Ok(false)`, `:147`). The finding's replay takes this way;
-- its list lands before the first `DELETE`, and its `DELETE` after: Cloud has no row, and with no Server Clear pending for `P`, `pendingRevocation` re-raises the `NotFound` (`dashboard/src/routes/api/cli/-cli.handler.ts:572-577`). The CLI reads the 404 as `UnknownCredential` (`remove_token` in `core/crates/ployz/src/cloud_account/token.rs`), and the login warns that `P` "is still live" though its row is gone (`:148-154`).
+- its list lands after the first `DELETE`: it finds no `P` and says nothing (`Ok(false)`, `:148`). The finding's replay takes this way;
+- its list lands before the first `DELETE`, and its `DELETE` after: Cloud has no row, and with no Server Clear pending for `P`, `pendingRevocation` re-raises the `NotFound` (`dashboard/src/routes/api/cli/-cli.handler.ts:588-592`). The CLI reads the 404 as `UnknownCredential` (`remove_token` in `core/crates/ployz/src/cloud_account/token.rs`), and the login warns that `P` "is still live" though its row is gone (`:149-155`).
 
 Both are `is_shipped` rows, and no property covers them: `P` is revoked either way.
 
-**Nothing a later login does ends the orphan.** `fate`'s id is the token that login read (`:212`), and the orphan is in no file. Things that do end it: `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:243-268`), the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), the member leaving the Organization (`dashboard/src/modules/organization/membership.server.ts:44-45`), and expiry after `LIFETIME_DAYS` (`:13`, `:106`; `dashboard/src/modules/identity/organization-token.server.ts:71`), after which Cloud refuses the token as a bearer (`tokenRuns`, `dashboard/src/modules/identity/caller.server.ts:129-130`, `dashboard/src/modules/identity/claim-required.server.ts:40`), though `ployz token ls` still lists its row as `expired` (`dashboard/src/modules/identity/organization-token.server.ts:157`). `AgentTokenRefused`'s text also names the Organization's deletion (`core/crates/ployz/src/cloud_login.rs:80`). This list may not be complete.
+**Nothing a later login does ends the orphan.** `fate`'s id is the token that login read (`:215`), and the orphan is in no file. Things that do end it: `ployz token rm` (`core/crates/ployz/src/handlers/account.rs:242-269`), the dashboard's revoke (`dashboard/src/modules/identity/organization-token.functions.ts:38-44`), the member leaving the Organization (`dashboard/src/modules/organization/membership.server.ts:44-45`), and expiry after `LIFETIME_DAYS` (`:14`, `:107`; `dashboard/src/modules/identity/organization-token.server.ts:71`), after which Cloud refuses the token as a bearer (`tokenRuns`, `dashboard/src/modules/identity/caller.server.ts:129-130`, `dashboard/src/modules/identity/claim-required.server.ts:40`), though `ployz token ls` still lists its row as `expired` (`dashboard/src/modules/identity/organization-token.server.ts:157`). `AgentTokenRefused`'s text also names the Organization's deletion (`core/crates/ployz/src/cloud_login.rs:82`). This list may not be complete.
 
 **Only a race orphans a token.** `only_a_race_orphans_a_token` searches the whole model with every raced state rejected and finds no break of `EVERY_TOKEN_ACCOUNTED`. `the_unraced_stale_note_is_the_second_route` runs the same search for `NOTE_HOLDS_WHEN_PRINTED`, and the break it finds is the second route.
 
@@ -154,7 +155,7 @@ Expected: `test result: ok. 24 passed; 0 failed`.
 - **Running.** The `mcp_login` tests take 0.1 to 1 s of nextest time. The logged runs took 0.27 to 0.56 s.
 - **Without an edit.** A warm run, with nothing to compile, takes 0.5 to 4 s of wall time. The logged runs took 0.97 to 2.64 s.
 - **After an edit to the model.** Cargo recompiles `ployz-verify` first. Across the logged scratch runs, on hosts with load averages up to about 26, an edit-and-run took 1.9 to 12.3 s of wall time, the compile alone up to 10 s; allow up to 20 s.
-- **Cold.** A dev build in a fresh `CARGO_TARGET_DIR` took 72 s of wall time. A release build (`--release`, after `rm -rf core/target/release`) took 8.8 s here, with the dependencies already built; no release build from an empty target was logged. The dev profile builds `ployz-verify` and `stateright` at `opt-level = 3` already (`core/Cargo.toml:36-40`).
+- **Cold.** A dev build in a fresh `CARGO_TARGET_DIR` took 72 s of wall time. A release build (`--release`, after `rm -rf core/target/release`) took 8.8 s here, with the dependencies already built; no release build from an empty target was logged. The dev profile builds `ployz-verify` and `stateright` at `opt-level = 3` already (`core/Cargo.toml:40-47`).
 
 Read the tests in five groups.
 - **The finding, on the code as it is.**
@@ -180,7 +181,7 @@ login     take an exclusive lock on a file beside mcp.json, in the shape of
           release the lock as the login returns, whichever way
 ```
 
-So a second login waits until the first returns, reads the first one's token as its token before, and revokes it as `fate` and `revoke` do today. Readers (`agent`, `publishing_setup`) take no lock, since a rename is atomic. Only `ployz mcp login` takes this lock.
+So a second login waits until the first returns, reads the first one's token as its token before, and revokes it as `fate` and `revoke` do today. Readers (`agent`, `publishing_setup`, `reporting_as`) take no lock, since a rename is atomic. Only `ployz mcp login` takes this lock.
 
 In the model, `McpLogin::locks` turns it on. `McpLogin::read` takes the lock and reads in one step: every writer takes the lock first, so nothing can write between them. `McpLogin::offers` offers no read while another login holds it. `McpLogin::step` releases it when its login returns.
 
@@ -201,11 +202,11 @@ The model has no liveness property, so a lock that is never released shows only 
 - the holder left `P` live (Unflushed, or `P` in another Organization or Cloud), and the next login reads the holder's token and revokes it, while `P` stays named (`the_fix_revokes_the_holder_s_token_and_keeps_the_earlier_one_named`);
 - the finding's logins: B is offered no read while A holds the lock, then reads TA and revokes it, and every `always` holds along the way (`the_fix_serializes_the_finding_s_logins`).
 
-**E-142 also names a re-read before persist.** With every writer taking the lock, that re-read never sees another token in this model: no modelled step writes `mcp.json` but a login's `save` (`:110`), and a hand edit during a login is not modelled. It matters only against a writer that takes no lock, an older `ployz` or a hand edit. So the model leaves the re-read out, and E-142 must argue it.
+**E-142 also names a re-read before persist.** With every writer taking the lock, that re-read never sees another token in this model: no modelled step writes `mcp.json` but a login's `save` (`:111`), and a hand edit during a login is not modelled. It matters only against a writer that takes no lock, an older `ployz` or a hand edit. So the model leaves the re-read out, and E-142 must argue it.
 
 **What it costs.** A second login waits on the first's Cloud calls, each up to `REQUEST_TIMEOUT`, 15 s (`core/crates/ployz/src/cloud_account/http.rs`).
 
-**What it doesn't change.** A kill, a power loss or a lost reply still leaves a token unnamed (Bounds). After an Unflushed save, a crash may bring the token before back into `mcp.json` (`:62`); the new token is then live and held by no file, and the Unflushed warning names `mcp.json`'s path, not that token's id (`:185-191`).
+**What it doesn't change.** A kill, a power loss or a lost reply still leaves a token unnamed (Bounds). After an Unflushed save, a crash may bring the token before back into `mcp.json` (`:63`); the new token is then live and held by no file, and the Unflushed warning names `mcp.json`'s path, not that token's id (`:186-192`).
 
 ## Read a counterexample
 
@@ -214,13 +215,13 @@ A story is a numbered list of steps cut at the last state of a path. Each row na
 These are the last rows of `two_logins_that_read_the_same_token_orphan_the_first_rename`'s replay:
 
 ```
- 8. Login A: revoke: DELETE /api/cli/tokens/P removes its row (:263; dashboard/src/modules/identity/organization-token.server.ts:174-177), and revoke returns Ok(true) (:264, :146)
+ 8. Login A: revoke: DELETE /api/cli/tokens/P removes its row (:264; dashboard/src/modules/identity/organization-token.server.ts:174-177), and revoke returns Ok(true) (:265, :147)
     mcp.json: TB | Cloud: P agent revoked, TA agent live, TB agent live | Login A: Reporting { left: None }, read P | Login B: Listing, read P | named: none
- 9. Login B: revoke: GET /api/cli/tokens does not list P, whose row another login's DELETE removed, so revoke returns Ok(false) and login says nothing of P (:255-261, :147)
+ 9. Login B: revoke: GET /api/cli/tokens does not list P, whose row another login's DELETE removed, so revoke returns Ok(false) and login says nothing of P (:256-262, :148)
     mcp.json: TB | Cloud: P agent revoked, TA agent live, TB agent live | Login A: Reporting { left: None }, read P | Login B: Reporting { left: None }, read P | named: none
-10. Login A: prints "`ployz mcp` now acts with its own agent token TA in Organization …" (:171-174), while mcp.json holds TB, prints "Revoked the agent token P it replaced." (:175-177), and returns Ok
+10. Login A: prints "`ployz mcp` now acts with its own agent token TA in Organization …" (:172-175), while mcp.json holds TB, prints "Revoked the agent token P it replaced." (:176-178), and returns Ok
     mcp.json: TB | Cloud: P agent revoked, TA agent live, TB agent live | Login A: Done(Ok), read P | Login B: Reporting { left: None }, read P | named: none
-11. Login B: prints "`ployz mcp` now acts with its own agent token TB in Organization …" (:171-174), and returns Ok
+11. Login B: prints "`ployz mcp` now acts with its own agent token TB in Organization …" (:172-175), and returns Ok
     mcp.json: TB | Cloud: P agent revoked, TA agent live, TB agent live | Login A: Done(Ok), read P | Login B: Done(Ok), read P | named: none
 ```
 
@@ -261,13 +262,13 @@ Each `Broken` flag is already set by its own test, so setting one in a test of y
 
 | Guard | Flag | The model's statement under the flag | Property | Test |
 |---|---|---|---|---|
-| The temp file's `sync_all` before the rename (`:75-78`) | `persist_unflushed_bytes` | `McpLogin::save` records `bytes: false` | `REVOKED_ONLY_WHEN_DURABLE` | `the_temp_file_is_flushed_before_the_rename` |
+| The temp file's `sync_all` before the rename (`:76-79`) | `persist_unflushed_bytes` | `McpLogin::save` records `bytes: false` | `REVOKED_ONLY_WHEN_DURABLE` | `the_temp_file_is_flushed_before_the_rename` |
 | `ployz_decide::fate::fate`'s Unflushed arm | `revoke_after_unflushed` | `McpLogin::fate` reads an unflushed save as `Durability::Durable` | `REVOKED_ONLY_WHEN_DURABLE` | `an_unflushed_save_keeps_the_token_before` |
 | `ployz_decide::fate::fate`'s Cloud check | `fate_ignores_cloud` | `McpLogin::fate` reads a `Place::OtherCloud` token as `Previous::Same` | `EVERY_TOKEN_ACCOUNTED` | `fate_leaves_a_token_in_another_cloud` |
 | `ployz_decide::fate::fate`'s Organization check | `fate_ignores_organization` | `McpLogin::fate` reads a `Place::OtherOrganization` token as `Previous::Same` | `EVERY_TOKEN_ACCOUNTED` | `fate_leaves_a_token_in_another_organization` |
-| `revoke`'s listed-as-agent check (`:256-262`) | `revoke_unlisted` | `McpLogin::list` sets `found` to true | `NO_CLI_TOKEN_REVOKED` | `revoke_deletes_only_a_listed_agent_token` |
-| The kind check and refusal (`:109`, `:119-124`) | `keep_non_agent` | `McpLogin::save` saves a `cli` token | `ONLY_AGENT_TOKEN_HELD` | `the_kind_check_refuses_a_cli_token` |
-| The revoke of the token just made, and its warning (`:125-136`) | `failed_save_keeps_new_token` | `McpLogin::unmaking` returns `Pc::Done(Outcome::Err)` | `EVERY_TOKEN_ACCOUNTED` | `a_failed_save_revokes_the_token_just_made` |
+| `revoke`'s listed-as-agent check (`:257-263`) | `revoke_unlisted` | `McpLogin::list` sets `found` to true | `NO_CLI_TOKEN_REVOKED` | `revoke_deletes_only_a_listed_agent_token` |
+| The kind check and refusal (`:110`, `:120-125`) | `keep_non_agent` | `McpLogin::save` saves a `cli` token | `ONLY_AGENT_TOKEN_HELD` | `the_kind_check_refuses_a_cli_token` |
+| The revoke of the token just made, and its warning (`:126-137`) | `failed_save_keeps_new_token` | `McpLogin::unmaking` returns `Pc::Done(Outcome::Err)` | `EVERY_TOKEN_ACCOUNTED` | `a_failed_save_revokes_the_token_just_made` |
 | The fix's lock from the read | `unlocked` | `McpLogin::locks` is false | `EVERY_TOKEN_ACCOUNTED` | `the_fix_needs_the_lock_from_the_read` |
 | The fix's lock through the report | `releases_before_report` | `McpLogin::save` releases the lock after the rename | `NOTE_HOLDS_WHEN_PRINTED` | `the_fix_needs_the_lock_through_the_report` |
 
@@ -468,11 +469,11 @@ It printed `as is: 363558 states` and `fixed: 15615 states`, the same two `alway
 
 **Left out, and argued.**
 - **Kills, power loss and lost replies (risk 2).** A kill between `new_token` and the rename, or between the rename and the warnings, leaves a token unnamed. A reply lost after Cloud minted is an Err to the CLI (`call` and `exchange` retry nothing, `core/crates/ployz/src/cloud_account/calls.rs` and `core/crates/ployz/src/cloud_account/http.rs`; `REQUEST_TIMEOUT`, `core/crates/ployz/src/cloud_account/http.rs`), and the login returns at `:108` naming nothing. Each leaves a token unnamed on the fix too, so it is not this finding. A scratch lift added a kill action that ends any started login and releases its lock, and counted a killed login as returned: on `proposed()`, 3168 states, `EVERY_TOKEN_ACCOUNTED` broke, the other four `always` held, and a search that rejected every state with a killed login found no break of any of the five.
-- **The unreadable file's token (risk 3).** `login` replaces a `Corrupt` file without revoking or naming the token it held (`:94-97`). Nobody can know that token, so the property counts none (`counts`).
+- **The unreadable file's token (risk 3).** `login` replaces a `Corrupt` file without revoking or naming the token it held (`:95-98`). Nobody can know that token, so the property counts none (`counts`).
 - **A token Cloud refuses while `mcp.json` still holds it, and no `ployz mcp logout` (risk 5).** Expiry, `ployz token rm` and a member leaving are not steps; nor is any way back to no file.
 - **The other writers of a token row** (What the model copies).
-- **A pending Server Clear for `P`.** It makes the second `DELETE` succeed, so both logins print "Revoked …". `P` is revoked either way, so it changes no property's verdict and adds only a second "Revoked" note. A Clear is pending only when `P` had Server Access on a Server that hasn't confirmed the Clear (`pendingServerRevocations`, `dashboard/src/modules/machines/server-access.server.ts:387-405`).
-- **A `POST` that fails before Cloud inserts a row**, and a read error other than not found or `Corrupt` (`:55`, `:98`). The login returns before it mints or writes anything.
+- **A pending Server Clear for `P`.** It makes the second `DELETE` succeed, so both logins print "Revoked …". `P` is revoked either way, so it changes no property's verdict and adds only a second "Revoked" note. A Clear is pending only when `P` had Server Access on a Server that hasn't confirmed the Clear (`pendingServerRevocations`, `dashboard/src/modules/machines/server-access.server.ts:415-432`).
+- **A `POST` that fails before Cloud inserts a row**, and a read error other than not found or `Corrupt` (`:56`, `:99`). The login returns before it mints or writes anything.
 - **A change of sign-in or Organization between logins.** `cloud.json` is the sign-in store's model. Both logins act as one signed-in person in one Organization, who can list and revoke their own tokens.
 - **Expired rows.** `listCredentials` lists expired tokens too (`dashboard/src/modules/identity/organization-token.server.ts:157`), and the model has no clock.
 - **Each bound above.**
@@ -501,8 +502,8 @@ When a change touches a function the description names, reread the step that cop
 | `core/crates/ployz/src/handlers/account.rs` | `in_cloud` |
 | `core/crates/ployz/src/handlers/mod.rs` | `runtime` |
 | `core/crates/ployz/src/cloud_account/token.rs` | `new_token`, `credentials`, `remove_token` |
-| `core/crates/ployz/src/handlers/mcp.rs` | `publishing_setup`, `agent` (readers, left out) |
+| `core/crates/ployz/src/handlers/mcp.rs` | `publishing_setup`, `agent`, `reporting_as` (readers, left out) |
 | `dashboard/src/routes/api/cli/-cli.handler.ts` | `GET tokens`, `POST tokens`, `DELETE tokens/:id`, `pendingRevocation` |
 | `dashboard/src/modules/identity/organization-token.server.ts` | `createOrganizationToken`, `mintOrganizationTokenUnchecked`, `listCredentials`, `revokeCredential` |
 
-Sync commit: `f8e91a4d83`. The model describes the covered code as it is at that commit.
+Sync commit: `48582970f9`. The model describes the covered code as it is at that commit.
