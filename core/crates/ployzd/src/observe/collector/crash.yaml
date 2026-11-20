@@ -1,0 +1,24 @@
+receivers:
+  otlp/ployzd-crash:
+    protocols:
+      http:
+        endpoint: ${env:PLOYZ_CRASH_RECEIVER}
+processors:
+  batch/crash:
+    timeout: 100ms
+exporters:
+  otlp_http/crash:
+    endpoint: ${env:PLOYZ_OTLP_ENDPOINT}
+    encoding: json
+    compression: none
+    auth:
+      authenticator: bearertokenauth
+    sending_queue:
+      enabled: true
+      storage: file_storage
+service:
+  pipelines:
+    logs/crash:
+      receivers: [otlp/ployzd-crash]
+      processors: [batch/crash]
+      exporters: [otlp_http/crash]
