@@ -794,8 +794,17 @@ fn take_restart_policy(container: &mut serde_json::Value, body: &Bytes) {
     let policy = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
         .and_then(|body| body.get("RestartPolicy").cloned());
-    if let Some(policy) = policy {
-        container["HostConfig"]["RestartPolicy"] = policy;
+    if let Some(policy) = policy
+        && let Some(host) = container
+            .as_object_mut()
+            .map(|container| {
+                container
+                    .entry("HostConfig")
+                    .or_insert_with(|| serde_json::json!({}))
+            })
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        host.insert("RestartPolicy".into(), policy);
     }
 }
 
