@@ -31,7 +31,7 @@ fn each_gate_arm_writes_its_capability_and_hints_as_before() {
             tonic::Code::PermissionDenied,
             "This server runs only deploys an approved device signed.",
             json!({
-                "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY,
+                "capability": ployz_core::SIGNED_VERSION_CAPABILITY,
                 "next": "ployz deploy from an approved device",
             }),
         ),

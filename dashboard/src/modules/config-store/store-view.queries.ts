@@ -75,6 +75,8 @@ const refreshedBy = {
   pull_request: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
   // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.
   on_merge: ["store_environment", "store_pull_request"],
+  // Signed versions arrive with a Deploy and are never rewritten.
+  versions: ["store_deployment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */

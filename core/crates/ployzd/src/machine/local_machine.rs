@@ -221,8 +221,8 @@ pub enum Error {
     EmptyUpdate,
     #[error("push target {0}")]
     InvalidPushTarget(&'static str),
-    /// Device enforcement refused an Operator's creation, or its step under a deploy
-    /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
+    /// Device enforcement refused an Operator's creation, or a step of one under a signed
+    /// version. The refusal names [`ployz_core::SIGNED_VERSION_CAPABILITY`] in its details.
     #[error("{}", admission::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
     /// A rule build's grant failed a check before anything opened. The refusal names

@@ -563,13 +563,12 @@ impl MachineRpc for MachineService {
         }
         let presented = if operator {
             Presented::Operator {
-                deploy: request.deploy.as_ref(),
                 rule: request.rule.as_deref(),
                 versions: &request.versions,
             }
         } else {
             Presented::FullAccess {
-                deploy: request.deploy.as_ref(),
+                versions: &request.versions,
             }
         };
         let admitted = match local.admit_spec(&request.want, presented).await {
@@ -1263,7 +1262,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::DeployRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            &Gate::new(ployz_core::DEPLOY_APPROVAL_CAPABILITY).next("ployz deploy from an approved device"),
+            &Gate::new(ployz_core::SIGNED_VERSION_CAPABILITY).next("ployz deploy from an approved device"),
         )),
         LocalMachineError::RuleDeployRefused(ref refusal) => {
             let gate = Gate::new(ployz_core::DEPLOY_RULE_CAPABILITY);

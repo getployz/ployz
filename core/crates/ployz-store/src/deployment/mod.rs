@@ -41,7 +41,7 @@ pub(crate) use rows::server_names;
 pub(crate) use status::*;
 pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
-pub use versions::{Pinned, PostedVersion, RanService, TagPin};
+pub use versions::{Pinned, PostedVersion, RanService, TagPin, VersionsQuery, VersionsView};
 
 pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
@@ -648,9 +648,6 @@ pub struct Claimed {
     /// claim's runner may change the Environment, so a Pending copy one of these
     /// left is no run's.
     pub ended_runs: BTreeSet<DeploymentId>,
-    /// The approval a Device signed for this Deployment, which the runner hands to each
-    /// Server; none when a token or automation admitted it.
-    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
     /// The automatic deploy rule a push's Deployment runs under, which the runner hands
     /// each Server with each Service's image token; none for any other Deployment.
     pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,

@@ -1,16 +1,18 @@
 //! What a Deploy hands the Client it runs through: the log it writes under, the pull
-//! credentials of its Services, and the approvals every Server gets with a Container change.
+//! credentials of its Services, and the signatures every Server gets with a Container
+//! change.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, NewContainer, RegistryAuth, RunTarget,
     ServiceName,
-    authority::{
-        DeployApproval, PayloadDigest, RuleProof, ServiceVersion, Signed, version::MAX_PRESENTED,
-    },
+    authority::{PayloadDigest, RuleProof, ServiceVersion, Signed, version::MAX_PRESENTED},
 };
-use ployz_store::{ConfigStore, OrganizationId};
+use ployz_store::{Ask as _, ConfigStore, OrganizationId, VersionsQuery, View};
+
+use crate::cloud_account::Credential;
+use crate::failure::Failure;
 
 /// The Deploy this client executes, shared by its clones as their Deploy's own.
 #[derive(Clone, Default)]
@@ -23,13 +25,11 @@ pub(crate) struct DeployContext {
     approvals: Arc<Approvals>,
 }
 
-/// The approvals a client hands each Server with a Container change.
+/// The signatures a client hands each Server with a Container change.
 #[derive(Clone, Debug, Default)]
 struct Approvals {
-    /// The approval of the Deploy every Container this client creates or steps belongs to.
-    deploy: Option<Signed<DeployApproval>>,
     /// A rule's proof for each Service it built, when a rule deploys in place of a
-    /// person's approval.
+    /// person's signature.
     proofs: RuleProofs,
     versions: Versions,
 }
@@ -47,26 +47,37 @@ enum Versions {
     Kept(KeptVersions),
 }
 
-/// The Config Store that keeps an Organization's signed versions.
+/// The Config Store that keeps an Organization's signed versions: one in this process, or
+/// Cloud's, read as this CLI's credential. Cloud can withhold a version but not forge one:
+/// each Server checks every signature against the keys it trusts.
 #[derive(Clone)]
-pub(crate) struct KeptVersions {
-    store: Arc<ConfigStore>,
-    organization: OrganizationId,
+pub(crate) enum KeptVersions {
+    Local {
+        store: Arc<ConfigStore>,
+        organization: OrganizationId,
+    },
+    Cloud(Arc<Credential>),
 }
 
 impl std::fmt::Debug for KeptVersions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("KeptVersions")
-            .field("organization", &self.organization)
-            .finish_non_exhaustive()
+        match self {
+            Self::Local { organization, .. } => formatter
+                .debug_struct("KeptVersions::Local")
+                .field("organization", organization)
+                .finish_non_exhaustive(),
+            Self::Cloud(credential) => formatter
+                .debug_struct("KeptVersions::Cloud")
+                .field("cloud", &credential.cloud())
+                .finish_non_exhaustive(),
+        }
     }
 }
 
 impl KeptVersions {
     #[must_use]
     pub(crate) fn new(store: Arc<ConfigStore>, organization: OrganizationId) -> Self {
-        Self {
+        Self::Local {
             store,
             organization,
         }
@@ -79,15 +90,35 @@ impl KeptVersions {
         else {
             return Vec::new();
         };
-        let (organization, namespace, service) = (
-            self.organization.clone(),
-            new.slot.namespace.clone(),
-            new.slot.service.clone(),
-        );
-        let read = crate::sdk::store_call(&self.store, move |store| {
-            store.versions_for(&organization, (&namespace, &service), digest)
-        })
-        .await;
+        let query = VersionsQuery {
+            namespace: new.slot.namespace.clone(),
+            service: new.slot.service.clone(),
+            digest,
+        };
+        let read = match self {
+            Self::Local {
+                store,
+                organization,
+            } => {
+                let organization = organization.clone();
+                crate::sdk::store_call(store, move |store| {
+                    store.versions_for(&organization, (&query.namespace, &query.service), digest)
+                })
+                .await
+                .map_err(Failure::from)
+            }
+            Self::Cloud(credential) => crate::cloud_account::config_store::<View>(
+                credential,
+                crate::cloud_account::Via::Cli,
+                "read",
+                &query.to_query(),
+                None,
+            )
+            .await
+            .map_err(Failure::from)
+            .and_then(|view| VersionsQuery::view(view).map_err(Failure::from))
+            .map(|view| view.versions),
+        };
         read.unwrap_or_else(|error| {
             tracing::warn!(%error, service = %new.slot.service, "could not read a copy's signed versions");
             Vec::new()
@@ -96,16 +127,16 @@ impl KeptVersions {
 }
 
 /// The proof each Service an automatic deploy rule built carries to every Server, in
-/// place of a person's deploy approval.
+/// place of a person's signed version.
 #[derive(Clone, Debug, Default)]
 pub struct RuleProofs {
     pub rules: BTreeMap<ServiceName, RuleProof>,
 }
 
-/// What a Container change carries to the Server: the approvals and the proofs for `want`.
+/// What a Container change carries to the Server: the signed versions and the proofs for
+/// `want`.
 pub(super) struct Carried {
     pub(super) rule: Option<Box<RuleProof>>,
-    pub(super) deploy: Option<Signed<DeployApproval>>,
     pub(super) versions: Vec<Signed<ServiceVersion>>,
 }
 
@@ -113,17 +144,12 @@ impl Carried {
     pub(super) fn none() -> Self {
         Self {
             rule: None,
-            deploy: None,
             versions: Vec::new(),
         }
     }
 }
 
 impl DeployContext {
-    pub(super) fn set_deploy(&mut self, approval: Option<Signed<DeployApproval>>) {
-        Arc::make_mut(&mut self.approvals).deploy = approval;
-    }
-
     pub(super) fn set_proofs(&mut self, proofs: RuleProofs) {
         Arc::make_mut(&mut self.approvals).proofs = proofs;
     }
@@ -188,7 +214,6 @@ impl DeployContext {
         };
         Carried {
             rule: proof_for(&self.approvals.proofs.rules, want),
-            deploy: self.approvals.deploy.clone(),
             versions,
         }
     }

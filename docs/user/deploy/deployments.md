@@ -198,23 +198,43 @@ Use `--yes` only where you trust the plan Ployz Cloud sends.
 
 Each server checks every container it creates against what you signed: the image, command,
 variables and sealed values, mounts, config files, ports, privileges, restart policy and hook. Ployz Cloud
-carries the approval but can't change what it covers. A server logs each one, such as
-`deploy 0f8fad5b… approved by device 3KQ7-M2XD for web digest=cb8d3c6ef656`.
+carries the signature but can't change what it covers. A server logs each one, such as
+`web admitted by signed version from [Device(3x4sgmns4e)] digest=cb8d3c6ef656`.
 
-A server remembers the last 32 versions of each service it ran under a signature.
-Restarting one, running more or fewer copies of it, or rolling back to it on that server
-needs no new signature, from the dashboard or the CLI. A version stops counting when you
-remove every device that signed it. One deployed from the server's own terminal keeps
-counting.
+A server keeps no list of the versions it ran. Each new container it creates, on any server,
+needs the signature with it, which Ployz Cloud sends as described below. A version stops
+counting when you remove every device that signed it.
 
 Ployz Cloud keeps every version you sign, and each deployment records the image each signed
 service ran. **Roll back** or **Redeploy** runs the images that deployment ran and sends their
 signatures, so every server runs them, even one that never ran that version, and even after
-the tag moved. A service that deployment ran unsigned runs its tag again, as the tag points
-now. A deploy that changes only how many copies run, where they run or their CPU and memory
-limits runs the image the service last ran, with its signature, as long as your settings still
-name the same tag. Change anything else, such as a variable, and it runs the image your
+the tag moved. A service that deployment ran unsigned runs the image its settings named
+then: a digest as written, or a tag as it points now. A deploy that changes only how many
+copies run, where they run or their CPU and memory limits runs the image the service last
+ran, with its signature, as long as your settings still name the same tag. Change anything else, such as a variable, and it runs the image your
 settings name now. Ployz Cloud can replay a version you signed, but it can't sign one.
+
+A deployment made before Ployz Cloud kept signed versions has no signature of its own. Which
+images a rollback or redeploy of it runs depends on how it was deployed:
+
+- **Signed on a device with an older `ployz`.** Ployz Cloud kept the image that deploy pinned
+  each service to, so a rollback runs those images even after the tag moved. This holds for
+  every deployment an older `ployz` signed, however recent.
+- **Not signed by a device.** Nothing recorded the images it ran. Each service runs the image
+  your settings named then: an image written by digest runs that digest, and a tag runs the
+  image it points to now.
+
+Either way, Ployz Cloud sends a signature for a service only when a device has since signed
+that exact version: the same image and settings, in the same environment. A server refuses the
+rest of its services that reach data. Run `ployz deploy` on an approved device to sign them.
+
+A `ployz` from before signed versions sends a kind of signature Ployz Cloud no longer keeps.
+Ployz Cloud refuses its deploy before anything is queued and names the update to run:
+
+```text
+This ployz signs deploys in an older form this Config Store no longer takes, so nothing was deployed. Update ployz, then deploy again.
+next: curl -fsSL https://ployz.sh | sh -s -- beta
+```
 
 A server also keeps which devices approved each container it made, and checks they're still
 approved before it creates the container and each time the dashboard starts it again. Once
@@ -247,6 +267,28 @@ servers refuse the build with `This server runs only builds an approved device s
 If `ployz deploy` can't reach your servers before it signs, it warns and deploys
 without signing, and the servers refuse it.
 
+### Upgrade servers before you sign
+
+A server on 0.4.0-beta.2 or earlier that enforces device approval reads only the older kind
+of signature, so it refuses every version a newer `ployz` signs, and every rollback or
+redeploy Ployz Cloud sends it. Upgrade each such server first, then update `ployz` on your
+devices. Before it signs, `ployz deploy` asks every server whether it checks signed versions,
+which a server advertises as `ployz.container.signed-version.v1`. When one that enforces
+doesn't, the deploy signs nothing and names the server to upgrade:
+
+```text
+error: Upgrade web-1 first: it enforces device approval with an older ployz that can't check this device's signature, so it would refuse this deploy. Nothing signed or deployed.
+next: ployz server upgrade beta web-1
+```
+
+When a server that enforces doesn't say whether it checks signed versions, and doesn't answer
+when asked, the deploy signs nothing:
+
+```text
+error: Couldn't confirm web-2 can check this device's signature: it enforces device approval and didn't answer. Nothing signed or deployed.
+inspect: ployz status
+```
+
 ### Deploy from the dashboard
 
 **Deploy** at the bottom of an environment signs nothing. A server runs it for three kinds of
@@ -258,7 +300,6 @@ service:
 - A version a device signed, which Ployz Cloud sends with its signature: a rollback or
   redeploy of a signed deployment, or a change of only replicas, placement or limits while
   your settings name the tag your last signed deploy ran.
-- A version the server already ran under a signature, as above.
 
 A deploy that changes the tag, or any setting the signature covers, has no signature to send,
 even when nothing else changed. Run `ployz deploy` on an approved device to sign it.

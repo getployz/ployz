@@ -73,7 +73,6 @@ async fn client(fleet: &FakeFleet, machine: &str) -> Client {
 
 fn stop(container: &str) -> EnsureContainerRequest {
     EnsureContainerRequest {
-        deploy: None,
         rule: None,
         versions: Vec::new(),
         want: ContainerWant::Stopped {
@@ -283,7 +282,6 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
     let error = client
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
-                deploy: None,
                 rule: None,
                 versions: Vec::new(),
                 want: ContainerWant::Gone {
@@ -345,7 +343,6 @@ async fn a_held_copy_leaves_every_live_route_and_only_its_run_brings_it_back() {
             .call::<op::EnsureContainer>(
                 EnsureContainerRequest {
                     want,
-                    deploy: None,
                     rule: None,
                     versions: Vec::new(),
                 },

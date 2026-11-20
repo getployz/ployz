@@ -752,7 +752,6 @@ mod tests {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
                     versions: Vec::new(),
                 }),
                 &Trusted::default(),

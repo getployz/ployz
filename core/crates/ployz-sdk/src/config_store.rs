@@ -148,8 +148,7 @@ impl ConfigStore {
             clippy::disallowed_methods,
             reason = "whole numbers first, as `from_js`"
         )]
-        let command = ployz_store::Command::decode(whole_numbers(command))
-            .map_err(|error| refused("Expected a Config Store command", &error))?;
+        let command = ployz_store::Command::sent(whole_numbers(command)).map_err(rpc_to_napi)?;
         let trusted = evidence(trusted)?;
         self.run(move |store| store.commit(&who, &command, &trusted))
             .await

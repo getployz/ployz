@@ -3,7 +3,6 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
-use ployz_core::authority::{DeployApproval, Signed};
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -99,12 +98,6 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(optional, as = "Option<bool>")]
     pub no_prune: bool,
-    /// The approval a Device signed for this Deployment, naming the digest of each
-    /// Service's spec as it plans now. Its runner hands it to each Server, and a
-    /// Server that enforces Device approval creates nothing without one that matches.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, as = "Option<Signed<DeployApproval>>")]
-    pub approval: Option<Box<Signed<DeployApproval>>>,
     /// A signed version of each Service a client signed for this Deploy, with the image
     /// it pinned the Service's tag to. The Store keeps each for later runs and drains, and
     /// this Deployment runs those pins.
@@ -138,12 +131,6 @@ pub struct Retry {
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
-    /// As [`Deploy::approval`], for the specs this redeploy ships: its source's
-    /// frozen revision as a plan of it with `deployment` lowers it. Servers that
-    /// enforce Device approval run none of an image's Services without one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, as = "Option<Signed<DeployApproval>>")]
-    pub approval: Option<Box<Signed<DeployApproval>>>,
     /// As [`Deploy::versions`], over what its source ran.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PostedVersion>>")]
@@ -228,9 +215,6 @@ pub(crate) fn admit(
             let pruning = retry_pruning(tx, &retried, trusted)?;
             pruning.admit(trusted, Some(rollback.number))?;
             deployment::admitted_by_user(tx, &retried.id, trusted)?;
-            if let Some(approval) = &retry.approval {
-                deployment::approved_by_device(tx, &retried.id, approval)?;
-            }
             deployment::versions::post(tx, &retried.id, &retry.versions)?;
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
@@ -535,9 +519,6 @@ fn deploy(
         &frozen,
     )?;
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
-    if let Some(approval) = &admit.approval {
-        deployment::approved_by_device(tx, &summary.id, approval)?;
-    }
     deployment::versions::post(tx, &summary.id, &admit.versions)?;
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = match admit.services.is_empty() {

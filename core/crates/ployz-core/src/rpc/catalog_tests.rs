@@ -487,8 +487,8 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.build.grant.rule.v1", "Always"),
     ("ployz.ingress.tunnel.v1", "Cluster"),
     ("ployz.private-access.approval.v1", "Cluster"),
-    ("ployz.container.deploy-approval.v1", "Always"),
-    ("ployz.container.deploy-proposal.v1", "Always"),
+    ("ployz.container.signed-version.v1", "Always"),
+    ("ployz.container.signed-version.proposal.v1", "Always"),
     ("ployz.container.deploy-rule.v1", "Always"),
     ("ployz.rule.passkey.v1", "Always"),
 ];

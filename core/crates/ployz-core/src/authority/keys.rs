@@ -185,7 +185,7 @@ impl KeySignature {
 /// as one type.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-#[ts(concrete(T = super::deploy::DeployApproval))]
+#[ts(concrete(T = super::version::ServiceVersion))]
 pub struct Signed<T> {
     pub body: String,
     pub signatures: Vec<KeySignature>,

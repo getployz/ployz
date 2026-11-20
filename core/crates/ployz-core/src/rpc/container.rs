@@ -9,7 +9,7 @@ use super::error::{RpcError, RpcErrorCode};
 use super::evidence::{Departure, Evidence};
 use crate::{
     ContainerId, ContainerKind, ContainerLimits, ContainerObservation, Namespace,
-    ResolvedServiceSpec, authority::DeployApproval, authority::Signed,
+    ResolvedServiceSpec, authority::Signed,
 };
 
 /// Whether listed Container observations carry real environment values.
@@ -73,15 +73,9 @@ pub enum ContainerLocator {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnsureContainerRequest {
     pub want: ContainerWant,
-    /// The approval of the Deploy this want is part of. A Machine under Device
-    /// enforcement requires it from an Operator caller for a new creation, and takes
-    /// it for a step on a Container in its Namespace; an older daemon ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub deploy: Option<Signed<DeployApproval>>,
     /// The automatic deploy rule this want is part of, with the pinned builder's image
     /// token for its Service. A Machine under Device enforcement takes it in place of a
-    /// deploy approval from an Operator caller. Sent only to a daemon advertising
+    /// signed version from an Operator caller. Sent only to a daemon advertising
     /// [`crate::DEPLOY_RULE_CAPABILITY`]; an older daemon ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

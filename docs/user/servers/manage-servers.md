@@ -328,9 +328,8 @@ A server checks these itself, whoever asks. Ployz Cloud carries a signature but 
   [Deploy from an approved device](../deploy/deployments.md#deploy-from-an-approved-device).
   The dashboard's **Deploy** signs nothing. It sends the signature of a version a device
   signed, for a rollback or a change of only replicas, placement or limits. A server runs any
-  other for a service that reaches none of those, and for a version it already ran under a
-  signature.
-  It refuses any other container with `ployz.container.deploy-approval.v1` and names
+  other only for a service that reaches none of those.
+  It refuses any other container with `ployz.container.signed-version.v1` and names
   `ployz deploy from an approved device`.
 - **Builds.** A server refuses a build Ployz Cloud starts with
   `This server runs only builds an approved device starts.`, before the build opens any
@@ -393,6 +392,17 @@ moves only if it [reaches no data](../deploy/deployments.md#deploy-from-the-dash
 reports any other as failed and leaves it where it runs. Turn off **Run services here**, then
 run `ployz deploy` from an approved device to move those off. A volume stays on its server; see
 [Move a volume](../services/move-a-volume.md).
+
+`ployz server drain` sends the same signatures, read from Ployz Cloud, even with `--connect`.
+Signed out, it changes nothing when any copy could move to a server that enforces device
+approval: such a server starts a moved copy only from a signed version, since the move brings its
+image along instead of pulling it. A drain whose copies can only go to servers that don't enforce
+it, that stay because nothing can take them, or that only removes old copies, goes ahead:
+
+```text
+error: Nothing drained from web-1: shop-production/api needs a device's signature to start on another server, and a signed-out ployz can't read it.
+next: ployz login
+```
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,

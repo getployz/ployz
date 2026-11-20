@@ -20,8 +20,8 @@ use futures_util::future::BoxFuture;
 use futures_util::stream::FuturesUnordered;
 use futures_util::{FutureExt, StreamExt};
 use ployz_core::{
-    CopyRotation, EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget,
-    MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
+    ContainerKind, CopyRotation, EnvironmentValues, LiveServices, Machine, MachineId, MachineName,
+    MachineTarget, MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
     UpdateMachineRequest, op,
 };
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ use ts_rs::TS;
 
 use crate::cluster::{Call, Deadline, RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
+use crate::deploy::DeploySnapshot;
 use crate::deploy::cleanup::Copy;
 
 pub(crate) mod placement;
@@ -339,6 +340,81 @@ impl Client {
         let ready = preflight(self, target, scope, cancellation, progress).await?;
         Ok(execute(self, ready, cancellation, progress).await)
     }
+}
+
+/// The Services a Drain of `target` within `scope` could move onto a Server that enforces
+/// Device approval, where each new copy needs a signed version. Empty when no other Server
+/// enforces. Reads only, so a caller can refuse before the Drain changes anything.
+///
+/// # Errors
+///
+/// `target` is not a visible Server, or its Containers can't be listed.
+pub(crate) async fn needing_versions(
+    client: &mut Client,
+    target: &MachineTarget,
+    scope: &DrainScope,
+) -> Result<Vec<QualifiedService>, DrainError> {
+    let machines = client.machines().await?;
+    let server = visible_machine(target, &machines)
+        .map_err(DrainError::Refused)?
+        .machine
+        .clone();
+    let enforced = machines.iter().any(|observed| {
+        observed.machine.id != server.id
+            && observed.machine.runtime.device_enforcement == Some(true)
+    });
+    if !enforced {
+        return Ok(Vec::new());
+    }
+    let snapshot = client.deploy_snapshot(machines).await?;
+    unsigned_moves(snapshot, &server.id, scope).map_err(|detail| DrainError::Unobservable {
+        server: server.name,
+        detail,
+    })
+}
+
+/// [`needing_versions`] on `snapshot`, taken before the Drain turns `server`'s role off.
+/// The detail when `server`'s own Containers went unlisted, since then nothing says what
+/// would move.
+fn unsigned_moves(
+    mut snapshot: DeploySnapshot,
+    server: &MachineId,
+    scope: &DrainScope,
+) -> Result<Vec<QualifiedService>, String> {
+    if let Some(failure) = snapshot
+        .container_failures
+        .iter()
+        .find(|failure| failure.machine_id == *server)
+    {
+        return Err(error_chain::row(&failure.error));
+    }
+    if snapshot.container_omissions.contains(server) {
+        return Err("no terminal response".into());
+    }
+    // Another Server may answer by the time a move looks, and the move then goes ahead.
+    snapshot.container_failures.clear();
+    snapshot.container_omissions.clear();
+    for observed in &mut snapshot.machines {
+        if observed.machine.id == *server {
+            observed.machine.accepts_services = false;
+        }
+    }
+    let mut services: Vec<QualifiedService> = snapshot
+        .containers
+        .iter()
+        .filter(|container| {
+            container.machine_id == *server && container.kind == ContainerKind::ServiceContainer
+        })
+        .map(|container| QualifiedService {
+            namespace: container.namespace.clone(),
+            name: container.resolved_spec.name.clone(),
+        })
+        .filter(|service| scope.includes(service))
+        .collect();
+    services.sort();
+    services.dedup();
+    services.retain(|service| placement::needs_version(&snapshot, service));
+    Ok(services)
 }
 
 /// Everything decided before the first move.
@@ -971,3 +1047,7 @@ pub(crate) fn replicated_services_on(
 #[cfg(test)]
 #[path = "drain_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "drain/version_tests.rs"]
+mod version_tests;
