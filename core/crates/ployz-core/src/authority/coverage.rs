@@ -81,7 +81,8 @@ pub enum Authorization {
 use Authorization::{Bound, Full, Read, Signed};
 use Statement::{Deploy, Join, PrivateAccess, Proposal, Rule};
 
-const IMAGE_BOUND: &str = "writes no name but a retention name its content certifies, so a Full creation's tag keeps naming what it named; a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
+const IMAGE_BOUND: &str = "a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
+const PULL_BOUND: &str = "writes no name but a retention name its content certifies, so a Full creation's tag keeps naming what it named; a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
 
 /// Every catalog route's class, in catalog order.
 pub const AUTHORIZATION: &[(&str, Authorization)] = &[
@@ -180,12 +181,12 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         Bound("residual: the next deploy pulls again"),
     ),
     (ENSURE_IMAGE_INGEST_CAPABILITY, Bound(IMAGE_BOUND)),
-    (PULL_IMAGE_CAPABILITY, Bound(IMAGE_BOUND)),
+    (PULL_IMAGE_CAPABILITY, Bound(PULL_BOUND)),
     (
         PULL_FREE_IMAGE_CAPABILITY,
         Bound("writes no name; records an image ID only an unsigned creation reads"),
     ),
-    (PULL_IMAGE_FROM_MACHINE_CAPABILITY, Bound(IMAGE_BOUND)),
+    (PULL_IMAGE_FROM_MACHINE_CAPABILITY, Bound(PULL_BOUND)),
     (MINT_BUILD_GRANT_CAPABILITY, Signed(&[Rule])),
     (INSPECT_BUILD_GRANT_CAPABILITY, Read),
     (

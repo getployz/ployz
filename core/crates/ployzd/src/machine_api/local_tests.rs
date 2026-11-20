@@ -456,6 +456,55 @@ async fn a_pulled_image_answers_only_after_docker_holds_it() {
     std::fs::remove_dir_all(data_dir).unwrap();
 }
 
+/// A Full creation runs the tag by name, so a Full caller's pull, such as a direct
+/// Device's before its Deploy creates anything, must leave the tag naming what the
+/// registry serves: on a Server that lacks it, and over an older one when pulled `always`.
+#[tokio::test]
+async fn a_full_callers_pull_leaves_the_tag_its_creation_runs() {
+    let image = "example.test/api:1";
+    let served = format!("sha256:{}", "e".repeat(64));
+    for (held, policy) in [
+        (None, ployz_core::PullPolicy::Missing),
+        (
+            Some(format!("sha256:{}", "b".repeat(64))),
+            ployz_core::PullPolicy::Always,
+        ),
+    ] {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-full-pull").await;
+        fake.images
+            .lock()
+            .unwrap()
+            .insert(image.into(), held.clone());
+        fake.registry
+            .lock()
+            .unwrap()
+            .insert(image.into(), served.clone());
+        service
+            .pull_free_image(Request::new(
+                op::PullFreeImage::into_request(ployz_core::PullFreeImageRequest {
+                    image: image.into(),
+                    policy,
+                    registry_auth: None,
+                })
+                .encode()
+                .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::PullFreeImage>()
+            .unwrap();
+        assert_eq!(
+            fake.images.lock().unwrap().get(image),
+            Some(&Some(served.clone())),
+            "held {held:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     use serde_json::json;

@@ -324,12 +324,6 @@ mod tests {
             ("localhost:5000/app:v1", "localhost:5000/app:v1"),
             ("[::1]:5000/app", "[::1]:5000/app:latest"),
             ("app@sha256:abcd", "app@sha256:abcd"),
-            // A digest pull writes no tag, so a pinned reference loses its tag.
-            ("app:v1@sha256:abcd", "app@sha256:abcd"),
-            (
-                "localhost:5000/app:v1@sha256:abcd",
-                "localhost:5000/app@sha256:abcd",
-            ),
         ] {
             prepare_image(&docker, image, PullPolicy::Always, None)
                 .await

@@ -23,12 +23,12 @@ use crate::docker::test_support::FakeDocker;
 use crate::machine::{LocalMachineStore, RecordOwner};
 use crate::sealing_key::SealingKey;
 
-/// Cases this harness can't reach over TCP, with the unit test that proves each. Cloud's
-/// own connection is an iroh connection, a rule grant needs GitHub's signed token, and an
-/// upgrade resolves releases only on an installed Machine.
 const PINNED_NGINX: &str =
     "nginx@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+/// Cases this harness can't reach over TCP, with the unit test that proves each. Cloud's
+/// own connection is an iroh connection, a rule grant needs GitHub's signed token, and an
+/// upgrade resolves releases only on an installed Machine.
 const UNIT_ONLY: &[(&str, &str, &str)] = &[
     (
         ployz_core::REQUEST_MACHINE_UPGRADE_CAPABILITY,

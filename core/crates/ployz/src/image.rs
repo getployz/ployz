@@ -142,9 +142,7 @@ fn select_targets(
 /// `Never` pull from a peer whose store holds the variant the destination's
 /// architecture runs, selected by [`available_variant`]. `Missing` without such
 /// a peer leaves the registry pull to the destination. `Never` without one
-/// leaves the destination to fail if the image is absent. A tag is copied only where
-/// this client may name images ([`Naming::UserTags`]); anywhere else the destination
-/// pulls it itself, since its creation runs only an image it pulled.
+/// leaves the destination to fail if the image is absent.
 ///
 /// # Errors
 ///
@@ -158,9 +156,6 @@ pub(crate) async fn ensure_cluster_image(
     match policy {
         PullPolicy::Always => return Ok(()),
         PullPolicy::Missing | PullPolicy::Never => {}
-    }
-    if !names_content(image) && client.image_naming(dest) == Naming::Retention {
-        return Ok(());
     }
     let mut listing_client = client.clone();
     let machines = listing_client.machines().await.map_err(rpc_error)?;
@@ -213,8 +208,10 @@ pub(crate) async fn ensure_cluster_image(
 }
 
 /// Make `image` present on `dest` as `policy` asks before a Deploy changes any
-/// Container. A peer that holds the image serves it as [`ensure_cluster_image`]
-/// does; `dest` then pulls from its registry as `policy` asks and confirms it holds
+/// Container. A tag is copied from a peer only where this client may name images
+/// ([`Naming::UserTags`]); anywhere else `dest` pulls it as its own creation will read it.
+/// Otherwise a peer that holds the image serves it as [`ensure_cluster_image`]
+/// does, and `dest` then pulls from its registry as `policy` asks and confirms it holds
 /// the image, so `Never` fails here for an absent image. Answers what `dest` reports
 /// of the image, such as the ports it exposes.
 ///
@@ -229,9 +226,10 @@ pub(crate) async fn pull_cluster_image(
     policy: PullPolicy,
     registry_auth: Option<RegistryAuth>,
 ) -> Result<ImagePulled, RpcError> {
-    ensure_cluster_image(client, dest, image, policy).await?;
     let target = MachineTarget::from(dest);
-    if !names_content(image) && client.image_naming(dest) == Naming::Retention {
+    if !ployz_core::authority::deploy::content_addressed(image)
+        && client.image_naming(dest) == Naming::Retention
+    {
         // Pulled as the creation will be, so the ports reported are the image that runs.
         let pulled = client
             .clone()
@@ -239,6 +237,7 @@ pub(crate) async fn pull_cluster_image(
                 PullFreeImageRequest {
                     image: image.to_owned(),
                     policy,
+                    registry_auth: registry_auth.clone(),
                 },
                 Call::keyed().to(&target),
             )
@@ -251,6 +250,8 @@ pub(crate) async fn pull_cluster_image(
                 }) => {}
             pulled => return pulled,
         }
+    } else {
+        ensure_cluster_image(client, dest, image, policy).await?;
     }
     client
         .clone()
@@ -264,12 +265,6 @@ pub(crate) async fn pull_cluster_image(
         )
         .await
         .or_else(|error| pulls_on_create(answered_by(dest, error).pulling(image, policy)))
-}
-
-/// Whether `image` names its content, so copying or pulling it writes no name a Full
-/// creation reads.
-fn names_content(image: &str) -> bool {
-    ployz_core::authority::deploy::content_addressed(image)
 }
 
 /// A daemon older than [`PULL_IMAGE_CAPABILITY`] pulls when it creates the Container,

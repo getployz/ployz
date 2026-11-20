@@ -1003,9 +1003,22 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::PullFreeImage>(request)?;
         if request.image.is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
+        }
+        if !operator {
+            // A Full creation runs the tag by name, so the tag is what this pull must place.
+            return finish(
+                self.local
+                    .pull_image(ployz_core::PullImageRequest {
+                        image: request.image,
+                        policy: request.policy,
+                        registry_auth: request.registry_auth,
+                    })
+                    .await,
+            );
         }
         finish(self.local.pull_free_image(request).await)
     }

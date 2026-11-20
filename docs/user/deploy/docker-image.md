@@ -69,11 +69,10 @@ With more than one project, or to deploy to an environment other than the defaul
 
 ## Tags on your servers
 
-Only you write a tag like `nginx:1.27` on a server: with `ployz deploy` or a drain from the CLI
-over SSH or on that server itself, and only on the server you connected to. A deploy from Ployz
-Cloud, or one that reaches a server through another, pulls the image on that server by digest
-and runs it without writing the tag. A tag on a server names only what you put there, so a
-deploy that runs it with your secrets and volumes runs that image.
+Only you write a tag like `nginx:1.27` on a server, from the CLI connected to that server itself:
+over SSH, on the server, or as an approved device. A deploy from Ployz Cloud, or one that reaches
+a server through another, pulls the image on that server by digest and runs it without writing
+the tag. A tag on a server names only what you put there.
 
 On a server other than the one you connect to, a deploy pulls a tag from its registry, even when
 another server already holds the image. A `pull: never` deploy there runs only an image that
