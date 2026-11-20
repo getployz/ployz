@@ -23,8 +23,8 @@
 //!
 //! The fix: Seed carries its run's gen, and `seed_volume` (machine_api/local.rs)
 //! checks it against `into`'s floor under the switch lock, before the plugin's
-//! `seed_volume` runs, through `check_gen` (machine_api/local_volume_copy.rs:273-283) and
-//! `FloorTurn::check` (docker/spec_store.rs:558-571). The check refuses a gen below the
+//! `seed_volume` runs, through `check_gen` (machine_api/local_volume_copy.rs:280-293) and
+//! `FloorTurn::check` (docker/spec_store.rs:603-618). The check refuses a gen below the
 //! floor and leaves the floor where it is. Gens come from one identity column, so a later
 //! run's `SetVolumeCopy` on A raises `into`'s floor above the seed run's gen.
 //!
@@ -636,9 +636,9 @@ impl VolumeMarks {
         };
     }
 
-    /// `FloorTurn::admit` (docker/spec_store.rs:531-554) through `admit_gen`
-    /// (machine_api/local_volume_copy.rs:258-268), which `set_copy` runs before the switch
-    /// lock (:47) and `set_copy_admitted` again under it (:88).
+    /// `FloorTurn::admit` (docker/spec_store.rs:577-601) through `admit_gen`
+    /// (machine_api/local_volume_copy.rs:268-278), which `set_copy` runs before the switch
+    /// lock (:49) and `set_copy_planned` again under it (:91).
     fn admit(state: &mut State, generation: u8) -> bool {
         if generation < state.floor {
             return false;
@@ -647,8 +647,8 @@ impl VolumeMarks {
         true
     }
 
-    /// `FloorTurn::check` (docker/spec_store.rs:558-571) through `check_gen`
-    /// (machine_api/local_volume_copy.rs:273-283): refuses a gen below the floor, so an
+    /// `FloorTurn::check` (docker/spec_store.rs:603-618) through `check_gen`
+    /// (machine_api/local_volume_copy.rs:280-293): refuses a gen below the floor, so an
     /// equal one passes, and leaves the floor where it is.
     fn check(&self, state: &mut State, generation: u8) -> bool {
         if self.broken.seed_raises_floor {
