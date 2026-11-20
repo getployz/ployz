@@ -1,12 +1,18 @@
 import "@tanstack/react-start/server-only";
+import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Effect, Option } from "effect";
+import type { MachineId } from "#/db/tables";
 import { machineTokenCurrent, parseMachineToken } from "#/modules/observe-ingest/machine-token";
 import { organizationOfSigningMachine, verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
+import { organizationMachine } from "#/modules/machines/tables";
 import { AppConfig } from "#/server/config.server";
+import { Database } from "#/server/database.server";
 import { Unauthorized, Unavailable } from "#/server/public-error";
 
 export const OTLP_SIGNALS = ["logs", "metrics", "traces"] as const;
 export type OtlpSignal = (typeof OTLP_SIGNALS)[number];
+
+export type OtlpSender = { readonly organizationId: string; readonly machineId: MachineId };
 
 /** Days Cloud keeps a Machine's records. Constant for now: it is the one retention Cloud sells. */
 const RETENTION_DAYS = "30";
@@ -15,14 +21,30 @@ const FORWARD_TIMEOUT_MS = 20_000;
 const badBody = (message: string) => Response.json({ error: message }, { status: 400, headers: { "cache-control": "no-store" } });
 const ENCODINGS = new Set(["gzip", "zstd", "identity"]);
 
-/** The Organization whose Machine signed this token. Everything Cloud stamps on a record comes from here. */
+/** The Machine that signed this token and the Organization it is enrolled in. Everything Cloud stamps on a record comes from here. */
 export const authenticateMachineToken = Effect.fn("ObserveIngest.otlpToken")(function* (authorization: string | null) {
   const token = parseMachineToken(authorization);
   if (Option.isNone(token)) return yield* new Unauthorized();
   const nowSeconds = Math.floor((yield* Clock.currentTimeMillis) / 1000);
   if (!machineTokenCurrent(token.value, nowSeconds)) return yield* new Unauthorized();
   const { machine, message, signature } = token.value;
-  return yield* organizationOfSigningMachine(machine, (identity) => verifyManagementSignature(identity, message, signature));
+  const organizationId = yield* organizationOfSigningMachine(machine, (identity) => verifyManagementSignature(identity, message, signature));
+  return { organizationId, machineId: machine };
+});
+
+/** A Machine's last report is kept to within this, so a steady stream of batches writes its row twice a minute. */
+const SEEN_GRANULARITY_SECONDS = 30;
+
+export const recordMachineSeen = Effect.fn("ObserveIngest.machineSeen")(function* (sender: OtlpSender) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(organizationMachine).set({ observeSeenAt: sql`now()` }).where(and(
+    eq(organizationMachine.organizationId, sender.organizationId),
+    eq(organizationMachine.machineId, sender.machineId),
+    or(
+      isNull(organizationMachine.observeSeenAt),
+      lt(organizationMachine.observeSeenAt, sql`now() - make_interval(secs => ${SEEN_GRANULARITY_SECONDS})`),
+    ),
+  ));
 });
 
 /**
@@ -30,7 +52,7 @@ export const authenticateMachineToken = Effect.fn("ObserveIngest.otlpToken")(fun
  * the Machine sent is forwarded but the body's type and encoding.
  */
 export const forwardOtlp = Effect.fn("ObserveIngest.otlpForward")(function* (
-  organizationId: string,
+  sender: OtlpSender,
   signal: OtlpSignal,
   headers: Headers,
   body: Uint8Array,
@@ -45,7 +67,8 @@ export const forwardOtlp = Effect.fn("ObserveIngest.otlpForward")(function* (
   }
   const forward = new Headers({
     "content-type": contentType,
-    "x-ployz-org": organizationId,
+    "x-ployz-org": sender.organizationId,
+    "x-ployz-machine": sender.machineId,
     "x-ployz-retention-days": RETENTION_DAYS,
   });
   const encoding = headers.get("content-encoding")?.trim().toLowerCase();
@@ -67,6 +90,8 @@ export const forwardOtlp = Effect.fn("ObserveIngest.otlpForward")(function* (
       try: () => upstream.arrayBuffer(),
       catch: (cause) => new Unavailable({ message: "Cloud's observe Collector is not answering.", userFacing: true, cause }),
     });
+    // The batch is already queued; a failed write here only makes the Machine look quiet a little longer.
+    yield* recordMachineSeen(sender).pipe(Effect.catchCause((cause) => Effect.logWarning("Cannot record a Machine's last report.", { cause })));
     return new Response(reply, {
       status: 200,
       headers: { "content-type": upstream.headers.get("content-type") ?? contentType, "cache-control": "no-store" },

@@ -30,13 +30,13 @@ const MAX_OTLP_BYTES = 8 * 1024 * 1024;
 
 export function handleMachineOtlp(request: Request, signal: OtlpSignal) {
   return Effect.gen(function* () {
-    const organization = yield* Effect.result(authenticateMachineToken(request.headers.get("authorization")));
-    if (Result.isFailure(organization)) return errorResponse(organization.failure);
+    const sender = yield* Effect.result(authenticateMachineToken(request.headers.get("authorization")));
+    if (Result.isFailure(sender)) return errorResponse(sender.failure);
     const read = yield* Effect.result(Effect.tryPromise(() => readCappedBody(request, MAX_OTLP_BYTES)));
     if (Result.isFailure(read)) return Response.json({ error: "Cloud could not read the request body." }, { status: 503, headers: noStore });
     const body = read.success;
     if (body === null) return Response.json({ error: "OTLP body is over 8 MiB." }, { status: 413, headers: noStore });
-    const forwarded = yield* Effect.result(forwardOtlp(organization.success, signal, request.headers, body));
+    const forwarded = yield* Effect.result(forwardOtlp(sender.success, signal, request.headers, body));
     return Result.isFailure(forwarded) ? errorResponse(forwarded.failure) : forwarded.success;
   });
 }

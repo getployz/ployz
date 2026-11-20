@@ -1,0 +1,1 @@
+ALTER TABLE "organization_machine" ADD COLUMN "observe_seen_at" timestamp with time zone;

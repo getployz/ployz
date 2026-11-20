@@ -35,6 +35,8 @@ export const runtimeContainerRecordSchema = Schema.Struct({
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
   /** Present only on a Global Service's containers: one runs on every Server. */
   global: Schema.optionalKey(Schema.Literal(true)),
+  /** Docker's log driver, as the daemon reported it. `local` is a 0.3 container whose logs never reach Cloud. */
+  logDriver: Schema.optionalKey(Schema.String),
 });
 
 export type RuntimeContainerRecord = typeof runtimeContainerRecordSchema.Type;
