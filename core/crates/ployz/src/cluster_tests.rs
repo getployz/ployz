@@ -1526,9 +1526,9 @@ async fn a_copy_names_the_user_tag_only_on_an_entry_that_lacks_it() {
 
     let image_id = format!("sha256:{}", "7".repeat(64));
     let retention = format!("app:ployz-sha256-{}", "7".repeat(64));
-    let summary = |id: &str| ImageSummary {
+    let summary = |(id, tag): (&str, &str)| ImageSummary {
         id: id.to_owned(),
-        repo_tags: vec!["app:v1".into()],
+        repo_tags: vec![tag.to_owned()],
         created: 0,
         size: 1,
         containers: 1,
@@ -1542,24 +1542,38 @@ async fn a_copy_names_the_user_tag_only_on_an_entry_that_lacks_it() {
     };
     let (entry, other) = (observed('a'), observed('b'));
     let elsewhere = format!("sha256:{}", "c".repeat(64));
-    for (source, dest, dest_holds, names) in [
-        (&entry, &other, None, vec![retention.clone()]),
+    let foreign_retention = format!("team/{retention}");
+    // The source's tag on the image, what the destination holds, and the names written.
+    for (source, dest, source_tag, dest_holds, names) in [
+        (&entry, &other, "app:v1", None, vec![retention.clone()]),
         (
             &other,
             &entry,
+            "app:v1",
             None,
             vec![retention.clone(), "app:v1".to_owned()],
         ),
         (
             &other,
             &entry,
-            Some(elsewhere.clone()),
+            "app:v1",
+            Some((elsewhere.as_str(), "app:v1")),
+            vec![retention.clone()],
+        ),
+        // Another repository's `app:v1` is no binding of `app:v1`.
+        (&other, &entry, "team/app:v1", None, vec![retention.clone()]),
+        // Nor does another repository's retention name keep this one.
+        (
+            &entry,
+            &other,
+            "app:v1",
+            Some((image_id.as_str(), foreign_retention.as_str())),
             vec![retention.clone()],
         ),
     ] {
         let pulls = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (seen, source_id, held) = (pulls.clone(), source.id, summary(&image_id));
-        let dest_held = dest_holds.as_deref().map(summary);
+        let (seen, source_id, held) = (pulls.clone(), source.id, summary((&image_id, source_tag)));
+        let dest_held = dest_holds.map(summary);
         let address = entry.management_address();
         let (mut client, server) = crate::connect::test_support::rpc_client_over(
             crate::context::Connection::ssh(

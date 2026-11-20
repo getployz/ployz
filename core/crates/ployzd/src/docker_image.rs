@@ -22,11 +22,7 @@ pub(crate) enum ImagePull<'auth> {
 /// `image`'s repository, registry and port kept, pinned to `id`: `repo:tag` becomes
 /// `repo@sha256:…`.
 pub(crate) fn pinned_reference(image: &str, id: &ployz_core::ImageDigest) -> String {
-    let repository = match image.rsplit_once(':') {
-        Some((repository, tag)) if !tag.contains('/') => repository,
-        _ => image,
-    };
-    format!("{repository}@{id}")
+    format!("{}@{id}", ployz_core::image_repository(image))
 }
 
 /// Make `image` present as `policy` asks, pulling with `auth` for a private image.

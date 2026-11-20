@@ -255,12 +255,10 @@ fn stored<'store>(store: &'store MachineImages, image: &str) -> Option<&'store I
         .or_else(|| image.starts_with("sha256:").then_some(image));
     store.images.iter().find(|summary| match digest {
         Some(digest) => summary.id == digest,
-        None => summary.repo_tags.iter().any(|tag| {
-            tag == image
-                || tag
-                    .strip_suffix(image)
-                    .is_some_and(|prefix| prefix.ends_with('/'))
-        }),
+        None => summary
+            .repo_tags
+            .iter()
+            .any(|tag| ployz_core::same_image_name(tag, image)),
     })
 }
 

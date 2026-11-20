@@ -68,8 +68,8 @@ async fn pull_and_tag(
             )));
         }
         let tag = tag.unwrap_or(image);
-        if let Some((_, hex)) = tag.split_once(ployz_core::RETENTION_TAG) {
-            retention_free(docker, pulled, tag, hex).await?;
+        if let Some(digest) = ployz_core::retained_digest(tag) {
+            retention_free(docker, pulled, tag, &digest).await?;
         }
         // Verify before publishing the requested or retention tag: a failed
         // attempt must not leave a tag or remove one from an earlier delivery.
@@ -88,9 +88,8 @@ async fn retention_free(
     docker: &std::path::Path,
     pulled: &str,
     tag: &str,
-    hex: &str,
+    digest: &ployz_core::ImageDigest,
 ) -> Result<(), Error> {
-    let digest = format!("sha256:{hex}");
     if descriptor_digest(docker, pulled).await?.as_deref() != Some(digest.as_str()) {
         return Err(Error::RetentionNameTaken(tag.to_owned()));
     }
@@ -384,6 +383,13 @@ esac
                 );
             }
         }
+        // An ordinary tag that only starts like a retention name is no retention name.
+        let ordinary = "app:ployz-sha256-staging";
+        let pulled = format!("127.0.0.1:1234/{ordinary}");
+        fs::write(root.join("name"), "free").unwrap();
+        pull_and_tag(ordinary, &pulled, None, "linux/amd64", &docker)
+            .await
+            .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

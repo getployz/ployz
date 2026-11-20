@@ -299,7 +299,7 @@ pub(crate) async fn copy_running_image(
     let names = if ployz_core::authority::deploy::content_addressed(image) {
         Vec::new()
     } else {
-        let pinned = format!("{}@{image_id}", full_repository(image));
+        let pinned = format!("{}@{image_id}", ployz_core::image_repository(image));
         let retention =
             ployz_core::retention_tag(&pinned).ok_or_else(|| PushError::InvalidReference {
                 reference: pinned.clone(),
@@ -361,23 +361,11 @@ pub(crate) async fn copy_running_image(
     Ok(())
 }
 
-/// `image` without its tag, its registry and port kept: the repository its retention
-/// name and a destination's pinned pull both name.
-fn full_repository(image: &str) -> &str {
-    match image.rsplit_once(':') {
-        Some((repository, tag)) if !tag.contains('/') => repository,
-        _ => image,
-    }
-}
-
 /// `image` without its tag or registry: the path a digest pull asks the source for.
 /// The destination pulls it through its own loopback registry, which cannot nest a
 /// registry host like `registry:5000`, and the source serves digests by content alone.
 fn repository(image: &str) -> &str {
-    let repository = match image.rsplit_once(':') {
-        Some((repository, tag)) if !tag.contains('/') => repository,
-        _ => image,
-    };
+    let repository = ployz_core::image_repository(image);
     match repository.split_once('/') {
         Some((host, path)) if host.contains(['.', ':']) || host == "localhost" => path,
         _ => repository,

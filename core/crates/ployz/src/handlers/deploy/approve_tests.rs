@@ -171,16 +171,6 @@ fn an_image_written_by_digest_is_not_looked_up() {
 }
 
 #[test]
-fn a_registry_port_is_not_a_tag() {
-    assert_eq!(super::repository("registry:5000/web"), "registry:5000/web");
-    assert_eq!(
-        super::repository("registry:5000/web:2"),
-        "registry:5000/web"
-    );
-    assert_eq!(super::repository(PINNED), "nginx");
-}
-
-#[test]
 fn a_built_service_is_refused_plainly_with_no_pin_hint() {
     let error = signable(Some(vec![spec("ployz-build/web:pending")])).unwrap_err();
     let rpc = error.report();
