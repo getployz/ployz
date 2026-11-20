@@ -165,4 +165,40 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
     expect(hourly.buckets.filter((bucket) => bucket.pageviews > 0).map((bucket) => [bucket.bucket.toISOString().slice(11, 13), bucket.pageviews, bucket.visits]))
       .toEqual([["09", 2, 1], ["10", 1, 1], ["11", 1, 1]]);
   }).pipe(Effect.provide(config)), 60_000);
+  it.live("matches a goal whose pattern holds an underscore, a percent sign or a backslash, and only that text", () => Effect.gen(function* () {
+    const org = randomUUID();
+    yield* Effect.promise(() => seed(org, "goal-text", [
+      { at: at(first, "09:00:00"), path: "/sign_up", visitor: 1 },
+      { at: at(first, "09:01:00"), path: "/signXup", visitor: 2 },
+      { at: at(first, "09:02:00"), path: "/50%", visitor: 3 },
+      { at: at(first, "09:03:00"), path: "/500", visitor: 4 },
+      { at: at(first, "09:04:00"), path: "/a\\b", visitor: 5 },
+    ]));
+    const goals = [
+      { id: "us", name: "Underscore", pathPattern: "/sign_up" },
+      { id: "pc", name: "Percent", pathPattern: "/50%" },
+      { id: "bs", name: "Backslash", pathPattern: "/a\\b" },
+    ];
+    const answer = yield* analytics.figures({ ...query(org), goals }, "day", []);
+    expect(Object.fromEntries(answer.goals.map(({ goalId, visitors }) => [goalId, visitors]))).toEqual({ us: 1, pc: 1, bs: 1 });
+  }).pipe(Effect.provide(config)), 60_000);
+  it.live("filters to a page whose path holds a quote or a backslash", () => Effect.gen(function* () {
+    const org = randomUUID();
+    yield* Effect.promise(() => seed(org, "page-text", [
+      { at: at(first, "09:00:00"), path: "/O'Brien", visitor: 1 },
+      { at: at(first, "09:01:00"), path: "/a\\b", visitor: 2 },
+      { at: at(first, "09:02:00"), path: "/", visitor: 3 },
+    ]));
+    for (const path of ["/O'Brien", "/a\\b"]) {
+      const filtered = yield* analytics.figures({ ...query(org), filters: [{ key: "page", op: "eq", value: path }] }, "day", ["page"]);
+      expect(filtered.overview.pageviews).toBe(1);
+      expect(filtered.values("page")).toEqual([{ value: path, pageviews: 1, visitors: 1 }]);
+    }
+  }).pipe(Effect.provide(config)), 60_000);
+  it.live("reads a goal whose pattern holds a quote", () => Effect.gen(function* () {
+    const org = randomUUID();
+    yield* Effect.promise(() => seed(org, "quote", [{ at: at(first, "09:00:00"), path: "/it's here", visitor: 1 }]));
+    const answer = yield* analytics.figures({ ...query(org), goals: [{ id: "q", name: "Quote", pathPattern: "/it's*" }] }, "day", []);
+    expect(answer.goals).toEqual([{ goalId: "q", name: "Quote", visitors: 1, conversions: 1 }]);
+  }).pipe(Effect.provide(config)), 60_000);
 });

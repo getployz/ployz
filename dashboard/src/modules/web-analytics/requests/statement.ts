@@ -7,19 +7,14 @@ type Table = "ployz_request" | "ployz_pageview";
  * The one place a request statement names its table. Every read of request data selects from `scoped`, which holds
  * only the Organization's rows (`org` is bound by `queryObserveOrg` from the session) in the Environment's namespaces.
  */
-const scopedOf = (table: Table) => `scoped AS (SELECT * FROM otel.${table} WHERE OrgId = {org:String} AND Namespace IN {namespaces:Array(String)})`;
+const scopedOf = (table: Table, namespaces: string) => `scoped AS (SELECT * FROM otel.${table} WHERE OrgId = {org:String} AND Namespace IN ${namespaces})`;
 
 /** Counts and sums come back as numbers; the bot hashes travel as strings because a 64-bit hash outruns a JS number. */
 const SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0, max_memory_usage = 6000000000";
 
-const ESCAPES = new Map([
-  ["\\", "\\\\"], ["'", "\\'"], ["\n", "\\n"], ["\t", "\\t"], ["\r", "\\r"], ["\0", "\\0"], ["\b", "\\b"], ["\f", "\\f"],
-]);
-const escapeText = (value: string) => value.replace(/[\\'\n\t\r\0\b\f]/g, (char) => ESCAPES.get(char) ?? char);
-
 /**
  * A statement's values. Each `bind` names its value `{pN:Type}` for the SQL to hold, so no statement text is built
- * from a value. `org` and `namespaces` belong to the scoped source.
+ * from a value. `org` belongs to the scoped source, which binds the Environment's namespaces itself.
  */
 export class Params {
   readonly #values = new Map<string, string>();
@@ -30,9 +25,11 @@ export class Params {
     return `{${name}:${type}}`;
   }
 
-  string(value: string) { return this.#bind("String", escapeText(value)); }
+  /** The shared reader escapes each value once for ClickHouse's `param_` text, so a value goes in as it is. */
+  string(value: string) { return this.#bind("String", value); }
   int(value: number) { return this.#bind("Int64", String(Math.trunc(value))); }
-  strings(value: ReadonlyArray<string>) { return this.#bind("Array(String)", `[${value.map((item) => `'${escapeText(item)}'`).join(",")}]`); }
+  /** An array of one `String` binding per item. ClickHouse reads an `Array(String)` param without unescaping it, so the reader's escaping would corrupt a value inside one. */
+  strings(value: ReadonlyArray<string>) { return `[${value.map((item) => this.string(item)).join(", ")}]`; }
   /** Decimal digits of 64-bit hashes. */
   hashes(value: ReadonlyArray<string>) { return this.#bind("Array(UInt64)", `[${value.join(",")}]`); }
   instant(value: Date) { return `fromUnixTimestamp64Milli(${this.int(value.getTime())}, 'UTC')`; }
@@ -54,11 +51,9 @@ const readScoped = Effect.fn("WebAnalytics.read")(function* <Row>(
     const none: Array<Row> = [];
     return none;
   }
-  const text = `WITH ${[scopedOf(table), ...ctes].join(",\n")}\n${select}\n${SETTINGS}`;
+  const text = `WITH ${[scopedOf(table, params.strings(scope.namespaces)), ...ctes].join(",\n")}\n${select}\n${SETTINGS}`;
   if (/\botel\./.test([...ctes, select].join(" "))) return yield* Effect.die(new Error("A request read selects from `scoped`, never from an otel table."));
-  const values = new Map(params.values);
-  values.set("namespaces", `[${scope.namespaces.map((namespace) => `'${escapeText(namespace)}'`).join(",")}]`);
-  return yield* queryObserveOrg(scope.organizationId, text, values, row);
+  return yield* queryObserveOrg(scope.organizationId, text, params.values, row);
 });
 
 /**
