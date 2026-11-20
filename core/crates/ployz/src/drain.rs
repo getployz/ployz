@@ -343,9 +343,8 @@ impl Client {
 }
 
 /// The Services a Drain of `target` within `scope` could move onto a Server that enforces
-/// Device approval, with copies that need a signed version there. Read with their values,
-/// as a move reads them, so a Sealed value counts. Empty when no other Server enforces.
-/// Reads only, so a caller can refuse before the Drain changes anything.
+/// Device approval, where each new copy needs a signed version. Empty when no other Server
+/// enforces. Reads only, so a caller can refuse before the Drain changes anything.
 ///
 /// # Errors
 ///

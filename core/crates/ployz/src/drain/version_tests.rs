@@ -1,5 +1,5 @@
-//! Which moves a signed-out Drain can't make: the copies it would start, with data, on a
-//! Server that enforces Device approval.
+//! Which moves a signed-out Drain can't make: the copies it would start on a Server that
+//! enforces Device approval.
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerObservationParts,
@@ -11,8 +11,6 @@ use serde_json::json;
 
 use super::{DrainScope, unsigned_moves};
 use crate::deploy::DeploySnapshot;
-
-const SEALED: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 
 /// web-b is the Server drained.
 fn drained() -> MachineId {
@@ -45,12 +43,9 @@ fn server(hex: char, accepts_services: bool, enforcing: bool) -> MachineObservat
     MachineObservation::new(machine, MembershipObservation::Up)
 }
 
-fn api(sealed: bool) -> ResolvedServiceSpec {
-    let value = if sealed {
-        json!({ "sealed": SEALED, "scope": "shared", "key": "TOKEN" })
-    } else {
-        json!("plain")
-    };
+const SEALED: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
+
+fn api(environment: serde_json::Value) -> ResolvedServiceSpec {
     serde_json::from_value(json!({
         "service_id": "a".repeat(32),
         "name": "api",
@@ -58,10 +53,19 @@ fn api(sealed: bool) -> ResolvedServiceSpec {
         "container": {
             "image": "alpine:3.23.3",
             "pull_policy": "missing",
-            "environment": { "TOKEN": value },
+            "environment": environment,
         },
     }))
     .unwrap()
+}
+
+fn plain() -> ResolvedServiceSpec {
+    api(json!({ "TOKEN": "plain" }))
+}
+
+/// A copy that reaches data, so that only where it goes can spare it a signature.
+fn sealed() -> ResolvedServiceSpec {
+    api(json!({ "TOKEN": { "sealed": SEALED, "scope": "shared", "key": "TOKEN" } }))
 }
 
 fn copy(
@@ -98,18 +102,15 @@ fn unsigned(snapshot: DeploySnapshot) -> Result<Vec<String>, String> {
 }
 
 #[test]
-fn a_secret_moving_to_an_enforcing_server_needs_its_signed_version() {
-    let snapshot = |sealed| DeploySnapshot {
+fn a_copy_moving_to_an_enforcing_server_needs_its_signed_version() {
+    // Even one that reaches no data: the move copies its image in under pull policy
+    // never, which such a Server runs only under a signature.
+    let snapshot = DeploySnapshot {
         machines: vec![server('a', true, true), server('b', true, false)],
-        containers: vec![copy('1', 'b', None, api(sealed))],
+        containers: vec![copy('1', 'b', None, plain())],
         ..DeploySnapshot::default()
     };
-    assert_eq!(unsigned(snapshot(true)), Ok(vec!["app/api".to_owned()]));
-    assert_eq!(
-        unsigned(snapshot(false)),
-        Ok(Vec::new()),
-        "a copy that reaches no data starts unsigned anywhere"
-    );
+    assert_eq!(unsigned(snapshot), Ok(vec!["app/api".to_owned()]));
 }
 
 #[test]
@@ -120,7 +121,7 @@ fn a_move_only_a_server_that_does_not_enforce_can_take_needs_nothing() {
             server('b', true, false),
             server('c', true, false),
         ],
-        containers: vec![copy('1', 'b', None, api(true))],
+        containers: vec![copy('1', 'b', None, sealed())],
         ..DeploySnapshot::default()
     };
     assert_eq!(unsigned(snapshot), Ok(Vec::new()));
@@ -131,8 +132,8 @@ fn an_old_copy_the_drain_only_cleans_up_needs_nothing() {
     let snapshot = DeploySnapshot {
         machines: vec![server('a', true, true), server('b', true, false)],
         containers: vec![
-            copy('1', 'a', Some(CopyRotation::In), api(true)),
-            copy('2', 'b', Some(CopyRotation::Out), api(true)),
+            copy('1', 'a', Some(CopyRotation::In), sealed()),
+            copy('2', 'b', Some(CopyRotation::Out), sealed()),
         ],
         ..DeploySnapshot::default()
     };

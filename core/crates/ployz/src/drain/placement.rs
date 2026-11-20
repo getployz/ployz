@@ -10,7 +10,6 @@
 //! returns an error: whatever moved before a failure stays in its result.
 
 use crate::cluster::{Call, Deadline};
-use ployz_core::authority::{deploy::Creation, needs_signature};
 use ployz_core::error_chain;
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
@@ -424,33 +423,30 @@ fn refusal(
         })
 }
 
-/// Whether converging `service` on `snapshot` could start a copy that needs a signed
-/// version on a Server that enforces Device approval: such a Server is among the ones a
-/// move of it may pick. A copy that only waits Out, is held, or has nowhere to go starts
-/// nothing.
+/// Whether converging `service` on `snapshot` could start a copy on a Server that enforces
+/// Device approval: such a Server is among the ones a move of it may pick. That copy needs
+/// a signed version whatever it reaches, since a move copies its image in under pull policy
+/// never, and such a Server runs an unsigned spec only from an image it pulled itself. A
+/// copy that only waits Out, is held, or has nowhere to go starts nothing.
 pub(crate) fn needs_version(snapshot: &DeploySnapshot, service: &QualifiedService) -> bool {
     let stranded = movable(snapshot, service);
     if refusal(snapshot, service, &stranded).is_some() {
         return false;
     }
     stranded.iter().any(|container| {
-        let spec = &container.resolved_spec;
-        let creation = Creation {
-            service: &service.name,
-            kind: container.kind,
-            spec,
-        };
-        needs_signature(creation, false).is_some()
-            && destinations(
-                &kept_in_region(spec, machine(snapshot, &container.machine_id)),
-                &container.namespace,
-                snapshot,
-            )
-            .is_ok_and(|machines| {
-                machines
-                    .iter()
-                    .any(|machine| machine.machine.runtime.device_enforcement == Some(true))
-            })
+        destinations(
+            &kept_in_region(
+                &container.resolved_spec,
+                machine(snapshot, &container.machine_id),
+            ),
+            &container.namespace,
+            snapshot,
+        )
+        .is_ok_and(|machines| {
+            machines
+                .iter()
+                .any(|machine| machine.machine.runtime.device_enforcement == Some(true))
+        })
     })
 }
 
