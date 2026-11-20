@@ -944,6 +944,20 @@ pub enum PlanError {
         /// The Machine holding the Volume's writer.
         machine: MachineName,
     },
+    /// A Managed Volume no Server holds yet was placed on a Server that can't take it now.
+    #[error(
+        "Volume {volume} was placed on {machine}, which {}. {} or remove {volume} and add it again. It holds no data yet.",
+        if *.full { "has no room for it" } else { "can't run this service" },
+        if *.full { format!("Free space on {machine},") } else { format!("Let {machine} run it,") }
+    )]
+    FirstCopyUnfit {
+        /// The Volume, as its owner named it.
+        volume: String,
+        /// The Server an earlier Deployment chose for its first copy.
+        machine: MachineName,
+        /// It is out of room, rather than unable to run the Service.
+        full: bool,
+    },
     /// The Service mounts a born Volume, and every Server it could run on is too old to
     /// check where a Volume's data began.
     #[error(
@@ -1220,6 +1234,7 @@ impl PlanError {
             | Self::ServiceModeCannotChange
             | Self::NoWriter { .. }
             | Self::VolumeServerTakesNoServices { .. }
+            | Self::FirstCopyUnfit { .. }
             | Self::VolumeOriginsUnchecked { .. }
             | Self::RegionUnmatched { .. }
             | Self::VolumeOutsideRegion { .. }
@@ -1266,6 +1281,8 @@ impl PlanError {
                 error.to_string(),
             )
             .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
+            error @ Self::FirstCopyUnfit { .. } => RpcError::conflict(error.to_string())
+                .with_details(serde_json::json!({ "reason": "first_copy_unfit" })),
             Self::VolumeOriginsUnchecked { ref names, .. } => {
                 RpcError::conflict(self.to_string()).with_details(serde_json::json!({
                     "reason": "upgrade_required",

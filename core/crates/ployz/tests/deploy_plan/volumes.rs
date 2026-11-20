@@ -3749,3 +3749,107 @@ fn a_global_service_with_an_unread_server_keeps_its_replicas() {
         assert_only_web_runs(&preview);
     }
 }
+
+/// The Server and first-copy mark of each Volume `intent` creates on `snapshot`, with the
+/// Services the runner blocked.
+fn first_copies_planned(
+    intent: &DeployIntent,
+    snapshot: &DeploySnapshot,
+) -> (Vec<(MachineId, Option<ployz_core::FirstCopy>)>, Vec<String>) {
+    let preview = runner_preview(intent, snapshot).unwrap();
+    (
+        preview
+            .volumes_to_create
+            .iter()
+            .map(|create| (create.machine_id, create.first_copy.clone()))
+            .collect(),
+        preview
+            .blocked
+            .iter()
+            .map(|blocked| blocked.error.message.clone())
+            .collect(),
+    )
+}
+
+/// While no Server holds a copy, a Volume an earlier Deployment placed starts only on
+/// that Server, so a late step of that Deployment can't leave a second first copy. A
+/// Writer a Move put elsewhere is registered where it is, and a Server gone from the
+/// Cluster gives its Volume up.
+#[test]
+fn a_first_copy_starts_where_an_earlier_deploy_placed_it() {
+    let pinned = |machine: char| {
+        automatic_provisioned_intent()
+            .with_first_copies([(app_volume("data"), machine_id(machine))].into())
+    };
+    let first = |replaces: Option<char>| {
+        Some(ployz_core::FirstCopy {
+            replaces: replaces.map(machine_id),
+        })
+    };
+    for (case, intent, copies, created) in [
+        (
+            "unplaced",
+            automatic_provisioned_intent(),
+            vec![],
+            (machine_id('1'), first(None)),
+        ),
+        (
+            "placed on second",
+            pinned('2'),
+            vec![],
+            (machine_id('2'), first(None)),
+        ),
+        (
+            "moved to second",
+            pinned('1'),
+            vec![('2', CopyRole::Writer)],
+            (machine_id('2'), None),
+        ),
+        (
+            "placed on a Server that left",
+            pinned('9'),
+            vec![],
+            (machine_id('1'), first(Some('9'))),
+        ),
+    ] {
+        let (creates, blocked) = first_copies_planned(&intent, &copies_snapshot(&copies, vec![]));
+        assert_eq!(creates, [created], "{case}");
+        assert!(blocked.is_empty(), "{case}: {blocked:?}");
+    }
+}
+
+/// A Volume placed on a Server that can't take it now waits for that Server, and is not
+/// started on another one beside a late step that may still make it there.
+#[test]
+fn a_first_copy_waits_for_the_server_it_was_placed_on() {
+    let intent = automatic_provisioned_intent()
+        .with_first_copies([(app_volume("data"), machine_id('2'))].into());
+    let mut refusing = copies_snapshot(&[], vec![]);
+    refusing
+        .machines
+        .iter_mut()
+        .filter(|machine| machine.machine.id == machine_id('2'))
+        .for_each(|machine| machine.machine.accepts_services = false);
+    let mut full = copies_snapshot(&[], vec![]);
+    if let Some(Ok(capacity)) = full.storage_capacity.get_mut(&machine_id('2')) {
+        capacity.backing = ployz_core::StorageBacking::Fixed {
+            pool_size_bytes: ployz_core::STORAGE_GIB / 2,
+        };
+    }
+    for (case, snapshot, refusal) in [
+        (
+            "refuses services",
+            refusing,
+            "Volume data was placed on second, which can't run this service. Let second run it, or remove data and add it again. It holds no data yet.",
+        ),
+        (
+            "out of room",
+            full,
+            "Volume data was placed on second, which has no room for it. Free space on second, or remove data and add it again. It holds no data yet.",
+        ),
+    ] {
+        let (creates, blocked) = first_copies_planned(&intent, &snapshot);
+        assert!(creates.is_empty(), "{case}: {creates:?}");
+        assert_eq!(blocked, [refusal], "{case}");
+    }
+}

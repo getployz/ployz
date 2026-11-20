@@ -451,7 +451,11 @@ pub(crate) fn forget_cluster(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Deploym
             &[organization.into()],
         )?;
     }
-    for table in ["config_volume_storage", "config_volume_birth"] {
+    for table in [
+        "config_volume_storage",
+        "config_volume_birth",
+        "config_volume_first_copy",
+    ] {
         tx.execute(
             &format!(
                 "DELETE FROM {table} WHERE environment_id IN \
