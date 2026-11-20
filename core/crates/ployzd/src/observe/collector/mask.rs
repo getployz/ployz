@@ -55,7 +55,7 @@ fn statement(rule: &Rule) -> String {
     format!(
         "replace_pattern(body, {}, {})",
         quoted(&rule.pattern),
-        quoted(&rule.marker.replace('$', "$$")),
+        quoted(&rule.marker.replace('$', "$$$$")),
     )
 }
 
@@ -163,14 +163,14 @@ mod tests {
     }
 
     #[test]
-    fn a_dollar_in_a_name_is_not_a_group_reference() {
+    fn a_dollar_in_a_name_survives_the_config_and_the_replacement_expansions() {
         let rule = Rule {
             pattern: "x".into(),
             marker: "[secret A$1]".into(),
         };
         assert_eq!(
             statement(&rule),
-            r#"replace_pattern(body, "x", "[secret A$$1]")"#
+            r#"replace_pattern(body, "x", "[secret A$$$$1]")"#
         );
     }
 }

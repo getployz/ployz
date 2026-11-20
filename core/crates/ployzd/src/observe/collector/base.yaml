@@ -7,7 +7,7 @@ extensions:
     endpoint: 127.0.0.1:13133
 receivers:
   filelog:
-    include: [/var/lib/docker/containers/*/*-json.log]
+    include: [/var/lib/docker/containers/*/*-json.log*]
     start_at: beginning
     poll_interval: 1s
     storage: file_storage
@@ -36,7 +36,7 @@ processors:
           - set(attributes["ployz.service.id"], attributes["attrs"]["ployz.service.id"])
           - set(attributes["ployz.service.hook"], attributes["attrs"]["ployz.service.hook"]) where attributes["attrs"]["ployz.service.hook"] != nil
           - delete_key(attributes, "attrs")
-          - set(attributes["container.id"], ExtractPatterns(attributes["log.file.name"], "^(?P<id>[0-9a-f]{64})-json[.]log$")["id"])
+          - set(attributes["container.id"], ExtractPatterns(attributes["log.file.name"], "^(?P<id>[0-9a-f]{64})-json[.]log(?:[.][0-9]+)?$")["id"])
           - delete_key(attributes, "log.file.name")
           - delete_key(attributes, "log.file.path")
   batch:

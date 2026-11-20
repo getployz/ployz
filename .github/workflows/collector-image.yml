@@ -31,8 +31,12 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - name: Build the Collector
-        run: docker build --tag "$IMAGE" core/collector
+      - name: Create the builder
+        run: docker buildx create --use
+      - name: Build the Collector for arm64
+        run: docker buildx build --platform linux/arm64 core/collector
+      - name: Build the Collector for amd64
+        run: docker buildx build --platform linux/amd64 --load --tag "$IMAGE" core/collector
       - name: Check the Collector accepts its own manifest
         run: docker run --rm "$IMAGE" components > /dev/null
       - name: Publish the Collector
@@ -41,6 +45,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker push "$IMAGE"
-          digest=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}')
-          echo "Pin this in core/crates/ployzd/src/images.rs: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx build --platform linux/amd64,linux/arm64 --push --tag "$IMAGE" --metadata-file metadata.json core/collector
+          digest=$(jq -r '."containerimage.digest"' metadata.json)
+          echo "Pin this in core/crates/ployzd/src/images.rs: \`${IMAGE%%:*}@$digest\`" >> "$GITHUB_STEP_SUMMARY"

@@ -810,7 +810,7 @@ impl Lifecycle {
             .as_ref()
             .and_then(|config| config.labels.as_ref());
         if let Some(container_labels) = container_labels {
-            self.collector.cover(container_labels).await;
+            self.collector.cover(container_labels).await?;
         }
         let result = self
             .docker

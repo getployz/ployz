@@ -56,6 +56,7 @@ struct Inner {
 
 struct State {
     values: SealedValues,
+    inventoried: bool,
     refresh_token_at: Option<i64>,
     torn_down: bool,
 }
@@ -73,6 +74,7 @@ impl Collector {
             token_seconds,
             state: Mutex::new(State {
                 values: SealedValues::none(),
+                inventoried: false,
                 refresh_token_at: None,
                 torn_down: false,
             }),
@@ -81,26 +83,24 @@ impl Collector {
 
     /// Returns once the Collector masks the Sealed values of a container about to start,
     /// so its first line is already masked. Where the Collector cannot be brought up to
-    /// date it is removed first, so the container's output waits on its own log file.
-    pub(crate) async fn cover(&self, container_labels: &HashMap<String, String>) {
-        let Some(inner) = &self.0 else { return };
+    /// date it is removed, so the container's output waits on its own log file. Where it
+    /// cannot be removed either, the start fails rather than leave a Collector running
+    /// without the container's values.
+    pub(crate) async fn cover(
+        &self,
+        container_labels: &HashMap<String, String>,
+    ) -> Result<(), Error> {
+        let Some(inner) = &self.0 else { return Ok(()) };
         if !container_labels.contains_key(labels::SEALED_ENV) {
-            return;
+            return Ok(());
         }
-        let values = match inner.values_of(container_labels) {
-            Ok(values) => values,
-            Err(error) => {
-                tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not read a container's Sealed values for the Collector");
-                return;
-            }
-        };
         let mut state = inner.state.lock().await;
-        if let Err(error) = inner.converge(&mut state, values).await {
-            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector could not take a new Sealed value, so it is stopped");
-            if let Err(error) = inner.service().remove().await {
-                tracing::warn!(error = %error, "could not stop the Collector");
-            }
-        }
+        let Err(error) = inner.take_values_of(&mut state, container_labels).await else {
+            return Ok(());
+        };
+        tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector could not take a new Sealed value, so it is stopped");
+        inner.service().remove().await?;
+        Ok(())
     }
 
     /// Keeps the Collector converged until `shutdown`, leaving it running.
@@ -134,10 +134,25 @@ impl Inner {
         Ok(record.secrets(Some(&self.data_dir))?)
     }
 
+    async fn take_values_of(
+        &self,
+        state: &mut State,
+        container_labels: &HashMap<String, String>,
+    ) -> Result<(), Error> {
+        let mut found = self.values_of(container_labels)?;
+        if !state.inventoried {
+            found.merge(self.live_values().await?);
+        }
+        self.converge(state, found).await
+    }
+
     async fn tick(&self) -> Duration {
         let mut state = self.state.lock().await;
-        let found = self.live_values().await;
-        if let Err(error) = self.converge(&mut state, found).await {
+        let converged = match self.live_values().await {
+            Ok(found) => self.converge(&mut state, found).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = converged {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector is not converged");
         }
         state.refresh_token_at.map_or(TICK, |at| {
@@ -146,24 +161,14 @@ impl Inner {
         })
     }
 
-    async fn live_values(&self) -> SealedValues {
+    /// Every Sealed value of every managed container, or an error where any of them
+    /// cannot be listed or opened, since a mask missing one would let it through.
+    async fn live_values(&self) -> Result<SealedValues, Error> {
         let mut found = SealedValues::none();
-        let containers = match self.docker.managed_containers().await {
-            Ok(containers) => containers,
-            Err(error) => {
-                tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not list containers for the Collector");
-                return found;
-            }
-        };
-        for (_, container_labels) in containers {
-            match self.values_of(&container_labels) {
-                Ok(values) => found.merge(values),
-                Err(error) => {
-                    tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not read a container's Sealed values for the Collector");
-                }
-            }
+        for (_, container_labels) in self.docker.managed_containers().await? {
+            found.merge(self.values_of(&container_labels)?);
         }
-        found
+        Ok(found)
     }
 
     async fn converge(&self, state: &mut State, found: SealedValues) -> Result<(), Error> {
@@ -177,12 +182,14 @@ impl Inner {
                 service.remove().await?;
                 remove_dir(&self.machine_root.join("run/ployz/collector"))?;
                 state.values = SealedValues::none();
+                state.inventoried = false;
                 state.refresh_token_at = None;
                 state.torn_down = true;
             }
             return Ok(());
         };
         state.torn_down = false;
+        state.inventoried = true;
         state.values.merge(found);
         let docker_root = self.docker.docker_root().await?;
         let paths = Paths::under(&self.machine_root, &self.data_dir, &docker_root);

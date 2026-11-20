@@ -73,7 +73,8 @@ no service arguments, and `--follow` still use live container discovery.
 A server connected to Ployz Cloud runs a log collector beside your services. It reads what each
 service prints and sends the lines to Cloud, with each [Sealed](../services/variables.md) value
 replaced by `[secret NAME]`. A server that isn't connected to Cloud runs no collector and sends
-nothing; live logs still work.
+nothing; live logs still work. When a server first connects, the collector also sends the output
+its containers wrote before that, up to what each still has on disk.
 
 Each service keeps up to 30 MB of its own output on the server, in three files of 10 MB. If Cloud
 can't be reached, the collector resumes where it stopped and sends the lines it missed, unless
@@ -129,8 +130,10 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   Recreating an environment with the same name can show its earlier logs. A service's card
   on a deployment shows only that deployment's output.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
-  their logs aren't kept or sent to Ployz Cloud until their next deploy. `ployz deploy` replaces
-  them, even when nothing else about the service changed.
+  their logs aren't sent to Ployz Cloud until their next deploy. `ployz deploy` replaces them,
+  even when nothing else about the service changed.
+- **Containers this release starts keep their output only while they exist.** The server keeps
+  nothing of a removed one yet, so a rollback or removal ends its logs.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
   timestamp, sets it. A line without one counts as **Info**, stderr included.
