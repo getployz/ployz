@@ -2042,6 +2042,13 @@ fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> 
             .map(|machine| machine.machine.name.clone())
             .collect::<Vec<_>>()
     };
+    let unchecked = names(Exclusion::ChecksNoOrigins);
+    if !unchecked.is_empty() {
+        return PlanError::VolumeOriginsUnchecked {
+            service: spec.name.clone(),
+            names: unchecked,
+        };
+    }
     let mut constraints = Vec::new();
     let down = names(Exclusion::Down);
     if !down.is_empty() {
