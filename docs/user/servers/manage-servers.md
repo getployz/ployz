@@ -449,18 +449,17 @@ A service stays running where it is, and is reported with the reason, when:
 When the drain ends, the **Drain** row counts what moved, stopped, stayed and failed, and how many
 services no project owns it left alone. It lists each service with where it went or why it stayed.
 A drain that stops early marks the service it was moving **Interrupted** and the ones it never
-reached **Not attempted**; those still run on the server. When a container the drain didn't make
-holds the new container's place on the other server, as one an older CLI left mid-move, the move
-fails and names it: **Container 3f2a9c1d07b4 is in the way on web-3. Inspect it, remove it if
-it's a leftover, and drain again.** The drain removes nothing it didn't make, and the service
-keeps running where it was. One exception: when the other server's answer doesn't say the drain
-made nothing there, the drain can't tell whether it did, so it removes whatever holds that place, as
-a failed deploy does. That happens when the connection drops before the server answers, when the
-server fails with an error it didn't mark as made-nothing, and on any error from a server running an
-older Ployz. A container in the way can then be removed instead of named and left in place. With
-`--json`, a move that failed says what became of its new container under `replacement`:
-`none_left` when the server made none or none of it is left, `removed` when the drain removed it,
-`discarded` when it removed whatever held its place, and `left` when it may still be there.
+reached **Not attempted**; those still run on the server. Each move names its new container with a
+key no one else uses, and keeps that key when it has to ask the other server again. When a move
+fails, the drain removes the container under that key once and nothing else, so a container another
+tool or an older CLI left on the other server stays where it is. When a request to the other server
+got no answer, or the drain stopped while one was out, the dashboard's row says the new container
+**may still be there**: that server can still make it after the drain ends. With `--json`, a failed
+move's `replacement_removed` is `true` only when the drain removed its new container and no request
+can still make one. When a drain stopped after the new container came into service but before the old
+one was retired, drain again: it finds that container, starts no second one, and retires the old
+one. If that container runs another image or has left service, the old one keeps serving and the row
+says why.
 If a server's proxy doesn't confirm the switch in time, the moved service's old container keeps
 running on the drained server and the row says so; the next drain removes it, along with any old container an earlier drain left there. While an old
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`

@@ -145,7 +145,7 @@ impl CopyLifecycle for Cluster {
         &self,
         _machine_id: &MachineId,
         want: ContainerWant,
-    ) -> Result<crate::deploy::Creation, RpcError> {
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         panic!("a retirement creates nothing: {want:?}")
     }
 

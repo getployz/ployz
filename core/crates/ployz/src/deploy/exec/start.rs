@@ -1,23 +1,19 @@
 use super::cleanup;
 use super::machine_ops::CopyLifecycle;
-use super::machine_ops::Creation;
 use super::machine_ops::MachineOperations;
 use super::stop_first::{Withdrawn, leave_unstopped};
-use super::transport::{Failure, RESTART_WAIT, RestartTolerant};
+use super::transport::{Outstanding, RESTART_WAIT, RestartTolerant};
 use super::{Left, Rows, SlotPolicy, left_by, machine_error, stop};
 use crate::connect::{ConnectError, TransportError};
 use crate::deploy::cleanup::EmptyPolicy;
 use crate::deploy::progress::Progress;
-use crate::drain::Replacement;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
-    ENSURE_PINNED_CONTAINER_CAPABILITY, EnsuredContainer, ExecutionError, Gen, HealthVerdict,
-    ImageDigest, MachineAction, MachineId, Namespace, NewContainer, OperationPhase, OutOfMemory,
-    QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey,
-    error_chain,
+    ContainerWant, CopyRotation, DeploymentLogId, Drain, ENSURE_PINNED_CONTAINER_CAPABILITY,
+    EnsuredContainer, ExecutionError, Gen, HealthVerdict, ImageDigest, MachineAction, MachineId,
+    Namespace, NewContainer, OperationPhase, OutOfMemory, QualifiedService, ResolvedServiceSpec,
+    RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey, error_chain,
 };
-use ployz_decide::drain_start::{Earlier, Heard, Outcome};
 use tokio_util::sync::CancellationToken;
 
 /// The owner refuses Gone on a copy that already came In. With `hold`, that
@@ -153,11 +149,12 @@ pub(super) async fn remove_stray<C: MachineOperations>(
     rows.leave_unrouted(progress, service, *machine_id, container_id, error);
 }
 
-/// Why a move's replacement never served, and what the move did with it.
+/// Why a move's replacement never served, and whether none of it is left on its
+/// destination; otherwise it may still be there.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct MoveError {
     pub(crate) end: MoveEnd,
-    pub(crate) replacement: Replacement,
+    pub(crate) replacement_removed: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -166,13 +163,8 @@ pub(crate) enum MoveEnd {
     NotServing {
         detail: String,
     },
-    /// The destination predates the pinned route, so nothing was sent.
+    /// The destination predates the pinned route, so it refused every send.
     NeedsUpgrade,
-    /// The slot holds another Container, `occupant` when the answer named it. Nothing of
-    /// this move was made, and nothing was removed: the occupant may be another caller's.
-    SlotOccupied {
-        occupant: Option<ContainerId>,
-    },
 }
 
 impl From<ExecutionError> for MoveEnd {
@@ -190,13 +182,35 @@ impl From<ExecutionError> for MoveEnd {
     }
 }
 
+/// A move's replacement, Pending and healthy on its destination.
+#[derive(Debug)]
+pub(crate) struct Started {
+    pub(crate) container_id: ContainerId,
+    pub(crate) deploy: Option<DeploymentLogId>,
+    to: MachineId,
+    /// The slot the move minted. Only its own sends made what it holds.
+    slot: SlotKey,
+    /// A send of the move lost its answer or was cut off while out, so it may still make
+    /// a Container after any removal.
+    unsettled: bool,
+}
+
+impl Started {
+    /// Remove the replacement by the move's slot, and say whether none of it is left.
+    pub(crate) async fn discard<C: CopyLifecycle>(self, client: &C) -> bool {
+        emptied(client, &self.to, self.slot).await && !self.unsettled
+    }
+}
+
 /// Create the replacement of `old` on `to` and wait for its health. `image` is the image
 /// ID the old copy runs. A spec whose image is a tag goes on the pinned route, pinned to
 /// it, so whatever the tag names on `to` never decides what runs; any other spec goes on
-/// ensure.v1 as it is. Only the Container an answer named is ever removed by its ID. When
-/// every send was refused or answered that nothing is left, nothing is removed. When any
-/// send may have acted unanswered, even one a later refusal followed, the slot is discarded
-/// as any failed start's.
+/// ensure.v1 as it is.
+///
+/// Every send of one move carries the slot it mints, `move:{old}:{nonce}`, which no other
+/// caller names, so a resend adopts what an earlier send made. After any end but a healthy
+/// Container, the move removes that slot by key once: it can take only what its own sends
+/// made, whatever an error says the Machine did.
 pub(crate) async fn move_container<C: MachineOperations>(
     client: &C,
     namespace: &Namespace,
@@ -205,7 +219,8 @@ pub(crate) async fn move_container<C: MachineOperations>(
     (from, old): (&MachineId, &ContainerId),
     image: &ImageDigest,
     cancellation: &CancellationToken,
-) -> Result<(ContainerId, Option<DeploymentLogId>), MoveError> {
+) -> Result<Started, MoveError> {
+    let once = client;
     let client = RestartTolerant::new(client, cancellation);
     let policy = SlotPolicy::of(ContainerKind::ServiceContainer, &spec.mode);
     let global = policy.keyed_by_spec();
@@ -214,7 +229,7 @@ pub(crate) async fn move_container<C: MachineOperations>(
         ContainerKind::ServiceContainer,
         spec,
         None,
-        || format!("move:{old}"),
+        || format!("move:{old}:{}", uuid::Uuid::new_v4().simple()),
     );
     let adopts = global && adopts_running(&client, to, &slot, spec).await;
     let source = match client.inspect_container(from, old).await {
@@ -222,11 +237,7 @@ pub(crate) async fn move_container<C: MachineOperations>(
         Err(error) => {
             return Err(MoveError {
                 end: machine_error(MachineAction::InspectContainer, error).into(),
-                replacement: if adopts {
-                    Replacement::Left
-                } else {
-                    Replacement::NoneLeft
-                },
+                replacement_removed: !adopts,
             });
         }
     };
@@ -245,15 +256,16 @@ pub(crate) async fn move_container<C: MachineOperations>(
         }),
         rotation: RunRotation::Pending,
     };
-    let (answered, earlier) = tokio::select! {
-        (answered, earlier) = client.ensure_new_sent(to, want) => (Some(answered), earlier),
-        () = cancellation.cancelled() => (None, Earlier::Nothing),
+    let outstanding = Outstanding::default();
+    let answered = tokio::select! {
+        answered = client.ensure_new_noting(to, want, &outstanding) => Some(answered),
+        () = cancellation.cancelled() => None,
     };
-    let (end, heard) = match answered {
-        Some(Ok(Creation::Answered(EnsuredContainer::Ensured {
+    let end = match answered {
+        Some(Ok(EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health,
-        }))) => {
+        })) => {
             let id = observed.container_id;
             let failed = if cancellation.is_cancelled() {
                 Some(MoveEnd::Cancelled)
@@ -263,120 +275,66 @@ pub(crate) async fn move_container<C: MachineOperations>(
                     .map(MoveEnd::from)
             };
             match failed {
-                None => return Ok((id, deploy)),
-                Some(end) => (end, Heard::Present(id)),
+                None => {
+                    return Ok(Started {
+                        container_id: id,
+                        deploy,
+                        to: *to,
+                        slot,
+                        unsettled: outstanding.any(),
+                    });
+                }
+                Some(end) => end,
             }
         }
-        Some(Ok(Creation::Answered(EnsuredContainer::Ensured {
+        Some(Ok(EnsuredContainer::Ensured {
             now: ContainerNow::Absent { .. },
             ..
-        }))) => (
-            MoveEnd::NotServing {
-                detail: format!(
-                    "the Machine started no Container for slot {}",
-                    slot.creation_key.as_str()
-                ),
-            },
-            Heard::Absent,
-        ),
-        Some(Ok(Creation::Answered(EnsuredContainer::Refused { now, refusal }))) => (
-            match refusal.reason {
-                ContainerRefusalReason::SlotOccupied | ContainerRefusalReason::ImageDiffers => {
-                    MoveEnd::SlotOccupied {
-                        occupant: now.present().map(|observed| observed.container_id),
-                    }
-                }
-                ContainerRefusalReason::NotParticipating
-                | ContainerRefusalReason::NotEligible
-                | ContainerRefusalReason::InvalidIngress
-                | ContainerRefusalReason::ImagePullFailed
-                | ContainerRefusalReason::VolumesNotPrepared
-                | ContainerRefusalReason::NotFound
-                | ContainerRefusalReason::LastIn
-                | ContainerRefusalReason::OlderThanIn
-                | ContainerRefusalReason::HeldByOtherRun
-                | ContainerRefusalReason::RotationMismatch
-                | ContainerRefusalReason::InRotation
-                | ContainerRefusalReason::SealingKeyMissing
-                | ContainerRefusalReason::SealedValueUnopenable
-                | ContainerRefusalReason::Unrecognized => MoveEnd::NotServing {
-                    detail: error_chain::row(&machine_error(
-                        MachineAction::CreateContainer,
-                        refusal.into_error(),
-                    )),
-                },
-            },
-            Heard::Refused,
-        ),
-        Some(Ok(Creation::Unsent(error))) => (
-            machine_error(MachineAction::CreateContainer, error).into(),
-            Heard::Unsent,
-        ),
-        // The reported error may be an earlier send's: what is left follows the last send.
-        Some(Err(Failure { error, last }))
+        })) => MoveEnd::NotServing {
+            detail: format!(
+                "the Machine started no Container for slot {}",
+                slot.creation_key.as_str()
+            ),
+        },
+        Some(Ok(EnsuredContainer::Refused { refusal, .. })) => MoveEnd::NotServing {
+            detail: error_chain::row(&machine_error(
+                MachineAction::CreateContainer,
+                refusal.into_error(),
+            )),
+        },
+        Some(Err(error))
             if error.refusal().is_some_and(|refusal| {
                 refusal.capability == ENSURE_PINNED_CONTAINER_CAPABILITY
             }) =>
         {
-            (MoveEnd::NeedsUpgrade, last.into())
+            MoveEnd::NeedsUpgrade
         }
-        Some(Err(Failure { error, last })) => (
-            machine_error(MachineAction::CreateContainer, error).into(),
-            last.into(),
-        ),
-        None => (MoveEnd::Cancelled, Heard::Unanswered),
-    };
-    let outcome = Outcome::of(earlier, heard);
-    // An end that says nothing of this move was made holds only when no send of it may
-    // have made one.
-    let end = if outcome == Outcome::Unknown {
-        unsettled(end)
-    } else {
-        end
+        Some(Err(error)) => machine_error(MachineAction::CreateContainer, error).into(),
+        None => MoveEnd::Cancelled,
     };
     let keep = adopts || (global && !cancellation.is_cancelled());
-    let replacement = match outcome {
-        Outcome::Absent | Outcome::Refused => Replacement::NoneLeft,
-        _ if keep => Replacement::Left,
-        Outcome::Present(id) => {
-            let removed = cleanup::gone(
-                &client,
-                to,
-                ContainerLocator::Id(id),
-                Drain::NONE,
-                AnonymousVolumes::Remove,
-                None,
-            );
-            // Unanswered for as long as a restart takes, the replacement may remain.
-            match tokio::time::timeout(RESTART_WAIT, removed).await {
-                Ok(Ok(cleanup::Gone::Removed)) => Replacement::Removed,
-                _ => Replacement::Left,
-            }
-        }
-        Outcome::Unknown => match discard_attempt(&client, to, slot).await {
-            Ok(()) => Replacement::Discarded,
-            Err(_) => Replacement::Left,
-        },
-    };
-    Err(MoveError { end, replacement })
+    let replacement_removed = !keep && emptied(once, to, slot).await && !outstanding.any();
+    Err(MoveError {
+        end,
+        replacement_removed,
+    })
 }
 
-/// `end`, for a move one of whose sends may have made a Container: a refusal of a later
-/// send no longer says nothing of this move was made.
-fn unsettled(end: MoveEnd) -> MoveEnd {
-    let refused = match end {
-        MoveEnd::SlotOccupied {
-            occupant: Some(occupant),
-        } => format!("Container {occupant} holds its slot"),
-        MoveEnd::SlotOccupied { occupant: None } => "another Container holds its slot".to_owned(),
-        MoveEnd::NeedsUpgrade => "it lacks the pinned route".to_owned(),
-        end @ (MoveEnd::Cancelled | MoveEnd::NotServing { .. }) => return end,
-    };
-    MoveEnd::NotServing {
-        detail: format!(
-            "the Machine refused a resend after an earlier send's answer was lost: {refused}"
-        ),
-    }
+/// Send one Gone for `slot` on `machine_id`, and say whether it left the slot empty. A
+/// removal unanswered for as long as a restart takes may not have happened.
+async fn emptied<C: CopyLifecycle>(client: &C, machine_id: &MachineId, slot: SlotKey) -> bool {
+    let gone = cleanup::gone(
+        client,
+        machine_id,
+        ContainerLocator::Key(slot),
+        Drain::NONE,
+        AnonymousVolumes::Remove,
+        Some(RESTART_WAIT),
+    );
+    matches!(
+        tokio::time::timeout(RESTART_WAIT, gone).await,
+        Ok(Ok(cleanup::Gone::Removed))
+    )
 }
 
 /// What a failed Global creation leaves on its Machine. A stop-first replacement

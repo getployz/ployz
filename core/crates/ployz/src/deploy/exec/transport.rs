@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ployz_core::{
@@ -9,12 +9,11 @@ use ployz_core::{
     ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, SetIngressDoorsRequest,
     SetPrivateAccessRequest, SlotKey,
 };
-use ployz_decide::drain_start::{Earlier, Failed};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::machine_ops::{
-    CopyLifecycle, Creation, DeployOperations, Listed, ProxyPlacement, RedialFailure, Session,
+    CopyLifecycle, DeployOperations, Listed, ProxyPlacement, RedialFailure, Session,
 };
 
 pub(super) const RESTART_WAIT: Duration = Duration::from_secs(60);
@@ -61,14 +60,13 @@ impl<'a, C: Session> RestartTolerant<'a, C> {
 }
 
 impl<C: Session> RestartTolerant<'_, C> {
-    /// `op`'s answer, sent again while the Machine restarts, with what the sends before
-    /// the last may have done.
-    async fn sent<T, Fut>(&self, op: impl FnMut() -> Fut) -> (Result<T, Failure>, Earlier)
+    /// `op`'s answer, sent again while the Machine restarts.
+    async fn waited<T, Fut>(&self, op: impl FnMut() -> Fut) -> Result<T, RpcError>
     where
         Fut: Future<Output = Result<T, RpcError>>,
     {
         let seen = &AtomicU64::new(self.session().await);
-        sends_out_restart(self.cancellation, op, move || async move {
+        wait_out_restart(self.cancellation, op, move || async move {
             let answer = self.redial_since(seen.load(Ordering::Relaxed)).await;
             seen.store(self.session().await, Ordering::Relaxed);
             answer
@@ -77,16 +75,42 @@ impl<C: Session> RestartTolerant<'_, C> {
     }
 }
 
+/// Whether a creation's sends may still make a Container on their Machine: one went out
+/// and lost its answer, or was cut off while out. Once set it stays set, since a later
+/// answer speaks only for its own send.
+#[derive(Default)]
+pub(crate) struct Outstanding {
+    out: AtomicBool,
+    lost: AtomicBool,
+}
+
+impl Outstanding {
+    pub(crate) fn any(&self) -> bool {
+        self.out.load(Ordering::Relaxed) || self.lost.load(Ordering::Relaxed)
+    }
+}
+
 impl<C: CopyLifecycle + Session> RestartTolerant<'_, C> {
-    /// [`CopyLifecycle::ensure_new`], with what its sends before the last may have made:
-    /// a creation's answer speaks only for its own send.
-    pub(crate) async fn ensure_new_sent(
+    /// [`CopyLifecycle::ensure_new`], sent again while the Machine restarts, noting in
+    /// `outstanding` every send that may still act.
+    pub(crate) async fn ensure_new_noting(
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> (Result<Creation, Failure>, Earlier) {
-        self.sent(|| self.inner.ensure_new(machine_id, want.clone()))
-            .await
+        outstanding: &Outstanding,
+    ) -> Result<EnsuredContainer, RpcError> {
+        self.waited(|| async {
+            outstanding.out.store(true, Ordering::Relaxed);
+            let answer = self.inner.ensure_new(machine_id, want.clone()).await;
+            outstanding.out.store(false, Ordering::Relaxed);
+            if let Err(error) = &answer
+                && (error.reply_lost() || error.target_unanswered())
+            {
+                outstanding.lost.store(true, Ordering::Relaxed);
+            }
+            answer
+        })
+        .await
     }
 }
 
@@ -108,11 +132,7 @@ macro_rules! restart_policy {
         )*
     };
     (@send wait $self:ident $name:ident $($arg:ident)*) => {{
-        $self
-            .sent(|| $self.inner.$name($(Clone::clone(&$arg)),*))
-            .await
-            .0
-            .map_err(|failure| failure.error)
+        $self.waited(|| $self.inner.$name($(Clone::clone(&$arg)),*)).await
     }};
     (@send once($reason:literal) $self:ident $name:ident $($arg:ident)*) => {
         $self.inner.$name($($arg),*).await
@@ -127,7 +147,7 @@ restart_policy! {
         once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
         wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
         wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
-        wait fn ensure_new(&self, machine_id: &MachineId, want: ContainerWant) -> Result<Creation, RpcError>;
+        wait fn ensure_new(&self, machine_id: &MachineId, want: ContainerWant) -> Result<EnsuredContainer, RpcError>;
         wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
         wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
         wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
@@ -146,28 +166,16 @@ restart_policy! {
     }
 }
 
-/// A call no send of which was answered.
-pub(crate) struct Failure {
-    /// The error that best says why, which may be an earlier send's.
-    pub(crate) error: RpcError,
-    /// What the last send's own error says it did, whichever error is reported.
-    pub(crate) last: Failed,
-}
-
-/// `op`'s answer, sent again while the Machine restarts, with what the sends before the
-/// last may have done: a later answer never speaks for an earlier send whose answer was
-/// lost.
-pub(super) async fn sends_out_restart<T, Fut, Redial>(
+pub(super) async fn wait_out_restart<T, Fut, Redial>(
     cancellation: &CancellationToken,
     mut op: impl FnMut() -> Fut,
     mut redial: impl FnMut() -> Redial,
-) -> (Result<T, Failure>, Earlier)
+) -> Result<T, RpcError>
 where
     Fut: Future<Output = Result<T, RpcError>>,
     Redial: Future<Output = Option<Result<(), RedialFailure>>>,
 {
     let deadline = Instant::now() + RESTART_WAIT;
-    let mut earlier = Earlier::Nothing;
     // What earlier attempts showed of the Machine. A real answer clears the other two, and
     // a lost reply and a silence each clear the other. A Machine that answered was not
     // silent throughout: its answer stands in for a later silence, as `Client::repeat` keeps it.
@@ -181,19 +189,17 @@ where
     let mut silent: Option<RpcError> = None;
     loop {
         let error = match op().await {
-            Ok(value) => return (Ok(value), earlier),
+            Ok(value) => return Ok(value),
             Err(error) => error,
         };
         // An ended client's refusal of its entry never reached the Machine and says nothing
         // of it: it ends the wait in its own words, still saying what earlier sends may have
         // done. Other unreached failures, as a refused dial, go through the bookkeeping below
         // as before.
-        let last = Failed::of(&error);
         if error.never_reached() && error.code == RpcErrorCode::Unauthenticated {
-            let error = still_lost(error, lost.as_ref().or(silent.as_ref()));
-            return (Err(Failure { error, last }), earlier);
+            return Err(still_lost(error, lost.as_ref().or(silent.as_ref())));
         }
-        let closed = error.on_closed_session();
+        let closed = crate::connect::on_closed_session(&error);
         // A send that never reached the Machine, or met a closed session, says nothing of
         // it, so it is never kept.
         let unreached = error.never_reached() || closed;
@@ -221,21 +227,16 @@ where
             && !cancellation.is_cancelled()
             // Nothing sent on a closed session reaches a daemon again.
             && (!closed
-                || match redialed(&mut redial, deadline, cancellation).await {
-                    Ok(redialed) => redialed,
-                    Err(refusal) => {
-                        let error = still_lost(refusal, lost.as_ref().or(silent.as_ref()));
-                        return (Err(Failure { error, last }), earlier);
-                    }
-                });
+                || redialed(&mut redial, deadline, cancellation)
+                    .await
+                    .map_err(|refusal| still_lost(refusal, lost.as_ref().or(silent.as_ref())))?);
         if !again {
-            return (Err(Failure { error, last }), earlier);
+            return Err(error);
         }
         tokio::select! {
-            () = cancellation.cancelled() => return (Err(Failure { error, last }), earlier),
+            () = cancellation.cancelled() => return Err(error),
             () = tokio::time::sleep(RESTART_POLL) => {}
         }
-        earlier = earlier.then(last);
     }
 }
 

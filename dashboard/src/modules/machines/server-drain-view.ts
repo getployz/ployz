@@ -256,8 +256,6 @@ export function failureWords(failure: MoveFailure, drained: string): string {
       return `Its new container on ${failure.to.name} didn't become healthy${failure.replacement_removed ? "" : ", and may still be there"}. ${stillOn(failure.from)}`;
     case "cancelled":
       return `The drain stopped mid-move. ${stillOn(failure.from)}${failure.replacement_removed ? "" : ` Its new container on ${failure.to.name} may still be there.`}`;
-    case "slot_occupied":
-      return `${failure.occupant ? `Container ${failure.occupant.slice(0, 12)}` : "Another container"} is in the way on ${failure.to.name}. Inspect it, remove it if it's a leftover, and drain again. ${stillOn(failure.from)}`;
     case "refused": {
       const why = stayWords(failure.reason, drained);
       const still = failure.from ? ` ${stillOn(failure.from)}` : "";

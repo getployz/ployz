@@ -3,12 +3,10 @@
 use ployz_core::{DeploymentLogId, Gen, MachineName};
 
 use super::*;
-use crate::connect::ConnectError;
 use crate::deploy::cleanup::Copy;
 use crate::deploy::{MoveEnd, MoveError};
-use crate::drain::Replacement;
 use crate::drain::placement::{
-    LastIn, MachineRef, OldCopyEnd, Relocated, Unconfirmed, relocate, retire_old,
+    LastIn, MachineRef, OldCopyEnd, Relocated, Unconfirmed, confirm_promoted, relocate, retire_old,
 };
 
 const FROM: char = '1';
@@ -30,7 +28,7 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveError> {
         &CancellationToken::new(),
     )
     .await
-    .map(|(id, _)| id)
+    .map(|started| started.container_id)
 }
 
 fn moving(steps: Vec<Step>) -> Scripted {
@@ -131,7 +129,10 @@ async fn a_move_brings_the_new_copy_in_and_retires_the_old_one() {
 #[tokio::test]
 async fn a_refused_in_discards_the_new_copy_and_keeps_the_old_one() {
     let mut steps = served();
-    steps.push(ok(Call::Remove(machine(TO), container('b'))));
+    steps.push(ok(Call::DiscardSlot(
+        machine(TO),
+        ContainerKind::ServiceContainer,
+    )));
     let mut client = moving(steps).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
     client.unhealthy_in.insert(
         container('b'),
@@ -144,12 +145,12 @@ async fn a_refused_in_discards_the_new_copy_and_keeps_the_old_one() {
     );
     let Err(MoveError {
         end: MoveEnd::NotServing { .. },
-        replacement,
+        replacement_removed,
     }) = relocate_with(&client, &CancellationToken::new()).await
     else {
         panic!("a copy that did not go In serves nothing");
     };
-    assert_eq!(replacement, Replacement::Removed);
+    assert!(replacement_removed);
     assert_eq!(client.rotation(&container('a')), Some(CopyRotation::In));
     assert_eq!(client.rotation(&container('b')), None);
     client.assert_done();
@@ -269,14 +270,14 @@ async fn a_replacement_is_claimed_removed_only_when_its_removal_was_acknowledged
                 machine(TO),
                 ContainerKind::ServiceContainer,
             )),
-            Replacement::Discarded,
+            true,
         ),
         (
             failed(
                 Call::DiscardSlot(machine(TO), ContainerKind::ServiceContainer),
                 "remove failed",
             ),
-            Replacement::Left,
+            false,
         ),
     ] {
         let client = moving(vec![
@@ -286,10 +287,14 @@ async fn a_replacement_is_claimed_removed_only_when_its_removal_was_acknowledged
             ),
             removal,
         ]);
-        let Err(MoveError { replacement, .. }) = move_with(&client).await else {
+        let Err(MoveError {
+            replacement_removed,
+            ..
+        }) = move_with(&client).await
+        else {
             panic!("the new Container never served");
         };
-        assert_eq!(replacement, removed);
+        assert_eq!(replacement_removed, removed);
         client.assert_done();
     }
 }
@@ -312,38 +317,6 @@ async fn a_run_whose_reply_was_lost_is_resent_to_the_same_slot() {
 }
 
 #[tokio::test]
-async fn a_move_names_its_slot_by_its_old_copy_or_by_a_global_spec() {
-    for (global, key) in [
-        (false, format!("move:{}", container('a'))),
-        (true, crate::cluster::global_creation_key(&global_spec())),
-    ] {
-        let client = moving(served());
-        let spec = if global {
-            global_spec()
-        } else {
-            spec(Some(0), None, None)
-        };
-        move_container(
-            &client,
-            &test_namespace(),
-            &spec,
-            &machine(TO),
-            (&machine(FROM), &container('a')),
-            &source_image(),
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        let slots = client.slots.lock().unwrap();
-        let [slot] = slots.as_slice() else {
-            panic!("expected one creation, got {slots:?}");
-        };
-        assert_eq!(slot.kind, ContainerKind::ServiceContainer);
-        assert_eq!(slot.creation_key.as_str(), key);
-    }
-}
-
-#[tokio::test]
 async fn a_failed_run_removes_its_slot() {
     let client = moving(vec![
         failed(
@@ -355,10 +328,14 @@ async fn a_failed_run_removes_its_slot() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    let Err(MoveError { replacement, .. }) = move_with(&client).await else {
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&client).await
+    else {
         panic!("nothing served");
     };
-    assert_eq!(replacement, Replacement::Discarded);
+    assert!(replacement_removed);
     client.assert_done();
 }
 
@@ -370,51 +347,20 @@ async fn an_unreadable_source_copy_starts_no_replacement() {
     )]);
     let Err(MoveError {
         end: MoveEnd::NotServing { detail },
-        replacement,
+        replacement_removed,
     }) = move_with(&client).await
     else {
         panic!("the move stops at the inspect");
     };
     assert!(detail.starts_with("inspect Container failed: "), "{detail}");
-    assert_eq!(replacement, Replacement::NoneLeft);
+    assert!(replacement_removed);
     client.assert_done();
 }
 
-/// A start answered without a Container, or refused because another holds the slot, left
-/// nothing of this move behind. Removing by slot would take whatever holds it.
-#[tokio::test]
-async fn a_start_that_made_nothing_removes_nothing() {
-    for (reply, occupant) in [
-        (Reply::Ok, None),
-        (
-            Reply::Refused(ContainerRefusalReason::SlotOccupied, Some(container('c'))),
-            Some(Some(container('c'))),
-        ),
-        (
-            Reply::Refused(ContainerRefusalReason::ImageDiffers, Some(container('c'))),
-            Some(Some(container('c'))),
-        ),
-    ] {
-        let client = moving(vec![Step(
-            Call::Run(machine(TO), ContainerKind::ServiceContainer),
-            reply,
-        )]);
-        let Err(MoveError { end, replacement }) = move_with(&client).await else {
-            panic!("nothing served");
-        };
-        match occupant {
-            None => assert!(matches!(end, MoveEnd::NotServing { .. }), "{end:?}"),
-            Some(occupant) => assert_eq!(end, MoveEnd::SlotOccupied { occupant }),
-        }
-        assert_eq!(replacement, Replacement::NoneLeft);
-        client.assert_done();
-    }
-}
-
 /// A start that answered with its Container and then failed, or whose drain was cancelled
-/// after the answer, removes that Container by its ID and nothing else.
+/// after the answer, removes what the move's own slot holds: that Container.
 #[tokio::test]
-async fn a_failed_start_removes_only_the_container_it_answered() {
+async fn a_failed_start_removes_the_container_it_made() {
     for cancelled in [false, true] {
         let run = if cancelled {
             created(
@@ -424,7 +370,7 @@ async fn a_failed_start_removes_only_the_container_it_answered() {
         } else {
             unhealthy_run(machine(TO), &container('b'))
         };
-        let mut client = moving(vec![run, ok(Call::Discard(machine(TO), container('b')))]);
+        let mut client = moving(vec![run, discarded()]);
         let cancellation = CancellationToken::new();
         if cancelled {
             client.cancel_on = Some((
@@ -432,7 +378,10 @@ async fn a_failed_start_removes_only_the_container_it_answered() {
                 cancellation.clone(),
             ));
         }
-        let Err(MoveError { end, replacement }) = move_container(
+        let Err(MoveError {
+            end,
+            replacement_removed,
+        }) = move_container(
             &client,
             &test_namespace(),
             &spec(Some(0), None, None),
@@ -446,160 +395,241 @@ async fn a_failed_start_removes_only_the_container_it_answered() {
             panic!("nothing served");
         };
         assert_eq!(cancelled, end == MoveEnd::Cancelled, "{end:?}");
-        assert_eq!(replacement, Replacement::Removed);
+        assert!(replacement_removed);
+        assert_eq!(client.rotation(&container('b')), None);
         client.assert_done();
     }
 }
 
-/// A start's answer that is lost may have made a Container. A later refusal speaks only for
-/// its own send, so the move discards its slot as any unanswered start's, and never says
-/// the occupant is merely in the way.
+fn discarded() -> Step {
+    ok(Call::DiscardSlot(
+        machine(TO),
+        ContainerKind::ServiceContainer,
+    ))
+}
+
+/// The move's own sends of a create, by the slot each named.
+fn run() -> Call {
+    Call::Run(machine(TO), ContainerKind::ServiceContainer)
+}
+
+fn lost() -> RpcError {
+    RpcError::unavailable("connection lost").reply_lost_from(&machine(TO))
+}
+
+/// Y, another caller's Pending copy on the destination in the slot `move:{old}`: a move of
+/// the same copy by an older CLI, or a hand-written ensure.v1.
+fn with_planted(client: Scripted) -> Scripted {
+    client
+        .with_copy(&machine(TO), &container('c'), CopyRotation::Pending)
+        .with_key(&container('c'), &format!("move:{}", container('a')))
+}
+
+/// However a move fails, its cleanup takes only what its own sends made. Another caller's
+/// copy in the slot `move:{old}` survives a refusal before Docker's create that carries no
+/// mark (a full bridge), a cancel while the move waits to resend, a refused redial, a typed
+/// refusal, a failed health check and a lost answer.
 #[tokio::test(start_paused = true)]
-async fn a_refusal_after_a_lost_answer_discards_the_slot() {
-    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
-    let lost = || RpcError::unavailable("connection lost").reply_lost_from(&machine(TO));
-    let refused_redial = RpcError::unauthenticated("the entry refused this client");
-    for (resend, redial) in [
+async fn another_callers_copy_under_the_old_copys_key_survives_every_failure() {
+    let full_bridge = || {
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument(
+                "no bridge endpoint is free on this Server",
+            )),
+        )
+    };
+    let cases: Vec<(&str, Vec<Step>, bool)> = vec![
+        ("a full bridge", vec![full_bridge(), discarded()], false),
         (
-            Reply::Refused(ContainerRefusalReason::SlotOccupied, Some(container('b'))),
-            None,
+            "a cancel during the resend wait",
+            vec![
+                Step(run(), Reply::Error(RpcError::unavailable("restarting"))),
+                discarded(),
+            ],
+            true,
         ),
         (
-            Reply::Error(RpcError::internal("could not record the admission").unacted()),
-            None,
+            "a refused redial",
+            vec![
+                Step(run(), Reply::Error(crate::connect::closed_session_error())),
+                discarded(),
+            ],
+            false,
         ),
         (
-            Reply::Error(crate::connect::closed_session_error()),
-            Some(Err(RedialFailure::Refused(refused_redial.clone()))),
+            "a typed refusal",
+            vec![
+                Step(
+                    run(),
+                    Reply::Refused(ContainerRefusalReason::ImagePullFailed, None),
+                ),
+                discarded(),
+            ],
+            false,
+        ),
+        (
+            "a failed health check",
+            vec![unhealthy_run(machine(TO), &container('b')), discarded()],
+            false,
+        ),
+        (
+            "a lost answer",
+            vec![
+                Step(run(), Reply::Error(lost())),
+                full_bridge(),
+                discarded(),
+            ],
+            false,
+        ),
+    ];
+    for (case, steps, cancel_in_wait) in cases {
+        let mut client = with_planted(moving(steps));
+        client.redial = Some(Err(RedialFailure::Refused(RpcError::new(
+            RpcErrorCode::Unauthenticated,
+            "the entry refused this key",
+        ))));
+        let cancellation = CancellationToken::new();
+        if cancel_in_wait {
+            let cancel = cancellation.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(RESTART_POLL / 2).await;
+                cancel.cancel();
+            });
+        }
+        let moved = move_container(
+            &client,
+            &test_namespace(),
+            &spec(Some(0), None, None),
+            &machine(TO),
+            (&machine(FROM), &container('a')),
+            &source_image(),
+            &cancellation,
+        )
+        .await;
+        assert!(moved.is_err(), "{case}");
+        assert_eq!(
+            client.rotation(&container('c')),
+            Some(CopyRotation::Pending),
+            "{case}: another caller's copy was removed"
+        );
+        assert_eq!(client.rotation(&container('b')), None, "{case}");
+        client.assert_done();
+    }
+}
+
+/// A resend carries the slot its lost send made a Container in, so the cleanup after it
+/// takes that Container too. The report still can't say none is left: the lost send's
+/// request may still arrive after the cleanup.
+#[tokio::test(start_paused = true)]
+async fn a_resend_removes_what_its_lost_send_made() {
+    let client = moving(vec![
+        Step(run(), Reply::CreatedLost(container('b'), lost())),
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        discarded(),
+    ]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&client).await
+    else {
+        panic!("nothing served");
+    };
+    assert_eq!(client.rotation(&container('b')), None);
+    assert!(!replacement_removed, "a lost send may still create");
+    client.assert_done();
+}
+
+/// Two drains moving the same copy at once: one fails while the other's new Container
+/// waits on its health. The failed one's cleanup leaves the other's Container alone.
+#[tokio::test(start_paused = true)]
+async fn a_failed_move_leaves_a_concurrent_moves_copy() {
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine(FROM), container('a')), running()),
+        Step(
+            run(),
+            Reply::CreatedAfter(container('b'), || {
+                tokio::time::sleep(std::time::Duration::from_secs(1))
+            }),
+        ),
+        observed(Call::Inspect(machine(FROM), container('a')), running()),
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        discarded(),
+    ]);
+    let (served, failed) = tokio::join!(move_with(&client), move_with(&client));
+    assert_eq!(served.unwrap(), container('b'));
+    assert!(failed.is_err());
+    assert_eq!(
+        client.rotation(&container('b')),
+        Some(CopyRotation::Pending)
+    );
+    client.assert_done();
+}
+
+/// A rerun of a drain whose earlier move brought its copy In, but never retired the old
+/// one, creates nothing: it confirms that copy runs the old copy's image and is listed,
+/// then retires the old copy. A copy of another image leaves the old copy serving.
+#[tokio::test]
+async fn a_rerun_retires_the_old_copy_behind_the_copy_an_earlier_move_brought_in() {
+    let promoted = Copy {
+        machine_id: machine(TO),
+        service: api(),
+        container_id: container('b'),
+        rotation: CopyRotation::In,
+    };
+    for (image, end) in [
+        ("a", OldCopyEnd::Stopped),
+        (
+            "c",
+            OldCopyEnd::In {
+                unconfirmed: Unconfirmed::Failed {
+                    detail: format!(
+                        "Container {} came In for it on {}, but runs another image",
+                        container('b'),
+                        name(&machine(TO))
+                    ),
+                },
+            },
         ),
     ] {
-        let mut client = moving(vec![
-            Step(run(), Reply::Error(lost())),
-            Step(run(), resend),
-            ok(Call::DiscardSlot(
-                machine(TO),
-                ContainerKind::ServiceContainer,
-            )),
-        ]);
-        client.redial = redial;
-        let Err(MoveError { end, replacement }) = move_with(&client).await else {
-            panic!("nothing served");
-        };
-        assert!(matches!(end, MoveEnd::NotServing { .. }), "{end:?}");
-        assert_eq!(replacement, Replacement::Discarded);
+        let mut steps = vec![
+            observed(Call::Inspect(machine(FROM), container('a')), running()),
+            observed(Call::Inspect(machine(TO), container('b')), running()),
+        ];
+        if end == OldCopyEnd::Stopped {
+            steps.push(ok(Call::Remove(machine(FROM), container('a'))));
+        }
+        let mut client = Scripted::new(steps)
+            .with_copy(&machine(FROM), &container('a'), CopyRotation::In)
+            .with_copy(&machine(TO), &container('b'), CopyRotation::In)
+            .with_key(&container('b'), &format!("move:{}", container('a')));
+        client
+            .image_ids
+            .insert(container('a'), source_image().to_string());
+        client
+            .image_ids
+            .insert(container('b'), format!("sha256:{}", image.repeat(64)));
+        let cancellation = CancellationToken::new();
+        let ended =
+            match confirm_promoted(&client, &old_copy(), &promoted, &name, &cancellation).await {
+                Relocated::Listed => retire_old(&client, &old_copy(), &name, &cancellation)
+                    .await
+                    .unwrap(),
+                Relocated::Unlisted(unconfirmed) => OldCopyEnd::In { unconfirmed },
+            };
+        assert_eq!(ended, end);
+        assert_eq!(client.rotation(&container('b')), Some(CopyRotation::In));
         client.assert_done();
     }
 }
 
-/// An error the Machine marked as refused before it acted made nothing, so the move
-/// removes nothing: the slot may hold another caller's Container. A refusal after the
-/// create carries no mark, and the Container that create made is discarded.
-#[tokio::test]
-async fn only_a_refusal_before_the_create_leaves_the_slot_alone() {
-    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
-    let gated = || {
-        RpcError::new(
-            RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
-            "the spec's signer was revoked",
-        )
-        .with_details(serde_json::json!({ "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY }))
-    };
-    let before = moving(vec![Step(
-        run(),
-        Reply::Error(RpcError::internal("could not record the admission").unacted()),
-    )]);
-    let Err(MoveError { replacement, .. }) = move_with(&before).await else {
-        panic!("nothing served");
-    };
-    assert_eq!(replacement, Replacement::NoneLeft);
-    before.assert_done();
-
-    let after = moving(vec![
-        Step(run(), Reply::Error(gated())),
-        ok(Call::DiscardSlot(
-            machine(TO),
-            ContainerKind::ServiceContainer,
-        )),
-    ]);
-    let Err(MoveError { replacement, .. }) = move_with(&after).await else {
-        panic!("nothing served");
-    };
-    assert_eq!(replacement, Replacement::Discarded);
-    after.assert_done();
-}
-
-/// A send the entry couldn't dial never reached the destination, so it made nothing there.
-/// The resend's refusal then speaks for the whole start: the occupant is named and left.
-#[tokio::test(start_paused = true)]
-async fn a_refusal_after_an_undialed_send_leaves_the_slot_alone() {
-    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
-    let undialed = crate::cluster::answered_by(
-        &machine(TO),
-        ConnectError::from(ployz_core::rpc::target_unreached_status(
-            &std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused"),
-        )),
-    );
-    let client = moving(vec![
-        Step(run(), Reply::Error(undialed)),
-        Step(
-            run(),
-            Reply::Refused(ContainerRefusalReason::SlotOccupied, Some(container('c'))),
-        ),
-    ]);
-    let Err(MoveError { end, replacement }) = move_with(&client).await else {
-        panic!("nothing served");
-    };
-    assert_eq!(
-        end,
-        MoveEnd::SlotOccupied {
-            occupant: Some(container('c'))
-        }
-    );
-    assert_eq!(replacement, Replacement::NoneLeft);
-    client.assert_done();
-}
-
-/// The error a failed start reports may be an earlier send's. What is left on the Machine
-/// follows the last send: one left unanswered may have made a Container, which the move
-/// discards, whatever answer it reports.
-#[tokio::test(start_paused = true)]
-async fn a_last_send_left_unanswered_discards_the_slot_whatever_error_is_reported() {
-    let run = || Call::Run(machine(TO), ContainerKind::ServiceContainer);
-    let client = moving(vec![
-        Step(
-            run(),
-            Reply::Error(RpcError::unavailable("Cluster store is not available").unacted()),
-        ),
-        Step(
-            run(),
-            Reply::ErrorAfter(
-                RpcError::unanswered_target(
-                    RpcErrorCode::Unavailable,
-                    format!("Machine {} did not answer", machine(TO)),
-                ),
-                || tokio::time::sleep(RESTART_WAIT),
-            ),
-        ),
-        ok(Call::DiscardSlot(
-            machine(TO),
-            ContainerKind::ServiceContainer,
-        )),
-    ]);
-    let Err(MoveError { end, replacement }) = move_with(&client).await else {
-        panic!("nothing served");
-    };
-    let MoveEnd::NotServing { detail } = end else {
-        panic!("nothing served: {end:?}");
-    };
-    assert!(
-        detail.contains("Cluster store is not available"),
-        "{detail}"
-    );
-    assert_eq!(replacement, Replacement::Discarded);
-    client.assert_done();
-}
-
-async fn cancelled_global_move(client: &Scripted) -> Replacement {
+async fn cancelled_global_move(client: &Scripted) -> bool {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;
     let cancellation = CancellationToken::new();
@@ -622,12 +652,12 @@ async fn cancelled_global_move(client: &Scripted) -> Replacement {
     cancellation.cancel();
     let Err(MoveError {
         end: MoveEnd::Cancelled,
-        replacement,
+        replacement_removed,
     }) = moving.await
     else {
         panic!("a cancelled move serves nothing");
     };
-    replacement
+    replacement_removed
 }
 
 #[tokio::test]
@@ -642,7 +672,10 @@ async fn a_cancelled_global_move_removes_its_replacement() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    assert_eq!(cancelled_global_move(&client).await, Replacement::Discarded);
+    assert!(
+        !cancelled_global_move(&client).await,
+        "a send was cut off while out"
+    );
     client.assert_done();
 }
 
@@ -653,7 +686,7 @@ async fn a_cancelled_global_move_keeps_an_adopted_replica() {
         Reply::Pending,
     )]);
     client.runs_global = true;
-    assert_eq!(cancelled_global_move(&client).await, Replacement::Left);
+    assert!(!cancelled_global_move(&client).await);
     client.assert_done();
 }
 

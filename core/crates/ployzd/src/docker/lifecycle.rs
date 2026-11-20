@@ -285,8 +285,7 @@ impl Lifecycle {
         .await
     }
 
-    /// Run final admission and create a container. A failure before Docker's create
-    /// ran comes back through [`CreateFailure::unacted`].
+    /// Run final admission and create a container.
     ///
     /// # Errors
     ///
@@ -299,7 +298,7 @@ impl Lifecycle {
     where
         Storage: Future<Output = Option<MachineStorageObservation>> + Send,
         Admission: Future<Output = Result<(), E>> + Send,
-        E: CreateFailure,
+        E: From<Error>,
     {
         let ContainerRequest {
             creation_key,
@@ -319,7 +318,7 @@ impl Lifecycle {
             if let Some(existing) = self
                 .matching_creation(&mut operation, machine, namespace, kind, spec, creation_key)
                 .await
-                .map_err(unacted::<E>)?
+                .map_err(E::from)?
             {
                 return Ok(existing);
             }
@@ -336,10 +335,10 @@ impl Lifecycle {
         require_eligible(
             self.admit_and_ensure_volumes(machine, namespace, spec, storage)
                 .await
-                .map_err(unacted::<E>)?,
+                .map_err(E::from)?,
         )
-        .map_err(unacted::<E>)?;
-        admission.await.map_err(E::unacted)?;
+        .map_err(E::from)?;
+        admission.await?;
         // Boxed: every caller's future embeds this one, and the stages hold a create body.
         Box::pin(self.create_admitted(Creating {
             machine,
@@ -353,15 +352,12 @@ impl Lifecycle {
             admitted,
         }))
         .await
+        .map_err(E::from)
     }
 
     /// Everything after admission: the body Docker is sent, the image, and the Container
-    /// with its spec, written under one config lock. Every failure before Docker's create
-    /// is [`CreateFailure::unacted`].
-    async fn create_admitted<E: CreateFailure>(
-        &self,
-        creating: Creating<'_>,
-    ) -> Result<ContainerCreated, E> {
+    /// with its spec, written under one config lock.
+    async fn create_admitted(&self, creating: Creating<'_>) -> Result<ContainerCreated, Error> {
         let Creating {
             machine,
             creation_key,
@@ -370,7 +366,7 @@ impl Lifecycle {
             spec,
             ..
         } = creating;
-        let mut body = self.build_body(&creating).await.map_err(unacted::<E>)?;
+        let mut body = self.build_body(&creating).await?;
         if let ImagePull::Pinned(id) = creating.image {
             body.image = Some(id.to_string());
         }
@@ -388,14 +384,12 @@ impl Lifecycle {
                             &crate::docker_image::pinned_reference(&spec.container.image, id),
                             policy,
                         )
-                        .await
-                        .map_err(unacted::<E>)?;
+                        .await?;
                 }
                 ImagePull::Policy(_) | ImagePull::Prepared => {
                     self.images
                         .pull_free(&spec.container.image, spec.container.pull_policy)
-                        .await
-                        .map_err(unacted::<E>)?;
+                        .await?;
                 }
             }
         } else if let ImagePull::Policy(registry_auth) = creating.image
@@ -407,9 +401,7 @@ impl Lifecycle {
             )
             .await
         {
-            return Err(unacted::<E>(
-                self.images.pull_failure(Error::ImagePull(error)).await,
-            ));
+            return Err(self.images.pull_failure(Error::ImagePull(error)).await);
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
@@ -422,8 +414,7 @@ impl Lifecycle {
                 spec,
                 creation_key,
             )
-            .await
-            .map_err(unacted::<E>)?
+            .await?
         {
             return Ok(existing);
         }
@@ -431,23 +422,17 @@ impl Lifecycle {
         // its rule may have arrived, while the image pulled.
         creating
             .admitted
-            .still_holds(Error::AdmissionUnread)
-            .map_err(unacted::<E>)?
-            .map_err(|refusal| unacted::<E>(Error::Unadmitted(refusal)))?;
+            .still_holds(Error::AdmissionUnread)?
+            .map_err(Error::Unadmitted)?;
         let mounts = body
             .host_config
             .get_or_insert_default()
             .mounts
             .get_or_insert_default();
-        mounts.extend(
-            docker_config_mounts(&mut config_operation, spec)
-                .await
-                .map_err(unacted::<E>)?,
-        );
+        mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let result = self
             .create_and_record(&creating, &mut config_operation, body)
-            .await
-            .map_err(E::from);
+            .await;
         if result.is_err()
             && let Err(error) = config_operation.garbage_collect_configs().await
         {
@@ -1195,26 +1180,6 @@ fn creation_name(
         serde_json::to_vec(&(machine, namespace, kind, key)).expect("creation scope serializes");
     let digest = hex::encode(Sha256::digest(scope));
     format!("{service}-{}", &digest[..12])
-}
-
-/// The error a create answers with, which can say the create failed before Docker made
-/// anything.
-pub(crate) trait CreateFailure: From<Error> {
-    /// `self`, raised before Docker's create ran, so this request made no Container.
-    #[must_use]
-    fn unacted(self) -> Self;
-}
-
-/// Only tests create through the Docker layer directly, and they read its errors as they are.
-impl CreateFailure for Error {
-    fn unacted(self) -> Self {
-        self
-    }
-}
-
-/// Name `E` at each call: left to `?`, it resolves to [`Error`] itself, which marks nothing.
-fn unacted<E: CreateFailure>(error: Error) -> E {
-    E::from(error).unacted()
 }
 
 /// Refuse unsupported or unobservable placement without conflating the two.

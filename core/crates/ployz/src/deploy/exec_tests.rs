@@ -14,27 +14,10 @@ use ployz_core::{
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::deploy::{DeployOutcome, FailedOperation};
 
-use super::machine_ops::RedialFailure;
 use super::machine_ops::{DeployOperations, Listed, omission_requires_observation};
-use super::transport::{RESTART_POLL, RESTART_WAIT, sends_out_restart};
+use super::transport::{RESTART_POLL, RESTART_WAIT, wait_out_restart};
 use super::*;
 use crate::deploy::cleanup::ACK_POLL;
-
-/// `op`'s answer, sent again while the Machine restarts, as any resent call reports it.
-async fn wait_out_restart<T, Fut, Redial>(
-    cancellation: &CancellationToken,
-    op: impl FnMut() -> Fut,
-    redial: impl FnMut() -> Redial,
-) -> Result<T, RpcError>
-where
-    Fut: std::future::Future<Output = Result<T, RpcError>>,
-    Redial: std::future::Future<Output = Option<Result<(), RedialFailure>>>,
-{
-    sends_out_restart(cancellation, op, redial)
-        .await
-        .0
-        .map_err(|failure| failure.error)
-}
 
 fn test_namespace() -> Namespace {
     Namespace::parse("app").unwrap()
@@ -122,8 +105,8 @@ enum Reply {
     CreatedAfter(ContainerId, fn() -> tokio::time::Sleep),
     /// Absent once the test's own delay ends.
     OkAfter(fn() -> tokio::time::Sleep),
-    /// This error once the test's own delay ends.
-    ErrorAfter(RpcError, fn() -> tokio::time::Sleep),
+    /// The Machine made this Container, but its answer was lost on the way back.
+    CreatedLost(ContainerId, RpcError),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -251,6 +234,8 @@ struct Scripted {
     steps: Mutex<VecDeque<Step>>,
     observations: Option<Vec<ContainerObservation>>,
     observed_specs: BTreeMap<ContainerId, ResolvedServiceSpec>,
+    /// The image ID an inspect reports for each copy; none when absent.
+    image_ids: BTreeMap<ContainerId, String>,
     slots: Mutex<Vec<SlotKey>>,
     /// The image ID each new creation was pinned to, and the spec it sent.
     pins: Mutex<Vec<(Option<ployz_core::ImageDigest>, ResolvedServiceSpec)>>,
@@ -339,6 +324,7 @@ impl Scripted {
             steps: Mutex::new(steps.into()),
             observations: None,
             observed_specs: BTreeMap::new(),
+            image_ids: BTreeMap::new(),
             slots: Mutex::new(Vec::new()),
             pins: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
@@ -946,8 +932,8 @@ impl Scripted {
                     Reply::Pending => std::future::pending().await,
                     Reply::Listed(_)
                     | Reply::CreatedAfter(..)
+                    | Reply::CreatedLost(..)
                     | Reply::OkAfter(_)
-                    | Reply::ErrorAfter(..)
                     | Reply::Observed(..)
                     | Reply::ObservedDoor(..)
                     | Reply::Refused(..) => {
@@ -1100,12 +1086,18 @@ impl Scripted {
             cancel.cancel();
         }
         let healthy = settled.then_some(HealthVerdict::Healthy);
+        let discarded = match (&call, &of) {
+            (Call::DiscardSlot(..), ContainerLocator::Key(slot)) => Some(slot.clone()),
+            _ => None,
+        };
         let reply = self.next(call.clone());
         let container_id = match &reply {
-            Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedAfter(id, _) => Some(*id),
+            Reply::Created(id)
+            | Reply::Settled(id, _)
+            | Reply::CreatedAfter(id, _)
+            | Reply::CreatedLost(id, _) => Some(*id),
             Reply::Ok
             | Reply::OkAfter(_)
-            | Reply::ErrorAfter(..)
             | Reply::Listed(_)
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
@@ -1147,11 +1139,7 @@ impl Scripted {
                 delay().await;
                 ensured(ContainerNow::Absent { of }, None)
             }
-            Reply::Error(error) => Err(error),
-            Reply::ErrorAfter(error, delay) => {
-                delay().await;
-                Err(error)
-            }
+            Reply::Error(error) | Reply::CreatedLost(_, error) => Err(error),
             Reply::Refused(reason, occupant) => Ok(EnsuredContainer::Refused {
                 now: occupant.map_or(ContainerNow::Absent { of }, |id| present(&id)),
                 refusal: refusal(reason, "refused"),
@@ -1171,11 +1159,22 @@ impl Scripted {
                     self.record(id, |copy| copy.present = false);
                     self.applied(Move::Gone(id));
                 }
+                // A Gone by key removes only what was made under that key.
+                Call::DiscardSlot(..) => {
+                    let slot = discarded.expect("a discard names its slot");
+                    for copy in self.copies.lock().unwrap().values_mut() {
+                        if copy.machine_id == machine
+                            && copy.kind == slot.kind
+                            && copy.key.as_ref() == Some(&slot.creation_key)
+                        {
+                            copy.present = false;
+                        }
+                    }
+                }
                 Call::Prepare(_)
                 | Call::List(_)
                 | Call::Run(..)
                 | Call::Inspect(..)
-                | Call::DiscardSlot(..)
                 | Call::RemoveVolume(_)
                 | Call::UpdateLimits(..)
                 | Call::UpdatePlacement(..) => {}
@@ -1248,8 +1247,8 @@ impl CopyLifecycle for Scripted {
             | Reply::Created(_)
             | Reply::Settled(..)
             | Reply::CreatedAfter(..)
+            | Reply::CreatedLost(..)
             | Reply::OkAfter(_)
-            | Reply::ErrorAfter(..)
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
             | Reply::Pending
@@ -1313,7 +1312,7 @@ impl CopyLifecycle for Scripted {
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> Result<Creation, RpcError> {
+    ) -> Result<EnsuredContainer, RpcError> {
         if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
@@ -1324,9 +1323,7 @@ impl CopyLifecycle for Scripted {
                 .unwrap()
                 .push((new.image_id.clone(), new.resolved_spec.clone()));
         }
-        self.converge(machine_id, want)
-            .await
-            .map(Creation::Answered)
+        self.converge(machine_id, want).await
     }
 
     async fn ensure_unsettled(
@@ -1406,7 +1403,7 @@ impl CopyLifecycle for Scripted {
                 Ok(ContainerDetails {
                     container: self.recorded(container),
                     environment: None,
-                    image_id: None,
+                    image_id: self.image_ids.get(container_id).cloned(),
                     last_check,
                     run: None,
                     leaving: false,
@@ -1436,8 +1433,8 @@ impl CopyLifecycle for Scripted {
             | Reply::Created(_)
             | Reply::Settled(..)
             | Reply::CreatedAfter(..)
+            | Reply::CreatedLost(..)
             | Reply::OkAfter(_)
-            | Reply::ErrorAfter(..)
             | Reply::Refused(..) => {
                 panic!("scripted inspect requires Observed or Error")
             }
@@ -1565,8 +1562,8 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::Created(_)
         | Reply::Settled(..)
         | Reply::CreatedAfter(..)
+        | Reply::CreatedLost(..)
         | Reply::OkAfter(_)
-        | Reply::ErrorAfter(..)
         | Reply::Observed(..)
         | Reply::ObservedDoor(..)
         | Reply::Pending

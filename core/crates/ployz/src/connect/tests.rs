@@ -1304,7 +1304,7 @@ fn a_closed_session_does_not_outlast_a_later_silence() {
         let kept = keep_target_reply(&mut reply, silence);
         assert!(kept.target_unanswered(), "{kept}");
         let error = crate::cluster::answered_by(&machine, kept);
-        assert!(!error.on_closed_session(), "{error:?}");
+        assert!(!on_closed_session(&error), "{error:?}");
         assert_eq!(
             error.code.retry(),
             Retry::Now,
@@ -1380,7 +1380,7 @@ async fn a_call_after_the_stream_closed_is_marked_and_stays_unavailable() {
     assert!(!connect.target_replied(), "no daemon sent it");
     let error = rpc_error(connect);
     assert_eq!(error.code, RpcErrorCode::Unavailable);
-    assert!(error.on_closed_session(), "{error:?}");
+    assert!(on_closed_session(&error), "{error:?}");
     assert_eq!(error.details, closed_session_error().details);
     assert!(
         error_chain::row(&error).contains("connection to the daemon closed"),
@@ -1397,7 +1397,7 @@ fn a_broken_pipe_is_not_a_closed_session() {
     let error = TransportError::from(status);
     assert!(error.origin != Origin::SessionClosed, "{error:?}");
     assert!(error.unanswered);
-    assert!(!error.to_rpc_error().on_closed_session());
+    assert!(!on_closed_session(&error.to_rpc_error()));
 }
 
 #[test]
@@ -1466,7 +1466,7 @@ async fn a_resend_after_a_keepalive_timeout_ends_on_the_closed_session() {
     let resent = rpc_error(ConnectError::from(
         rpc.describe_contract(describe()).await.unwrap_err(),
     ));
-    assert!(resent.on_closed_session(), "{resent:?}");
+    assert!(on_closed_session(&resent), "{resent:?}");
 }
 
 #[tokio::test(start_paused = true)]

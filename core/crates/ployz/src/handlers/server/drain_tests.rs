@@ -163,7 +163,6 @@ fn every_other_outcome_keeps_its_line() {
         to: MachineRef::from(&web1),
         detail: "deploy cancelled".into(),
         replacement_removed: true,
-        replacement: None,
     };
     assert_eq!(
         [
@@ -191,7 +190,6 @@ fn every_other_outcome_keeps_its_line() {
                         from: MachineRef::from(&drained),
                         to: MachineRef::from(&web1),
                         replacement_removed: false,
-                        replacement: None,
                     },
                 }
             ),
@@ -323,7 +321,6 @@ fn the_drain_is_complete_once_every_copy_moved_and_every_old_copy_is_gone() {
                     from: MachineRef::from(&server('b', "web-2")),
                     to: MachineRef::from(&web1),
                     replacement_removed: true,
-                    replacement: None,
                 },
             },
         )],

@@ -5566,66 +5566,6 @@ mod ensure_container {
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
-        /// A drain removes nothing after a refusal marked `acted: false`, and discards its
-        /// slot by key after any other. A signer removed while a creation waits for Docker
-        /// is refused before the create, so it says nothing was made. The same removal
-        /// refusing a start after the create must not say so.
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-        async fn only_a_signer_removed_before_the_create_says_nothing_was_made() {
-            let fixture = enforced("ployzd-signer-removed-before-create").await;
-            let approved = reaching(PINNED);
-            let made = deploy_ensure(
-                &fixture.service,
-                new_want("service_container", "k1", &approved),
-                Some(&fixture.deploy(&approved)),
-            )
-            .await
-            .unwrap();
-            let made = present(&made).container_id;
-            fixture
-                .runtime
-                .lifecycle()
-                .stop(&made, None, None)
-                .await
-                .unwrap();
-            let reached = Arc::new(tokio::sync::Notify::new());
-            let release = Arc::new(tokio::sync::Notify::new());
-            let mut held = fixture.service.clone();
-            held.local = held
-                .local
-                .pausing_ensure_for_test(crate::machine::EnsurePause {
-                    point: crate::machine::EnsurePausePoint::BeforeWork,
-                    reached: Arc::clone(&reached),
-                    release: Arc::clone(&release),
-                });
-            let want = new_want("service_container", "k2", &approved);
-            let creating = tokio::spawn(async move { deploy_ensure(&held, want, None).await });
-            reached.notified().await;
-            let seen = requests(&fixture.fake).len();
-            let code = DeviceKey::from(fixture.signer.public()).code();
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.remove_device(code).unwrap();
-                })
-                .await
-                .unwrap();
-            release.notify_one();
-
-            let refused = creating.await.unwrap();
-            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
-            let details = status_details(refused.as_ref().unwrap_err().details()).unwrap();
-            deploy_refused(refused, "doesn't trust the device that approved");
-            assert_eq!(details["acted"], json!(false), "{details}");
-
-            let after = deploy_ensure(&fixture.service, started(&made), None).await;
-            let details = status_details(after.as_ref().unwrap_err().details()).unwrap();
-            deploy_refused(after, "doesn't trust the device that approved");
-            assert_eq!(details.get("acted"), None, "{details}");
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
         #[tokio::test]
         async fn what_full_access_made_runs_again_for_an_operator_only_from_a_pinned_image() {
             let fixture = enforced("ployzd-full-access-spec").await;

@@ -57,7 +57,7 @@ impl CopyLifecycle for Recording {
         &self,
         machine_id: &MachineId,
         want: ContainerWant,
-    ) -> Result<Creation, RpcError> {
+    ) -> Result<EnsuredContainer, RpcError> {
         self.wants.lock().unwrap().push(want.clone());
         self.fake.ensure_new(machine_id, want).await
     }

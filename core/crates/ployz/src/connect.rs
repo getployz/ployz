@@ -257,6 +257,14 @@ impl Connector for SystemConnector {
 #[error("connection to the daemon closed")]
 struct SessionClosed;
 
+const SESSION_CLOSED_REASON: &str = "session_closed";
+
+/// The call failed on a channel whose one stream had closed: resending it on
+/// that channel can never reach a daemon.
+pub(crate) fn on_closed_session(error: &RpcError) -> bool {
+    error.details.get("reason").and_then(Value::as_str) == Some(SESSION_CLOSED_REASON)
+}
+
 #[cfg(test)]
 pub(crate) fn closed_session_error() -> RpcError {
     TransportError {
@@ -1589,7 +1597,7 @@ pub(crate) fn keep_target_reply(
 /// never reached the target says nothing about it, so the earlier loss stands. A target
 /// that stayed silent is stronger news than an earlier drop, and a failure that no retry
 /// fixes, such as a refused SSH key, is what the user has to act on. Its twin in
-/// `sends_out_restart` agrees on every attempt but a refused redial, which it reports still
+/// `wait_out_restart` agrees on every attempt but a refused redial, which it reports still
 /// saying the earlier send may have been done.
 pub(crate) fn keep_lost_call(lost: Option<ConnectError>, error: ConnectError) -> ConnectError {
     match lost {
@@ -1612,7 +1620,7 @@ enum Origin {
     /// The client's connection or stream failed: no status crossed the wire.
     Local,
     /// The channel's one stream closed: resending on it can never succeed, so
-    /// [`TransportError::to_rpc_error`] marks it for [`RpcError::on_closed_session`]. It never left
+    /// [`TransportError::to_rpc_error`] marks it for [`on_closed_session`]. It never left
     /// this client, so it is a local failure too.
     SessionClosed,
 }
@@ -1770,7 +1778,7 @@ impl TransportError {
     pub fn to_rpc_error(&self) -> RpcError {
         RpcError::new(rpc_error_code(self.code), self.message.clone())
             .with_details(if self.origin == Origin::SessionClosed {
-                json!({ "reason": ployz_core::rpc::SESSION_CLOSED_REASON })
+                json!({ "reason": SESSION_CLOSED_REASON })
             } else {
                 self.details.clone()
             })

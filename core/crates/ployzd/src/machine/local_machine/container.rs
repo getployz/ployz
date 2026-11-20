@@ -1509,11 +1509,8 @@ impl LocalMachine {
         admitted: AdmittedSpec,
         switch: Option<SwitchGuard>,
     ) -> Result<Made, Error> {
-        let exclusive = self.exclusive_turn().await;
-        // An installation or upgrade under way refuses before the create, so it made nothing.
-        let installation = self.admit_installation().map_err(Error::unacted)?;
         let outcome = self
-            .spawn_admitted((exclusive, installation), move |local| async move {
+            .finish_mutation(move |local| async move {
                 let _switch = switch;
                 let pin = new.image_id.clone();
                 let created = local
@@ -1650,17 +1647,14 @@ impl LocalMachine {
             )
             .await
             .map_err(|error| {
-                let Error::Unacted(source) = error else {
+                let Error::Docker(crate::docker::Error::Unadmitted(refusal)) = error else {
                     return error;
-                };
-                let Error::Docker(crate::docker::Error::Unadmitted(refusal)) = *source else {
-                    return source.unacted();
                 };
                 tracing::warn!(
                     service = %spec.name,
                     "create refused right before Docker made it: {refusal}"
                 );
-                Error::DeployRefused(refusal).unacted()
+                Error::DeployRefused(refusal)
             })
     }
 }
@@ -2102,19 +2096,14 @@ fn want_locator(want: &ContainerWant) -> ContainerLocator {
     }
 }
 
-/// A creation reached Docker with no admission of its spec, refused before Docker made
-/// anything. Every caller's spec passes [`LocalMachine::admit_spec`] first, so this is a
-/// path that skipped it.
+/// A creation reached Docker with no admission of its spec. Every caller's spec passes
+/// [`LocalMachine::admit_spec`] first, so this is a path that skipped it.
 fn unadmitted() -> Error {
-    Error::Docker(crate::docker::Error::NotAdmitted).unacted()
+    Error::Docker(crate::docker::Error::NotAdmitted)
 }
 
 fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     use crate::{docker::Error as Docker, sealed_env::OpenError};
-    // A typed refusal already says nothing was made; any other error keeps its mark.
-    if let Error::Unacted(source) = error {
-        return create_refusal(*source).map_err(Error::unacted);
-    }
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only create-path errors a driver can act on become refusals"

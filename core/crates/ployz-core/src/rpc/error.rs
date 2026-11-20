@@ -6,7 +6,7 @@ use std::fmt;
 use thiserror::Error;
 use ts_rs::TS;
 
-use super::evidence::{Departure, MissingImage, ReplyLost, Unacted, Undialed, Unreached};
+use super::evidence::{Departure, MissingImage, ReplyLost, Undialed, Unreached};
 use crate::PullPolicy;
 
 #[derive(Debug, Error)]
@@ -223,19 +223,6 @@ impl RpcError {
         self.mark(&Unreached)
     }
 
-    /// `self`, the target Machine's refusal of a call it made nothing of. Read back by
-    /// [`Self::never_acted`]. Details that aren't an object are kept unmarked.
-    #[must_use]
-    pub fn unacted(self) -> Self {
-        self.mark(&Unacted)
-    }
-
-    /// Whether the target Machine said it refused the call before acting on it.
-    #[must_use]
-    pub fn never_acted(&self) -> bool {
-        self.marked::<Unacted>().is_some()
-    }
-
     /// `self`, an [`Self::unanswered_target`] error from a router that couldn't dial the
     /// target, so only small packets went its way. Read back by [`Self::undialed`].
     #[must_use]
@@ -260,13 +247,6 @@ impl RpcError {
     #[must_use]
     pub fn reply_lost(&self) -> bool {
         self.marked::<ReplyLost>().is_some()
-    }
-
-    /// Whether the call failed on a client channel whose one stream had closed, so it
-    /// never left the client: resending it on that channel can never reach a daemon.
-    #[must_use]
-    pub fn on_closed_session(&self) -> bool {
-        self.details.get("reason").and_then(Value::as_str) == Some(SESSION_CLOSED_REASON)
     }
 
     /// Whether the target Machine didn't answer, rather than answering with this error.
@@ -469,10 +449,6 @@ pub fn target_unreached_status(error: &(dyn std::error::Error + 'static)) -> ton
     status
 }
 
-/// The `reason` a client puts in the details of a call that met a channel whose one
-/// stream had closed. Read back by [`RpcError::on_closed_session`]. Never on the wire.
-pub const SESSION_CLOSED_REASON: &str = "session_closed";
-
 /// The `reason` an entry Machine's router puts in the details of a status it made for a
 /// target that did not answer, when its own path probes found that large packets to that
 /// target are dropped. Read back by `ConnectError::large_packets_dropped` in the CLI.
@@ -535,36 +511,6 @@ pub fn hinted_status(
         serde_json::to_vec(&hints).expect("a JSON value serializes")
     };
     tonic::Status::with_details(code, error.to_string(), details.into())
-}
-
-/// `status` with `mark` merged into its details, which keep their causes, so
-/// [`status_details`] reads the mark back. Details that aren't a JSON object, as a
-/// router's own may be, are kept unmarked. Code, message and metadata stay.
-#[cfg(not(target_arch = "wasm32"))]
-#[must_use]
-pub fn marked_status<M: super::evidence::Mark>(status: tonic::Status, mark: &M) -> tonic::Status {
-    let mut fields = if status.details().is_empty() {
-        serde_json::Map::new()
-    } else {
-        match serde_json::from_slice::<Value>(status.details()) {
-            Ok(Value::Object(fields)) => fields,
-            _ => return status,
-        }
-    };
-    mark.insert(&mut fields);
-    let cause = match fields.remove(STATUS_CAUSE) {
-        Some(Value::Array(cause)) => cause
-            .into_iter()
-            .filter_map(|line| line.as_str().map(str::to_owned))
-            .collect(),
-        _ => Vec::new(),
-    };
-    tonic::Status::with_details_and_metadata(
-        status.code(),
-        status.message(),
-        StatusBody::new(cause, fields).encode().into(),
-        status.metadata().clone(),
-    )
 }
 
 /// The details a [`caused_status`] or [`hinted_status`] carried, without their

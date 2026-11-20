@@ -1255,7 +1255,7 @@ impl MachineService {
         };
         let admitted = match local.admit_spec(&request.want, presented).await {
             Ok(admitted) => admitted,
-            Err(error) => return local_error(error.unacted()),
+            Err(error) => return local_error(error),
         };
         finish(local.ensure_container(request.want, admitted).await)
     }
@@ -1314,11 +1314,9 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
 }
 
 fn pinned_refusal(message: &str) -> RpcError {
-    RpcError::invalid_argument(message)
-        .with_details(
-            serde_json::json!({ "capability": ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY }),
-        )
-        .unacted()
+    RpcError::invalid_argument(message).with_details(
+        serde_json::json!({ "capability": ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY }),
+    )
 }
 
 #[expect(
@@ -1340,15 +1338,6 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Departing { server, source } => {
             Ok(local_failure(*source)?.overlapping_leave(&server))
         }
-        // Marked so a caller that sent a creation knows nothing of it was made. An error
-        // without the mark says nothing of that.
-        LocalMachineError::Unacted(source) => match local_failure(*source) {
-            Ok(error) => Ok(error.unacted()),
-            Err(status) => Err(ployz_core::rpc::marked_status(
-                status,
-                &ployz_core::Unacted,
-            )),
-        },
         LocalMachineError::ManagementRevoked => Err(ployz_core::rpc::caused_status(
             tonic::Code::Unauthenticated,
             &error,

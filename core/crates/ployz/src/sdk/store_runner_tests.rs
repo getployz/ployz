@@ -1246,7 +1246,7 @@ impl CopyLifecycle for Recording {
         &self,
         machine_id: &MachineId,
         want: ployz_core::ContainerWant,
-    ) -> Result<crate::deploy::Creation, RpcError> {
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
         self.wants.lock().unwrap().push(want.clone());
         CopyLifecycle::ensure_new(&self.client, machine_id, want).await
     }

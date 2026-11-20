@@ -130,10 +130,8 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         )
         .await
         .unwrap_err();
-    // Refused before Docker's create, so marked as having made nothing.
     assert!(
-        matches!(&error, super::Error::Unacted(source)
-            if matches!(**source, super::Error::IngressProxyServiceSpec(_))),
+        matches!(error, super::Error::IngressProxyServiceSpec(_)),
         "{error}"
     );
     local

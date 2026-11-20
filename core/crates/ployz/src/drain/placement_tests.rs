@@ -90,7 +90,8 @@ fn a_tag_spec_moves_only_to_a_server_that_pins_its_image() {
 
 /// A Server whose row claims nothing may still be asked. If its daemon then turns the
 /// pinned route down, the move fails as a refusal from the source, with nothing left on
-/// the destination, so another Server's drain is not held up by it.
+/// the destination, so another Server's drain is not held up by it. When a send may
+/// still have made a Container there, the failure says so and holds that drain.
 #[test]
 fn an_unclaimed_server_that_turns_the_pin_down_needs_upgrading() {
     let unclaimed = server('c', None);
@@ -105,43 +106,21 @@ fn an_unclaimed_server_that_turns_the_pin_down_needs_upgrading() {
     let failure = MoveFailure::of(
         MoveError {
             end: MoveEnd::NeedsUpgrade,
-            replacement: Replacement::NoneLeft,
+            replacement_removed: true,
         },
         from.clone(),
-        to,
+        to.clone(),
     );
     assert!(failure.clean_elsewhere(&unclaimed.machine.id));
     assert!(!failure.clean_elsewhere(&from.id));
-}
-
-/// A failed move's report says what became of its replacement: none made, removed by its
-/// ID, or whatever held its slot removed by key. `replacement_removed` still says only
-/// that none is left, so a reader from before `replacement` reads the report as it did.
-#[test]
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-fn a_failed_move_reports_how_its_replacement_ended() {
-    let (from, to) = (
-        MachineRef::from(&server('a', None).machine),
-        MachineRef::from(&server('b', None).machine),
+    let unsettled = MoveFailure::of(
+        MoveError {
+            end: MoveEnd::NeedsUpgrade,
+            replacement_removed: false,
+        },
+        from,
+        to,
     );
-    for (replacement, removed, reported) in [
-        (Replacement::NoneLeft, true, "none_left"),
-        (Replacement::Discarded, true, "discarded"),
-        (Replacement::Removed, true, "removed"),
-        (Replacement::Left, false, "left"),
-    ] {
-        let failure = MoveFailure::of(
-            MoveError {
-                end: MoveEnd::NotServing {
-                    detail: "never became healthy".into(),
-                },
-                replacement,
-            },
-            from.clone(),
-            to.clone(),
-        );
-        let report = serde_json::to_value(&failure).unwrap();
-        assert_eq!(report["replacement_removed"], json!(removed), "{report}");
-        assert_eq!(report["replacement"], json!(reported), "{report}");
-    }
+    assert!(!unsettled.clean_elsewhere(&unclaimed.machine.id));
+    assert!(unsettled.to_string().contains("upgrade"), "{unsettled}");
 }

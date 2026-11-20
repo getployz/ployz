@@ -20,7 +20,7 @@ pub(crate) use exec::{
     health_error, move_container, set_each,
 };
 #[cfg(test)]
-pub(crate) use exec::{Creation, RedialFailure, Session};
+pub(crate) use exec::{RedialFailure, Session};
 pub(crate) mod pipeline;
 mod planning;
 mod progress;

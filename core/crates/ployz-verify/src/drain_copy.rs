@@ -1,59 +1,71 @@
 //! A drain's start of its new copy on the destination Server, from the request to the
-//! cleanup: the handler that serves it, another caller of ensure.v1 on the same slot,
-//! and the drain that sends it, cancels, reads the answer and cleans up.
+//! cleanup: the handler that serves it, other callers of ensure.v1 on the same Server, and
+//! the drain that sends it, resends it, cancels, reads the answer and cleans up.
 //!
 //! The properties:
 //!
 //! - **The reply is ours.** Every `Present` answer names the Container the handler made or
 //!   adopted for this request, with the drain's spec and the pinned image.
 //! - **No wrong start.** The handler never starts a Container that runs another image.
-//! - **Cleanup by the named ID.** After a definitive answer, the drain removes only the
-//!   Container a `Present` answer named. After `Absent` or a refusal it removes nothing, so a
-//!   refused occupant another caller made always survives. An answer is definitive when the
-//!   Machine gave it, as a typed answer or an error it raised before Docker's create, and no
-//!   earlier send of the start reached the handler and lost its answer.
-//! - **Nothing of ours is left.** A drain that ends without moving leaves no Container the
-//!   handler made in the slot, unless the handler made it after the drain's removal by key.
+//! - **No foreign removal.** Every Container a removal the drain caused took was made by one
+//!   of the move's own sends: the cleanup's Gone by key, and the handler's own recovery of a
+//!   half-made Container while it reads the slot.
+//! - **Nothing of ours is left.** A drain that ends without moving leaves no Container any
+//!   of its sends made, in any slot, unless that Container was made after its Gone.
+//! - **The report is true.** A drain that reports its replacement removed leaves no
+//!   Container any of its sends made, then or later.
 //!
 //! The actors, each step its own transition:
 //!
 //! - the handler, `MachineService::ensure` (ployzd/src/machine_api/local.rs), then
 //!   `converge_now` and `create_and_start` (ployzd/src/machine/local_machine/container.rs):
-//!   admission may refuse the request before anything else, as an error it marks as
-//!   refused before acting (`LocalMachineError::Unacted`); otherwise it reads
-//!   the slot and plans (`ContainerStep::{Done, Start, CreateAndStart}`), creates or adopts
-//!   the Container a name conflict finds, checks the image by ID (`image_differs`) before it
-//!   starts or answers, starts, then reads the Container it acted on (`container_now` of
-//!   `ContainerLocator::Id(acted)`) and answers. `Done` answers what its plan read. A
-//!   signer removed while the image pulled refuses the create right before Docker makes it
-//!   (`still_holds` in `create_admitted`, ployzd/src/docker/lifecycle.rs), marked as
-//!   refused before acting. Its start may be refused after the create (`start_checked`'s
-//!   signer check), as an error with no mark. One request, and one resend after a lost
+//!   it reads the slot its request names and plans, recovers a half-made Container of that
+//!   key (`matching_creation`, ployzd/src/docker/lifecycle.rs), creates or adopts the
+//!   Container a name conflict finds, checks the image by ID (`image_differs`) before it
+//!   starts or answers, starts, then reads the Container it acted on and answers. Any of
+//!   those steps may end in an error instead. One request, and one resend after a lost
 //!   answer or a send the entry couldn't dial (`RestartTolerant`,
-//!   ployz/src/deploy/exec/transport.rs), which the entry may refuse to redial;
-//! - the planter, an ensure.v1 caller on the drain's key `move:{old}`, acting at most twice:
-//!   it creates and starts a Container of either spec and either image while the slot is
-//!   empty, stops the slot's Container by ID, or removes it by key;
-//! - the drain, `move_container` (ployz/src/deploy/exec/start.rs): it sends, may cancel
-//!   before the answer, reads what each failed send did from its error, waits out health,
-//!   and cleans up by the `Outcome` that `ployz_decide::drain_start::Outcome::of` builds
-//!   from its last send and the sends before it. The model calls both: `Failed::of` on the
-//!   error each failed send carries, as the entry or the handler words it, and
-//!   `Outcome::of`.
+//!   ployz/src/deploy/exec/transport.rs), which the entry may refuse to dial again for;
+//! - the planter, an honest other caller (an older CLI's move of the same copy, a
+//!   hand-written ensure.v1, a second drain), acting at most twice in the slot `move:{old}`
+//!   or in a second drain's minted slot: it creates a Container of either spec and either
+//!   image, half-made or started, stops one, or removes one by key. It never acts in this
+//!   move's minted slot: only a forger can name it, which is an accepted residual;
+//! - a Machine restore, once: it gives the move's own Container a new ID under the same key
+//!   and spec, and the move remains its creator;
+//! - the drain, `move_container` (ployz/src/deploy/exec/start.rs): it mints its slot once,
+//!   sends, may cancel at any point the resend wait included, waits out health, and after
+//!   any end but a healthy Container sends one Gone by its slot's key. It reports the
+//!   replacement removed only when that Gone left the slot empty and no send of it went out
+//!   without an answer (`Outstanding`).
 //!
-//! Bounds: one destination slot, Container IDs up to 4, two specs, two images.
+//! The drain's cleanup has no branch, so the model calls no production decision. The key
+//! choice is a transition, and `Key` switches it back to the designs it replaced.
 //!
-//! Out of scope: a second destination (two Servers can't show a copy landing on the wrong
-//! one), two drains at once, rotation and the steps after a healthy answer (`relocate`,
-//! `bring_in`, `wait_listed`, `retire_old`, all unchanged), and who signed the spec. A
-//! discard by key with no answer can still remove another caller's Container that took the
-//! slot meanwhile; the model reaches it and accepts it, as main does.
+//! Bounds: four slots, Container IDs up to 5, two specs, two images, one resend.
+//!
+//! Out of scope: a second destination, rotation and the steps after a healthy answer
+//! (`relocate`, `bring_in`, `wait_listed`, `retire_old`), and who signed the spec.
 
 use std::fmt::Write as _;
 
-use ployz_core::{RpcError, RpcErrorCode};
-use ployz_decide::drain_start::{Earlier, Failed, Heard, Outcome};
 use stateright::{Model, Property};
+
+/// A slot on the destination, named by its creation key. Docker names a Container by its
+/// key, so a slot holds at most one.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Slot {
+    /// `move:{old}:{nonce}`, which this move minted.
+    Minted,
+    /// A key the resend minted afresh, under `Key::PerSend` only.
+    Resent,
+    /// `move:{old}`, which an older CLI or anyone reading the old copy's ID can name.
+    Shared,
+    /// A second drain's minted slot.
+    Second,
+}
+
+const SLOTS: [Slot; 4] = [Slot::Minted, Slot::Resent, Slot::Shared, Slot::Second];
 
 /// The spec a Container was made from: the drain's own, or another.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -71,22 +83,23 @@ enum Image {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Maker {
-    Handler,
+    /// One of this move's sends, or a restore of what one made.
+    Move,
     Planter,
 }
 
-/// The Container named by the slot's key. Docker names a Container by its key, so the
-/// slot holds at most one.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Container {
     id: u8,
     spec: Spec,
     image: Image,
     running: bool,
+    /// Created by Docker, its spec never written: the next create of its key recovers it.
+    half: bool,
     made_by: Maker,
 }
 
-const MAX_ID: u8 = 4;
+const MAX_ID: u8 = 5;
 
 /// Why the handler refused.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -97,35 +110,20 @@ enum Refusal {
     ImageDiffers,
 }
 
-/// An error in place of an answer.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Erred {
-    /// Admission refused the request before the slot was read, and marked the error so.
-    Admission,
-    /// The signer was removed while the image pulled, so the create was refused right
-    /// before Docker made it, by an error marked so.
-    BeforeCreate,
-    /// The start was refused after the create, by an error that names its gate but carries
-    /// no mark.
-    AfterCreate,
-    /// The entry refused to dial again for the resend, which never left the drain.
-    Redial,
-}
-
 /// What came back to the drain, as `EnsuredContainer` reads.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Answer {
     /// `Ensured { now: Present }`, with what the final read saw.
-    Present { id: u8, spec: Spec, image: Image },
+    Present {
+        id: u8,
+        spec: Spec,
+        image: Image,
+    },
     /// `Ensured { now: Absent }`.
     Absent,
-    /// `Refused`, naming the occupant the read found.
-    Refused {
-        refusal: Refusal,
-        occupant: Option<u8>,
-    },
-    /// An error that says why.
-    Error(Erred),
+    Refused(Refusal),
+    /// An error in place of an answer, whatever it says the Machine did.
+    Error,
 }
 
 /// What the handler does next, as `converge_now` and `create_and_start` order it.
@@ -133,19 +131,20 @@ enum Answer {
 enum Step {
     /// Waits for the drain's request.
     Idle,
-    /// Reads the slot and plans the step (`plan` in `converge_now`).
+    /// The request is on its way and not yet admitted: a Gone by key doesn't wait for it.
     Plan,
     /// `create_container_admitted`: creates the Container, or adopts the one a name
     /// conflict finds when it was made from the same spec.
     Create,
-    /// `image_differs`: the Container must run the pinned image, before it starts or the
-    /// handler answers.
+    /// `image_differs`, before it starts or the handler answers.
     Check { id: u8, then: Then },
     /// `start_checked`. `checked` says whether the image was checked already.
     Start { id: u8, checked: bool },
     /// The final read and the answer.
     Answer,
-    /// Answered, or the request was lost with nothing left to resend.
+    /// The answer was lost, or the entry couldn't dial: `RestartTolerant` waits to resend.
+    Backoff,
+    /// Answered, or nothing left to send.
     Done,
 }
 
@@ -161,12 +160,12 @@ struct Handler {
     step: Step,
     /// 1 for the request, 2 for the resend.
     run: u8,
+    /// The slot this run's request names.
+    slot: Slot,
     /// The Container this run made or adopted, or `Start` planned (`acted`).
     acted: Option<u8>,
     refusal: Option<Refusal>,
-    erred: Option<Erred>,
-    /// A Docker failure: the Container it acted on was gone. The drain gets an error.
-    failed: bool,
+    erred: bool,
     /// The Container the first run made, so a resend that adopts it shows.
     first_made: Option<u8>,
     /// What the plan read when it found the request done, which `Done` answers.
@@ -178,53 +177,61 @@ struct Handler {
 enum Phase {
     Ready,
     Waiting,
-    /// No answer: cancelled before one, lost twice, or a daemon error.
+    /// No answer: cancelled, or every send lost.
     Unanswered,
     Answered,
     /// Healthy: the move is done.
     Moved,
-    /// Cleaned up, or nothing to clean.
+    /// Cleaned up.
     Finished,
 }
 
-/// A removal the drain sent: by the ID an answer named, or by the slot's key.
+/// The drain's Gone by key: the slot it named, and the Container it took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Removal {
-    Id(u8),
-    Key,
+struct Gone {
+    slot: Slot,
+    took: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Drain {
     phase: Phase,
-    /// What the sends before the last may have done.
-    earlier: Earlier,
     answer: Option<Answer>,
     /// The answered Container failed health, or the drain was cancelled after the answer.
     failed: bool,
-    /// The removal it sent, and the Container it took, if any.
-    removal: Option<(Removal, Option<u8>)>,
+    /// A send went out and lost its answer, or was cut off while out (`Outstanding`).
+    outstanding: bool,
+    /// Cancelled while it waited to resend.
+    cancelled_in_wait: bool,
+    gone: Option<Gone>,
+    /// What the report says of the replacement.
+    reported_removed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct State {
-    slot: Option<Container>,
+    slots: [Option<Container>; 4],
     next_id: u8,
     handler: Handler,
     planter_acts: u8,
+    /// The ID a restore gave the move's Container.
+    restored: Option<u8>,
     drain: Drain,
     /// The handler started a Container that runs another image.
     wrong_start: bool,
-    /// The handler made a Container after the drain removed by key.
-    made_after_discard: bool,
-    /// A send reached the handler and its answer was lost, so it may have acted: what the
-    /// drain's `earlier` must say, whatever its errors told it.
-    lost_after_reaching: bool,
+    /// A removal the drain caused took a Container none of its sends made.
+    foreign_removed: bool,
+    /// Bit `id` is set for a Container the handler made after the drain's Gone.
+    late: u8,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum PlanterAct {
-    Create(Spec, Image),
+    Create {
+        spec: Spec,
+        image: Image,
+        half: bool,
+    },
     Stop,
     Gone,
 }
@@ -232,65 +239,50 @@ enum PlanterAct {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Action {
     Send,
-    /// The drain is cancelled before any answer.
+    /// The drain is cancelled before any answer, the resend wait included.
     Cancel,
     Handler,
-    /// Admission refuses the request.
-    Refuse,
-    /// The signer is removed while the image pulls: the create is refused before Docker
-    /// makes anything.
-    RefuseBeforeCreate,
-    /// The entry can't dial the destination, so the request never reaches the handler;
-    /// `RestartTolerant` resends once.
+    /// The request fails with an error at this step, before or after anything was made.
+    Error,
+    /// The entry can't dial the destination, so the request never reaches the handler.
     Undial,
-    /// `start_checked` refuses the start after the create.
-    RefuseStart,
+    /// `RestartTolerant` resends.
+    Resend,
     /// The entry refuses to dial again, so the resend never leaves.
     RefuseRedial,
     /// The answer reaches the drain.
     Deliver,
-    /// The answer is lost on the way; `RestartTolerant` resends once.
+    /// The answer is lost on the way.
     Lose,
     /// The answered Container serves healthy.
     Healthy,
     /// The answered Container fails health, or the drain is cancelled after the answer.
     Fails,
-    /// The drain cleans up what its answer, or the lack of one, left.
+    /// The drain's one Gone by key.
     Cleanup,
-    Planter(PlanterAct),
+    /// A Machine restore gives the move's Container a new ID under its key.
+    Restore,
+    Planter(Slot, PlanterAct),
 }
 
 /// The code as it ships, or one part of it switched back to an earlier design.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 struct Switches {
+    key: Key,
     reply: ReplyBy,
     check: Check,
-    cleanup: Cleanup,
-    marks: Marks,
-    dial: Dial,
 }
 
-/// Which errors the handler marks as raised before it acted.
+/// Which slot each send of the move names.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
-enum Marks {
-    /// Admission's, and the signer check right before Docker's create
-    /// (`LocalMachineError::Unacted` through `CreateFailure::unacted`).
+enum Key {
+    /// Minted once per move, so every send and the Gone name the one slot.
     #[default]
-    BeforeCreate,
-    /// Admission's only: the signer check before the create answers unmarked.
-    AdmissionOnly,
-    /// None.
-    Nothing,
-}
-
-/// What the client keeps of an entry that couldn't dial the destination.
-#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
-enum Dial {
-    /// The router's mark, kept as `undialed` by `answered_by`.
-    #[default]
-    Kept,
-    /// Dropped: the error says only that the Machine didn't answer.
-    Dropped,
+    Minted,
+    /// `move:{old}`, as before this change: another caller can name it.
+    Shared,
+    /// Minted afresh for each send, so the Gone names only the last send's slot.
+    PerSend,
 }
 
 /// What the final read names.
@@ -299,7 +291,7 @@ enum ReplyBy {
     /// `container_now(&ContainerLocator::Id(acted))`.
     #[default]
     Acted,
-    /// The slot, as the read before this change did.
+    /// The slot, as the read before the pinned route did.
     Slot,
 }
 
@@ -315,22 +307,6 @@ enum Check {
     AfterStart,
 }
 
-/// How the drain cleans up.
-#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
-enum Cleanup {
-    /// By what it heard: the named ID, nothing, or the key with no answer.
-    #[default]
-    ByAnswer,
-    /// By the slot's key after any failure, as main's `discard_attempt` did.
-    BySlot,
-    /// As `ByAnswer`, and also removes the occupant a refusal names.
-    RefusedOccupant,
-    /// As `ByAnswer`, but any error that names its gate is read as a refusal, marked or not.
-    GateAsRefusal,
-    /// As `ByAnswer`, but only the last send counts, as if no earlier one had been lost.
-    LastReply,
-}
-
 #[derive(Clone, Debug)]
 struct DrainCopy {
     switches: Switches,
@@ -339,52 +315,93 @@ struct DrainCopy {
 const REPLY_IS_OURS: &str =
     "every Present answer names our Container, from our spec, on the pinned image";
 const NO_WRONG_START: &str = "the handler never starts a Container that runs another image";
-const CLEANUP_BY_ID: &str =
-    "after a definitive answer the drain removes only the Container a Present answer named";
-
-/// The error a gate refusing a deploy's signer words, as `local_failure` sends it for
-/// `DeployRefused`: it names its capability, and is marked only when `marked`.
-fn gated(marked: bool) -> RpcError {
-    let error = RpcError::new(
-        RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
-        "the spec's signer is no longer trusted here",
-    )
-    .with_details(serde_json::json!({ "capability": ployz_core::DEPLOY_APPROVAL_CAPABILITY }));
-    if marked { error.unacted() } else { error }
-}
-const NOTHING_LEFT: &str =
-    "a drain that ends without moving leaves no Container the handler made in the slot";
+const NO_FOREIGN_REMOVAL: &str =
+    "every Container a removal the drain caused took was made by one of the move's sends";
+const NOTHING_LEFT: &str = "a drain that ends without moving leaves no Container its sends made, unless made after its Gone";
+const REPORT_IS_TRUE: &str =
+    "a drain that reports its replacement removed leaves no Container its sends made";
 
 impl State {
-    fn container(&self, id: u8) -> Option<Container> {
-        self.slot.filter(|container| container.id == id)
+    fn slot(&self, slot: Slot) -> Option<Container> {
+        let [minted, resent, shared, second] = self.slots;
+        match slot {
+            Slot::Minted => minted,
+            Slot::Resent => resent,
+            Slot::Shared => shared,
+            Slot::Second => second,
+        }
     }
 
-    fn make(&mut self, spec: Spec, image: Image, made_by: Maker) -> Option<u8> {
+    fn slot_mut(&mut self, slot: Slot) -> &mut Option<Container> {
+        let [minted, resent, shared, second] = &mut self.slots;
+        match slot {
+            Slot::Minted => minted,
+            Slot::Resent => resent,
+            Slot::Shared => shared,
+            Slot::Second => second,
+        }
+    }
+
+    /// The Container `id` in `slot`, if it is still there.
+    fn container(&self, slot: Slot, id: u8) -> Option<Container> {
+        self.slot(slot).filter(|container| container.id == id)
+    }
+
+    fn make(&mut self, slot: Slot, container: Container) -> Option<u8> {
         if self.next_id > MAX_ID {
             return None;
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.slot = Some(Container {
-            id,
-            spec,
-            image,
-            running: made_by == Maker::Planter,
-            made_by,
-        });
+        *self.slot_mut(slot) = Some(Container { id, ..container });
         Some(id)
+    }
+
+    /// Remove what `slot` holds for a removal the drain caused.
+    fn remove(&mut self, slot: Slot) -> Option<u8> {
+        let taken = self.slot_mut(slot).take()?;
+        if taken.made_by != Maker::Move {
+            self.foreign_removed = true;
+        }
+        Some(taken.id)
+    }
+
+    /// The Containers the move's sends made that are still on the destination.
+    fn ours(&self) -> impl Iterator<Item = Container> + '_ {
+        self.slots
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|container| container.made_by == Maker::Move)
     }
 }
 
 impl DrainCopy {
+    /// The slot run `run` of the move names.
+    fn slot_of(&self, run: u8) -> Slot {
+        match (self.switches.key, run) {
+            (Key::Minted, _) | (Key::PerSend, 1) => Slot::Minted,
+            (Key::PerSend, _) => Slot::Resent,
+            (Key::Shared, _) => Slot::Shared,
+        }
+    }
+
     /// One handler step from `state`.
     fn handle(&self, state: &mut State) {
-        let handler = &mut state.handler;
-        match handler.step {
-            Step::Idle | Step::Answer | Step::Done => unreachable!("not a handler step"),
+        let target = state.handler.slot;
+        match state.handler.step {
+            Step::Idle | Step::Answer | Step::Backoff | Step::Done => {
+                unreachable!("not a handler step")
+            }
             Step::Plan => {
-                handler.step = match state.slot {
+                // `matching_creation` recovers a half-made Container of this key: it removes it
+                // and creates afresh.
+                if state.slot(target).is_some_and(|container| container.half) {
+                    state.remove(target);
+                }
+                let occupant = state.slot(target);
+                let handler = &mut state.handler;
+                handler.step = match occupant {
                     None => Step::Create,
                     Some(occupant) if occupant.spec == Spec::Other => {
                         handler.refusal = Some(Refusal::SlotOccupied);
@@ -402,46 +419,55 @@ impl DrainCopy {
                     }
                 };
             }
-            Step::Create => match state.slot {
+            Step::Create => match state.slot(target) {
                 None => {
-                    let made = state.make(Spec::Drained, Image::Pinned, Maker::Handler);
+                    let made = state.make(
+                        target,
+                        Container {
+                            id: 0,
+                            spec: Spec::Drained,
+                            image: Image::Pinned,
+                            running: false,
+                            half: false,
+                            made_by: Maker::Move,
+                        },
+                    );
+                    if let Some(id) = made
+                        && state.drain.gone.is_some()
+                    {
+                        state.late |= 1 << id;
+                    }
                     let handler = &mut state.handler;
                     if handler.run == 1 {
                         handler.first_made = made;
                     }
-                    if state
-                        .drain
-                        .removal
-                        .is_some_and(|(removal, _)| removal == Removal::Key)
-                    {
-                        state.made_after_discard = true;
-                    }
-                    let handler = &mut state.handler;
                     match made {
                         Some(id) => {
                             handler.acted = Some(id);
                             handler.step = self.after_plan(id, Then::Start);
                         }
                         None => {
-                            handler.failed = true;
+                            handler.erred = true;
                             handler.step = Step::Answer;
                         }
                     }
                 }
                 // `create_refusal`: nothing was made, so the answer reads the slot.
                 Some(occupant) if occupant.spec == Spec::Other => {
-                    handler.refusal = Some(Refusal::SlotOccupied);
-                    handler.step = Step::Answer;
+                    state.handler.refusal = Some(Refusal::SlotOccupied);
+                    state.handler.step = Step::Answer;
                 }
                 Some(occupant) => {
-                    handler.acted = Some(occupant.id);
-                    handler.step = self.after_plan(occupant.id, Then::Start);
+                    state.handler.acted = Some(occupant.id);
+                    state.handler.step = self.after_plan(occupant.id, Then::Start);
                 }
             },
             Step::Check { id, then } => {
-                handler.step = match state.slot.filter(|container| container.id == id) {
+                let checked = state.container(target, id);
+                let handler = &mut state.handler;
+                handler.step = match checked {
                     None => {
-                        handler.failed = true;
+                        handler.erred = true;
                         Step::Answer
                     }
                     Some(container) if container.image != Image::Pinned => {
@@ -454,32 +480,29 @@ impl DrainCopy {
                     },
                 };
             }
-            Step::Start { id, checked } => {
-                match state.slot.filter(|container| container.id == id) {
-                    None => {
-                        handler.failed = true;
-                        handler.step = Step::Answer;
-                    }
-                    Some(container) => {
-                        // Starting a running Container changes nothing.
-                        if container.image != Image::Pinned && !container.running {
-                            state.wrong_start = true;
-                        }
-                        if let Some(slot) = &mut state.slot {
-                            slot.running = true;
-                        }
-                        let handler = &mut state.handler;
-                        handler.step = if !checked && self.switches.check == Check::AfterStart {
-                            Step::Check {
-                                id,
-                                then: Then::Answer,
-                            }
-                        } else {
-                            Step::Answer
-                        };
-                    }
+            Step::Start { id, checked } => match state.container(target, id) {
+                None => {
+                    state.handler.erred = true;
+                    state.handler.step = Step::Answer;
                 }
-            }
+                Some(container) => {
+                    // Starting a running Container changes nothing.
+                    if container.image != Image::Pinned && !container.running {
+                        state.wrong_start = true;
+                    }
+                    if let Some(slot) = state.slot_mut(target) {
+                        slot.running = true;
+                    }
+                    state.handler.step = if !checked && self.switches.check == Check::AfterStart {
+                        Step::Check {
+                            id,
+                            then: Then::Answer,
+                        }
+                    } else {
+                        Step::Answer
+                    };
+                }
+            },
         }
     }
 
@@ -493,107 +516,59 @@ impl DrainCopy {
         }
     }
 
-    /// The final read and its answer; `None` for a Docker failure.
-    fn answer(&self, state: &State) -> Option<Answer> {
+    /// The final read and its answer.
+    fn answer(&self, state: &State) -> Answer {
         let handler = state.handler;
-        if handler.failed {
-            return None;
+        if handler.erred {
+            return Answer::Error;
+        }
+        if let Some(refusal) = handler.refusal {
+            return Answer::Refused(refusal);
         }
         let read = match (handler.planned, self.switches.reply) {
             (Some(planned), _) => Some(planned),
-            (None, ReplyBy::Acted) => handler.acted.map_or(state.slot, |id| state.container(id)),
-            (None, ReplyBy::Slot) => state.slot,
+            (None, ReplyBy::Acted) => handler
+                .acted
+                .and_then(|id| state.container(handler.slot, id)),
+            (None, ReplyBy::Slot) => state.slot(handler.slot),
         };
-        if let Some(erred) = handler.erred {
-            // An error carries no read of the slot.
-            return Some(Answer::Error(erred));
-        }
-        Some(match handler.refusal {
-            Some(refusal) => Answer::Refused {
-                refusal,
-                occupant: read.map(|container| container.id),
-            },
-            None => read.map_or(Answer::Absent, |container| Answer::Present {
-                id: container.id,
-                spec: container.spec,
-                image: container.image,
-            }),
+        read.map_or(Answer::Absent, |container| Answer::Present {
+            id: container.id,
+            spec: container.spec,
+            image: container.image,
         })
     }
 
-    /// What the drain's last send heard, as `move_container` reads it.
-    fn heard(&self, answer: Option<Answer>) -> Heard<u8> {
-        let marks = self.switches.marks;
-        let error = match answer {
-            None => return Heard::Unanswered,
-            Some(Answer::Present { id, .. }) => return Heard::Present(id),
-            Some(Answer::Absent) => return Heard::Absent,
-            Some(Answer::Refused { .. }) => return Heard::Refused,
-            // The resend never left: the start's last send is the lost one before it,
-            // which `earlier` holds already.
-            Some(Answer::Error(Erred::Redial)) => return Heard::Unsent,
-            Some(Answer::Error(Erred::Admission)) => gated(marks != Marks::Nothing),
-            Some(Answer::Error(Erred::BeforeCreate)) => gated(marks == Marks::BeforeCreate),
-            Some(Answer::Error(Erred::AfterCreate)) => gated(false),
-        };
-        if self.switches.cleanup == Cleanup::GateAsRefusal
-            && error.details.get("capability").is_some()
-        {
-            return Heard::Refused;
-        }
-        Failed::of(&error).into()
-    }
-
-    /// The error the drain gets for a send the entry couldn't dial, as `answered_by` words
-    /// the router's status.
-    fn undialed(&self) -> RpcError {
-        let silent = RpcError::unanswered_target(
-            RpcErrorCode::Unavailable,
-            "Machine 2 did not answer: connection refused".into(),
-        );
-        match self.switches.dial {
-            Dial::Kept => silent.undialed_target(),
-            Dial::Dropped => silent,
-        }
-    }
-
-    /// The removal the drain sends for what it heard, if any.
-    fn removal(&self, drain: Drain) -> Option<Removal> {
-        let cleanup = self.switches.cleanup;
-        match drain.answer {
-            Some(_) if cleanup == Cleanup::BySlot => return Some(Removal::Key),
-            Some(Answer::Refused {
-                occupant: Some(id), ..
-            }) if cleanup == Cleanup::RefusedOccupant => return Some(Removal::Id(id)),
-            _ => {}
-        }
-        let earlier = if cleanup == Cleanup::LastReply {
-            Earlier::Nothing
-        } else {
-            drain.earlier
-        };
-        match Outcome::of(earlier, self.heard(drain.answer)) {
-            Outcome::Unknown => Some(Removal::Key),
-            Outcome::Absent | Outcome::Refused => None,
-            Outcome::Present(id) => Some(Removal::Id(id)),
-        }
-    }
-
-    /// The drain hears `answer`, or nothing, and goes on to what it calls for.
-    fn hear(&self, state: &mut State, answer: Option<Answer>) {
+    /// The drain hears `answer`, or nothing.
+    fn hear(state: &mut State, answer: Option<Answer>) {
         if state.drain.phase != Phase::Waiting {
             return;
         }
-        let Some(answer) = answer else {
-            state.drain.phase = Phase::Unanswered;
-            return;
+        state.drain.answer = answer;
+        state.drain.phase = match answer {
+            None => Phase::Unanswered,
+            Some(_) => Phase::Answered,
         };
-        state.drain.answer = Some(answer);
-        state.drain.phase = Phase::Answered;
-        // Nothing waits on an answer that is not Present and that leaves nothing to remove.
-        if !matches!(answer, Answer::Present { .. }) && self.removal(state.drain).is_none() {
-            state.drain.phase = Phase::Finished;
-        }
+    }
+
+    /// Whether the drain's next step is its Gone: after any end but a healthy Container.
+    /// The daemon's Gone by key waits for admitted work on that key, so it runs only while
+    /// no request of the move is past its admission.
+    fn cleans_up(&self, state: &State) -> bool {
+        let drain = state.drain;
+        let due = match drain.phase {
+            Phase::Unanswered => true,
+            Phase::Answered => match drain.answer {
+                Some(Answer::Present { .. }) => drain.failed,
+                _ => true,
+            },
+            Phase::Ready | Phase::Waiting | Phase::Moved | Phase::Finished => false,
+        };
+        let admitted = matches!(
+            state.handler.step,
+            Step::Create | Step::Check { .. } | Step::Start { .. } | Step::Answer
+        );
+        due && !admitted
     }
 }
 
@@ -603,29 +578,32 @@ impl Model for DrainCopy {
 
     fn init_states(&self) -> Vec<State> {
         vec![State {
-            slot: None,
+            slots: [None; 4],
             next_id: 1,
             handler: Handler {
                 step: Step::Idle,
                 run: 1,
+                slot: self.slot_of(1),
                 acted: None,
                 refusal: None,
-                erred: None,
-                failed: false,
+                erred: false,
                 first_made: None,
                 planned: None,
             },
             planter_acts: 0,
+            restored: None,
             drain: Drain {
                 phase: Phase::Ready,
-                earlier: Earlier::Nothing,
                 answer: None,
                 failed: false,
-                removal: None,
+                outstanding: false,
+                cancelled_in_wait: false,
+                gone: None,
+                reported_removed: false,
             },
             wrong_start: false,
-            made_after_discard: false,
-            lost_after_reaching: false,
+            foreign_removed: false,
+            late: 0,
         }]
     }
 
@@ -647,35 +625,51 @@ impl Model for DrainCopy {
         match state.handler.step {
             Step::Idle | Step::Done => {}
             Step::Answer => actions.extend([Action::Deliver, Action::Lose]),
-            Step::Plan => {
-                actions.extend([Action::Handler, Action::Refuse]);
-                match state.handler.run {
-                    1 => actions.push(Action::Undial),
-                    _ => actions.push(Action::RefuseRedial),
+            Step::Backoff => {
+                if state.drain.phase == Phase::Waiting {
+                    actions.extend([Action::Resend, Action::RefuseRedial]);
                 }
             }
-            Step::Start { .. } => actions.extend([Action::Handler, Action::RefuseStart]),
-            // `still_holds` runs only when no Container of the key was found to adopt.
-            Step::Create if state.slot.is_none() => {
-                actions.extend([Action::Handler, Action::RefuseBeforeCreate]);
+            Step::Plan => {
+                actions.extend([Action::Handler, Action::Error]);
+                if state.handler.run == 1 {
+                    actions.push(Action::Undial);
+                }
             }
-            Step::Create | Step::Check { .. } => actions.push(Action::Handler),
+            Step::Create | Step::Check { .. } | Step::Start { .. } => {
+                actions.extend([Action::Handler, Action::Error]);
+            }
+        }
+        if state.restored.is_none()
+            && state.next_id <= MAX_ID
+            && [Slot::Minted, Slot::Resent]
+                .iter()
+                .any(|slot| state.slot(*slot).is_some_and(|c| c.made_by == Maker::Move))
+        {
+            actions.push(Action::Restore);
         }
         if state.planter_acts < 2 {
-            match state.slot {
-                None if state.next_id <= MAX_ID => {
-                    for spec in [Spec::Drained, Spec::Other] {
-                        for image in [Image::Pinned, Image::Other] {
-                            actions.push(Action::Planter(PlanterAct::Create(spec, image)));
+            for slot in [Slot::Shared, Slot::Second] {
+                match state.slot(slot) {
+                    None if state.next_id <= MAX_ID => {
+                        for spec in [Spec::Drained, Spec::Other] {
+                            for image in [Image::Pinned, Image::Other] {
+                                for half in [false, true] {
+                                    actions.push(Action::Planter(
+                                        slot,
+                                        PlanterAct::Create { spec, image, half },
+                                    ));
+                                }
+                            }
                         }
                     }
-                }
-                None => {}
-                Some(container) => {
-                    if container.running {
-                        actions.push(Action::Planter(PlanterAct::Stop));
+                    None => {}
+                    Some(container) => {
+                        if container.running {
+                            actions.push(Action::Planter(slot, PlanterAct::Stop));
+                        }
+                        actions.push(Action::Planter(slot, PlanterAct::Gone));
                     }
-                    actions.push(Action::Planter(PlanterAct::Gone));
                 }
             }
         }
@@ -688,84 +682,102 @@ impl Model for DrainCopy {
                 state.drain.phase = Phase::Waiting;
                 state.handler.step = Step::Plan;
             }
-            Action::Cancel => state.drain.phase = Phase::Unanswered,
+            Action::Cancel => {
+                let handler = &mut state.handler;
+                if handler.step == Step::Backoff {
+                    state.drain.cancelled_in_wait = true;
+                    handler.step = Step::Done;
+                } else if handler.step != Step::Done {
+                    // Cut off while out: the request goes on without the drain.
+                    state.drain.outstanding = true;
+                }
+                state.drain.phase = Phase::Unanswered;
+            }
             Action::Handler => self.handle(&mut state),
-            Action::Refuse => {
-                state.handler.erred = Some(Erred::Admission);
+            Action::Error => {
+                state.handler.erred = true;
                 state.handler.step = Step::Answer;
             }
-            Action::RefuseBeforeCreate => {
-                state.handler.erred = Some(Erred::BeforeCreate);
-                state.handler.step = Step::Answer;
-            }
-            // The handler never got the request; the resend is its first.
+            // The request never reached the handler, but the client can't tell it from a
+            // lost one (`target_unanswered`).
             Action::Undial => {
-                state.handler.run = 2;
-                state.drain.earlier = state.drain.earlier.then(Failed::of(&self.undialed()));
+                state.handler.step = Step::Backoff;
+                state.drain.outstanding = true;
             }
-            // The created Container stays, not started.
-            Action::RefuseStart => {
-                state.handler.erred = Some(Erred::AfterCreate);
-                state.handler.step = Step::Answer;
+            Action::Resend => {
+                state.handler = Handler {
+                    step: Step::Plan,
+                    run: 2,
+                    slot: self.slot_of(2),
+                    acted: None,
+                    refusal: None,
+                    erred: false,
+                    first_made: state.handler.first_made,
+                    planned: None,
+                };
             }
             Action::RefuseRedial => {
                 state.handler.step = Step::Done;
-                self.hear(&mut state, Some(Answer::Error(Erred::Redial)));
+                Self::hear(&mut state, Some(Answer::Error));
             }
             Action::Deliver | Action::Lose => {
                 let answer = self.answer(&state);
-                let handler = &mut state.handler;
-                let resend = action == Action::Lose && handler.run == 1;
-                if resend {
-                    *handler = Handler {
-                        step: Step::Plan,
-                        run: 2,
-                        acted: None,
-                        refusal: None,
-                        erred: None,
-                        failed: false,
-                        first_made: handler.first_made,
-                        planned: None,
-                    };
-                    // The lost send may have acted; the resend's answer speaks only for itself.
-                    state.drain.earlier = state.drain.earlier.then(Failed::Unanswered);
-                    state.lost_after_reaching = true;
+                if action == Action::Lose && state.handler.run == 1 {
+                    state.handler.step = Step::Backoff;
+                    state.drain.outstanding = true;
                 } else {
-                    handler.step = Step::Done;
-                    let heard = if action == Action::Deliver {
-                        answer
-                    } else {
-                        None
-                    };
-                    self.hear(&mut state, heard);
+                    state.handler.step = Step::Done;
+                    if action == Action::Lose {
+                        state.drain.outstanding = true;
+                    }
+                    Self::hear(&mut state, (action == Action::Deliver).then_some(answer));
                 }
             }
             Action::Healthy => state.drain.phase = Phase::Moved,
             Action::Fails => state.drain.failed = true,
             Action::Cleanup => {
-                let removal = self.removal(state.drain).expect("a removal to send");
-                let taken = match removal {
-                    Removal::Id(id) => state.container(id).map(|container| container.id),
-                    Removal::Key => state.slot.map(|container| container.id),
-                };
-                if taken.is_some() {
-                    state.slot = None;
-                }
-                state.drain.removal = Some((removal, taken));
+                let slot = self.slot_of(state.handler.run);
+                let took = state.remove(slot);
+                state.drain.gone = Some(Gone { slot, took });
+                state.drain.reported_removed = !state.drain.outstanding;
                 state.drain.phase = Phase::Finished;
             }
-            Action::Planter(act) => {
+            Action::Restore => {
+                let slot = [Slot::Minted, Slot::Resent]
+                    .into_iter()
+                    .find(|slot| state.slot(*slot).is_some_and(|c| c.made_by == Maker::Move))
+                    .expect("a Container of the move to restore");
+                let restored = state.slot(slot).expect("checked above");
+                state.restored = state.make(slot, restored);
+                // The restored Container is the same creation: one made after the Gone still is.
+                if let Some(id) = state.restored
+                    && state.late & (1 << restored.id) != 0
+                {
+                    state.late |= 1 << id;
+                }
+            }
+            Action::Planter(slot, act) => {
                 state.planter_acts += 1;
                 match act {
-                    PlanterAct::Create(spec, image) => {
-                        state.make(spec, image, Maker::Planter)?;
+                    PlanterAct::Create { spec, image, half } => {
+                        state.make(
+                            slot,
+                            Container {
+                                id: 0,
+                                spec,
+                                image,
+                                running: !half,
+                                half,
+                                made_by: Maker::Planter,
+                            },
+                        )?;
                     }
                     PlanterAct::Stop => {
-                        if let Some(slot) = &mut state.slot {
-                            slot.running = false;
+                        if let Some(container) = state.slot_mut(slot) {
+                            container.running = false;
                         }
                     }
-                    PlanterAct::Gone => state.slot = None,
+                    PlanterAct::Gone => *state.slot_mut(slot) = None,
                 }
             }
         }
@@ -774,141 +786,72 @@ impl Model for DrainCopy {
 
     fn properties(&self) -> Vec<Property<Self>> {
         vec![
-            Property::always(REPLY_IS_OURS, |_, state: &State| {
-                match state.drain.answer {
-                    Some(Answer::Present { id, spec, image }) => {
-                        spec == Spec::Drained && image == Image::Pinned
-                            // The answer of the run that served it: the last one.
-                            && state.handler.acted == Some(id)
-                    }
-                    _ => true,
+            Property::always(REPLY_IS_OURS, |_, state: &State| match state.drain.answer {
+                Some(Answer::Present { id, spec, image }) => {
+                    spec == Spec::Drained
+                        && image == Image::Pinned
+                        // The answer of the run that served it: the last one.
+                        && state.handler.acted == Some(id)
                 }
+                _ => true,
             }),
             Property::always(NO_WRONG_START, |_, state: &State| !state.wrong_start),
-            Property::always(CLEANUP_BY_ID, |_, state: &State| {
-                let drain = state.drain;
-                let definitive = !state.lost_after_reaching
-                    && matches!(
-                        drain.answer,
-                        Some(
-                            Answer::Present { .. }
-                                | Answer::Absent
-                                | Answer::Refused { .. }
-                                | Answer::Error(Erred::Admission | Erred::BeforeCreate)
-                        )
-                    );
-                match (drain.answer, drain.removal) {
-                    (_, None) => true,
-                    (Some(Answer::Present { id, .. }), Some((Removal::Id(removed), _))) => {
-                        id == removed
-                    }
-                    _ => !definitive,
-                }
+            Property::always(NO_FOREIGN_REMOVAL, |_, state: &State| {
+                !state.foreign_removed
             }),
             Property::always(NOTHING_LEFT, |_, state: &State| {
                 state.drain.phase != Phase::Finished
-                    || state.made_after_discard
-                    || state.slot.is_none_or(|c| c.made_by != Maker::Handler)
+                    || state
+                        .ours()
+                        .all(|container| state.late & (1 << container.id) != 0)
+            }),
+            Property::always(REPORT_IS_TRUE, |_, state: &State| {
+                !state.drain.reported_removed || state.ours().next().is_none()
             }),
             Property::sometimes(
                 "a fresh answer names the Container just made",
                 |_, state: &State| {
                     matches!(state.drain.answer, Some(Answer::Present { id, .. })
-                    if state.handler.run == 1 && state.handler.first_made == Some(id))
+                        if state.handler.run == 1 && state.handler.first_made == Some(id))
                 },
             ),
             Property::sometimes(
-                "a resend adopts the Container its lost answer made",
+                "a resend adopts what its lost send made, and the Gone removes it",
                 |_, state: &State| {
-                    matches!(state.drain.answer, Some(Answer::Present { id, .. })
-                    if state.handler.run == 2 && state.handler.first_made == Some(id))
-                },
-            ),
-            Property::sometimes(
-                "the planter removed ours and filled the slot: Absent, and its Container is left",
-                |_, state: &State| {
-                    state.drain.answer == Some(Answer::Absent)
-                        && state.drain.phase == Phase::Finished
-                        && state.slot.is_some_and(|y| y.made_by == Maker::Planter)
-                },
-            ),
-            Property::sometimes(
-                "a refusal leaves the planter's occupant in place",
-                |_, state: &State| {
-                    matches!(state.drain.answer, Some(Answer::Refused { occupant: Some(id), .. })
-                        if state.drain.phase == Phase::Finished
-                            && state.container(id).is_some_and(|o| o.made_by == Maker::Planter))
-                },
-            ),
-            Property::sometimes(
-                "an admission refusal leaves the planter's Container in place",
-                |_, state: &State| {
-                    state.drain.answer == Some(Answer::Error(Erred::Admission))
-                        && state.drain.earlier == Earlier::Nothing
-                        && state.drain.phase == Phase::Finished
-                        && state.slot.is_some_and(|o| o.made_by == Maker::Planter)
-                },
-            ),
-            Property::sometimes(
-                "a signer removed before the create leaves the planter's Container in place",
-                |_, state: &State| {
-                    state.drain.answer == Some(Answer::Error(Erred::BeforeCreate))
-                        && state.drain.phase == Phase::Finished
-                        && state.slot.is_some_and(|o| o.made_by == Maker::Planter)
-                },
-            ),
-            Property::sometimes(
-                "a refusal after a send the entry couldn't dial leaves the occupant in place",
-                |_, state: &State| {
-                    matches!(state.drain.answer, Some(Answer::Refused { occupant: Some(id), .. })
-                        if state.handler.run == 2
-                            && !state.lost_after_reaching
-                            && state.drain.phase == Phase::Finished
-                            && state.container(id).is_some_and(|o| o.made_by == Maker::Planter))
-                },
-            ),
-            Property::sometimes(
-                "a refused redial after a lost answer removes the lost send's Container by key",
-                |_, state: &State| {
-                    state.drain.answer == Some(Answer::Error(Erred::Redial))
+                    state.handler.run == 2
                         && state.handler.first_made.is_some()
-                        && state.drain.removal.map(|(_, taken)| taken)
-                            == Some(state.handler.first_made)
+                        && state.drain.gone.map(|gone| gone.took) == Some(state.handler.first_made)
                 },
             ),
             Property::sometimes(
-                "a start refused after its create removes that Container by key",
+                "a cancel in the resend wait leaves another caller's Container in move:{old}",
                 |_, state: &State| {
-                    state.drain.answer == Some(Answer::Error(Erred::AfterCreate))
-                        && matches!(state.drain.removal, Some((Removal::Key, Some(_))))
+                    state.drain.cancelled_in_wait
+                        && state.drain.phase == Phase::Finished
+                        && state
+                            .slot(Slot::Shared)
+                            .is_some_and(|y| y.made_by == Maker::Planter)
                 },
             ),
             Property::sometimes(
-                "the handler makes a Container after the drain removed by key",
-                |_, state: &State| state.made_after_discard,
+                "the Gone removes the move's Container a restore gave a new ID",
+                |_, state: &State| {
+                    state.restored.is_some()
+                        && state.drain.gone.and_then(|gone| gone.took) == state.restored
+                },
             ),
+            Property::sometimes(
+                "a send still out makes its Container after the Gone",
+                |_, state: &State| state.late != 0,
+            ),
+            Property::sometimes("a drain reports its replacement removed", |_, s: &State| {
+                s.drain.reported_removed && s.drain.gone.is_some_and(|gone| gone.took.is_some())
+            }),
         ]
     }
 }
 
-impl DrainCopy {
-    /// Whether the drain's next step is its cleanup.
-    fn cleans_up(&self, state: &State) -> bool {
-        let drain = state.drain;
-        let due = match drain.phase {
-            Phase::Unanswered => true,
-            Phase::Answered => match drain.answer {
-                // A Container answered healthy is the move's; it waits for `Fails`.
-                Some(Answer::Present { .. }) => drain.failed,
-                _ => true,
-            },
-            Phase::Ready | Phase::Waiting | Phase::Moved | Phase::Finished => false,
-        };
-        due && self.removal(drain).is_some()
-    }
-}
-
-/// `path` in the code's words: each step, then the slot and what the drain holds.
+/// `path` in the code's words: each step, then the slots and what the drain holds.
 fn story(path: &[(State, Option<Action>)]) -> String {
     let mut story = String::new();
     let mut led_by: Option<(Action, State)> = None;
@@ -918,29 +861,38 @@ fn story(path: &[(State, Option<Action>)]) -> String {
             Some((action, before)) => reads_as(action, &before),
         };
         led_by = action.map(|action| (action, *state));
-        let slot = state.slot.map_or_else(
-            || "empty".to_owned(),
-            |c| {
-                format!(
-                    "#{} {:?} spec on {:?} image, {}, made by {:?}",
-                    c.id,
-                    c.spec,
-                    c.image,
-                    if c.running { "running" } else { "not running" },
-                    c.made_by
-                )
-            },
-        );
+        let slots = SLOTS
+            .iter()
+            .filter_map(|slot| {
+                state.slot(*slot).map(|c| {
+                    format!(
+                        "{slot:?}: #{} {:?} spec on {:?} image, {}{}, made by {:?}",
+                        c.id,
+                        c.spec,
+                        c.image,
+                        if c.running { "running" } else { "not running" },
+                        if c.half { ", half-made" } else { "" },
+                        c.made_by
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let slots = if slots.is_empty() {
+            "all empty".to_owned()
+        } else {
+            slots.join("; ")
+        };
         let _ = writeln!(
             story,
-            "{n:2}. {what}\n    slot: {slot}; handler run {} at {:?}, acted {:?}; drain {:?}, earlier {:?}, answer {:?}, removal {:?}",
+            "{n:2}. {what}\n    slots: {slots}\n    handler run {} on {:?} at {:?}, acted {:?}; drain {:?}, answer {:?}, outstanding {}, gone {:?}",
             state.handler.run,
+            state.handler.slot,
             state.handler.step,
             state.handler.acted,
             state.drain.phase,
-            state.drain.earlier,
             state.drain.answer,
-            state.drain.removal,
+            state.drain.outstanding,
+            state.drain.gone,
         );
     }
     story
@@ -950,15 +902,9 @@ fn reads_as(action: Action, before: &State) -> String {
     match action {
         Action::Send => "drain: move_container sends the start (ensure_new)".to_owned(),
         Action::Cancel => "drain: cancelled before any answer".to_owned(),
-        // Whether the refusal carries its mark depends on the switches.
-        Action::Refuse => "handler: admit_spec refuses the request before acting".to_owned(),
-        Action::RefuseBeforeCreate => {
-            "handler: still_holds refuses the create right before Docker".to_owned()
-        }
-        Action::Undial => "entry: can't dial the destination; the drain resends".to_owned(),
-        Action::RefuseStart => {
-            "handler: start_checked refuses the start after the create, unmarked".to_owned()
-        }
+        Action::Error => "handler: the request fails with an error".to_owned(),
+        Action::Undial => "entry: can't dial the destination".to_owned(),
+        Action::Resend => "drain: RestartTolerant resends".to_owned(),
         Action::RefuseRedial => "drain: the entry refuses to dial again for the resend".to_owned(),
         Action::Handler => match before.handler.step {
             Step::Plan => "handler: converge_now reads the slot and plans".to_owned(),
@@ -968,7 +914,9 @@ fn reads_as(action: Action, before: &State) -> String {
             }
             Step::Check { id, .. } => format!("handler: image_differs reads #{id}'s image"),
             Step::Start { id, .. } => format!("handler: start_checked starts #{id}"),
-            Step::Idle | Step::Answer | Step::Done => unreachable!("not a handler step"),
+            Step::Idle | Step::Answer | Step::Backoff | Step::Done => {
+                unreachable!("not a handler step")
+            }
         },
         Action::Deliver => "handler: the final read, and its answer reaches the drain".to_owned(),
         Action::Lose => "handler: the final read, and its answer is lost".to_owned(),
@@ -977,8 +925,9 @@ fn reads_as(action: Action, before: &State) -> String {
             "drain: the answered Container fails health, or a cancel comes after the answer"
                 .to_owned()
         }
-        Action::Cleanup => "drain: cleans up by its Outcome".to_owned(),
-        Action::Planter(act) => format!("planter: {act:?} on key move:{{old}}"),
+        Action::Cleanup => "drain: one Gone by its slot's key".to_owned(),
+        Action::Restore => "machine: a restore gives the move's Container a new ID".to_owned(),
+        Action::Planter(slot, act) => format!("planter: {act:?} in {slot:?}"),
     }
 }
 
@@ -1010,26 +959,68 @@ mod tests {
         last(&path)
     }
 
-    /// As shipped, every property holds and every `sometimes` is reached: a fresh answer,
-    /// a resend that adopts its own Container, an Absent answer beside the planter's
-    /// Container, a refusal that leaves the planter's occupant, an admission refusal and a
-    /// signer removed before the create that each leave the planter's Container, a refusal
-    /// after a send the entry couldn't dial that leaves the occupant, a refused redial and
-    /// a start refused after its create that each remove the start's Container by key, and
-    /// a late create after a removal by key.
+    /// As shipped, every property holds and every `sometimes` is reached: a fresh answer, a
+    /// resend that adopts what its lost send made and a Gone that removes it, a cancel in the
+    /// resend wait beside another caller's Container, a restored Container the Gone removes,
+    /// a late create after the Gone, and a report of the replacement removed.
     #[test]
-    fn the_drain_s_start_answers_and_cleans_up_only_its_own_container() {
+    fn the_drain_s_cleanup_takes_only_what_its_own_sends_made() {
         let checker = check(switched(Switches::default()));
         println!("as shipped: {} states", checker.unique_state_count());
         checker.assert_properties();
     }
 
-    /// Read by slot, the final read names whatever holds the slot: the planter removed
-    /// ours after its start and made another spec's Container there.
+    /// With the shared key `move:{old}`, the drain's Gone takes what another caller made in
+    /// it after the drain's own send failed.
+    #[test]
+    fn a_shared_key_removes_another_caller_s_container() {
+        let model = switched(Switches {
+            key: Key::Shared,
+            ..Switches::default()
+        });
+        let path = breaks_where(model.clone(), NO_FOREIGN_REMOVAL, |path| {
+            last(path)
+                .drain
+                .gone
+                .is_some_and(|gone| gone.slot == Slot::Shared && gone.took.is_some())
+        });
+        println!(
+            "{NO_FOREIGN_REMOVAL} fails with a shared key:\n{}",
+            model.story(&path)
+        );
+        let last = last(&path);
+        assert!(last.foreign_removed);
+        assert!(
+            last.ours().next().is_none(),
+            "nothing of the move was there to take"
+        );
+    }
+
+    /// With a key per send, the Gone names only the last send's slot: the first send made a
+    /// Container and lost its answer, and that Container is left.
+    #[test]
+    fn a_key_per_send_leaves_the_lost_send_s_container() {
+        let last = witness(
+            Switches {
+                key: Key::PerSend,
+                ..Switches::default()
+            },
+            NOTHING_LEFT,
+        );
+        assert_eq!(last.drain.gone.map(|gone| gone.slot), Some(Slot::Resent));
+        assert!(
+            last.slot(Slot::Minted)
+                .is_some_and(|left| left.made_by == Maker::Move)
+        );
+        assert!(!last.foreign_removed);
+    }
+
+    /// In a slot another caller can name, the final read by slot names whatever holds it.
     #[test]
     fn an_answer_read_by_slot_names_another_container() {
         let last = witness(
             Switches {
+                key: Key::Shared,
                 reply: ReplyBy::Slot,
                 ..Switches::default()
             },
@@ -1040,11 +1031,12 @@ mod tests {
         );
     }
 
-    /// With no image check, the handler answers a running same-spec Container on another
-    /// image, and starts a stopped one.
+    /// In a slot another caller can name, with no image check the handler answers a running
+    /// same-spec Container on another image, and starts a stopped one.
     #[test]
     fn without_the_image_check_another_image_is_answered_and_started() {
         let unchecked = Switches {
+            key: Key::Shared,
             check: Check::None,
             ..Switches::default()
         };
@@ -1059,155 +1051,18 @@ mod tests {
         assert!(witness(unchecked, NO_WRONG_START).wrong_start);
     }
 
-    /// Checked only after the start, the planter's stopped Container on another image is
+    /// Checked only after the start, another caller's stopped Container on another image is
     /// started before the check refuses it.
     #[test]
     fn an_image_check_after_the_start_comes_too_late() {
         let last = witness(
             Switches {
+                key: Key::Shared,
                 check: Check::AfterStart,
                 ..Switches::default()
             },
             NO_WRONG_START,
         );
         assert!(last.wrong_start);
-    }
-
-    /// Main's cleanup removes by slot key after any failure. The planter removed our
-    /// Container and made its own in the slot, the answer read ours by ID as Absent, and
-    /// the cleanup by key takes the planter's.
-    #[test]
-    fn a_cleanup_by_slot_removes_another_caller_s_container() {
-        let model = switched(Switches {
-            cleanup: Cleanup::BySlot,
-            ..Switches::default()
-        });
-        let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
-            let last = last(path);
-            last.drain.answer == Some(Answer::Absent)
-                && matches!(last.drain.removal, Some((Removal::Key, Some(_))))
-        });
-        println!("{CLEANUP_BY_ID} fails by slot:\n{}", model.story(&path));
-        let last = last(&path);
-        assert!(matches!(last.drain.removal, Some((Removal::Key, Some(_)))));
-    }
-
-    /// Removing the occupant a refusal names takes another caller's Container, which may
-    /// be a correct one made after the conflict.
-    #[test]
-    fn removing_a_refused_occupant_removes_another_caller_s_container() {
-        let last = witness(
-            Switches {
-                cleanup: Cleanup::RefusedOccupant,
-                ..Switches::default()
-            },
-            CLEANUP_BY_ID,
-        );
-        assert!(matches!(last.drain.answer, Some(Answer::Refused { .. })));
-        assert!(matches!(
-            last.drain.removal,
-            Some((Removal::Id(_), Some(_)))
-        ));
-    }
-
-    /// Read as no answer, admission's refusal sends the drain's removal by key, which takes
-    /// the Container another caller left in the slot.
-    #[test]
-    fn a_refusal_read_as_no_answer_removes_another_caller_s_container() {
-        let model = switched(Switches {
-            marks: Marks::Nothing,
-            ..Switches::default()
-        });
-        let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
-            matches!(last(path).drain.removal, Some((Removal::Key, Some(_))))
-        });
-        println!(
-            "{CLEANUP_BY_ID} fails on a refusal read as no answer:\n{}",
-            model.story(&path)
-        );
-        let last = last(&path);
-        assert_eq!(last.drain.answer, Some(Answer::Error(Erred::Admission)));
-    }
-
-    /// Read from its last send alone, a refusal of the resend speaks for the send whose
-    /// answer was lost: the drain removes nothing and leaves the Container that send made.
-    #[test]
-    fn a_refused_resend_read_alone_leaves_the_lost_send_s_container() {
-        let model = switched(Switches {
-            cleanup: Cleanup::LastReply,
-            ..Switches::default()
-        });
-        let path = breaks_where(model.clone(), NOTHING_LEFT, |path| {
-            last(path).drain.answer == Some(Answer::Error(Erred::Redial))
-        });
-        println!(
-            "{NOTHING_LEFT} fails on the last send alone:\n{}",
-            model.story(&path)
-        );
-        let last = last(&path);
-        assert_eq!(last.drain.earlier, Earlier::MaybeActed);
-        assert_eq!(last.drain.removal, None);
-        assert!(last.slot.is_some_and(|c| c.made_by == Maker::Handler));
-    }
-
-    /// Read as a refusal, a gated error after the create speaks for a Container the start
-    /// made: the drain removes nothing and leaves it.
-    #[test]
-    fn a_gated_error_after_the_create_read_as_a_refusal_leaves_its_container() {
-        let last = witness(
-            Switches {
-                cleanup: Cleanup::GateAsRefusal,
-                ..Switches::default()
-            },
-            NOTHING_LEFT,
-        );
-        assert_eq!(last.drain.answer, Some(Answer::Error(Erred::AfterCreate)));
-        assert_eq!(last.drain.removal, None);
-    }
-
-    /// Left unmarked, the signer check right before Docker's create reads as no answer:
-    /// the drain removes by key, which takes the Container the planter made after it.
-    #[test]
-    fn a_refusal_before_the_create_left_unmarked_removes_another_caller_s_container() {
-        let model = switched(Switches {
-            marks: Marks::AdmissionOnly,
-            ..Switches::default()
-        });
-        let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
-            let last = last(path);
-            last.drain.answer == Some(Answer::Error(Erred::BeforeCreate))
-                && matches!(last.drain.removal, Some((Removal::Key, Some(_))))
-        });
-        println!(
-            "{CLEANUP_BY_ID} fails on an unmarked refusal before the create:\n{}",
-            model.story(&path)
-        );
-        let last = last(&path);
-        assert!(matches!(last.drain.removal, Some((Removal::Key, Some(_)))));
-        assert!(last.slot.is_none());
-    }
-
-    /// Without the entry's word that it couldn't dial, a send that never reached the
-    /// handler reads as one that may have acted. The resend's refusal then removes by key
-    /// and takes the occupant it named.
-    #[test]
-    fn a_send_the_entry_could_not_dial_read_as_unanswered_removes_the_occupant() {
-        let model = switched(Switches {
-            dial: Dial::Dropped,
-            ..Switches::default()
-        });
-        let path = breaks_where(model.clone(), CLEANUP_BY_ID, |path| {
-            let last = last(path);
-            matches!(last.drain.answer, Some(Answer::Refused { .. }))
-                && last.handler.first_made.is_none()
-        });
-        println!(
-            "{CLEANUP_BY_ID} fails when the failed dial is forgotten:\n{}",
-            model.story(&path)
-        );
-        let last = last(&path);
-        assert_eq!(last.drain.earlier, Earlier::MaybeActed);
-        assert!(!last.lost_after_reaching);
-        assert!(matches!(last.drain.removal, Some((Removal::Key, Some(_)))));
     }
 }
