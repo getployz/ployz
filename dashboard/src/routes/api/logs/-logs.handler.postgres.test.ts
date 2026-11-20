@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { it } from "@effect/vitest";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { afterAll, beforeAll, expect, vi } from "vitest";
 import { callStoreAsMember, readStore } from "#/modules/config-store/config-store.server";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
@@ -25,6 +25,9 @@ let clickhouse = "";
 const ACME = "00000000-0000-4000-8000-0000000000c1";
 const OTHER = "00000000-0000-4000-8000-0000000000d2";
 const production = { project: "shop", environment: "production" };
+
+type ReadLogsBody = { environment: typeof production; search?: string; organizationId?: string; organizationSlug?: string };
+const ReadLogsAnswer = Schema.Struct({ lines: Schema.Array(Schema.Struct({ message: Schema.String })) });
 
 beforeAll(async () => {
   await docker("run", "--detach", "--rm", "--name", container, "--publish", "127.0.0.1::8123", "--tmpfs", "/var/lib/clickhouse:rw",
@@ -88,16 +91,16 @@ it.live("reads the caller's Organization's lines only, and only with logs:read",
       const tokenFor = (organizationId: string, userId: string, grant: TokenGrant) =>
         mintOrganizationTokenUnchecked({ organizationId, userId, name: "cli", kind: "cli", expiresAt: new Date(Date.now() + 3_600_000), grant })
           .pipe(Effect.map((token) => token.secret));
-      const post = (secret: string | null, body: unknown) => handleLogsRead(new Request("http://localhost:3000/api/logs/read", {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(secret === null ? {} : { authorization: `Bearer ${secret}` }) },
-        body: JSON.stringify(body),
-      })).pipe(
-        Effect.flatMap((response) => Effect.promise(() => response.json()).pipe(Effect.map((json): { status: number; messages: string[] } => ({
-          status: response.status, messages: (json as { lines: { message: string }[] }).lines.map((line) => line.message),
-        })))),
-        Effect.catch((error) => Effect.succeed({ status: statusForPublicError(encodePublicError(error)), messages: [] })),
-      );
+      const post = (secret: string | null, body: ReadLogsBody) => {
+        const headers = new Headers({ "content-type": "application/json" });
+        if (secret !== null) headers.set("authorization", `Bearer ${secret}`);
+        return handleLogsRead(new Request("http://localhost:3000/api/logs/read", { method: "POST", headers, body: JSON.stringify(body) })).pipe(
+          Effect.flatMap((response) => Effect.promise(() => response.json()).pipe(Effect.map((json) => ({
+            status: response.status, messages: Schema.decodeUnknownSync(ReadLogsAnswer)(json).lines.map((line) => line.message),
+          })))),
+          Effect.catch((error) => Effect.succeed({ status: statusForPublicError(encodePublicError(error)), messages: [] as string[] })),
+        );
+      };
 
       const acme = yield* tokenFor(ACME, acmeOwner, FULL_GRANT);
       const other = yield* tokenFor(OTHER, otherOwner, FULL_GRANT);
