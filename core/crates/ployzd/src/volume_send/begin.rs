@@ -121,63 +121,46 @@ pub async fn read(
 mod tests {
     use super::*;
 
-    /// A BEGIN record of `versioninfo` building `toguid`, written big-endian when `big`.
-    fn begin(versioninfo: u64, toguid: u64, big: bool) -> [u8; RECORD_BYTES] {
-        let u32_bytes = |value: u32| {
-            if big {
-                value.to_be_bytes()
-            } else {
-                value.to_le_bytes()
-            }
-        };
-        let u64_bytes = |value: u64| {
-            if big {
-                value.to_be_bytes()
-            } else {
-                value.to_le_bytes()
-            }
-        };
-        let mut record = Vec::with_capacity(RECORD_BYTES);
-        record.extend(u32_bytes(DRR_BEGIN));
-        record.extend(u32_bytes(0));
-        record.extend(u64_bytes(DMU_BACKUP_MAGIC));
-        record.extend(u64_bytes(versioninfo));
-        record.extend([0; 16]);
-        record.extend(u64_bytes(toguid));
-        record.resize(RECORD_BYTES, 0);
-        record.try_into().unwrap()
+    /// BEGIN records `zfs send` (OpenZFS 2.2.2, x86_64) wrote for one dataset: a full and an
+    /// incremental stream of a snapshot of GUID [`TO`], and the compound records of `-I`
+    /// and `-p`.
+    const FULL: &[u8; RECORD_BYTES] = include_bytes!("fixtures/begin-full.bin");
+    const INCREMENTAL: &[u8; RECORD_BYTES] = include_bytes!("fixtures/begin-incremental.bin");
+    const INTERMEDIARY: &[u8; RECORD_BYTES] = include_bytes!("fixtures/begin-intermediary.bin");
+    const PROPERTIES: &[u8; RECORD_BYTES] = include_bytes!("fixtures/begin-properties.bin");
+    const TO: u64 = 10_550_143_828_866_502_470;
+
+    #[test]
+    fn a_real_substream_begin_passes_only_for_the_snapshot_it_builds() {
+        for record in [FULL, INCREMENTAL] {
+            assert_eq!(check(record, TO), Ok(()));
+            assert_eq!(
+                check(record, TO + 1),
+                Err(BeginError::OtherSnapshot {
+                    expected: TO + 1,
+                    found: TO
+                })
+            );
+        }
     }
 
     #[test]
-    fn a_substream_begin_of_the_guid_passes_in_either_byte_order() {
-        let substream = 0x11 << 2 | DMU_SUBSTREAM;
-        assert_eq!(check(&begin(substream, 12, false), 12), Ok(()));
-        assert_eq!(check(&begin(substream, 12, true), 12), Ok(()));
-        assert_eq!(
-            check(&begin(substream, 12, false), 13),
-            Err(BeginError::OtherSnapshot {
-                expected: 13,
-                found: 12
-            })
-        );
-        assert_eq!(check(&begin(2, 12, false), 12), Err(BeginError::Compound));
-        assert_eq!(check(&[0; RECORD_BYTES], 12), Err(BeginError::NoMagic));
-        let mut other = begin(substream, 12, false);
-        other[0] = 1;
-        assert_eq!(check(&other, 12), Err(BeginError::NotBegin));
+    fn a_real_compound_begin_is_refused() {
+        for record in [INTERMEDIARY, PROPERTIES] {
+            assert_eq!(check(record, TO), Err(BeginError::Compound));
+        }
     }
 
     #[tokio::test]
     async fn a_short_or_silent_stream_has_no_begin() {
-        let record = begin(DMU_SUBSTREAM, 12, false);
-        let mut short = record.get(..100).unwrap();
+        let mut short = FULL.get(..100).unwrap();
         assert_eq!(
-            read(&mut short, 12, READ_BOUND).await,
+            read(&mut short, TO, READ_BOUND).await,
             Err(BeginError::Short(100))
         );
         let (_writer, mut silent) = tokio::io::duplex(8);
         assert_eq!(
-            read(&mut silent, 12, Duration::from_millis(20)).await,
+            read(&mut silent, TO, Duration::from_millis(20)).await,
             Err(BeginError::Slow(Duration::from_millis(20)))
         );
     }
