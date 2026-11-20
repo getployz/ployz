@@ -574,10 +574,6 @@ impl Node {
         only
     }
 
-    fn restart_policy(&self, container: ContainerId) -> Value {
-        self.container(container).unwrap()["HostConfig"]["RestartPolicy"]["Name"].clone()
-    }
-
     fn running(&self, container: ContainerId) -> bool {
         self.container(container)
             .is_some_and(|named| named["State"]["Status"] == "running")
@@ -831,13 +827,6 @@ fn gone(container: ContainerId) -> ContainerWant {
 }
 
 async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
-    ensure_reply(node, want)
-        .await
-        .decode::<op::EnsureContainer>()
-        .unwrap()
-}
-
-async fn ensure_reply(node: &Node, want: ContainerWant) -> RpcResponse {
     let request = op::EnsureContainer::into_request(EnsureContainerRequest {
         want,
         rule: None,
@@ -849,6 +838,8 @@ async fn ensure_reply(node: &Node, want: ContainerWant) -> RpcResponse {
         .unwrap()
         .into_inner()
         .decode_response()
+        .unwrap()
+        .decode::<op::EnsureContainer>()
         .unwrap()
 }
 
@@ -973,58 +964,6 @@ async fn out_while_the_unacked_proxy_is_down() {
     let routes = fleet.read_routes(1, &api).await;
     assert_eq!(routes.down, BTreeSet::from([fleet.id(2)]));
     assert!(!routes.routes.contains_key(&fleet.id(2)), "{routes:?}");
-}
-
-// A held copy Docker would not stop still serves, and the Deploy hands it back. Under
-// restart policy no, its next exit or a reboot would leave the Service down.
-#[tokio::test]
-async fn a_held_copy_docker_would_not_stop_goes_back_in_with_its_restart_policy() {
-    let fleet = Fleet::start().await;
-    let node = fleet.node(0);
-    let a = fleet.routed(0, "a", "api", 1).await;
-    let declared = node.restart_policy(a);
-    assert_ne!(
-        declared, "no",
-        "the copy declares a policy that restarts it"
-    );
-    ensured(&ensure(node, held(a, "run-a", Some(CopyRotation::In))).await);
-
-    node.fake.refuse_stop.store(true, Ordering::SeqCst);
-    wire_error(ensure_reply(node, stopped(a)).await);
-    node.fake.refuse_stop.store(false, Ordering::SeqCst);
-    assert!(node.running(a));
-
-    let back = ensure(node, into(a, Some(run("run-a")), None)).await;
-    assert_eq!(rotation_of(&back), CopyRotation::In);
-    assert_eq!(node.restart_policy(a), declared);
-}
-
-// ployzd died between taking a held copy's restart policy and stopping it, so the copy
-// serves under no. Handing it back gives the policy back.
-#[tokio::test]
-async fn a_held_copy_serving_without_its_restart_policy_gets_it_back_in() {
-    let fleet = Fleet::start().await;
-    let node = fleet.node(0);
-    let a = fleet.routed(0, "a", "api", 1).await;
-    let declared = node.restart_policy(a);
-    ensured(&ensure(node, held(a, "run-a", Some(CopyRotation::In))).await);
-    for named in node
-        .fake
-        .named_containers
-        .as_ref()
-        .unwrap()
-        .lock()
-        .unwrap()
-        .values_mut()
-    {
-        if named["Id"] == a.to_string().as_str() {
-            named["HostConfig"]["RestartPolicy"] = json!({"Name": "no"});
-        }
-    }
-
-    let back = ensure(node, into(a, Some(run("run-a")), None)).await;
-    assert_eq!(rotation_of(&back), CopyRotation::In);
-    assert_eq!(node.restart_policy(a), declared);
 }
 
 // Lane 7.

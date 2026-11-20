@@ -198,7 +198,11 @@ pub(super) fn container_create_body(
         }),
         log_config: Some(container_log_config()),
         port_bindings: port_bindings.filter(|_| on_bridge),
-        restart_policy: Some(declared_restart(kind, spec)),
+        restart_policy: Some(docker_restart(if hook.is_some() {
+            ployz_core::RestartPolicy::No
+        } else {
+            spec.container.restart
+        })),
         mounts: (!mounts.is_empty()).then_some(mounts),
         cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
         cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
@@ -278,15 +282,6 @@ pub(super) fn container_create_body(
         stop_timeout: container.stop_timeout_secs,
         host_config: Some(host_config),
         ..Default::default()
-    })
-}
-
-/// The restart policy Docker holds while the Container is wanted running. A pre-deploy
-/// hook runs once, so it never restarts.
-pub(super) fn declared_restart(kind: ContainerKind, spec: &ResolvedServiceSpec) -> RestartPolicy {
-    docker_restart(match kind {
-        ContainerKind::ServiceContainer => spec.container.restart,
-        ContainerKind::PreDeployHook => ployz_core::RestartPolicy::No,
     })
 }
 

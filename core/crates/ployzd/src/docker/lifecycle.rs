@@ -4,9 +4,8 @@ use std::future::Future;
 use bollard::{
     errors::Error as DockerError,
     models::{
-        ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum,
-        ContainerUpdateBody, Mount, MountType, NetworkConnectRequest, RestartPolicy,
-        RestartPolicyNameEnum,
+        ContainerCreateBody, ContainerInspectResponse, ContainerStateStatusEnum, Mount, MountType,
+        NetworkConnectRequest,
     },
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
@@ -903,117 +902,10 @@ impl Lifecycle {
         Ok(self.specs.admitted_by(container_id).await?)
     }
 
-    /// Lifts any stop hold on the Container, then starts it as [`Self::start_declared`] does.
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.observation.ensure_managed(container_id).await?;
         self.recovery.release(container_id).await;
-        self.start_declared(container_id, &inspected).await
-    }
-
-    /// Gives the Container back the restart policy its spec declares, which a stop took,
-    /// then starts it. A start that fails takes the policy again, so the Container stays
-    /// stopped through a dockerd restart: a Deploy keeps a new copy whose start failed
-    /// beside the old copy it brings back.
-    pub(super) async fn start_declared(
-        &self,
-        container_id: &ContainerId,
-        inspected: &ContainerInspectResponse,
-    ) -> Result<(), Error> {
-        if let Some(declared) = self.taken_restart(container_id, inspected).await? {
-            self.set_restart(container_id, declared).await?;
-        }
-        let started = self.start_inspected(container_id, inspected).await;
-        if started.is_err()
-            && let Err(error) = self.set_restart(container_id, restart_never()).await
-        {
-            tracing::warn!(container = %container_id, "a Container whose start failed keeps its restart policy: {error}");
-        }
-        started
-    }
-
-    /// Gives a running Container back the restart policy its spec declares. A stop Docker
-    /// refused, or one ployzd died before asking for, leaves it serving under `no`.
-    /// `turn` is awaited only when the policy differs, and held over a second look and
-    /// the write, so no stop lands between them.
-    pub async fn restore_running_restart<G>(
-        &self,
-        container_id: &ContainerId,
-        turn: impl Future<Output = G>,
-    ) -> Result<(), Error> {
-        let inspected = self.observation.ensure_managed(container_id).await?;
-        if !is_running(&inspected)
-            || self
-                .taken_restart(container_id, &inspected)
-                .await?
-                .is_none()
-        {
-            return Ok(());
-        }
-        let _turn = turn.await;
-        self.restore_if_running(container_id).await
-    }
-
-    async fn restore_if_running(&self, container_id: &ContainerId) -> Result<(), Error> {
-        let inspected = self.observation.ensure_managed(container_id).await?;
-        if is_running(&inspected)
-            && let Some(declared) = self.taken_restart(container_id, &inspected).await?
-        {
-            self.set_restart(container_id, declared).await?;
-        }
-        Ok(())
-    }
-
-    /// The policy the spec declares, when Docker holds another.
-    async fn taken_restart(
-        &self,
-        container_id: &ContainerId,
-        inspected: &ContainerInspectResponse,
-    ) -> Result<Option<RestartPolicy>, Error> {
-        let declared = self.declared_restart(container_id, inspected).await?;
-        let held = inspected
-            .host_config
-            .as_ref()
-            .and_then(|host| host.restart_policy.as_ref());
-        Ok((!held.is_some_and(|held| same_restart(held, &declared))).then_some(declared))
-    }
-
-    async fn declared_restart(
-        &self,
-        container_id: &ContainerId,
-        inspected: &ContainerInspectResponse,
-    ) -> Result<RestartPolicy, Error> {
-        let kind = ServiceLabels::parse(
-            inspected
-                .config
-                .as_ref()
-                .and_then(|config| config.labels.as_ref())
-                .ok_or(Error::NotManaged)?,
-        )?
-        .kind;
-        let spec = self
-            .specs
-            .get(container_id)
-            .await?
-            .ok_or(Error::SpecNotFound(*container_id))?;
-        Ok(create::declared_restart(kind, &spec))
-    }
-
-    async fn set_restart(
-        &self,
-        container_id: &ContainerId,
-        policy: RestartPolicy,
-    ) -> Result<(), Error> {
-        self.docker
-            .client
-            .update_container(
-                container_id.as_str(),
-                ContainerUpdateBody {
-                    restart_policy: Some(policy),
-                    ..ContainerUpdateBody::default()
-                },
-            )
-            .await
-            .map_err(|error| docker_error(container_id, error))
+        self.start_inspected(container_id, &inspected).await
     }
 
     pub(super) async fn start_inspected(
@@ -1105,10 +997,6 @@ impl Lifecycle {
             plan.proceed();
         }
         managed?;
-        // Docker starts a stopped `always` Container, and an `on-failure` one the stop
-        // left with a non-zero code, whenever dockerd restarts. One Ployz stopped beside
-        // the Container that replaced it would then run with it on one Volume.
-        self.set_restart(container_id, restart_never()).await?;
         let mut options = StopContainerOptionsBuilder::default();
         if let Some(signal) = signal {
             options = options.signal(signal);
@@ -1121,19 +1009,7 @@ impl Lifecycle {
             .client
             .stop_container(container_id.as_str(), Some(options.build()))
             .await;
-        // Docker answered that it would not stop the copy, so it serves on and a caller
-        // may hand it back. A stop the client gave up waiting for may still end.
-        let refused = matches!(
-            &result,
-            Err(bollard::errors::Error::DockerResponseServerError { status_code, .. })
-                if *status_code != 404
-        );
-        if let Err(error) = idempotent_lifecycle_result(container_id, result) {
-            if refused && let Err(restore) = self.restore_if_running(container_id).await {
-                tracing::warn!(container = %container_id, "a Container whose stop failed keeps restart policy no: {restore}");
-            }
-            return Err(error.into());
-        }
+        idempotent_lifecycle_result(container_id, result)?;
         Ok(true)
     }
 
@@ -1352,19 +1228,6 @@ async fn docker_config_mounts(
         });
     }
     Ok(mounts)
-}
-
-fn restart_never() -> RestartPolicy {
-    RestartPolicy {
-        name: Some(RestartPolicyNameEnum::NO),
-        maximum_retry_count: None,
-    }
-}
-
-/// Docker reports a policy with no retry count as a count of zero.
-fn same_restart(held: &RestartPolicy, wanted: &RestartPolicy) -> bool {
-    held.name == wanted.name
-        && held.maximum_retry_count.unwrap_or(0) == wanted.maximum_retry_count.unwrap_or(0)
 }
 
 pub(super) fn idempotent_lifecycle_result(
