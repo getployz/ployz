@@ -171,8 +171,15 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       },
     },
   });
+  // A Service's own lines count against the limit, so other Services' loaded lines never shut its history out.
+  const scrollback = () => {
+    if (!focused) return collection.size;
+    let lines = 0;
+    for (const row of collection.values()) if (row.kind === "line" && row.serviceName === focused) lines++;
+    return lines;
+  };
   async function loadOlder() {
-    if (controller.signal.aborted || snapshot.historyPending || cursor === null || collection.size >= SCROLLBACK_LIMIT) return;
+    if (controller.signal.aborted || snapshot.historyPending || cursor === null || scrollback() >= SCROLLBACK_LIMIT) return;
     const streamSignal = controller.signal;
     const begun = generation;
     const term = snapshot.searching;
@@ -231,6 +238,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     else {
       following = true;
       link.open();
+      if (focused) void loadOlder();
     }
   }
   /**
@@ -240,11 +248,13 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   function focus(name: string) {
     if (name === focused) return;
     focused = name;
-    resetHistory();
+    // The lines already held keep their keys, whichever Service they belong to, so the next read lands only the new ones.
+    cursor = undefined;
+    generation++;
     controller.abort();
     controller = new AbortController();
     publish({ ...snapshot, historyPending: false, historyError: false });
-    if (name) void loadOlder();
+    if (name || snapshot.searching) void loadOlder();
   }
   return {
     collection, loadOlder, search, focus,

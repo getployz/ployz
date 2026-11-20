@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DbProvider } from "@tanstack/react-db";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
@@ -70,7 +70,9 @@ it("shows the off states for the Service the selection names, and not for anothe
 it("offers a removed Service in the picker before any of its lines have loaded", async () => {
   const selection = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
   await withViewer(selection, async () => {
-    await waitFor(() => expect(screen.getByLabelText("All services")).toBeTruthy());
+    const picker = await waitFor(() => screen.getByLabelText("All services"));
+    await act(async () => { fireEvent.click(picker); });
+    await waitFor(() => expect(screen.getByRole("option", { name: "removed" })).toBeTruthy());
   });
 });
 

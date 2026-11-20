@@ -135,12 +135,12 @@ it("selects one Service of a namespace by its name", async () => {
 
 it("names every Service of a namespace with recent lines, and no other Organization's", async () => {
   await insert([
+    { org: ACME, at: second(49), body: "web tick", service: "web" },
     { org: ACME, at: second(50), body: "removed tick", service: "removed" },
     { org: OTHER, at: second(51), body: "other tick", service: "theirs" },
   ]);
   const names = await Effect.runPromise(readLogServices(endpoint, { organizationId: ACME, namespace: NAMESPACE }));
-  expect(names).toContain("removed");
-  expect(names).toContain("web");
+  expect(names).toEqual(expect.arrayContaining(["removed", "web"]));
   expect(names).not.toContain("theirs");
   expect(await Effect.runPromise(readLogServices(endpoint, { organizationId: ACME, namespace: "other-namespace" }))).toEqual([]);
 }, 60_000);

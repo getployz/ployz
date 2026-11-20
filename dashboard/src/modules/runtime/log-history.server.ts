@@ -66,7 +66,7 @@ WHERE OrgId = {org:String}
 ORDER BY Timestamp DESC, ${TIE_BREAK} DESC
 LIMIT {limit:UInt32}`;
 
-const MAX_SERVICES = 200;
+const MAX_SERVICES = 1000;
 const serviceRow = Schema.Struct({ service: Schema.String });
 
 /** The names of the Services of a namespace with lines in the last 30 days, removed ones included. */
