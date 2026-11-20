@@ -13,6 +13,9 @@ use ployz_core::{SnapshotGuid, SnapshotName, VolumeOrigin};
 
 use super::{PluginError, Result, VolumeStorage, marks::Mark};
 
+/// The bytes of a property source ZFS prints: its 128-byte buffer less the NUL.
+const CUT_SOURCE: usize = 127;
+
 /// The origin a copy expects or carries; `None` is Legacy.
 pub(super) type Origin = Option<VolumeOrigin>;
 
@@ -32,9 +35,10 @@ impl Point {
     /// on its snapshots, so the source is read off `fs`. Any other source refuses: the
     /// value was not stamped here.
     ///
-    /// ZFS prints a source into 128 bytes, so a long `fs` shows a cut `inherited from`.
-    /// A snapshot whose own `fs` holds the value locally inherits it from that `fs`, so a
-    /// cut prefix of the full source names it as well.
+    /// ZFS prints a source into 128 bytes, so a long `fs` shows `inherited from <fs>` cut
+    /// to its first [`CUT_SOURCE`] bytes. A snapshot whose own `fs` holds the value locally
+    /// inherits it from that `fs`, so that cut names it as well. Any shorter source must be
+    /// the whole of it.
     pub(super) fn parse(output: &str, fs: &str, snapshot: &str) -> Result<Self> {
         let invalid =
             || PluginError::from(format!("unexpected ZFS output for {snapshot}: {output:?}"));
@@ -70,8 +74,12 @@ impl Point {
         };
         let guid = guid.parse().map(SnapshotGuid::new).map_err(|_| invalid())?;
         let inherited = format!("inherited from {fs}");
-        let inherits =
-            |source: &str| source.starts_with("inherited from ") && inherited.starts_with(source);
+        let inherits = |source: &str| {
+            source == inherited
+                || (source.len() == CUT_SOURCE
+                    && inherited.len() > CUT_SOURCE
+                    && inherited.starts_with(source))
+        };
         let origin = match (on_snapshot, on_fs) {
             (("-", "-"), ("-", "-")) => None,
             ((value, source), (stamped, "local")) if inherits(source) && value == stamped => {
@@ -245,5 +253,25 @@ mod tests {
         };
         assert!(read("local").unwrap().origin.is_some());
         assert!(read("received").is_err());
+    }
+
+    /// Only the whole source, or ZFS's full-length cut of a longer one, names the snapshot's
+    /// own filesystem. A shorter prefix is output ZFS never prints for it.
+    #[test]
+    fn a_short_prefix_of_the_source_names_no_filesystem() {
+        for source in ["inherited from ", "inherited from tank/ployz/dat"] {
+            let refused = output((ORIGIN, source), (ORIGIN, "local"));
+            assert!(Point::parse(&refused, FS, AT).is_err(), "{refused}");
+        }
+        let fs = format!("tank/ployz-mirror/{}/fs", "v".repeat(100));
+        let at = format!("{fs}@w-1-2");
+        let short = format!("inherited from {fs}")
+            .get(..126)
+            .unwrap()
+            .to_owned();
+        let refused = format!(
+            "{at}\tguid\t12\t-\n{at}\tployz:origin\t{ORIGIN}\t{short}\n{fs}\tployz:origin\t{ORIGIN}\tlocal\n"
+        );
+        assert!(Point::parse(&refused, &fs, &at).is_err(), "{refused}");
     }
 }
