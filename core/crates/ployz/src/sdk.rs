@@ -1789,7 +1789,6 @@ fn plan_refusal_code(error: &crate::deploy::PlanError) -> RpcErrorCode {
         | PlanError::NoEligibleMachines { .. }
         | PlanError::RegionUnmatched { .. }
         | PlanError::VolumeOutsideRegion { .. }
-        | PlanError::VolumeInOtherRegion { .. }
         | PlanError::VolumesApart { .. }
         | PlanError::VolumeSharedAcrossRegions { .. }
         | PlanError::ServiceModeCannotChange

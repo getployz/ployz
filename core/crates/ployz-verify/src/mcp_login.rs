@@ -2,24 +2,24 @@
 //! A bare `:n` is a line of the file named just before it in the same parentheses, and
 //! otherwise of `core/crates/ployz/src/handlers/mcp/login.rs`.
 //!
-//! `login` reads `mcp.json` once (`stored`, :92, :48-57). Inside `in_cloud` it asks Cloud for a
-//! new agent token (`new_token`, :101-108), refuses a token of another kind (:109, :119-124),
+//! `login` reads `mcp.json` once (`stored`, :93, :49-58). Inside `in_cloud` it asks Cloud for a
+//! new agent token (`new_token`, :102-109), refuses a token of another kind (:110, :120-125),
 //! and `save`s the new one: a temp file, flushed, renamed over `mcp.json`, then a flush of the
-//! directory (:66-88). A failed save, or a refused kind, revokes the token just made (:125-138).
-//! `fate` then decides what happens to the token it read (:140-141; `ployz_decide::fate::fate`
+//! directory (:67-89). A failed save, or a refused kind, revokes the token just made (:126-139).
+//! `fate` then decides what happens to the token it read (:141-142; `ployz_decide::fate::fate`
 //! is the decision, and `fate` here only maps its sign-in and its save onto the facts), and `revoke`
 //! lists the Organization's tokens and deletes that one while it is listed as an agent token
-//! (:252-265). Last, `login` prints its warnings and its note (:160-178).
+//! (:253-266). Last, `login` prints its warnings and its note (:161-179).
 //!
 //! Each login is its own `ployz mcp login` process, and its Cloud calls block its one thread
-//! (`in_cloud`, core/crates/ployz/src/handlers/account.rs:133-142, on the current-thread
-//! `runtime` of core/crates/ployz/src/handlers/mod.rs:480-484). So one login's steps run in
+//! (`in_cloud`, core/crates/ployz/src/handlers/account.rs:135-144, on the current-thread
+//! `runtime` of core/crates/ployz/src/handlers/mod.rs:491-495). So one login's steps run in
 //! order, and another login can step between any two of them. No lock covers them, and the
-//! rename (:79) does not read `mcp.json` again.
+//! rename (:80) does not read `mcp.json` again.
 //!
 //! The finding: two logins read the same token before, and both mint. The first rename's token
 //! is replaced by the second's. It stays live in Cloud, and no login revokes it or names it.
-//! Its login still prints that `ployz mcp` now acts with it (:171-174).
+//! Its login still prints that `ployz mcp` now acts with it (:172-175).
 //!
 //! The fix variant models E-142's lock: a CLI-local exclusive lock beside `mcp.json`, taken
 //! before the read and held through the warnings and the note, in the shape of
@@ -45,7 +45,7 @@ const SAVE_FAILURES: u8 = 1;
 const FLUSH_FAILURES: u8 = 1;
 /// How many of `revoke`'s lists fail.
 const LIST_FAILURES: u8 = 1;
-/// How many `DELETE`s fail, `revoke`'s (:263) or the one of a token just made (:128).
+/// How many `DELETE`s fail, `revoke`'s (:264) or the one of a token just made (:129).
 const DELETE_FAILURES: u8 = 1;
 
 /// A token: `P`, the one `mcp.json` holds at the start, or the one a login minted.
@@ -118,9 +118,9 @@ struct Token {
     kind: Kind,
     /// Its row is still in Cloud: no `DELETE` removed it.
     live: bool,
-    /// A `Left` warning named it: "The agent token … this replaced is still live" (:192-197).
+    /// A `Left` warning named it: "The agent token … this replaced is still live" (:193-198).
     named_left: bool,
-    /// The failed-save warning named it: "Could not revoke the token … just made" (:129-135).
+    /// The failed-save warning named it: "Could not revoke the token … just made" (:130-136).
     named_unrevoked: bool,
 }
 
@@ -146,12 +146,12 @@ impl Token {
     }
 }
 
-/// What `mcp.json` holds (`Stored`, :22-28).
+/// What `mcp.json` holds (`Stored`, :23-29).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum File {
-    /// No file: `stored` returns `Ok(None)` (:54).
+    /// No file: `stored` returns `Ok(None)` (:55).
     Absent,
-    /// A file that does not parse: `stored` returns `Corrupt` (:53). Its token, if any, is
+    /// A file that does not parse: `stored` returns `Corrupt` (:54). Its token, if any, is
     /// one nobody can know.
     Unreadable,
     /// A `Stored` naming this token.
@@ -203,32 +203,32 @@ enum Why {
     Organization,
     /// `ployz_decide::fate::fate`'s Unflushed arm.
     Unflushed,
-    /// `revoke`'s list failed (:255, :148-154).
+    /// `revoke`'s list failed (:256, :149-155).
     ListFailed,
-    /// `revoke`'s `DELETE` failed (:263, :148-154).
+    /// `revoke`'s `DELETE` failed (:264, :149-155).
     DeleteFailed,
     /// `revoke`'s `DELETE` got a 404, which the CLI reads as `UnknownCredential`
-    /// (`remove_token` in core/crates/ployz/src/cloud_account/token.rs, :148-154).
+    /// (`remove_token` in core/crates/ployz/src/cloud_account/token.rs, :149-155).
     NotFound,
 }
 
-/// What `fate` decided for the token before (:140-157).
+/// What `fate` decided for the token before (:141-158).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Fate {
-    /// No token before (:143).
+    /// No token before (:144).
     NoPrevious,
-    /// `fate` returned `Ok(id)`, so `revoke` runs (:145).
+    /// `fate` returned `Ok(id)`, so `revoke` runs (:146).
     Revoke,
-    /// `fate` returned `Err(Left)` (:144).
+    /// `fate` returned `Err(Left)` (:145).
     Left(Why),
 }
 
-/// Why a login revokes the token it just made (:125-138).
+/// Why a login revokes the token it just made (:126-139).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Unmake {
-    /// The kind check refused it (:109, :119-124).
+    /// The kind check refused it (:110, :120-125).
     Refused,
-    /// `save` failed before its rename (:69-80).
+    /// `save` failed before its rename (:70-81).
     SaveFailed,
 }
 
@@ -242,20 +242,20 @@ enum Outcome {
 /// Where one login is: its next step.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Pc {
-    /// Not started: `stored`'s read is next (:92).
+    /// Not started: `stored`'s read is next (:93).
     Idle,
     /// It read `mcp.json`; `in_cloud`'s credential load and `new_token`'s POST are next
-    /// (core/crates/ployz/src/handlers/account.rs:139, :101-108).
+    /// (:102-109; core/crates/ployz/src/handlers/account.rs:141).
     Minting,
-    /// Cloud answered the POST; the kind check and `save` are next (:109-124, :66-88).
+    /// Cloud answered the POST; the kind check and `save` are next (:110-125, :67-89).
     Saving,
-    /// The kind check or `save` failed; `remove_token` of the token just made is next (:128).
+    /// The kind check or `save` failed; `remove_token` of the token just made is next (:129).
     Unmaking(Unmake),
-    /// `fate` returned `Ok(id)`; `revoke`'s list is next (:255).
+    /// `fate` returned `Ok(id)`; `revoke`'s list is next (:256).
     Listing,
-    /// `revoke` found the token before listed as an agent token; its `DELETE` is next (:263).
+    /// `revoke` found the token before listed as an agent token; its `DELETE` is next (:264).
     Deleting,
-    /// `in_cloud` returned; the warnings and the note are next (:160-178). `left` is why
+    /// `in_cloud` returned; the warnings and the note are next (:161-179). `left` is why
     /// the token before stays live, if it does.
     Reporting {
         left: Option<Why>,
@@ -266,9 +266,9 @@ enum Pc {
 /// What a login's save did before it returned: facts of its steps, not its `Saved` answer.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Flushes {
-    /// `sync_all` flushed the temp file before the rename (:75-78).
+    /// `sync_all` flushed the temp file before the rename (:76-79).
     bytes: bool,
-    /// The directory flush after the rename succeeded (:83).
+    /// The directory flush after the rename succeeded (:84).
     dir: bool,
 }
 
@@ -276,14 +276,14 @@ struct Flushes {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Login {
     pc: Pc,
-    /// The token its read found (`previous`, :92-99).
+    /// The token its read found (`previous`, :93-100).
     previous: Option<Tok>,
     /// Bookkeeping, read by no step that copies code: how many renames had landed when it
     /// read `mcp.json`.
     saw: u8,
     /// What its save did, once it renamed.
     flushes: Option<Flushes>,
-    /// Its `revoke` deleted the token before: `revoked` is `Some(id)` (:146).
+    /// Its `revoke` deleted the token before: `revoked` is `Some(id)` (:147).
     revoked: bool,
 }
 
@@ -296,7 +296,7 @@ impl Login {
         revoked: false,
     };
 
-    /// What `save` returned: `Unflushed` exactly when its directory flush failed (:82-86).
+    /// What `save` returned: `Unflushed` exactly when its directory flush failed (:83-87).
     fn durable(&self) -> bool {
         self.flushes.is_some_and(|flushes| flushes.dir)
     }
@@ -309,7 +309,7 @@ impl Login {
     reason = "each flag removes one independent guard"
 )]
 struct Broken {
-    /// `save` renames the temp file without its `sync_all` (:75-78).
+    /// `save` renames the temp file without its `sync_all` (:76-79).
     persist_unflushed_bytes: bool,
     /// `fate` has no Unflushed arm, so it revokes after a failed directory flush.
     revoke_after_unflushed: bool,
@@ -317,12 +317,12 @@ struct Broken {
     fate_ignores_cloud: bool,
     /// `fate` has no Organization check.
     fate_ignores_organization: bool,
-    /// `revoke` deletes the token before without its listed-as-agent check (:256-262).
+    /// `revoke` deletes the token before without its listed-as-agent check (:257-263).
     revoke_unlisted: bool,
-    /// `login` saves a token of any kind: no kind check (:109, :119-124).
+    /// `login` saves a token of any kind: no kind check (:110, :120-125).
     keep_non_agent: bool,
     /// A failed save, or a refused kind, returns its error without revoking the token just
-    /// made or warning (:125-136).
+    /// made or warning (:126-137).
     failed_save_keeps_new_token: bool,
 }
 
@@ -348,17 +348,17 @@ struct Failures {
 /// The branch the last step took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Branch {
-    /// `stored` read this (:92).
+    /// `stored` read this (:93).
     Read(File),
-    /// Cloud's POST answered a token of this kind (:101-108).
+    /// Cloud's POST answered a token of this kind (:102-109).
     Minted(Kind),
     /// The kind check or `save` failed, and the login goes on to revoke the token it made.
     Failed(Unmake),
     /// `remove_token` of the token just made: `revoked` false is the failed-save warning
-    /// (:128-136).
+    /// (:129-137).
     Unmade { why: Unmake, revoked: bool },
     /// `save` renamed this login's token over `over`, flushed its directory or not, and
-    /// `fate` decided (:79-87, :140-141).
+    /// `fate` decided (:80-88, :141-142).
     Saved {
         who: usize,
         over: File,
@@ -366,17 +366,17 @@ enum Branch {
         fate: Fate,
     },
     /// `revoke`'s list answered, and the token before was listed as an agent token or not
-    /// (:255-262).
+    /// (:256-263).
     Listed { who: usize, found: bool },
-    /// `revoke`'s list failed (:255).
+    /// `revoke`'s list failed (:256).
     ListFailed,
-    /// `revoke`'s `DELETE` removed the row (:263).
+    /// `revoke`'s `DELETE` removed the row (:264).
     Deleted,
-    /// `revoke`'s `DELETE` failed, Cloud unreachable (:263).
+    /// `revoke`'s `DELETE` failed, Cloud unreachable (:264).
     DeleteFailed,
-    /// `revoke`'s `DELETE` found no row, and Cloud answered 404 (:263).
+    /// `revoke`'s `DELETE` found no row, and Cloud answered 404 (:264).
     DeleteNotFound,
-    /// The login printed its warnings and its note, and returned `Ok` (:160-178).
+    /// The login printed its warnings and its note, and returned `Ok` (:161-179).
     Noted { who: usize, left: Option<Why> },
 }
 
@@ -442,7 +442,7 @@ fn accounted(state: &State, tok: Tok) -> bool {
     state.file == File::Holds(tok) || !token.live || token.named_left || token.named_unrevoked
 }
 
-/// `revoke`'s list holds the token as an agent token (:255-262). Cloud lists the rows of the
+/// `revoke`'s list holds the token as an agent token (:256-263). Cloud lists the rows of the
 /// caller's Organization in this Cloud (`listCredentials`,
 /// dashboard/src/modules/identity/organization-token.server.ts:119-168).
 fn listed_as_agent(token: Token) -> bool {
@@ -717,7 +717,7 @@ impl McpLogin {
     }
 
     /// Where a failed save or a refused kind goes: `remove_token` of the token just made
-    /// (:125-137).
+    /// (:126-138).
     fn unmaking(&self, why: Unmake) -> Pc {
         if self.broken.failed_save_keeps_new_token {
             Pc::Done(Outcome::Err)
@@ -726,7 +726,7 @@ impl McpLogin {
         }
     }
 
-    /// `stored` reads `mcp.json` (:92-99). Under the fix the lock is taken first; no other
+    /// `stored` reads `mcp.json` (:93-100). Under the fix the lock is taken first; no other
     /// login writes `mcp.json` without it, so taking it and reading are one step.
     fn read(&self, state: &mut State, who: usize) -> Pc {
         if self.locks() {
@@ -744,7 +744,7 @@ impl McpLogin {
         Pc::Minting
     }
 
-    /// `new_token`'s POST (:101-108): Cloud inserts the login's token, of kind agent unless it
+    /// `new_token`'s POST (:102-109): Cloud inserts the login's token, of kind agent unless it
     /// answers `cli`.
     fn mint(state: &mut State, who: usize, kind: Kind) -> Pc {
         *state.token_mut(Tok::of(who)) = Token::live(Place::Here, kind);
@@ -755,8 +755,8 @@ impl McpLogin {
         Pc::Saving
     }
 
-    /// The kind check and `save` (:109-124, :66-88), then `fate` (:140-141). Each part
-    /// touches only this process's state except the rename (:79), so they are one step.
+    /// The kind check and `save` (:110-125, :67-89), then `fate` (:141-142). Each part
+    /// touches only this process's state except the rename (:80), so they are one step.
     fn save(&self, state: &mut State, who: usize, fails: bool, flushes_dir: bool) -> Pc {
         let made = Tok::of(who);
         if state.token(made).kind != Kind::Agent && !self.broken.keep_non_agent {
@@ -804,7 +804,7 @@ impl McpLogin {
     }
 
     /// `remove_token` of the token just made, its warning when that fails, and the error the
-    /// login returns (:127-137).
+    /// login returns (:128-138).
     fn unmake(state: &mut State, who: usize, why: Unmake, fails: bool) -> Pc {
         if fails {
             state.failed.delete += 1;
@@ -819,7 +819,7 @@ impl McpLogin {
         Pc::Done(Outcome::Err)
     }
 
-    /// `revoke`'s list and its listed-as-agent check (:255-262).
+    /// `revoke`'s list and its listed-as-agent check (:256-263).
     fn list(&self, state: &mut State, who: usize, fails: bool) -> Pc {
         if fails {
             state.failed.list += 1;
@@ -838,7 +838,7 @@ impl McpLogin {
         }
     }
 
-    /// `revoke`'s `DELETE` (:263), one `DELETE … RETURNING` in Cloud
+    /// `revoke`'s `DELETE` (:264), one `DELETE … RETURNING` in Cloud
     /// (dashboard/src/modules/identity/organization-token.server.ts:174-177).
     fn delete(state: &mut State, who: usize, fails: bool) -> Pc {
         if fails {
@@ -863,7 +863,7 @@ impl McpLogin {
         }
     }
 
-    /// The warnings and the note (:160-178). Only the `Left` warning names a token (:192-197).
+    /// The warnings and the note (:161-179). Only the `Left` warning names a token (:193-198).
     fn report(state: &mut State, who: usize, left: Option<Why>) -> Pc {
         if left.is_some() {
             let previous = state.previous(who);
@@ -1166,7 +1166,7 @@ fn fated(fate: Fate, before: &State, who: usize, durable: bool) -> String {
     let previous = before.login(who).previous;
     let id = previous.map_or_else(String::new, |tok| tok.to_string());
     match fate {
-        Fate::NoPrevious => "there is no token before, so nothing is revoked (:143)".to_owned(),
+        Fate::NoPrevious => "there is no token before, so nothing is revoked (:144)".to_owned(),
         Fate::Revoke => {
             let place = before.token(before.previous(who)).place;
             let skipped = match place {
@@ -1186,7 +1186,7 @@ fn fated(fate: Fate, before: &State, who: usize, durable: bool) -> String {
                     format!("finds {id} in this Cloud and Organization and the save Durable, and ")
                 }
             };
-            format!("fate {skipped}returns Ok({id}), so revoke is next (:140-141, :145)")
+            format!("fate {skipped}returns Ok({id}), so revoke is next (:141-142, :146)")
         }
         Fate::Left(Why::Cloud) => {
             format!("fate leaves {id} live: it is in another Cloud")
@@ -1212,10 +1212,10 @@ fn left_why(why: Why) -> &'static str {
             "a crash may bring it back into mcp.json, which could not be flushed (<error>) (:243-245)"
         }
         Why::ListFailed | Why::DeleteFailed => {
-            "revoking it failed (Could not reach Cloud at <cloud>.) (:150; core/crates/ployz/src/cloud_login.rs:30)"
+            "revoking it failed (Could not reach Cloud at <cloud>.) (:151; core/crates/ployz/src/cloud_login.rs:32)"
         }
         Why::NotFound => {
-            "revoking it failed (no token or signed-in device <id> in this Organization) (:150; core/crates/ployz/src/cloud_login.rs:93-94)"
+            "revoking it failed (no token or signed-in device <id> in this Organization) (:151; core/crates/ployz/src/cloud_login.rs:95-96)"
         }
     }
 }
@@ -1240,53 +1240,53 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
     };
     let what = match after.took.expect("every step takes a branch") {
         Branch::Read(File::Absent) => format!(
-            "{locked}stored finds no mcp.json, so there is no token before (:92, :54); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)"
+            "{locked}stored finds no mcp.json, so there is no token before (:93, :55); in_cloud's credential load and new_token's POST are next (:102-109; core/crates/ployz/src/handlers/account.rs:141)"
         ),
         Branch::Read(File::Unreadable) => format!(
-            "{locked}stored finds mcp.json unreadable, so login warns \"The sign-in stored at <path> is unreadable. Replacing it.\" and goes on with no token before (:92, :53, :94-97; core/crates/ployz/src/cloud_login.rs:50); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)"
+            "{locked}stored finds mcp.json unreadable, so login warns \"The sign-in stored at <path> is unreadable. Replacing it.\" and goes on with no token before (:93, :54, :95-98; core/crates/ployz/src/cloud_login.rs:52); in_cloud's credential load and new_token's POST are next (:102-109; core/crates/ployz/src/handlers/account.rs:141)"
         ),
         Branch::Read(File::Holds(tok)) => format!(
-            "{locked}stored reads mcp.json, which holds {tok}, its token before (:92, :50-52); in_cloud's credential load and new_token's POST are next (core/crates/ployz/src/handlers/account.rs:139, :101-108)"
+            "{locked}stored reads mcp.json, which holds {tok}, its token before (:93, :51-53); in_cloud's credential load and new_token's POST are next (:102-109; core/crates/ployz/src/handlers/account.rs:141)"
         ),
         Branch::Minted(Kind::Agent) => format!(
-            "new_token: POST /api/cli/tokens, and Cloud inserts {made}, an agent token named \"ployz mcp\" with the Full preset for 365 days (:101-108; dashboard/src/modules/identity/organization-token.server.ts:34-56, :70); the kind check and save are next (:109-110)"
+            "new_token: POST /api/cli/tokens, and Cloud inserts {made}, an agent token named \"ployz mcp\" with the Full preset for 365 days (:102-109; dashboard/src/modules/identity/organization-token.server.ts:34-56, :70); the kind check and save are next (:110-111)"
         ),
         Branch::Minted(Kind::Cli) => format!(
-            "new_token: POST /api/cli/tokens, and Cloud inserts {made} with kind cli, as a Cloud that ignores the kind the CLI asks for would (:101-108); the kind check is next (:109)"
+            "new_token: POST /api/cli/tokens, and Cloud inserts {made} with kind cli, as a Cloud that ignores the kind the CLI asks for would (:102-109); the kind check is next (:110)"
         ),
         Branch::Failed(why) => {
             let failed = match why {
                 Unmake::Refused => format!(
-                    "the kind check finds {made} is a cli token where `ployz mcp` needs an agent token (:109, :119-124)"
+                    "the kind check finds {made} is a cli token where `ployz mcp` needs an agent token (:110, :120-125)"
                 ),
                 Unmake::SaveFailed => {
-                    "save fails before its rename, say writing the temp file (:69-78)".to_owned()
+                    "save fails before its rename, say writing the temp file (:70-79)".to_owned()
                 }
             };
             if matches!(after.pc(who), Pc::Done(_)) {
                 format!(
-                    "{failed}, and login returns the error without revoking {made} or warning (under Broken) (:137){releases}"
+                    "{failed}, and login returns the error without revoking {made} or warning (under Broken) (:138){releases}"
                 )
             } else {
-                format!("{failed}, so remove_token of {made} is next (:125-128)")
+                format!("{failed}, so remove_token of {made} is next (:126-129)")
             }
         }
         Branch::Unmade { why, revoked } => {
             let error = match why {
                 Unmake::Refused => {
-                    "\"Cloud sent an unexpected reply: it made a cli token where `ployz mcp` needs an agent token\" (:120-123; core/crates/ployz/src/cloud_login.rs:46)"
+                    "\"Cloud sent an unexpected reply: it made a cli token where `ployz mcp` needs an agent token\" (:121-124; core/crates/ployz/src/cloud_login.rs:48)"
                 }
                 Unmake::SaveFailed => {
-                    "\"Could not use the sign-in stored at <path>.\" (core/crates/ployz/src/cloud_login.rs:48)"
+                    "\"Could not use the sign-in stored at <path>.\" (core/crates/ployz/src/cloud_login.rs:50)"
                 }
             };
             if revoked {
                 format!(
-                    "remove_token: DELETE /api/cli/tokens/{made} revokes the token it just made (:128), and login returns the error {error} (:137){releases}"
+                    "remove_token: DELETE /api/cli/tokens/{made} revokes the token it just made (:129), and login returns the error {error} (:138){releases}"
                 )
             } else {
                 format!(
-                    "remove_token: DELETE /api/cli/tokens/{made} fails, Cloud unreachable, so login warns \"Could not revoke the token {made} just made: … Run `ployz token rm {made}`.\" (:128-135) and returns the error {error} (:137){releases}"
+                    "remove_token: DELETE /api/cli/tokens/{made} fails, Cloud unreachable, so login warns \"Could not revoke the token {made} just made: … Run `ployz token rm {made}`.\" (:129-136) and returns the error {error} (:138){releases}"
                 )
             }
         }
@@ -1297,9 +1297,9 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             ..
         } => {
             let flush = if durable {
-                "the directory flush succeeds, so save returns Durable (:82-84)"
+                "the directory flush succeeds, so save returns Durable (:83-85)"
             } else {
-                "the directory flush fails, so save returns Unflushed (:82-85)"
+                "the directory flush fails, so save returns Unflushed (:83-86)"
             };
             let kind = if before.token(made).kind == Kind::Cli {
                 ", a cli token, past no kind check (under Broken),"
@@ -1316,7 +1316,7 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 "skips its sync_all (under Broken)"
             };
             format!(
-                "save writes {made}{kind} to a temp file, {synced}, and renames it to mcp.json, where {over} was, without reading it (:71-79); {flush}; {}{}",
+                "save writes {made}{kind} to a temp file, {synced}, and renames it to mcp.json, where {over} was, without reading it (:72-80); {flush}; {}{}",
                 fated(fate, before, who, durable),
                 if releases.is_empty() {
                     ""
@@ -1326,18 +1326,18 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
             )
         }
         Branch::ListFailed => format!(
-            "revoke: GET /api/cli/tokens fails, Cloud unreachable, so login leaves {} live (:255, :148-154)",
+            "revoke: GET /api/cli/tokens fails, Cloud unreachable, so login leaves {} live (:256, :149-155)",
             before.previous(who)
         ),
         Branch::Listed { found: true, .. } => {
             let previous = before.previous(who);
             if listed_as_agent(before.token(previous)) {
                 format!(
-                    "revoke: GET /api/cli/tokens lists {previous} as an agent token (:255-262); its DELETE is next (:263)"
+                    "revoke: GET /api/cli/tokens lists {previous} as an agent token (:256-263); its DELETE is next (:264)"
                 )
             } else {
                 format!(
-                    "revoke: GET /api/cli/tokens answers, and with no listed-as-agent check its DELETE of {previous} is next (under Broken) (:255-263)"
+                    "revoke: GET /api/cli/tokens answers, and with no listed-as-agent check its DELETE of {previous} is next (under Broken) (:256-264)"
                 )
             }
         }
@@ -1352,30 +1352,30 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 format!("does not list {previous}")
             };
             format!(
-                "revoke: GET /api/cli/tokens {why}, so revoke returns Ok(false) and login says nothing of {previous} (:255-261, :147)"
+                "revoke: GET /api/cli/tokens {why}, so revoke returns Ok(false) and login says nothing of {previous} (:256-262, :148)"
             )
         }
         Branch::Deleted => format!(
-            "revoke: DELETE /api/cli/tokens/{} removes its row (:263; dashboard/src/modules/identity/organization-token.server.ts:174-177), and revoke returns Ok(true) (:264, :146)",
+            "revoke: DELETE /api/cli/tokens/{} removes its row (:264; dashboard/src/modules/identity/organization-token.server.ts:174-177), and revoke returns Ok(true) (:265, :147)",
             before.previous(who)
         ),
         Branch::DeleteFailed => format!(
-            "revoke: DELETE /api/cli/tokens/{} fails, Cloud unreachable, so login leaves it live (:263, :148-154)",
+            "revoke: DELETE /api/cli/tokens/{} fails, Cloud unreachable, so login leaves it live (:264, :149-155)",
             before.previous(who)
         ),
         Branch::DeleteNotFound => format!(
-            "revoke: DELETE /api/cli/tokens/{} finds no row, since another login's DELETE removed it; with no Server Clear pending Cloud answers 404 (dashboard/src/modules/identity/organization-token.server.ts:174-177, :192; dashboard/src/routes/api/cli/-cli.handler.ts:229-230, :572-577), the CLI reads it as UnknownCredential (`remove_token` in core/crates/ployz/src/cloud_account/token.rs), and login leaves it to name as still live (:148-154)",
+            "revoke: DELETE /api/cli/tokens/{} finds no row, since another login's DELETE removed it; with no Server Clear pending Cloud answers 404 (dashboard/src/modules/identity/organization-token.server.ts:174-177, :192; dashboard/src/routes/api/cli/-cli.handler.ts:230-231, :588-592), the CLI reads it as UnknownCredential (`remove_token` in core/crates/ployz/src/cloud_account/token.rs), and login leaves it to name as still live (:149-155)",
             before.previous(who)
         ),
         Branch::Noted { left, .. } => {
             let login = before.login(who);
             let mut said = Vec::new();
             if !login.durable() {
-                said.push("warns \"Saved the new agent token to <path>, but could not flush its directory (<error>), so a crash may lose it. …\" (:185-191)".to_owned());
+                said.push("warns \"Saved the new agent token to <path>, but could not flush its directory (<error>), so a crash may lose it. …\" (:186-192)".to_owned());
             }
             if let Some(why) = left {
                 said.push(format!(
-                    "warns \"The agent token {} this replaced is still live: {}. To revoke it, ….\" (:192-197)",
+                    "warns \"The agent token {} this replaced is still live: {}. To revoke it, ….\" (:193-198)",
                     before.previous(who),
                     left_why(why)
                 ));
@@ -1386,11 +1386,11 @@ fn reads_as(before: &State, action: Action, after: &State) -> String {
                 format!(", while mcp.json holds {}", after.file)
             };
             said.push(format!(
-                "prints \"`ployz mcp` now acts with its own agent token {made} in Organization …\" (:171-174){stale}"
+                "prints \"`ployz mcp` now acts with its own agent token {made} in Organization …\" (:172-175){stale}"
             ));
             if login.revoked {
                 said.push(format!(
-                    "prints \"Revoked the agent token {} it replaced.\" (:175-177)",
+                    "prints \"Revoked the agent token {} it replaced.\" (:176-178)",
                     before.previous(who)
                 ));
             }
@@ -1512,10 +1512,10 @@ mod tests {
         goes(B),
     ];
 
-    /// The race. Both logins read P (:92) and mint (:101-108). A's save renames TA over P,
-    /// and B's renames TB over TA, each without reading mcp.json again (:79). A lists P as
-    /// an agent token and deletes it (:255-263). B lists after that DELETE, finds no P, and
-    /// says nothing (:147). Both return Ok and print their note (:171-174). mcp.json holds
+    /// The race. Both logins read P (:93) and mint (:102-109). A's save renames TA over P,
+    /// and B's renames TB over TA, each without reading mcp.json again (:80). A lists P as
+    /// an agent token and deletes it (:256-264). B lists after that DELETE, finds no P, and
+    /// says nothing (:148). Both return Ok and print their note (:172-175). mcp.json holds
     /// TB. TA is live in Cloud, and no login revoked it or named it in a warning; A's note
     /// said `ployz mcp` now acts with TA while mcp.json held TB.
     #[test]
@@ -1734,7 +1734,7 @@ mod tests {
         }
         harness::assert_reached(COVERAGE, &model, &checker);
     }
-    /// `persist_unflushed_bytes`: without the `sync_all` before the rename (:75-78), a
+    /// `persist_unflushed_bytes`: without the `sync_all` before the rename (:76-79), a
     /// login revokes P after a save whose bytes were never flushed.
     #[test]
     fn the_temp_file_is_flushed_before_the_rename() {
@@ -1813,7 +1813,7 @@ mod tests {
         assert!(p.live && !accounted(&broken, Tok::P));
     }
 
-    /// `revoke_unlisted`: without the listed-as-agent check (:256-262), a login revokes the
+    /// `revoke_unlisted`: without the listed-as-agent check (:257-263), a login revokes the
     /// cli token an edited mcp.json names.
     #[test]
     fn revoke_deletes_only_a_listed_agent_token() {
@@ -1830,7 +1830,7 @@ mod tests {
         assert!(!broken.token(Tok::P).live);
     }
 
-    /// `keep_non_agent`: without the kind check (:109, :119-124), a login renames a cli
+    /// `keep_non_agent`: without the kind check (:110, :120-125), a login renames a cli
     /// token into mcp.json.
     #[test]
     fn the_kind_check_refuses_a_cli_token() {
@@ -1849,7 +1849,7 @@ mod tests {
     }
 
     /// `failed_save_keeps_new_token`: without the revoke of the token just made and its
-    /// warning (:125-136), a failed save leaves that token live, held by no file and
+    /// warning (:126-137), a failed save leaves that token live, held by no file and
     /// named by no warning.
     #[test]
     fn a_failed_save_revokes_the_token_just_made() {

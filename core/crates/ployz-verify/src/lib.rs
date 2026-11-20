@@ -3,8 +3,9 @@
 //!
 //! A module calls the `ployz-core` code its protocol runs where that code is pure:
 //! `issuance_gate`, `issuance_backoff` and `issuance_failure_clock` in `acme_issuance`,
-//! `RestartPolicy` in `bridge_notes`, `MachineUpgradeOutcome::is_terminal` in `upgrade_attempt` and
-//! `plan` in `volume_runs`. The other modules re-state their protocol's decisions by hand,
+//! `RestartPolicy` in `bridge_notes`, `MachineUpgradeOutcome::is_terminal` in `upgrade_attempt`,
+//! `plan` in `volume_runs`, and the Deploy planner itself (`ployz::deploy::preview_deploy`) in
+//! `region_placement`. The other modules re-state their protocol's decisions by hand,
 //! and a decision that moves into `ployz-decide` is called, never re-stated.
 
 #[cfg(test)]
@@ -21,6 +22,8 @@ mod harness;
 mod mcp_login;
 #[cfg(test)]
 mod pool_ownership;
+#[cfg(test)]
+mod region_placement;
 #[cfg(test)]
 mod removal_marks;
 #[cfg(test)]

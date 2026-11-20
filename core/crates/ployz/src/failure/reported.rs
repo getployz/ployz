@@ -269,7 +269,6 @@ impl Reported for PlanError {
             | PlanError::VolumeServerTakesNoServices { .. }
             | PlanError::RegionUnmatched { .. }
             | PlanError::VolumeOutsideRegion { .. }
-            | PlanError::VolumeInOtherRegion { .. }
             | PlanError::VolumesApart { .. }
             | PlanError::VolumeSharedAcrossRegions { .. }
             | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,

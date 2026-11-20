@@ -1,15 +1,15 @@
 import type { DiffView } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
-import { changeGroups, regionName } from "#/modules/config-store/store-deployments";
+import { changeGroups, homesOf, regionName, type Homes } from "#/modules/config-store/store-deployments";
 
 /** `name` is a Setting, a variable key when `variable`, or what happened to the node; `values` its machine values. */
 export type ChangeLine = { key: string; mark: "+" | "~" | "−"; node: string; name: string; variable: boolean; values: string };
 
 /** One line per changed node or Setting in `changes`, minus what a destroyed line already says. */
-function changeLines(diff: DiffView, changes: DiffView["changes"], effects: ApprovalReview["effects"]): ChangeLine[] {
+function changeLines(changes: DiffView["changes"], homes: Homes, effects: ApprovalReview["effects"]): ChangeLine[] {
   const destroyedNodes = new Set(effects.filter((effect) => effect.kind === "removes_service" || effect.kind === "deletes_volume").map((effect) => effect.node));
   const destroyedPaths = new Set(effects.map((effect) => effect.path));
-  return changeGroups({ ...diff, changes }, []).flatMap((group): ChangeLine[] => {
+  return changeGroups({ changes }, [], homes).flatMap((group): ChangeLine[] => {
     if (group.lifecycle === "delete") {
       return destroyedNodes.has(group.nodeId) ? [] : [{ key: group.nodeId, mark: "−", node: group.nodeName, name: `removed ${group.nodeType}`, variable: false, values: "" }];
     }
@@ -43,7 +43,7 @@ export function reviewedChanges(command: string, review: ApprovalReview) {
   if (!("diff" in review)) return { region: [], asked: [], others: [] };
   const { effects, diff } = review;
   const saves = command === "publish" || command === "admit";
-  const asked = saves ? changeLines(diff, diff.draft_changes ?? [], effects) : [];
+  const asked = saves ? changeLines(diff.draft_changes ?? [], homesOf(diff.draft_region, null), effects) : [];
   const keys = new Set(asked.map((line) => line.key));
-  return { region: regionLine(diff), asked, others: changeLines(diff, diff.changes, effects).filter((line) => !keys.has(line.key)) };
+  return { region: regionLine(diff), asked, others: changeLines(diff.changes, homesOf(diff.region, null), effects).filter((line) => !keys.has(line.key)) };
 }

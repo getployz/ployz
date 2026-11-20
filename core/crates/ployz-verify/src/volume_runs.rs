@@ -1063,7 +1063,7 @@ impl VolumeRuns {
         Ok(())
     }
 
-    /// `set_copy_admitted` past its floor check: inspect, `plan`, and run the transition.
+    /// `set_copy_planned` past its floor check: inspect, `plan`, and run the transition.
     fn transition(&self, state: &mut State, index: usize) {
         let request = state.request(index);
         let to = request.to;

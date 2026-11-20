@@ -36,7 +36,7 @@ async function showCard(read: () => ReturnType<typeof views.useStoreView>) {
   const projectGroup = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug",
     loader: () => ({ store, environmentId: "env-id" }), component: () => (
-      <StoreServiceCard service={service} changeCount={0} runtimeIdentity={null} desiredReplicas={null} trays={[]} configTrays={[]} notSet={[]}
+      <StoreServiceCard service={service} changeCount={0} runtimeIdentity={null} desiredReplicas={null} replicas={1} trays={[]} configTrays={[]} notSet={[]}
         selected={false} className="block" />
     ) });
   const router = createRouter({

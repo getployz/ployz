@@ -1,4 +1,4 @@
-import type { ConfigListing, DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { ConfigListing, DiffView, JsonValue, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import type { Node } from "@xyflow/react";
@@ -12,8 +12,10 @@ export type StoreCanvasService = {
   changeCount: number;
   /** How runtime evidence names it, `NAMESPACE/PRIVATE_DNS`; null when the Environment has no Namespace. */
   runtimeIdentity: string | null;
-  /** How many replicas its deployed Settings ask for, when they say. */
+  /** How many replicas its deployed Settings ask for across its regions, when they say. */
   desiredReplicas: number | null;
+  /** Its `replicas` as the next Deploy has it: a count, or one per region. */
+  replicas: JsonValue;
   /** The Volumes it mounts, as trays under its card. */
   trays: MountedVolume[];
   /** The Configs it mounts, as trays under its card, above its Volumes. */
@@ -80,6 +82,8 @@ export type StoreCanvas = {
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
   diff: DiffView;
+  /** The Environment's region in Working State; null when it runs in any region. */
+  region: string | null;
   /** Each Volume's copies by Volume id, as the Servers and the staged placement have them; empty until they answer. */
   copies: ReadonlyMap<string, VolumeCopies>;
   /** The Services, Volumes and Configs this tab is adding, until the Store's answer draws them. */

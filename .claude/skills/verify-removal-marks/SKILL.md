@@ -67,7 +67,7 @@ When a change intentionally alters the lifecycle (a new guard, a new statement, 
 
 Bounds: one Project with one Environment target, one mark, one removal Deployment that starts `Running` or already `Applied`, one sweep, one close, one cancel, each running at most once, and the runner ending the Deployment once. The runner ends a `Running` removal `Applied`, and a `Cancelling` one either `Applied` (its run succeeded) or `Cancelled` (it failed), as `record` and `end` do; so a cancel can return success while the removal still applies on the Servers. A `Running` removal that ends `Failed` is out of bounds: the Environment stays on the Servers, and no finisher gets past `on_servers`. Three row locks: the Project, the Environment, the mark. No lock timeout: a transaction waits as long as it takes, where Postgres gives up after ten seconds and the write fails.
 
-Out of scope: a Project-target mark and its member Environments, two sweeps side by side, a `remove()` run again after a cancel, a queued removal Deployment that never claimed, Cloud admitting what the sweep lists as due, the runner's own row lock on the Deployment, the `evidence` and `accepted` columns the same upsert overwrites, `clear_tombstone` on the next `remove()`, pull-request idle closes, and the Store's change log. A green model says nothing about them; cover them with the removal tests in `core/crates/ployz-store/tests/removal.rs`, on Postgres with `PLOYZ_STORE_TEST_POSTGRES` set.
+Out of scope: a Project-target mark and its member Environments, two sweeps side by side, a `remove()` run again after a cancel, a push or a reopened pull request that clears the tombstone and a later close that marks the Environment again, a queued removal Deployment that never claimed, Cloud admitting what the sweep lists as due, the runner's own row lock on the Deployment, the `evidence` and `accepted` columns the same upsert overwrites, `clear_tombstone` on the next `remove()`, pull-request idle closes, and the Store's change log. A green model says nothing about them; cover them with the removal tests in `core/crates/ployz-store/tests/removal.rs`, on Postgres with `PLOYZ_STORE_TEST_POSTGRES` set.
 
 ## Coverage
 
@@ -80,12 +80,15 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 - `core/crates/ployz-store/src/deployment/lifecycle.rs`: `cancel`.
 - `core/crates/ployz-store/src/deployment/record.rs`: `record` and its `Applied`/`Failed` choice, `end` and its `(Cancelling, Failed)` to `Cancelled` mapping.
 - `core/crates/ployz-store/src/deployment/history.rs`: `in_flight`, `last_ran`, `on_servers`, `ran`.
+- `core/crates/ployz-store/src/deployment/status.rs`: `in_flight_sql` and `IN_FLIGHT`, which decide what `in_flight` finds.
 - `core/crates/ployz-store/src/storage/pg.rs`: `begin` and its READ COMMITTED level, `TIMEOUT`.
 - `core/crates/ployz-store/src/storage/sqlite.rs`: `transaction` and `BEGIN IMMEDIATE`.
 - `core/crates/ployz-store/src/pull_request/mod.rs`: the calls to `removal::close` and `removal::sweep`, `mark::unmarked`, and `mark::drop_live` at the merge undo.
 - `core/crates/ployz-store/src/branch/idle.rs`: `idle_facts`, which splices `mark::marks_holding`.
 - `core/crates/ployz-store/src/pr_environment.rs`: `live_previews`, which splices `mark::unmarked`.
+- `core/crates/ployz-store/src/branch/sync.rs`: its call to `removal::close` when a Sync closes the Branch it came from.
+- `core/crates/ployz-store/src/automation.rs`: its call to `mark::clear_tombstone` when a push brings back a Branch whose removal someone cancelled.
 - `core/crates/ployz-store/src/branch/follow.rs`: `mark::unmarked`.
 - `dashboard/src/modules/config-store/store-github.inngest.ts` and `store-deployment.inngest.ts`: when Cloud sweeps.
 
-Sync commit: `379d927a88e00ad82aafa355f828f3b4a0bf5451`, the commit that made `finish` conditional, checked against it. Code in the list above that changed after it has not been rechecked.
+Sync commit: `48582970f957293b4e37d63c7620a5d620b4a24b`, the `main` each function above was reread against. Code in the list above that changed after it has not been rechecked.

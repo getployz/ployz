@@ -617,3 +617,26 @@ it("reads a build as interrupted only when it failed and the Store marked it", (
   expect(buildInterrupted({ status: "failed", interrupted: false })).toBe(false);
   expect(buildInterrupted({ status: "building", interrupted: true })).toBe(false);
 });
+
+const replicas = (before: JsonValue, after: JsonValue, comparison: "head" | "saved" = "head") => asTestDouble<DiffView["changes"][number]>()({
+  type: "service", id: "s1", name: "web", lifecycle: "update", comparison, data: null, restarts: [],
+  settings: [{ path: "web.replicas", kind: "update", before, after, canRestore: true, row: null }],
+});
+const production = { ...diff, environment: { id: "e1", name: "production", project: "shop", revision: 3 } };
+const sides = (groups: ReturnType<typeof reviewGroups>) => groups.flatMap((group) => group.rows.map((row) => [row.currentValue, row.newValue]));
+
+it("words a replica change with the region on both sides, as the Environment's region was and is", () => {
+  expect(sides(changeGroups({ changes: [replicas(2, { fsn: 2, syd: 1 })] }, services, ["fsn", "fsn"]))).toEqual([["fsn 2", "fsn 2 · syd 1"]]);
+  expect(sides(changeGroups({ changes: [replicas(1, 2)] }, services, ["fsn", "syd"]))).toEqual([["fsn 1", "syd 2"]]);
+  const moved = reviewGroups({ ...production, changes: [replicas(1, 2)], region: { before: "fsn", after: "syd" } }, services, "syd");
+  expect(sides(moved.filter((group) => group.nodeName === "web"))).toEqual([["fsn 1", "syd 2"]]);
+});
+
+it("words an unsaved edit over a Save with the region that Save holds, not the deployed one", () => {
+  // Deployed fsn 1. Saved without deploying: syd 2. Now edited back to 1.
+  const saved = { ...production, changes: [], region: { before: "fsn", after: "syd" }, draft_changes: [replicas(2, 1, "saved")] };
+  expect(sides(reviewGroups(saved, services, "syd").filter((group) => group.nodeName === "web"))).toEqual([["syd 2", "syd 1"]]);
+  // The region itself isn't saved yet either: the Save holds fsn.
+  const unsaved = { ...saved, draft_region: { before: "fsn", after: "syd" } };
+  expect(sides(reviewGroups(unsaved, services, "syd").filter((group) => group.nodeName === "web"))).toEqual([["fsn 2", "syd 1"]]);
+});

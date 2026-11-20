@@ -278,6 +278,13 @@ ask like a member's.
 Protected guards what runs through Ployz. An admin can open a shell on a server, and from there
 reach any environment on it.
 
+### Choose where an environment runs
+
+Under **Settings → Environment → Region**, **Runs in** picks the [region](../services/regions.md)
+whose servers run the environment's services: **Any region**, or one a server is in. It is a
+staged change that waits for your next deploy. A service with its own counts for each region keeps
+them.
+
 ### Delete an environment
 
 1. Open the environment's **Settings → Environment**.

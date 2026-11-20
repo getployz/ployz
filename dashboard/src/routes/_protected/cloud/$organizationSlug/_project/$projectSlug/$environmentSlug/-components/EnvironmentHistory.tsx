@@ -161,7 +161,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
         {!history.revisions.length ? <Empty variant="placeholder"><EmptyDescription>No saved versions yet</EmptyDescription></Empty> : null}
         <ol className="flex flex-col gap-3" aria-label="Saved versions">
           {history.revisions.map((revision) => {
-            const changes = lines(changeGroups({ ...diff, changes: revision.changes }, []));
+            const changes = lines(changeGroups(revision, [], [revision.region.before, revision.region.after]));
             const latest = revision.revision === diff.saved;
             const after = later(history.revisions, revision.revision);
             const open = unfolded.has(revision.revision);

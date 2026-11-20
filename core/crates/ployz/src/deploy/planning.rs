@@ -1165,7 +1165,6 @@ fn assemble_plan(
                 | PlanError::RegionUnmatched { .. }
                 | PlanError::VolumeInSeveralRegions { .. }
                 | PlanError::VolumeOutsideRegion { .. }
-                | PlanError::VolumeInOtherRegion { .. }
                 | PlanError::VolumesApart { .. }
                 | PlanError::VolumeSharedAcrossRegions { .. }),
             ) if blocks_unmountable => {

@@ -45,6 +45,7 @@ type BottomBarProps = {
   totalChanges: number;
   /** What the bar counts as changes: edits not yet saved. Defaults to `totalChanges`. */
   stagedChanges?: number;
+  waits?: ReviewProps["waits"];
   /** The latest Save when it is all there is to deploy: part of it is neither applied nor shipped by a Deploy in flight, which may ship the rest. */
   undeployedSave?: number | null;
   /** The latest Save when every Deploy of it ran nothing: none of its changes reached a Server. */
@@ -94,6 +95,7 @@ export function BottomBar({
   groups,
   totalChanges,
   stagedChanges = totalChanges,
+  waits,
   undeployedSave = null,
   ranNothingSave = null,
   canSave,
@@ -266,7 +268,8 @@ export function BottomBar({
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
-    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable, ranNothingSave,
+    environment: params.environmentSlug, groups, totalChanges, unsavedChanges: Math.min(stagedChanges, totalChanges), waits,
+    canDeploy: deployable, asks, canSave: saveable, ranNothingSave,
     onClose: () => setOpen(false), onDeploy: () => deploy(), message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
     onDiscardAll: nothingToDiscard ? undefined : discardAll,
