@@ -15,8 +15,8 @@ use ployz_core::{
 };
 
 use crate::deploy::{
-    BesideVolume, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
-    SharedHome,
+    BesideVolume, DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError,
+    PlanOptions, SharedHome,
 };
 
 use super::placement::PlacementReservations;
@@ -86,24 +86,20 @@ impl<'snapshot> VolumePlan<'snapshot> {
     /// unresolved locality.
     pub(super) fn new(
         snapshot: &'snapshot DeploySnapshot,
-        namespace: &Namespace,
-        volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
-        deployed_volumes: &BTreeSet<DockerVolumeName>,
-        first_copies: &'snapshot BTreeMap<DockerVolumeName, MachineId>,
+        intent: &'snapshot DeployIntent,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
-        operator: Operator,
     ) -> Result<Self, PlanError> {
         reject_mixed_volume_modes(&managed_volume_uses(requested))?;
         let plan = Self {
             snapshot,
-            namespace: namespace.clone(),
-            volume_names,
+            namespace: intent.namespace.clone(),
+            volume_names: &intent.volume_names,
             deployed_volumes: managed_volume_uses(requested)
                 .into_keys()
-                .filter(|name| deployed_volumes.contains(name))
+                .filter(|name| intent.deployed_volumes.contains(name))
                 .collect(),
-            first_copies,
+            first_copies: &intent.first_copies,
             global: managed_volume_uses(target)
                 .into_iter()
                 .filter(|(_, uses)| uses.iter().any(|volume_use| volume_use.global))
@@ -123,7 +119,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                     (name, services)
                 })
                 .collect(),
-            operator,
+            operator: intent.options.mode().operator(),
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target, requested)?;
@@ -406,7 +402,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             replaces: self
                 .first_copies
                 .get(&id.name)
-                .filter(|machine| **machine != id.machine_id)
+                .filter(|machine| self.snapshot.machine(**machine).is_none())
                 .copied(),
         })
     }

@@ -1076,16 +1076,7 @@ fn assemble_plan(
     for spec in &requested {
         placement::validate_host_ports(spec)?;
     }
-    let mut volume_plan = VolumePlan::new(
-        snapshot,
-        &intent.namespace,
-        &intent.volume_names,
-        &intent.deployed_volumes,
-        &intent.first_copies,
-        &target,
-        &requested,
-        intent.options.mode().operator(),
-    )?;
+    let mut volume_plan = VolumePlan::new(snapshot, intent, &target, &requested)?;
     let name_errors_with_service = requested.len() > 1;
     let blocks_unmountable = intent.options.mode().blocks_unmountable();
     let mut reservations = PlacementReservations::new(snapshot);
