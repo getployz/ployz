@@ -49,7 +49,9 @@ what is missing or invalid.
 | `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID`, `POLAR_SERVER` | no | all or none; none disables billing and every Organization is unlimited |
 | `UPTIME_ENABLED` | no | `true` on the dashboard when an uptime checker (`uptime/`) runs; unset hides uptime |
 | `AUTOMATIC_UPGRADE_RELEASE_AGE_HOURS` | no | how old a release must be before automatic upgrades take it; defaults to `72`, `0` takes it as soon as it's out. Manual upgrades never wait |
-| `ANALYTICS_ENABLED` | no | `true` on a Self-hosted Cloud to issue analytics salts and store pageviews; Ployz-hosted Cloud is always on |
+| `ANALYTICS_ENABLED` | no | `true` on a Self-hosted Cloud to issue analytics salts and read pageviews; Ployz-hosted Cloud is always on |
+| `OBSERVE_CLICKHOUSE_URL` | no | ClickHouse HTTP address web analytics read requests from; unset, the Analytics page is off. Self-host: `http://clickhouse:8123` with the observe profile |
+| `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | no | Credentials for it; the user defaults to `default` |
 | `POSTHOG_KEY`, `POSTHOG_HOST` | no | product analytics, Ployz-hosted only; no key disables it. `POSTHOG_HOST` defaults to PostHog US Cloud; `pnpm posthog:backfill` sends existing users and Organizations once |
 
 ## Build and deploy
