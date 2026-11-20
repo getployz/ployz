@@ -136,6 +136,16 @@ pub(super) struct DeployService {
     sealing: Option<ployz_core::Sealing>,
     /// It mints and reads Build Grants, as a Machine a GitHub build pushes to.
     grants: bool,
+    /// It checks a rule's builds: the first creation proved by a token gets this verified
+    /// build back, and the token has expired by the next, so only the verified build
+    /// admits a creation after it.
+    rule_checks: Option<RuleChecks>,
+}
+
+#[derive(Clone)]
+struct RuleChecks {
+    issues: ployz_core::authority::VerifiedBuild,
+    expired: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +229,7 @@ impl DeployService {
             rival_proxy: false,
             sealing: None,
             grants: false,
+            rule_checks: None,
         }
     }
 
@@ -284,6 +295,34 @@ impl DeployService {
     }
 
     /// It mints Build Grants, and reads each as having received nothing yet.
+    pub(super) fn checking_rules(mut self, issues: ployz_core::authority::VerifiedBuild) -> Self {
+        self.rule_checks = Some(RuleChecks {
+            issues,
+            expired: Arc::default(),
+        });
+        self
+    }
+
+    /// The verified build a creation under a rule gets back, or the refusal a Server
+    /// gives one whose proof no longer holds.
+    fn check_rule(
+        &self,
+        proof: Option<&ployz_core::authority::RuleProof>,
+    ) -> Result<Option<ployz_core::authority::VerifiedBuild>, RpcError> {
+        use ployz_core::authority::RuleEvidence;
+        let Some(checks) = &self.rule_checks else {
+            return Ok(None);
+        };
+        match proof.map(|proof| &proof.evidence) {
+            Some(RuleEvidence::Online(_)) if !checks.expired.swap(true, Ordering::SeqCst) => {
+                Ok(Some(checks.issues))
+            }
+            Some(RuleEvidence::Verified(verified)) if *verified == checks.issues => Ok(None),
+            Some(RuleEvidence::Online(_)) => Err(RpcError::forbidden("the image token expired")),
+            _ => Err(RpcError::forbidden("no proof of the rule's build")),
+        }
+    }
+
     pub(super) fn minting_grants(mut self) -> Self {
         self.grants = true;
         self
@@ -1151,6 +1190,17 @@ impl FakeMachine for DeployService {
             return Err(Status::invalid_argument("expected ensure_container"));
         };
         let want = ensure.want.clone();
+        let mut verified = None;
+        if let ployz_core::ContainerWant::Running {
+            container: RunTarget::New(_),
+            ..
+        } = &want
+        {
+            match self.check_rule(ensure.rule.as_deref()) {
+                Ok(issued) => verified = issued,
+                Err(refusal) => return encoded(RpcResponse::from(refusal)),
+            }
+        }
         let settled = matches!(
             &want,
             ployz_core::ContainerWant::Running { container: RunTarget::New(new), .. }
@@ -1291,7 +1341,7 @@ impl FakeMachine for DeployService {
         encoded(RpcResponse::from(EnsuredContainer::Ensured {
             now,
             health,
-            verified: None,
+            verified,
         }))
     }
     async fn exec(

@@ -11,7 +11,7 @@ use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, NewContainer, RegistryAuth, RunTarget,
     ServiceName,
     authority::{
-        ImageDigest, PayloadDigest, RuleProof, ServiceVersion, Signed, VerifiedBuild,
+        ImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed, VerifiedBuild,
         version::MAX_PRESENTED,
     },
 };
@@ -109,20 +109,9 @@ impl KeptVersions {
                 organization,
             } => {
                 let organization = organization.clone();
-                crate::sdk::store_call(store, move |store| {
-                    let service = (&query.namespace, &query.service);
-                    let versions = store.versions_for(&organization, service, digest)?;
-                    let rule = match query.image {
-                        Some(image) => store.verified_proof(&organization, service, image)?,
-                        None => None,
-                    };
-                    Ok(ployz_store::VersionsView {
-                        versions,
-                        rule: rule.map(Box::new),
-                    })
-                })
-                .await
-                .map_err(Failure::from)
+                crate::sdk::store_call(store, move |store| store.versions(&organization, &query))
+                    .await
+                    .map_err(Failure::from)
             }
             Self::Cloud(credential) => crate::cloud_account::config_store::<View>(
                 credential,
@@ -184,6 +173,43 @@ impl RuleProofs {
                 ))
             })
             .collect()
+    }
+
+    /// The proof a change of `want` carries: its Service's, or for a step on a Container
+    /// named only by ID, any of the Deploy's, since such a step needs only the rule's
+    /// Environment. Once a Server issued a verified build for that Service, the proof
+    /// carries it in place of the token, which may have expired since: a pre-deploy hook
+    /// can outlast it.
+    fn carried(&self, want: &ContainerWant) -> Option<Box<RuleProof>> {
+        let service = match want {
+            ContainerWant::Running {
+                container: RunTarget::New(new),
+                ..
+            } => Some(&new.slot.service),
+            ContainerWant::Held { container, .. }
+            | ContainerWant::Out { container, .. }
+            | ContainerWant::Stopped { container, .. }
+            | ContainerWant::Gone { container, .. }
+            | ContainerWant::Running {
+                container: RunTarget::Existing(container),
+                ..
+            } => match container {
+                ContainerLocator::Key(slot) => Some(&slot.service),
+                ContainerLocator::Id(_) => None,
+            },
+        };
+        let (service, proof) = service
+            .and_then(|service| self.rules.get_key_value(service))
+            .or_else(|| self.rules.iter().next())?;
+        let mut proof = proof.clone();
+        let issued = self
+            .issued
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(verified) = issued.get(service) {
+            proof.evidence = RuleEvidence::Verified(*verified);
+        }
+        Some(Box::new(proof))
     }
 }
 
@@ -280,41 +306,10 @@ impl DeployContext {
             ) => Vec::new(),
         };
         Carried {
-            rule: proof_for(&self.approvals.proofs.rules, want),
+            rule: self.approvals.proofs.carried(want),
             versions,
         }
     }
-}
-
-/// The proof in `proofs` a change of `want` carries: its Service's, or for a step on a
-/// Container named only by ID, any of the Deploy's, since such a step needs only the
-/// rule's Environment.
-fn proof_for(
-    proofs: &BTreeMap<ServiceName, RuleProof>,
-    want: &ContainerWant,
-) -> Option<Box<RuleProof>> {
-    let service = match want {
-        ContainerWant::Running {
-            container: RunTarget::New(new),
-            ..
-        } => Some(&new.slot.service),
-        ContainerWant::Held { container, .. }
-        | ContainerWant::Out { container, .. }
-        | ContainerWant::Stopped { container, .. }
-        | ContainerWant::Gone { container, .. }
-        | ContainerWant::Running {
-            container: RunTarget::Existing(container),
-            ..
-        } => match container {
-            ContainerLocator::Key(slot) => Some(&slot.service),
-            ContainerLocator::Id(_) => None,
-        },
-    };
-    service
-        .and_then(|service| proofs.get(service))
-        .or_else(|| proofs.values().next())
-        .cloned()
-        .map(Box::new)
 }
 
 #[cfg(test)]
