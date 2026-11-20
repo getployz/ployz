@@ -279,7 +279,7 @@ pub struct VersionsView {
     /// The newest verified build kept for `image` under the Environment's rule, which a
     /// Server takes in place of a signed version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "unknown")]
+    #[ts(optional)]
     pub rule: Option<Box<RuleProof>>,
 }
 

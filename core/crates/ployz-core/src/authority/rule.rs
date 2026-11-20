@@ -558,7 +558,6 @@ pub fn template(
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuleProof {
-    #[ts(type = "unknown")]
     pub rule: Signed<AutoDeployRule>,
     pub evidence: RuleEvidence,
     pub claim: BuildClaim,
