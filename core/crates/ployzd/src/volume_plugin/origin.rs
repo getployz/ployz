@@ -9,7 +9,7 @@
 //!
 //! Every reader goes through [`VolumeStorage::origin_of`]. `None` is Legacy throughout.
 
-use ployz_core::{SnapshotGuid, VolumeOrigin};
+use ployz_core::{SnapshotGuid, SnapshotName, VolumeOrigin};
 
 use super::{PluginError, Result, VolumeStorage, marks::Mark};
 
@@ -31,6 +31,10 @@ impl Point {
     /// `local`. ZFS shows a value `zfs receive -p` wrote as `received` on `fs` only, never
     /// on its snapshots, so the source is read off `fs`. Any other source refuses: the
     /// value was not stamped here.
+    ///
+    /// ZFS prints a source into 128 bytes, so a long `fs` shows a cut `inherited from`.
+    /// A snapshot whose own `fs` holds the value locally inherits it from that `fs`, so a
+    /// cut prefix of the full source names it as well.
     pub(super) fn parse(output: &str, fs: &str, snapshot: &str) -> Result<Self> {
         let invalid =
             || PluginError::from(format!("unexpected ZFS output for {snapshot}: {output:?}"));
@@ -66,13 +70,15 @@ impl Point {
         };
         let guid = guid.parse().map(SnapshotGuid::new).map_err(|_| invalid())?;
         let inherited = format!("inherited from {fs}");
+        let inherits =
+            |source: &str| source.starts_with("inherited from ") && inherited.starts_with(source);
         let origin = match (on_snapshot, on_fs) {
             (("-", "-"), ("-", "-")) => None,
-            ((value, source), (stamped, "local")) if source == inherited && value == stamped => {
+            ((value, source), (stamped, "local")) if inherits(source) && value == stamped => {
                 Some(parse_origin(value, fs)?)
             }
             ((_, source), (_, fs_source)) => {
-                return Err(PluginError::from(format!(
+                return Err(PluginError::Unstamped(format!(
                     "{snapshot} carries an origin this Machine did not stamp ({source}; {fs} {fs_source})"
                 )));
             }
@@ -83,7 +89,7 @@ impl Point {
 
 fn parse_origin(value: &str, dataset: &str) -> Result<VolumeOrigin> {
     VolumeOrigin::parse(value).map_err(|error| {
-        PluginError::from(format!(
+        PluginError::Unstamped(format!(
             "{dataset} carries an unreadable origin {value:?}: {error}"
         ))
     })
@@ -98,7 +104,7 @@ impl VolumeStorage {
         match output.trim_end_matches('\n').split_once('\t') {
             Some(("-", "-")) => Ok(None),
             Some((value, "local")) => parse_origin(value, dataset).map(Some),
-            _ => Err(PluginError::from(format!(
+            _ => Err(PluginError::Unstamped(format!(
                 "{dataset} carries {mark} that this Machine did not set: {output:?}"
             ))),
         }
@@ -109,21 +115,23 @@ impl VolumeStorage {
         self.local_origin(parent, Mark::PullOrigin).await
     }
 
-    /// The origin of a copy: the slot's pending record if it has one, else what `dataset`
-    /// carries. `parent` is the slot parent for a slot's copy, `None` for a root.
-    /// `dataset` is `None` for a slot that has no `fs` yet.
+    /// The origin of a copy: the slot's pending record if it has one, else what the copy
+    /// carries. `parent` is the slot parent for a slot's copy, `None` for a root. `copy`
+    /// is the copy's dataset with its newest snapshot, `None` for a slot with no `fs` yet.
+    /// A copy with a snapshot is read with it, as [`Self::point`] reads what a send sends.
     pub(super) async fn origin_of(
         &self,
         parent: Option<&str>,
-        dataset: Option<&str>,
+        copy: Option<(&str, Option<&SnapshotName>)>,
     ) -> Result<Origin> {
         if let Some(parent) = parent
             && let Some(record) = self.record(parent).await?
         {
             return Ok(Some(record));
         }
-        match dataset {
-            Some(dataset) => self.local_origin(dataset, Mark::Origin).await,
+        match copy {
+            Some((fs, Some(newest))) => Ok(self.point(fs, newest.as_str()).await?.origin),
+            Some((fs, None)) => self.local_origin(fs, Mark::Origin).await,
             None => Ok(None),
         }
     }
@@ -215,5 +223,27 @@ mod tests {
         ] {
             assert!(Point::parse(&refused, FS, AT).is_err(), "{refused}");
         }
+    }
+
+    /// OpenZFS 2.2 prints `inherited from <fs>` into 128 bytes.
+    #[test]
+    fn a_long_filesystem_carries_its_origin_though_zfs_cuts_its_source() {
+        let fs = format!("tank/ployz-mirror/{}/fs", "v".repeat(100));
+        let at = format!("{fs}@w-1-2");
+        let cut = format!("inherited from {fs}")
+            .get(..127)
+            .unwrap()
+            .to_owned();
+        let read = |fs_source: &str| {
+            Point::parse(
+                &format!(
+                    "{at}\tguid\t12\t-\n{at}\tployz:origin\t{ORIGIN}\t{cut}\n{fs}\tployz:origin\t{ORIGIN}\t{fs_source}\n"
+                ),
+                &fs,
+                &at,
+            )
+        };
+        assert!(read("local").unwrap().origin.is_some());
+        assert!(read("received").is_err());
     }
 }

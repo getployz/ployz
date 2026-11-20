@@ -156,6 +156,11 @@ if [ -e '{props}/stall-command' ] && [ "$(cat '{props}/stall-command')" = "$*" ]
 fi
 case "$*" in
   'list -H -o name -t filesystem')
+    # props/list-cut, and props/datasets-cut below: ZFS stopped iterating, said so on
+    # stderr, and still exited 0.
+    if [ -e '{props}/list-cut' ]; then
+      printf 'tank\ntank/ployz\n'; echo 'cannot iterate filesystems: I/O error' >&2; exit 0
+    fi
     for d in tank tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} tank/ployz-mirror tank/ployz-mirror/copy tank/ployz-mirror/copy/fs tank/ployz-mirror/data tank/ployz-mirror/data/fs tank/ployz-mirror/{seed} tank/ployz-mirror/{seed}/fs; do
       ! exists "$d" || printf '%s\n' "$d"
     done
@@ -167,6 +172,9 @@ case "$*" in
     ;;
   'list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r tank')
     if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
+    if [ -e '{props}/datasets-cut' ]; then
+      printf 'tank\t0\t0\t0\t0\t/tank\tyes\toff\n'; echo 'cannot iterate filesystems: I/O error' >&2; exit 0
+    fi
     if [ -e '{hold_list}' ]; then
       touch '{list_held}'
       while [ -e '{hold_list}' ]; do sleep 0.01; done

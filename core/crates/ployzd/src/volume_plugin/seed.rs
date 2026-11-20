@@ -17,7 +17,7 @@ use ployzd::{
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{
-    Dataset, VolumeName, VolumeStorage,
+    Dataset, PluginError, VolumeName, VolumeStorage,
     inspect::{answering, internal},
     marks::{Mark, Marks},
     origin::Origin,
@@ -180,16 +180,6 @@ impl VolumeStorage {
             SeedProgress::Taken => Err(SwitchError::Precondition
                 .rpc_error(format!("Volume {into} already exists on this Machine"))),
             SeedProgress::Renamed(renamed) => {
-                // Only a rename without completion leaves a record behind it, and the root
-                // may not carry the origin the record names.
-                if let Some(parent) = &renamed.parent
-                    && self.record(parent).await.map_err(internal)?.is_some()
-                {
-                    return Err(SwitchError::Precondition.rpc_error(format!(
-                        "{} left slot {parent} before its origin was stamped; forget it and seed again",
-                        renamed.root
-                    )));
-                }
                 renamed.finish_landing(self).await?;
                 self.seeded(&pool, &into).await
             }
@@ -336,7 +326,13 @@ impl VolumeStorage {
         let read = self
             .point(&root, point.name.as_str())
             .await
-            .map_err(|error| SwitchError::Precondition.rpc_error(error.to_string()))?;
+            .map_err(|error| {
+                if let PluginError::Unstamped(message) = error {
+                    SwitchError::Precondition.rpc_error(message)
+                } else {
+                    internal(error)
+                }
+            })?;
         if read.guid != guid {
             return Err(SwitchError::RestorePointGone.rpc_error(format!(
                 "restore point {guid} is no longer on Volume {name}"

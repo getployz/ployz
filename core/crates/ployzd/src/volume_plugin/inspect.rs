@@ -113,6 +113,24 @@ pub(super) fn internal(error: PluginError) -> RpcError {
     }
 }
 
+/// Every snapshot of `dataset` as `name<TAB>guid<TAB>creation`, newest first by
+/// transaction group (creation time ties within a second).
+fn snapshot_listing(dataset: &str) -> [&str; 11] {
+    [
+        "list",
+        "-Hp",
+        "-t",
+        "snapshot",
+        "-o",
+        "name,guid,creation",
+        "-S",
+        "createtxg",
+        "-d",
+        "1",
+        dataset,
+    ]
+}
+
 impl VolumeStorage {
     /// A dataset's user property, or `None` when ZFS reports it unset (`-`).
     pub(super) async fn property(&self, dataset: &str, property: &str) -> Result<Option<String>> {
@@ -147,29 +165,15 @@ impl VolumeStorage {
         Ok(RootMarks { cut, promote })
     }
 
-    /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
-    /// transaction group (creation time ties within a second).
     async fn list_snapshots(&self, dataset: &str) -> Result<String> {
-        self.zfs(&[
-            "list",
-            "-Hp",
-            "-t",
-            "snapshot",
-            "-o",
-            "name,guid,creation",
-            "-S",
-            "createtxg",
-            "-d",
-            "1",
-            dataset,
-        ])
-        .await
+        self.zfs(&snapshot_listing(dataset)).await
     }
 
-    /// The full `<dataset>@<name>` of every snapshot, whatever its name.
+    /// The full `<dataset>@<name>` of every snapshot, whatever its name, from a listing
+    /// ZFS finished: a snapshot missing from it is absent.
     pub(super) async fn snapshot_names(&self, dataset: &str) -> Result<Vec<String>> {
         Ok(self
-            .list_snapshots(dataset)
+            .zfs_listing(&snapshot_listing(dataset))
             .await?
             .lines()
             .filter_map(|line| line.split('\t').next())
@@ -205,7 +209,7 @@ impl VolumeStorage {
         Ok(snapshots)
     }
 
-    async fn newest_snapshot(&self, dataset: &str) -> Result<Option<Snapshot>> {
+    pub(super) async fn newest_snapshot(&self, dataset: &str) -> Result<Option<Snapshot>> {
         Ok(self.snapshots(dataset).await?.into_iter().next())
     }
 
@@ -259,10 +263,17 @@ impl VolumeStorage {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             root.require_provisioned(name)?;
             let copy = RootCopy::parse(root, self.root_marks(root).await?);
+            let newest = self.newest_snapshot(&root.name).await?;
+            let origin = self
+                .origin_of(
+                    None,
+                    Some((&root.name, newest.as_ref().map(|newest| &newest.name))),
+                )
+                .await?;
             return Ok(Some(copy.view(
-                self.newest_snapshot(&root.name).await?,
+                newest,
                 self.marks(&root.name).epoch().await?,
-                self.origin_of(None, Some(&root.name)).await?,
+                origin,
             )));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
@@ -281,6 +292,12 @@ impl VolumeStorage {
             .pull(slot, name, newest.as_ref(), resume_token.is_some())
             .await?
             .unzip();
+        let origin = self
+            .origin_of(
+                Some(&slot.name),
+                fs.map(|fs| (fs.name.as_str(), newest.as_ref().map(|newest| &newest.name))),
+            )
+            .await?;
         Ok(Some(VolumeCopy::Slot {
             slot: self.slot_id(&slot.name).await?,
             readonly,
@@ -289,9 +306,7 @@ impl VolumeStorage {
             pull,
             role: Some(self.marks(&slot.name).role().await?),
             pull_state,
-            origin: self
-                .origin_of(Some(&slot.name), fs.map(|fs| fs.name.as_str()))
-                .await?,
+            origin,
         }))
     }
 

@@ -31,7 +31,8 @@ impl VolumeStorage {
             .await
             .map_err(internal)?
             .ok_or_else(|| unknown("no Machine Pool is imported on this Machine".to_owned()))?;
-        let datasets = self.datasets(&pool).await.map_err(internal)?;
+        // Every 404 below is an absence, judged only from listings ZFS finished.
+        let datasets = self.complete_datasets(&pool).await.map_err(internal)?;
         let pulled = || {
             SwitchError::Busy.rpc_error(format!(
                 "Volume {name} is still being pulled on this Server"
@@ -40,25 +41,22 @@ impl VolumeStorage {
         if self.receives.status(&name).busy() {
             return Err(pulled());
         }
+        // A slot parent's marks hold whatever sits beside it: a root parked or landed next
+        // to a stale parent sends only once that parent is clean.
+        if let Some(parent) = Self::slot(&datasets, &pool, &name) {
+            let marks = self.marks(&parent.name);
+            if marks.is_set(Mark::Pull).await.map_err(internal)?
+                || marks.is_set(Mark::PullOrigin).await.map_err(internal)?
+            {
+                return Err(pulled());
+            }
+        }
         let dataset = match Self::dataset(&datasets, &pool, &name).map_err(internal)? {
             Some(root) => root.name.clone(),
-            None => {
-                let (Some(parent), Some(fs)) = (
-                    Self::slot(&datasets, &pool, &name),
-                    Self::slot_fs(&datasets, &pool, &name),
-                ) else {
-                    return Err(unknown(format!(
-                        "Volume {name} has no writer on this Machine"
-                    )));
-                };
-                let marks = self.marks(&parent.name);
-                if marks.is_set(Mark::Pull).await.map_err(internal)?
-                    || marks.is_set(Mark::PullOrigin).await.map_err(internal)?
-                {
-                    return Err(pulled());
-                }
-                fs.name.clone()
-            }
+            None => Self::slot_fs(&datasets, &pool, &name)
+                .ok_or_else(|| unknown(format!("Volume {name} has no writer on this Machine")))?
+                .name
+                .clone(),
         };
         let at = format!("{dataset}@{}", request.target);
         if !self

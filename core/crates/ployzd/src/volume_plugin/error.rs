@@ -22,6 +22,9 @@ pub(super) enum PluginError {
     NotProvisioned { dataset: String },
     #[error(transparent)]
     Capacity(#[from] ployz_core::StorageCapacityError),
+    /// A dataset carries an origin this Machine did not stamp, or one it cannot read.
+    #[error("{0}")]
+    Unstamped(String),
     /// Every other refusal and failure, written where it happens: what ZFS or the host
     /// answered, or the request that was invalid.
     #[error("{0}")]

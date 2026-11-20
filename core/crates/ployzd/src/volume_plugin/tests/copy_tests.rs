@@ -4172,3 +4172,49 @@ async fn send_point_refuses_a_slot_still_marked_mid_pull() {
     );
     server.abort();
 }
+
+/// A listing ZFS cut short never reads as an empty slot: the occupied Legacy Mirror keeps
+/// its bytes and origin, and no record names the born stream.
+#[tokio::test]
+async fn a_cut_listing_never_lets_a_born_pull_stamp_an_occupied_mirror() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.born(BORN);
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    fs::write(test.0.join("props/list-cut"), "").unwrap();
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let failure = failed(&socket).await;
+    assert!(failure.contains("cannot iterate"), "{failure}");
+    assert_eq!(property(&test, SLOT, "ployz:pull-origin"), None);
+    assert_eq!(property(&test, SLOT_FS, "ployz:origin"), None);
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
+    server.abort();
+}
+
+/// What SendPoint answers 404 for is an absence a finished listing showed, and a parent
+/// still marked mid-pull holds back whatever sits beside it, a root included.
+#[tokio::test]
+async fn send_point_answers_a_cut_listing_or_a_marked_parent_as_no_absence() {
+    let point = json!({"name": "data", "target": "w-1-2"});
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mirror"]);
+    set_snapshots(&test, ROOT, &[("w-1-2", 12)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    let reply = post(&socket, "/Volume.SendPoint", point.clone()).await;
+    assert_eq!(
+        reply.pointer("/Err/code"),
+        Some(&json!("conflict")),
+        "{reply}"
+    );
+    fs::remove_file(test.0.join("props").join(SLOT).join("ployz:pull")).unwrap();
+    fs::write(test.0.join("props/datasets-cut"), "").unwrap();
+    let reply = post(&socket, "/Volume.SendPoint", point).await;
+    let code = reply.pointer("/Err/code");
+    assert!(
+        code.is_some() && code != Some(&json!("not_found")),
+        "{reply}"
+    );
+    server.abort();
+}

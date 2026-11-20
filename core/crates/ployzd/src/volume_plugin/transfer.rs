@@ -475,30 +475,39 @@ impl VolumeStorage {
                 .map(|value| value.to_str().unwrap_or_default()),
         )
         .map_err(|error| failed(format!("{} answered {error}", opened.shown)))?;
-        let fs_exists = self
-            .exists(fs)
-            .await
-            .map_err(|error| failed(error.to_string()))?;
         let record = self
             .record(parent)
             .await
             .map_err(|error| failed(error.to_string()))?;
-        if fs_exists || record.is_some() {
-            let held = match record {
-                Some(record) => Some(record),
-                None => self
-                    .origin_of(None, Some(fs))
+        // An absent `fs` lets any origin in, so absence comes only from a finished listing.
+        let held = match record {
+            Some(record) => Some(Some(record)),
+            None if self
+                .exists(fs)
+                .await
+                .map_err(|error| failed(error.to_string()))? =>
+            {
+                let newest = self
+                    .newest_snapshot(fs)
                     .await
-                    .map_err(|error| failed(error.to_string()))?,
-            };
-            if held != sent {
-                return Err(failed(format!(
-                    "{} sent data of origin {}, and {fs} holds origin {}; this Server keeps its copy",
-                    opened.shown,
-                    shown_origin(sent),
-                    shown_origin(held)
-                )));
+                    .map_err(|error| failed(error.to_string()))?;
+                Some(
+                    self.origin_of(None, Some((fs, newest.as_ref().map(|newest| &newest.name))))
+                        .await
+                        .map_err(|error| failed(error.to_string()))?,
+                )
             }
+            None => None,
+        };
+        if let Some(held) = held
+            && held != sent
+        {
+            return Err(failed(format!(
+                "{} sent data of origin {}, and {fs} holds origin {}; this Server keeps its copy",
+                opened.shown,
+                shown_origin(sent),
+                shown_origin(held)
+            )));
         }
         if record == sent {
             return Ok(());

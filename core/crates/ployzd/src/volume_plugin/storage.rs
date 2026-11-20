@@ -314,16 +314,16 @@ impl VolumeStorage {
     }
 
     pub(super) async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
-        let output = self
-            .zfs(&[
-                "list",
-                "-Hp",
-                "-o",
-                "name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly",
-                "-r",
-                pool.name(),
-            ])
-            .await?;
+        Self::parse_datasets(pool, &self.zfs(&dataset_listing(pool)).await?)
+    }
+
+    /// [`Self::datasets`] from a listing that ZFS finished, for an answer that says a
+    /// dataset is absent.
+    pub(super) async fn complete_datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
+        Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)
+    }
+
+    fn parse_datasets(pool: &MachinePool, output: &str) -> Result<Vec<Dataset>> {
         output
             .lines()
             .map(|line| Dataset::parse(line, pool.name()))
@@ -364,13 +364,32 @@ impl VolumeStorage {
 
     pub(super) async fn exists(&self, dataset: &str) -> Result<bool> {
         let names = self
-            .zfs(&["list", "-H", "-o", "name", "-t", "filesystem"])
+            .zfs_listing(&["list", "-H", "-o", "name", "-t", "filesystem"])
             .await?;
         Ok(names.lines().any(|name| name == dataset))
     }
 
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {
         checked_command(&self.zfs, args).await
+    }
+
+    /// Like [`Self::zfs`], for a listing an absence is judged from. ZFS exits 0 when it
+    /// stopped iterating on an error and says so only on stderr, so any stderr fails it.
+    pub(super) async fn zfs_listing(&self, args: &[&str]) -> Result<String> {
+        let output = run_command(&self.zfs, args).await;
+        if let Ok(output) = &output
+            && output.status.success()
+            && !output.stderr.trim_ascii().is_empty()
+        {
+            return Err(format!(
+                "{} {} stopped early: {}",
+                self.zfs.display(),
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
+        checked_output(&self.zfs, args, output)
     }
 
     /// What this Machine holds for `name` in `datasets`, if anything, with `receiving`
@@ -634,6 +653,17 @@ fn parse_size(value: &str) -> Result<u64> {
     amount
         .checked_mul(multiplier)
         .ok_or_else(|| format!("Volume size {value:?} overflows bytes").into())
+}
+
+fn dataset_listing(pool: &MachinePool) -> [&str; 6] {
+    [
+        "list",
+        "-Hp",
+        "-o",
+        "name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly",
+        "-r",
+        pool.name(),
+    ]
 }
 
 pub(super) async fn run_command(program: &PathBuf, args: &[&str]) -> io::Result<Output> {
