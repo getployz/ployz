@@ -59,9 +59,17 @@
 //! The whole product is millions of states, so each `Scenario` checks one bounded
 //! slice of it.
 //!
+//! With Cloud honest, the row lock and the owner checks (`requireOwner`, `commitMove`)
+//! keep late promotes to one Writer, and floors and the expected copy are a second
+//! fence: removing either alone keeps `never two Writers` on three Machines, and the
+//! floors' own break needs the owner checks gone too, on two. Prepare's
+//! `admit_plain_mount` and Create's forgotten-origin check are each the only fence for
+//! the late Deploy steps they stop.
+//!
 //! Out of scope: operator collisions, a forged step, a Deploy that takes over a Move's
 //! lane (`fenceTaken`, `fenceFollowed`), the rowless mirror sync, a demote, warm rounds
-//! beyond one pull, and a third takeover. Of the resize: real capacities and floors (one
+//! beyond one pull, a third takeover, and a first Deploy's late step while no copy
+//! exists yet, since every start has a Writer (#4466). Of the resize: real capacities and floors (one
 //! Machine either takes the target or not, and a floor never moves), ZFS (a bound is one
 //! value per copy), the Store's record transaction (one atomic step on the lock row), a
 //! second resize, a resize during or after the Move (a late `SetVolumeSize` may land
@@ -971,8 +979,6 @@ struct Broken {
     shrink_keeps_refused_record: bool,
     /// A Machine admits an Operator's Writer start that creates a Container.
     start_gate: bool,
-    /// `plan` reads every request's expected copy as the copy the Machine holds.
-    expect: bool,
     /// Prepare skips `admit_plain_mount`.
     plain_mount: bool,
     /// Create makes a fresh root on a Machine that forgot its copy.
@@ -1585,15 +1591,10 @@ impl VolumeRuns {
             | Want::Create
             | Want::Start => None,
         };
-        let expect = if self.broken.expect {
-            expect_of(host.copy)
-        } else {
-            request.expect
-        };
         let plan = ployz_core::plan(
             volume_copy(host.copy, to).as_ref(),
             start == Some(StartState::Running),
-            &expected(expect, to),
+            &expected(request.expect, to),
             &wanted(request.want),
         );
         let transition = match plan {
