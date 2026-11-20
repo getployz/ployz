@@ -45,7 +45,15 @@ impl LocalDocker {
                     let (_, service) = labels::service_pair(&labelled)?;
                     Some((id, service))
                 });
-        let read = join_all(containers.map(|(id, service)| self.read_stats(id, service))).await;
+        let machine_memory = self
+            .client
+            .info()
+            .await?
+            .mem_total
+            .and_then(|total| u64::try_from(total).ok());
+        let read =
+            join_all(containers.map(|(id, service)| self.read_stats(id, service, machine_memory)))
+                .await;
         Ok(read.into_iter().flatten().collect())
     }
 
@@ -53,6 +61,7 @@ impl LocalDocker {
         &self,
         id: ContainerId,
         service: QualifiedService,
+        machine_memory: Option<u64>,
     ) -> Option<LiveContainer> {
         let options = StatsOptionsBuilder::default()
             .stream(false)
@@ -67,7 +76,7 @@ impl LocalDocker {
             }
             Ok(None) | Err(_) => return None,
         };
-        Some(live(id, service, &stats))
+        Some(live(id, service, &stats, machine_memory))
     }
 }
 
@@ -75,6 +84,7 @@ fn live(
     container_id: ContainerId,
     service: QualifiedService,
     stats: &ContainerStatsResponse,
+    machine_memory: Option<u64>,
 ) -> LiveContainer {
     let networks = stats.networks.as_ref();
     let network = |bytes: fn(&bollard::models::ContainerNetworkStats) -> Option<u64>| {
@@ -105,12 +115,18 @@ fn live(
         service,
         cpu: cpu(stats),
         mem_bytes: memory.and_then(in_use),
-        mem_limit: memory.and_then(|memory| memory.limit),
+        mem_limit: own_limit(memory.and_then(|memory| memory.limit), machine_memory),
         rx: network(|network| network.rx_bytes),
         tx: network(|network| network.tx_bytes),
         io_r: blkio("read"),
         io_w: blkio("write"),
     }
+}
+
+/// Docker reports the Machine's memory as the limit of a container that has none. Without a
+/// Machine total to tell the two apart, no limit is claimed.
+fn own_limit(limit: Option<u64>, machine_memory: Option<u64>) -> Option<u64> {
+    limit.filter(|limit| Some(*limit) < machine_memory)
 }
 
 /// Memory as `docker stats` shows it: page cache the kernel can drop is not in use. Its
@@ -151,7 +167,7 @@ mod tests {
 
     use bollard::models::ContainerMemoryStats;
 
-    use super::in_use;
+    use super::{in_use, own_limit};
 
     fn memory(stat: &str) -> ContainerMemoryStats {
         ContainerMemoryStats {
@@ -165,5 +181,14 @@ mod tests {
     fn page_cache_is_left_out_under_cgroup_v1_and_v2() {
         assert_eq!(in_use(&memory("total_inactive_file")), Some(100));
         assert_eq!(in_use(&memory("inactive_file")), Some(100));
+    }
+
+    #[test]
+    fn a_container_without_its_own_limit_claims_none() {
+        let machine = Some(4_100);
+        assert_eq!(own_limit(Some(512), machine), Some(512));
+        assert_eq!(own_limit(Some(4_100), machine), None);
+        assert_eq!(own_limit(Some(512), None), None);
+        assert_eq!(own_limit(None, machine), None);
     }
 }

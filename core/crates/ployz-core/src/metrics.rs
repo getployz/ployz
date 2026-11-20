@@ -105,7 +105,7 @@ pub struct LiveContainer {
     pub cpu: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mem_bytes: Option<u64>,
-    /// The Machine's memory when the container has no limit of its own.
+    /// The container's own memory limit. None when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mem_limit: Option<u64>,
     /// Bytes in and out since the container started.

@@ -33,11 +33,13 @@ pub(crate) fn report(live: &LiveMetrics, subject: &str) -> Table {
         .filter_map(|container| container.cpu)
         .reduce(|total, cpu| total + cpu);
     let shown = |value: Option<String>| value.unwrap_or_else(|| "not measured".to_owned());
-    let memory = sum(|container| container.mem_bytes).map(|used| {
-        match sum(|container| container.mem_limit) {
-            Some(limit) => format!("{} / {}", bytes(used), bytes(limit)),
-            None => bytes(used),
-        }
+    let limit = containers
+        .iter()
+        .map(|container| container.mem_limit)
+        .sum::<Option<u64>>();
+    let memory = sum(|container| container.mem_bytes).map(|used| match limit {
+        Some(limit) => format!("{} / {}", bytes(used), bytes(limit)),
+        None => bytes(used),
     });
     table.row(["Containers".to_owned(), containers.len().to_string()]);
     table.row([
