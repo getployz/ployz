@@ -289,18 +289,18 @@ impl Inner {
             &[config::BASE.as_bytes(), mask.as_bytes()],
         );
         let loaded = state.requests_loaded.as_deref() == Some(requests.as_bytes());
-        let ensured = service.ensure(desired).await?;
-        state.requests_loaded = Some(requests.into_bytes());
-        match ensured {
-            Ensure::Keep if loaded => Ok(()),
+        match service.ensure(desired).await? {
+            Ensure::Keep if loaded => {}
             // The requests config is out of the spec digest, so a new salt reloads the running
             // Collector, which keeps its file offsets, instead of replacing it.
             Ensure::Keep => {
                 service.signal("SIGHUP").await?;
-                wait_healthy().await
+                wait_healthy().await?;
             }
-            Ensure::Create | Ensure::Replace | Ensure::Start => wait_healthy().await,
+            Ensure::Create | Ensure::Replace | Ensure::Start => wait_healthy().await?,
         }
+        state.requests_loaded = Some(requests.into_bytes());
+        Ok(())
     }
 }
 
