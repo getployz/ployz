@@ -4193,6 +4193,45 @@ async fn a_cut_listing_never_lets_a_born_pull_stamp_an_occupied_mirror() {
     server.abort();
 }
 
+/// A snapshot listing ZFS cut short never names a newest point: Inspect and a pull both
+/// fail, and the born Mirror keeps its bytes, its origin and its resume token.
+#[tokio::test]
+async fn a_cut_snapshot_listing_names_no_newest_point() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.born(BORN);
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:origin", BORN);
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+    let cut = test.0.join("props").join(SLOT_FS).join("snapshots-cut");
+    fs::write(&cut, "").unwrap();
+
+    for (route, request) in [
+        ("/Volume.Copy.Inspect", json!({"name": "data"})),
+        ("/Volume.Copy.Pull", pull("w-1-2")),
+    ] {
+        let reply = post(&socket, route, request).await;
+        assert!(
+            reply.get("Err").is_some() && reply.to_string().contains("cannot iterate"),
+            "{route}: {reply}"
+        );
+    }
+    fs::remove_file(&cut).unwrap();
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:origin").as_deref(),
+        Some(BORN)
+    );
+    assert_eq!(
+        property(&test, SLOT_FS, "receive_resume_token").as_deref(),
+        Some("token-1")
+    );
+    assert_eq!(property(&test, SLOT, "ployz:pull-origin"), None);
+    assert!(!commands(&test).contains("zfs receive"));
+    server.abort();
+}
+
 /// What SendPoint answers 404 for is an absence a finished listing showed, and a parent
 /// still marked mid-pull holds back whatever sits beside it, a root included.
 #[tokio::test]

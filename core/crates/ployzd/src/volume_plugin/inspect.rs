@@ -165,15 +165,16 @@ impl VolumeStorage {
         Ok(RootMarks { cut, promote })
     }
 
+    /// Every snapshot of `dataset` from a listing ZFS finished. Whatever reads it judges a
+    /// snapshot missing from it absent, or the first one newest.
     async fn list_snapshots(&self, dataset: &str) -> Result<String> {
-        self.zfs(&snapshot_listing(dataset)).await
+        self.zfs_listing(&snapshot_listing(dataset)).await
     }
 
-    /// The full `<dataset>@<name>` of every snapshot, whatever its name, from a listing
-    /// ZFS finished: a snapshot missing from it is absent.
+    /// The full `<dataset>@<name>` of every snapshot, whatever its name.
     pub(super) async fn snapshot_names(&self, dataset: &str) -> Result<Vec<String>> {
         Ok(self
-            .zfs_listing(&snapshot_listing(dataset))
+            .list_snapshots(dataset)
             .await?
             .lines()
             .filter_map(|line| line.split('\t').next())

@@ -224,6 +224,11 @@ case "$*" in
   'list -Hp -t snapshot -o name,guid,creation -S createtxg -d 1 '*)
     require "${{11}}"
     f='{props}'/"${{11}}/snapshots"
+    # props/<dataset>/snapshots-cut: ZFS lost the newest snapshot mid-iteration, said so on
+    # stderr, and still exited 0.
+    if [ -e "$f-cut" ]; then
+      tail -n +2 "$f"; echo 'cannot iterate snapshots: I/O error' >&2; exit 0
+    fi
     [ ! -e "$f" ] || cat "$f"
     ;;
   'get -H -o property,value -s local all '*)
