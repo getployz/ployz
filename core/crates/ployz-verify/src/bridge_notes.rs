@@ -6,8 +6,8 @@
 //!
 //! What hosts each step. One `ployzd` process runs on the Machine. Each daemon start runs
 //! `NetworkPlane::start` (called from `start_planes` in core/crates/ployzd/src/daemon.rs), whose `ensure_docker_network`
-//! (:516-553) loads both notes (:540-541), readdresses the bridge when its IPv6 shape is wrong
-//! (:571-578), pins its members (:545) and starts the members written down (:546). The Machine
+//! (:516-554) loads both notes (:541-542), readdresses the bridge when its IPv6 shape is wrong
+//! (:572-579), pins its members (:546) and starts the members written down (:547). The Machine
 //! API is built and served only after `NetworkPlane::start` returns
 //! (`MachineApi::builder` and the `machine_api` serve arm in `start_planes`, core/crates/ployzd/src/daemon.rs), so the operator's own steps on a
 //! Container (`ContainerStep::Start`, `Stop` and `Hold`,
@@ -20,14 +20,14 @@
 //! The first finding: a member Docker refused to start stays in `bridge-stopped-members.json`
 //! (stopped.rs:64-73). The operator stops it between daemon starts, and nothing touches the note
 //! (`Lifecycle::stop`, core/crates/ployzd/src/docker/lifecycle.rs). The next daemon
-//! start's `Stopped::start` starts it again (:546, stopped.rs:60-79). A failed rewrite of the
+//! start's `Stopped::start` starts it again (:547, stopped.rs:60-79). A failed rewrite of the
 //! note after a start that Docker accepted keeps the member written down the same way
 //! (stopped.rs:80-93).
 //!
-//! The second finding: `Stopped::start` (:546) starts every member written down, whether or not
+//! The second finding: `Stopped::start` (:547) starts every member written down, whether or not
 //! `pin_members` rejoined it. `pin_members` returns before rejoining anything when its listing
-//! fails (:752-760), and records a member whose `rejoin_with` failed only in `unjoined`
-//! (:818-820), so a member still detached from the bridge is started.
+//! fails (:753-761), and records a member whose `rejoin_with` failed only in `unjoined`
+//! (:819-821), so a member still detached from the bridge is started.
 //!
 //! The fix variant (`BridgeNotes::fix`) reads each member's `MemberDebt` from the two notes, with
 //! their formats unchanged. Its `Stopped::start` pays a Start debt only once Docker shows the
@@ -80,7 +80,7 @@ const STARTS: u8 = 2;
 const CRASHES: u8 = 1;
 /// Starts Docker refuses, with a 500 or the netless 404.
 const REFUSED_STARTS: u8 = 1;
-/// Container listings that fail, in the readdress (:648) or the pin pass (:752).
+/// Container listings that fail, in the readdress (:649) or the pin pass (:753).
 const FAILED_LISTINGS: u8 = 1;
 /// Pinned connects Docker refuses, whose `connect(None)` fallback it then accepts or refuses.
 const REFUSED_CONNECTS: u8 = 1;
@@ -278,11 +278,11 @@ struct Container {
 /// The ployz bridge.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Bridge {
-    /// It fits but its IPv6 shape is not the one the start wants (:571-578).
+    /// It fits but its IPv6 shape is not the one the start wants (:572-579).
     Old,
     /// It fits.
     New,
-    /// No bridge stands: `inspect_network` answers 404 (:615).
+    /// No bridge stands: `inspect_network` answers 404 (:616).
     None,
 }
 
@@ -304,7 +304,7 @@ impl Seen {
 /// Why a member is in `bridge-stopped-members.json`, a ghost for the rows and the story.
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 enum Why {
-    /// `stop` wrote it down before stopping it (:880-885).
+    /// `stop` wrote it down before stopping it (:881-886).
     #[default]
     Noted,
     /// Docker refused its start with something other than a 404 (stopped.rs:67-73).
@@ -320,26 +320,26 @@ enum Why {
 /// Which pass a step belongs to.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Phase {
-    /// `readdress_docker_network` (:639-688).
+    /// `readdress_docker_network` (:640-689).
     Readdress,
-    /// `pin_members` (:751-823).
+    /// `pin_members` (:752-824).
     Pin,
 }
 
 /// One statement of `detach`, `stop` or `rejoin_with`.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Step {
-    /// The first disconnect (:841), or the pinned connect (:914-917).
+    /// The first disconnect (:842), or the pinned connect (:915-918).
     First,
-    /// `stop`'s inspect (:859-867) and `ployz_decide::bridge::settle`.
+    /// `stop`'s inspect (:860-868) and `ployz_decide::bridge::settle`.
     Inspect,
-    /// `stopped.note` (:881-884).
+    /// `stopped.note` (:882-885).
     Note,
-    /// `stop_container` (:887-892), after `settle` answered `settle`.
+    /// `stop_container` (:888-893), after `settle` answered `settle`.
     Stop(Settle),
-    /// The disconnect again (:844), or the pinned connect again (:920-923).
+    /// The disconnect again (:845), or the pinned connect again (:921-924).
     Again,
-    /// `connect(None)` (:925-930); `either`: Docker may refuse it too, after it refused the
+    /// `connect(None)` (:926-931); `either`: Docker may refuse it too, after it refused the
     /// pinned connect.
     Fallback { either: bool },
 }
@@ -347,23 +347,23 @@ enum Step {
 /// The statement a daemon start runs next.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum At {
-    /// `Stopped::load` and `Pins::load` (:540-541).
+    /// `Stopped::load` and `Pins::load` (:541-542).
     Load,
-    /// `inspect_network` (:568).
+    /// `inspect_network` (:569).
     Shape,
-    /// `bridge_members` (:648), or `bridge_containers` (:752).
+    /// `bridge_members` (:649), or `bridge_containers` (:753).
     List(Phase),
-    /// `pins.record` (:656, :769-777).
+    /// `pins.record` (:657, :770-778).
     Record(Phase),
-    /// `detach` of the member at `i` in the pass's order (:664, :805).
+    /// `detach` of the member at `i` in the pass's order (:665, :806).
     Detach { phase: Phase, i: u8, step: Step },
-    /// `replace_docker_network`'s `remove_network` (:699).
+    /// `replace_docker_network`'s `remove_network` (:700).
     Remove,
-    /// `create_bridge` (:618, :704).
+    /// `create_bridge` (:619, :705).
     Create(Phase),
-    /// `rejoin_with` of the member at `i` (:685, :818).
+    /// `rejoin_with` of the member at `i` (:686, :819).
     Rejoin { phase: Phase, i: u8, step: Step },
-    /// `pins.finish` (:822).
+    /// `pins.finish` (:823).
     Finish,
     /// `Stopped::start`'s `start_container` of `member` (stopped.rs:64).
     Start(Member),
@@ -411,16 +411,16 @@ struct Pass {
     pins: Pair<Option<Addr>>,
     /// The listing, after `Pins::restore`.
     seen: Pair<Option<Seen>>,
-    /// The loop's order: every listed member in the readdress, sorted by address (:660), and
-    /// the members that need a pin in the pin pass, by id (:778, :149).
+    /// The loop's order: every listed member in the readdress, sorted by address (:661), and
+    /// the members that need a pin in the pin pass, by id (:779, :149).
     order: Order,
-    /// The members this readdress detached (:661-665).
+    /// The members this readdress detached (:662-666).
     detached: Set,
     /// The address each member rejoins at (`addresses`, :29-48).
     assigned: Pair<Option<Addr>>,
-    /// `recorded` (:769-777).
+    /// `recorded` (:770-778).
     recorded: bool,
-    /// `unjoined` (:779, :818-820).
+    /// `unjoined` (:780, :819-821).
     unjoined: Set,
     /// The ids `Stopped::start` keeps (stopped.rs:62-79), and why.
     kept: Set,
@@ -462,7 +462,7 @@ enum Disconnect {
     /// The member is detached. `address_noted`: `bridge-member-addresses.json` names the address
     /// it held.
     Detached { address_noted: bool },
-    /// 404: the member is gone (:848).
+    /// 404: the member is gone (:849).
     Gone,
     /// `ployz_decide::bridge::between_restarts`.
     BetweenRestarts,
@@ -511,9 +511,9 @@ enum Operator {
     /// `ContainerStep::Start` of a Container at rest; `attached` is where Docker put a detached
     /// one, if anywhere.
     Start { attached: Option<Addr> },
-    /// `ContainerStep::Stop`, of a running Container (:1436-1440).
+    /// `ContainerStep::Stop`, of a running Container (`plan_container`'s `ContainerWant::Stopped` arm).
     Stop,
-    /// `ContainerStep::Hold`, of a Container at rest (:1441).
+    /// `ContainerStep::Hold`, of a Container at rest (the same arm).
     Hold,
     /// A remove: the Container is gone.
     Remove,
@@ -547,7 +547,7 @@ enum Branch {
         phase: Phase,
         member: Member,
     },
-    /// The pin pass skips an attached member: `recorded` is false (:783-785).
+    /// The pin pass skips an attached member: `recorded` is false (:784-786).
     Unrecorded {
         member: Member,
     },
@@ -695,12 +695,12 @@ enum OnRefusal {
     reason = "each flag removes one independent guard"
 )]
 struct Broken {
-    /// `stop` stops the member before `Stopped::note`, not after it succeeded (:880-885).
+    /// `stop` stops the member before `Stopped::note`, not after it succeeded (:881-886).
     stop_before_note: bool,
-    /// A failed `Pins::record` neither abandons the readdress (:656-659) nor skips an attached
-    /// member in the pin pass (:783-785).
+    /// A failed `Pins::record` neither abandons the readdress (:657-660) nor skips an attached
+    /// member in the pin pass (:784-786).
     detach_unrecorded: bool,
-    /// The readdress replaces the bridge after a failed detach too (:673-679).
+    /// The readdress replaces the bridge after a failed detach too (:674-680).
     replace_after_failed_detach: bool,
     /// `Pins::restore` gives a detached member its noted address though another member holds
     /// it (pins.rs:54-55).
@@ -841,7 +841,7 @@ impl BridgeNotes {
         state.pass.assigned = assigned;
     }
 
-    /// The listed members' addresses, after `Pins::restore` (:683, :765).
+    /// The listed members' addresses, after `Pins::restore` (:684, :766).
     fn taken(&self, state: &State) -> Addrs {
         let mut taken = Addrs::default();
         for member in self.members() {
@@ -850,7 +850,7 @@ impl BridgeNotes {
         taken
     }
 
-    /// The readdress's next attached member from `i` on (:663), or the step after the loop.
+    /// The readdress's next attached member from `i` on (:664), or the step after the loop.
     fn next_detach(&self, state: &State, i: u8) -> At {
         let order = state.pass.order;
         for i in i..2 {
@@ -871,7 +871,7 @@ impl BridgeNotes {
         At::Remove
     }
 
-    /// The readdress's rejoin loop over the members it detached (:683-686).
+    /// The readdress's rejoin loop over the members it detached (:684-687).
     fn start_rejoins(&self, state: &mut State) -> At {
         let detached = state.pass.detached;
         let order = Order::of(
@@ -902,7 +902,7 @@ impl BridgeNotes {
         }
     }
 
-    /// The pin pass's member at `i` (:780-820), or `pins.finish`.
+    /// The pin pass's member at `i` (:781-821), or `pins.finish`.
     fn next_pin(state: &State, i: u8) -> At {
         let Some(member) = state.pass.order.nth(i) else {
             return At::Finish;
@@ -975,7 +975,7 @@ impl BridgeNotes {
         }
     }
 
-    /// One step of `stop` (:858-893) for `member`, from `step`; returns the step after it.
+    /// One step of `stop` (:859-894) for `member`, from `step`; returns the step after it.
     fn stop(&self, state: &mut State, member: Member, step: Step, pick: Pick) -> Step {
         match step {
             Step::Inspect => {
@@ -1058,7 +1058,7 @@ impl BridgeNotes {
         }
     }
 
-    /// Docker's disconnect of `member` (:832-840).
+    /// Docker's disconnect of `member` (:833-841).
     fn disconnect(state: &mut State, member: Member) -> Disconnect {
         let container = state.docker.get_mut(member);
         match (container.run, container.endpoint) {
@@ -1135,9 +1135,9 @@ impl BridgeNotes {
                     state.used.failed_listings += 1;
                     state.took = Some(Branch::Listed { phase, ok: false });
                     match phase {
-                        // :650-653: report, and `Ok(())`, so the shape step returns.
+                        // :651-654: report, and `Ok(())`, so the shape step returns.
                         Phase::Readdress => At::List(Phase::Pin),
-                        // :754-759: return before `finish`.
+                        // :755-760: return before `finish`.
                         Phase::Pin => Self::next_start(state, None),
                     }
                 } else {
@@ -1187,7 +1187,7 @@ impl BridgeNotes {
                         At::List(Phase::Pin)
                     }
                     Phase::Readdress => {
-                        // :660: sort by (no address, address), stably over the id order.
+                        // :661: sort by (no address, address), stably over the id order.
                         let mut listed = self
                             .members()
                             .filter_map(|member| {
@@ -1213,14 +1213,14 @@ impl BridgeNotes {
                             && !state.pass.recorded
                             && !self.broken.detach_unrecorded
                         {
-                            // :783-785.
+                            // :784-786.
                             state.took = Some(Branch::Unrecorded { member });
                             Self::next_pin(state, i + 1)
                         } else if phase == Phase::Pin
                             && step == Step::First
                             && state.docker.get(member).run == Run::Gone
                         {
-                            // `inspect_container` fails (:796-803).
+                            // `inspect_container` fails (:797-804).
                             state.took = Some(Branch::Inspected {
                                 member,
                                 settle: None,
@@ -1243,15 +1243,15 @@ impl BridgeNotes {
                                 (Disconnect::BetweenRestarts | Disconnect::Refused, _) => {
                                     state.took = Some(Branch::DetachFailed { phase, member });
                                     match phase {
-                                        // :667-670: `break`, and with `disconnected` an Err
-                                        // the bridge is not replaced (:673-679).
+                                        // :668-671: `break`, and with `disconnected` an Err
+                                        // the bridge is not replaced (:674-680).
                                         Phase::Readdress
                                             if self.broken.replace_after_failed_detach =>
                                         {
                                             At::Remove
                                         }
                                         Phase::Readdress => self.start_rejoins(state),
-                                        // :808-814: `continue`.
+                                        // :809-815: `continue`.
                                         Phase::Pin => Self::next_pin(state, i + 1),
                                     }
                                 }
@@ -1524,7 +1524,7 @@ impl BridgeNotes {
         state.process = Process::Starting(next);
     }
 
-    /// The pin pass's loop over the members that need a pin, in id order (:778-780).
+    /// The pin pass's loop over the members that need a pin, in id order (:779-781).
     fn start_pins(&self, state: &mut State) -> At {
         let seen = state.pass.seen;
         let order = Order::of(
@@ -1902,11 +1902,11 @@ const STARTS_ONLY_OWED: &str =
 const STARTS_ONLY_ON_BRIDGE: &str =
     "Stopped::start starts a member only while Docker shows it on the bridge";
 /// `Stopped::note`'s doc comment (stopped.rs:47): "Writes `id` down. Stop it only once this
-/// succeeds." `stop` (:880-885) and its doc (:856-857) say the same.
+/// succeeds." `stop` (:881-886) and its doc (:857-858) say the same.
 const NOTED_BEFORE_STOP: &str =
     "the start stops a member it must start again only once the stopped note names it";
 /// `Pins::record`'s doc comment (pins.rs:62-63): "Detach a member only once this succeeds."
-/// The readdress's doc (:632-634) says the same.
+/// The readdress's doc (:633-635) says the same.
 const ADDRESS_NOTED_BEFORE_DETACH: &str =
     "the start detaches a member only while the address note names an address for it";
 
@@ -1937,7 +1937,7 @@ fn ran_loaded(state: &State, why: Why) -> bool {
 /// Each branch the bounds reach. `current_code_breaks_both_properties_and_reaches_every_row`
 /// expects every row on the code as it is, and the two policy tests every row their policy keeps.
 const COVERAGE: &[Coverage] = &[
-    // ensure_docker_network_shape (:555-622).
+    // ensure_docker_network_shape (:556-623).
     Coverage {
         name: "the start finds the bridge's IPv6 shape wrong and readdresses it",
         on: everywhere,
@@ -1956,7 +1956,7 @@ const COVERAGE: &[Coverage] = &[
         omit: None,
         reached: |_, state| took(state, Branch::Created { readdress: false }),
     },
-    // readdress_docker_network (:639-688).
+    // readdress_docker_network (:640-689).
     Coverage {
         name: "the readdress's listing fails, and it returns Ok",
         on: everywhere,
@@ -2213,7 +2213,7 @@ const COVERAGE: &[Coverage] = &[
             )
         },
     },
-    // pin_members (:751-823).
+    // pin_members (:752-824).
     Coverage {
         name: "the pin pass's listing fails, and it returns before finish",
         on: everywhere,
@@ -2843,7 +2843,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
     };
     let what = match branch {
         Branch::Loaded { stopped, pins } => format!(
-            "daemon start {}: Stopped::load and Pins::load read {} and {} (:540-541)",
+            "daemon start {}: Stopped::load and Pins::load read {} and {} (:541-542)",
             after.starts,
             if stopped {
                 "the stopped note"
@@ -2856,13 +2856,13 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                 "no address note"
             }
         ),
-        Branch::Shape(Bridge::Old) => "inspect_network: the bridge fits but its IPv6 shape differs, so readdress_docker_network runs (:568-578)".to_owned(),
-        Branch::Shape(Bridge::New) => "inspect_network: the bridge fits (:568-578)".to_owned(),
-        Branch::Shape(Bridge::None) => "inspect_network answers 404, so create_bridge runs (:615, :618)".to_owned(),
-        Branch::Listed { phase: Phase::Readdress, ok: true } => "readdress: bridge_members lists the members, and Pins::restore gives each detached one its noted address (:648, :655)".to_owned(),
-        Branch::Listed { phase: Phase::Readdress, ok: false } => "readdress: the listing fails, so it reports and returns Ok (:648-654)".to_owned(),
-        Branch::Listed { phase: Phase::Pin, ok: true } => "pin pass: bridge_containers lists the members, and Pins::restore gives each detached one its noted address (:752, :762-765)".to_owned(),
-        Branch::Listed { phase: Phase::Pin, ok: false } => "pin pass: the listing fails, so pin_members returns before rejoining anything or calling finish (:752-760)".to_owned(),
+        Branch::Shape(Bridge::Old) => "inspect_network: the bridge fits but its IPv6 shape differs, so readdress_docker_network runs (:569-579)".to_owned(),
+        Branch::Shape(Bridge::New) => "inspect_network: the bridge fits (:569-579)".to_owned(),
+        Branch::Shape(Bridge::None) => "inspect_network answers 404, so create_bridge runs (:616, :619)".to_owned(),
+        Branch::Listed { phase: Phase::Readdress, ok: true } => "readdress: bridge_members lists the members, and Pins::restore gives each detached one its noted address (:649, :656)".to_owned(),
+        Branch::Listed { phase: Phase::Readdress, ok: false } => "readdress: the listing fails, so it reports and returns Ok (:649-655)".to_owned(),
+        Branch::Listed { phase: Phase::Pin, ok: true } => "pin pass: bridge_containers lists the members, and Pins::restore gives each detached one its noted address (:753, :763-766)".to_owned(),
+        Branch::Listed { phase: Phase::Pin, ok: false } => "pin pass: the listing fails, so pin_members returns before rejoining anything or calling finish (:753-761)".to_owned(),
         Branch::Recorded { phase, write } => format!(
             "{}: {}{}",
             phase_name(phase),
@@ -2870,13 +2870,13 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             match (phase, write) {
                 (_, Write::Unchanged | Write::Written) => format!(
                     " ({})",
-                    if phase == Phase::Readdress { ":656" } else { ":769-777" }
+                    if phase == Phase::Readdress { ":657" } else { ":770-778" }
                 ),
                 (Phase::Readdress, Write::Failed | Write::FailedAfterRename) => {
-                    "; the memory rolls back (pins.rs:75-77), and the readdress returns Ok (:656-659)".to_owned()
+                    "; the memory rolls back (pins.rs:75-77), and the readdress returns Ok (:657-660)".to_owned()
                 }
                 (Phase::Pin, Write::Failed | Write::FailedAfterRename) => {
-                    "; the memory rolls back (pins.rs:75-77), and attached members keep their addresses (:769-777, :783-785)".to_owned()
+                    "; the memory rolls back (pins.rs:75-77), and attached members keep their addresses (:770-778, :784-786)".to_owned()
                 }
             }
         ),
@@ -2899,21 +2899,21 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                         ", though the address note does not name its address"
                     }
                 ),
-                Disconnect::Gone => "404, so detach returns Ok(false) (:848)".to_owned(),
-                Disconnect::BetweenRestarts => "Docker refuses it as between restarts (:842, `ployz_decide::bridge::between_restarts`)".to_owned(),
+                Disconnect::Gone => "404, so detach returns Ok(false) (:849)".to_owned(),
+                Disconnect::BetweenRestarts => "Docker refuses it as between restarts (:843, `ployz_decide::bridge::between_restarts`)".to_owned(),
                 Disconnect::Refused => "Docker refuses it, and detach returns the error".to_owned(),
             }
         ),
         Branch::DetachFailed { phase, member } => format!(
-            "{}: disconnect {member:?} again (:844): Docker refuses it again, so detach returns Err (:849){}",
+            "{}: disconnect {member:?} again (:845): Docker refuses it again, so detach returns Err (:850){}",
             phase_name(phase),
             match phase {
-                Phase::Readdress => "; the loop breaks, and the bridge is not replaced (:667-679)",
-                Phase::Pin => "; pin_members reports and moves on (:808-814)",
+                Phase::Readdress => "; the loop breaks, and the bridge is not replaced (:668-680)",
+                Phase::Pin => "; pin_members reports and moves on (:809-815)",
             }
         ),
         Branch::Unrecorded { member } => format!(
-            "pin pass: {member:?} is attached and recorded is false, so it is skipped (:782-785)"
+            "pin pass: {member:?} is attached and recorded is false, so it is skipped (:783-786)"
         ),
         Branch::Inspected {
             member,
@@ -2923,7 +2923,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             member,
             settle: Some(answer),
         } => format!(
-            "stop {member:?}: inspect, and settle answers {answer:?} (:859-877, `ployz_decide::bridge::settle`){}",
+            "stop {member:?}: inspect, and settle answers {answer:?} (:860-878, `ployz_decide::bridge::settle`){}",
             match answer {
                 Settle::Leave => "; the refused operation is retried",
                 Settle::Stop => "; it is stopped without a note",
@@ -2937,9 +2937,9 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             "stop {member:?}: Stopped::note: {}{}",
             write_words(write, "the stopped note"),
             match write {
-                Write::Unchanged | Write::Written => " (:881, stopped.rs:48-56)",
+                Write::Unchanged | Write::Written => " (:882, stopped.rs:48-56)",
                 Write::Failed | Write::FailedAfterRename => {
-                    "; note takes the id back out (stopped.rs:49-53), and stop reports and leaves it alone (:881-884)"
+                    "; note takes the id back out (stopped.rs:49-53), and stop reports and leaves it alone (:882-885)"
                 }
             }
         ),
@@ -2948,19 +2948,19 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             settle,
             noted,
         } => format!(
-            "stop {member:?}: stop_container (:887-892){}",
+            "stop {member:?}: stop_container (:888-893){}",
             match (settle, noted) {
                 (Settle::StopAndNote, true) => ", which the stopped note names",
                 (Settle::StopAndNote, false) => ", which the stopped note does not name",
                 (Settle::Stop | Settle::Leave, _) => ", for good",
             }
         ),
-        Branch::Removed { attached: true } => "readdress: replace_docker_network removes the old bridge, a member still on it, and in this answer Docker detaches the member (:673-679, :699)".to_owned(),
-        Branch::Removed { attached: false } => "readdress: every detach succeeded, so replace_docker_network removes the old bridge (:673-679, :699)".to_owned(),
-        Branch::RemoveRefused => "readdress: Docker refuses to remove the old bridge, a member still on it, so replace_docker_network returns Ok(Some) (:699-702), and the rejoins run (:683-686)".to_owned(),
+        Branch::Removed { attached: true } => "readdress: replace_docker_network removes the old bridge, a member still on it, and in this answer Docker detaches the member (:674-680, :700)".to_owned(),
+        Branch::Removed { attached: false } => "readdress: every detach succeeded, so replace_docker_network removes the old bridge (:674-680, :700)".to_owned(),
+        Branch::RemoveRefused => "readdress: Docker refuses to remove the old bridge, a member still on it, so replace_docker_network returns Ok(Some) (:700-703), and the rejoins run (:684-687)".to_owned(),
         Branch::Created { readdress } => format!(
             "create_bridge creates the bridge in its new shape ({})",
-            if readdress { ":704, :709-728" } else { ":618, :709-728" }
+            if readdress { ":705, :710-729" } else { ":619, :710-729" }
         ),
         Branch::Connected {
             phase,
@@ -2969,11 +2969,11 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             answer,
         } => {
             let call = match (phase, step) {
-                (Phase::Readdress, Step::Fallback { .. }) => "readdress: rejoin_with falls back to connect(None) (:925-930)".to_owned(),
-                (Phase::Pin, Step::Fallback { .. }) => "pin pass: rejoin_with falls back to connect(None) (:925-930)".to_owned(),
-                (_, Step::Again) => format!("{}: rejoin_with connects {member:?} again, pinned (:920-923)", phase_name(phase)),
+                (Phase::Readdress, Step::Fallback { .. }) => "readdress: rejoin_with falls back to connect(None) (:926-931)".to_owned(),
+                (Phase::Pin, Step::Fallback { .. }) => "pin pass: rejoin_with falls back to connect(None) (:926-931)".to_owned(),
+                (_, Step::Again) => format!("{}: rejoin_with connects {member:?} again, pinned (:921-924)", phase_name(phase)),
                 (_, Step::First | Step::Inspect | Step::Note | Step::Stop(_)) => format!(
-                    "{}: rejoin_with connects {member:?} pinned at {:?} (:{}, :914-917)",
+                    "{}: rejoin_with connects {member:?} pinned at {:?} (:{}, :915-918)",
                     phase_name(phase),
                     assigned(after, member),
                     if phase == Phase::Readdress { "897" } else { "818" }
@@ -2982,18 +2982,18 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             let answered = match answer {
                 Connect::Pinned(address) => format!("it rejoins pinned at {address:?}"),
                 Connect::Dynamic(address) => format!("Docker attaches it on {address:?}, a dynamic address"),
-                Connect::BetweenRestarts => "Docker refuses it as between restarts (:918)".to_owned(),
+                Connect::BetweenRestarts => "Docker refuses it as between restarts (:919)".to_owned(),
                 Connect::InUse => "Docker refuses it: another endpoint holds that address".to_owned(),
                 Connect::Refused => "Docker refuses it".to_owned(),
             };
             format!("{call}: {answered}")
         }
         Branch::Unjoined { phase, member } => format!(
-            "{}: connect(None) is refused too, so rejoin_with reports and returns false (:925-938){}",
+            "{}: connect(None) is refused too, so rejoin_with reports and returns false (:926-939){}",
             phase_name(phase),
             match phase {
-                Phase::Readdress => format!(", which rejoin discards (:895-898); {member:?} stays detached"),
-                Phase::Pin => format!(", and {member:?} goes into unjoined (:818-820)"),
+                Phase::Readdress => format!(", which rejoin discards (:896-899); {member:?} stays detached"),
+                Phase::Pin => format!(", and {member:?} goes into unjoined (:819-821)"),
             }
         ),
         Branch::Finished {
@@ -3048,7 +3048,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
                 ),
             };
             format!(
-                "Stopped::start {} {member:?} ({loaded}{}) (:546, stopped.rs:64): {answered}",
+                "Stopped::start {} {member:?} ({loaded}{}) (:547, stopped.rs:64): {answered}",
                 if answer == Started::Deferred {
                     "defers its start of"
                 } else {
