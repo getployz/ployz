@@ -41,8 +41,8 @@ pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, Step
 pub use refusal::AuthorityRefusal;
 pub use rule::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, ClaimRule, CommitAuthority,
-    CommitSha, GithubClaims, ImageDigest, PolicyDigest, RecipientKey, RuleFacts, RuleId,
-    RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest,
+    CommitSha, GithubClaims, ImageDigest, PolicyDigest, RecipientKey, RuleEvidence, RuleFacts,
+    RuleId, RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest, VerifiedBuild,
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use trusted_key::{

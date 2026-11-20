@@ -894,6 +894,7 @@ impl Scripted {
                 return Ok(EnsuredContainer::Ensured {
                     now: self.now(machine_id, &container_id),
                     health: None,
+                    verified: None,
                 });
             }
             Decision::Refused(refusal) => {
@@ -948,6 +949,7 @@ impl Scripted {
                 return Ok(EnsuredContainer::Ensured {
                     now: self.now(machine_id, &container_id),
                     health: Some(verdict),
+                    verified: None,
                 });
             }
         }
@@ -975,6 +977,7 @@ impl Scripted {
         Ok(EnsuredContainer::Ensured {
             now: self.now(machine_id, &container_id),
             health: routing.then_some(HealthVerdict::Healthy),
+            verified: None,
         })
     }
 
@@ -1122,7 +1125,13 @@ impl Scripted {
                 },
             );
         }
-        let ensured = |now, health| Ok(EnsuredContainer::Ensured { now, health });
+        let ensured = |now, health| {
+            Ok(EnsuredContainer::Ensured {
+                now,
+                health,
+                verified: None,
+            })
+        };
         let present = |container_id: &ContainerId| self.now(machine_id, container_id);
         let answer = match reply {
             Reply::Created(container_id) => ensured(present(&container_id), healthy),

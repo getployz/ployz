@@ -108,6 +108,18 @@ impl SealingKey {
         ployz_core::X25519Secret::from_bytes(*key)
     }
 
+    /// The MAC a verified build is, keyed under a label nothing else uses. Every Machine
+    /// holding this Sealing Key derives the same key, and nothing without it can.
+    pub(crate) fn verified_build(&self) -> hkdf::hmac::Hmac<sha2_0_10::Sha256> {
+        use hkdf::hmac::Mac as _;
+        let mut key = Zeroizing::new([0; 32]);
+        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
+            .expand(separation::VERIFIED_BUILD_KEY, key.as_mut())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        hkdf::hmac::Hmac::<sha2_0_10::Sha256>::new_from_slice(key.as_ref())
+            .expect("HMAC takes a key of any length")
+    }
+
     /// Classifies `<data_dir>/sealing.key`: 32 bytes are the key, no file is
     /// [`KeyFile::Absent`], and any other length is [`KeyFile::Unusable`].
     ///

@@ -2662,6 +2662,7 @@ async fn a_leave_under_way_marks_the_unhealthy_copy_a_creation_it_let_through_ma
                 departing,
                 ..
             }),
+        ..
     } = &ensured
     else {
         panic!("the copy's own verdict names it: {ensured:?}");
@@ -2754,6 +2755,7 @@ async fn a_creation_queued_behind_a_failed_leave_answers_its_unhealthy_copy() {
         health: Some(HealthVerdict::Failed {
             departing: None, ..
         }),
+        ..
     } = &reply
     else {
         panic!("the copy's own verdict names it, unmarked: {reply:?}");

@@ -247,6 +247,7 @@ fn take(
             authority: ployz_core::authority::CommitAuthority::Head,
         })?,
     };
+    let verified = build::verified(tx, &id)?;
     let ran = super::versions::pinned(
         tx,
         (
@@ -269,6 +270,7 @@ fn take(
         ended_runs,
         rule,
         image_tokens,
+        verified,
         ran,
     })))
 }

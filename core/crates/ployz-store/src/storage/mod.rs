@@ -326,6 +326,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0051_volume_birth",
         Step::Sql(include_str!("migrations/0051_volume_birth.sql")),
     ),
+    (
+        // What a Server issued once its online check of a rule build passed.
+        "0052_verified_build",
+        Step::Sql(include_str!("migrations/0052_verified_build.sql")),
+    ),
 ];
 
 enum Step {

@@ -387,7 +387,10 @@ to your other servers. If no other server runs services, deploys fail until you 
 back on or add a server.
 
 A drain sends each copy it moves with the signatures Ployz Cloud keeps for that copy's version,
-so the other server runs it even if it never ran that version. A copy of a version nobody signed
+so the other server runs it even if it never ran that version. A copy an
+[automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push) built moves with
+what a server answered when it first checked that build with GitHub, while the rule's approval
+stands. A copy of a version nobody signed
 moves only if it [reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). The drain
 reports any other as failed and leaves it where it runs. Turn off **Run services here**, then
 run `ployz deploy` from an approved device to move those off. A volume stays on its server; see

@@ -1162,15 +1162,35 @@ impl Client {
                 Response = ployz_core::EnsuredContainer,
             >,
     {
+        let service = if let ContainerWant::Running {
+            container: ployz_core::RunTarget::New(new),
+            ..
+        } = &request.want
+        {
+            Some(new.slot.service.clone())
+        } else {
+            None
+        };
         let payload = R::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(
+        let ensured = apply_timeout(
             timeout,
             self.send::<R>(payload, Some(&MachineTarget::from(machine_id))),
         )
         .await
-        .map_err(|error| answered_by(machine_id, error))
+        .map_err(|error| answered_by(machine_id, error))?;
+        if let (
+            Some(service),
+            ployz_core::EnsuredContainer::Ensured {
+                verified: Some(verified),
+                ..
+            },
+        ) = (&service, &ensured)
+        {
+            self.deploy.note_issued(service, *verified);
+        }
+        Ok(ensured)
     }
 
     /// Converge one Container as a joiner's catch-up does, which carries no Deploy's

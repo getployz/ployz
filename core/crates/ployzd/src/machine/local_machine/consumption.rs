@@ -1,5 +1,5 @@
 //! The record of what this Machine has consumed, kept in `restart-approvals.json`: joins,
-//! GitHub tokens, rule marks, and the build each rule's Service last ran and its hook.
+//! GitHub tokens, rule marks, and the hook each rule's Service last ran.
 //! Every verb goes through [`ConsumptionLog::transact`] or [`ConsumptionLog::read`], so the
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
@@ -13,10 +13,7 @@ use std::{
 
 use ployz_core::{
     ServiceName,
-    authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, ClaimRule, RuleId, RuleIdentity,
-        Signed, Timestamp,
-    },
+    authority::{AuthorityRefusal, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed, Timestamp},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -45,9 +42,6 @@ struct Consumption {
     /// expire.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     proofs: BTreeMap<String, Timestamp>,
-    /// The build each rule's Service last created a Container from here.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    accepted: BTreeMap<String, AcceptedBuild>,
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
@@ -98,29 +92,6 @@ impl Consumption {
 /// record grows with rules, not with pushes.
 fn rule_service_key(rule: RuleId, service: &ServiceName) -> String {
     format!("{rule}/{service}")
-}
-
-/// The build this Machine last admitted a creation for under a rule's Service. A later
-/// creation of the same build may rely on it in place of an unexpired token; it still
-/// needs the commit to be the head.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-struct AcceptedBuild {
-    generation: u64,
-    commit: ployz_core::authority::CommitSha,
-    image: ployz_core::authority::ImageDigest,
-}
-
-impl AcceptedBuild {
-    fn of(claim: &BuildClaim) -> Option<Self> {
-        match claim.stage {
-            BuildStage::Built { image, .. } => Some(Self {
-                generation: claim.generation,
-                commit: claim.commit,
-                image,
-            }),
-            BuildStage::Grant { .. } => None,
-        }
-    }
 }
 
 /// The hook one push ran for a rule's Service: its build and the slot it was made in.
@@ -374,44 +345,6 @@ impl ConsumptionLog {
     ) -> Result<Option<u64>, E> {
         self.read(map_io, |log| {
             log.rules.get(&rule).map(|mark| mark.generation)
-        })
-    }
-
-    /// Whether this Machine already admitted a creation of `claim`'s build under `rule`.
-    pub(crate) fn accepted(
-        &self,
-        rule: &AutoDeployRule,
-        claim: &BuildClaim,
-    ) -> Result<bool, Error> {
-        self.read(Error::ApprovalRecord, |log| {
-            let accepted = log
-                .accepted
-                .get(&rule_service_key(rule.rule, &claim.service));
-            AcceptedBuild::of(claim).is_some_and(|build| accepted == Some(&build))
-        })
-    }
-
-    /// Record `claim`'s build as the one `rule`'s Service last created a Container from
-    /// here. Written before the Container is made. Refuses, through `refused`, a `rule` a
-    /// newer generation replaced while its admission waited on GitHub.
-    pub(crate) fn accept(
-        &self,
-        rule: &impl ClaimRule,
-        claim: &BuildClaim,
-        refused: impl FnOnce(AuthorityRefusal) -> Error,
-    ) -> Result<(), Error> {
-        self.transact(Error::ApprovalRecord, |log| {
-            let rule = rule.identity();
-            log.check_mark(rule).map_err(refused)?;
-            let Some(build) = AcceptedBuild::of(claim) else {
-                return Ok(Edit::Keep(()));
-            };
-            let key = rule_service_key(rule.rule, &claim.service);
-            if log.accepted.get(&key) == Some(&build) {
-                return Ok(Edit::Keep(()));
-            }
-            log.accepted.insert(key, build);
-            Ok(Edit::Write(()))
         })
     }
 

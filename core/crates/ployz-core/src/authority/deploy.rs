@@ -52,7 +52,7 @@ pub(super) fn run_fields_cleared(spec: &RequestedServiceSpec) -> RequestedServic
         pre_deploy,
         update: _,
     } = spec;
-    let host_data = reads_host_data(spec);
+    let host_data = placement_signed(spec);
     let ServiceContainerSpec {
         image,
         command,
@@ -151,7 +151,7 @@ pub(super) fn run_fields_cleared(spec: &RequestedServiceSpec) -> RequestedServic
 /// tmpfs mount, since a named Volume, even one Docker backs with tmpfs, is found by name and
 /// two Servers can hold same-named Volumes with different contents, or when it has any
 /// [`host_reach`] beyond a Volume it only declares.
-fn reads_host_data(spec: &RequestedServiceSpec) -> bool {
+pub(super) fn placement_signed(spec: &RequestedServiceSpec) -> bool {
     spec.volume_graph()
         .mounted_volumes()
         .any(|volume| !matches!(volume.source.kind(), RawVolumeSource::Tmpfs { .. }))
