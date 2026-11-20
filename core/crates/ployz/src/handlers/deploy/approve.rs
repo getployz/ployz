@@ -3,7 +3,7 @@
 //! each Service with the digest of its spec, and admits the Deploy with them. Each
 //! Server then creates only the specs a trusted Device signed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use clap::ArgMatches;
@@ -11,8 +11,8 @@ use ployz_core::authority::{
     ApprovedChange, ServiceVersion, SignerKey, Timestamp, deploy::content_addressed,
 };
 use ployz_core::{
-    Hint, MachineObservation, RequestedServiceSpec, RpcErrorCode, SealingPublicKey, ServiceName,
-    cluster_sealing_key,
+    Claim, Hint, MachineId, MachineObservation, MachineTarget, RequestedServiceSpec, RpcErrorCode,
+    SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName, cluster_sealing_key,
 };
 use ployz_store::{EnvironmentRef, PlanQuery, PostedVersion, TagPin};
 use serde_json::json;
@@ -20,6 +20,7 @@ use serde_json::json;
 use super::super::device::DeviceSigning;
 use super::super::store::Store;
 use super::super::{Error, route};
+use crate::connect::Client;
 use crate::image::{PinError, pin_public};
 
 /// A signed version of each Service with the image it pinned, the plan version it
@@ -39,9 +40,19 @@ pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
     /// The name each Server reports, which a person reads its signed lines by.
     pub(in crate::handlers) names: BTreeMap<ployz_core::MachineId, String>,
-    /// Each Server that enforces and runs a ployz too old to check a signed version, by
-    /// name. It would refuse every Service this Device signs.
+    /// Each Server that enforces and can't be shown to check a signed version. It would
+    /// refuse every Service this Device signs.
+    pub(in crate::handlers) behind: Behind,
+}
+
+/// Servers that enforce Device approval and that this Device can't sign for yet, by name.
+#[derive(Debug, Default, PartialEq)]
+pub(in crate::handlers) struct Behind {
+    /// Each runs a ployz too old to check a signed version.
     pub(in crate::handlers) outdated: Vec<String>,
+    /// Each was seen with no capabilities, as through a relay, and didn't answer when
+    /// asked itself.
+    pub(in crate::handlers) unverified: Vec<String>,
 }
 
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
@@ -95,8 +106,11 @@ pub(in crate::handlers) fn sign(
         }
         Probe::Enforcing(enforcing) => enforcing,
     };
-    if !enforcing.outdated.is_empty() {
-        return Err(outdated(&enforcing.outdated));
+    if !enforcing.behind.outdated.is_empty() {
+        return Err(outdated(matches, &enforcing.behind.outdated));
+    }
+    if !enforcing.behind.unverified.is_empty() {
+        return Err(unverified(matches, &enforcing.behind.unverified));
     }
     let plan = plan?;
     let target = signable(plan.target)?;
@@ -246,18 +260,56 @@ pub(in crate::handlers) fn probe(matches: &ArgMatches) -> Probe {
         return Probe::Unknown;
     };
     let observed = runtime.block_on(async {
-        tokio::time::timeout(PROBE_TIMEOUT, async {
+        let (client, observed) = tokio::time::timeout(PROBE_TIMEOUT, async {
             let mut client = route::connect(matches, context).await.ok()?;
-            client.machines().await.ok()
+            let observed = client.machines().await.ok()?;
+            Some((client, observed))
         })
         .await
         .ok()
-        .flatten()
+        .flatten()?;
+        let answered = asked(&client, &unclaimed(&observed)).await;
+        Some((observed, answered))
     });
-    observed.map_or(Probe::Unknown, |observed| enforced(&observed))
+    observed.map_or(Probe::Unknown, |(observed, answered)| {
+        enforced(&observed, &answered)
+    })
 }
 
-fn enforced(observed: &[MachineObservation]) -> Probe {
+/// Each Server that enforces and was seen with no capabilities. An empty list claims
+/// nothing: an older entry relays a newer peer's record without one.
+fn unclaimed(observed: &[MachineObservation]) -> BTreeSet<MachineId> {
+    observed
+        .iter()
+        .map(|observed| &observed.machine)
+        .filter(|machine| {
+            machine.runtime.device_enforcement == Some(true)
+                && machine.runtime.claim(SIGNED_VERSION_CAPABILITY) == Claim::Unclaimed
+        })
+        .map(|machine| machine.id)
+        .collect()
+}
+
+/// Whether each of `machines`, asked itself, checks a signed version. One that doesn't
+/// answer in time is left out.
+async fn asked(client: &Client, machines: &BTreeSet<MachineId>) -> BTreeMap<MachineId, bool> {
+    let asks = machines.iter().map(|machine| async move {
+        let target = MachineTarget::from(machine);
+        let ask = client.supports(Some(&target), SIGNED_VERSION_CAPABILITY);
+        let answer = tokio::time::timeout(PROBE_TIMEOUT, ask).await.ok()?.ok()?;
+        Some((*machine, answer))
+    });
+    futures_util::future::join_all(asks)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// What `observed` says about Device approval, with `answered` saying, for each Server
+/// seen with no capabilities that was asked and answered, whether it checks a signed
+/// version.
+fn enforced(observed: &[MachineObservation], answered: &BTreeMap<MachineId, bool>) -> Probe {
     if !observed
         .iter()
         .any(|observed| observed.machine.runtime.device_enforcement == Some(true))
@@ -278,43 +330,52 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
         .iter()
         .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
         .collect();
-    // An empty list claims nothing: a relayed record can arrive without one.
-    let mut outdated: Vec<String> = observed
-        .iter()
-        .map(|observed| &observed.machine)
-        .filter(|machine| {
-            machine.runtime.device_enforcement == Some(true)
-                && !machine.runtime.capabilities.is_empty()
-                && !machine
-                    .runtime
-                    .capabilities
-                    .contains(ployz_core::SIGNED_VERSION_CAPABILITY)
-        })
-        .map(|machine| machine.name.to_string())
-        .collect();
-    outdated.sort_unstable();
-    outdated.dedup();
+    let mut behind = Behind::default();
+    for machine in observed.iter().map(|observed| &observed.machine) {
+        if machine.runtime.device_enforcement != Some(true) {
+            continue;
+        }
+        let checks = match machine.runtime.claim(SIGNED_VERSION_CAPABILITY) {
+            Claim::Advertises => Some(true),
+            Claim::Lacks => Some(false),
+            Claim::Unclaimed => answered.get(&machine.id).copied(),
+        };
+        match checks {
+            Some(true) => {}
+            Some(false) => behind.outdated.push(machine.name.to_string()),
+            None => behind.unverified.push(machine.name.to_string()),
+        }
+    }
+    for names in [&mut behind.outdated, &mut behind.unverified] {
+        names.sort_unstable();
+        names.dedup();
+    }
     Probe::Enforcing(Enforcing {
         cluster,
         machines,
         names,
-        outdated,
+        behind,
     })
+}
+
+/// `servers` joined for a sentence: `a`, `a and b`, `a, b and c`.
+fn listed(servers: &[String]) -> String {
+    match servers {
+        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => servers.join(""),
+    }
 }
 
 /// The refusal for Servers that enforce and can't check a signed version, before
 /// anything is signed or admitted.
-fn outdated(servers: &[String]) -> Error {
-    let named = match servers {
-        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => servers.join(""),
-    };
+fn outdated(matches: &ArgMatches, servers: &[String]) -> Error {
+    let named = listed(servers);
     // This CLI's own channel, which carries a ployz that checks what it signs.
     let channel = match ployz_core::MachineVersion::parse(env!("CARGO_PKG_VERSION")) {
         Ok(version) if !version.is_prerelease() => "stable",
         _ => "beta",
     };
-    let mut upgrade = vec!["ployz", "server", "upgrade", channel];
+    let mut upgrade = vec!["server", "upgrade", channel];
     upgrade.extend(servers.iter().map(String::as_str));
     Error::detailed(
         RpcErrorCode::Unsupported,
@@ -326,10 +387,28 @@ fn outdated(servers: &[String]) -> Error {
         ),
         json!({
             "servers": servers,
-            "capability": ployz_core::SIGNED_VERSION_CAPABILITY,
+            "capability": SIGNED_VERSION_CAPABILITY,
         }),
     )
-    .hint(Hint::Next(shell_words::join(upgrade)))
+    .hint(Hint::Next(super::super::rerun(matches, &upgrade)))
+}
+
+/// The refusal for Servers that enforce and didn't say whether they can check a signed
+/// version, before anything is signed or admitted.
+fn unverified(matches: &ArgMatches, servers: &[String]) -> Error {
+    Error::detailed(
+        RpcErrorCode::Unavailable,
+        format!(
+            "Couldn't confirm that {} can check this device's signature, so nothing was signed              or deployed. {} enforces device approval but didn't answer when asked.",
+            listed(servers),
+            if servers.len() == 1 { "It" } else { "Each" },
+        ),
+        json!({
+            "servers": servers,
+            "capability": SIGNED_VERSION_CAPABILITY,
+        }),
+    )
+    .hint(Hint::Inspect(super::super::rerun(matches, &["status"])))
 }
 
 /// Whether `spec` runs the image a build or upload will make, which no Device can
