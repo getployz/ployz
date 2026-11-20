@@ -365,7 +365,7 @@ impl LocalMachine {
             let refusal = match containers.lifecycle().admitted_by(id).await? {
                 Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
                 None => Some(AuthorityRefusal::Mismatch {
-                    field: "an admission",
+                    field: "a kept admission",
                 }),
             };
             if let Some(refusal) = refusal {
@@ -520,6 +520,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch {
             field: "an admission",
         } => "This server kept no record of who approved this container. Deploy it again.",
+        AuthorityRefusal::Mismatch {
+            field: "a kept admission",
+        } => {
+            "This container was made before this server's upgrade, so the server starts it only from a deploy an approved device signed. Deploy the service again with a current CLI."
+        }
         AuthorityRefusal::Mismatch {
             field: "a generation",
         } => {
