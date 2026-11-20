@@ -98,7 +98,6 @@ pub use github::{
     GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView,
 };
 pub use id::*;
-pub use old_cli::refuse_deploy_approval;
 pub use permission::Permission;
 pub use ployz_core::authority::rule_draft::RuleSourceView;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.

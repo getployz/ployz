@@ -185,12 +185,12 @@ fn uuid(label: &str) -> String {
 }
 
 /// A CLI from before signed versions posts its Device's deploy approval with a Deploy or a
-/// redeploy, and no signed version. No Server reads that approval, so the command is
-/// refused with the update to run, and never decodes into one that runs unsigned.
+/// redeploy, and no signed version. The Store keeps no approval for its runners, so the
+/// command is refused as unsupported with the update to run, never decoded into one that
+/// runs unsigned.
 #[test]
 fn an_old_clis_deploy_approval_is_refused_with_the_update_to_run() {
     let id = "0b9e7c4e-1f2a-4c3b-9d8e-7f6a5b4c3d2f";
-    let approval = json!({ "body": "{}", "signatures": [] });
     for (admit, extra) in [
         ("deploy", json!({})),
         ("retry", json!({ "deployment": VOLUME })),
@@ -200,29 +200,19 @@ fn an_old_clis_deploy_approval_is_refused_with_the_update_to_run() {
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        Command::decode(command.clone()).unwrap();
-        ployz_store::refuse_deploy_approval(&command).unwrap();
+        Command::sent(command.clone()).unwrap();
 
         command
             .as_object_mut()
             .unwrap()
-            .insert("approval".into(), approval.clone());
-        let refused = ployz_store::refuse_deploy_approval(&command).unwrap_err();
+            .insert("approval".into(), json!({ "body": "{}", "signatures": [] }));
+        let refused = Command::sent(command).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Unsupported, "{admit}");
-        assert!(
-            refused.message.contains("Update ployz"),
-            "{}",
-            refused.message
-        );
-        assert!(
-            refused
-                .details
-                .get("next")
-                .and_then(Value::as_str)
-                .is_some_and(|next| next.contains("ployz.sh")),
-            "{}",
+        assert_eq!(
+            refused.details.pointer("/follow_up/kind"),
+            Some(&json!("update_client")),
+            "{admit}: {}",
             refused.details
         );
-        assert!(Command::decode(command).is_err(), "{admit}");
     }
 }
