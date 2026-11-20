@@ -94,6 +94,7 @@ const MACHINE: &str = "PLOYZ_MACHINE_ID=11111111111111111111111111111111";
 fn log_config() -> serde_json::Value {
     serde_json::json!({
         "Config": {
+            "compress": "false",
             "labels": "ployz.namespace,ployz.service.name,ployz.service.id,ployz.service.hook",
             "max-file": "3",
             "max-size": "10m",

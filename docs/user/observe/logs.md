@@ -85,7 +85,11 @@ Hiding secrets is best effort. A line can still show:
 - a secret that isn't a Sealed value, since Ployz can't know it's secret;
 - a Sealed value shorter than 6 bytes;
 - a copy of a Sealed value that your app changed, such as base64 or a URL-encoded form;
-- a Sealed value inside a line longer than 16 KiB, which Docker splits into pieces.
+- a Sealed value inside a line longer than 16 KiB, which Docker splits into pieces;
+- a Sealed value of a container that is gone, when another container logged it earlier.
+
+If a container's Sealed value can't be opened, for example after the server's Sealing Key
+changed, the collector doesn't run until that container is gone or redeployed.
 
 Don't print secrets from your app. A deploy that adds a Sealed value waits for the collector to
 learn it before the new container starts, so the container's first line is already hidden. The

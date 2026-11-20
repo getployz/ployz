@@ -99,6 +99,7 @@ impl Collector {
             return Ok(());
         };
         tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector could not take a new Sealed value, so it is stopped");
+        state.inventoried = false;
         inner.service().remove().await?;
         Ok(())
     }
@@ -139,21 +140,26 @@ impl Inner {
         state: &mut State,
         container_labels: &HashMap<String, String>,
     ) -> Result<(), Error> {
-        let mut found = self.values_of(container_labels)?;
-        if !state.inventoried {
-            found.merge(self.live_values().await?);
-        }
+        let connected =
+            store::identity(&self.data_dir).is_some_and(|identity| identity.push_target.is_some());
+        let found = match self.values_of(container_labels) {
+            _ if !connected => Ok(SealedValues::none()),
+            Ok(found) if state.inventoried => Ok(found),
+            Ok(mut found) => self.live_values().await.map(|live| {
+                found.merge(live);
+                found
+            }),
+            Err(error) => Err(error),
+        };
         self.converge(state, found).await
     }
 
     async fn tick(&self) -> Duration {
         let mut state = self.state.lock().await;
-        let converged = match self.live_values().await {
-            Ok(found) => self.converge(&mut state, found).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = converged {
+        let found = self.live_values().await;
+        if let Err(error) = self.converge(&mut state, found).await {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector is not converged");
+            return TICK;
         }
         state.refresh_token_at.map_or(TICK, |at| {
             let until = u64::try_from(at - unix_seconds()).unwrap_or(0);
@@ -171,7 +177,14 @@ impl Inner {
         Ok(found)
     }
 
-    async fn converge(&self, state: &mut State, found: SealedValues) -> Result<(), Error> {
+    /// Brings the Collector to what `found` says, where `found` is every Sealed value
+    /// there is or the reason it could not be had. Stopping needs no values, so a push
+    /// target gone tears the Collector down whatever `found` is.
+    async fn converge(
+        &self,
+        state: &mut State,
+        found: Result<SealedValues, Error>,
+    ) -> Result<(), Error> {
         let service = self.service();
         let target = store::identity(&self.data_dir).and_then(|identity| {
             let target = identity.push_target.clone()?;
@@ -188,6 +201,7 @@ impl Inner {
             }
             return Ok(());
         };
+        let found = found?;
         state.torn_down = false;
         state.inventoried = true;
         state.values.merge(found);

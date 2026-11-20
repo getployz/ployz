@@ -34,6 +34,7 @@ pub(crate) fn container_log_config() -> HostConfigLogConfig {
         config: Some(HashMap::from([
             ("max-size".into(), "10m".into()),
             ("max-file".into(), "3".into()),
+            ("compress".into(), "false".into()),
             (
                 "labels".into(),
                 [
@@ -518,6 +519,7 @@ mod tests {
             Some(HashMap::from([
                 ("max-size".to_string(), "10m".to_string()),
                 ("max-file".to_string(), "3".to_string()),
+                ("compress".to_string(), "false".to_string()),
                 (
                     "labels".to_string(),
                     "ployz.namespace,ployz.service.name,ployz.service.id,ployz.service.hook"

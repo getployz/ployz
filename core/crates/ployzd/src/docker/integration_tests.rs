@@ -971,6 +971,7 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
         &HashMap::from([
             ("max-size".to_owned(), "10m".to_owned()),
             ("max-file".to_owned(), "3".to_owned()),
+            ("compress".to_owned(), "false".to_owned()),
             (
                 "labels".to_owned(),
                 "ployz.namespace,ployz.service.name,ployz.service.id,ployz.service.hook".to_owned()
