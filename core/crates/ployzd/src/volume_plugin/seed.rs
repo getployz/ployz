@@ -19,7 +19,7 @@ use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
-    holders::{Unheld, copy_held_for_other_data},
+    holders::{Unheld, copy_held_for_other_data, copy_unlisted},
     inspect::{answering, internal},
     marks::{Mark, Marks},
     origin::Origin,
@@ -137,7 +137,9 @@ impl Copied {
             .await
             .map_err(|unheld| match unheld {
                 Unheld::Foreign => SwitchError::Foreign.rpc_error(copy_held_for_other_data(into)),
-                Unheld::Unlisted(message) => SwitchError::DockerUnavailable.rpc_error(message),
+                Unheld::Unlisted(cause) => {
+                    SwitchError::DockerUnavailable.rpc_error(copy_unlisted(into, &cause))
+                }
             })?;
         // The slot may be a mirror that pulled this point; landed, it is no received copy.
         storage

@@ -20,7 +20,7 @@ use ployzd::{
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
-    holders::{Unheld, copy_held_for_other_data},
+    holders::{Unheld, copy_held_for_other_data, copy_unlisted},
     inspect::{answering, internal},
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
@@ -480,9 +480,13 @@ impl VolumeStorage {
                     )
                     .await);
             }
-            Err(Unheld::Unlisted(message)) => {
+            Err(Unheld::Unlisted(cause)) => {
                 return Err(self
-                    .refuse_found(&scope, CopyRefusal::DockerUnavailable, message)
+                    .refuse_found(
+                        &scope,
+                        CopyRefusal::DockerUnavailable,
+                        copy_unlisted(&request.name, &cause),
+                    )
                     .await);
             }
         }

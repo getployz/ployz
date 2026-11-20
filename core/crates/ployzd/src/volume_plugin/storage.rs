@@ -199,8 +199,11 @@ impl VolumeStorage {
                     name: name.to_string(),
                 });
             }
-            Err(super::holders::Unheld::Unlisted(message)) => {
-                return Err(PluginError::from(message));
+            Err(super::holders::Unheld::Unlisted(cause)) => {
+                return Err(PluginError::HoldersUnlisted {
+                    name: name.to_string(),
+                    cause,
+                });
             }
         }
 

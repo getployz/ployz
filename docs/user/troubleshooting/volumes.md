@@ -201,15 +201,27 @@ under that name: "Volume data is mounted by a Container approved for other data"
 service from the server, or restore the data it was approved for. A mirror is never refused this
 way, since no service opens it.
 
+An external volume is one made outside Ployz, so a service never opens a volume Ployz provisioned
+through an external mount, even one Docker shows without labels:
+
+```
+Volume 'data' is a Ployz Provisioned Volume, and an External mount opens only a Volume made outside Ployz
+```
+
+Mount it as a provisioned volume, or give the external volume another name.
+
 ## A volume change says Docker is not answering
 
 ```
 Docker is not answering on this Machine, so Volume data keeps its copies as they are until it does
 ```
 
+A deploy that makes a new volume says "so no new data is made under Volume 'data' until it does".
+
 A server changes which copy is the volume, or makes a new one, only while Docker can say which
 services use it. Start Docker on that server, or wait for it to come back, then run the command
-again.
+again. In Ployz Cloud, a move, release or restore tries again on its own and fails with "Docker
+isn't answering on web-1" only if Docker stays down.
 
 ## A move to another server says the volume already has a copy
 

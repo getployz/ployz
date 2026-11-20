@@ -58,6 +58,7 @@ import {
   type RunContext,
   sendSwitch,
   setVolumeCopy,
+  SwitchAttemptError,
   startOrphanDeletes,
   volumeBusyMessage,
 } from "#/modules/volume-run/volume-run.server";
@@ -2695,6 +2696,7 @@ describe("volume runs", () => {
       ["behind", "data's copy on fsn-1 lacks the snapshot this run needs"],
       ["written", "data on fsn-1 was written after its final snapshot"],
       ["no_source", "data's mirror on fsn-1 has no Server to pull from"],
+      ["foreign", "data on fsn-1 is mounted by a Service approved for other data"],
     ] as const)("%s is an answer with the copy left and its message", async (reason, message) => {
       const run = await requested({ kind: "sync", args: { full: false } });
       await running(run.id);
@@ -2732,6 +2734,33 @@ describe("volume runs", () => {
       expect(failure).not.toBeInstanceOf(NonRetriableError);
       expect(failure?.message).toBe("set_volume_copy on fsn-1: internal: dataset is busy");
       expect(await rows()).toMatchObject([{ state: "running" }]);
+    });
+
+    it("Docker not answering fails only the attempt, so the step asks again once it is back", async () => {
+      const run = await requested({ kind: "sync", args: { full: false } });
+      await running(run.id);
+      failNext.set("snapshot@fsn-1", "docker_unavailable");
+
+      const failure = await snapshot(run.id).then(() => null, (error: Error) => error);
+
+      expect(failure).toBeInstanceOf(SwitchAttemptError);
+      expect(failure).not.toBeInstanceOf(NonRetriableError);
+      expect(failure?.message).toBe("Docker isn't answering on fsn-1");
+      expect(await rows()).toMatchObject([{ state: "running", message: null }]);
+      expect(await snapshot(run.id)).toMatchObject({ ok: true });
+    });
+
+    it("a SeedVolume refused because Docker isn't answering fails only the attempt", async () => {
+      const run = await requested({ kind: "sync", args: { full: false } });
+      await running(run.id);
+      failNext.set("inspect@fsn-1", new RawFault({ code: "unavailable", message: "docker", details: { reason: "docker_unavailable" } }));
+
+      const failure = await runEffect(sendSwitch(context(run.id), "run-1", fsn1, { command: "inspect_volume_copy", payload: { name: dockerVolume } }))
+        .then(() => null, (error: Error) => error);
+
+      expect(failure).toBeInstanceOf(SwitchAttemptError);
+      expect(failure?.message).toBe("Docker isn't answering on fsn-1");
+      expect(await rows()).toMatchObject([{ state: "running", message: null }]);
     });
 
     it("a read SeedVolume's reasons refuse ends the run for good with its message", async () => {

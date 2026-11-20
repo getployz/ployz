@@ -1135,8 +1135,11 @@ export type SwitchReason = CopyRefusal | SwitchError["reason"];
 
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
-  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale",
+  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable",
 ] as const satisfies readonly SwitchReason[];
+
+/** Refusals that pass on their own, so they fail only the attempt and the step asks again. Docker comes back by itself. */
+const passing = (reason: SwitchReason | null) => reason === "docker_unavailable";
 
 const SwitchErrorDetails = Schema.Struct({ details: Schema.Struct({ reason: Schema.Literals(SWITCH_REASONS) }) });
 const decodeSwitchError = Schema.decodeUnknownOption(SwitchErrorDetails);
@@ -1176,6 +1179,10 @@ export function switchFailureMessage(
       return `the restore point is gone from ${name} on ${machine.name}`;
     case "stale":
       return `a newer run took ${fenced} on ${machine.name}`;
+    case "foreign":
+      return `${name} on ${machine.name} is mounted by a Service approved for other data`;
+    case "docker_unavailable":
+      return `Docker isn't answering on ${machine.name}`;
     case "busy":
       return undefined;
   }
@@ -1204,7 +1211,8 @@ const switchReach = (cause: unknown): SwitchReach => {
 type SwitchRequest = Extract<VolumeSwitchRequest, { command: "seed_volume" | "inspect_volume_copy" }>;
 
 /**
- * A refusal with a message ends the run; Busy and transport failures fail only the attempt, so the step retries.
+ * A refusal with a message ends the run; Busy, Docker not answering and transport failures fail only the attempt, so
+ * the step retries.
  * `fenced` names the Volume whose floor the request is checked against, as in `switchFailureMessage`.
  */
 export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunId: string, machine: MachineRef, request: R, fenced = ctx.volumeName) => {
@@ -1215,8 +1223,8 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
       Effect.catch((error): Effect.Effect<never, Error, Database> => {
         const reason = switchErrorOf(error);
         const message = reason === null ? undefined : switchFailureMessage(reason, ctx, machine, fenced);
-        if (message !== undefined) return failRun(ctx, inngestRunId, message);
-        return Effect.fail(new SwitchAttemptError(reason, `${request.command} on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
+        if (message !== undefined && !passing(reason)) return failRun(ctx, inngestRunId, message);
+        return Effect.fail(new SwitchAttemptError(reason, message ?? `${request.command} on ${machine.name}: ${sdkFailureMessage(error, [machine])}`));
       }),
     );
   }).pipe(Effect.scoped);
@@ -1234,8 +1242,8 @@ export type CopyAnswer =
 export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName" | "gen"> & Partial<Pick<RunContext, "id">>;
 
 /**
- * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask fails,
- * so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
+ * One SetVolumeCopy. A refusal is an answer, since the caller decides what follows it; only a failure to ask, or a
+ * Machine whose Docker isn't answering, fails, so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
  * when the SetVolumeCopy itself was cut. Any other failure but a `SwitchAttemptError` is a session that didn't open, so
  * the SetVolumeCopy was never sent.
  */
@@ -1262,6 +1270,7 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
       }
       const { reason, copy } = refused;
       const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
+      if (passing(reason)) return Effect.fail(new SwitchAttemptError(reason, message));
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
     }),
   );

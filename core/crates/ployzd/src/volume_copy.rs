@@ -17,6 +17,11 @@ use serde::{Deserialize, Serialize};
 /// refusal of a create.
 pub const HELD_FOR_OTHER_DATA: &str = "is mounted by a Container approved for other data";
 
+/// The plugin's words for a root it held back because Docker did not list the Containers
+/// that mount the name in time. The daemon reads them back out of Docker's refusal of a
+/// create.
+pub const DOCKER_NOT_ANSWERING: &str = "Docker is not answering on this Machine";
+
 /// The Pool's capacity and commitments, with no effect.
 pub const STORAGE_INSPECT_ROUTE: &str = "Storage.Inspect";
 /// The Pool made ready for Volumes.

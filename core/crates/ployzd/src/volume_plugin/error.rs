@@ -28,6 +28,13 @@ pub(super) enum PluginError {
         ployzd::volume_copy::HELD_FOR_OTHER_DATA
     )]
     HeldForOtherData { name: String },
+    /// Docker did not list the Containers that mount the name, so no fresh root goes under
+    /// it yet.
+    #[error(
+        "{}, so no new data is made under Volume {name} until it does: {cause}",
+        ployzd::volume_copy::DOCKER_NOT_ANSWERING
+    )]
+    HoldersUnlisted { name: String, cause: String },
     /// A dataset carries an origin this Machine did not stamp, or one it cannot read.
     #[error("{0}")]
     Unstamped(String),

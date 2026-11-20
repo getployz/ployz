@@ -13,7 +13,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use ployz_core::{DockerVolumeName, MountOrigins, VolumeOrigin, labels};
-use ployzd::volume_copy::HELD_FOR_OTHER_DATA;
+use ployzd::volume_copy::{DOCKER_NOT_ANSWERING, HELD_FOR_OTHER_DATA};
 
 use super::{VolumeStorage, origin::Origin};
 
@@ -47,7 +47,7 @@ pub(super) struct Holder {
 pub(super) enum Unheld {
     /// A Container that mounts the name expects other data.
     Foreign,
-    /// Docker could not say which Containers mount it, in words for the caller.
+    /// Docker could not say which Containers mount it, for this reason.
     Unlisted(String),
 }
 
@@ -125,11 +125,7 @@ impl VolumeStorage {
         name: &DockerVolumeName,
         carried: Origin,
     ) -> std::result::Result<(), Unheld> {
-        let holders = self.holders.list(name).await.map_err(|error| {
-            Unheld::Unlisted(format!(
-                "Docker is not answering on this Machine, so Volume {name} keeps its copies as they are until it does: {error}"
-            ))
-        })?;
+        let holders = self.holders.list(name).await.map_err(Unheld::Unlisted)?;
         let carried = carried.unwrap_or_else(|| VolumeOrigin::legacy(name));
         for holder in holders {
             let expected = match holder.origins.as_deref() {
@@ -145,6 +141,14 @@ impl VolumeStorage {
         }
         Ok(())
     }
+}
+
+/// The refusal of a copy that stays in its slot because Docker did not list the holders
+/// of `name`, for `cause`.
+pub(super) fn copy_unlisted(name: &DockerVolumeName, cause: &str) -> String {
+    format!(
+        "{DOCKER_NOT_ANSWERING}, so Volume {name} keeps its copies as they are until it does: {cause}"
+    )
 }
 
 /// The refusal of a copy that stays in its slot because a holder of `name` expects other
