@@ -28,7 +28,9 @@ const clickhouse = async (query: string, body = "") => {
     headers: { authorization: `Basic ${Buffer.from(`${user}:${process.env["CLICKHOUSE_PASSWORD"] ?? ""}`).toString("base64")}` },
     body,
   });
-  if (!response.ok) throw new Error(`ClickHouse answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  const text = await response.text();
+  if (!response.ok) throw new Error(`ClickHouse answered ${response.status}: ${text.slice(0, 300)}`);
+  return text;
 };
 
 type Seed = {
@@ -40,27 +42,36 @@ type Seed = {
   readonly contentType?: string;
   readonly method?: string;
   readonly service?: string;
+  readonly secPurpose?: string;
 };
 
 const organizations: string[] = [];
 
-/** Rows for one Organization in the shared namespace, each a request with its own id. */
-const seed = async (organizationId: string, prefix: string, rows: ReadonlyArray<Seed>) => {
+/** Rows for one Organization in the shared namespace, each a request with its own id. Pageviews reach `otel.ployz_pageview` through its view. */
+const seed = async (organizationId: string, prefix: string, rows: ReadonlyArray<Seed>, retentionDays = 30) => {
   organizations.push(organizationId);
   const body = rows.map((row, index) => JSON.stringify({
-    OrgId: organizationId, RetentionDays: 30, Timestamp: row.at.replace("T", " ").replace("Z", "") , Namespace: NAMESPACE,
+    OrgId: organizationId, RetentionDays: retentionDays, Timestamp: row.at.replace("T", " ").replace("Z", "") , Namespace: NAMESPACE,
     Service: row.service ?? "web", Host: "shop.test", Method: row.method ?? "GET", Path: row.path ?? "/", Status: row.status ?? 200,
     DurationUs: 12_000, BytesIn: 0, BytesOut: 100, RequestId: `${prefix}-${index}`, Ua: row.ua ?? BROWSER, ReferrerHost: "", Language: "en",
-    ContentType: row.contentType ?? "text/html; charset=utf-8", SecPurpose: "", Visitor: row.visitor === null ? null : String(row.visitor),
+    ContentType: row.contentType ?? "text/html; charset=utf-8", SecPurpose: row.secPurpose ?? "", Visitor: row.visitor === null ? null : String(row.visitor),
     UtmSource: "", UtmMedium: "", UtmCampaign: "", UtmTerm: "", UtmContent: "", Ref: "",
   })).join("\n");
   await clickhouse("INSERT INTO otel.ployz_request FORMAT JSONEachRow", body);
 };
 
+/** What `otel.ployz_pageview` holds for one Organization, as `RetentionDays|Path|Visitor` lines (`\N` is no visitor). */
+const pageviewRows = async (organizationId: string) => {
+  const text = await clickhouse(`SELECT RetentionDays, Path, Visitor FROM otel.ployz_pageview WHERE OrgId = '${organizationId}' ORDER BY Path, Visitor, RequestId FORMAT TSV`);
+  return text.trim().split("\n").filter((line) => line !== "").map((line) => line.replaceAll("\t", "|"));
+};
+
 afterAll(async () => {
   if (organizations.length === 0) return;
   const ids = organizations.map((id) => `'${id}'`).join(",");
-  await clickhouse(`ALTER TABLE otel.ployz_request DELETE WHERE OrgId IN (${ids}) SETTINGS mutations_sync = 2`);
+  for (const table of ["ployz_request", "ployz_pageview"]) {
+    await clickhouse(`ALTER TABLE otel.${table} DELETE WHERE OrgId IN (${ids}) SETTINGS mutations_sync = 2`);
+  }
 });
 
 const today = localDay("UTC", Date.now());
@@ -88,10 +99,12 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
       { at: at(first, "10:00:00"), path: "/", visitor: 2 },
       { at: at(first, "11:00:00"), path: "/", visitor: 99, ua: GOOGLEBOT },
       { at: at(first, "11:05:00"), path: "/data.json", visitor: 3, contentType: "application/json" },
+      { at: at(first, "11:30:00"), path: "/prefetched", visitor: 4, secPurpose: "prefetch" },
       { at: at(first, "12:00:00"), path: "/checkout", visitor: null, method: "POST", status: 502, service: "api" },
       { at: at(second, "09:00:00"), path: "/", visitor: 5 },
+      { at: at(second, "12:00:00"), path: "/", visitor: null },
     ]));
-    // Globex sends the same paths from the same namespace, with more visitors and a page of its own.
+    // Globex sends the same paths from the same namespace, with more visitors and a page of its own. It keeps rows 7 days.
     yield* Effect.promise(() => seed(globex, "globex", [
       { at: at(first, "09:00:00"), path: "/", visitor: 11 },
       { at: at(first, "09:30:00"), path: "/globex-only", visitor: 12 },
@@ -99,10 +112,21 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
       { at: at(first, "10:30:00"), path: "/", visitor: 14 },
       { at: at(second, "09:00:00"), path: "/globex-only", visitor: 15 },
       { at: at(first, "12:00:00"), path: "/globex-checkout", visitor: null, method: "POST", status: 500, service: "api" },
-    ]));
+    ], 7));
+
+    // The pageview table holds each Organization's own pageviews and nothing else: not an API call, a POST or a prefetch. It
+    // keeps a pageview that came without a visitor, and copies the retention of the request it came from.
+    expect(yield* Effect.promise(() => pageviewRows(acme))).toEqual([
+      "30|/|1", "30|/|2", "30|/|5", "30|/|99", "30|/|\\N", "30|/pricing|1",
+    ]);
+    expect(yield* Effect.promise(() => pageviewRows(globex))).toEqual([
+      "7|/|11", "7|/|13", "7|/|14", "7|/globex-only|12", "7|/globex-only|15",
+    ]);
 
     const mine = yield* analytics.figures(query(acme), "day", ["page"]);
     const theirs = yield* analytics.figures(query(globex), "day", ["page"]);
+    expect(mine.noSaltDays).toEqual([second]);
+    expect(theirs.noSaltDays).toEqual([]);
 
     const perDay = (answer: typeof mine) => answer.buckets.filter((b) => b.pageviews > 0).map(({ pageviews, visitors }) => ({ pageviews, visitors }));
     expect(perDay(mine)).toEqual([{ pageviews: 3, visitors: 2 }, { pageviews: 1, visitors: 1 }]);

@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { botsAmong } from "../classify";
 import type { Range } from "../model";
-import { Params, readRequests, type Scope } from "./statement";
+import { Params, readPageviews, readRequests, type Scope } from "./statement";
 
 /**
  * Past this many distinct user agents in one window the rarest go unclassified and count as people. The bot list
@@ -9,21 +9,19 @@ import { Params, readRequests, type Scope } from "./statement";
  */
 const DISTINCT_AGENTS = 20_000;
 
-/** A request a person's browser made for a page: GET, 2xx, HTML, and not a prefetch or prerender the person never saw. */
-export const PAGEVIEW = "Method = 'GET' AND Status >= 200 AND Status < 300 AND startsWith(lower(ContentType), 'text/html') AND NOT match(SecPurpose, '(?i)prefetch|prerender')";
-
 const Agent = Schema.Struct({ ua: Schema.String, hash: Schema.String });
 
 /**
  * The hashes of the bot user agents in a window. ClickHouse lists the window's distinct agents, the `isbot` list names
  * the bots among them here, and a figure's query then drops `cityHash64(Ua)` in this list. `pageviewsOnly` looks only at
- * the agents behind page requests.
+ * the agents behind page requests, which the pageview table holds alone.
  */
 export const botHashes = Effect.fn("WebAnalytics.bots")(function* (scope: Scope, range: Range, pageviewsOnly: boolean) {
   const params = new Params();
-  const agents = yield* readRequests(scope, params, [], `
+  const read = pageviewsOnly ? readPageviews : readRequests;
+  const agents = yield* read(scope, params, [], `
     SELECT Ua AS ua, toString(cityHash64(Ua)) AS hash FROM scoped
-    WHERE Timestamp >= ${params.instant(range.start)} AND Timestamp < ${params.instant(range.end)}${pageviewsOnly ? ` AND ${PAGEVIEW}` : ""}
+    WHERE Timestamp >= ${params.instant(range.start)} AND Timestamp < ${params.instant(range.end)}
     GROUP BY Ua ORDER BY count() DESC, Ua LIMIT ${DISTINCT_AGENTS}`, Agent);
   return botsAmong(agents).map(({ hash }) => hash);
 });

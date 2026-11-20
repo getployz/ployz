@@ -1,11 +1,14 @@
 import { Effect, Schema } from "effect";
 import { queryObserveOrg } from "#/modules/observe-store/clickhouse.server";
 
+/** A read selects from every request, or from the pageviews alone. */
+type Table = "ployz_request" | "ployz_pageview";
+
 /**
  * The one place a request statement names its table. Every read of request data selects from `scoped`, which holds
  * only the Organization's rows (`org` is bound by `queryObserveOrg` from the session) in the Environment's namespaces.
  */
-const SCOPED = "scoped AS (SELECT * FROM otel.ployz_request WHERE OrgId = {org:String} AND Namespace IN {namespaces:Array(String)})";
+const scopedOf = (table: Table) => `scoped AS (SELECT * FROM otel.${table} WHERE OrgId = {org:String} AND Namespace IN {namespaces:Array(String)})`;
 
 /** Counts and sums come back as numbers; the bot hashes travel as strings because a 64-bit hash outruns a JS number. */
 const SETTINGS = "SETTINGS output_format_json_quote_64bit_integers = 0, max_memory_usage = 6000000000";
@@ -41,11 +44,8 @@ export class Params {
 
 export type Scope = { readonly organizationId: string; readonly namespaces: ReadonlyArray<string> };
 
-/**
- * Runs `select` over `scoped` and the extra `ctes` (each `name AS (...)`, reading `scoped` or an earlier one). An
- * Environment with no namespace has no rows, so it reads none.
- */
-export const readRequests = Effect.fn("WebAnalytics.read")(function* <Row>(
+const readScoped = Effect.fn("WebAnalytics.read")(function* <Row>(
+  table: Table,
   scope: Scope,
   params: Params,
   ctes: ReadonlyArray<string>,
@@ -56,9 +56,20 @@ export const readRequests = Effect.fn("WebAnalytics.read")(function* <Row>(
     const none: Array<Row> = [];
     return none;
   }
-  const text = `WITH ${[SCOPED, ...ctes].join(",\n")}\n${select}\n${SETTINGS}`;
+  const text = `WITH ${[scopedOf(table), ...ctes].join(",\n")}\n${select}\n${SETTINGS}`;
   if (/\botel\./.test([...ctes, select].join(" "))) return yield* Effect.die(new Error("A request read selects from `scoped`, never from an otel table."));
   const values = new Map(params.values);
   values.set("namespaces", `[${scope.namespaces.map((namespace) => `'${escapeText(namespace)}'`).join(",")}]`);
   return yield* queryObserveOrg(scope.organizationId, text, values, row);
 });
+
+/**
+ * Runs `select` over `scoped`, every request of the Organization, and the extra `ctes` (each `name AS (...)`, reading
+ * `scoped` or an earlier one). An Environment with no namespace has no rows, so it reads none.
+ */
+export const readRequests = <Row>(scope: Scope, params: Params, ctes: ReadonlyArray<string>, select: string, row: Schema.Decoder<Row>) =>
+  readScoped("ployz_request", scope, params, ctes, select, row);
+
+/** `readRequests` where `scoped` holds only the pageviews, with the columns the figures read. */
+export const readPageviews = <Row>(scope: Scope, params: Params, ctes: ReadonlyArray<string>, select: string, row: Schema.Decoder<Row>) =>
+  readScoped("ployz_pageview", scope, params, ctes, select, row);
