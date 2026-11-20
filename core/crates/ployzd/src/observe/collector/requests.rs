@@ -45,12 +45,47 @@ struct Window<'a> {
     salt: &'a Salt,
 }
 
-/// The Collector config that ships every access-log line of the sites Cloud lists, or `{}`
-/// where it lists none. A line leaves the Machine with its client address already hashed
-/// into a visitor, so Cloud never holds one.
+fn requests_receiver() -> Value {
+    json!({
+        "include": [format!("{REQUESTS_MOUNT}/access*.log")],
+        "start_at": "end",
+        "poll_interval": "500ms",
+        "storage": "file_storage",
+        "operators": [{
+            "type": "json_parser",
+            "parse_from": "body",
+            "parse_to": "attributes",
+            "on_error": "drop",
+        }],
+    })
+}
+
+/// The Collector config that ships every access-log line of the sites Cloud lists. A line
+/// leaves the Machine with its client address already hashed into a visitor, so Cloud never
+/// holds one. Where Cloud lists no site the file is still read and every line dropped, so
+/// its checkpoint keeps up and a site turned on later counts nothing from while it was off.
 pub(super) fn fragment(sites: &[(Namespace, Vec<Salt>)]) -> String {
     if sites.is_empty() {
-        return "{}".to_owned();
+        let config: Value = json!({
+            "receivers": { "filelog/requests": requests_receiver() },
+            "processors": {
+                "filter/requests": {
+                    "error_mode": "silent",
+                    "logs": { "log_record": ["true"] },
+                },
+            },
+            "service": {
+                "pipelines": {
+                    "logs/requests": {
+                        "receivers": ["filelog/requests"],
+                        "processors": ["filter/requests"],
+                        "exporters": ["otlp_http"],
+                    }
+                }
+            },
+        });
+        return serde_json::to_string_pretty(&config)
+            .expect("a requests fragment serializes to JSON");
     }
     let windows: Vec<Window<'_>> = sites
         .iter()
@@ -99,20 +134,7 @@ pub(super) fn fragment(sites: &[(Namespace, Vec<Salt>)]) -> String {
     pipeline.push("transform/visitors".to_owned());
     pipeline.push("batch".to_owned());
     let config: Value = json!({
-        "receivers": {
-            "filelog/requests": {
-                "include": [format!("{REQUESTS_MOUNT}/access*.log")],
-                "start_at": "end",
-                "poll_interval": "500ms",
-                "storage": "file_storage",
-                "operators": [{
-                    "type": "json_parser",
-                    "parse_from": "body",
-                    "parse_to": "attributes",
-                    "on_error": "drop",
-                }],
-            }
-        },
+        "receivers": { "filelog/requests": requests_receiver() },
         "processors": processors,
         "service": {
             "pipelines": {
@@ -300,6 +322,21 @@ mod tests {
 
     fn parsed(fragment: &str) -> Value {
         serde_json::from_str(fragment).unwrap()
+    }
+
+    #[test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+    fn with_no_site_the_file_is_still_read_and_every_line_dropped() {
+        let config = parsed(&fragment(&[]));
+        assert!(config["receivers"]["filelog/requests"].is_object());
+        assert_eq!(
+            config["processors"]["filter/requests"]["logs"]["log_record"],
+            json!(["true"])
+        );
+        assert_eq!(
+            config["service"]["pipelines"]["logs/requests"]["processors"],
+            json!(["filter/requests"])
+        );
     }
 
     #[test]
