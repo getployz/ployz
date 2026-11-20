@@ -46,7 +46,6 @@
     "@better-auth/drizzle-adapter": "^1.7.16",
     "@better-auth/mcp": "1.7.16",
     "@better-auth/oauth-provider": "1.7.16",
-    "@clickhouse/client": "1.25.0",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-json": "^6.0.2",

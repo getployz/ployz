@@ -1,5 +1,4 @@
 import "@tanstack/react-start/server-only";
-import { createClient } from "@clickhouse/client";
 import { Effect, Redacted } from "effect";
 import { AppConfig } from "#/server/config.server";
 import { Unavailable } from "#/server/public-error";
@@ -36,24 +35,32 @@ export type ObserveStore = { readonly type: "not_configured" } | { readonly type
 export const openObserveStore = Effect.fn("ObserveStore.open")(function* (organizationId: string) {
   const { observeClickhouse } = yield* AppConfig;
   if (observeClickhouse === undefined) return { type: "not_configured" } satisfies ObserveStore;
-  const client = yield* Effect.acquireRelease(
-    Effect.sync(() => createClient({
-      url: observeClickhouse.url.href,
-      username: observeClickhouse.username,
-      password: observeClickhouse.password === undefined ? "" : Redacted.value(observeClickhouse.password),
-      database: "otel",
-      request_timeout: QUERY_SECONDS * 1000,
-      max_open_connections: 4,
-      clickhouse_settings: { max_execution_time: QUERY_SECONDS, max_result_rows: String(RESULT_ROWS), result_overflow_mode: "throw" },
-    })),
-    (opened) => Effect.promise(() => opened.close()),
-  );
+  const authorization = `Basic ${Buffer.from(`${observeClickhouse.username}:${observeClickhouse.password === undefined ? "" : Redacted.value(observeClickhouse.password)}`).toString("base64")}`;
   const query: OrgQuery = <Row>(text: string, params: QueryParams = {}) => Effect.suspend(() => {
     assertOrgScoped(text, params);
+    // Every value travels as a `param_` binding, never in the statement's text. `readonly=2` refuses writes and DDL
+    // but still lets the per-query limits below apply.
+    const target = new URL("/", observeClickhouse.url);
+    target.searchParams.set("default_format", "JSONEachRow");
+    target.searchParams.set("database", "otel");
+    target.searchParams.set("readonly", "2");
+    target.searchParams.set("max_execution_time", String(QUERY_SECONDS));
+    target.searchParams.set("max_result_rows", String(RESULT_ROWS));
+    target.searchParams.set("result_overflow_mode", "throw");
+    for (const [name, value] of Object.entries({ ...params, org: organizationId })) target.searchParams.set(`param_${name}`, String(value));
     return Effect.tryPromise({
-      try: async () => {
-        const result = await client.query({ query: text, query_params: { ...params, org: organizationId }, format: "JSONEachRow" });
-        return await result.json<Row>();
+      try: async (signal) => {
+        const response = await fetch(target, {
+          method: "POST",
+          headers: { authorization },
+          body: text,
+          signal: AbortSignal.any([signal, AbortSignal.timeout((QUERY_SECONDS + 5) * 1000)]),
+        });
+        const body = await response.text();
+        if (!response.ok) throw new Error(`ClickHouse answered ${response.status}: ${body.slice(0, 300)}`);
+        const lines = body.trim();
+        // SAFETY: the caller's query text fixes the row's columns; ClickHouse answers exactly those.
+        return lines === "" ? [] : lines.split("\n").map((line) => JSON.parse(line) as Row);
       },
       catch: (cause) => new Unavailable({ message: "Cloud couldn’t read metrics. Try again.", userFacing: true, cause }),
     });
