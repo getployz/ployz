@@ -652,6 +652,9 @@ impl AutoDeployRule {
         if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
             return Err(mismatch("a hook"));
         }
+        if !creation.spec.volume_graph().born_in(facts.namespace) {
+            return Err(mismatch("a Volume's Environment"));
+        }
         let approved = self
             .service(facts.service)
             .map(|service| service.template)

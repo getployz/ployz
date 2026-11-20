@@ -96,6 +96,8 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     pub(crate) admission: Admission,
     /// Fresh local storage observation deferred to final container admission.
     pub(crate) storage: Storage,
+    /// The volume plugin, which says what origin each Provisioned Volume carries.
+    pub(crate) plugin: &'spec crate::storage::Plugin,
 }
 
 /// A request once admission has consumed its futures: what the rest of creation reads.
@@ -109,6 +111,7 @@ struct Creating<'a> {
     namespace: &'a Namespace,
     spec: &'a ResolvedServiceSpec,
     admitted: AdmittedSpec,
+    plugin: &'a crate::storage::Plugin,
 }
 
 /// Creating, starting, stopping and removing the managed Containers, and the marks and
@@ -280,6 +283,7 @@ impl Lifecycle {
                 admitted: AdmittedSpec::test_signed(namespace, spec),
                 admission: std::future::ready(Ok::<_, Error>(())),
                 storage: std::future::ready(None),
+                plugin: &super::test_support::NO_PLUGIN,
             },
         )
         .await
@@ -311,6 +315,7 @@ impl Lifecycle {
             admitted,
             admission,
             storage,
+            plugin,
         } = request;
         {
             // Wait for an in-flight create to persist its spec before comparing a retry.
@@ -350,6 +355,7 @@ impl Lifecycle {
             namespace,
             spec,
             admitted,
+            plugin,
         }))
         .await
         .map_err(E::from)
@@ -404,6 +410,11 @@ impl Lifecycle {
             .admitted
             .still_holds(Error::AdmissionUnread)?
             .map_err(Error::Unadmitted)?;
+        // Read last, under this lock and the caller's switch guard, so no promote or seed
+        // lands other data under a mounted name before Docker makes the Container.
+        self.volumes
+            .require_origins(&machine.id, spec, creating.plugin)
+            .await?;
         let mounts = body
             .host_config
             .get_or_insert_default()

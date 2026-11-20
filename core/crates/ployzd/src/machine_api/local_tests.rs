@@ -895,8 +895,19 @@ async fn fake_docker_service_built(
             .with_machine_root(data_dir.join("root")),
         None => runtime,
     };
+    // A Legacy root under every name, so a create reads the origin its spec expects.
+    let plugin = crate::storage::test_support::FakePlugin::default();
+    plugin.reply(
+        crate::volume_copy::INSPECT_ROUTE,
+        serde_json::json!({"Ok": {"kind":"root", "readonly":false, "newest":null, "epoch":1,
+            "seed":false}}),
+    );
+    let default_plugin = data_dir.join("default-plugin");
+    std::fs::create_dir_all(&default_plugin).unwrap();
+    let (plugin, _server) = plugin.serve(&default_plugin);
     let mut service = MachineService::with_cluster(store.clone(), None)
-        .with_optional_containers(Some(runtime.clone()));
+        .with_optional_containers(Some(runtime.clone()))
+        .with_volume_plugin(plugin);
     // `true` lists no pools, which reads as ZFS ready whatever the host has.
     service.local =
         service
@@ -2798,6 +2809,8 @@ mod set_volume_copy {
     use serde_json::{Value, json};
 
     const VOLUME: &str = "app_data";
+    /// The read each create of a holder makes of the origin its Volume carries.
+    const ORIGIN_READ: &str = INSPECT_ROUTE;
 
     fn writer_root(epoch: u32, newest: Option<Value>) -> Value {
         json!({"Ok": {"kind":"root", "readonly":false,
@@ -3078,6 +3091,106 @@ mod set_volume_copy {
         plugin
     }
 
+    /// A spec mounting `data` born in `namespace`.
+    fn born_spec(namespace: &str) -> (ResolvedServiceSpec, ployz_core::VolumeOrigin) {
+        let birth: ployz_core::VolumeBirth = serde_json::from_value(json!({
+            "namespace": namespace, "name": "data", "made_at": 1_762_178_640_000_u64,
+            "nonce": "00112233445566778899aabbccddeeff"}))
+        .unwrap();
+        let origin = ployz_core::VolumeOrigin::of(&birth).unwrap();
+        let mut source = ployz_core::RawVolumeSource::Provisioned {
+            name: "data".parse().unwrap(),
+            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+                std::num::NonZeroU64::new(1_073_741_824).unwrap(),
+            ),
+            labels: BTreeMap::new(),
+            birth: Some(birth),
+        }
+        .admit()
+        .unwrap();
+        source.scope_to_namespace(&Namespace::parse("app").unwrap());
+        (spec_with_sources(vec![source]), origin)
+    }
+
+    fn root_carrying(origin: Option<ployz_core::VolumeOrigin>) -> Value {
+        json!({"Ok": {"kind":"root", "readonly":false, "newest":null, "epoch":1,
+            "seed":false, "origin":origin}})
+    }
+
+    /// A stale copy promoted under the name, or a sibling's data swapped under it, is
+    /// refused at create: Docker never makes a Container that would open it.
+    #[tokio::test]
+    async fn a_holder_is_created_only_over_the_data_its_spec_names() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-create").await;
+        let plugin = FakePlugin::default();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let (spec, born) = born_spec("app");
+        let (other, _) = born_spec("other-env");
+        let create = |spec: ResolvedServiceSpec| {
+            let service = service.clone();
+            async move {
+                service
+                    .local
+                    .create_container(
+                        ContainerKind::ServiceContainer,
+                        &Namespace::parse("app").unwrap(),
+                        &spec,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+            }
+        };
+        let made = || {
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .len()
+        };
+
+        for carried in [
+            None,
+            Some(
+                ployz_core::VolumeOrigin::of(
+                    &serde_json::from_value(json!({
+            "namespace": "app", "name": "data", "made_at": 1_762_178_640_000_u64,
+            "nonce": "ffeeddccbbaa99887766554433221100"}))
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+        ] {
+            plugin.reply(INSPECT_ROUTE, root_carrying(carried));
+            let refused = create(spec.clone()).await.unwrap_err();
+            assert!(
+                matches!(
+                    refused,
+                    crate::machine::LocalMachineError::Docker(
+                        crate::docker::Error::ForeignVolume { .. }
+                    )
+                ),
+                "{refused:?}"
+            );
+            assert_eq!(made(), 0, "Docker made no Container over {carried:?}");
+        }
+        plugin.reply(INSPECT_ROUTE, root_carrying(Some(born)));
+        create(other).await.unwrap_err();
+        assert_eq!(
+            made(),
+            0,
+            "a birth from another Environment names no data here"
+        );
+
+        create(spec).await.unwrap();
+        assert_eq!(made(), 1);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_raise_whose_kept_start_another_holder_superseded_starts_nothing() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-kept-held").await;
@@ -3096,7 +3209,10 @@ mod set_volume_copy {
             serde_json::to_value(&raised).unwrap(),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![ORIGIN_READ, ORIGIN_READ, INSPECT_ROUTE, WRITER_ROUTE]
+        );
         assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3121,7 +3237,10 @@ mod set_volume_copy {
             serde_json::to_value(&raised).unwrap(),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![ORIGIN_READ, INSPECT_ROUTE, WRITER_ROUTE]
+        );
         let creates = fake
             .requests
             .lock()
@@ -3265,14 +3384,20 @@ mod set_volume_copy {
         assert_eq!(holder_status(&fake), vec![json!("exited")]);
         assert_eq!(
             plugin.routes_called(),
-            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
+            vec![ORIGIN_READ, INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
         );
 
         let again = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(again, first);
         assert_eq!(
             plugin.routes_called(),
-            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+            vec![
+                ORIGIN_READ,
+                INSPECT_ROUTE,
+                CUT_ROUTE,
+                INSPECT_ROUTE,
+                INSPECT_ROUTE
+            ]
         );
         assert_eq!(
             cut_lines(&capture),
@@ -3321,7 +3446,13 @@ mod set_volume_copy {
         assert_eq!(holder_status(&fake), vec![json!("exited")]);
         assert_eq!(
             plugin.routes_called(),
-            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+            vec![
+                ORIGIN_READ,
+                INSPECT_ROUTE,
+                CUT_ROUTE,
+                INSPECT_ROUTE,
+                INSPECT_ROUTE
+            ]
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3358,7 +3489,10 @@ mod set_volume_copy {
         let error = refusal(&refused);
         assert_eq!(error.details["reason"], json!("busy"), "{error:?}");
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![ORIGIN_READ, ORIGIN_READ, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
         let mut status = holder_status(&fake);
         status.sort_by_key(ToString::to_string);
         assert_eq!(status, vec![json!("exited"), json!("running")]);
@@ -3395,7 +3529,7 @@ mod set_volume_copy {
             "{error:?}"
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(plugin.routes_called(), vec![ORIGIN_READ, INSPECT_ROUTE]);
         assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3419,7 +3553,10 @@ mod set_volume_copy {
         assert_eq!(error.details["reason"], json!("busy"));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![ORIGIN_READ, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
         assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3439,7 +3576,7 @@ mod set_volume_copy {
         assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
         assert_eq!(error.details["reason"], json!("mismatch"));
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(plugin.routes_called(), vec![ORIGIN_READ, INSPECT_ROUTE]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -3470,11 +3607,14 @@ mod set_volume_copy {
             serde_json::to_value(&raised).unwrap(),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![ORIGIN_READ, INSPECT_ROUTE, WRITER_ROUTE]
+        );
         assert_eq!(reply(&set_copy(&service, raise).await), raised);
         assert_eq!(
             plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
+            vec![ORIGIN_READ, INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
         );
 
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":1}))).await);
@@ -3482,7 +3622,13 @@ mod set_volume_copy {
         assert_eq!(holder_status(&fake), vec![json!("running")]);
         assert_eq!(
             plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
+            vec![
+                ORIGIN_READ,
+                INSPECT_ROUTE,
+                WRITER_ROUTE,
+                INSPECT_ROUTE,
+                INSPECT_ROUTE
+            ]
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3553,7 +3699,10 @@ mod set_volume_copy {
         assert_eq!(error.details["floor"], json!(5));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![ORIGIN_READ, INSPECT_ROUTE, INSPECT_ROUTE]
+        );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -4197,7 +4346,13 @@ mod set_volume_copy {
         );
         assert_eq!(
             plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
+            vec![
+                INSPECT_ROUTE,
+                WRITER_ROUTE,
+                ORIGIN_READ,
+                ORIGIN_READ,
+                INSPECT_ROUTE
+            ]
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -4227,7 +4382,10 @@ mod set_volume_copy {
             serde_json::to_value(&held).unwrap(),
             json!({"copy": writer_root(1, Some(snapshot("f-1", 7)))["Ok"]})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(
+            plugin.routes_called(),
+            vec![INSPECT_ROUTE, ORIGIN_READ, INSPECT_ROUTE]
+        );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -4258,7 +4416,7 @@ mod set_volume_copy {
         assert_eq!(first, again);
         assert_eq!(
             plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
+            vec![INSPECT_ROUTE, WRITER_ROUTE, ORIGIN_READ, INSPECT_ROUTE]
         );
         let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
         assert_eq!(containers.len(), 1, "{:?}", containers.keys());

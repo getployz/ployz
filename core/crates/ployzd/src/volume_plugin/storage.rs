@@ -40,6 +40,8 @@ pub(super) struct VolumeStorage {
     /// How long a departure waits for every receive to stop. Demote answers within its
     /// 120 s timeout even when ZFS hangs one of them.
     pub(super) stop_deadline: Duration,
+    /// Where a rename under a name lists the Containers that mount it.
+    pub(super) holders: super::holders::Holders,
 }
 
 /// Bytes a dataset commits the Pool to: a root's `refquota`, or a slot parent's. The
@@ -117,6 +119,7 @@ impl VolumeStorage {
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
             stop_deadline: STOP_DEADLINE,
+            holders: super::holders::Holders::Docker,
         }
     }
 
@@ -140,6 +143,7 @@ impl VolumeStorage {
             send_port: ployz_core::VOLUME_SEND_PORT,
             receive_stall: RECEIVE_STALL,
             stop_deadline: STOP_DEADLINE,
+            holders: super::holders::Holders::none(),
         }
     }
 

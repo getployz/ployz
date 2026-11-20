@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting volumes
-description: Fix volume moves that stop partway, busy volumes, and moves cut short by a lost server.
+description: Fix volume moves that stop partway, busy volumes, volumes holding other data, and moves cut short by a lost server.
 ---
 
 Fixes for [moving](../services/move-a-volume.md), [mirroring](../services/mirror-a-volume.md) and
@@ -180,6 +180,33 @@ it's gone for good, forget it, then run the `ployz volume restore` line.
 If `web-2` answers but holds no copy, the deploy says "data finishes on web-2, which holds no copy
 to start" instead. Remove `web-2` with the `ployz server rm` line it prints, then run the
 `ployz volume restore` line.
+
+## A deploy says the volume holds another volume's data
+
+```
+Volume 'data' holds another Volume's data under the same name, not the data this Service was approved for
+```
+
+A server opens a volume's data only for a service whose approval names that volume. An earlier
+volume with the same name, or another volume's copy, left this data on `web-1`, so your service
+doesn't start there and nothing is deleted. Make the copy you want the volume, then deploy:
+
+```sh
+ployz volume restore data --from web-2
+```
+
+A move, mirror or restore is refused the same way when a service on the server, running or
+stopped, was approved for other data under that name: "Volume data is mounted by a Container
+approved for other data".
+
+## A volume change says Docker is not answering
+
+```
+Docker is not answering on this Machine, so Volume data keeps its copies as they are until it does
+```
+
+A server changes which copy is the volume only while Docker can say which services use it. Start
+Docker on that server, or wait for it to come back, then run the command again.
 
 ## A move to another server says the volume already has a copy
 

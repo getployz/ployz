@@ -522,6 +522,9 @@ pub enum SwitchError {
     /// The restore point a seed asked for is no longer on the writer.
     RestorePointGone,
     NoCapacity,
+    /// A Container that mounts the new Volume expects data of another origin than the
+    /// seed carries.
+    Foreign,
 }
 
 impl SwitchError {
@@ -543,7 +546,8 @@ impl CodedRefusal for SwitchError {
             | Self::Busy
             | Self::VolumeSwitching
             | Self::NoWriter
-            | Self::RestorePointGone => RpcErrorCode::Conflict,
+            | Self::RestorePointGone
+            | Self::Foreign => RpcErrorCode::Conflict,
             Self::NoCapacity => RpcErrorCode::Unavailable,
         }
     }

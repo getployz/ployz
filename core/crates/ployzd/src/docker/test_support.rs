@@ -877,6 +877,13 @@ fn image_id(image: &str) -> String {
     }
 }
 
+/// A volume plugin no test serves: a create that reads a Provisioned Volume's origin
+/// through it is refused, as when the plugin is down.
+pub(crate) static NO_PLUGIN: std::sync::LazyLock<crate::storage::Plugin> =
+    std::sync::LazyLock::new(|| {
+        crate::storage::Plugin::at("/nonexistent/ployz-test-plugin.sock".into())
+    });
+
 pub(super) fn container_request<'spec, Storage>(
     kind: ContainerKind,
     namespace: &'spec Namespace,
@@ -894,6 +901,7 @@ pub(super) fn container_request<'spec, Storage>(
         admitted: crate::machine::AdmittedSpec::test_signed(namespace, spec),
         admission: std::future::ready(Ok(())),
         storage,
+        plugin: &NO_PLUGIN,
     }
 }
 

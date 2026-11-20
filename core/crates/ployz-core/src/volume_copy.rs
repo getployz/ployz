@@ -229,6 +229,9 @@ pub enum CopyRefusal {
     NoSource,
     /// The request's `gen` is below the floor: a newer lane owns the Volume.
     Stale,
+    /// A Container that mounts the Volume expects data of another origin than the copy
+    /// carries.
+    Foreign,
 }
 
 /// `RpcError.details` of a refused `SetVolumeCopy`: the reason and the copy it left.
@@ -264,7 +267,8 @@ impl CodedRefusal for SetVolumeCopyRefused {
             | CopyRefusal::Behind
             | CopyRefusal::Written
             | CopyRefusal::NoSource
-            | CopyRefusal::Stale => RpcErrorCode::Conflict,
+            | CopyRefusal::Stale
+            | CopyRefusal::Foreign => RpcErrorCode::Conflict,
         }
     }
 }

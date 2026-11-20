@@ -1582,6 +1582,7 @@ impl LocalMachine {
                         Ok(())
                     },
                     storage: self.observe_storage(),
+                    plugin: &self.plugin,
                 },
             )
             .await
@@ -2051,6 +2052,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
             ContainerRefusalReason::VolumesNotPrepared
         }
+        Error::Docker(Docker::ForeignVolume { .. }) => ContainerRefusalReason::ForeignVolume,
         Error::Docker(Docker::Sealed(open)) => match open {
             OpenError::KeyMissing => ContainerRefusalReason::SealingKeyMissing,
             OpenError::KeyUnreadable(_) => return Err(error),

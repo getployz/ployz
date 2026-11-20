@@ -407,7 +407,7 @@ impl LocalMachine {
         self
     }
 
-    /// Make subsequent starts of a Provisioned Volume's holder take `switch`.
+    /// Make subsequent creates and starts of a Provisioned Volume's holder take `switch`.
     #[must_use]
     pub(crate) fn with_switch(mut self, switch: SwitchLock) -> Self {
         self.switch = Some(switch);

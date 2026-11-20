@@ -20,6 +20,7 @@ use ployzd::{
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
+    holders::Unheld,
     inspect::{answering, internal},
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
@@ -457,10 +458,26 @@ impl VolumeStorage {
         if marks.is_set(Mark::ResumeToken).await.map_err(internal)? {
             self.z(&["receive", "-A", &fs_name]).await?;
         }
+        let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
         // No copy leaves its slot while the slot still holds a record its bytes lack.
-        self.complete(&DatasetLayout::of(&scope.pool).slot_parent(name), &fs_name)
+        self.complete(&parent, &fs_name).await.map_err(internal)?;
+        let newest = self.newest_snapshot(&fs_name).await.map_err(internal)?;
+        let carried = self
+            .origin_of(
+                Some(&parent),
+                Some((&fs_name, newest.as_ref().map(|newest| &newest.name))),
+            )
             .await
             .map_err(internal)?;
+        match self.admit_holders(&request.name, carried).await {
+            Ok(()) => {}
+            Err(Unheld::Foreign(message)) => {
+                return Err(self
+                    .refuse_found(&scope, CopyRefusal::Foreign, message)
+                    .await);
+            }
+            Err(Unheld::Unlisted(error)) => return Err(error),
+        }
         marks.promote_slot(request.epoch).await.map_err(internal)?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
         let parent = DatasetLayout::of(&scope.pool).root_parent();

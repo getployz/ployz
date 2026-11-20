@@ -124,6 +124,66 @@ impl Volumes {
         }
     }
 
+    /// Refuses unless each mounted managed Volume carries the origin `spec` expects of it:
+    /// an Ordinary one by its `ployz.origin` label, a Provisioned one by its dataset, which
+    /// the plugin reads. A Volume that carries none is Legacy, which only a mount with no
+    /// birth expects.
+    ///
+    /// # Errors
+    /// Returns [`Error::ForeignVolume`] naming the first Volume that differs, or the error
+    /// that kept its origin unread.
+    pub(super) async fn require_origins(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+        plugin: &crate::storage::Plugin,
+    ) -> Result<(), Error> {
+        let mut checked = BTreeSet::new();
+        for volume in spec.volume_graph().mounted_volumes() {
+            let source = &volume.source;
+            let Some(name) = source.docker_volume_name() else {
+                continue;
+            };
+            if !checked.insert(name) {
+                continue;
+            }
+            let carried = match source.kind() {
+                ployz_core::RawVolumeSource::Ordinary { .. } => {
+                    let observed = self.inspect_volume(machine_id, name).await?;
+                    match observed.labels.get(labels::VOLUME_ORIGIN) {
+                        None => None,
+                        Some(label) => {
+                            Some(ployz_core::VolumeOrigin::parse(label).map_err(|_| {
+                                Error::ForeignVolume {
+                                    name: name.clone(),
+                                    found: format!("has an unreadable origin label {label:?}"),
+                                }
+                            })?)
+                        }
+                    }
+                }
+                ployz_core::RawVolumeSource::Provisioned { .. } => {
+                    provisioned_origin(plugin, name).await?
+                }
+                ployz_core::RawVolumeSource::External { .. }
+                | ployz_core::RawVolumeSource::Bind { .. }
+                | ployz_core::RawVolumeSource::Tmpfs { .. } => continue,
+            };
+            let expected =
+                ployz_core::VolumeOrigin::expected(source.birth(), name).map_err(|error| {
+                    Error::InvalidContainerConfig(format!("mount origins: {error}"))
+                })?;
+            let carried = carried.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(name));
+            if carried != expected {
+                return Err(Error::ForeignVolume {
+                    name: name.clone(),
+                    found: "holds another Volume's data under the same name, not the data this Service was approved for".to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse an External mount of a Volume carrying Ployz's managed label. External means
     /// made outside Ployz, and under Device enforcement the only named Volumes an Operator
     /// can make come from `PrepareVolumes`, which labels them, so a labelled one may hold
@@ -435,6 +495,31 @@ fn volume_in_use(holders: Vec<Option<QualifiedService>>) -> Error {
     Error::VolumeInUse {
         message,
         services: named,
+    }
+}
+
+/// The origin a Provisioned Volume's writable root carries, `None` for Legacy. A name with
+/// no root here has no data a Container could open, so it is refused as well.
+async fn provisioned_origin(
+    plugin: &crate::storage::Plugin,
+    name: &DockerVolumeName,
+) -> Result<Option<ployz_core::VolumeOrigin>, Error> {
+    let copy = plugin
+        .call::<Option<ployz_core::VolumeCopy>>(
+            crate::volume_copy::INSPECT_ROUTE,
+            &crate::volume_copy::CopyRequest { name: name.clone() },
+        )
+        .await
+        .map_err(|source| Error::VolumeOriginUnread {
+            name: name.clone(),
+            source: Box::new(source),
+        })?;
+    match copy {
+        Some(ployz_core::VolumeCopy::Root { origin, .. }) => Ok(origin),
+        Some(ployz_core::VolumeCopy::Slot { .. }) | None => Err(Error::ForeignVolume {
+            name: name.clone(),
+            found: "has no writable copy on this Machine".to_owned(),
+        }),
     }
 }
 

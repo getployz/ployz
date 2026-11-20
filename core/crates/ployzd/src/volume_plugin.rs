@@ -26,6 +26,7 @@ mod capacity;
 mod copy;
 mod departure;
 mod error;
+mod holders;
 mod inspect;
 mod marks;
 mod origin;
@@ -378,6 +379,8 @@ mod tests {
 
     #[path = "copy_tests.rs"]
     mod copy_tests;
+    #[path = "holders_tests.rs"]
+    mod holders_tests;
     mod marks_model_tests;
     mod marks_tests;
     mod seed_tests;

@@ -1381,6 +1381,20 @@ pub enum Error {
         name: DockerVolumeName,
         reason: String,
     },
+    /// A mounted Volume holds data of another origin than the spec expects.
+    #[error("Volume '{name}' {found}")]
+    ForeignVolume {
+        name: DockerVolumeName,
+        /// What is wrong with the Volume, as a clause after its name.
+        found: String,
+    },
+    /// The volume plugin did not say which origin a Provisioned Volume carries.
+    #[error("could not read which data Volume '{name}' holds")]
+    VolumeOriginUnread {
+        name: DockerVolumeName,
+        #[source]
+        source: Box<ployz_core::RpcError>,
+    },
     /// Docker refused to remove a Volume that containers still mount.
     #[error("{message}")]
     VolumeInUse {
@@ -1523,6 +1537,7 @@ impl Error {
                 ..
             })
             | Self::VolumeShapeMismatch { .. }
+            | Self::ForeignVolume { .. }
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
             | Self::ServicePlacementMismatch
@@ -1533,6 +1548,7 @@ impl Error {
             Self::VolumeCreatedButUnverified { .. }
             | Self::StorageUnobservable
             | Self::VolumePluginListFailed(_)
+            | Self::VolumeOriginUnread { .. }
             | Self::EventStreamClosed
             // A peer pull is idempotent, so a rerun is safe whatever docker printed.
             | Self::PeerPull(_)

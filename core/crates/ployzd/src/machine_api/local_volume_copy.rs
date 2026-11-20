@@ -531,6 +531,9 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
         CopyRefusal::Behind => format!("Volume {name} is not at the wanted snapshot"),
         CopyRefusal::Written => format!("Volume {name} was written after the wanted snapshot"),
         CopyRefusal::NoSource => format!("Volume {name} has no copy to pull from"),
+        CopyRefusal::Foreign => {
+            format!("Volume {name} is mounted by a Container approved for other data")
+        }
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",
             refused.floor.unwrap_or_default()

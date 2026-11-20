@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath,
-    Namespace, ServiceVolumeReference, ValueError,
+    Namespace, ServiceVolumeReference, VOLUME_ORIGIN_CAPABILITY, ValueError,
     authority::canonical::{self, CanonicalError, Timestamp},
     labels,
     value::hex_newtype,
@@ -42,9 +42,6 @@ hex_newtype!(
     VolumeOrigin, "volume origin", 32, "", "64 lowercase hex digits"
 );
 
-/// Names the encoding of every origin, and is the capability a Server that checks origins
-/// claims.
-pub const VOLUME_ORIGIN_CAPABILITY: &str = "ployz.volume.origin.v1";
 /// The send request header listing what the pulling Server claims, comma separated.
 pub const CAPABILITIES_HEADER: &str = "ployz-capabilities";
 /// The send reply header carrying the origin of a born copy. Legacy data sends none.

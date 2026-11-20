@@ -555,12 +555,12 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::EnsureContainer>(request)?;
-        let mut local = self.local_at(operator);
-        if operator {
-            // An Operator's start of a Provisioned Volume's holder waits out a switch of
-            // that Volume, as a Writer's start does.
-            local = local.with_switch(Arc::clone(&self.switch_mutation));
-        }
+        // Every start or create of a Provisioned Volume's holder, a hook's included, waits
+        // out a switch of that Volume, as a Writer's start does: its create reads each
+        // Volume's origin, and no promote or seed may land between that read and Docker.
+        let local = self
+            .local_at(operator)
+            .with_switch(Arc::clone(&self.switch_mutation));
         let presented = if operator {
             Presented::Operator {
                 rule: request.rule.as_deref(),
