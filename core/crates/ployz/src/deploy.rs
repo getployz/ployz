@@ -33,7 +33,7 @@ pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
     plan_ingress_repairs, plan_namespace_removal, preview_deploy, without_departed,
 };
-pub(crate) use planning::{place_one, region_waits};
+pub(crate) use planning::{destinations, place_one, region_waits};
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,

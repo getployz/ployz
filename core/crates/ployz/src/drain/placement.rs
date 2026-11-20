@@ -10,6 +10,7 @@
 //! returns an error: whatever moved before a failure stays in its result.
 
 use crate::cluster::{Call, Deadline};
+use ployz_core::authority::{deploy::Creation, needs_signature};
 use ployz_core::error_chain;
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
@@ -31,8 +32,8 @@ use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 use crate::deploy::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
 use crate::deploy::{
-    DeploySnapshot, MachineOperations, MoveEnd, MoveError, health_error, is_active_runtime,
-    move_container, place_one, region_waits,
+    DeploySnapshot, MachineOperations, MoveEnd, MoveError, destinations, health_error,
+    is_active_runtime, move_container, place_one, region_waits,
 };
 
 /// A Server as a move names it.
@@ -421,6 +422,36 @@ fn refusal(
         .map(|error| StayReason::NoDestination {
             detail: error_chain::row(&error),
         })
+}
+
+/// Whether converging `service` on `snapshot` could start a copy that needs a signed
+/// version on a Server that enforces Device approval: such a Server is among the ones a
+/// move of it may pick. A copy that only waits Out, is held, or has nowhere to go starts
+/// nothing.
+pub(crate) fn needs_version(snapshot: &DeploySnapshot, service: &QualifiedService) -> bool {
+    let stranded = movable(snapshot, service);
+    if refusal(snapshot, service, &stranded).is_some() {
+        return false;
+    }
+    stranded.iter().any(|container| {
+        let spec = &container.resolved_spec;
+        let creation = Creation {
+            service: &service.name,
+            kind: container.kind,
+            spec,
+        };
+        needs_signature(creation, false).is_some()
+            && destinations(
+                &kept_in_region(spec, machine(snapshot, &container.machine_id)),
+                &container.namespace,
+                snapshot,
+            )
+            .is_ok_and(|machines| {
+                machines
+                    .iter()
+                    .any(|machine| machine.machine.runtime.device_enforcement == Some(true))
+            })
+    })
 }
 
 fn kept_in_region(spec: &ResolvedServiceSpec, source: &Machine) -> RequestedServiceSpec {

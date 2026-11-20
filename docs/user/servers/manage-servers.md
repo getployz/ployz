@@ -394,8 +394,9 @@ run `ployz deploy` from an approved device to move those off. A volume stays on 
 [Move a volume](../services/move-a-volume.md).
 
 `ployz server drain` sends the same signatures, read from Ployz Cloud, even with `--connect`.
-Signed out, it changes nothing when a copy that reaches data would move to a server that
-enforces device approval:
+Signed out, it changes nothing when a copy that reaches data could move to a server that
+enforces device approval. A drain whose copies can only go to servers that don't enforce it, or
+that only removes old copies, goes ahead:
 
 ```text
 error: Nothing drained from web-1: shop-production/api needs a device's signature to start on another server, and a signed-out ployz can't read it.
