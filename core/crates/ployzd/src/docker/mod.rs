@@ -277,9 +277,24 @@ impl LocalDocker {
         &self,
         labels: Vec<String>,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
-        let filters = HashMap::from([("label", labels)]);
+        self.listed(HashMap::from([("label", labels)]), true).await
+    }
+
+    /// [`Self::labelled`], of running containers only.
+    pub(super) async fn running_labelled(
+        &self,
+        labels: Vec<String>,
+    ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
+        self.listed(HashMap::from([("label", labels)]), false).await
+    }
+
+    async fn listed(
+        &self,
+        filters: HashMap<&str, Vec<String>>,
+        all: bool,
+    ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
         let options = ListContainersOptionsBuilder::default()
-            .all(true)
+            .all(all)
             .filters(&filters)
             .build();
         self.client

@@ -1555,3 +1555,51 @@ async fn image_cleanup_lists_tag_times_and_removes_only_unused_references() {
         ]
     );
 }
+
+#[tokio::test]
+#[ignore = "requires Docker and ployz-collector:local"]
+async fn live_stats_leave_out_an_exited_service_container() {
+    let docker = LocalDocker::connect().unwrap();
+    let labels = HashMap::from([
+        (labels::MANAGED.to_owned(), String::new()),
+        (labels::NAMESPACE.to_owned(), "review".to_owned()),
+        (labels::SERVICE_NAME.to_owned(), "sleeping".to_owned()),
+        (labels::SERVICE_ID.to_owned(), "c".repeat(32)),
+    ]);
+    let name = format!("ployz-live-stats-test-{}", MachineId::random());
+    let created = docker
+        .client
+        .create_container(
+            Some(CreateContainerOptionsBuilder::default().name(&name).build()),
+            ContainerCreateBody {
+                image: Some("ployz-collector:local".into()),
+                cmd: Some(vec!["components".into()]),
+                labels: Some(labels),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let id = ContainerId::parse(created.id).unwrap();
+    docker
+        .client
+        .start_container(id.as_str(), None::<StartContainerOptions>)
+        .await
+        .unwrap();
+    // Docker's running list can still show a container just after its wait returns.
+    let review = || vec![format!("{}=review", labels::NAMESPACE)];
+    for _ in 0..50 {
+        if docker.running_labelled(review()).await.unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(docker.labelled(review()).await.unwrap().len(), 1);
+
+    let scope = ployz_core::metrics::MetricScope::Service {
+        service: QualifiedService::parse("review/sleeping").unwrap(),
+    };
+    let live = docker.live_stats(&scope).await;
+    remove_container(&docker.client, &id).await;
+    assert_eq!(live.unwrap(), []);
+}

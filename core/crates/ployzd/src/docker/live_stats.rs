@@ -31,17 +31,17 @@ impl LocalDocker {
             filter.push(format!("{}={}", labels::NAMESPACE, service.namespace));
             filter.push(format!("{}={}", labels::SERVICE_NAME, service.name));
         }
-        let containers = self
-            .labelled(filter)
-            .await?
-            .into_iter()
-            .filter_map(|(id, labelled)| {
-                if labelled.contains_key(labels::HOOK) {
-                    return None;
-                }
-                let (_, service) = labels::service_pair(&labelled)?;
-                Some((id, service))
-            });
+        let containers =
+            self.running_labelled(filter)
+                .await?
+                .into_iter()
+                .filter_map(|(id, labelled)| {
+                    if labelled.contains_key(labels::HOOK) {
+                        return None;
+                    }
+                    let (_, service) = labels::service_pair(&labelled)?;
+                    Some((id, service))
+                });
         let read = join_all(containers.map(|(id, service)| self.read_stats(id, service))).await;
         Ok(read.into_iter().flatten().collect())
     }
