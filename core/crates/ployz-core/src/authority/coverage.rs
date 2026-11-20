@@ -184,7 +184,9 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (PULL_IMAGE_CAPABILITY, Bound(PULL_BOUND)),
     (
         PULL_FREE_IMAGE_CAPABILITY,
-        Bound("writes no name; records an image ID only an unsigned creation reads"),
+        Bound(
+            "for an Operator, writes no name and records an image ID only an unsigned creation reads; for a Full caller, pulls the tag like pull.v1",
+        ),
     ),
     (PULL_IMAGE_FROM_MACHINE_CAPABILITY, Bound(PULL_BOUND)),
     (MINT_BUILD_GRANT_CAPABILITY, Signed(&[Rule])),
