@@ -225,8 +225,12 @@ impl AdmittedSpec {
 /// What a caller brought with a Container change.
 #[derive(Clone, Copy)]
 pub(crate) enum Presented<'a> {
-    /// A call at Full access: this Server's own socket, or a Device's own connection.
-    FullAccess,
+    /// A call at Full access: this Server's own socket, or a Device's own connection,
+    /// with the versions it carries. A version that admits the spec records its signers,
+    /// so removing them stops a later start, as for an Operator's creation.
+    FullAccess {
+        versions: &'a [Signed<ServiceVersion>],
+    },
     /// An Operator's call, with the statements it carries.
     Operator {
         rule: Option<&'a RuleProof>,
@@ -277,7 +281,7 @@ impl LocalMachine {
             }))
         };
         let (rule, versions) = match presented {
-            Presented::FullAccess => (None, &[][..]),
+            Presented::FullAccess { versions } => (None, versions),
             Presented::Operator { rule, versions } => (rule, versions),
         };
         // One budget for every signature this attempt opens, whichever proof carries it.
@@ -289,7 +293,7 @@ impl LocalMachine {
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
-        if matches!(presented, Presented::FullAccess) {
+        if matches!(presented, Presented::FullAccess { .. }) {
             return admitted(self.full_access()?);
         }
         if let Some(rule) = rule {
@@ -464,7 +468,9 @@ impl LocalMachine {
         &self,
         want: ContainerWant,
     ) -> Result<ployz_core::EnsuredContainer, Error> {
-        let admitted = self.admit_spec(&want, Presented::FullAccess).await?;
+        let admitted = self
+            .admit_spec(&want, Presented::FullAccess { versions: &[] })
+            .await?;
         self.ensure_container(want, admitted).await
     }
 }

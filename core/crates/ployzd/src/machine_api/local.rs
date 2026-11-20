@@ -567,7 +567,9 @@ impl MachineRpc for MachineService {
                 versions: &request.versions,
             }
         } else {
-            Presented::FullAccess
+            Presented::FullAccess {
+                versions: &request.versions,
+            }
         };
         let admitted = match local.admit_spec(&request.want, presented).await {
             Ok(admitted) => admitted,

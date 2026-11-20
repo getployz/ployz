@@ -4992,7 +4992,7 @@ mod ensure_container {
         //! runs only the spec an approved Device signed.
 
         use ployz_core::{
-            SIGNED_VERSION_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER,
+            DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, SIGNED_VERSION_CAPABILITY,
             SealingPublicKey,
             authority::{PayloadDigest, ServiceVersion, Signed, Signer, Timestamp},
             rpc::status_details,
@@ -5543,6 +5543,44 @@ mod ensure_container {
                     Some(&signed),
                 )
                 .await,
+                "doesn't trust the device",
+            );
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
+        /// A Full caller, such as `ployz deploy` over SSH, that carries a Device's version
+        /// keeps that Device behind the Container, so an Operator start stops once it is
+        /// removed, as for a Container an Operator created.
+        #[tokio::test]
+        async fn a_full_creation_that_carries_a_version_starts_for_an_operator_only_while_its_signer_is_trusted()
+         {
+            let fixture = enforced("ployzd-full-signed-spec").await;
+            let service = &fixture.service;
+            let approved = reaching(PINNED);
+            let created = ensure(
+                service,
+                json!({
+                    "want": new_want("service_container", "k1", &approved),
+                    "versions": [fixture.version(&approved)],
+                }),
+            )
+            .await;
+            let id = present(&created).container_id;
+            let stopped = json!({"state":"stopped", "container":{"id":id}, "drain":0});
+            deploy_ensure(service, stopped.clone(), None).await.unwrap();
+            deploy_ensure(service, started(&id), None).await.unwrap();
+
+            let code = DeviceKey::from(fixture.signer.public()).code();
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.remove_device(code).unwrap();
+                })
+                .await
+                .unwrap();
+            deploy_ensure(service, stopped, None).await.unwrap();
+            deploy_refused(
+                deploy_ensure(service, started(&id), None).await,
                 "doesn't trust the device",
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
