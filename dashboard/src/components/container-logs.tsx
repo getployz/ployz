@@ -14,7 +14,7 @@ import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { logHistoryStatusQueryOptions, logOffStates } from "#/modules/runtime/log-history";
+import { logHistoryServicesQueryOptions, logHistoryStatusQueryOptions, logOffStates } from "#/modules/runtime/log-history";
 import { getRuntimeCollections, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
@@ -61,6 +61,9 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   }, [stream, historyOn, search]);
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
+  useEffect(() => {
+    if (historyOn) stream.focus(service);
+  }, [stream, historyOn, service]);
   const [levels, setLevels] = useState<readonly string[]>([]);
   // A gap is about every line, so it hides only behind a filter on what lines say.
   const matches = (row: ContainerLogRow) => row.kind === "gap" ? !search && !levels.length
@@ -85,7 +88,9 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     },
   });
   const machines = new Map(loaded.map(row => [row.machineId, row.machineName]));
-  const services = [...new Set(loaded.map(row => row.serviceName))];
+  // Cloud's history knows Services whose lines aren't loaded, such as a removed one, so the picker offers them too.
+  const stored = useQuery(logHistoryServicesQueryOptions(selection, historyOn && !selection.serviceId)).data ?? [];
+  const services = [...new Set([...loaded.map(row => row.serviceName), ...stored])].sort();
   // A filter shows only with something to pick.
   const servicesVary = !selection.serviceId && services.length > 1;
   const machinesVary = machines.size > 1;

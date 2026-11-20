@@ -49,6 +49,7 @@ import { Route as ApiLogsReadRouteImport } from './routes/api/logs/read'
 import { Route as ApiMailUnsubscribeRouteImport } from './routes/api/mail/unsubscribe'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
+import { Route as ApiRuntimeLogHistoryServicesRouteImport } from './routes/api/runtime/log-history-services'
 import { Route as ApiRuntimeLogHistoryStatusRouteImport } from './routes/api/runtime/log-history-status'
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as DotwellKnownOauthAuthorizationServerApiAuthRouteImport } from './routes/[.]well-known/oauth-authorization-server/api/auth'
@@ -304,6 +305,12 @@ const ApiRuntimeEventsRoute = ApiRuntimeEventsRouteImport.update({
   path: '/api/runtime/events',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiRuntimeLogHistoryServicesRoute =
+  ApiRuntimeLogHistoryServicesRouteImport.update({
+    id: '/api/runtime/log-history-services',
+    path: '/api/runtime/log-history-services',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiRuntimeLogHistoryStatusRoute =
   ApiRuntimeLogHistoryStatusRouteImport.update({
     id: '/api/runtime/log-history-status',
@@ -676,6 +683,7 @@ export interface FileRoutesByFullPath {
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/log-history-services': typeof ApiRuntimeLogHistoryServicesRoute
   '/api/runtime/log-history-status': typeof ApiRuntimeLogHistoryStatusRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
@@ -762,6 +770,7 @@ export interface FileRoutesByTo {
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/log-history-services': typeof ApiRuntimeLogHistoryServicesRoute
   '/api/runtime/log-history-status': typeof ApiRuntimeLogHistoryStatusRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server': typeof DotwellKnownOauthAuthorizationServerIndexRoute
@@ -850,6 +859,7 @@ export interface FileRoutesById {
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/log-history-services': typeof ApiRuntimeLogHistoryServicesRoute
   '/api/runtime/log-history-status': typeof ApiRuntimeLogHistoryStatusRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
@@ -943,6 +953,7 @@ export interface FileRouteTypes {
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
+    | '/api/runtime/log-history-services'
     | '/api/runtime/log-history-status'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
@@ -1029,6 +1040,7 @@ export interface FileRouteTypes {
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
+    | '/api/runtime/log-history-services'
     | '/api/runtime/log-history-status'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server'
@@ -1116,6 +1128,7 @@ export interface FileRouteTypes {
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
+    | '/api/runtime/log-history-services'
     | '/api/runtime/log-history-status'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
@@ -1206,6 +1219,7 @@ export interface RootRouteChildren {
   ApiMailUnsubscribeRoute: typeof ApiMailUnsubscribeRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
+  ApiRuntimeLogHistoryServicesRoute: typeof ApiRuntimeLogHistoryServicesRoute
   ApiRuntimeLogHistoryStatusRoute: typeof ApiRuntimeLogHistoryStatusRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
   DotwellKnownOauthAuthorizationServerIndexRoute: typeof DotwellKnownOauthAuthorizationServerIndexRoute
@@ -1512,6 +1526,13 @@ declare module '@tanstack/react-router' {
       path: '/api/runtime/events'
       fullPath: '/api/runtime/events'
       preLoaderRoute: typeof ApiRuntimeEventsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/runtime/log-history-services': {
+      id: '/api/runtime/log-history-services'
+      path: '/api/runtime/log-history-services'
+      fullPath: '/api/runtime/log-history-services'
+      preLoaderRoute: typeof ApiRuntimeLogHistoryServicesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/runtime/log-history-status': {
@@ -2123,6 +2144,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiMailUnsubscribeRoute: ApiMailUnsubscribeRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
+  ApiRuntimeLogHistoryServicesRoute: ApiRuntimeLogHistoryServicesRoute,
   ApiRuntimeLogHistoryStatusRoute: ApiRuntimeLogHistoryStatusRoute,
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
   DotwellKnownOauthAuthorizationServerIndexRoute:

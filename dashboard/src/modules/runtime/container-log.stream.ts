@@ -38,6 +38,8 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   const stored = new Set<string>();
   // Bumped by each reset, so a read begun before it lands nothing.
   let generation = 0;
+  // One Service of the Environment whose older lines the Log Store reads, so a Service whose lines aren't loaded yet can be opened.
+  let focused = "";
   const resetHistory = () => {
     cursor = undefined;
     stored.clear();
@@ -174,6 +176,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
     const streamSignal = controller.signal;
     const begun = generation;
     const term = snapshot.searching;
+    const service = focused;
     const cancelHistory = () => { void scope.queryClient.cancelQueries({ queryKey: [id, "history"] }); };
     streamSignal.addEventListener("abort", cancelHistory, { once: true });
     publish({ ...snapshot, historyPending: true, historyError: false });
@@ -185,11 +188,11 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       for (let read = 0; read < OVERLAP_PAGES && cursor !== null; read++) {
         const from = cursor;
         const page: typeof containerLogPageSchema.Type = await scope.queryClient.fetchQuery({
-          queryKey: [id, "history", term, from ?? null],
+          queryKey: [id, "history", term, service, from ?? null],
           staleTime: query => from !== undefined && query.state.data?.failures.length === 0 ? Infinity : 0,
           queryFn: async ({ signal }) => {
             const response = await fetch("/api/runtime/logs", {
-              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from, contains: term || undefined }), signal: AbortSignal.any([signal, streamSignal]),
+              method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...selection, cursor: from, contains: term || undefined, service: service || undefined }), signal: AbortSignal.any([signal, streamSignal]),
             });
             if (!response.ok) throw new Error("Could not load older logs.");
             return Schema.decodeUnknownSync(containerLogPageSchema)(await response.json());
@@ -230,8 +233,21 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
       link.open();
     }
   }
+  /**
+   * Reads the stored lines of one Service of the Environment, or of all of them with an empty name. The live tail stays
+   * open; the viewer's filter shows only the Service's lines.
+   */
+  function focus(name: string) {
+    if (name === focused) return;
+    focused = name;
+    resetHistory();
+    controller.abort();
+    controller = new AbortController();
+    publish({ ...snapshot, historyPending: false, historyError: false });
+    if (name) void loadOlder();
+  }
   return {
-    collection, loadOlder, search,
+    collection, loadOlder, search, focus,
     /** A viewer on screen keeps the stream open; it closes once the last one leaves. Returns the leave. */
     view() {
       viewers++;

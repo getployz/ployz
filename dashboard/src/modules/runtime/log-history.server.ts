@@ -66,6 +66,31 @@ WHERE OrgId = {org:String}
 ORDER BY Timestamp DESC, ${TIE_BREAK} DESC
 LIMIT {limit:UInt32}`;
 
+const MAX_SERVICES = 200;
+const serviceRow = Schema.Struct({ service: Schema.String });
+
+/** The names of the Services of a namespace with lines in the last 30 days, removed ones included. */
+export const readLogServices = Effect.fn("Runtime.readLogServices")(function* (
+  endpoint: ClickhouseEndpoint,
+  scope: Pick<LogHistoryScope, "organizationId" | "namespace">,
+) {
+  const rows = yield* queryObserveOrgAt(
+    endpoint,
+    scope.organizationId,
+    `SELECT DISTINCT LogAttributes['ployz.service.name'] AS service
+FROM otel.otel_logs
+WHERE OrgId = {org:String}
+  AND LogAttributes['ployz.namespace'] = {namespace:String}
+  AND TimestampTime >= now() - toIntervalDay(30)
+  AND service != ''
+ORDER BY service
+LIMIT {limit:UInt32}`,
+    new Map([["namespace", scope.namespace], ["limit", String(MAX_SERVICES)]]),
+    serviceRow,
+  );
+  return rows.map((row) => row.service);
+});
+
 /**
  * The newest `limit` lines of `scope` strictly older than `cursor` (or than now), newest first. The cursor is null
  * once nothing older is held.

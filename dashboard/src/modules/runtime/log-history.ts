@@ -25,6 +25,24 @@ export function logHistoryStatusQueryOptions(organizationSlug: string) {
   });
 }
 
+const logHistoryServicesSchema = Schema.Struct({ services: Schema.Array(Schema.String) });
+
+/** The Services of an Environment that Cloud holds lines for, removed ones too. */
+export function logHistoryServicesQueryOptions(selection: { organizationSlug: string; projectSlug?: string | undefined; environmentSlug?: string | undefined }, enabled: boolean) {
+  const { organizationSlug, projectSlug, environmentSlug } = selection;
+  const query = new URLSearchParams(Object.entries({ organizationSlug, projectSlug, environmentSlug }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  return queryOptions({
+    queryKey: ["log-history-services", query.toString()] as const,
+    enabled,
+    queryFn: async ({ signal }) => {
+      const response = await fetch(`/api/runtime/log-history-services?${query}`, { signal });
+      if (!response.ok) throw new Error("Could not read the services with logs.");
+      return Schema.decodeUnknownSync(logHistoryServicesSchema)(await response.json()).services;
+    },
+    staleTime: STATUS_POLL_MS,
+  });
+}
+
 export type SilentMachine = { readonly machineId: string; readonly silentMs: number | null };
 const NONE: readonly SilentMachine[] = [];
 

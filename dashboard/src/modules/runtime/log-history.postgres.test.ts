@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { Effect, Redacted } from "effect";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import type { ClickhouseEndpoint } from "#/modules/observe-store/clickhouse.server";
-import { type LogHistoryRow, type LogHistoryScope, readLogHistory } from "./log-history.server";
+import { type LogHistoryRow, type LogHistoryScope, readLogHistory, readLogServices } from "./log-history.server";
 
 const execFile = promisify(execFileCallback);
 const docker = (...args: ReadonlyArray<string>) => execFile("docker", args, { maxBuffer: 10 * 1024 * 1024 });
@@ -131,6 +131,18 @@ it("selects one Service of a namespace by its name", async () => {
   await insert([{ org: ACME, at: second(30), body: "billing tick", service: "billing" }]);
   expect((await read({ serviceName: "billing" })).rows.map((row) => row.message)).toEqual(["billing tick"]);
   expect((await read({ serviceName: "missing" })).rows).toEqual([]);
+}, 60_000);
+
+it("names every Service of a namespace with recent lines, and no other Organization's", async () => {
+  await insert([
+    { org: ACME, at: second(50), body: "removed tick", service: "removed" },
+    { org: OTHER, at: second(51), body: "other tick", service: "theirs" },
+  ]);
+  const names = await Effect.runPromise(readLogServices(endpoint, { organizationId: ACME, namespace: NAMESPACE }));
+  expect(names).toContain("removed");
+  expect(names).toContain("web");
+  expect(names).not.toContain("theirs");
+  expect(await Effect.runPromise(readLogServices(endpoint, { organizationId: ACME, namespace: "other-namespace" }))).toEqual([]);
 }, 60_000);
 
 it("pages through a line printed on both streams in one nanosecond", async () => {

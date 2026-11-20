@@ -8,9 +8,9 @@ import { organizationSlugSchema } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
 import { Forbidden } from "#/server/public-error";
 import type { ContainerLogLine } from "./container-log.collection";
-import { logSearchSchema, resolveLogFilter } from "./container-logs.server";
+import { type LogSearch, logSearchSchema, resolveLogFilter } from "./container-logs.server";
 import { clickhouseEndpoint } from "#/modules/observe-store/clickhouse.server";
-import { type LogHistoryRow, logHistoryCursor, readLogHistory } from "./log-history.server";
+import { type LogHistoryRow, logHistoryCursor, readLogHistory, readLogServices } from "./log-history.server";
 import { logLevel } from "./log-level";
 
 const HISTORY_PAGE = 500;
@@ -22,6 +22,8 @@ export const logHistorySchema = Schema.Struct({
   cursor: Schema.optional(logHistoryCursor),
   contains: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_SEARCH_LENGTH))),
   machineId: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/))),
+  /** One Service of the Environment, by its runtime name, for a read that is not already one Service's. */
+  service: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200))),
 });
 export type LogHistoryRequest = typeof logHistorySchema.Type;
 
@@ -63,7 +65,7 @@ export const readHistoryPage = Effect.fn("Runtime.readHistoryPage")(function* (r
   // Cloud's lines carry no Deployment, so a Deployment's card reads its older lines from the server instead.
   if (filter.deploymentId !== undefined) return { rows: [], failures: [], cursor: null };
   const page = yield* readLogHistory(endpoint, {
-    organizationId, namespace: filter.namespace, serviceName: filter.serviceName,
+    organizationId, namespace: filter.namespace, serviceName: filter.serviceName ?? input.service,
     machineId: input.machineId, search: input.contains,
   }, { limit: HISTORY_PAGE, cursor: input.cursor });
   const names = yield* machineNames(organizationId, [...new Set(page.rows.map((row) => row.machineId))]);
@@ -72,6 +74,16 @@ export const readHistoryPage = Effect.fn("Runtime.readHistoryPage")(function* (r
     failures: [],
     cursor: page.cursor,
   };
+});
+
+/** The Services of an Environment that Cloud holds lines for, removed ones too, so the Logs page can offer them before their lines load. */
+export const readHistoryServices = Effect.fn("Runtime.readHistoryServices")(function* (request: Request, search: LogSearch) {
+  const organizationId = yield* authorizeHistory(request, search.organizationSlug);
+  const endpoint = yield* clickhouseEndpoint;
+  if (endpoint === undefined) return { services: [] };
+  const filter = yield* resolveLogFilter(organizationId, search);
+  if (filter.deploymentId !== undefined) return { services: [] };
+  return { services: yield* readLogServices(endpoint, { organizationId, namespace: filter.namespace }) };
 });
 
 /**

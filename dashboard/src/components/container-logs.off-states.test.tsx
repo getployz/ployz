@@ -25,6 +25,7 @@ async function withViewer(selection: ContainerLogSelection, run: (services: Retu
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(2_000);
   vi.stubGlobal("fetch", async (url: string) => url.includes("log-history-status")
     ? Response.json({ history: true, now: 900_000, machines: [{ machineId: "quiet", seenAt: 300_000 }] })
+    : url.includes("log-history-services") ? Response.json({ services: ["api", "removed"] })
     : Response.json({ rows: [], failures: [], cursor: null }));
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
@@ -63,6 +64,13 @@ it("shows the off states for the Service the selection names, and not for anothe
     await act(async () => { services.insert(record(SERVICE, [container("old", "local"), container("quiet", "json-file")])); });
     await waitFor(() => expect(screen.getByText("This service isn’t sending logs yet")).toBeTruthy());
     await waitFor(() => expect(screen.getByText(/hasn’t sent logs for 10 minutes/)).toBeTruthy());
+  });
+});
+
+it("offers a removed Service in the picker before any of its lines have loaded", async () => {
+  const selection = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
+  await withViewer(selection, async () => {
+    await waitFor(() => expect(screen.getByLabelText("All services")).toBeTruthy());
   });
 });
 
