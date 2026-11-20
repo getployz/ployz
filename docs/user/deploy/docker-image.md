@@ -67,6 +67,22 @@ With more than one project, or to deploy to an environment other than the defaul
 `--project` and `--env` to both commands. See
 [CLI and coding agents](../cli/overview.md#make-an-organization-token) to make the token.
 
+## Tags on your servers
+
+Only you write a tag like `nginx:1.27` on a server, from the CLI connected to that server itself:
+over SSH, on the server, or as an approved device. A deploy from Ployz Cloud, or one that reaches
+a server through another, pulls the image on that server by digest and runs it without writing
+the tag. A tag on a server names only what you put there.
+
+On a server other than the one you connect to, a deploy pulls a tag from its registry, even when
+another server already holds the image. A `pull: never` deploy there runs only an image that
+server pulled itself since Ployz last started on it.
+
+A Ployz Cloud or CLI older than this release asks a server to store an image under its tag, and
+an upgraded server refuses as unsupported. Its deploy onto that server fails when another server
+holds the image, naming `ployz.image.pull-from-machine.v1`. Otherwise it deploys without the
+warning about ports the image exposes. Upgrade it.
+
 ## Use a private image
 
 1. Open the service and go to **Settings → Source**.

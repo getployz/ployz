@@ -99,6 +99,7 @@ macro_rules! rpc_catalog {
                 PruneImages: (prune_images, PruneImagesRequest, ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
                 EnsureImageIngest: (ensure_image_ingest, EnsureImageIngestRequest, ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),
                 PullImage: (pull_image, PullImageRequest, ImagePulled, PULL_IMAGE_CAPABILITY, "ployz.image.pull.v1", Container, Operator),
+                PullFreeImage: (pull_free_image, PullFreeImageRequest, ImagePulled, PULL_FREE_IMAGE_CAPABILITY, "ployz.image.pull-free.v1", Container, Operator),
                 PullImageFromMachine: (pull_image_from_machine, PullImageFromMachineRequest, ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container, Operator),
                 MintBuildGrant: (mint_build_grant, MintBuildGrantRequest, BuildGrantMinted, MINT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.mint.v1", Container, Operator),
                 InspectBuildGrant: (inspect_build_grant, InspectBuildGrantRequest, BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container, Operator),

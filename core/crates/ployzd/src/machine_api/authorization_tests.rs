@@ -23,6 +23,9 @@ use crate::docker::test_support::FakeDocker;
 use crate::machine::{LocalMachineStore, RecordOwner};
 use crate::sealing_key::SealingKey;
 
+const PINNED_NGINX: &str =
+    "nginx@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
 /// Cases this harness can't reach over TCP, with the unit test that proves each. Cloud's
 /// own connection is an iroh connection, a rule grant needs GitHub's signed token, and an
 /// upgrade resolves releases only on an installed Machine.
@@ -540,12 +543,23 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY, _) => {
             unary::<op::EnsureImageIngest>(json!({}))
         }
-        (ployz_core::PULL_IMAGE_CAPABILITY, _) => unary::<op::PullImage>(json!({
+        (ployz_core::PULL_IMAGE_CAPABILITY, "tag") => unary::<op::PullImage>(json!({
             "image": "nginx:1.29-alpine", "policy": "missing", "registry_auth": null,
         })),
-        (ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY, _) => {
+        (ployz_core::PULL_IMAGE_CAPABILITY, _) => unary::<op::PullImage>(json!({
+            "image": PINNED_NGINX, "policy": "missing", "registry_auth": null,
+        })),
+        (ployz_core::PULL_FREE_IMAGE_CAPABILITY, _) => unary::<op::PullFreeImage>(json!({
+            "image": "nginx:1.29-alpine", "policy": "missing",
+        })),
+        (ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY, branch) => {
+            let image = if branch == "tag" {
+                "nginx:1.29-alpine"
+            } else {
+                PINNED_NGINX
+            };
             unary::<op::PullImageFromMachine>(json!({
-                "pull": {"mode": "reference", "image": "nginx:1.29-alpine"},
+                "pull": {"mode": "reference", "image": image},
                 "source": {"management_address": "fd00::1", "port": 7570},
                 "platform": "linux/amd64",
             }))
@@ -793,6 +807,14 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
         }
         "the Machine pulls the image itself" => {
             assert_eq!(pulls(machine), 1, "{case:?}");
+        }
+        "the Machine pulls the image by digest and writes no name" => {
+            assert_eq!(pulls(machine), 1, "{case:?}");
+            assert_eq!(
+                machine.fake.images.lock().unwrap().get("nginx:1.29-alpine"),
+                None,
+                "{case:?}: the tag was written"
+            );
         }
         "the key stays on the Machine" | "the key installed is the one the Cluster publishes" => {
             let held = SealingKey::load(&machine.data_dir)

@@ -168,6 +168,12 @@ impl Client {
         }
     }
 
+    /// This client as one whose entry is `entry`, as a connection confirms it.
+    #[cfg(test)]
+    pub(crate) fn enter_at(&mut self, entry: MachineId) {
+        self.session.entry = Some(entry);
+    }
+
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.session.ended()?;
         if self.routes.is_empty()
