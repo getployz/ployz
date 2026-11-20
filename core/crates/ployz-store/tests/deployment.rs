@@ -9394,16 +9394,18 @@ fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_on
     let mut later = first.clone();
     later.statement = statement(("shop-production", "web"), digest, at.plus(1_000));
     admit_signed(&store, &who, 2, vec![later.clone()]);
+    // What a signed-in CLI's drain reads from Cloud.
     let kept = store
-        .versions_for(
-            &OrganizationId::parse("org").unwrap(),
-            (
-                &ployz_core::Namespace::parse("shop-production").unwrap(),
-                &ServiceName::parse("web").unwrap(),
-            ),
-            digest,
+        .read(
+            &who,
+            &ployz_store::VersionsQuery {
+                namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+                service: ServiceName::parse("web").unwrap(),
+                digest,
+            },
         )
-        .unwrap();
+        .unwrap()
+        .versions;
     assert!(kept.contains(&first.statement), "{kept:?}");
     assert!(kept.contains(&later.statement), "{kept:?}");
 }

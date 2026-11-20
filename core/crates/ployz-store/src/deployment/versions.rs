@@ -21,6 +21,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use super::{TargetNode, now};
+use crate::Actor;
 use crate::error;
 use crate::id::DeploymentId;
 use crate::storage::Tx;
@@ -226,6 +227,37 @@ pub(crate) fn versions_for(
     .iter()
     .map(|row| row.json(0, "Signed version"))
     .collect()
+}
+
+/// The signed versions kept for one spec of a Service, by the digest a Server checks.
+/// Each is a signature Cloud can't make, so a drain that reads them from Cloud gets
+/// nothing a Server would take that a trusted key didn't sign.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VersionsQuery {
+    pub namespace: Namespace,
+    pub service: ServiceName,
+    pub digest: PayloadDigest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct VersionsView {
+    /// Newest first, and at most as many as one request carries.
+    pub versions: Vec<Signed<ServiceVersion>>,
+}
+
+pub(crate) fn versions(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &VersionsQuery,
+) -> Result<VersionsView, RpcError> {
+    versions_for(
+        tx,
+        who.organization.as_str(),
+        (&query.namespace, &query.service),
+        query.digest,
+    )
+    .map(|versions| VersionsView { versions })
 }
 
 /// What each Service of `target` runs in Deployment `id`, written back so a retry of `id`

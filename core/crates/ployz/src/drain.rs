@@ -19,6 +19,7 @@ use std::pin::pin;
 use futures_util::future::BoxFuture;
 use futures_util::stream::FuturesUnordered;
 use futures_util::{FutureExt, StreamExt};
+use ployz_core::authority::{deploy::Creation, needs_signature};
 use ployz_core::{
     CopyRotation, EnvironmentValues, LiveServices, Machine, MachineId, MachineName, MachineTarget,
     MachineUpdate, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceMode,
@@ -339,6 +340,55 @@ impl Client {
         let ready = preflight(self, target, scope, cancellation, progress).await?;
         Ok(execute(self, ready, cancellation, progress).await)
     }
+}
+
+/// The Services a Drain of `target` within `scope` would move whose copies need a signed
+/// version, when another Server enforces Device approval and could take them. Read with
+/// their values, as a move reads them, so a Sealed value counts. Empty when no other
+/// Server enforces.
+///
+/// # Errors
+///
+/// `target` is not a visible Server, or its Services can't be observed.
+pub(crate) async fn needing_versions(
+    client: &mut Client,
+    target: &MachineTarget,
+    scope: &DrainScope,
+) -> Result<Vec<QualifiedService>, DrainError> {
+    let machines = client.machines().await?;
+    let drained = visible_machine(target, &machines).map_err(DrainError::Refused)?;
+    let enforced = machines.iter().any(|observed| {
+        observed.machine.id != drained.machine.id
+            && observed.machine.runtime.device_enforcement == Some(true)
+    });
+    if !enforced {
+        return Ok(Vec::new());
+    }
+    let live = client
+        .live_services_from(std::slice::from_ref(drained), EnvironmentValues::Included)
+        .await?;
+    Ok(live
+        .services()
+        .into_iter()
+        .filter(|service| {
+            scope.includes(&service.identity)
+                && service.containers.iter().any(|container| {
+                    let observation = container.as_observation();
+                    observation.machine_id == drained.machine.id
+                        && can_move(&observation.resolved_spec)
+                        && needs_signature(
+                            Creation {
+                                service: &service.identity.name,
+                                kind: observation.kind,
+                                spec: &observation.resolved_spec,
+                            },
+                            false,
+                        )
+                        .is_some()
+                })
+        })
+        .map(|service| service.identity)
+        .collect())
 }
 
 /// Everything decided before the first move.

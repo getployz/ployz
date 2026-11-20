@@ -9,7 +9,10 @@ use ployz_core::{
     ServiceName,
     authority::{PayloadDigest, RuleProof, ServiceVersion, Signed, version::MAX_PRESENTED},
 };
-use ployz_store::{ConfigStore, OrganizationId};
+use ployz_store::{Ask as _, ConfigStore, OrganizationId, VersionsQuery, View};
+
+use crate::cloud_account::Credential;
+use crate::failure::Failure;
 
 /// The Deploy this client executes, shared by its clones as their Deploy's own.
 #[derive(Clone, Default)]
@@ -44,26 +47,37 @@ enum Versions {
     Kept(KeptVersions),
 }
 
-/// The Config Store that keeps an Organization's signed versions.
+/// The Config Store that keeps an Organization's signed versions: one in this process, or
+/// Cloud's, read as this CLI's credential. Cloud can withhold a version but not forge one:
+/// each Server checks every signature against the keys it trusts.
 #[derive(Clone)]
-pub(crate) struct KeptVersions {
-    store: Arc<ConfigStore>,
-    organization: OrganizationId,
+pub(crate) enum KeptVersions {
+    Local {
+        store: Arc<ConfigStore>,
+        organization: OrganizationId,
+    },
+    Cloud(Arc<Credential>),
 }
 
 impl std::fmt::Debug for KeptVersions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("KeptVersions")
-            .field("organization", &self.organization)
-            .finish_non_exhaustive()
+        match self {
+            Self::Local { organization, .. } => formatter
+                .debug_struct("KeptVersions::Local")
+                .field("organization", organization)
+                .finish_non_exhaustive(),
+            Self::Cloud(credential) => formatter
+                .debug_struct("KeptVersions::Cloud")
+                .field("cloud", &credential.cloud())
+                .finish_non_exhaustive(),
+        }
     }
 }
 
 impl KeptVersions {
     #[must_use]
     pub(crate) fn new(store: Arc<ConfigStore>, organization: OrganizationId) -> Self {
-        Self {
+        Self::Local {
             store,
             organization,
         }
@@ -76,15 +90,35 @@ impl KeptVersions {
         else {
             return Vec::new();
         };
-        let (organization, namespace, service) = (
-            self.organization.clone(),
-            new.slot.namespace.clone(),
-            new.slot.service.clone(),
-        );
-        let read = crate::sdk::store_call(&self.store, move |store| {
-            store.versions_for(&organization, (&namespace, &service), digest)
-        })
-        .await;
+        let query = VersionsQuery {
+            namespace: new.slot.namespace.clone(),
+            service: new.slot.service.clone(),
+            digest,
+        };
+        let read = match self {
+            Self::Local {
+                store,
+                organization,
+            } => {
+                let organization = organization.clone();
+                crate::sdk::store_call(store, move |store| {
+                    store.versions_for(&organization, (&query.namespace, &query.service), digest)
+                })
+                .await
+                .map_err(Failure::from)
+            }
+            Self::Cloud(credential) => crate::cloud_account::config_store::<View>(
+                credential,
+                crate::cloud_account::Via::Cli,
+                "read",
+                &query.to_query(),
+                None,
+            )
+            .await
+            .map_err(Failure::from)
+            .and_then(|view| VersionsQuery::view(view).map_err(Failure::from))
+            .map(|view| view.versions),
+        };
         read.unwrap_or_else(|error| {
             tracing::warn!(%error, service = %new.slot.service, "could not read a copy's signed versions");
             Vec::new()
