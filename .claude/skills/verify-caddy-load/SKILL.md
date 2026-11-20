@@ -111,4 +111,4 @@ Each model step is a copy of code at the sync commit. Reread these when a diff t
 
 The model's state holds one `CaddyLoad` (`State::load`) beside the published claim (`addresses`); `State::recorded_by` reads the container of a `Loaded` or `Served` input, and each pass ends in the `PassOutcome` the code would build, which `after` and `claim` read. The `Broken` flags replay a removed guard through `CaddyLoad::refused_by` or a local override of the input to `after`.
 
-Sync commit: `b3a0139338a5d28888efd1038b462d2b70fe7609`, the commit this model was checked against. Code in the list above that changed after it has not been rechecked.
+Sync commit: `48582970f957293b4e37d63c7620a5d620b4a24b`, the commit this model was checked against. Code in the list above that changed after it has not been rechecked.
