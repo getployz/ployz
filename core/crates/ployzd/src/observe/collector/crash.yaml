@@ -3,9 +3,6 @@ receivers:
     protocols:
       http:
         endpoint: ${env:PLOYZ_CRASH_RECEIVER}
-processors:
-  batch/crash:
-    timeout: 100ms
 exporters:
   otlp_http/crash:
     endpoint: ${env:PLOYZ_OTLP_ENDPOINT}
@@ -20,5 +17,4 @@ service:
   pipelines:
     logs/crash:
       receivers: [otlp/ployzd-crash]
-      processors: [batch/crash]
       exporters: [otlp_http/crash]
