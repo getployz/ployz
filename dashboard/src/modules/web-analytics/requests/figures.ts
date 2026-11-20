@@ -66,33 +66,41 @@ const filterSql = (params: Params, filters: ReadonlyArray<Filter>, column: (key:
 const sessionFilters = (query: FigureQuery) => query.filters.filter((filter) => SESSION_KEYS.has(filter.key));
 const pageFilters = (query: FigureQuery) => query.filters.filter((filter) => !SESSION_KEYS.has(filter.key));
 
-/** Rows of one visitor are ordered the same way everywhere: by time, then page, then host. */
-const ORDER = "us, path, host";
-const FRAME = "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING";
+/**
+ * The columns a pageview carries through sessionizing. Time, page and host come first: the tuples of one visitor sort by
+ * them, so ties on time break the same way everywhere. The rest are the dims a figure breaks down or filters by.
+ */
+const pageviewColumns = (query: FigureQuery, dims: ReadonlyArray<FilterKey>) => [
+  ...new Set(["us", "path", "host", ...dims.map((dim) => COLUMN[dim]), ...query.filters.map((filter) => COLUMN[filter.key])]),
+];
+
+/** One field of a pageview tuple held in `tuple`. */
+const field = (columns: ReadonlyArray<string>, tuple: string, column: string) => `tupleElement(${tuple}, ${columns.indexOf(column) + 1})`;
 
 /**
  * The counted pageviews of the sessions window, sessionized. `base` is every counted pageview (a pageview with no
- * visitor came on a day the Machine had no salt, and is not counted), `pv` only the visitors a filter can select,
- * `numbered` gives each pageview its visit's number, and `visits` folds each visit with the values of its first pageview,
- * keeping the ones the filters select: session filters test the first pageview, page filters need a pageview of the visit
- * that passes. Only a visitor with a pageview passing each eq filter can have a selected visit, so only theirs are
- * sessionized; a visitor's visits never depend on another visitor's pageviews.
+ * visitor came on a day the Machine had no salt, and is not counted) and `counted` only the visitors a filter can select.
+ * Each visitor's pageviews are gathered into one sorted array and cut into visits wherever two are more than the session
+ * gap apart, so no sort of all the pageviews is needed. `visits` holds one row per visit with the values of its first
+ * pageview, keeping the visits the filters select: session filters test the first pageview, page filters need a pageview
+ * of the visit that passes. Only a visitor with a pageview passing each eq filter can have a selected visit, so only
+ * theirs are sessionized; a visitor's visits never depend on another visitor's pageviews.
  */
-const visitCtes = (query: FigureQuery, params: Params, window: Range, bots: ReadonlyArray<string>) => {
+const visitCtes = (query: FigureQuery, params: Params, window: Range, bots: ReadonlyArray<string>, columns: ReadonlyArray<string>) => {
   const { range } = query;
   const picks = pageFilters(query);
   const row = (key: FilterKey) => COLUMN[key];
+  const at = (tuple: string, column: string) => field(columns, tuple, column);
   const candidates = query.filters.filter((filter) => filter.op === "eq")
     .map((filter) => `visitor IN (SELECT visitor FROM base WHERE ${filterSql(params, [filter], row)[0]})`);
-  const picked = picks.length === 0 ? "true" : filterSql(params, picks, row).join(" AND ");
+  const picked = picks.length === 0 ? "true" : filterSql(params, picks, (key) => at("t", COLUMN[key])).join(" AND ");
   const selected = [
     ...filterSql(params, sessionFilters(query), head),
     ...(picks.length === 0 ? [] : ["picked > 0"]),
   ];
   const from = micros(params, range.start);
   const to = micros(params, range.end);
-  // The entry page is the first pageview's path, though `page` is not a session dim.
-  const heads = [...SESSION_DIMS.map((dim) => COLUMN[dim]), COLUMN.page].map((column) => `argMin(${column}, (${ORDER})) AS h_${column}`).join(", ");
+  const heads = columns.filter((column) => column !== "us").map((column) => `${at("visit[1]", column)} AS h_${column}`).join(", ");
   return [
     `base AS (
       SELECT toUnixTimestamp64Micro(Timestamp) AS us, assumeNotNull(Visitor) AS visitor, Host AS host, Path AS path,
@@ -102,28 +110,27 @@ const visitCtes = (query: FigureQuery, params: Params, window: Range, bots: Read
       FROM scoped
       WHERE Timestamp >= ${params.instant(window.start)} AND Timestamp < ${params.instant(window.end)}
         AND Visitor IS NOT NULL AND ${PAGEVIEW} AND cityHash64(Ua) NOT IN ${params.hashes(bots)})`,
-    `pv AS (SELECT * FROM base${candidates.length === 0 ? "" : ` WHERE ${candidates.join(" AND ")}`})`,
-    `marked AS (
-      SELECT *, lagInFrame(us, 1, 0) OVER w AS prev
-      FROM pv WINDOW w AS (PARTITION BY visitor ORDER BY ${ORDER} ${FRAME}))`,
-    `numbered AS (
-      SELECT *, sum(if(prev = 0 OR us - prev > ${GAP_US}, 1, 0)) OVER (PARTITION BY visitor ORDER BY ${ORDER} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS sn
-      FROM marked)`,
+    `counted AS (SELECT * FROM base${candidates.length === 0 ? "" : ` WHERE ${candidates.join(" AND ")}`})`,
     `visits AS (
-      SELECT visitor, sn, min(us) AS start_us, max(us) AS end_us, count() AS n, ${heads},
-        countIf(us >= ${from} AND us < ${to} AND ${picked}) AS pv, countIf(${picked}) AS picked
-      FROM numbered GROUP BY visitor, sn${selected.length === 0 ? "" : ` HAVING ${selected.join(" AND ")}`})`,
+      SELECT visitor, visit, ${at("visit[1]", "us")} AS start_us, ${at("visit[-1]", "us")} AS end_us, length(visit) AS n, ${heads},
+        arrayCount(t -> ${at("t", "us")} >= ${from} AND ${at("t", "us")} < ${to} AND ${picked}, visit) AS pv,
+        arrayCount(t -> ${picked}, visit) AS picked
+      FROM (SELECT visitor, arraySort(groupArray(tuple(${columns.join(", ")}))) AS pageviews FROM counted GROUP BY visitor)
+      ARRAY JOIN arraySplit((t, previous) -> previous = 0 OR ${at("t", "us")} - previous > ${GAP_US}, pageviews,
+        arrayPushFront(arrayPopBack(arrayMap(t -> ${at("t", "us")}, pageviews)), 0)) AS visit${selected.length === 0 ? "" : `
+      WHERE ${selected.join(" AND ")}`})`,
   ];
 };
 
 /** The pageviews of selected visits that fall in the range and pass the page filters, as `rows`. */
-const rowsCte = (query: FigureQuery, params: Params) => {
+const rowsCte = (query: FigureQuery, params: Params, columns: ReadonlyArray<string>) => {
   const { range } = query;
   const picks = pageFilters(query);
-  const inRange = `us >= ${micros(params, range.start)} AND us < ${micros(params, range.end)}`;
-  const page = picks.length === 0 ? "" : ` AND ${filterSql(params, picks, (key) => COLUMN[key]).join(" AND ")}`;
-  if (query.filters.length === 0) return `rows AS (SELECT us, visitor, path FROM pv WHERE ${inRange})`;
-  return `rows AS (SELECT us, visitor, path FROM numbered WHERE ${inRange}${page} AND (visitor, sn) IN (SELECT visitor, sn FROM visits))`;
+  const at = (column: string) => field(columns, "view", column);
+  const inRange = (us: string) => `${us} >= ${micros(params, range.start)} AND ${us} < ${micros(params, range.end)}`;
+  if (query.filters.length === 0) return `rows AS (SELECT us, visitor, path FROM counted WHERE ${inRange("us")})`;
+  const page = picks.length === 0 ? "" : ` AND ${filterSql(params, picks, (key) => at(COLUMN[key])).join(" AND ")}`;
+  return `rows AS (SELECT ${at("us")} AS us, visitor, ${at("path")} AS path FROM visits ARRAY JOIN visit AS view WHERE ${inRange(at("us"))}${page})`;
 };
 
 const Count = Schema.Finite;
@@ -191,17 +198,18 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
   const { range, timezone } = query;
   const window = sessionWindow(timezone, range);
   const bots = yield* botHashes(query, window, true);
+  const columns = pageviewColumns(query, dims);
 
   const grouped = Effect.gen(function* () {
     const params = new Params();
-    const ctes = visitCtes(query, params, window, bots);
+    const ctes = visitCtes(query, params, window, bots, columns);
     return yield* readRequests(query, params, ctes, groupedFigures(query, dims, timezone, params), GroupRow);
   });
 
   const pages = Effect.gen(function* () {
     if (!dims.includes("page")) return [];
     const params = new Params();
-    const ctes = [...visitCtes(query, params, window, bots), rowsCte(query, params)];
+    const ctes = [...visitCtes(query, params, window, bots, columns), rowsCte(query, params, columns)];
     return yield* readRequests(query, params, ctes, "SELECT path AS key, count() AS pageviews, uniqExact(visitor) AS visitors FROM rows GROUP BY path", PageRow);
   });
 
@@ -209,8 +217,8 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
     if (query.goals.length === 0) return [];
     const params = new Params();
     const ctes = [
-      ...visitCtes(query, params, window, bots),
-      rowsCte(query, params),
+      ...visitCtes(query, params, window, bots, columns),
+      rowsCte(query, params, columns),
       `goals AS (SELECT arrayJoin(arrayZip(${params.strings(query.goals.map((goal) => goal.id))}, ${params.strings(query.goals.map((goal) => likePattern(goal.pathPattern)))})) AS goal)`,
       "matched AS (SELECT goal.1 AS id, path FROM goals CROSS JOIN (SELECT DISTINCT path FROM rows) AS paths WHERE path LIKE goal.2)",
     ];
@@ -222,7 +230,7 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
     if (interval !== "hour") return [];
     const params = new Params();
     const zone = params.string(timezone);
-    const ctes = [...visitCtes(query, params, window, bots), rowsCte(query, params)];
+    const ctes = [...visitCtes(query, params, window, bots, columns), rowsCte(query, params, columns)];
     const part = (pageviews: string, visitors: string, visits: string, bounces: string, duration: string, hour: string, source: string, where = "") =>
       `SELECT ${hour} AS hour, ${pageviews} AS pageviews, ${visitors} AS visitors, ${visits} AS visits, ${bounces} AS bounces, ${duration} AS duration FROM ${source} ${where} GROUP BY hour`;
     return yield* readRequests(query, params, ctes, `
