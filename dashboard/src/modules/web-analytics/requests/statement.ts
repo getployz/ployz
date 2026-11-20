@@ -1,7 +1,6 @@
 import { Effect, Schema } from "effect";
 import { queryObserveOrg } from "#/modules/observe-store/clickhouse.server";
 
-/** A read selects from every request, or from the pageviews alone. */
 type Table = "ployz_request" | "ployz_pageview";
 
 /**
@@ -36,7 +35,6 @@ export class Params {
   strings(value: ReadonlyArray<string>) { return this.#bind("Array(String)", `[${value.map((item) => `'${escapeText(item)}'`).join(",")}]`); }
   /** Decimal digits of 64-bit hashes. */
   hashes(value: ReadonlyArray<string>) { return this.#bind("Array(UInt64)", `[${value.join(",")}]`); }
-  /** An instant as the DateTime64(3, UTC) it is to ClickHouse. */
   instant(value: Date) { return `fromUnixTimestamp64Milli(${this.int(value.getTime())}, 'UTC')`; }
 
   get values(): ReadonlyMap<string, string> { return this.#values; }
@@ -64,12 +62,11 @@ const readScoped = Effect.fn("WebAnalytics.read")(function* <Row>(
 });
 
 /**
- * Runs `select` over `scoped`, every request of the Organization, and the extra `ctes` (each `name AS (...)`, reading
- * `scoped` or an earlier one). An Environment with no namespace has no rows, so it reads none.
+ * The extra `ctes` are each `name AS (...)`, reading `scoped` or an earlier one. An Environment with no namespace has
+ * no rows, so it reads none.
  */
 export const readRequests = <Row>(scope: Scope, params: Params, ctes: ReadonlyArray<string>, select: string, row: Schema.Decoder<Row>) =>
   readScoped("ployz_request", scope, params, ctes, select, row);
 
-/** `readRequests` where `scoped` holds only the pageviews, with the columns the figures read. */
 export const readPageviews = <Row>(scope: Scope, params: Params, ctes: ReadonlyArray<string>, select: string, row: Schema.Decoder<Row>) =>
   readScoped("ployz_pageview", scope, params, ctes, select, row);

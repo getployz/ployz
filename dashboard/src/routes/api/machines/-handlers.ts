@@ -54,7 +54,6 @@ export function handleObservePush(request: Request, machineId: string) {
   });
 }
 
-/** A Machine asks for the salts of its Organization's sites, signed like a push with an empty JSON object as body. */
 export function handleAnalyticsSalts(request: Request, machineId: string) {
   return Effect.gen(function* () {
     const credentials = yield* Effect.result(observePushCredentials(machineId, request.headers));

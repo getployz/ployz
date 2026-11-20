@@ -47,7 +47,7 @@ type Seed = {
 
 const organizations: string[] = [];
 
-/** Rows for one Organization in the shared namespace, each a request with its own id. Pageviews reach `otel.ployz_pageview` through its view. */
+/** Pageviews reach `otel.ployz_pageview` through its view. */
 const seed = async (organizationId: string, prefix: string, rows: ReadonlyArray<Seed>, retentionDays = 30) => {
   organizations.push(organizationId);
   const body = rows.map((row, index) => JSON.stringify({
@@ -92,7 +92,6 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
   const globex = randomUUID();
 
   it.live("counts unique visitors per day, leaves bots out, and keeps two Organizations in one namespace apart", () => Effect.gen(function* () {
-    // Acme's first day: visitors 1 and 2 (one of them twice) and a crawler. Its second day: visitor 5.
     yield* Effect.promise(() => seed(acme, "acme", [
       { at: at(first, "09:00:00"), path: "/", visitor: 1 },
       { at: at(first, "09:10:00"), path: "/pricing", visitor: 1 },
@@ -104,7 +103,6 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
       { at: at(second, "09:00:00"), path: "/", visitor: 5 },
       { at: at(second, "12:00:00"), path: "/", visitor: null },
     ]));
-    // Globex sends the same paths from the same namespace, with more visitors and a page of its own. It keeps rows 7 days.
     yield* Effect.promise(() => seed(globex, "globex", [
       { at: at(first, "09:00:00"), path: "/", visitor: 11 },
       { at: at(first, "09:30:00"), path: "/globex-only", visitor: 12 },
@@ -114,8 +112,6 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
       { at: at(first, "12:00:00"), path: "/globex-checkout", visitor: null, method: "POST", status: 500, service: "api" },
     ], 7));
 
-    // The pageview table holds each Organization's own pageviews and nothing else: not an API call, a POST or a prefetch. It
-    // keeps a pageview that came without a visitor, and copies the retention of the request it came from.
     expect(yield* Effect.promise(() => pageviewRows(acme))).toEqual([
       "30|/|1", "30|/|2", "30|/|5", "30|/|99", "30|/|\\N", "30|/pricing|1",
     ]);
@@ -143,14 +139,11 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
     expect(myErrors.byRoute).toEqual([{ route: "/checkout", status: 502, requests: 1 }]);
     expect(myErrors.services).toEqual(["api", "web"]);
 
-    // A request id that is Globex's resolves for Globex and for nobody else.
     expect((yield* analytics.request(site(globex), "globex-0"))?.path).toBe("/");
     expect(yield* analytics.request(site(acme), "globex-0")).toBeNull();
   }).pipe(Effect.provide(config)), 60_000);
   it.live("folds a visitor's pageviews into visits, with bounces, durations, entry pages, goals and a page filter", () => Effect.gen(function* () {
     const org = randomUUID();
-    // Visitor 1 reads two pages within a minute of each other (one visit of 600 s), then comes back after an hour (a bounce).
-    // Visitor 2 reads one page (a bounce).
     yield* Effect.promise(() => seed(org, "visits", [
       { at: at(first, "09:00:00"), path: "/", visitor: 1 },
       { at: at(first, "09:10:00"), path: "/pricing", visitor: 1 },
@@ -164,7 +157,6 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
     expect(all.entryPages.map(({ value, visits }) => [value, visits])).toEqual([["/", 1], ["/docs", 1], ["/pricing", 1]]);
     expect(all.goals).toEqual([{ goalId: "g1", name: "Pricing", visitors: 2, conversions: 2 }]);
 
-    // A page filter keeps the visits that have that page, counting only that page's views.
     const filtered = yield* analytics.figures({ ...base, filters: [{ key: "page", op: "eq", value: "/pricing" }] }, "day", ["page"]);
     expect(filtered.overview).toMatchObject({ pageviews: 2, visitors: 2, visits: 2 });
     expect(filtered.values("page")).toEqual([{ value: "/pricing", pageviews: 2, visitors: 2 }]);

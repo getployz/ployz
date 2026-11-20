@@ -6,8 +6,6 @@ use crate::observe::salts::Salt;
 
 pub(super) const REQUESTS_MOUNT: &str = "/var/lib/ployz/requests";
 
-/// A string in a form that matches what Cloud's analytics treats as personal: an address,
-/// a signed token or a long opaque run.
 const PERSONAL: &str = r"(?i:[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*|[A-Za-z0-9_-]{32,})";
 const QUERY_KEYS: [&str; 6] = [
     "utm_source",
@@ -42,7 +40,6 @@ const KEPT: [&str; 22] = [
     "ployz.request.ref",
 ];
 
-/// One site's salt for the window of one day.
 struct Window<'a> {
     namespace: &'a Namespace,
     salt: &'a Salt,
@@ -51,10 +48,6 @@ struct Window<'a> {
 /// The Collector config that ships every access-log line of the sites Cloud lists, or `{}`
 /// where it lists none. A line leaves the Machine with its client address already hashed
 /// into a visitor, so Cloud never holds one.
-///
-/// Each site-day window gets a statement that builds `namespace|address|user agent` and a
-/// `redaction` processor that HMACs it with that day's salt. A line outside every window
-/// ships without a visitor.
 pub(super) fn fragment(sites: &[(Namespace, Vec<Salt>)]) -> String {
     if sites.is_empty() {
         return "{}".to_owned();
@@ -156,8 +149,7 @@ fn drop_other_sites(sites: &[(Namespace, Vec<Salt>)]) -> String {
     format!("attributes[\"namespace\"] == nil or ({others})")
 }
 
-/// Sets `to` to the first `max` characters of `from`. Cutting by character keeps a clipped
-/// value valid UTF-8, which the OTLP encoding needs.
+/// Cuts by character, so a clipped value stays valid UTF-8, which the OTLP encoding needs.
 fn clip(to: &str, from: &str, max: usize) -> String {
     let pattern = format!("^(?s)(?P<v>.{{0,{max}}})");
     format!(
@@ -265,8 +257,6 @@ fn statements(windows: &[Window<'_>]) -> Vec<String> {
     out
 }
 
-/// The expression of a clip, for a statement that sets an attribute only where a condition
-/// holds.
 fn clip_value(from: &str, max: usize) -> String {
     let pattern = format!("^(?s)(?P<v>.{{0,{max}}})");
     format!("ExtractPatterns({from}, {})[\"v\"]", quoted(&pattern))

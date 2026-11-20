@@ -11,11 +11,7 @@ const DISTINCT_AGENTS = 20_000;
 
 const Agent = Schema.Struct({ ua: Schema.String, hash: Schema.String });
 
-/**
- * The hashes of the bot user agents in a window. ClickHouse lists the window's distinct agents, the `isbot` list names
- * the bots among them here, and a figure's query then drops `cityHash64(Ua)` in this list. `pageviewsOnly` looks only at
- * the agents behind page requests, which the pageview table holds alone.
- */
+/** `pageviewsOnly` looks only at the agents behind page requests, which the pageview table holds alone. */
 export const botHashes = Effect.fn("WebAnalytics.bots")(function* (scope: Scope, range: Range, pageviewsOnly: boolean) {
   const params = new Params();
   const read = pageviewsOnly ? readPageviews : readRequests;

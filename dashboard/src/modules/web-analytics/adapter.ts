@@ -64,7 +64,6 @@ export const request = Effect.fn("WebAnalytics.request")(function* (site: Site, 
   return yield* routes.request({ organizationId: site.organizationId, namespaces: site.namespaces, timezone: site.timezone }, requestId, yield* Clock.currentTimeMillis);
 });
 
-/** Whether the site has counted a visitor in the days kept; when it has not, the days its pageviews all came without a salt. */
 export const seen = Effect.fn("WebAnalytics.seen")(function* (site: Site) {
   const now = yield* Clock.currentTimeMillis;
   return yield* store.seenVisitors({

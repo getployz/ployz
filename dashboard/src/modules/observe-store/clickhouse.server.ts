@@ -19,11 +19,7 @@ export const clickhouseEndpoint = Effect.gen(function* () {
 
 export const observeConfigured = Effect.map(clickhouseEndpoint, (endpoint) => endpoint !== undefined);
 
-/**
- * Runs `statement` against `endpoint` as a read-only parameterized query: every value travels as a ClickHouse
- * `param_` binding, never in the statement's text, and `readonly=2` lets the per-query limits apply while still
- * refusing writes and DDL. Returns each `JSONEachRow` line decoded by `row`.
- */
+/** Every value travels as a ClickHouse `param_` binding, and `readonly=2` lets the per-query limits apply while still refusing writes and DDL. */
 const queryClickhouse = Effect.fn("ObserveStore.query")(function* <Row>(
   endpoint: ClickhouseEndpoint,
   statement: string,
@@ -71,7 +67,6 @@ export const queryObserveOrgAt = Effect.fn("ObserveStore.queryOrg")(function* <R
   return yield* queryClickhouse(endpoint, statement, new Map([["org", organizationId], ...params]), row);
 });
 
-/** `queryObserveOrgAt` against this Cloud's ClickHouse, or `Unavailable` (`OBSERVE_NOT_CONFIGURED`) where it has none. */
 export const queryObserveOrg = Effect.fn("ObserveStore.queryOrgConfigured")(function* <Row>(
   organizationId: string,
   statement: string,

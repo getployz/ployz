@@ -23,7 +23,6 @@ export type Figures = {
   readonly noSaltDays: ReadonlyArray<string>;
 };
 
-/** The columns of a counted pageview (`base` below) a filter or a breakdown names. */
 const COLUMN = {
   page: "path",
   host: "host",
@@ -56,25 +55,23 @@ export function sessionWindow(timezone: string, range: Range): Range {
   };
 }
 
-/** An instant as microseconds since the epoch, bound as a value. */
 const micros = (params: Params, instant: Date) => params.int(instant.getTime() * 1000);
 
+/** `neq` keeps rows whose value is missing: a pageview with no source is not from Google. */
 const filterSql = (params: Params, filters: ReadonlyArray<Filter>, column: (key: FilterKey) => string) =>
   filters.map((filter) => `${column(filter.key)} ${filter.op === "eq" ? "=" : "!="} ${params.string(filter.value)}`);
 
-/** `neq` keeps rows whose value is missing: a pageview with no source is not from Google. */
 const sessionFilters = (query: FigureQuery) => query.filters.filter((filter) => SESSION_KEYS.has(filter.key));
 const pageFilters = (query: FigureQuery) => query.filters.filter((filter) => !SESSION_KEYS.has(filter.key));
 
 /**
  * The columns a pageview carries through sessionizing. Time, page and host come first: the tuples of one visitor sort by
- * them, so ties on time break the same way everywhere. The rest are the dims a figure breaks down or filters by.
+ * them, so ties on time break the same way everywhere.
  */
 const pageviewColumns = (query: FigureQuery, dims: ReadonlyArray<FilterKey>) => [
   ...new Set(["us", "path", "host", ...dims.map((dim) => COLUMN[dim]), ...query.filters.map((filter) => COLUMN[filter.key])]),
 ];
 
-/** One field of a pageview tuple held in `tuple`. */
 const field = (columns: ReadonlyArray<string>, tuple: string, column: string) => `tupleElement(${tuple}, ${columns.indexOf(column) + 1})`;
 
 /**
@@ -121,7 +118,6 @@ const visitCtes = (query: FigureQuery, params: Params, window: Range, bots: Read
   ];
 };
 
-/** The pageviews of selected visits that fall in the range and pass the page filters, as `rows`. */
 const rowsCte = (query: FigureQuery, params: Params, columns: ReadonlyArray<string>) => {
   const { range } = query;
   const picks = pageFilters(query);
@@ -190,11 +186,6 @@ const hourKey = (us: string, zone: string) => {
 const toBucket = (bucket: Date, row: { pageviews: number; visitors: number; visits: number; bounces: number; duration: number }): BucketRow =>
   ({ bucket, pageviews: row.pageviews, visitors: row.visitors, visits: row.visits, bounces: row.bounces, totalDuration: row.duration });
 
-/**
- * Every figure of one range: its day series, its hour series for an hour interval, a breakdown per dim, its entry pages,
- * its goals, and the days whose pageviews came without a salt. The visit-level figures share one sessionization; the
- * page breakdown, goals and hours read the pageviews of the selected visits, each in a statement of its own, run together.
- */
 export const figures = Effect.fn("WebAnalytics.figures")(function* (query: FigureQuery, interval: Interval, dims: ReadonlyArray<FilterKey>) {
   const { range, timezone } = query;
   const window = sessionWindow(timezone, range);
@@ -278,10 +269,6 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
 
 const SeenRow = Schema.Struct({ day: Schema.String, counted: Count });
 
-/**
- * Whether the site ever counted a visitor in the days kept, and when it has not, the days whose pageviews all came
- * without a salt.
- */
 export const seenVisitors = Effect.fn("WebAnalytics.seen")(function* (query: Scope & { readonly timezone: string; readonly kept: Range }) {
   const bots = yield* botHashes(query, query.kept, true);
   const params = new Params();

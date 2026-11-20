@@ -72,7 +72,6 @@ const toSample = (row: SampleRow): RequestSample => ({ ...row, ts: new Date(row.
 
 const SAMPLE_COLUMNS = "RequestId AS requestId, toUnixTimestamp64Milli(Timestamp) AS ts, Service AS service, Method AS method, Path AS path, Status AS status, duration_ms AS durationMs";
 
-/** Every request in range a person or a program made; bot traffic is left out. */
 const requestsCte = (query: RouteQuery, params: Params, bots: ReadonlyArray<string>, service = query.service) => `
   rows AS (
     SELECT ${routeOf("Path")} AS route, Timestamp, RequestId, Service, Method, Path, Status, DurationUs / 1000 AS duration_ms
@@ -81,7 +80,6 @@ const requestsCte = (query: RouteQuery, params: Params, bots: ReadonlyArray<stri
       AND cityHash64(Ua) NOT IN ${params.hashes(bots)}${service === undefined ? "" : ` AND Service = ${params.string(service)}`})`;
 
 const TOP = `top AS (SELECT route FROM rows GROUP BY route ORDER BY count() DESC, route LIMIT ${ROUTE_LIMIT})`;
-/** The busiest failed routes, as `top` over the failed `rows`. */
 const TOP_FAILED = `top AS (SELECT route FROM rows WHERE Status >= 400 GROUP BY route ORDER BY count() DESC, route LIMIT ${ROUTE_LIMIT})`;
 
 const named = `if(route IN (SELECT route FROM top), route, '${OTHER_ROUTE}')`;
@@ -98,7 +96,6 @@ const services = Effect.fn("WebAnalytics.services")(function* (query: RouteQuery
 
 const RouteAnswer = Schema.Struct({ route: Schema.String, requests: Count, errors: Count, quantiles: Schema.Array(Count) });
 
-/** The busiest routes with their latency percentiles and 5xx count, the rest as Other, and the slowest requests. */
 export const api = Effect.fn("WebAnalytics.api")(function* (query: RouteQuery) {
   const bots = yield* botHashes(query, query.range, false);
   const run = <Row>(select: (params: Params) => string, row: Schema.Decoder<Row>, withTop = false) => Effect.gen(function* () {
@@ -125,7 +122,6 @@ export const api = Effect.fn("WebAnalytics.api")(function* (query: RouteQuery) {
 const HourAnswer = Schema.Struct({ hour: Count, client: Count, server: Count });
 const FailedRoute = Schema.Struct({ route: Schema.String, status: Count, requests: Count });
 
-/** 4xx and 5xx counts per site-local hour, failures by route and status, and the newest failures. */
 export const errors = Effect.fn("WebAnalytics.errors")(function* (query: RouteQuery) {
   const bots = yield* botHashes(query, query.range, false);
   const run = <Row>(select: (params: Params) => string, row: Schema.Decoder<Row>, withTop = false) => Effect.gen(function* () {
@@ -152,7 +148,6 @@ export const errors = Effect.fn("WebAnalytics.errors")(function* (query: RouteQu
   };
 });
 
-/** One request by its id, bots included, among the days kept. */
 export const request = Effect.fn("WebAnalytics.request")(function* (query: Scope & { readonly timezone: string }, requestId: string, now: number) {
   const params = new Params();
   const [row] = yield* readRequests(query, params, [], `

@@ -232,8 +232,6 @@ impl<R: ServiceRuntime> ManagedService<R> {
             .map(|seconds| StopContainerOptionsBuilder::default().t(seconds).build())
     }
 
-    /// Sends the container a signal, which a process that reloads on SIGHUP takes as its
-    /// cue to read its files again.
     pub(crate) async fn signal(&self, signal: &str) -> Result<(), DockerError> {
         self.runtime
             .client()

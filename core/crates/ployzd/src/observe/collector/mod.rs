@@ -180,8 +180,7 @@ impl Inner {
         self.converge(state, &connected, found).await
     }
 
-    /// Asks Cloud for the sites' day salts when the cache is stale, outside the state lock so
-    /// a slow Cloud never holds up a container start.
+    /// Runs outside the state lock, so a slow Cloud never holds up a container start.
     async fn refresh_salts(&self) {
         let now = unix_seconds();
         if !self.salts.stale(now) || now < self.salts_retry_at.load(Ordering::Relaxed) {

@@ -36,7 +36,6 @@ pub struct Pusher {
 }
 
 impl Pusher {
-    /// Asks Cloud for the day salts of this Machine's sites. The body is `{}`, signed like a push.
     pub(in crate::observe) async fn analytics_salts(
         &self,
         client: &reqwest::Client,

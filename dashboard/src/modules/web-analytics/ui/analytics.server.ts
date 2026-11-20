@@ -49,7 +49,6 @@ const gateFor = Effect.fn("WebAnalyticsView.gate")(function* (organizationId: st
   return analyticsGate(plan, entitled, clickhouse, site);
 });
 
-/** The site as a query reads it: whose rows, and which namespace its Services run in. */
 const siteOf = Effect.fn("WebAnalyticsView.siteOf")(function* (organizationId: string, environmentId: string, timezone: string) {
   const namespace = (yield* namespacesByEnvironment(organizationId)).get(environmentId);
   return { organizationId, environmentId, timezone, namespaces: namespace === undefined ? [] : [namespace] } satisfies analytics.Site;
