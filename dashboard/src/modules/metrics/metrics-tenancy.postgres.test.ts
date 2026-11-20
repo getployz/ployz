@@ -66,6 +66,13 @@ const EDGE_SERVICE = "edge";
 /** A minute bucket that starts before the read window's second bucket, for samples placed either side of its edges. */
 const EDGE = Math.floor((NOW - 240) / 60) * 60;
 
+const ROLL_SERVICE = "roll";
+const ROLL_MACHINE = "machine-roll";
+/** A minute bucket inside the read window, in which one replica gives way to the next with no overlap. */
+const ROLL = Math.floor((NOW - 200) / 60) * 60;
+const ROLL_MEMORY = 256;
+const ROLL_MACHINE_MEMORY = 4100;
+
 /** Each Organization's CPU counter grows by its own amount, so a leaked row changes the sum. */
 const GROWTH = { "org-a": 10, "org-b": 500 } as const;
 
@@ -104,6 +111,20 @@ async function seed() {
     ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": MACHINE, "ployz.namespace": NAMESPACE, "ployz.service.name": EDGE_SERVICE, "container.id": "edge-container" },
     MetricName: SERVICE_METRICS.rx, Attributes: { interface: "eth0" }, TimeUnix: clickhouseTime(EDGE + offset), Value: (offset + 1) * 100, IsMonotonic: true,
   })));
+  // A rollout: the old replica reports 256 for half of one bucket and its replacement 256 for the other half. Neither
+  // has a limit of its own, so Docker reports the Machine's memory for both. Another Organization runs a Machine of the
+  // same id with a smaller total, which must not mix in.
+  const replica = (container: string, offsets: readonly number[]) => offsets.flatMap((offset) => [SERVICE_METRICS.memory, SERVICE_METRICS.memoryLimit].map((metric) => ({
+    ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": ROLL_MACHINE, "ployz.namespace": NAMESPACE, "ployz.service.name": ROLL_SERVICE, "container.id": container },
+    MetricName: metric, Attributes: {}, TimeUnix: clickhouseTime(ROLL + offset), Value: metric === SERVICE_METRICS.memory ? ROLL_MEMORY : ROLL_MACHINE_MEMORY, IsMonotonic: false,
+  })));
+  await insert("otel_metrics_sum", [
+    ...replica("roll-old", [0, 10, 20]),
+    ...replica("roll-new", [30, 40, 50]),
+    ...[["org-a", ROLL_MACHINE_MEMORY], ["org-b", 99]].map(([org, total]) => ({
+      ResourceAttributes: { "ployz.org": org, "ployz.machine": ROLL_MACHINE }, MetricName: HOST_METRICS.memoryTotal, Attributes: {}, TimeUnix: clickhouseTime(ROLL), Value: total, IsMonotonic: false,
+    })),
+  ]);
   // One replica exiting 1 every 6 s for the last hour, newest 10 s ago.
   await insert("otel_logs", Array.from({ length: LOOP_EVENTS }, (_, index) => ({
     Timestamp: clickhouseTime(NOW - 10 - index * 6), Body: "container exited", ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": FAN_MACHINE },
@@ -195,6 +216,14 @@ it("divides a counter's growth by the time between its samples, so a scrape eith
   const rates = serviceHistory(rows, [], { ...range, at: NOW * 1000 }).points.map((point) => point.netIn);
   expect(rates).toHaveLength(2);
   for (const rate of rates) expect(rate).toBeCloseTo(100, 6);
+}, 60_000);
+
+it("reads a rollout with no overlap as one replica's memory, and a limit that is the Machine's memory as none", async () => {
+  const rows = await asOrganization(readServiceRows("org-a", range, NAMESPACE, ROLL_SERVICE));
+  const [point] = serviceHistory(rows, [], { ...range, at: NOW * 1000 }).points.filter((entry) => entry.at === ROLL * 1000);
+  expect(point?.memory).toBe(ROLL_MEMORY);
+  expect(point?.memoryLimit).toBeUndefined();
+  expect(await asOrganization(readServiceRows("org-b", range, NAMESPACE, ROLL_SERVICE))).toEqual([]);
 }, 60_000);
 
 it("reads when a Machine or Service last sent a reading, for the session's Organization alone", async () => {

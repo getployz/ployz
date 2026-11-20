@@ -27,6 +27,12 @@ describe("serviceRows", () => {
     expect(rows.find((row) => row.metric === "Net in")).toEqual({ metric: "Net in", now: null, avg: null, peak: null });
   });
 
+  it("has no now for a silent Server, though its newest bucket is inside three wide steps", () => {
+    const wide = { ...service({ cpu: [{ at: UNTIL - 60_000, value: 1 }] }), stepMs: 2_020_000 };
+    expect(serviceRows(wide, UNTIL)[0]?.now).toBe("1.00 vCPU");
+    expect(serviceRows(wide, UNTIL, true)[0]).toMatchObject({ now: null, avg: "1.00 vCPU" });
+  });
+
   it("has no now once the newest reading is older than three steps", () => {
     const [cpu] = serviceRows(service({ cpu: [{ at: UNTIL - 5 * STEP, value: 2 }] }), UNTIL);
     expect(cpu).toEqual({ metric: "CPU", now: null, avg: "2.00 vCPU", peak: "2.00 vCPU" });

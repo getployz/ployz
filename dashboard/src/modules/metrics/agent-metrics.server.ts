@@ -58,8 +58,8 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
     ]);
     const history = serviceHistory([...rows, ...volumes], crashes, reading);
     const charts = serviceMetrics({ type: "history", window, at: now, history }, new Map());
-    metrics = serviceRows(charts, window.to);
     const silent = latest === null ? undefined : silentSince(latest, window, now);
+    metrics = serviceRows(charts, window.to, silent !== undefined);
     if (silent !== undefined) notes.push(silenceNote(subject.service, silent, now));
     notes.push(...gapNotes(charts.allGaps));
   } else {
@@ -75,7 +75,7 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
     } else {
       if (silent !== undefined) notes.push(silenceNote(subject.server.name, silent, now));
       const charts = serverMetrics({ type: "history", window, at: now, history: hostHistory(rows, disk, reading) });
-      metrics = serverRows(charts, window.to);
+      metrics = serverRows(charts, window.to, silent !== undefined);
       notes.push(...gapNotes(charts.gaps));
     }
   }

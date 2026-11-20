@@ -43,13 +43,17 @@ function row({ label, unit, samples, of }: Line, freshSince: number): MetricRow 
   };
 }
 
-const freshSince = (until: number, stepMs: number | null) => until - FRESH_STEPS * (stepMs ?? 0);
+/** A silent Server has no reading of now, however wide its buckets are. */
+const freshSince = (until: number, stepMs: number | null, silent: boolean) => (silent ? Number.POSITIVE_INFINITY : until - FRESH_STEPS * (stepMs ?? 0));
 
-const rowsOf = (lines: readonly Line[], until: number, stepMs: number | null): MetricRow[] =>
-  lines.every((line) => line.samples.length === 0) ? [] : lines.map((line) => row(line, freshSince(until, stepMs)));
+const rowsOf = (lines: readonly Line[], until: number, stepMs: number | null, silent: boolean): MetricRow[] =>
+  lines.every((line) => line.samples.length === 0) ? [] : lines.map((line) => row(line, freshSince(until, stepMs, silent)));
 
-/** The Service's table, summed over its Servers. Empty when no Server reported a reading in the range. */
-export function serviceRows(metrics: ServiceMetrics, until: number): MetricRow[] {
+/**
+ * The Service's table, summed over its Servers. Empty when no Server reported a reading in the range. `silent` is
+ * whether the range reaches the present with no reading in the last minute, which leaves NOW unmeasured.
+ */
+export function serviceRows(metrics: ServiceMetrics, until: number, silent = false): MetricRow[] {
   const { all } = metrics;
   return rowsOf([
     { label: "CPU", unit: "cores", samples: all.cpu },
@@ -58,10 +62,10 @@ export function serviceRows(metrics: ServiceMetrics, until: number): MetricRow[]
     { label: "Net out", unit: "bytes_per_second", samples: all.netOut },
     { label: "Disk read", unit: "bytes_per_second", samples: all.diskRead },
     { label: "Disk write", unit: "bytes_per_second", samples: all.diskWrite },
-  ], until, metrics.stepMs);
+  ], until, metrics.stepMs, silent);
 }
 
-export function serverRows(metrics: ServerMetrics, until: number): MetricRow[] {
+export function serverRows(metrics: ServerMetrics, until: number, silent = false): MetricRow[] {
   const disk = (pick: (sample: ServerMetrics["disk"][number]) => number | undefined): Sample[] =>
     metrics.disk.flatMap((sample) => { const value = pick(sample); return value === undefined ? [] : [{ at: sample.at, value }]; });
   return rowsOf([
@@ -76,7 +80,7 @@ export function serverRows(metrics: ServerMetrics, until: number): MetricRow[] {
     { label: "Mirrors", unit: "bytes", samples: disk((sample) => sample.mirrors) },
     { label: "Logs and metrics", unit: "bytes", samples: disk((sample) => sample.logsAndMetrics) },
     { label: "Other", unit: "bytes", samples: disk((sample) => sample.other) },
-  ], until, metrics.stepMs);
+  ], until, metrics.stepMs, silent);
 }
 
 const span = (ms: number): string => {

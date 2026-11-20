@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { SERVICE_METRICS, VOLUME_METRICS, hostPoints, servicePoints, type DiskRow, type MetricRow } from "./metrics-history";
+import { HOST_METRICS, SCRAPES_METRIC, SERVICE_METRICS, VOLUME_METRICS, hostPoints, servicePoints, type DiskRow, type MetricRow } from "./metrics-history";
 import { counterRate, counterShare, gapsBetween, silentSince, stepFor } from "./metrics-series";
 
 const STEP = 10_000;
 const window = { from: 0, to: 60_000 };
 
 const row = (metric: string, bucket: number, value: number, extra: Partial<MetricRow> = {}): MetricRow => ({
-  metric, machine: "m1", series: "c1", state: "", direction: "", device: "", operation: "", bucket, sampledAt: bucket * 1000, value, ...extra,
+  metric, machine: "m1", series: "c1", state: "", direction: "", device: "", operation: "", bucket, sampledAt: bucket * 1000, samples: 1, value, ...extra,
 });
 
 describe("counter rates", () => {
@@ -63,6 +63,31 @@ describe("counter rates", () => {
       row("container.cpu.usage.total", 10, 9e9, { machine: "b" }),
     ];
     expect(servicePoints(rows, window, STEP).map((point) => point.cpu)).toEqual([0.1]);
+  });
+});
+
+describe("memory of a Service", () => {
+  const WIDE = 60_000;
+  const memory = SERVICE_METRICS.memory;
+  const scraped = (bucket: number, scrapes: number) => row(SCRAPES_METRIC, bucket, scrapes, { series: "" });
+
+  it("averages a rollout with no overlap over the bucket, rather than adding the old replica to the new", () => {
+    const rows = [row(memory, 0, 256, { series: "old", samples: 3 }), row(memory, 0, 256, { series: "new", samples: 3 }), scraped(0, 6)];
+    expect(servicePoints(rows, { from: 0, to: WIDE }, WIDE).map((point) => point.memory)).toEqual([256]);
+  });
+
+  it("adds replicas that ran the whole bucket together", () => {
+    const rows = [row(memory, 0, 256, { series: "a", samples: 6 }), row(memory, 0, 256, { series: "b", samples: 6 }), scraped(0, 6)];
+    expect(servicePoints(rows, { from: 0, to: WIDE }, WIDE).map((point) => point.memory)).toEqual([512]);
+  });
+
+  it("reads a container limit that is the Machine's whole memory as no limit", () => {
+    const limit = (series: string, value: number) => row(SERVICE_METRICS.memoryLimit, 0, value, { series });
+    const total = row(HOST_METRICS.memoryTotal, 0, 4100, { series: "", machine: "m1" });
+    const unlimited = [limit("a", 4100), limit("b", 4100), total];
+    expect(servicePoints(unlimited, window, STEP)[0]?.memoryLimit).toBeUndefined();
+    const limited = [limit("a", 256), limit("b", 512), total];
+    expect(servicePoints(limited, window, STEP)[0]?.memoryLimit).toBe(768);
   });
 });
 

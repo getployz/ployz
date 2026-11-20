@@ -26,7 +26,7 @@ const counter = (count: number, stepSec: number, rate: (index: number) => number
 };
 
 const row = (metric: string, machine: string, bucket: number, value: number, extra: Partial<MetricRow> = {}): MetricRow =>
-  ({ metric, machine, series: "c0", state: "", direction: "", device: "", operation: "", bucket, sampledAt: bucket * 1000, value, ...extra });
+  ({ metric, machine, series: "c0", state: "", direction: "", device: "", operation: "", bucket, sampledAt: bucket * 1000, samples: 1, value, ...extra });
 
 /** `skipped` buckets send nothing, so the range shows a gap there. */
 const sent = <T>(starts: readonly number[], skipped: (index: number) => boolean, make: (bucket: number, index: number) => readonly T[]) =>
@@ -44,6 +44,7 @@ function serviceRows(machine: string, range: Range, seed: number, io: boolean, s
     row(SERVICE_METRICS.cpu, machine, bucket, cpu[index] ?? 0),
     row(SERVICE_METRICS.memory, machine, bucket, wave(index, 200 * MIB, 40 * MIB, seed)),
     row(SERVICE_METRICS.memoryLimit, machine, bucket, 512 * MIB),
+    row(HOST_METRICS.memoryTotal, machine, bucket, 8192 * MIB),
     row(SERVICE_METRICS.rx, machine, bucket, rx[index] ?? 0),
     row(SERVICE_METRICS.tx, machine, bucket, tx[index] ?? 0),
     ...(io ? [

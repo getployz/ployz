@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { queryObserveOrg } from "#/modules/observe-store/clickhouse.server";
-import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS, VOLUME_METRICS } from "./metrics-history";
+import { DISK_METRIC, HOST_METRICS, SCRAPES_METRIC, SERVICE_METRICS, VOLUME_METRICS } from "./metrics-history";
 import type { SeriesWindow } from "./metrics-series";
 
 /** Where a read looks: the range, and the bucket width in milliseconds that `stepFor` chose. */
@@ -9,7 +9,7 @@ export type StoreRange = { readonly window: SeriesWindow; readonly stepMs: numbe
 
 const metricRow = Schema.Struct({
   metric: Schema.String, machine: Schema.String, series: Schema.String, state: Schema.String, direction: Schema.String,
-  device: Schema.String, operation: Schema.String, bucket: Schema.Number, sampledAt: Schema.Number, value: Schema.Number,
+  device: Schema.String, operation: Schema.String, bucket: Schema.Number, sampledAt: Schema.Number, samples: Schema.Number, value: Schema.Number,
 });
 const diskRow = Schema.Struct({ machine: Schema.String, kind: Schema.String, bucket: Schema.Number, value: Schema.Number });
 const crashRow = Schema.Struct({
@@ -25,6 +25,8 @@ const names = (metrics: Readonly<Record<string, string>>) => Object.values(metri
 const BUCKET = "intDiv(toUnixTimestamp(TimeUnix), {step:UInt32}) * {step:UInt32}";
 /** A counter keeps its last value in the bucket, so growth between buckets is exact. A gauge keeps its mean. */
 const VALUE = "if(any(IsMonotonic), argMax(Value, TimeUnix), avg(Value))";
+/** How many samples the series took in the bucket, which `servicePoints` weighs against the Machine's scrapes. */
+const SAMPLES = "toFloat64(count())";
 /** When the bucket's last sample was taken, in Unix milliseconds: a counter's growth is over the time between two of these. */
 const SAMPLED_AT = "toFloat64(toUnixTimestamp64Milli(max(TimeUnix)))";
 /** The identity of one series of a counter: every attribute that fans it out. Two with different identities grow on their own. */
@@ -34,8 +36,22 @@ const IN_RANGE = "TimeUnix >= fromUnixTimestamp64Milli({from:Int64}) AND TimeUni
 /** One bucket earlier than the range, so the first bucket in view has a predecessor to grow from. */
 const bounds = ({ window, stepMs }: StoreRange) => ({ from: window.from - stepMs, to: window.to, step: stepMs / 1000 });
 
+const SERVICE_IN = (metrics: string) => `
+      AND MetricName IN (${metrics})
+      AND ResourceAttributes['ployz.namespace'] = {namespace:String}
+      AND ResourceAttributes['ployz.service.name'] = {service:String}
+      AND ${IN_RANGE}`;
+
+/**
+ * A Service's rows. Beside each container's own, two kinds of row say how to read them. `SCRAPES_METRIC` rows count
+ * the distinct scrapes of the Service's memory per Machine and bucket: a replica that lived half a bucket weighs half
+ * in it, so a rollout with no overlap never adds the old replica to the new. The Machine's total memory rows tell a
+ * container's own limit from the Machine's memory, which Docker reports as the limit of a container with none.
+ */
 export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (organizationId: string, range: StoreRange, namespace: string, service: string) {
-  return yield* queryObserveOrg(organizationId, `
+  const own = { ...bounds(range), namespace, service };
+  const [containers, scrapes, machines] = yield* Effect.all([
+    queryObserveOrg(organizationId, `
     SELECT MetricName AS metric,
       ResourceAttributes['ployz.machine'] AS machine,
       ${identity("ResourceAttributes['container.id']", "Attributes['interface']", "Attributes['device_major']", "Attributes['device_minor']")} AS series,
@@ -43,15 +59,44 @@ export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (
       Attributes['operation'] AS operation,
       ${BUCKET} AS bucket,
       ${SAMPLED_AT} AS sampledAt,
+      ${SAMPLES} AS samples,
       ${VALUE} AS value
     FROM otel.otel_metrics_sum
-    WHERE OrgId = {org:String}
-      AND MetricName IN (${names(SERVICE_METRICS)})
-      AND ResourceAttributes['ployz.namespace'] = {namespace:String}
-      AND ResourceAttributes['ployz.service.name'] = {service:String}
-      AND ${IN_RANGE}
+    WHERE OrgId = {org:String}${SERVICE_IN(names(SERVICE_METRICS))}
     GROUP BY metric, machine, series, operation, bucket
-    ORDER BY bucket`, params({ ...bounds(range), namespace, service }), metricRow);
+    ORDER BY bucket`, params(own), metricRow),
+    queryObserveOrg(organizationId, `
+    SELECT '${SCRAPES_METRIC}' AS metric,
+      ResourceAttributes['ployz.machine'] AS machine,
+      '' AS series, '' AS state, '' AS direction, '' AS device, '' AS operation,
+      ${BUCKET} AS bucket,
+      ${SAMPLED_AT} AS sampledAt,
+      toFloat64(1) AS samples,
+      toFloat64(uniqExact(TimeUnix)) AS value
+    FROM otel.otel_metrics_sum
+    WHERE OrgId = {org:String}${SERVICE_IN(`'${SERVICE_METRICS.memory}'`)}
+    GROUP BY machine, bucket
+    ORDER BY bucket`, params(own), metricRow),
+    queryObserveOrg(organizationId, `
+    SELECT MetricName AS metric,
+      ResourceAttributes['ployz.machine'] AS machine,
+      '' AS series, '' AS state, '' AS direction, '' AS device, '' AS operation,
+      ${BUCKET} AS bucket,
+      ${SAMPLED_AT} AS sampledAt,
+      ${SAMPLES} AS samples,
+      avg(Value) AS value
+    FROM otel.otel_metrics_sum
+    WHERE OrgId = {org:String}
+      AND MetricName = '${HOST_METRICS.memoryTotal}'
+      AND ResourceAttributes['ployz.machine'] IN (
+        SELECT ResourceAttributes['ployz.machine'] FROM otel.otel_metrics_sum
+        WHERE OrgId = {org:String}${SERVICE_IN(`'${SERVICE_METRICS.memory}'`)}
+        GROUP BY ResourceAttributes['ployz.machine'])
+      AND ${IN_RANGE}
+    GROUP BY metric, machine, bucket
+    ORDER BY bucket`, params(own), metricRow),
+  ]);
+  return [...containers, ...scrapes, ...machines];
 });
 
 /**
@@ -68,6 +113,7 @@ export const readVolumeRows = Effect.fn("MetricsStore.volumeRows")(function* (or
       '' AS state, '' AS direction, '' AS device, '' AS operation,
       ${BUCKET} AS bucket,
       ${SAMPLED_AT} AS sampledAt,
+      ${SAMPLES} AS samples,
       argMax(Value, TimeUnix) AS value
     FROM otel.otel_metrics_sum
     WHERE OrgId = {org:String}
@@ -89,6 +135,7 @@ export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organi
       '' AS operation,
       ${BUCKET} AS bucket,
       ${SAMPLED_AT} AS sampledAt,
+      ${SAMPLES} AS samples,
       ${VALUE} AS value
     FROM otel.otel_metrics_sum
     WHERE OrgId = {org:String}

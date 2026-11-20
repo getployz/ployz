@@ -3,7 +3,7 @@ import { counterRate, counterShare, gapsBetween, gaugeSum, type SeriesSample, ty
 
 /**
  * One series in one bucket, as ClickHouse returns it. `bucket` is the bucket start in Unix seconds, `sampledAt` when
- * the series's last sample in it was taken, in Unix milliseconds.
+ * the series's last sample in it was taken, in Unix milliseconds, and `samples` how many it took in the bucket.
  */
 export type MetricRow = {
   readonly metric: string;
@@ -15,6 +15,7 @@ export type MetricRow = {
   readonly operation: string;
   readonly bucket: number;
   readonly sampledAt: number;
+  readonly samples: number;
   readonly value: number;
 };
 
@@ -51,6 +52,9 @@ export const VOLUME_METRICS = {
   write: "ployz.volume.io.write_bytes",
 } as const;
 
+/** Not a metric: a row of this name counts the distinct scrapes of a Service's memory on one Machine in one bucket. */
+export const SCRAPES_METRIC = "ployz.scrapes";
+
 export const HOST_METRICS = {
   cpu: "system.cpu.time",
   memoryTotal: "system.memory.limit",
@@ -67,8 +71,8 @@ const NS_PER_SECOND = 1e9;
 /** The `system.cpu.time` states, as hostmetrics names them, in which a core waits rather than works. Every other state is busy. */
 const IDLE_STATES = new Set(["idle", "wait"]);
 
-const samples = (rows: readonly MetricRow[], keep: (row: MetricRow) => boolean): SeriesSample[] =>
-  rows.filter((row) => keep(row) && Number.isFinite(row.value)).map((row) => ({ series: `${row.machine}|${row.series}`, at: row.bucket * 1000, sampledAt: row.sampledAt, value: row.value }));
+const samples = (rows: readonly MetricRow[], keep: (row: MetricRow) => boolean, valueOf: (row: MetricRow) => number = (row) => row.value): SeriesSample[] =>
+  rows.filter((row) => keep(row) && Number.isFinite(row.value)).map((row) => ({ series: `${row.machine}|${row.series}`, at: row.bucket * 1000, sampledAt: row.sampledAt, value: valueOf(row) }));
 
 const named = (metric: string) => (row: MetricRow) => row.metric === metric;
 
@@ -80,12 +84,20 @@ const firstBucket = (window: SeriesWindow, stepMs: number) => Math.floor(window.
 /**
  * The Service's buckets: CPU in vCPUs, memory in bytes, network and disk in bytes per second. Disk adds each
  * container's block IO to the ZFS IO of each managed Volume the Service mounts, which counts once however many
- * replicas share the Volume.
+ * replicas share the Volume. Memory is the Service's average over the bucket: a container that ran part of it counts
+ * for that part, and a container limit that is the Machine's whole memory is no limit.
  */
 export function servicePoints(rows: readonly MetricRow[], window: SeriesWindow, stepMs: number): ServicePoint[] {
+  const scrapes = new Map(rows.filter(named(SCRAPES_METRIC)).map((row) => [`${row.machine}|${row.bucket}`, row.value]));
+  const machineMemory = new Map<string, number>();
+  for (const row of rows.filter(named(HOST_METRICS.memoryTotal))) machineMemory.set(row.machine, Math.max(machineMemory.get(row.machine) ?? 0, row.value));
+  const present = (row: MetricRow) => {
+    const taken = scrapes.get(`${row.machine}|${row.bucket}`);
+    return taken === undefined || taken <= 0 ? row.value : row.value * Math.min(1, row.samples / taken);
+  };
   const cpu = counterRate(samples(rows, named(SERVICE_METRICS.cpu)));
-  const memory = gaugeSum(samples(rows, named(SERVICE_METRICS.memory)));
-  const limit = gaugeSum(samples(rows, named(SERVICE_METRICS.memoryLimit)));
+  const memory = gaugeSum(samples(rows, named(SERVICE_METRICS.memory), present));
+  const limit = gaugeSum(samples(rows, (row) => row.metric === SERVICE_METRICS.memoryLimit && row.value < (machineMemory.get(row.machine) ?? 0), present));
   const rx = counterRate(samples(rows, named(SERVICE_METRICS.rx)));
   const tx = counterRate(samples(rows, named(SERVICE_METRICS.tx)));
   const read = counterRate(samples(rows, (row) => (row.metric === SERVICE_METRICS.io && row.operation === "read") || row.metric === VOLUME_METRICS.read));
