@@ -58,7 +58,12 @@ export function ServerResources({ organizationSlug, server }: { organizationSlug
         : availability === "not_reporting" ? <MetricsNotReporting server={server.name} />
         : query.isError ? <Unavailable>Couldn’t load metrics</Unavailable>
         : metrics === null || nowRead.isPending ? <ResourcesSkeleton />
-        : <Resources metrics={metrics} now={now} nowAge={Date.now() - nowRead.dataUpdatedAt} answeredAt={query.dataUpdatedAt} range={range} dimmed={query.isPlaceholderData} />}
+        : (
+          <>
+            {metrics.silentSince === null ? null : <MetricsNotReporting server={server.name} />}
+            <Resources metrics={metrics} now={now} nowAge={Date.now() - nowRead.dataUpdatedAt} answeredAt={query.dataUpdatedAt} range={range} dimmed={query.isPlaceholderData} />
+          </>
+        )}
     </section>
   );
 }

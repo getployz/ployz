@@ -39,6 +39,8 @@ export type ServiceMetrics = {
   readonly allGaps: readonly Gap[];
   readonly byServer: readonly { readonly server: ServerRef; readonly series: ServiceSeries; readonly gaps: readonly Gap[] }[];
   readonly markers: readonly Marker[];
+  /** The newest reading, when nothing has arrived for a minute. */
+  readonly silentSince: number | null;
 };
 
 export type DiskSample = DiskUse & { readonly at: number };
@@ -56,6 +58,8 @@ export type ServerMetrics = {
   readonly interfaces: readonly ServerInterface[];
   readonly disk: readonly DiskSample[];
   readonly gaps: readonly Gap[];
+  /** The newest reading, when nothing has arrived for a minute. */
+  readonly silentSince: number | null;
 };
 
 type Names = ReadonlyMap<string, string>;
@@ -114,7 +118,7 @@ const EMPTY_SERVICE: ServiceSeries = { cpu: [], memory: [], memoryLimit: [], net
 /** A Service's read as charts: the sum over its Servers, each Server's own, and what happened to its containers. */
 export function serviceMetrics(read: MetricRead<ServiceHistory>, names: Names): ServiceMetrics {
   if (read.type !== "history") {
-    return { availability: { type: read.type }, window: read.window, stepMs: null, all: EMPTY_SERVICE, allGaps: [], byServer: [], markers: [] };
+    return { availability: { type: read.type }, window: read.window, stepMs: null, all: EMPTY_SERVICE, allGaps: [], byServer: [], markers: [], silentSince: null };
   }
   const { history } = read;
   // A span is a gap in the sum only where no Server has data.
@@ -129,7 +133,10 @@ export function serviceMetrics(read: MetricRead<ServiceHistory>, names: Names): 
     kind: marker.kind, at: marker.at, server: serverRef(marker.machine, names), replica: marker.replica,
     ...(marker.exitCode !== undefined && { exitCode: marker.exitCode }),
   }))).sort((left, right) => left.at - right.at);
-  return { availability: availability(hasSamples(Object.values(all))), window: read.window, stepMs: history.stepMs, all, allGaps, byServer, markers };
+  return {
+    availability: availability(hasSamples(Object.values(all))), window: read.window, stepMs: history.stepMs, all, allGaps, byServer, markers,
+    silentSince: read.silentSince ?? null,
+  };
 }
 
 const HIDDEN_INTERFACE = /^(?:lo|veth.*|docker.*|br-.*)$/u;
@@ -139,7 +146,7 @@ export function serverMetrics(read: MetricRead<HostHistory>): ServerMetrics {
   if (read.type !== "history") {
     return {
       availability: { type: read.type }, window: read.window, stepMs: null,
-      cpu: [], memoryUsed: [], memoryTotal: [], interfaces: [], disk: [], gaps: [],
+      cpu: [], memoryUsed: [], memoryTotal: [], interfaces: [], disk: [], gaps: [], silentSince: null,
     };
   }
   const { history } = read;
@@ -156,5 +163,8 @@ export function serverMetrics(read: MetricRead<HostHistory>): ServerMetrics {
   const memoryUsed = series(points, gaps, (point) => point.memory === undefined ? undefined : point.memory.total - point.memory.available);
   const memoryTotal = series(points, gaps, (point) => point.memory?.total);
   const hasSample = hasSamples([cpu, memoryUsed, memoryTotal, disk, ...interfaces.flatMap((iface) => [iface.netIn, iface.netOut])]);
-  return { availability: availability(hasSample), window: read.window, stepMs: history.stepMs, cpu, memoryUsed, memoryTotal, interfaces, disk, gaps };
+  return {
+    availability: availability(hasSample), window: read.window, stepMs: history.stepMs, cpu, memoryUsed, memoryTotal, interfaces, disk, gaps,
+    silentSince: read.silentSince ?? null,
+  };
 }

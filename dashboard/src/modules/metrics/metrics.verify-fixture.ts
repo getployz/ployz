@@ -26,7 +26,7 @@ const counter = (count: number, stepSec: number, rate: (index: number) => number
 };
 
 const row = (metric: string, machine: string, bucket: number, value: number, extra: Partial<MetricRow> = {}): MetricRow =>
-  ({ metric, machine, series: "c0", state: "", direction: "", device: "", operation: "", bucket, value, ...extra });
+  ({ metric, machine, series: "c0", state: "", direction: "", device: "", operation: "", bucket, sampledAt: bucket * 1000, value, ...extra });
 
 /** `skipped` buckets send nothing, so the range shows a gap there. */
 const sent = <T>(starts: readonly number[], skipped: (index: number) => boolean, make: (bucket: number, index: number) => readonly T[]) =>

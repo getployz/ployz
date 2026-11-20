@@ -5,8 +5,8 @@ import { Effect } from "effect";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import type { AppConfig } from "#/server/config.server";
 import { testConfigLayer } from "#/test/config-environment";
-import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS, hostHistory, serviceHistory } from "./metrics-history";
-import { countCrashEvents, readCrashEvents, readDiskRows, readHostRows, readServiceRows } from "./metrics-store.server";
+import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS, VOLUME_METRICS, hostHistory, serviceHistory } from "./metrics-history";
+import { countCrashEvents, latestReading, readCrashEvents, readDiskRows, readHostRows, readServiceRows, readVolumeRows } from "./metrics-store.server";
 
 const execFile = promisify(execFileCallback);
 const docker = (...args: ReadonlyArray<string>) => execFile("docker", args, { maxBuffer: 10 * 1024 * 1024 });
@@ -61,6 +61,11 @@ const LOOP_EVENTS = 590;
 /** Two buckets of ten seconds that the read window below covers. */
 const TIMES = [NOW - 120, NOW - 60] as const;
 
+const VOLUME = `${NAMESPACE}_vol-data`;
+const EDGE_SERVICE = "edge";
+/** A minute bucket that starts before the read window's second bucket, for samples placed either side of its edges. */
+const EDGE = Math.floor((NOW - 240) / 60) * 60;
+
 /** Each Organization's CPU counter grows by its own amount, so a leaked row changes the sum. */
 const GROWTH = { "org-a": 10, "org-b": 500 } as const;
 
@@ -88,6 +93,17 @@ async function seed() {
       TimeUnix: clickhouseTime(time), Value: counter(index, 60e6), IsMonotonic: true,
     })),
   ]));
+  // Each Organization's managed Volume writes its own amount, read by ployzd with no container, and another Volume of
+  // the Namespace writes too.
+  await insert("otel_metrics_sum", ORGANIZATIONS.flatMap((org) => TIMES.flatMap((time, index) => ["vol-data", "vol-other"].map((volume) => ({
+    ResourceAttributes: { "ployz.org": org, "ployz.machine": MACHINE, "service.name": "ployzd" }, MetricName: VOLUME_METRICS.write,
+    Attributes: { "ployz.namespace": NAMESPACE, "ployz.volume": volume }, TimeUnix: clickhouseTime(time), Value: index * GROWTH[org] * 60e6, IsMonotonic: true,
+  })))));
+  // 100 bytes a second, the last scrape of one bucket a second before its edge, of the next a second after it.
+  await insert("otel_metrics_sum", [-1, 1, 61, 119].map((offset) => ({
+    ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": MACHINE, "ployz.namespace": NAMESPACE, "ployz.service.name": EDGE_SERVICE, "container.id": "edge-container" },
+    MetricName: SERVICE_METRICS.rx, Attributes: { interface: "eth0" }, TimeUnix: clickhouseTime(EDGE + offset), Value: (offset + 1) * 100, IsMonotonic: true,
+  })));
   // One replica exiting 1 every 6 s for the last hour, newest 10 s ago.
   await insert("otel_logs", Array.from({ length: LOOP_EVENTS }, (_, index) => ({
     Timestamp: clickhouseTime(NOW - 10 - index * 6), Body: "container exited", ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": FAN_MACHINE },
@@ -160,4 +176,31 @@ it("keeps the newest crash events and counts every one when a replica crashes mo
   expect(await asOrganization(countCrashEvents("org-a", hour, { ...filter, namespaces: [] }))).toEqual({ oomKills: 0, exits: 0 });
   expect(await asOrganization(countCrashEvents("org-a", hour, { machine: "another-machine" }))).toEqual({ oomKills: 0, exits: 0 });
   expect(await asOrganization(countCrashEvents("org-b", hour, filter))).toEqual({ oomKills: 0, exits: 0 });
+}, 60_000);
+
+it("reads a managed Volume's writes for the session's Organization alone, once, into the Service's disk", async () => {
+  const reading = { ...range, at: NOW * 1000 };
+  for (const org of ORGANIZATIONS) {
+    const volumes = await asOrganization(readVolumeRows(org, range, [VOLUME]));
+    expect(volumes.map((row) => [row.series, row.value])).toEqual([[VOLUME, 0], [VOLUME, GROWTH[org] * 60e6]]);
+    const rows = [...await asOrganization(readServiceRows(org, range, NAMESPACE, SERVICE)), ...volumes];
+    expect(serviceHistory(rows, [], reading).points.at(-1)?.diskWrite).toBe(GROWTH[org] * 1e6);
+  }
+  expect(await asOrganization(readVolumeRows("org-c", range, [VOLUME]))).toEqual([]);
+  expect(await asOrganization(readVolumeRows("org-a", range, []))).toEqual([]);
+}, 60_000);
+
+it("divides a counter's growth by the time between its samples, so a scrape either side of a bucket edge reads the steady rate", async () => {
+  const rows = await asOrganization(readServiceRows("org-a", range, NAMESPACE, EDGE_SERVICE));
+  const rates = serviceHistory(rows, [], { ...range, at: NOW * 1000 }).points.map((point) => point.netIn);
+  expect(rates).toHaveLength(2);
+  for (const rate of rates) expect(rate).toBeCloseTo(100, 6);
+}, 60_000);
+
+it("reads when a Machine or Service last sent a reading, for the session's Organization alone", async () => {
+  const since = (NOW - 300) * 1000;
+  expect(await asOrganization(latestReading("org-a", { machine: FAN_MACHINE }, since))).toBe(TIMES[1] * 1000);
+  expect(await asOrganization(latestReading("org-b", { namespace: NAMESPACE, service: SERVICE }, since))).toBe(TIMES[1] * 1000);
+  expect(await asOrganization(latestReading("org-c", { machine: MACHINE }, since))).toBeNull();
+  expect(await asOrganization(latestReading("org-a", { machine: MACHINE }, (NOW - 30) * 1000))).toBeNull();
 }, 60_000);

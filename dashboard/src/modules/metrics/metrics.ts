@@ -84,4 +84,5 @@ export type MetricRead<History> =
   | { readonly type: "not_configured"; readonly window: MetricWindow; readonly at: number }
   /** A Server sent nothing for the last minute and nothing in the range. */
   | { readonly type: "not_reporting"; readonly window: MetricWindow; readonly at: number }
-  | { readonly type: "history"; readonly window: MetricWindow; readonly at: number; readonly history: History };
+  /** `silentSince` is the newest reading when nothing has arrived for a minute, so the history stops there. */
+  | { readonly type: "history"; readonly window: MetricWindow; readonly at: number; readonly history: History; readonly silentSince?: number };

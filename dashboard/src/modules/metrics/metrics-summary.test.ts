@@ -8,7 +8,7 @@ const UNTIL = 1_000_000;
 
 const service = (all: Partial<ServiceSeries>): ServiceMetrics => ({
   availability: { type: "normal" }, window: { from: 0, to: UNTIL }, stepMs: STEP,
-  all: { ...EMPTY, ...all }, allGaps: [], byServer: [], markers: [],
+  all: { ...EMPTY, ...all }, allGaps: [], byServer: [], markers: [], silentSince: null,
 });
 
 describe("serviceRows", () => {
@@ -39,7 +39,7 @@ describe("serviceRows", () => {
 
 describe("serverRows", () => {
   const host: ServerMetrics = {
-    availability: { type: "normal" }, window: { from: 0, to: UNTIL }, stepMs: STEP,
+    availability: { type: "normal" }, window: { from: 0, to: UNTIL }, stepMs: STEP, silentSince: null,
     cpu: [{ at: UNTIL - STEP, value: 0.25 }], memoryUsed: [], memoryTotal: [],
     interfaces: [{ name: "eth0", netIn: [{ at: UNTIL - STEP, value: 2_500_000 }], netOut: [] }],
     disk: [{ at: UNTIL - STEP, total: 1000e9, free: 400e9, volumes: 300e9 }], gaps: [],

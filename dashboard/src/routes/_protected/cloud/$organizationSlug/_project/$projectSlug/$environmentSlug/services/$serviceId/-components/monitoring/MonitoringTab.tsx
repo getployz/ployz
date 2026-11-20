@@ -396,6 +396,7 @@ function Charts({ organizationSlug, scope, service, range, dimmed, uptime, uptim
           </ToggleGroup>
         </div>
       ) : null}
+      {metrics.silentSince === null ? null : <MetricsNotReporting server={null} />}
       {metrics.availability.type === "not_configured" ? <MetricsNotEnabled subject="Service" />
         : metrics.availability.type === "not_reporting" ? <MetricsNotReporting server={null} />
         : RESOURCE_CHARTS.map((resource) => (

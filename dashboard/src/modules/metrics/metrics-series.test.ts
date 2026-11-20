@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { hostPoints, servicePoints, type DiskRow, type MetricRow } from "./metrics-history";
-import { counterRate, counterShare, gapsBetween, stepFor } from "./metrics-series";
+import { SERVICE_METRICS, VOLUME_METRICS, hostPoints, servicePoints, type DiskRow, type MetricRow } from "./metrics-history";
+import { counterRate, counterShare, gapsBetween, silentSince, stepFor } from "./metrics-series";
 
 const STEP = 10_000;
 const window = { from: 0, to: 60_000 };
 
 const row = (metric: string, bucket: number, value: number, extra: Partial<MetricRow> = {}): MetricRow => ({
-  metric, machine: "m1", series: "c1", state: "", direction: "", device: "", operation: "", bucket, value, ...extra,
+  metric, machine: "m1", series: "c1", state: "", direction: "", device: "", operation: "", bucket, sampledAt: bucket * 1000, value, ...extra,
 });
 
 describe("counter rates", () => {
@@ -25,7 +25,7 @@ describe("counter rates", () => {
       row("container.network.io.usage.rx_bytes", 10, 0, { series: "new" }),
       row("container.network.io.usage.rx_bytes", 20, 300, { series: "new" }),
     ];
-    expect(counterRate(rows.map((entry) => ({ series: entry.series, at: entry.bucket * 1000, value: entry.value }))).get(20_000)).toBe(30);
+    expect(counterRate(rows.map((entry) => ({ series: entry.series, at: entry.bucket * 1000, sampledAt: entry.sampledAt, value: entry.value }))).get(20_000)).toBe(30);
     expect(servicePoints(rows, window, STEP).map((point) => point.netIn)).toEqual([50, 30]);
   });
 
@@ -33,6 +33,27 @@ describe("counter rates", () => {
     const read = (bucket: number, device: string, value: number) => row("container.blockio.io_service_bytes_recursive", bucket, value, { operation: "read", series: `c1|||${device}` });
     const rows = [0, 10, 20].flatMap((bucket, index) => [read(bucket, "8:0", 1e6 + index * 10e6), read(bucket, "253:0", 5e9 + index * 10e6)]);
     expect(servicePoints(rows, window, STEP).map((point) => point.diskRead)).toEqual([2e6, 2e6]);
+  });
+
+  it("divides each bucket's growth by the time between its two samples, so a scrape that crosses a bucket edge reads the steady rate", () => {
+    // 100 bytes a second, scraped every 10 s at 0.1 s, 9.9 s past the bucket start, then 0.1 s: one bucket's last sample
+    // lands just before its edge and the next just after it.
+    const rows = [[0, 1], [10, 199], [20, 201], [30, 399]].map(([bucket = 0, tenths = 0]) =>
+      row("container.network.io.usage.rx_bytes", bucket, tenths * 10, { sampledAt: tenths * 100 }));
+    expect(servicePoints(rows, window, STEP).map((point) => point.netIn)).toEqual([100, 100, 100]);
+  });
+
+  it("adds a managed Volume's ZFS reads and writes to the Service's disk once, however many replicas mount it", () => {
+    const replica = (container: string) => [0, 10, 20].map((bucket, index) =>
+      row(SERVICE_METRICS.io, bucket, index * 10_000, { operation: "write", series: `${container}|||8|0` }));
+    const volume = [0, 10, 20].map((bucket, index) => row(VOLUME_METRICS.write, bucket, index * 1e9, { series: "shop_vol-1" }));
+    const points = servicePoints([...replica("a"), ...replica("b"), ...volume], window, STEP);
+    expect(points.map((point) => point.diskWrite)).toEqual([1e8 + 2000, 1e8 + 2000]);
+  });
+
+  it("reads a Volume series whose counter restarted on a remount as no growth, as any counter", () => {
+    const volume = [0, 10, 20].map((bucket, index) => row(VOLUME_METRICS.read, bucket, [5e9, 1e6, 2e6][index] ?? 0, { series: "shop_vol-1" }));
+    expect(servicePoints(volume, window, STEP).map((point) => point.diskRead)).toEqual([0, 1e5]);
   });
 
   it("keeps a series on its own Machine", () => {
@@ -94,7 +115,7 @@ describe("host points", () => {
 
 describe("buckets", () => {
   it("shares one counter's growth between two series", () => {
-    const at = (value: number, bucket: number) => ({ series: "s", at: bucket, value });
+    const at = (value: number, bucket: number) => ({ series: "s", at: bucket, sampledAt: bucket, value });
     expect(counterShare([at(0, 0), at(30, 10_000)], [at(0, 0), at(70, 10_000)]).get(10_000)).toBe(0.3);
   });
 
@@ -107,5 +128,19 @@ describe("buckets", () => {
   it("reports the spans no bucket covers, not the present", () => {
     const gaps = gapsBetween(new Set([0, 10_000, 40_000]), { from: 0, to: 120_000 }, STEP, 120_000);
     expect(gaps).toEqual([{ from: 20_000, to: 40_000 }]);
+  });
+});
+
+describe("silence", () => {
+  const at = 10_000_000;
+  const hour = { from: at - 3600_000, to: at };
+
+  it("says when the newest reading is more than a minute old, though older ones fill the range", () => {
+    expect(silentSince(at - 485_000, hour, at)).toBe(at - 485_000);
+  });
+
+  it("says nothing of a reading inside the last minute, or of a range that ended before it", () => {
+    expect(silentSince(at - 20_000, hour, at)).toBeUndefined();
+    expect(silentSince(at - 7200_000, { from: at - 10_800_000, to: at - 7200_000 }, at)).toBeUndefined();
   });
 });

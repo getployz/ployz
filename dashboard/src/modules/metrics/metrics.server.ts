@@ -1,20 +1,18 @@
 import "@tanstack/react-start/server-only";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { findService } from "#/modules/config-store/store-lookup.server";
+import { findService, serviceVolumes } from "#/modules/config-store/store-lookup.server";
 import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import type { AppConfig } from "#/server/config.server";
-import type { Unavailable } from "#/server/public-error";
 import { resolveRange } from "#/modules/uptime/uptime-range";
 import { hostHistory, markersOnlyHistory, serviceHistory, type CrashEvent, type DiskRow, type MetricRow } from "./metrics-history";
-import { stepFor } from "./metrics-series";
-import { machineIsReporting, readCrashEvents, readDiskRows, readHostRows, readServiceRows, type StoreRange } from "./metrics-store.server";
+import { silentSince, stepFor } from "./metrics-series";
+import { latestReading, readCrashEvents, readDiskRows, readHostRows, readServiceRows, readVolumeRows, type StoreRange } from "./metrics-store.server";
 import type { HostHistory, MetricRead, MetricWindow, ReadRuntimeServiceMetricsInput, ReadServerMetricsInput, ReadServiceMetricsInput, ServiceHistory } from "./metrics";
 
 /** Runs `reading` against this Cloud's ClickHouse, or answers that metrics aren't enabled. */
-const readStore = Effect.fn("Metrics.readStore")(function* <History>(
-  window: MetricWindow, at: number, reading: (range: StoreRange) => Effect.Effect<MetricRead<History>, Unavailable, AppConfig>,
+const readStore = Effect.fn("Metrics.readStore")(function* <History, E, R>(
+  window: MetricWindow, at: number, reading: (range: StoreRange) => Effect.Effect<MetricRead<History>, E, R>,
 ) {
   if (!(yield* observeConfigured)) return { type: "not_configured", window, at } satisfies MetricRead<History>;
   return yield* reading({ window, stepMs: stepFor(window) });
@@ -22,19 +20,29 @@ const readStore = Effect.fn("Metrics.readStore")(function* <History>(
 
 /** The Service's rows and crash events as one read. Every Machine's rows sit in its own entry. */
 const readService = Effect.fn("Metrics.readService")(function* (organizationId: string, namespace: string, service: string, window: MetricWindow, at: number, markersOnly: boolean) {
-  const asRead = (range: StoreRange, rows: readonly MetricRow[], crashes: readonly CrashEvent[]): MetricRead<ServiceHistory> => ({
-    type: "history", window, at, history: markersOnly ? markersOnlyHistory(crashes, { ...range, at }) : serviceHistory(rows, crashes, { ...range, at }),
-  });
+  const asRead = (range: StoreRange, rows: readonly MetricRow[], crashes: readonly CrashEvent[], latest: number | null): MetricRead<ServiceHistory> => {
+    const silent = latest === null ? undefined : silentSince(latest, window, at);
+    return {
+      type: "history", window, at, history: markersOnly ? markersOnlyHistory(crashes, { ...range, at }) : serviceHistory(rows, crashes, { ...range, at }),
+      ...(silent !== undefined && { silentSince: silent }),
+    };
+  };
   // The verify dashboard has no ClickHouse; production builds drop this branch and the fixture with it.
   if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
     const { verifyServiceData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     const range = { window, stepMs: stepFor(window) };
     const { rows, crashes } = verifyServiceData(service, range);
-    return asRead(range, rows, crashes);
+    return asRead(range, rows, crashes, rows.length > 0 ? at : null);
   }
   return yield* readStore(window, at, (range) => Effect.gen(function* () {
     const crashes = yield* readCrashEvents(organizationId, range, { namespace, service });
-    return asRead(range, markersOnly ? [] : yield* readServiceRows(organizationId, range, namespace, service), crashes);
+    if (markersOnly) return asRead(range, [], crashes, null);
+    const [rows, volumes, latest] = yield* Effect.all([
+      readServiceRows(organizationId, range, namespace, service),
+      serviceVolumes(organizationId, namespace, service).pipe(Effect.flatMap((names) => readVolumeRows(organizationId, range, names))),
+      latestReading(organizationId, { namespace, service }, window.from),
+    ]);
+    return asRead(range, [...rows, ...volumes], crashes, latest);
   }));
 });
 
@@ -59,18 +67,25 @@ export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (acto
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const at = yield* Clock.currentTimeMillis;
   const window = resolveRange(input, at);
-  // A Server with rows in view has a history, gaps included. One with none is silent only if it is silent now too.
-  const asRead = (range: StoreRange, rows: readonly MetricRow[], disk: readonly DiskRow[], reporting: boolean): MetricRead<HostHistory> =>
-    reporting ? { type: "history", window, at, history: hostHistory(rows, disk, { ...range, at }) } : { type: "not_reporting", window, at };
+  // A Server with rows in view has a history, gaps included, which says when it went silent. One with none is not
+  // reporting only if it is silent now too.
+  const asRead = (range: StoreRange, rows: readonly MetricRow[], disk: readonly DiskRow[], latest: number | null): MetricRead<HostHistory> => {
+    const silent = latest === null ? undefined : silentSince(latest, window, at);
+    if (rows.length === 0 && disk.length === 0 && (latest === null || silent !== undefined)) return { type: "not_reporting", window, at };
+    return { type: "history", window, at, history: hostHistory(rows, disk, { ...range, at }), ...(silent !== undefined && { silentSince: silent }) };
+  };
   if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
     const { verifyServerData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     const range = { window, stepMs: stepFor(window) };
     const { rows, disk, reporting } = verifyServerData(input.machineId, range);
-    return asRead(range, rows, disk, reporting);
+    return asRead(range, rows, disk, reporting ? at : null);
   }
   return yield* readStore(window, at, (range) => Effect.gen(function* () {
-    const [rows, disk] = yield* Effect.all([readHostRows(organization.id, range, input.machineId), readDiskRows(organization.id, range, input.machineId)]);
-    const reporting = rows.length > 0 || disk.length > 0 || (yield* machineIsReporting(organization.id, input.machineId));
-    return asRead(range, rows, disk, reporting);
+    const [rows, disk, latest] = yield* Effect.all([
+      readHostRows(organization.id, range, input.machineId),
+      readDiskRows(organization.id, range, input.machineId),
+      latestReading(organization.id, { machine: input.machineId }, Math.min(window.from, at - 60_000)),
+    ]);
+    return asRead(range, rows, disk, latest);
   }));
 });

@@ -41,6 +41,7 @@ describe("serviceMetrics availability", () => {
         allGaps: [],
         byServer: [],
         markers: [],
+        silentSince: null,
       });
     }
   });
@@ -160,6 +161,7 @@ describe("serverMetrics", () => {
         { at: 2000, total: 1000, free: 390 },
       ],
       gaps: [{ from: 1000, to: 2000 }],
+      silentSince: null,
     });
   });
 

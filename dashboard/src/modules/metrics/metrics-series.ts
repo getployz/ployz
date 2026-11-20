@@ -1,7 +1,10 @@
 import type { Gap } from "./metrics";
 
-/** What one series said in one bucket: a counter's last value, or a gauge's average. `at` is the bucket start in Unix milliseconds. */
-export type SeriesSample = { readonly series: string; readonly at: number; readonly value: number };
+/**
+ * What one series said in one bucket: a counter's last value, or a gauge's average. `at` is the bucket start and
+ * `sampledAt` when the bucket's last sample was taken, both in Unix milliseconds.
+ */
+export type SeriesSample = { readonly series: string; readonly at: number; readonly sampledAt: number; readonly value: number };
 
 export type SeriesWindow = { readonly from: number; readonly to: number };
 
@@ -32,8 +35,10 @@ const bySeriesAndTime = (samples: readonly SeriesSample[]) => {
 export type Delta = { readonly series: string; readonly at: number; readonly delta: number; readonly seconds: number };
 
 /**
- * Each series's growth since its previous bucket. A series's first bucket has no predecessor and yields none. A value
- * lower than its predecessor is a counter that restarted, so it counts as no growth, never as negative growth.
+ * Each series's growth since its previous bucket, over the seconds between the two samples: a scrape that lands just
+ * past a bucket edge leaves one bucket with two intervals of growth and the next with none, so bucket starts would
+ * halve and double the rate. A series's first bucket has no predecessor and yields none. A value lower than its
+ * predecessor is a counter that restarted, so it counts as no growth, never as negative growth.
  */
 export function counterDeltas(samples: readonly SeriesSample[]): Delta[] {
   const deltas: Delta[] = [];
@@ -41,8 +46,8 @@ export function counterDeltas(samples: readonly SeriesSample[]): Delta[] {
     for (let index = 1; index < own.length; index++) {
       const previous = own[index - 1];
       const current = own[index];
-      if (previous === undefined || current === undefined) continue;
-      deltas.push({ series, at: current.at, delta: Math.max(0, current.value - previous.value), seconds: (current.at - previous.at) / SECOND_MS });
+      if (previous === undefined || current === undefined || current.sampledAt <= previous.sampledAt) continue;
+      deltas.push({ series, at: current.at, delta: Math.max(0, current.value - previous.value), seconds: (current.sampledAt - previous.sampledAt) / SECOND_MS });
     }
   }
   return deltas;
@@ -96,4 +101,16 @@ export function gapsBetween(buckets: ReadonlySet<number>, window: SeriesWindow, 
     }
   }
   return gaps;
+}
+
+/** A Machine sends every 10 seconds, so a minute without a reading is silence, not a late batch. */
+const SILENT_AFTER_MS = 60 * SECOND_MS;
+
+/**
+ * When a range that reaches the present stopped hearing: the newest reading, once it is more than a minute old. A
+ * range that ended earlier says nothing of now.
+ */
+export function silentSince(latest: number, window: SeriesWindow, at: number): number | undefined {
+  if (window.to < at - SILENT_AFTER_MS) return undefined;
+  return at - latest > SILENT_AFTER_MS ? latest : undefined;
 }

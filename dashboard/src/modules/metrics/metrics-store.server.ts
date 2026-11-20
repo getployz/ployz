@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { queryObserveOrg } from "#/modules/observe-store/clickhouse.server";
-import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS } from "./metrics-history";
+import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS, VOLUME_METRICS } from "./metrics-history";
 import type { SeriesWindow } from "./metrics-series";
 
 /** Where a read looks: the range, and the bucket width in milliseconds that `stepFor` chose. */
@@ -9,7 +9,7 @@ export type StoreRange = { readonly window: SeriesWindow; readonly stepMs: numbe
 
 const metricRow = Schema.Struct({
   metric: Schema.String, machine: Schema.String, series: Schema.String, state: Schema.String, direction: Schema.String,
-  device: Schema.String, operation: Schema.String, bucket: Schema.Number, value: Schema.Number,
+  device: Schema.String, operation: Schema.String, bucket: Schema.Number, sampledAt: Schema.Number, value: Schema.Number,
 });
 const diskRow = Schema.Struct({ machine: Schema.String, kind: Schema.String, bucket: Schema.Number, value: Schema.Number });
 const crashRow = Schema.Struct({
@@ -25,6 +25,8 @@ const names = (metrics: Readonly<Record<string, string>>) => Object.values(metri
 const BUCKET = "intDiv(toUnixTimestamp(TimeUnix), {step:UInt32}) * {step:UInt32}";
 /** A counter keeps its last value in the bucket, so growth between buckets is exact. A gauge keeps its mean. */
 const VALUE = "if(any(IsMonotonic), argMax(Value, TimeUnix), avg(Value))";
+/** When the bucket's last sample was taken, in Unix milliseconds: a counter's growth is over the time between two of these. */
+const SAMPLED_AT = "toFloat64(toUnixTimestamp64Milli(max(TimeUnix)))";
 /** The identity of one series of a counter: every attribute that fans it out. Two with different identities grow on their own. */
 const identity = (...parts: readonly string[]) => `concat(${parts.join(", '|', ")})`;
 const IN_RANGE = "TimeUnix >= fromUnixTimestamp64Milli({from:Int64}) AND TimeUnix <= fromUnixTimestamp64Milli({to:Int64})";
@@ -40,6 +42,7 @@ export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (
       '' AS state, '' AS direction, '' AS device,
       Attributes['operation'] AS operation,
       ${BUCKET} AS bucket,
+      ${SAMPLED_AT} AS sampledAt,
       ${VALUE} AS value
     FROM otel.otel_metrics_sum
     WHERE OrgId = {org:String}
@@ -49,6 +52,30 @@ export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (
       AND ${IN_RANGE}
     GROUP BY metric, machine, series, operation, bucket
     ORDER BY bucket`, params({ ...bounds(range), namespace, service }), metricRow);
+});
+
+/**
+ * The ZFS IO of the managed Volumes named by their Docker Volume names, one series per Volume and Machine. ployzd
+ * names a Volume by its Namespace and the rest of its Docker name on each point.
+ */
+export const readVolumeRows = Effect.fn("MetricsStore.volumeRows")(function* (organizationId: string, range: StoreRange, volumes: readonly string[]) {
+  if (volumes.length === 0) return [];
+  const listed = volumes.map((volume, index) => [`volume${index}`, volume] as const);
+  return yield* queryObserveOrg(organizationId, `
+    SELECT MetricName AS metric,
+      ResourceAttributes['ployz.machine'] AS machine,
+      concat(Attributes['ployz.namespace'], '_', Attributes['ployz.volume']) AS series,
+      '' AS state, '' AS direction, '' AS device, '' AS operation,
+      ${BUCKET} AS bucket,
+      ${SAMPLED_AT} AS sampledAt,
+      argMax(Value, TimeUnix) AS value
+    FROM otel.otel_metrics_sum
+    WHERE OrgId = {org:String}
+      AND MetricName IN (${names(VOLUME_METRICS)})
+      AND concat(Attributes['ployz.namespace'], '_', Attributes['ployz.volume']) IN (${listed.map(([name]) => `{${name}:String}`).join(", ")})
+      AND ${IN_RANGE}
+    GROUP BY metric, machine, series, bucket
+    ORDER BY bucket`, params({ ...bounds(range), ...Object.fromEntries(listed) }), metricRow);
 });
 
 export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organizationId: string, range: StoreRange, machine: string) {
@@ -61,6 +88,7 @@ export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organi
       Attributes['device'] AS device,
       '' AS operation,
       ${BUCKET} AS bucket,
+      ${SAMPLED_AT} AS sampledAt,
       ${VALUE} AS value
     FROM otel.otel_metrics_sum
     WHERE OrgId = {org:String}
@@ -86,16 +114,20 @@ export const readDiskRows = Effect.fn("MetricsStore.diskRows")(function* (organi
     ORDER BY bucket`, params({ ...bounds(range), machine }), diskRow);
 });
 
-const RECENT_SECONDS = 60;
+/** Whose readings `latestReading` looks for: a Machine's, or a Service's on every Machine. */
+export type ReadingScope = { readonly machine: string } | { readonly namespace: string; readonly service: string };
 
-export const machineIsReporting = Effect.fn("MetricsStore.machineIsReporting")(function* (organizationId: string, machine: string) {
+/** When the newest reading since `since` arrived, in Unix milliseconds, or null when none has. */
+export const latestReading = Effect.fn("MetricsStore.latestReading")(function* (organizationId: string, scope: ReadingScope, since: number) {
   const [row] = yield* queryObserveOrg(organizationId, `
-    SELECT toUInt32(count()) AS recent
+    SELECT toUInt32(count()) AS readings, ${SAMPLED_AT} AS latest
     FROM otel.otel_metrics_sum
     WHERE OrgId = {org:String}
-      AND ResourceAttributes['ployz.machine'] = {machine:String}
-      AND TimeUnix >= now() - INTERVAL ${RECENT_SECONDS} SECOND`, params({ machine }), Schema.Struct({ recent: Schema.Number }));
-  return (row?.recent ?? 0) > 0;
+      AND ${"machine" in scope
+        ? "ResourceAttributes['ployz.machine'] = {machine:String}"
+        : "ResourceAttributes['ployz.namespace'] = {namespace:String} AND ResourceAttributes['ployz.service.name'] = {service:String}"}
+      AND TimeUnix >= fromUnixTimestamp64Milli({since:Int64})`, params({ ...scope, since }), Schema.Struct({ readings: Schema.Number, latest: Schema.Number }));
+  return row === undefined || row.readings === 0 ? null : row.latest;
 });
 
 /**

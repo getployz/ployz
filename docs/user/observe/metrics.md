@@ -106,8 +106,8 @@ Every metrics view says why it has nothing to show:
 - **Metrics aren't enabled on this Service** (or **Server**). Cloud has no ClickHouse. Start the
   `observe` profile and set `OBSERVE_CLICKHOUSE_URL`, as
   [self-hosting](../self-hosting.md#keep-logs-metrics-and-traces-in-cloud-optional) describes.
-- **web-1 isn't reporting.** The server is up, but no numbers have arrived in the last minute.
-  Check that the server runs this release and can reach Cloud.
+- **web-1 isn't reporting.** No numbers have arrived in the last minute. The charts still show
+  what arrived before. Check that the server runs this release and can reach Cloud.
 - **No readings.** The range holds no numbers at all, as for a service deployed seconds ago.
 
 A missing number shows as not measured, never as zero.

@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
+import { dockerVolumeName } from "#/modules/volume-run/volume-run";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 
@@ -62,6 +63,22 @@ export const environmentServices = Effect.fn("ConfigStore.environmentServices")(
   // A rename between the two reads can put another Environment under these names.
   if (view.environment.id !== environmentId) return null;
   return { namespace: owned.namespace, project: owned.project, environment: owned.environment, services: view.services };
+});
+
+/**
+ * The Docker names of the Volumes a Service mounts in Working State, by the Namespace and runtime name its containers
+ * carry. None when the Organization owns no such Namespace.
+ */
+export const serviceVolumes = Effect.fn("ConfigStore.serviceVolumes")(function* (organizationId: string, namespace: string, runtime: string) {
+  const owned = (yield* owners(organizationId)).find((row) => row.namespace === namespace);
+  if (owned === undefined) return [];
+  const environment = { project: owned.project, environment: owned.environment };
+  const [{ services }, { volumes }] = yield* Effect.all([
+    readStore(organizationId, { query: "namespace", environment }),
+    readStore(organizationId, { query: "volumes", environment }),
+  ]);
+  const named = new Set(Object.entries(services).flatMap(([name, running]) => running === runtime ? [name] : []));
+  return volumes.filter((volume) => volume.mounts.some((mount) => named.has(mount.service))).map((volume) => dockerVolumeName(namespace, volume.id));
 });
 
 /**

@@ -43,6 +43,7 @@ const usage = (used: number, total: number): Usage | null => total > 0 ? { used,
 
 /** What a Server uses now, from a read that landed `age` ms ago, leaving out any reading too old to call current. */
 export function serverNow(metrics: ServerMetrics, age: number): ServerNow {
+  if (metrics.silentSince !== null) return { type: "not_reporting" };
   switch (metrics.availability.type) {
     case "not_configured":
       return { type: "not_configured" };

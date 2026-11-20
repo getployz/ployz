@@ -1,7 +1,10 @@
 import type { CrashMarker, DiskUse, HostHistory, HostPoint, ServiceHistory, ServicePoint } from "./metrics";
 import { counterRate, counterShare, gapsBetween, gaugeSum, type SeriesSample, type SeriesWindow } from "./metrics-series";
 
-/** One series in one bucket, as ClickHouse returns it. `bucket` is the bucket start in Unix seconds. */
+/**
+ * One series in one bucket, as ClickHouse returns it. `bucket` is the bucket start in Unix seconds, `sampledAt` when
+ * the series's last sample in it was taken, in Unix milliseconds.
+ */
 export type MetricRow = {
   readonly metric: string;
   readonly machine: string;
@@ -11,6 +14,7 @@ export type MetricRow = {
   readonly device: string;
   readonly operation: string;
   readonly bucket: number;
+  readonly sampledAt: number;
   readonly value: number;
 };
 
@@ -38,6 +42,15 @@ export const SERVICE_METRICS = {
   io: "container.blockio.io_service_bytes_recursive",
 } as const;
 
+/**
+ * A managed Volume's ZFS bytes, which ployzd sends once per Volume. A Volume's writes skip the container's block IO,
+ * so they reach the Service's disk only from here. A row's `series` is the Docker Volume name.
+ */
+export const VOLUME_METRICS = {
+  read: "ployz.volume.io.read_bytes",
+  write: "ployz.volume.io.write_bytes",
+} as const;
+
 export const HOST_METRICS = {
   cpu: "system.cpu.time",
   memoryTotal: "system.memory.limit",
@@ -55,7 +68,7 @@ const NS_PER_SECOND = 1e9;
 const IDLE_STATES = new Set(["idle", "wait"]);
 
 const samples = (rows: readonly MetricRow[], keep: (row: MetricRow) => boolean): SeriesSample[] =>
-  rows.filter((row) => keep(row) && Number.isFinite(row.value)).map((row) => ({ series: `${row.machine}|${row.series}`, at: row.bucket * 1000, value: row.value }));
+  rows.filter((row) => keep(row) && Number.isFinite(row.value)).map((row) => ({ series: `${row.machine}|${row.series}`, at: row.bucket * 1000, sampledAt: row.sampledAt, value: row.value }));
 
 const named = (metric: string) => (row: MetricRow) => row.metric === metric;
 
@@ -64,15 +77,19 @@ const timeline = (maps: readonly ReadonlyMap<number, unknown>[], from: number): 
 
 const firstBucket = (window: SeriesWindow, stepMs: number) => Math.floor(window.from / stepMs) * stepMs;
 
-/** The Service's buckets: CPU in vCPUs, memory in bytes, network and block IO in bytes per second. */
+/**
+ * The Service's buckets: CPU in vCPUs, memory in bytes, network and disk in bytes per second. Disk adds each
+ * container's block IO to the ZFS IO of each managed Volume the Service mounts, which counts once however many
+ * replicas share the Volume.
+ */
 export function servicePoints(rows: readonly MetricRow[], window: SeriesWindow, stepMs: number): ServicePoint[] {
   const cpu = counterRate(samples(rows, named(SERVICE_METRICS.cpu)));
   const memory = gaugeSum(samples(rows, named(SERVICE_METRICS.memory)));
   const limit = gaugeSum(samples(rows, named(SERVICE_METRICS.memoryLimit)));
   const rx = counterRate(samples(rows, named(SERVICE_METRICS.rx)));
   const tx = counterRate(samples(rows, named(SERVICE_METRICS.tx)));
-  const read = counterRate(samples(rows, (row) => row.metric === SERVICE_METRICS.io && row.operation === "read"));
-  const write = counterRate(samples(rows, (row) => row.metric === SERVICE_METRICS.io && row.operation === "write"));
+  const read = counterRate(samples(rows, (row) => (row.metric === SERVICE_METRICS.io && row.operation === "read") || row.metric === VOLUME_METRICS.read));
+  const write = counterRate(samples(rows, (row) => (row.metric === SERVICE_METRICS.io && row.operation === "write") || row.metric === VOLUME_METRICS.write));
   return timeline([cpu, memory, limit, rx, tx, read, write], firstBucket(window, stepMs)).map((at): ServicePoint => {
     const [cpuRate, memoryBytes, limitBytes] = [cpu.get(at), memory.get(at), limit.get(at)];
     const [received, sent, readRate, writeRate] = [rx.get(at), tx.get(at), read.get(at), write.get(at)];

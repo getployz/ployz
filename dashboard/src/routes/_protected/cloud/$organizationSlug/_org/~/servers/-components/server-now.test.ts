@@ -14,6 +14,7 @@ const empty: ServerMetrics = {
   interfaces: [],
   disk: [],
   gaps: [],
+  silentSince: null,
 };
 
 const recent = TO - 10_000;
@@ -46,6 +47,10 @@ describe("serverNow", () => {
       gaps: [{ from: TO - 270_000, to: TO }],
     }, 0);
     expect(now).toEqual({ type: "meters", cpu: null, memory: null, disk: { used: 23, total: 100 } });
+  });
+
+  it("says a Server that has sent nothing for a minute isn't reporting, though its last readings are still recent", () => {
+    expect(serverNow({ ...empty, cpu: [{ at: recent, value: 0.5 }], silentSince: recent }, 0)).toEqual({ type: "not_reporting" });
   });
 
   it("says there are no readings when every reading is old", () => {
