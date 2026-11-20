@@ -1,0 +1,113 @@
+import { execFile as execFileCallback } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
+
+const execFile = promisify(execFileCallback);
+const docker = (...args: ReadonlyArray<string>) => execFile("docker", args, { maxBuffer: 10 * 1024 * 1024 });
+
+const PASSWORD = "tenancy-test";
+const run = `ployz-observe-test-${process.pid}-${randomUUID().slice(0, 8)}`;
+const started: string[] = [];
+let clickhouse = "";
+let collector = "";
+
+/** The Collector config exactly as compose ships it, with compose's `$$` escape resolved. */
+function shippedCollectorConfig() {
+  const compose = readFileSync(join(process.cwd(), "self-host/compose.yml"), "utf8");
+  const block = /^ {2}observe-collector:\n {4}content: \|\n((?: {6}.*\n|\n)+)/m.exec(compose)?.[1];
+  if (block === undefined) throw new Error("compose.yml has no observe-collector config");
+  return block.replace(/^ {6}/gm, "").replaceAll("$$", "$");
+}
+
+type Row = Record<string, string | number>;
+
+async function query(sql: string): Promise<Row[]> {
+  const response = await fetch(`${clickhouse}/?default_format=JSONEachRow`, {
+    method: "POST",
+    headers: { authorization: `Basic ${Buffer.from(`otel:${PASSWORD}`).toString("base64")}` },
+    body: sql,
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(text);
+  return text.trim() === "" ? [] : text.trim().split("\n").map((line): Row => JSON.parse(line));
+}
+
+async function published(name: string, port: string) {
+  const { stdout } = await docker("port", name, port);
+  return `http://127.0.0.1:${stdout.trim().split("\n")[0]?.split(":").at(-1)}`;
+}
+
+/** Retries until `attempt` stops throwing or returns a value; ClickHouse and the Collector take seconds to come up. */
+const until = <A>(attempt: () => Promise<A | undefined>) =>
+  vi.waitFor(async () => {
+    const value = await attempt();
+    if (value === undefined) throw new Error("not yet");
+    return value;
+  }, { timeout: 60_000, interval: 1000 });
+
+beforeAll(async () => {
+  await docker("network", "create", run);
+  started.push(`network:${run}`);
+  await docker("run", "--detach", "--rm", "--name", `${run}-ch`, "--network", run, "--network-alias", "clickhouse", "--publish", "127.0.0.1::8123",
+    "--tmpfs", "/var/lib/clickhouse:rw", "--env", "CLICKHOUSE_USER=otel", "--env", `CLICKHOUSE_PASSWORD=${PASSWORD}`, "--env", "CLICKHOUSE_DB=otel",
+    "clickhouse/clickhouse-server:25.8");
+  started.push(`${run}-ch`);
+  clickhouse = await published(`${run}-ch`, "8123/tcp");
+  await until(async () => ((await fetch(`${clickhouse}/ping`)).ok ? true : undefined));
+  await execFile(process.execPath, ["scripts/observe-migrate.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, OBSERVE_CLICKHOUSE_URL: clickhouse, CLICKHOUSE_USER: "otel", CLICKHOUSE_PASSWORD: PASSWORD },
+  });
+  const configPath = join(mkdtempSync(join(tmpdir(), "ployz-collector-")), "config.yaml");
+  writeFileSync(configPath, shippedCollectorConfig());
+  await docker("run", "--detach", "--rm", "--name", `${run}-col`, "--network", run, "--publish", "127.0.0.1::4318",
+    "--env", `CLICKHOUSE_PASSWORD=${PASSWORD}`, "--volume", `${configPath}:/etc/otelcol/config.yaml:ro`,
+    "otel/opentelemetry-collector-contrib:0.147.0", "--config=/etc/otelcol/config.yaml");
+  started.push(`${run}-col`);
+  collector = await published(`${run}-col`, "4318/tcp");
+  await until(async () => ((await fetch(`${collector}/v1/logs`, { method: "POST" })).status > 0 ? true : undefined));
+}, 240_000);
+
+afterAll(async () => {
+  for (const name of started.reverse()) {
+    await (name.startsWith("network:") ? docker("network", "rm", name.slice(8)) : docker("rm", "--force", name)).catch(() => undefined);
+  }
+}, 60_000);
+
+const forged = (body: string) => JSON.stringify({
+  resourceLogs: [{
+    resource: { attributes: [
+      { key: "service.name", value: { stringValue: "web" } },
+      { key: "ployz.org", value: { stringValue: "victim-org" } },
+      { key: "ployz.retention_days", value: { stringValue: "9999" } },
+    ] },
+    scopeLogs: [{ logRecords: [{
+      timeUnixNano: `${Date.now()}000000`,
+      body: { stringValue: body },
+      attributes: [{ key: "ployz.org", value: { stringValue: "victim-org" } }],
+    }] }],
+  }],
+});
+
+async function post(body: string, headers: Record<string, string>) {
+  const response = await fetch(`${collector}/v1/logs`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
+  expect(response.status).toBe(200);
+}
+
+it("files a record under the org Cloud stamped, never the one the sender claimed", async () => {
+  await post(forged("unstamped"), {});
+  await post(forged("stamped"), { "x-ployz-org": "real-org", "x-ployz-retention-days": "9999" });
+  const rows = await until(async () => {
+    const found = await query("SELECT Body, OrgId, RetentionDays FROM otel.otel_logs ORDER BY Body");
+    return found.length === 2 ? found : undefined;
+  });
+  expect(rows).toEqual([
+    { Body: "stamped", OrgId: "real-org", RetentionDays: 400 },
+    { Body: "unstamped", OrgId: "", RetentionDays: 30 },
+  ]);
+  expect(await query("SELECT count() AS n FROM otel.otel_logs WHERE OrgId = 'victim-org'")).toEqual([{ n: 0 }]);
+}, 120_000);
