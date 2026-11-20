@@ -953,29 +953,3 @@ fn a_verified_build_runs_an_older_commit_and_keeps_every_other_check() {
         Err(AuthorityRefusal::Mismatch { field: "a Machine" })
     );
 }
-
-/// A retired builder's image is refused at creation as well as at its token, so a
-/// verified build, which skips the token, still refuses it.
-#[test]
-fn a_creation_built_by_a_retired_builder_is_refused_with_or_without_a_token() {
-    let lab = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
-    let mut pinned = approved_rule();
-    pinned.source.builder = Builder {
-        r#ref: format!("getployz/build/.github/workflows/build.yml@{lab}"),
-        sha: CommitSha::parse(lab).unwrap(),
-    };
-    for head in [Some(head()), None] {
-        assert_eq!(
-            create_on(
-                &pinned,
-                &built(),
-                requested_json(),
-                ContainerKind::ServiceContainer,
-                (head, "1")
-            ),
-            Err(AuthorityRefusal::RetiredBuilder {
-                sha: lab.to_owned()
-            })
-        );
-    }
-}

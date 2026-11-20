@@ -21,7 +21,6 @@ use serde_json::json;
 use ts_rs::TS;
 
 use super::{TargetNode, now};
-use crate::Actor;
 use crate::error;
 use crate::id::DeploymentId;
 use crate::storage::Tx;
@@ -284,12 +283,16 @@ pub struct VersionsView {
     pub rule: Option<Box<RuleProof>>,
 }
 
+/// What `organization` keeps for the spec `query` names: its signed versions and, for an
+/// image a rule built, the newest verified build under the Environment's rule now.
+///
+/// # Errors
+/// Returns a storage error, or `corrupt` for a row that doesn't read.
 pub(crate) fn versions(
     tx: &mut dyn Tx,
-    who: &Actor,
+    organization: &str,
     query: &VersionsQuery,
 ) -> Result<VersionsView, RpcError> {
-    let organization = who.organization.as_str();
     let service = (&query.namespace, &query.service);
     let versions = versions_for(tx, organization, service, query.digest)?;
     let rule = match query.image {

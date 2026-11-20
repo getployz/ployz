@@ -378,45 +378,20 @@ impl ConfigStore {
         }
     }
 
-    /// Every signed version of `service` in `namespace` that `organization` keeps for
-    /// `digest`, newest first and at most as many as one request carries: what a drain
-    /// sends a Server with the copy it moves there. In-process only.
+    /// What `organization` keeps for the spec `query` names: its newest signed versions,
+    /// at most as many as one request carries, and the newest verified build of its image
+    /// under the rule its Environment keeps now. What a drain sends a Server with the copy
+    /// it moves there. In-process only.
     ///
     /// # Errors
     /// Returns a storage error.
-    pub fn versions_for(
+    pub fn versions(
         &self,
         organization: &OrganizationId,
-        (namespace, service): (&ployz_core::Namespace, &ployz_core::ServiceName),
-        digest: ployz_core::authority::PayloadDigest,
-    ) -> Result<Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>, RpcError>
-    {
-        self.storage.read(|tx| {
-            deployment::versions::versions_for(
-                tx,
-                organization.as_str(),
-                (namespace, service),
-                digest,
-            )
-        })
-    }
-
-    /// The newest verified build `organization` keeps for `image` of `service` in
-    /// `namespace`, as the proof a Server takes in place of a token, under the rule its
-    /// Environment keeps now: what a drain sends with a copy a rule built. In-process
-    /// only.
-    ///
-    /// # Errors
-    /// Returns a storage error.
-    pub fn verified_proof(
-        &self,
-        organization: &OrganizationId,
-        (namespace, service): (&ployz_core::Namespace, &ployz_core::ServiceName),
-        image: ployz_core::authority::ImageDigest,
-    ) -> Result<Option<ployz_core::authority::RuleProof>, RpcError> {
-        self.storage.read(|tx| {
-            build::verified_proof(tx, organization.as_str(), (namespace, service), image)
-        })
+        query: &VersionsQuery,
+    ) -> Result<VersionsView, RpcError> {
+        self.storage
+            .read(|tx| deployment::versions::versions(tx, organization.as_str(), query))
     }
 
     /// Keep what the Servers issued for the images Deployment `deployment` ran, by
