@@ -99,23 +99,22 @@ impl VolumeOrigin {
 pub struct MountOrigins(BTreeMap<DockerVolumeName, VolumeOrigin>);
 
 impl MountOrigins {
-    /// The origins `graph`'s named-volume mounts expect, or `None` when every one is
-    /// Legacy, so a Container that mounts no born data carries no label.
+    /// The origins `graph`'s named-volume mounts expect, Legacy ones included, or `None`
+    /// when it has none. Docker fills a label a create leaves out from the image's, so a
+    /// Container with a named mount always carries its own.
     ///
     /// # Errors
     /// Returns a [`CanonicalError`] when a birth has no canonical form.
     pub fn of(graph: &crate::ResolvedServiceVolumeGraph) -> Result<Option<Self>, CanonicalError> {
-        let mut born = false;
         let mut origins = BTreeMap::new();
         for mount in graph.mounts() {
             let source = &graph.volume_for(mount).source;
             let Some(name) = source.docker_volume_name() else {
                 continue;
             };
-            born |= source.birth().is_some();
             origins.insert(name.clone(), VolumeOrigin::expected(source.birth(), name)?);
         }
-        Ok(born.then_some(Self(origins)))
+        Ok((!origins.is_empty()).then_some(Self(origins)))
     }
 
     /// The label's value.
