@@ -1,11 +1,24 @@
 import "@tanstack/react-start/server-only";
-import { Effect } from "effect";
-import type { OrgQuery } from "#/modules/observe-store/clickhouse.server";
-import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS, type CrashEvent, type DiskRow, type MetricRow } from "./metrics-history";
+import { Effect, Schema } from "effect";
+import { queryObserveOrg } from "#/modules/observe-store/clickhouse.server";
+import { DISK_METRIC, HOST_METRICS, SERVICE_METRICS } from "./metrics-history";
 import type { SeriesWindow } from "./metrics-series";
 
 /** Where a read looks: the range, and the bucket width in milliseconds that `stepFor` chose. */
 export type StoreRange = { readonly window: SeriesWindow; readonly stepMs: number };
+
+const metricRow = Schema.Struct({
+  metric: Schema.String, machine: Schema.String, series: Schema.String, state: Schema.String, direction: Schema.String,
+  device: Schema.String, operation: Schema.String, bucket: Schema.Number, value: Schema.Number,
+});
+const diskRow = Schema.Struct({ machine: Schema.String, kind: Schema.String, bucket: Schema.Number, value: Schema.Number });
+const crashRow = Schema.Struct({
+  at: Schema.Number, machine: Schema.String, container: Schema.String, serviceId: Schema.String, namespace: Schema.String,
+  service: Schema.String, reason: Schema.Literals(["out_of_memory", "exit_nonzero"]), exitCode: Schema.NullOr(Schema.Number),
+});
+
+/** Every value travels as a string `param_` binding. */
+const params = (values: Readonly<Record<string, string | number>>) => new Map(Object.entries(values).map(([name, value]) => [name, String(value)]));
 
 const names = (metrics: Readonly<Record<string, string>>) => Object.values(metrics).map((name) => `'${name}'`).join(", ");
 
@@ -19,8 +32,8 @@ const IN_RANGE = "TimeUnix >= fromUnixTimestamp64Milli({from:Int64}) AND TimeUni
 const bounds = ({ window, stepMs }: StoreRange) => ({ from: window.from - stepMs, to: window.to, step: stepMs / 1000 });
 
 /** A Service's container series, on every Machine that runs it. */
-export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (query: OrgQuery, range: StoreRange, namespace: string, service: string) {
-  return yield* query<MetricRow>(`
+export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (organizationId: string, range: StoreRange, namespace: string, service: string) {
+  return yield* queryObserveOrg(organizationId, `
     SELECT MetricName AS metric,
       ResourceAttributes['ployz.machine'] AS machine,
       ResourceAttributes['container.id'] AS series,
@@ -35,12 +48,12 @@ export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (
       AND ResourceAttributes['ployz.service.name'] = {service:String}
       AND ${IN_RANGE}
     GROUP BY metric, machine, series, operation, bucket
-    ORDER BY bucket`, { ...bounds(range), namespace, service });
+    ORDER BY bucket`, params({ ...bounds(range), namespace, service }), metricRow);
 });
 
 /** A Machine's own series: CPU time by state, memory, and network bytes by interface and direction. */
-export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (query: OrgQuery, range: StoreRange, machine: string) {
-  return yield* query<MetricRow>(`
+export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (organizationId: string, range: StoreRange, machine: string) {
+  return yield* queryObserveOrg(organizationId, `
     SELECT MetricName AS metric,
       ResourceAttributes['ployz.machine'] AS machine,
       '' AS series,
@@ -56,12 +69,12 @@ export const readHostRows = Effect.fn("MetricsStore.hostRows")(function* (query:
       AND ResourceAttributes['ployz.machine'] = {machine:String}
       AND ${IN_RANGE}
     GROUP BY metric, machine, state, direction, device, bucket
-    ORDER BY bucket`, { ...bounds(range), machine });
+    ORDER BY bucket`, params({ ...bounds(range), machine }), metricRow);
 });
 
 /** A Machine's disk use by kind, as `ployz.disk.bytes` reports it. */
-export const readDiskRows = Effect.fn("MetricsStore.diskRows")(function* (query: OrgQuery, range: StoreRange, machine: string) {
-  return yield* query<DiskRow>(`
+export const readDiskRows = Effect.fn("MetricsStore.diskRows")(function* (organizationId: string, range: StoreRange, machine: string) {
+  return yield* queryObserveOrg(organizationId, `
     SELECT ResourceAttributes['ployz.machine'] AS machine,
       Attributes['kind'] AS kind,
       ${BUCKET} AS bucket,
@@ -72,19 +85,19 @@ export const readDiskRows = Effect.fn("MetricsStore.diskRows")(function* (query:
       AND ResourceAttributes['ployz.machine'] = {machine:String}
       AND ${IN_RANGE}
     GROUP BY machine, kind, bucket
-    ORDER BY bucket`, { ...bounds(range), machine });
+    ORDER BY bucket`, params({ ...bounds(range), machine }), diskRow);
 });
 
 const RECENT_SECONDS = 60;
 
 /** Whether the Machine sent any metric in the last minute. */
-export const machineIsReporting = Effect.fn("MetricsStore.machineIsReporting")(function* (query: OrgQuery, machine: string) {
-  const [row] = yield* query<{ readonly recent: number }>(`
+export const machineIsReporting = Effect.fn("MetricsStore.machineIsReporting")(function* (organizationId: string, machine: string) {
+  const [row] = yield* queryObserveOrg(organizationId, `
     SELECT toUInt32(count()) AS recent
     FROM otel.otel_metrics_sum
     WHERE OrgId = {org:String}
       AND ResourceAttributes['ployz.machine'] = {machine:String}
-      AND TimeUnix >= now() - INTERVAL ${RECENT_SECONDS} SECOND`, { machine });
+      AND TimeUnix >= now() - INTERVAL ${RECENT_SECONDS} SECOND`, params({ machine }), Schema.Struct({ recent: Schema.Number }));
   return (row?.recent ?? 0) > 0;
 });
 
@@ -98,10 +111,10 @@ const attribute = (key: string) => `if(mapContains(LogAttributes, '${key}'), Log
 export type CrashFilter = { readonly namespace?: string; readonly service?: string };
 
 /** Out-of-memory kills and non-zero exits of a Service's containers in the range, newest last. */
-export const readCrashEvents = Effect.fn("MetricsStore.crashEvents")(function* (query: OrgQuery, { window }: StoreRange, filter: CrashFilter = {}) {
+export const readCrashEvents = Effect.fn("MetricsStore.crashEvents")(function* (organizationId: string, { window }: StoreRange, filter: CrashFilter = {}) {
   const namespace = filter.namespace === undefined ? "" : `AND ${attribute("ployz.namespace")} = {namespace:String}`;
   const service = filter.service === undefined ? "" : `AND ${attribute("ployz.service.name")} = {service:String}`;
-  return yield* query<CrashEvent>(`
+  return yield* queryObserveOrg(organizationId, `
     SELECT toFloat64(toUnixTimestamp64Milli(Timestamp)) AS at,
       ResourceAttributes['ployz.machine'] AS machine,
       ${attribute("container.id")} AS container,
@@ -117,9 +130,9 @@ export const readCrashEvents = Effect.fn("MetricsStore.crashEvents")(function* (
       ${namespace} ${service}
     ORDER BY Timestamp
     LIMIT 1 BY if(${attribute("ployz.event.id")} != '', ${attribute("ployz.event.id")}, concat(container, toString(Timestamp)))
-    LIMIT 500`, {
+    LIMIT 500`, params({
     from: window.from, to: window.to,
     ...(filter.namespace !== undefined && { namespace: filter.namespace }),
     ...(filter.service !== undefined && { service: filter.service }),
-  });
+  }), crashRow);
 });

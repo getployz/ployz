@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { MachineId, MetricEvent, MetricsAnswer, MetricsQuery } from "@ployz/sdk";
 import { Effect } from "effect";
-import { openObserveStore } from "#/modules/observe-store/clickhouse.server";
+import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { serverNames } from "#/modules/operations/operation-history.server";
 import { hostHistory, serviceHistory, type CrashEvent } from "./metrics-history";
 import { serverMetrics, serviceMetrics } from "./metrics-model";
@@ -42,26 +42,25 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
   const until = Math.floor(now / 1000);
   const since = query.since.kind === "at" ? query.since.at : until - query.since.minutes * 60;
   const window = { from: since * 1000, to: until * 1000 };
-  return yield* Effect.scoped(Effect.gen(function* () {
-    const store = yield* openObserveStore(organizationId);
-    if (store.type === "not_configured") return { type: "not_configured" } satisfies AgentMetrics;
+  return yield* Effect.gen(function* () {
+    if (!(yield* observeConfigured)) return { type: "not_configured" } satisfies AgentMetrics;
     const range = { window, stepMs: stepFor(window) };
     const reading = { ...range, at: now };
     const { subject } = query;
-    const everyCrash = yield* readCrashEvents(store.query, range, subject.kind === "service" ? { namespace: subject.namespace, service: subject.service } : {});
+    const everyCrash = yield* readCrashEvents(organizationId, range, subject.kind === "service" ? { namespace: subject.namespace, service: subject.service } : {});
     const crashes = everyCrash.filter((crash) => (subject.kind === "service" || crash.machine === subject.server.machine) && readableCrash(readable)(crash));
     const notes: string[] = [];
     let metrics: MetricsAnswer["metrics"] = [];
     if (subject.kind === "service") {
-      const rows = yield* readServiceRows(store.query, range, subject.namespace, subject.service);
+      const rows = yield* readServiceRows(organizationId, range, subject.namespace, subject.service);
       const history = serviceHistory(rows, crashes, reading);
       const charts = serviceMetrics({ type: "history", window, at: now, history }, new Map());
       metrics = serviceRows(charts, window.to);
       notes.push(...gapNotes(charts.allGaps));
     } else {
       const machine = subject.server.machine;
-      const [rows, disk] = yield* Effect.all([readHostRows(store.query, range, machine), readDiskRows(store.query, range, machine)]);
-      if (rows.length === 0 && disk.length === 0 && !(yield* machineIsReporting(store.query, machine))) {
+      const [rows, disk] = yield* Effect.all([readHostRows(organizationId, range, machine), readDiskRows(organizationId, range, machine)]);
+      if (rows.length === 0 && disk.length === 0 && !(yield* machineIsReporting(organizationId, machine))) {
         notes.push(`${subject.server.name} isn’t sending metrics.`);
       } else {
         const charts = serverMetrics({ type: "history", window, at: now, history: hostHistory(machine, rows, disk, reading) }, new Map());
@@ -86,5 +85,5 @@ export const answerMetrics = Effect.fn("Metrics.answerForAgent")(function* (
       seen: { seen_by: null, observed_at: until, read_at: until, age_seconds: 0, from: "cloud_cache", unanswered: [] },
     };
     return { type: "answered", answer } satisfies AgentMetrics;
-  }));
+  });
 });

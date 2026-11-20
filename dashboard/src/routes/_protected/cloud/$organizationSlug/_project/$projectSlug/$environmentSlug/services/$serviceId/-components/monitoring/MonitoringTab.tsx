@@ -3,7 +3,7 @@ import { useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-qu
 import { CatchBoundary, Link, useLoaderData, type ErrorComponentProps } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
 import type { DeploymentSummary, ServiceListing, VolumeListing } from "@ployz/sdk";
-import { MetricsNotEnabled, MetricsNotReporting } from "#/components/observe/ObserveOffState";
+import { MetricsNotEnabled, MetricsNotReporting } from "#/components/observe/MetricsOffState";
 import { MetricChart, atFormat, useMetricCursor, type ChartLimit, type ChartMarker, type MetricCursor, type MetricSeries, type TimeBand, type TimeSpan } from "#/components/metrics/metric-chart";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { Button } from "#/components/ui/button";

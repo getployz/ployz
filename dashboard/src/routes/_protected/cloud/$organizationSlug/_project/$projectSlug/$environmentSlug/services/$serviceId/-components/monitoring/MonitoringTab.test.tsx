@@ -48,7 +48,7 @@ const metrics = (history: Partial<MetricHistory> = {}): MetricRead => ({
 const range = { from: "1h", to: "now" };
 const store = { project: "shop", environment: "production" };
 
-const settled = () => screen.findAllByRole("heading", { level: 3, name: /^(Disk|Metrics aren’t enabled on this Service|Not reporting)$/ });
+const settled = () => screen.findAllByText(/^(Disk|Metrics aren’t enabled on this Service|Not reporting)$/);
 
 async function open({ shown = uptime(), change, checker = true, read = metrics(), placedOn = 1, listed = "ready", until = settled, receivedAt = now }: {
   shown?: ServiceUptime | NeedsProduction | null;
@@ -184,13 +184,15 @@ it("says No readings on each chart, not a zero, when no Server has sampled the S
 
 it("replaces the charts with the off state when Cloud keeps no metrics", async () => {
   await open({ checker: false, read: { type: "not_configured", window: { from: now - 3_600_000, to: now }, at: now } });
-  expect(charts()).toEqual(["Metrics aren’t enabled on this Service"]);
+  expect(charts()).toEqual([]);
+  expect(screen.getByRole("status").textContent).toContain("Metrics aren’t enabled on this Service");
   expect(screen.getByRole("link", { name: "Set up metrics" })).toBeTruthy();
 });
 
 it("replaces the charts with the off state when the Service's Server sends nothing", async () => {
   await open({ checker: false, read: { type: "not_reporting", window: { from: now - 3_600_000, to: now }, at: now } });
-  expect(charts()).toEqual(["Not reporting"]);
+  expect(charts()).toEqual([]);
+  expect(screen.getByRole("status").textContent).toContain("Not reporting");
 });
 
 it("offers All and By server when the Service runs on several Servers and one has readings", async () => {

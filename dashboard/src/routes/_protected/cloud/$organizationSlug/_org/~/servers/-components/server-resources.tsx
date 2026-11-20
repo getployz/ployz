@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Meter } from "@base-ui/react/meter";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { meterIndicatorClass, meterValue } from "#/components/metric-meter";
-import { MetricsNotEnabled, MetricsNotReporting } from "#/components/observe/ObserveOffState";
+import { MetricsNotEnabled, MetricsNotReporting } from "#/components/observe/MetricsOffState";
 import { MetricChart, useMetricCursor, type MetricSeries } from "#/components/metrics/metric-chart";
 import { Card } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";

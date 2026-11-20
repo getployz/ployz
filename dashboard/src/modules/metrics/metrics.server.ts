@@ -3,8 +3,9 @@ import type { MetricHistoryInput } from "@ployz/sdk";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { findService } from "#/modules/config-store/store-lookup.server";
-import { openObserveStore, type OrgQuery } from "#/modules/observe-store/clickhouse.server";
+import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { requireAccess } from "#/modules/organization/access.server";
+import type { AppConfig } from "#/server/config.server";
 import type { Unavailable } from "#/server/public-error";
 import { resolveRange } from "#/modules/uptime/uptime-range";
 import { hostHistory, markersOnlyHistory, serviceHistory } from "./metrics-history";
@@ -14,15 +15,12 @@ import type { MetricRead, MetricWindow, ReadRuntimeServiceMetricsInput, ReadServ
 
 const nanos = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
 
-type Reading = (query: OrgQuery, range: StoreRange) => Effect.Effect<MetricRead, Unavailable>;
+type Reading = (range: StoreRange) => Effect.Effect<MetricRead, Unavailable, AppConfig>;
 
-/** Opens the Organization's ClickHouse and runs `reading` against it, or answers that metrics aren't enabled. */
-const readStore = Effect.fn("Metrics.readStore")(function* (organizationId: string, window: MetricWindow, at: number, reading: Reading) {
-  return yield* Effect.scoped(Effect.gen(function* () {
-    const store = yield* openObserveStore(organizationId);
-    if (store.type === "not_configured") return { type: "not_configured", window, at } satisfies MetricRead;
-    return yield* reading(store.query, { window, stepMs: stepFor(window) });
-  }));
+/** Runs `reading` against this Cloud's ClickHouse, or answers that metrics aren't enabled. */
+const readStore = Effect.fn("Metrics.readStore")(function* (window: MetricWindow, at: number, reading: Reading) {
+  if (!(yield* observeConfigured)) return { type: "not_configured", window, at } satisfies MetricRead;
+  return yield* reading({ window, stepMs: stepFor(window) });
 });
 
 /** The Service's rows and crash events as one read. Every Machine's rows sit in its own reply. */
@@ -33,10 +31,10 @@ const readService = Effect.fn("Metrics.readService")(function* (organizationId: 
     const { verifyMetricHistory } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     return { type: "history", window, at, history: verifyMetricHistory(input) } satisfies MetricRead;
   }
-  return yield* readStore(organizationId, window, at, (query, range) => Effect.gen(function* () {
-    const crashes = yield* readCrashEvents(query, range, { namespace, service });
+  return yield* readStore(window, at, (range) => Effect.gen(function* () {
+    const crashes = yield* readCrashEvents(organizationId, range, { namespace, service });
     if (markersOnly) return { type: "history", window, at, history: markersOnlyHistory(crashes, { ...range, at }) } satisfies MetricRead;
-    const rows = yield* readServiceRows(query, range, namespace, service);
+    const rows = yield* readServiceRows(organizationId, range, namespace, service);
     return { type: "history", window, at, history: serviceHistory(rows, crashes, { ...range, at }) } satisfies MetricRead;
   }));
 });
@@ -67,10 +65,10 @@ export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (acto
     const { verifyMetricHistory } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
     return { type: "history", window, at, history: verifyMetricHistory(request) } satisfies MetricRead;
   }
-  return yield* readStore(organization.id, window, at, (query, range) => Effect.gen(function* () {
-    const [rows, disk] = yield* Effect.all([readHostRows(query, range, input.machineId), readDiskRows(query, range, input.machineId)]);
+  return yield* readStore(window, at, (range) => Effect.gen(function* () {
+    const [rows, disk] = yield* Effect.all([readHostRows(organization.id, range, input.machineId), readDiskRows(organization.id, range, input.machineId)]);
     // A Server with rows in view has a history, gaps included. One with none is silent only if it is silent now too.
-    if (rows.length === 0 && disk.length === 0 && !(yield* machineIsReporting(query, input.machineId))) {
+    if (rows.length === 0 && disk.length === 0 && !(yield* machineIsReporting(organization.id, input.machineId))) {
       return { type: "not_reporting", window, at } satisfies MetricRead;
     }
     return { type: "history", window, at, history: hostHistory(input.machineId, rows, disk, { ...range, at }) } satisfies MetricRead;
