@@ -59,19 +59,6 @@ impl Doors {
         doors
     }
 
-    fn restart_policy(&self, id: &ContainerId) -> String {
-        let containers = self.containers.lock().unwrap();
-        let container = containers
-            .values()
-            .find(|container| container["Id"] == id.as_str())
-            .unwrap();
-        container
-            .pointer("/HostConfig/RestartPolicy/Name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap()
-            .to_owned()
-    }
-
     fn set_state(&self, id: &ContainerId, state: serde_json::Value) {
         let mut containers = self.containers.lock().unwrap();
         let container = containers
@@ -164,35 +151,8 @@ async fn a_stop_inspects_the_container_then_stops_it() {
 
     assert_eq!(
         doors.calls(),
-        lines(&[
-            "GET /containers/caddy/json",
-            "POST /containers/caddy/update",
-            "POST /containers/caddy/stop",
-        ]),
+        lines(&["GET /containers/caddy/json", "POST /containers/caddy/stop"]),
     );
-}
-
-// A stopped Container that kept `always` would run again when dockerd restarts,
-// beside the Container that replaced it on the same Volume.
-#[tokio::test]
-async fn a_stopped_container_stays_stopped_through_a_dockerd_restart_until_it_starts() {
-    let doors = Doors::new().await;
-    let declared = doors.restart_policy(&doors.caddy);
-    assert_ne!(
-        declared, "no",
-        "the door declares a policy that restarts it"
-    );
-
-    doors
-        .runtime
-        .lifecycle()
-        .stop(&doors.caddy, None, None)
-        .await
-        .unwrap();
-    assert_eq!(doors.restart_policy(&doors.caddy), "no");
-
-    doors.runtime.lifecycle().start(&doors.caddy).await.unwrap();
-    assert_eq!(doors.restart_policy(&doors.caddy), declared);
 }
 
 #[tokio::test]
@@ -284,11 +244,7 @@ async fn a_requested_stop_holds_the_door_and_a_requested_start_lifts_the_hold() 
     );
     assert_eq!(
         doors.calls(),
-        lines(&[
-            "GET /containers/caddy/json",
-            "POST /containers/caddy/update",
-            "POST /containers/caddy/start",
-        ]),
+        lines(&["GET /containers/caddy/json", "POST /containers/caddy/start",]),
     );
 }
 

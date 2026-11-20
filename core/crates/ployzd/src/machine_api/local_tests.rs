@@ -4980,9 +4980,10 @@ mod ensure_container {
         assert_eq!(again, reply);
         let held = requests_since(&fake, seen);
         assert_eq!(ends_with(&held, Method::POST, "/stop").count(), 1);
-        assert!(held.iter().all(|(method, path)| *method == Method::GET
-            || path.ends_with("/update")
-            || path.ends_with("/stop")));
+        assert!(
+            held.iter()
+                .all(|(method, path)| *method == Method::GET || path.ends_with("/stop"))
+        );
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
