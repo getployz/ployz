@@ -91,7 +91,8 @@ const visitCtes = (query: FigureQuery, params: Params, window: Range, bots: Read
   ];
   const from = micros(params, range.start);
   const to = micros(params, range.end);
-  const heads = SESSION_DIMS.map((dim) => `argMin(${COLUMN[dim]}, (${ORDER})) AS h_${COLUMN[dim]}`).join(", ");
+  // The entry page is the first pageview's path, though `page` is not a session dim.
+  const heads = [...SESSION_DIMS.map((dim) => COLUMN[dim]), COLUMN.page].map((column) => `argMin(${column}, (${ORDER})) AS h_${column}`).join(", ");
   return [
     `base AS (
       SELECT toUnixTimestamp64Micro(Timestamp) AS us, assumeNotNull(Visitor) AS visitor, Host AS host, Path AS path,
@@ -131,15 +132,16 @@ const GroupRow = Schema.Struct({
   key: Schema.String,
   pageviews: Count,
   seen: Count,
-  started: Count,
+  starters: Count,
   visits: Count,
   bounces: Count,
-  duration: Count,
+  lasted: Count,
 });
 
 /**
  * Every visit-level figure in one pass over `visits`: each visit fans out to its day, its entry page and one value per
- * requested dim, and one GROUP BY counts them all. A visitor is one id per site-local day, so distinct visitors count
+ * requested dim, and one GROUP BY counts them all. No output alias repeats a column name an aggregate reads: ClickHouse would
+ * substitute the aggregate for the column. A visitor is one id per site-local day, so distinct visitors count
  * by id.
  */
 const groupedFigures = (query: FigureQuery, dims: ReadonlyArray<FilterKey>, timezone: string, params: Params) => {
@@ -151,8 +153,8 @@ const groupedFigures = (query: FigureQuery, dims: ReadonlyArray<FilterKey>, time
   ];
   const hidden = dims.filter((dim) => OPTIONAL_DIMS.has(dim)).map((dim) => `'${dim}'`);
   return `
-    SELECT kind, key, sum(pv) AS pageviews, uniqExactIf(visitor, pv > 0) AS seen, uniqExactIf(visitor, started) AS started,
-      countIf(started) AS visits, countIf(started AND n = 1) AS bounces, sumIf(duration, started) AS duration
+    SELECT kind, key, sum(pv) AS pageviews, uniqExactIf(visitor, pv > 0) AS seen, uniqExactIf(visitor, started) AS starters,
+      countIf(started) AS visits, countIf(started AND n = 1) AS bounces, sumIf(duration, started) AS lasted
     FROM (
       SELECT visitor, pv, n, duration, started, g.1 AS kind, g.2 AS key FROM (
         SELECT *, start_us >= ${micros(params, range.start)} AND start_us < ${micros(params, range.end)} AS started,
@@ -242,9 +244,9 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Figur
   const [groups, pageRows, goalRows, hourRows, noSaltRows] = yield* Effect.all([grouped, pages, goals, hours, noSalt], { concurrency: "unbounded" });
 
   const daily = groups.filter((row) => row.kind === "daily")
-    .map((row) => toBucket(dayStart(timezone, row.key), { ...row, visitors: row.seen }));
+    .map((row) => toBucket(dayStart(timezone, row.key), { ...row, visitors: row.seen, duration: row.lasted }));
   const entries = groups.filter((row) => row.kind === "entry")
-    .map((row): EntryRow => ({ value: row.key, visitors: row.started, visits: row.visits, bounces: row.bounces, totalDuration: row.duration }));
+    .map((row): EntryRow => ({ value: row.key, visitors: row.starters, visits: row.visits, bounces: row.bounces, totalDuration: row.lasted }));
   const values = new Map<FilterKey, ReadonlyArray<ValueRow>>(dims.map((dim) => [
     dim,
     dim === "page"
