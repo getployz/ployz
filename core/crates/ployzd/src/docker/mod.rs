@@ -64,6 +64,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
+use crate::observe::collector::Collector;
 use crate::sealed_compat::LogStore;
 use checks::CheckRecords;
 use error::docker_error;
@@ -204,6 +205,16 @@ impl LocalDocker {
         )
     }
 
+    /// Where Docker keeps its containers, and so their log files.
+    pub(crate) async fn docker_root(&self) -> Result<PathBuf, Error> {
+        Ok(self
+            .client
+            .info()
+            .await?
+            .docker_root_dir
+            .map_or_else(|| PathBuf::from("/var/lib/docker"), PathBuf::from))
+    }
+
     async fn uses_containerd_store(&self) -> Result<bool, Error> {
         Ok(self
             .client
@@ -238,7 +249,7 @@ impl LocalDocker {
             .collect())
     }
 
-    pub(super) async fn managed_containers(
+    pub(crate) async fn managed_containers(
         &self,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
         self.labelled(vec![
@@ -362,6 +373,7 @@ struct Settings {
     machine_root: PathBuf,
     log_store: LogStore,
     sink: Option<ObservationSink>,
+    collector: Collector,
 }
 
 /// What Docker and the Machine database say about the managed Containers, read without
@@ -386,6 +398,7 @@ impl ContainerRuntime {
                 machine_root: PathBuf::from("/"),
                 log_store: LogStore::default(),
                 sink: None,
+                collector: Collector::default(),
             },
         )
     }
@@ -413,6 +426,7 @@ impl ContainerRuntime {
             standing,
             recovery: IngressRecovery::default(),
             log_store: settings.log_store.clone(),
+            collector: settings.collector.clone(),
             departure: lifecycle::Departure::default(),
         };
         Self {
@@ -477,6 +491,24 @@ impl ContainerRuntime {
     #[must_use]
     pub fn with_sealing_key(self, data_dir: PathBuf) -> Self {
         self.configured(|settings| settings.sealing_key_dir = Some(data_dir))
+    }
+
+    /// Runs the Collector of this Machine's logs, which reads the Sealing Key and the
+    /// Machine record kept in `data_dir`.
+    #[must_use]
+    pub fn with_collector(self, data_dir: PathBuf) -> Self {
+        let collector = Collector::new(
+            self.docker.clone(),
+            data_dir,
+            self.settings.machine_root.clone(),
+        );
+        self.configured(|settings| settings.collector = collector)
+    }
+
+    /// The Collector this runtime starts containers behind.
+    #[must_use]
+    pub(crate) fn collector(&self) -> &Collector {
+        &self.settings.collector
     }
 
     #[must_use]

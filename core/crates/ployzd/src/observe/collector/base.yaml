@@ -1,0 +1,65 @@
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol
+  bearertokenauth:
+    filename: /etc/ployz/token/token
+  health_check:
+    endpoint: 127.0.0.1:13133
+receivers:
+  filelog:
+    include: [/var/lib/docker/containers/*/*-json.log]
+    start_at: beginning
+    poll_interval: 1s
+    storage: file_storage
+    include_file_path: true
+    operators:
+      - type: container
+        format: docker
+        add_metadata_from_filepath: false
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 150
+    spike_limit_mib: 30
+  filter/ployz:
+    error_mode: ignore
+    logs:
+      log_record:
+        - 'not IsMap(attributes["attrs"]) or attributes["attrs"]["ployz.namespace"] == nil'
+  transform/labels:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(attributes["ployz.namespace"], attributes["attrs"]["ployz.namespace"])
+          - set(attributes["ployz.service.name"], attributes["attrs"]["ployz.service.name"])
+          - set(attributes["ployz.service.id"], attributes["attrs"]["ployz.service.id"])
+          - set(attributes["ployz.service.hook"], attributes["attrs"]["ployz.service.hook"]) where attributes["attrs"]["ployz.service.hook"] != nil
+          - delete_key(attributes, "attrs")
+          - set(attributes["container.id"], ExtractPatterns(attributes["log.file.name"], "^(?P<id>[0-9a-f]{64})-json[.]log$")["id"])
+          - delete_key(attributes, "log.file.name")
+          - delete_key(attributes, "log.file.path")
+  batch:
+    timeout: 200ms
+exporters:
+  otlp_http:
+    endpoint: ${env:PLOYZ_OTLP_ENDPOINT}
+    encoding: proto
+    compression: gzip
+    auth:
+      authenticator: bearertokenauth
+    sending_queue:
+      enabled: true
+      storage: file_storage
+service:
+  extensions: [file_storage, bearertokenauth, health_check]
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: info
+  pipelines:
+    logs:
+      receivers: [filelog]
+      processors: [memory_limiter, filter/ployz, transform/mask, transform/labels, batch]
+      exporters: [otlp_http]

@@ -1,0 +1,23 @@
+dist:
+  name: otelcol-ployz
+  description: The Collector every Ployz Machine runs
+  output_path: ./out
+receivers:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/dockerstatsreceiver v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver v0.147.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.147.0
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.147.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.147.0
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.147.0
+extensions:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/storage/filestorage v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/bearertokenauthextension v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.147.0
+providers:
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.53.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.53.0

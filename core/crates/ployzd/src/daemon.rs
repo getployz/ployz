@@ -278,6 +278,7 @@ impl Daemon {
                     Ok(docker) => Some(
                         ContainerRuntime::new(docker, specs)
                             .with_sealing_key(config.data_dir.clone())
+                            .with_collector(config.data_dir.clone())
                             .with_log_store(LogStore::of(config.units)),
                     ),
                     Err(error) => {
@@ -439,6 +440,15 @@ impl Daemon {
                     }
                 }
             };
+            let collector = async {
+                match containers.clone() {
+                    Some(runtime) => runtime.collector().run(shutdown.clone()).await,
+                    None => {
+                        shutdown.cancelled().await;
+                        Ok(())
+                    }
+                }
+            };
             let dns = dns_service.run(records.clone(), shutdown.clone());
             let ingress = async {
                 if !participation.wait().await? {
@@ -526,6 +536,7 @@ impl Daemon {
                 network_rpc,
                 network_runner,
                 observer,
+                collector,
                 dns,
                 ingress,
                 certificates,
