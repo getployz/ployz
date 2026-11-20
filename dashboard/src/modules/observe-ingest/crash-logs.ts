@@ -53,7 +53,7 @@ const nanosToMs = (nanos: typeof Int64.Type | undefined): Option.Option<number> 
 const exitCodeOf = (value: typeof Value.Type | undefined): Option.Option<number | null> => {
   if (value?.intValue === undefined) return Option.some(null);
   const digits = String(value.intValue);
-  return /^-?\d{1,10}$/.test(digits) ? Option.some(Number(digits)) : Option.none();
+  return /^-?\d{1,15}$/.test(digits) ? Option.some(Number(digits)) : Option.none();
 };
 
 const crashEvent = (record: typeof LogRecord.Type): Option.Option<CrashEventInput> => {
@@ -74,6 +74,7 @@ const crashEvent = (record: typeof LogRecord.Type): Option.Option<CrashEventInpu
     Option.isNone(eventId) || Option.isNone(namespace) || Option.isNone(service) || Option.isNone(serviceId) || Option.isNone(containerId)
     || Option.isNone(exitCode) || Option.isNone(at) || replica === undefined || replica.length > 256 || oom === undefined
   ) return Option.none();
+  if (!oom && exitCode.value === 0) return Option.none();
   return Option.some({
     eventId: eventId.value,
     serviceId: serviceId.value,
@@ -97,6 +98,6 @@ export function crashEventsOf(json: string): ReadonlyArray<CrashEventInput> {
   return (envelope.value.resourceLogs ?? [])
     .flatMap((resource) => resource.scopeLogs ?? [])
     .flatMap((scope) => scope.logRecords ?? [])
-    .slice(0, MAX_CRASH_RECORDS)
-    .flatMap((record) => Option.toArray(crashEvent(record)));
+    .flatMap((record) => Option.toArray(crashEvent(record)))
+    .slice(0, MAX_CRASH_RECORDS);
 }
