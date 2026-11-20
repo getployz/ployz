@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { type LogHistoryStatus, logOffStates, NOT_REPORTING_MS } from "./log-history";
+import { type LogHistoryStatus, logOffStates, NOT_REPORTING_MS } from "./log-history.queries";
 import type { RuntimeContainerRecord } from "./runtime.collection";
 
 const NOW = 1_800_000_000_000;

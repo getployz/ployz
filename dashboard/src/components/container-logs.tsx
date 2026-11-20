@@ -14,7 +14,7 @@ import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { logHistoryServicesQueryOptions, logHistoryStatusQueryOptions, logOffStates } from "#/modules/runtime/log-history";
+import { logHistoryServicesQueryOptions, logHistoryStatusQueryOptions, logOffStates } from "#/modules/runtime/log-history.queries";
 import { getRuntimeCollections, projectRuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
