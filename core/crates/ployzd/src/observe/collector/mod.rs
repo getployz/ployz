@@ -55,12 +55,9 @@ struct Inner {
 }
 
 struct State {
-    /// Every Sealed value the Collector has been told to mask since the daemon started.
     values: SealedValues,
-    /// When the token on disk is half spent.
-    refresh_at: Option<i64>,
-    /// The Collector is removed and Cloud has no push target, as of the last look.
-    off: bool,
+    refresh_token_at: Option<i64>,
+    torn_down: bool,
 }
 
 impl Collector {
@@ -76,8 +73,8 @@ impl Collector {
             token_seconds,
             state: Mutex::new(State {
                 values: SealedValues::none(),
-                refresh_at: None,
-                off: false,
+                refresh_token_at: None,
+                torn_down: false,
             }),
         })))
     }
@@ -137,15 +134,13 @@ impl Inner {
         Ok(record.secrets(Some(&self.data_dir))?)
     }
 
-    /// One look at the Machine: converges on every Sealed value its containers hold and
-    /// returns how long to wait before the next.
     async fn tick(&self) -> Duration {
         let mut state = self.state.lock().await;
         let found = self.live_values().await;
         if let Err(error) = self.converge(&mut state, found).await {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector is not converged");
         }
-        state.refresh_at.map_or(TICK, |at| {
+        state.refresh_token_at.map_or(TICK, |at| {
             let until = u64::try_from(at - unix_seconds()).unwrap_or(0);
             TICK.min(Duration::from_secs(until.max(1)))
         })
@@ -178,16 +173,16 @@ impl Inner {
             Some((identity, target))
         });
         let Some((identity, target)) = target else {
-            if !state.off {
+            if !state.torn_down {
                 service.remove().await?;
                 remove_dir(&self.machine_root.join("run/ployz/collector"))?;
                 state.values = SealedValues::none();
-                state.refresh_at = None;
-                state.off = true;
+                state.refresh_token_at = None;
+                state.torn_down = true;
             }
             return Ok(());
         };
-        state.off = false;
+        state.torn_down = false;
         state.values.merge(found);
         let docker_root = self.docker.docker_root().await?;
         let paths = Paths::under(&self.machine_root, &self.data_dir, &docker_root);
@@ -195,7 +190,7 @@ impl Inner {
             create_private_dir(dir, Existing::Tighten).map_err(io::Error::from)?;
         }
         let now = unix_seconds();
-        if state.refresh_at.is_none_or(|at| now >= at) || !paths.token_file().exists() {
+        if state.refresh_token_at.is_none_or(|at| now >= at) || !paths.token_file().exists() {
             let token = token::mint(
                 &identity.management_secret,
                 &identity.id,
@@ -203,7 +198,7 @@ impl Inner {
                 self.token_seconds,
             );
             atomic_write(&paths.token_file(), token.as_bytes(), PRIVATE_FILE)?;
-            state.refresh_at = Some(now + self.token_seconds / 2);
+            state.refresh_token_at = Some(now + self.token_seconds / 2);
         }
         let mask = mask::fragment(&state.values);
         write_if_changed(&paths.base_file(), config::BASE.as_bytes())?;
@@ -243,8 +238,6 @@ fn remove_dir(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Waits for the Collector's health check, so a container that starts after it finds its
-/// mask in force.
 async fn wait_healthy() -> Result<(), Error> {
     let url = format!("http://{}/", config::HEALTH_ADDRESS);
     let client = reqwest::Client::new();

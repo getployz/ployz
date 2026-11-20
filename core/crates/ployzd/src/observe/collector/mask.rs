@@ -1,16 +1,12 @@
 use ployz_core::scrub::{SealedValues, marker_text};
 use serde_json::json;
 
-/// One `replace_pattern` statement: a regular expression and the text that replaces what
-/// it matches.
 #[derive(Debug, PartialEq, Eq)]
 struct Rule {
     pattern: String,
     marker: String,
 }
 
-/// The Collector config fragment that masks every Sealed value in a log body. A value that
-/// JSON writes differently also gets its escaped form, for an app that logs JSON.
 pub(super) fn fragment(values: &SealedValues) -> String {
     let statements = rules(values).iter().map(statement).collect::<Vec<_>>();
     let statements = if statements.is_empty() {
@@ -63,7 +59,6 @@ fn statement(rule: &Rule) -> String {
     )
 }
 
-/// An OTTL string literal, whose escapes are the ones JSON has.
 fn quoted(text: &str) -> String {
     serde_json::to_string(text).expect("a string serializes to JSON")
 }

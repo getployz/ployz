@@ -15,8 +15,6 @@ const LOGS_MOUNT: &str = "/var/lib/docker/containers";
 const MEMORY_BYTES: i64 = 256 << 20;
 pub(super) const STOP_GRACE_SECONDS: i32 = 15;
 
-/// Where the Collector's files live on this Machine. The config and the token sit under
-/// `/run`, so a reboot leaves neither the mask nor a token behind.
 pub(super) struct Paths {
     pub(super) config: PathBuf,
     pub(super) token: PathBuf,
@@ -48,7 +46,6 @@ impl Paths {
     }
 }
 
-/// The OTLP endpoint of the Cloud that set `push_target`.
 pub(super) fn endpoint(push_target: &Url) -> String {
     format!(
         "{}/api/machines/otlp",

@@ -205,7 +205,6 @@ impl LocalDocker {
         )
     }
 
-    /// Where Docker keeps its containers, and so their log files.
     pub(crate) async fn docker_root(&self) -> Result<PathBuf, Error> {
         Ok(self
             .client
@@ -505,7 +504,6 @@ impl ContainerRuntime {
         self.configured(|settings| settings.collector = collector)
     }
 
-    /// The Collector this runtime starts containers behind.
     #[must_use]
     pub(crate) fn collector(&self) -> &Collector {
         &self.settings.collector

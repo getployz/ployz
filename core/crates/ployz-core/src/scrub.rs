@@ -47,7 +47,6 @@ impl SealedValues {
         texts
     }
 
-    /// Adds the values of `other`.
     pub fn merge(&mut self, other: Self) {
         self.0.extend(other.0);
     }
@@ -277,7 +276,6 @@ fn rows(value: &str) -> std::str::SplitTerminator<'_, char> {
     value.split_terminator('\n')
 }
 
-/// What replaces a Sealed value named `name` in output.
 #[must_use]
 pub fn marker_text(name: &str) -> String {
     format!("[secret {name}]")

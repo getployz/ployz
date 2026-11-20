@@ -13,8 +13,6 @@ struct Claims<'a> {
     exp: i64,
 }
 
-/// The bearer token Cloud's OTLP route accepts from this Machine from `issued` for
-/// `lifetime_seconds`: the claims and the Management Identity's signature over them.
 pub(super) fn mint(
     secret: &ManagementSecret,
     machine: &MachineId,

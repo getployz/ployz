@@ -35,8 +35,6 @@ pub(crate) const TAILSCALE: &str = PinnedImage::new(
 )
 .as_str();
 
-/// OpenTelemetry Collector 0.147.0 built by `core/collector`, which the
-/// `Collector image` workflow publishes. The digest is the index the build pushed.
 pub(crate) const COLLECTOR: PinnedImage = PinnedImage::new(
     "ghcr.io/getployz/ployz-collector:0.147.0@sha256:0000000000000000000000000000000000000000000000000000000000000000",
 );
