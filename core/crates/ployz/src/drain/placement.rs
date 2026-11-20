@@ -209,6 +209,17 @@ impl StayReason {
             upgrade: servers,
         }
     }
+
+    /// The one Server this move tried turned the pinned route down, and must be upgraded
+    /// first. Another Server may still fit, so this names only the one it tried.
+    fn upgrade_to(server: MachineRef) -> Self {
+        Self::NoDestination {
+            detail: format!(
+                "upgrade {server} to move it there with `ployz server upgrade`, then drain again"
+            ),
+            upgrade: vec![server],
+        }
+    }
 }
 
 impl fmt::Display for StayReason {
@@ -299,7 +310,7 @@ impl MoveFailure {
             },
             MoveEnd::NeedsUpgrade if replacement_removed => Self::Refused {
                 from: Some(from),
-                reason: StayReason::needs_upgrade(vec![to]),
+                reason: StayReason::upgrade_to(to),
             },
             // A send may still have made a Container there, so the refusal can't say
             // nothing is left. It ends as `not_serving`, which every release reads.
