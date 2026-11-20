@@ -10,11 +10,13 @@
 //! `Host`, `run`'s `hosts` and `issue_wanted`'s `hosts.insert`). The hostname is pushed to `to_order` only when `issuance_gate` lets it through
 //! (core/crates/ployz-core/src/domain/issuance.rs:66-98) and `issuance_action` says the
 //! Machine's rank delay has passed since `Waiting`'s `orderable_since` (core/crates/ployz-decide/src/issuance.rs:196-211). The rank is
-//! the Machine's place among every `machines` row (`read_pass`'s `machine_rank` call).
+//! the Machine's place among the `machines` rows whose Public Door is not closed
+//! (`read_pass`'s `machine_rank` call over `ordering_machines`).
 //!
 //! `orderable_since` is the Machine's first pass the gate let through since the gate last held
-//! or refused the hostname, or since the policy or a missing directory stopped a pass before
-//! the gate (core/crates/ployz-decide/src/issuance.rs:196-211, and `issue_wanted`'s `hosts.clear()`). A read that returns Err keeps it. Only rank 0 records a
+//! or refused the hostname, or since a pass stopped before the gate: the policy refused, no
+//! directory, every Server on the Tunnel Door, or this Machine's Public Door closed
+//! (core/crates/ployz-decide/src/issuance.rs:196-211, and `issue_wanted`'s `hosts.clear()`). A read that returns Err keeps it. Only rank 0 records a
 //! refusal (`issue_wanted`'s `Issuance::Refused` arm).
 //!
 //! The code before this change, `as_it_was` in the tests, kept the first pass's instant through
@@ -49,10 +51,15 @@ const AGE_CAP: u8 = (MACHINES - 1) as u8;
 /// The most failures a recorded clock may count. A step that would record more is not taken.
 const MAX_FAILURES: u32 = 2;
 
-/// The rank `machine_rank` gives slot `who` among every `machines` row (`read_pass`'s `machine_rank` call), over
-/// Machine slots, whose order is their ids' order.
-fn rank(who: usize) -> usize {
-    machine_rank(&who, &(0..MACHINES).collect::<Vec<_>>())
+/// The rank `machine_rank` gives slot `who` among the Machines that take part in ordering,
+/// every `machines` row whose Public Door is not closed (`read_pass`'s `machine_rank` call over
+/// `ordering_machines`), over Machine slots, whose order is their ids' order. Slot `who` is
+/// rank `who` while every Public Door is open.
+fn rank(state: &State, who: usize) -> usize {
+    let ordering: Vec<usize> = (0..MACHINES)
+        .filter(|slot| !state.machine(*slot).closed)
+        .collect();
+    machine_rank(&who, &ordering)
 }
 
 /// The built-in Certificate Policy (core/crates/ployz-core/src/domain/certificate_policy.rs:93-103).
@@ -196,7 +203,8 @@ impl Clock {
 }
 
 /// Which `last_error` a recorded refusal holds. Only `record_certificate_error` compares it
-/// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check), and only with the policy's reason.
+/// (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check), with the policy's reason or
+/// the Tunnel Door's.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Reason {
     /// `refusal_reason` for DoesNotResolve (`issue_wanted`'s `Issuance::Refused` arm).
@@ -205,6 +213,9 @@ enum Reason {
     Authority,
     /// The Certificate Policy's refusal (`read_pass`'s refusal arm).
     Policy,
+    /// `CertificateHold::TunnelServes`, when every Server uses the Tunnel Door (`read_pass`'s
+    /// `standing.public.is_empty()` arm).
+    Tunnel,
 }
 
 /// `RecordedRefusal` (core/crates/ployzd/src/corrosion/certificate.rs:214-219).
@@ -269,6 +280,10 @@ struct Order {
 struct Machine {
     /// What this Machine's next probe sees (`verify_answers` and `hostname_verdict` in `issue_wanted`).
     verdict: Verdict,
+    /// Its Public Door is closed for the Tunnel Door: `door_standing` puts it in `closed`, so
+    /// `ordering_machines` leaves it out and its pass stops before the gate (`read_pass`'s
+    /// `standing.closed.contains(machine_id)` return). Open, it is in `public`.
+    closed: bool,
     /// The age of its loop's `orderable_since` for the hostname, in ticks capped at `AGE_CAP`:
     /// `Some` while its `Issuance` is `Waiting`, or `Order`, which is past every rank delay
     /// (core/crates/ployz-decide/src/issuance.rs:196-211). `None` while it is anything else or absent (`Host`, `hosts.clear` and `hosts.retain` in `issue_wanted`).
@@ -334,6 +349,18 @@ enum Branch {
     /// No directory: return (`read_pass`'s `directory_url` let-else). `reset` says `hosts.clear` dropped an
     /// `orderable_since`.
     NoDirectory { who: usize, reset: bool },
+    /// Every Server uses the Tunnel Door: `record_certificate_error` with
+    /// `CertificateHold::TunnelServes`, then return (`read_pass`'s `standing.public.is_empty()`
+    /// arm). `dropped` and `reset` as for `PolicyRefused`.
+    TunnelServes {
+        who: usize,
+        record: Record,
+        dropped: bool,
+        reset: bool,
+    },
+    /// This Machine's Public Door is closed: return (`read_pass`'s
+    /// `standing.closed.contains(machine_id)` return). `reset` as for `NoDirectory`.
+    DoorClosed { who: usize, reset: bool },
     /// A call before the gate returned Err, and `issue_wanted` returned it with `hosts` as it
     /// was. `reset` says an `orderable_since` was dropped, only under
     /// `Broken::error_clears_hosts`.
@@ -392,8 +419,13 @@ enum Action {
     /// makes returns Err.
     Pass { who: usize, lost: bool },
     /// Machine `who`'s loop runs one pass of `issue_wanted`, and a call before the gate returns
-    /// Err: a store read in `read_pass` or `HostnameProbe::new` in `read_pass`.
+    /// Err: a store read in `read_pass`, `HostnameProbe::new` in `read_pass`, or the
+    /// `record_certificate_error` of the policy refusal or the Tunnel Door, each returned
+    /// through `?`. Each writes nothing, so all reach one state.
     Errs(usize),
+    /// Machine `who`'s Public Door closes for the Tunnel Door, or opens again: its door
+    /// Containers change (`door_standing`).
+    Door(usize),
     /// Machine `who`'s obtain ends.
     Obtain { who: usize, ends: Ends },
     /// One tick, 30 s, passes.
@@ -445,10 +477,10 @@ impl State {
         matches!(
             self.took,
             Some(Branch::Refused {
-                who: 1..,
+                who,
                 record: Record::Wrote,
                 over_authority: true,
-            })
+            }) if rank(self, who) > 0
         )
     }
 
@@ -460,8 +492,9 @@ impl State {
         };
         let elapsed = tick() * u32::from(self.machine(who).orderable_since.unwrap_or(0));
         let policy = built_in();
-        let delay = rank_delay(rank(who), issuance_step(&policy));
-        wake(Issuance::Waiting, rank(who), elapsed, now(), &policy) > delay.saturating_sub(elapsed)
+        let rank = rank(self, who);
+        let delay = rank_delay(rank, issuance_step(&policy));
+        wake(Issuance::Waiting, rank, elapsed, now(), &policy) > delay.saturating_sub(elapsed)
     }
 
     /// An obtain ordered though the row it re-read held material.
@@ -522,24 +555,65 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
-        name: "the policy refusal's record_certificate_error returns Err",
+        name: "with no directory, the pass returns before the gate",
+        on: everywhere,
+        omit: None,
+        reached: |_, state| matches!(state.took, Some(Branch::NoDirectory { .. })),
+    },
+    Coverage {
+        name: "with every Server on the Tunnel Door, the pass records why and drops the row's clock",
         on: everywhere,
         omit: None,
         reached: |_, state| {
             matches!(
                 state.took,
-                Some(Branch::PolicyRefused {
-                    record: Record::Lost,
+                Some(Branch::TunnelServes {
+                    record: Record::Wrote,
+                    dropped: true,
+                    ..
+                })
+            ) && state.row.last_error() == Some(Reason::Tunnel)
+                && state.row.clock().is_none()
+        },
+    },
+    Coverage {
+        name: "the Tunnel Door record writes nothing over its own reason",
+        on: everywhere,
+        omit: None,
+        reached: |_, state| {
+            matches!(
+                state.took,
+                Some(Branch::TunnelServes {
+                    record: Record::Same,
                     ..
                 })
             )
         },
     },
     Coverage {
-        name: "with no directory, the pass returns before the gate",
+        name: "a Machine whose Public Door is closed returns before the gate",
         on: everywhere,
         omit: None,
-        reached: |_, state| matches!(state.took, Some(Branch::NoDirectory { .. })),
+        reached: |_, state| {
+            matches!(state.took, Some(Branch::DoorClosed { who, .. }) if state.machine(who).closed)
+                && state.machines.iter().any(|machine| !machine.closed)
+        },
+    },
+    Coverage {
+        name: "with rank 0's Public Door closed, rank 1 pushes the hostname at rank 0",
+        on: everywhere,
+        omit: None,
+        reached: |_, state| {
+            matches!(
+                state.took,
+                Some(Branch::Pushed {
+                    who: 1,
+                    gate: Gate::NoClock,
+                    early: false,
+                })
+            ) && state.machine(0).closed
+                && state.machine(1).unblocked == Some(0)
+        },
     },
     Coverage {
         name: "a call before the gate returns Err",
@@ -657,7 +731,7 @@ const COVERAGE: &[Coverage] = &[
                     early: false,
                     ..
                 })
-            )
+            ) && rank(state, 1) == 1
         },
     },
     Coverage {
@@ -809,7 +883,7 @@ const COVERAGE: &[Coverage] = &[
                     gate: Gate::Passed,
                     early: false,
                 },
-            )
+            ) && rank(state, 1) == 1
         },
     },
     Coverage {
@@ -824,7 +898,7 @@ const COVERAGE: &[Coverage] = &[
                     gate: Gate::VerdictChanged,
                     early: false,
                 },
-            )
+            ) && rank(state, 1) == 1
         },
     },
     Coverage {
@@ -849,6 +923,8 @@ const COVERAGE: &[Coverage] = &[
                 Some(
                     Branch::PolicyRefused { who, reset: true, .. }
                         | Branch::NoDirectory { who, reset: true }
+                        | Branch::TunnelServes { who, reset: true, .. }
+                        | Branch::DoorClosed { who, reset: true }
                 ) if state.machine(who).orderable_since.is_none()
             )
         },
@@ -886,8 +962,9 @@ struct Broken {
     /// A pass after a held one keeps the `orderable_since` before the hold, where `step` starts
     /// it again (core/crates/ployz-decide/src/issuance.rs:197-203).
     hold_keeps_orderable_since: bool,
-    /// `hosts.clear()` in `issue_wanted` deleted, so a pass the policy or a missing directory stops keeps
-    /// `orderable_since`.
+    /// `hosts.clear()` in `issue_wanted` deleted, so a pass that stops before the gate keeps
+    /// `orderable_since`: the policy refused, no directory, every Server on the Tunnel Door, or
+    /// this Machine's Public Door closed.
     early_return_keeps_orderable_since: bool,
     /// A read that returns Err clears `hosts` too, and counts as a blocked pass, where
     /// `issue_wanted` returns the Err with `hosts` as it was (the `?` on `read_pass`).
@@ -945,10 +1022,27 @@ fn block(machine: &mut Machine) {
     machine.unblocked = None;
 }
 
+/// `record_certificate_error` with `reason` (core/crates/ployzd/src/corrosion/store.rs,
+/// `record_certificate_error`): `write_acme_row` reads the row; when its `last_error` is
+/// already `reason` it writes nothing, and otherwise `with_error` keeps the material and
+/// replaces the refusal with the reason and no clock
+/// (core/crates/ployzd/src/corrosion/certificate.rs:356-379). Says what it did, and whether
+/// it dropped a clock. Its Err goes out through `read_pass`'s `?`, which is `Action::Errs`.
+fn record_error(row: &mut Row, reason: Reason) -> (Record, bool) {
+    if row.last_error() == Some(reason) {
+        return (Record::Same, false);
+    }
+    let dropped = row.clock().is_some();
+    row.refusal = Some(Recorded {
+        reason,
+        clock: None,
+    });
+    (Record::Wrote, dropped)
+}
+
 impl AcmeIssuance {
-    /// A pass the policy or a missing directory stops before the gate: `read_pass` answers
-    /// `None` (`read_pass`), and `issue_wanted` clears `hosts`. Says whether an
-    /// `orderable_since` was dropped.
+    /// A pass that stops before the gate: `read_pass` answers `None` (`read_pass`), and
+    /// `issue_wanted` clears `hosts`. Says whether an `orderable_since` was dropped.
     fn early_return(self, machine: &mut Machine) -> bool {
         block(machine);
         !self.broken.early_return_keeps_orderable_since && machine.orderable_since.take().is_some()
@@ -962,49 +1056,56 @@ impl AcmeIssuance {
         reason = "one arm per statement of the code the model copies"
     )]
     fn pass(self, state: &mut State, who: usize, lost: bool) -> Option<()> {
-        let rank = rank(who);
-        let policy = built_in();
+        // Every arm before the gate makes no record whose Err is only logged: a record there
+        // returns its Err through `?`, which is `Action::Errs`.
+        let stops_before_the_gate = !matches!(state.policy, Policy::BuiltIn | Policy::Repaired)
+            || state.machine(who).closed;
+        if lost && stops_before_the_gate {
+            return None;
+        }
         match state.policy {
-            // `read_pass`'s policy refusal arm: every Machine records the policy's reason for every wanted hostname,
-            // with `record_certificate_error` (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`),
-            // whose `with_error` keeps the material and replaces the refusal with the reason and
-            // no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379).
+            // `read_pass`'s policy refusal arm: every Machine records the policy's reason for
+            // every wanted hostname.
             Policy::Refused => {
-                let dropped = state.row.clock().is_some();
-                let record = if state.row.last_error() == Some(Reason::Policy) {
-                    if lost {
-                        return None;
-                    }
-                    Record::Same
-                } else if lost {
-                    Record::Lost
-                } else {
-                    state.row.refusal = Some(Recorded {
-                        reason: Reason::Policy,
-                        clock: None,
-                    });
-                    Record::Wrote
-                };
+                let (record, dropped) = record_error(&mut state.row, Reason::Policy);
                 let reset = self.early_return(state.machine_mut(who));
                 state.took = Some(Branch::PolicyRefused {
                     who,
                     record,
-                    dropped: dropped && record == Record::Wrote,
+                    dropped,
                     reset,
                 });
                 return Some(());
             }
             // `read_pass`'s `directory_url` let-else.
             Policy::NoDirectory => {
-                if lost {
-                    return None;
-                }
                 let reset = self.early_return(state.machine_mut(who));
                 state.took = Some(Branch::NoDirectory { who, reset });
                 return Some(());
             }
             Policy::BuiltIn | Policy::Repaired => {}
         }
+        // `read_pass`'s `door_standing`: with no Server's Public Door open and one closed, every
+        // Machine records `CertificateHold::TunnelServes` for every wanted hostname and returns.
+        if state.machines.iter().all(|machine| machine.closed) {
+            let (record, dropped) = record_error(&mut state.row, Reason::Tunnel);
+            let reset = self.early_return(state.machine_mut(who));
+            state.took = Some(Branch::TunnelServes {
+                who,
+                record,
+                dropped,
+                reset,
+            });
+            return Some(());
+        }
+        // `read_pass`'s `standing.closed.contains(machine_id)` return.
+        if state.machine(who).closed {
+            let reset = self.early_return(state.machine_mut(who));
+            state.took = Some(Branch::DoorClosed { who, reset });
+            return Some(());
+        }
+        let rank = rank(state, who);
+        let policy = built_in();
         // `read_pass`'s `certificate_state` and `wanted_certificate_hosts`, and `hosts.retain` in `issue_wanted`: the row is read once; the hostname is wanted, so `retain` keeps its
         // entry.
         let snapshot = state.row;
@@ -1224,11 +1325,12 @@ impl Model for AcmeIssuance {
     type State = State;
     type Action = Action;
 
-    /// No row, the built-in policy, and both Machines' probes reaching the Cluster directly,
-    /// before either loop's first pass.
+    /// No row, the built-in policy, every Public Door open, and both Machines' probes reaching
+    /// the Cluster directly, before either loop's first pass.
     fn init_states(&self) -> Vec<State> {
         let machine = Machine {
             verdict: Verdict::Direct,
+            closed: false,
             orderable_since: None,
             obtaining: None,
             unblocked: None,
@@ -1242,7 +1344,7 @@ impl Model for AcmeIssuance {
     }
 
     /// Each Machine's pass or obtain in slot order, then the tick, each probe change, each
-    /// restart and the operator's edits. The order decides only which of the shortest paths a
+    /// door change, each restart and the operator's edits. The order decides only which of the shortest paths a
     /// story shows. Nothing is fair: a container change wakes a loop at any time (`changes.next()` in `run`), so
     /// a pass is offered at any tick, and a Machine may also skip ticks.
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
@@ -1264,6 +1366,7 @@ impl Model for AcmeIssuance {
         }
         actions.push(Action::Tick);
         actions.extend((0..MACHINES).map(Action::Probe));
+        actions.extend((0..MACHINES).map(Action::Door));
         actions.extend(
             (0..MACHINES)
                 .filter(|who| {
@@ -1303,6 +1406,10 @@ impl Model for AcmeIssuance {
                 let machine = state.machine_mut(who);
                 machine.verdict = machine.verdict.flipped();
             }
+            Action::Door(who) => {
+                let machine = state.machine_mut(who);
+                machine.closed = !machine.closed;
+            }
             Action::Restart(who) => Self::restart(&mut state, who),
             Action::Operator(policy) => state.policy = policy,
         }
@@ -1340,9 +1447,9 @@ const WAKES_BY_THE_DELAY: &str =
 const NO_ORDER_OVER_MATERIAL: &str =
     "no obtain orders while the row it re-reads holds material that is not due for renewal";
 
-/// The name a story gives Machine `who`.
+/// The name a story gives Machine `who`: its rank while every Public Door is open.
 fn name(who: usize) -> String {
-    format!("Rank {}", rank(who))
+    format!("Rank {who}")
 }
 
 /// `ticks` ticks as seconds, "or more" where the age is capped.
@@ -1392,7 +1499,7 @@ fn row_words(row: Row) -> String {
 
 fn machine_words(who: usize, machine: Machine) -> String {
     format!(
-        "{}: probe {:?}, orderable_since {}, {}, unblocked {}",
+        "{}: probe {:?}, orderable_since {}, {}, unblocked {}{}",
         name(who),
         machine.verdict,
         machine
@@ -1403,6 +1510,11 @@ fn machine_words(who: usize, machine: Machine) -> String {
             |order| format!("obtain in flight from a pass {} ago", age_of(order.ago))
         ),
         machine.unblocked.map_or_else(|| "none".to_owned(), age),
+        if machine.closed {
+            ", Public Door closed"
+        } else {
+            ""
+        },
     )
 }
 
@@ -1547,13 +1659,31 @@ fn wait_words(who: usize, before: &State, after: &State) -> String {
         Some(Branch::Pushed { .. }) => Issuance::Order(ClusterRoute::Direct),
         _ => Issuance::Waiting,
     };
-    let sleeps = wake(state, rank(who), elapsed, now(), &policy).as_secs();
+    let sleeps = wake(state, rank(after, who), elapsed, now(), &policy).as_secs();
     match state {
         Issuance::Held(_) | Issuance::Refused { .. } => format!(
             "wake answers {sleeps} s, when the clock passes or at the next probe (core/crates/ployz-decide/src/issuance.rs:246-256)"
         ),
         Issuance::Issued { .. } | Issuance::Waiting | Issuance::Order(_) | Issuance::Renew(_) => {
             format!("wake answers {sleeps} s (core/crates/ployz-decide/src/issuance.rs:226-259)")
+        }
+    }
+}
+
+/// What `record_certificate_error` did, for the policy refusal or the Tunnel Door.
+fn error_record_words(record: Record, dropped: bool) -> &'static str {
+    match record {
+        Record::Wrote if dropped => {
+            "with_error keeps the material and replaces the refusal with the reason and no clock, dropping the clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)"
+        }
+        Record::Wrote => {
+            "with_error keeps the material and replaces the refusal with the reason and no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)"
+        }
+        Record::Same => {
+            "the row already holds that reason, so it writes nothing (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check)"
+        }
+        Record::Lost | Record::HasMaterial | Record::NotRankZero => {
+            unreachable!("record_certificate_error writes or keeps; its Err is Action::Errs")
         }
     }
 }
@@ -1573,6 +1703,17 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
                 match after.machine(who).verdict {
                     Verdict::Direct => "sees the hostname reach the Cluster directly",
                     Verdict::DoesNotResolve => "finds the hostname does not resolve",
+                }
+            );
+        }
+        Action::Door(who) => {
+            return format!(
+                "Doors: {}'s Public Door {} (door_standing)",
+                name(who),
+                if after.machine(who).closed {
+                    "closes for the Tunnel Door"
+                } else {
+                    "opens again"
                 }
             );
         }
@@ -1601,23 +1742,18 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
             }
         ),
         Some(Branch::PolicyRefused { record, dropped, reset, .. }) => format!(
-            "pass: resolve_certificate_policy refuses the policy, so record_certificate_error records its reason (read_pass's policy refusal arm, core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`): {}; read_pass stops before the gate{}, and run sleeps 60 s ({})",
-            match record {
-                Record::Wrote if dropped =>
-                    "with_error keeps the material and replaces the refusal with the reason and no clock, dropping the clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)",
-                Record::Wrote =>
-                    "with_error keeps the material and replaces the refusal with the reason and no clock (core/crates/ployzd/src/corrosion/certificate.rs:356-379)",
-                Record::Same =>
-                    "the row already holds that reason, so it writes nothing (core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`'s `last_error` check)",
-                Record::Lost => "it returns Err and writes nothing",
-                Record::HasMaterial | Record::NotRankZero => unreachable!("the policy refusal records with record_certificate_error"),
-            },
+            "pass: resolve_certificate_policy refuses the policy, so record_certificate_error records its reason (read_pass's policy refusal arm, core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`): {}; read_pass stops before the gate{}, and run sleeps 60 s (issue_wanted's Ok(RETRY_INTERVAL))",
+            error_record_words(record, dropped),
             reset_words(model, reset),
-            if record == Record::Lost {
-                "the Err, run's retry"
-            } else {
-                "issue_wanted's wake over hosts"
-            }
+        ),
+        Some(Branch::TunnelServes { record, dropped, reset, .. }) => format!(
+            "pass: door_standing finds no Public Door open and one closed, so every Server uses the Tunnel Door, and record_certificate_error records CertificateHold::TunnelServes (read_pass's standing.public.is_empty() arm, core/crates/ployzd/src/corrosion/store.rs, `record_certificate_error`): {}; read_pass stops before the gate{}, and run sleeps 60 s (issue_wanted's Ok(RETRY_INTERVAL))",
+            error_record_words(record, dropped),
+            reset_words(model, reset),
+        ),
+        Some(Branch::DoorClosed { reset, .. }) => format!(
+            "pass: this Machine's Public Door is closed, so read_pass stops before the gate (its standing.closed.contains(machine_id) return){}, and run sleeps 60 s (issue_wanted's Ok(RETRY_INTERVAL))",
+            reset_words(model, reset)
         ),
         Some(Branch::NoDirectory { reset, .. }) => format!(
             "pass: the policy has no directory, so read_pass stops before the gate (its directory_url let-else){}, and run sleeps 60 s (issue_wanted's Ok(RETRY_INTERVAL))",
@@ -1660,7 +1796,7 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
                 "the hostname is Refused, and the next pass the gate lets through starts orderable_since again (core/crates/ployz-decide/src/issuance.rs:187-189, core/crates/ployz-decide/src/issuance.rs:197-203)"
             },
             match record {
-                Record::Wrote if rank(who) > 0 => "it records the reason and the clock with record_certificate_failure, though it is not rank 0 (under Broken)",
+                Record::Wrote if rank(after, who) > 0 => "it records the reason and the clock with record_certificate_failure, though it is not rank 0 (under Broken)",
                 Record::Wrote => "it records the reason and the clock with record_certificate_failure (issue_wanted's Refused arm)",
                 Record::Lost => "its record_certificate_failure returns Err and writes nothing, which is only logged",
                 Record::NotRankZero => "it is not rank 0, so it records nothing",
@@ -1730,6 +1866,23 @@ fn reads_as(model: &AcmeIssuance, before: &State, action: Action, after: &State)
         }
         None => unreachable!("{action:?} records its branch"),
     };
+    let at = rank(after, who);
+    if at != who
+        && matches!(
+            after.took,
+            Some(
+                Branch::Held { .. }
+                    | Branch::Refused { .. }
+                    | Branch::Waiting { .. }
+                    | Branch::Pushed { .. }
+            )
+        )
+    {
+        return format!(
+            "{} at rank {at}, as ordering_machines leaves out a Machine whose Public Door is closed: {what}",
+            name(who)
+        );
+    }
     format!("{}: {what}", name(who))
 }
 
@@ -2329,8 +2482,9 @@ mod tests {
     }
 
     /// `hosts.clear()` in `issue_wanted`. Without it, a policy refusal lets rank 1 order with rank 0 once
-    /// it is repaired, and so does a policy with no directory. The second schedule is the first
-    /// with the policy left without a directory.
+    /// it is repaired, and so does a policy with no directory, every Server on the Tunnel Door
+    /// (`THE_TUNNEL`), and rank 1's own Public Door closed (`RANK_1_S_DOOR`). The second schedule
+    /// is the first with the policy left without a directory.
     #[test]
     fn a_pass_that_stops_before_the_gate_restarts_the_rank_delay() {
         let model = without(Broken {
@@ -2357,6 +2511,154 @@ mod tests {
             last(&path).took,
             Some(Branch::Waiting { who: R1, .. })
         ));
+        for schedule in [&THE_TUNNEL[..], &RANK_1_S_DOOR[..]] {
+            assert!(last(&follow(model, schedule)).early());
+            assert!(matches!(
+                last(&follow(as_is(), schedule)).took,
+                Some(Branch::Waiting { who: R1, .. })
+            ));
+        }
+    }
+
+    /// Every Server moves to the Tunnel Door and back. At 0 s rank 1's pass waits out its rank
+    /// delay, and rank 0's order fails, writing an Authority clock. Both Public Doors close,
+    /// and at 30 s each pass records why and returns. Both open again, and at 60 s rank 0
+    /// pushes the hostname and rank 1's pass comes.
+    const THE_TUNNEL: [Action; 13] = [
+        pass(R1),
+        pass(R0),
+        Action::Obtain {
+            who: R0,
+            ends: Ends::Failed { recorded: true },
+        },
+        Action::Door(R0),
+        Action::Door(R1),
+        Action::Tick,
+        pass(R1),
+        pass(R0),
+        Action::Door(R0),
+        Action::Door(R1),
+        Action::Tick,
+        pass(R0),
+        pass(R1),
+    ];
+
+    /// Rank 1's Public Door closes and opens again. At 0 s its pass waits out its rank delay,
+    /// then its door closes; at 30 s its pass returns before the gate; its door opens, and at
+    /// 60 s rank 0 pushes the hostname and rank 1's pass comes.
+    const RANK_1_S_DOOR: [Action; 8] = [
+        pass(R1),
+        Action::Door(R1),
+        Action::Tick,
+        pass(R1),
+        Action::Door(R1),
+        Action::Tick,
+        pass(R0),
+        pass(R1),
+    ];
+
+    /// With every Server on the Tunnel Door, each Machine records `CertificateHold::TunnelServes`
+    /// over the row's refusal, which drops the Authority clock, and `issue_wanted` clears
+    /// `hosts`. The second record finds its own reason and writes nothing. Once the doors open,
+    /// no clock holds, and rank 1 starts its rank delay again.
+    #[test]
+    fn every_server_on_the_tunnel_door_records_why_and_restarts_the_rank_delay() {
+        let path = follow(as_is(), &THE_TUNNEL);
+        let tunnel: Vec<Branch> = branches(&path)
+            .into_iter()
+            .filter(|branch| matches!(branch, Branch::TunnelServes { .. }))
+            .collect();
+        assert_eq!(
+            tunnel,
+            [
+                Branch::TunnelServes {
+                    who: R1,
+                    record: Record::Wrote,
+                    dropped: true,
+                    reset: true
+                },
+                Branch::TunnelServes {
+                    who: R0,
+                    record: Record::Same,
+                    dropped: false,
+                    reset: true
+                },
+            ]
+        );
+        assert_eq!(
+            branches(&path).last(),
+            Some(&Branch::Waiting {
+                who: R1,
+                gate: Gate::NoClock
+            })
+        );
+        rank_1_pushes_a_tick_later(&THE_TUNNEL);
+    }
+
+    /// A closed Public Door takes its Machine out of the ranking: with rank 0's door closed,
+    /// rank 1 is rank 0 and pushes the hostname at its first pass. When rank 0's door opens
+    /// again, rank 0 pushes too, in the same tick. Each waited the delay of the rank it had,
+    /// so `RANK_DELAY_KEPT` holds; the two orders compete, the cross-Machine promise the
+    /// property does not make.
+    #[test]
+    fn a_closed_public_door_hands_rank_0_on() {
+        let path = follow(
+            as_is(),
+            &[
+                Action::Door(R0),
+                pass(R0),
+                pass(R1),
+                Action::Door(R0),
+                pass(R0),
+            ],
+        );
+        assert_eq!(
+            branches(&path),
+            [
+                Branch::DoorClosed {
+                    who: R0,
+                    reset: false
+                },
+                Branch::Pushed {
+                    who: R1,
+                    gate: Gate::NoClock,
+                    early: false
+                },
+                Branch::Pushed {
+                    who: R0,
+                    gate: Gate::NoClock,
+                    early: false
+                },
+            ]
+        );
+        let both = last(&path);
+        assert!(
+            both.machines
+                .iter()
+                .all(|machine| machine.obtaining.is_some())
+        );
+        // Rank 1's order at rank 0 fails with nothing recorded, and rank 0's door opens: at its
+        // next pass rank 1 is rank 1 again, and its Order waits the longer delay.
+        let path = follow(
+            as_is(),
+            &[
+                Action::Door(R0),
+                pass(R1),
+                Action::Obtain {
+                    who: R1,
+                    ends: Ends::Failed { recorded: false },
+                },
+                Action::Door(R0),
+                pass(R1),
+            ],
+        );
+        assert_eq!(
+            branches(&path).last(),
+            Some(&Branch::Waiting {
+                who: R1,
+                gate: Gate::NoClock
+            })
+        );
     }
 
     /// Rank 0's order fails and its record writes an Authority clock. Two ticks on the clock
