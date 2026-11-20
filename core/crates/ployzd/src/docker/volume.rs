@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bollard::{
     Docker,
-    models::{Volume, VolumeCreateRequest},
+    models::{Mount, MountType, MountVolumeOptionsDriverConfig, Volume, VolumeCreateRequest},
     query_parameters::{ListContainersOptionsBuilder, RemoveVolumeOptionsBuilder},
 };
 use futures_util::{StreamExt, stream};
@@ -117,13 +117,18 @@ impl Volumes {
                     Err(error) if volume_conflict(&error) => {
                         verify_volume(source, &self.inspect_volume(machine_id, name).await?)
                     }
-                    Err(error) if held_for_other_data(&error) => Err(Error::ForeignVolume {
-                        name: name.clone(),
-                        found: format!(
-                            "{}, so no new data is made under its name until that Container is removed",
-                            crate::volume_copy::HELD_FOR_OTHER_DATA
-                        ),
-                    }),
+                    Err(error) if relays(&error, crate::volume_copy::DOCKER_NOT_ANSWERING) => {
+                        Err(Error::VolumeHoldersUnlisted(name.clone()))
+                    }
+                    Err(error) if relays(&error, crate::volume_copy::HELD_FOR_OTHER_DATA) => {
+                        Err(Error::ForeignVolume {
+                            name: name.clone(),
+                            found: format!(
+                                "{}, so no new data is made under its name until that Container is removed",
+                                crate::volume_copy::HELD_FOR_OTHER_DATA
+                            ),
+                        })
+                    }
                     Err(error) => Err(error),
                 }
             }
@@ -188,13 +193,11 @@ impl Volumes {
         Ok(())
     }
 
-    /// Refuse an External mount of a Volume carrying Ployz's managed label. External means
-    /// made outside Ployz, and under Device enforcement the only named Volumes an Operator
-    /// can make come from `PrepareVolumes`, which labels them, so a labelled one may hold
-    /// options nobody approved.
+    /// Refuse an External mount of a Volume Ployz made, early, before an image pull.
+    /// [`Self::pin_external_drivers`] repeats it where it counts, right before Docker's create.
     ///
     /// # Errors
-    /// Returns [`Error::VolumeShapeMismatch`] naming the Volume, or the inspection's error.
+    /// Returns the refusal of [`external_driver`] naming the Volume, or the inspection's error.
     pub(crate) async fn refuse_managed_external(
         &self,
         machine_id: &MachineId,
@@ -205,16 +208,55 @@ impl Volumes {
                 continue;
             };
             // A missing one is the mount check's to name, after this.
+            match self.inspect_volume(machine_id, name).await {
+                Ok(observed) => external_driver(name, &observed).map(drop)?,
+                Err(error) if volume_not_found(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    /// Names in each External mount the driver Docker has for its Volume now, refusing one
+    /// Ployz made. Docker searches every driver for a mount that names none, and the volume
+    /// plugin answers for a root whose labels Docker lost, so an unpinned External mount
+    /// could open Provisioned data. A pinned one opens only the driver named here, at create
+    /// and at every later start, or Docker refuses the name.
+    ///
+    /// # Errors
+    /// Returns [`Error::ExternalVolumeNotFound`], the refusal of [`external_driver`], or the
+    /// inspection's error.
+    pub(super) async fn pin_external_drivers(
+        &self,
+        machine_id: &MachineId,
+        spec: &ResolvedServiceSpec,
+        mounts: &mut [Mount],
+    ) -> Result<(), Error> {
+        let mut pinned = BTreeSet::new();
+        for volume in spec.volume_graph().mounted_volumes() {
+            let ployz_core::RawVolumeSource::External { name } = volume.source.kind() else {
+                continue;
+            };
+            if !pinned.insert(name) {
+                continue;
+            }
             let observed = match self.inspect_volume(machine_id, name).await {
                 Ok(observed) => observed,
-                Err(error) if volume_not_found(&error) => continue,
+                Err(error) if volume_not_found(&error) => {
+                    return Err(Error::ExternalVolumeNotFound(name.clone()));
+                }
                 Err(error) => return Err(error),
             };
-            if observed.labels.contains_key(ployz_core::labels::MANAGED) {
-                return Err(Error::VolumeShapeMismatch {
-                    name: name.clone(),
-                    reason: "an External mount names a Volume Ployz manages".into(),
-                });
+            let driver = external_driver(name, &observed)?;
+            for mount in mounts.iter_mut().filter(|mount| {
+                mount.typ == Some(MountType::VOLUME)
+                    && mount.source.as_deref() == Some(name.as_str())
+            }) {
+                mount.volume_options.get_or_insert_default().driver_config =
+                    Some(MountVolumeOptionsDriverConfig {
+                        name: Some(driver.to_owned()),
+                        options: None,
+                    });
             }
         }
         Ok(())
@@ -526,6 +568,30 @@ async fn provisioned_origin(
     }
 }
 
+/// The driver an External mount may open `observed` through. External means made outside
+/// Ployz. Under Device enforcement the only named Volumes an Operator can make come from
+/// `PrepareVolumes`, which labels them, so a labelled one may hold options nobody approved.
+/// One the Provisioned plugin serves holds Ployz's own data whatever labels Docker kept, and
+/// only a Provisioned mount, whose origin the plugin checks, opens it.
+fn external_driver<'a>(
+    name: &DockerVolumeName,
+    observed: &'a DockerVolume,
+) -> Result<&'a str, Error> {
+    if observed.labels.contains_key(ployz_core::labels::MANAGED) {
+        return Err(Error::VolumeShapeMismatch {
+            name: name.clone(),
+            reason: "an External mount names a Volume Ployz manages".into(),
+        });
+    }
+    match observed.driver() {
+        ployz_core::PROVISIONED_VOLUME_DRIVER => Err(Error::ForeignVolume {
+            name: name.clone(),
+            found: "is a Ployz Provisioned Volume, and an External mount opens only a Volume made outside Ployz".to_owned(),
+        }),
+        driver => Ok(driver),
+    }
+}
+
 fn other_data(name: &DockerVolumeName) -> Error {
     Error::ForeignVolume {
         name: name.clone(),
@@ -533,13 +599,13 @@ fn other_data(name: &DockerVolumeName) -> Error {
     }
 }
 
-/// Whether Docker refused a create because the volume plugin found a Container that
-/// mounts the name and expects other data.
-fn held_for_other_data(error: &Error) -> bool {
+/// Whether Docker refused a create with the volume plugin's `words`, which Docker relays
+/// only as text.
+fn relays(error: &Error, words: &str) -> bool {
     matches!(
         error,
         Error::Docker(bollard::errors::Error::DockerResponseServerError { message, .. })
-            if message.contains(crate::volume_copy::HELD_FOR_OTHER_DATA)
+            if message.contains(words)
     )
 }
 

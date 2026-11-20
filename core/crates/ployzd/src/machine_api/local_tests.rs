@@ -3261,6 +3261,70 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// Docker can lose a Provisioned root's labels and find it again through the plugin. An
+    /// External mount of its name still never opens it, and a genuine External Volume of the
+    /// name opens only through the driver Docker has for it now.
+    #[tokio::test]
+    async fn an_external_mount_never_opens_a_provisioned_root_docker_lost_the_labels_of() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-external").await;
+        let spec = spec_with_sources(vec![
+            ployz_core::RawVolumeSource::External {
+                name: "shared".parse().unwrap(),
+            }
+            .admit()
+            .unwrap(),
+        ]);
+        let made = || {
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .len()
+        };
+        fake.volumes.lock().unwrap().insert(
+            "shared".into(),
+            json!({"Name":"shared", "Driver":"ployz", "Mountpoint":"/var/lib/ployz-volumes/shared",
+                "Status":{"bound_bytes":1_073_741_824_u64, "used_bytes":0}}),
+        );
+
+        let refused = create_api(&service, &spec).await.unwrap_err();
+
+        assert!(
+            matches!(
+                refused,
+                crate::machine::LocalMachineError::Docker(
+                    crate::docker::Error::ForeignVolume { .. }
+                )
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(
+            made(),
+            0,
+            "Docker made no Container over the Provisioned root"
+        );
+
+        fake.volumes.lock().unwrap().insert(
+            "shared".into(),
+            json!({"Name":"shared", "Driver":"local", "Mountpoint":"/volumes/shared"}),
+        );
+        create_api(&service, &spec).await.unwrap();
+        assert_eq!(made(), 1);
+        let bodies = fake.request_bodies.lock().unwrap();
+        let (_, body) = bodies
+            .iter()
+            .rfind(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap();
+        assert_eq!(
+            body.pointer("/HostConfig/Mounts/0/VolumeOptions/DriverConfig/Name"),
+            Some(&json!("local")),
+            "Docker resolves the name only through the driver it had: {body}"
+        );
+        drop(bodies);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// A Provisioned Volume with no root here, absent or held only in a slot, is not
     /// prepared on this Machine. It holds no other data, so it is not refused as foreign.
     #[tokio::test]
@@ -3314,6 +3378,34 @@ mod set_volume_copy {
                 )
             ),
             "{refused:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A fresh Provisioned Volume waits while Docker does not list its holders, and the
+    /// create says so as a refusal to retry, as a promote's or seed's does.
+    #[tokio::test]
+    async fn a_fresh_volume_docker_did_not_list_the_holders_of_is_unavailable() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-unlisted").await;
+        *fake.refuse_volume_create.lock().unwrap() = Some(format!(
+            "create fresh: VolumeDriver.Create: {}, so no new data is made under Volume fresh until it does: no list within 3 s",
+            crate::volume_copy::DOCKER_NOT_ANSWERING
+        ));
+
+        let refused = create_api(
+            &service,
+            &spec_with_sources(vec![provisioned_source("fresh", 1_073_741_824)]),
+        )
+        .await
+        .unwrap_err();
+
+        let crate::machine::LocalMachineError::Docker(refused) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(
+            refused.rpc_code(),
+            ployz_core::RpcErrorCode::Unavailable,
+            "{refused}"
         );
         std::fs::remove_dir_all(data_dir).unwrap();
     }

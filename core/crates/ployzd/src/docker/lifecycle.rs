@@ -420,6 +420,9 @@ impl Lifecycle {
             .get_or_insert_default()
             .mounts
             .get_or_insert_default();
+        self.volumes
+            .pin_external_drivers(&machine.id, spec, mounts)
+            .await?;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let result = self
             .create_and_record(&creating, &mut config_operation, body)
