@@ -418,6 +418,15 @@ fn serve(
         {
             refused
         }
+        (Some(who), "/api/cli/agent/ask")
+            if who.organization.as_str() == "metricless"
+                && serde_json::from_slice::<Value>(&body).unwrap()["ask"]["query"] == "metrics" =>
+        {
+            (
+                409,
+                json!({ "error": { "code": "conflict", "message": "Metrics aren’t enabled on this Cloud.", "details": null } }),
+            )
+        }
         (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
             approvals.run(&method, route, &body, approval.as_deref())
@@ -4901,6 +4910,35 @@ fn logs_of_an_environment_with_nothing_deployed_stay_empty_unless_its_scope_refu
         ok(&target, &["project", "new", "shop"]);
         assert_eq!(ok(&target, &["logs"]), json!({ "logs": [] }), "{token}");
     }
+}
+
+#[test]
+fn metrics_show_cloud_history_with_server_access_and_live_numbers_when_cloud_keeps_none() {
+    let [historian, metricless] = ["ployz_historian", "ployz_metricless"].map(|token| {
+        let target = Target::Cloud {
+            url: fake_cloud(),
+            token,
+        };
+        ok(&target, &["project", "new", "shop"]);
+        ok(&target, &["service", "add", "web", "--image", "nginx:1"]);
+        target
+    });
+    let history = ok(&historian, &["metrics", "web"]);
+    assert!(history["metrics"].get("oom_kills").is_some(), "{history}");
+
+    let (_, live) = ployz(Some(&metricless), &["metrics", "web"]);
+    assert!(live["metrics"].get("machines").is_some(), "{live}");
+    let home = tempfile::tempdir().unwrap();
+    let output = metricless
+        .command(home.path())
+        .args(["metrics", "web"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("Metrics history isn’t enabled on this Cloud."),
+        "{stderr}"
+    );
 }
 
 #[test]

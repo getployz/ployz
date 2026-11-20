@@ -5,7 +5,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use chrono::Utc;
-use ployz_core::{MachineName, QualifiedService, ServiceName, ServiceSelector};
+use ployz_core::{MachineName, QualifiedService, RpcErrorCode, ServiceName, ServiceSelector};
 use ployz_store::tools::{
     CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, Timestamp,
     cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
@@ -202,11 +202,18 @@ pub(super) enum MetricsAsked {
     Server(String),
 }
 
+/// What Cloud did with a `metrics` read.
+pub(super) enum CloudMetrics {
+    Shown,
+    /// This Cloud keeps no metrics; its refusal, for when nothing else can answer.
+    NotEnabled(Error),
+}
+
 pub(super) fn metrics(
     credential: &Credential,
     asked: MetricsAsked,
     since_seconds: i64,
-) -> Result<(), Error> {
+) -> Result<CloudMetrics, Error> {
     let (subject, name, unknown) = match asked {
         MetricsAsked::Service { service, unknown } => (
             MetricsSubject::Service {
@@ -233,7 +240,7 @@ pub(super) fn metrics(
             )
         }
     };
-    let answer: MetricsAnswer = ask(
+    let answer: MetricsAnswer = match refusable(
         credential,
         CloudQuery::Metrics(MetricsQuery {
             subject,
@@ -242,7 +249,15 @@ pub(super) fn metrics(
             },
             deployment: None,
         }),
-    )?;
+    )? {
+        Ok(answer) => answer,
+        Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Conflict => {
+            return Ok(CloudMetrics::NotEnabled(
+                StoreCallError::Refused(refused).into(),
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
     if let Some(refusal) = unknown
         && answer.metrics.is_empty()
         && answer.seen.unanswered.is_empty()
@@ -273,7 +288,7 @@ pub(super) fn metrics(
             ui::note(note);
         }
     })?;
-    ui::unanswered(&answer.seen.unanswered)
+    ui::unanswered(&answer.seen.unanswered).map(|()| CloudMetrics::Shown)
 }
 
 pub(super) fn processes(

@@ -7,6 +7,7 @@ use ployz_core::metrics::LiveContainer;
 use crate::{sdk::LiveMetrics, ui::Table};
 
 pub(crate) const HISTORY_NOTE: &str = "History is in Ployz Cloud.";
+pub(crate) const NOT_ENABLED_NOTE: &str = "Metrics history isn’t enabled on this Cloud.";
 
 pub(crate) fn report(live: &LiveMetrics, subject: &str) -> Table {
     let containers: Vec<&LiveContainer> = live

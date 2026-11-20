@@ -6,16 +6,17 @@ use ployz_core::{MachineTarget, QualifiedService, ServiceSelector};
 
 use super::{
     Error,
-    cloud_read::{self, MetricsAsked},
+    cloud_read::{self, CloudMetrics, MetricsAsked},
     leaf_matches,
     operator::{in_scope, scope},
+    route,
     store::scoped,
     with_reader,
 };
 use crate::{
     cli::{
         base,
-        metrics::{HISTORY_NOTE, report},
+        metrics::{HISTORY_NOTE, NOT_ENABLED_NOTE, report},
         positional, value,
     },
     operator::input::TIME_FORMATS,
@@ -44,8 +45,9 @@ pub(super) fn command(command: Command) -> Command {
     )
 }
 
-/// Print the subject's live numbers, or with a Cloud credential its newest values and the
-/// range's average and peak.
+/// Print the subject's history from Cloud: its newest values and the range's average and
+/// peak. Without a Cloud connection, or on a Cloud that keeps no metrics, print what it
+/// uses now, read from the Servers.
 pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let since = leaf
@@ -82,6 +84,17 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                 },
             )
         }
+    };
+    let unread = match route::cloud_runs(&super::runtime()?, leaf)? {
+        Some(credential) => match cloud_read::metrics(&credential, fallback, since_seconds)? {
+            CloudMetrics::Shown => return Ok(()),
+            CloudMetrics::NotEnabled(refusal) => Unread::NotEnabled(refusal),
+        },
+        None => Unread::Ask(fallback),
+    };
+    let note = match unread {
+        Unread::Ask(_) => HISTORY_NOTE,
+        Unread::NotEnabled(_) => NOT_ENABLED_NOTE,
     };
     let credential = with_reader(root, |client| {
         Box::pin(async move {
@@ -120,13 +133,27 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
             ui::finish_fanout("metrics", &live, &gaps, || {
                 ui::stream(&name);
                 ui::rows(&table);
-                ui::note(HISTORY_NOTE);
+                ui::note(note);
             })
         })
     })?;
-    credential.map_or(Ok(()), |credential| {
-        cloud_read::metrics(&credential, fallback, since_seconds)
-    })
+    let Some(credential) = credential else {
+        return Ok(());
+    };
+    match unread {
+        Unread::Ask(asked) => match cloud_read::metrics(&credential, asked, since_seconds)? {
+            CloudMetrics::Shown => Ok(()),
+            CloudMetrics::NotEnabled(refusal) => Err(refusal),
+        },
+        Unread::NotEnabled(refusal) => Err(refusal),
+    }
+}
+
+/// Why the history was not shown before the Servers were read.
+enum Unread {
+    /// Cloud was not asked yet.
+    Ask(MetricsAsked),
+    NotEnabled(Error),
 }
 
 /// What the user selected, by name.
