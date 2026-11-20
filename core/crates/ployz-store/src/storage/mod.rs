@@ -311,13 +311,15 @@ const MIGRATIONS: &[(&str, Step)] = &[
         Step::Sql(include_str!("migrations/0048_region_name.sql")),
     ),
     (
-        // Each signed version a client posted, and what each Deployment ran: for one a
-        // Device approved, the pins its approval named.
+        // Each signed version a client posted, and what each Deployment ran.
         "0049_service_version",
-        Step::Rust(|tx, _| {
-            tx.batch(include_str!("migrations/0049_service_version.sql"))?;
-            crate::deployment::versions::record_approved(tx).map(|()| None)
-        }),
+        Step::Sql(include_str!("migrations/0049_service_version.sql")),
+    ),
+    (
+        // For each Deployment a Device approved, the pins its approval named, as what it
+        // ran.
+        "0050_approved_pins",
+        Step::Rust(|tx, _| crate::deployment::versions::record_approved(tx).map(|()| None)),
     ),
 ];
 

@@ -9,9 +9,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    PayloadDigest, ServiceVersion, Signed, deploy::content_addressed, version::MAX_PRESENTED,
+    PayloadDigest, ProposalRef, Purpose, ServiceVersion, Signed, SignerKey, Statement, Timestamp,
+    deploy::content_addressed, version::MAX_PRESENTED,
 };
-use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
+use ployz_core::{
+    MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
+    ServiceName,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -285,29 +289,56 @@ pub(super) fn pinned(
         .collect()
 }
 
-/// The part of a Device's deploy approval, as `config_deployment.deploy_approval` kept it
-/// before signed versions, that says what each Service ran.
-#[derive(Deserialize)]
+/// A Device's deploy approval as `config_deployment.deploy_approval` kept it before signed
+/// versions, decoded as the claim then decoded it: a canonical body with every field, and
+/// Machines and Services sorted and distinct.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct KeptApproval {
-    body: String,
-}
-
-#[derive(Deserialize)]
-struct ApprovalBody {
+    cluster: SealingPublicKey,
+    operation: OperationId,
+    namespace: Namespace,
+    machines: Vec<MachineId>,
     services: Vec<ApprovedService>,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+    signer: SignerKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposal: Option<ProposalRef>,
 }
 
-#[derive(Deserialize)]
+impl Statement for KeptApproval {
+    const PURPOSE: Purpose = Purpose::Workflow;
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ApprovedService {
     name: ServiceName,
     digest: PayloadDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     image: Option<String>,
+}
+
+impl KeptApproval {
+    fn read(text: &str) -> Option<Self> {
+        let approval = serde_json::from_str::<Signed<Self>>(text)
+            .ok()?
+            .open()
+            .ok()?;
+        let sorted = approval.machines.is_sorted_by(|left, right| left < right)
+            && approval
+                .services
+                .is_sorted_by(|left, right| left.name < right.name);
+        sorted.then_some(approval)
+    }
 }
 
 /// Record in `ran`, for each Deployment a Device approved before the Store kept what
 /// each one ran, the digest and pin its approval named for each Service it ships, as a
 /// claim read them from the approval: a retry or rollback of it then runs that pin, not
-/// whatever its tag names now. A Deployment whose approval doesn't read or whose Saved
+/// whatever its tag names now. A Service `ran` already names keeps what it names, so a
+/// second run changes nothing. A Deployment whose approval doesn't read or whose Saved
 /// revision no longer lowers keeps none, and runs its tag as before.
 ///
 /// # Errors
@@ -319,10 +350,7 @@ pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
     )?;
     for row in &rows {
         let id = row.parse::<DeploymentId>(0, "Deployment")?;
-        let Some(approved) = serde_json::from_str::<KeptApproval>(row.text(1)?)
-            .ok()
-            .and_then(|kept| serde_json::from_str::<ApprovalBody>(&kept.body).ok())
-        else {
+        let Some(approved) = KeptApproval::read(row.text(1)?) else {
             continue;
         };
         let Some(target) = super::load(tx, &id).ok().and_then(|stored| {
@@ -331,7 +359,8 @@ pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
         }) else {
             continue;
         };
-        let mut record = record_of(tx, &id)?;
+        let recorded = record_of(tx, &id)?;
+        let mut record = recorded.clone();
         for spec in &target.intent.target {
             let Some(approved) = approved
                 .services
@@ -351,7 +380,9 @@ pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
                     }),
                 });
         }
-        write_record(tx, &id, &record)?;
+        if record != recorded {
+            write_record(tx, &id, &record)?;
+        }
     }
     Ok(())
 }

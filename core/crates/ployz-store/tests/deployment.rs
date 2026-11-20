@@ -9263,33 +9263,8 @@ fn a_rollback_across_the_upgrade_runs_the_pin_a_device_approved_after_the_tag_mo
     let (store, who, url, dir) = own_shop();
     admit(&store, &who, 1, &[], None).unwrap();
     apply(&store, 1);
-    // #1 as a Store before signed versions kept it: a Device's approval pinned web's tag
-    // to P1, and nothing recorded what it ran.
-    let approval = json!({
-        "body": json!({
-            "namespace": "shop-production",
-            "services": [{
-                "name": "web",
-                "digest": signed_spec(&store, &who, "web", P1),
-                "image": P1,
-            }],
-        })
-        .to_string(),
-        "signatures": [],
-    });
-    for sql in [
-        "DROP TABLE config_service_version".to_owned(),
-        "ALTER TABLE config_deployment DROP COLUMN ran".to_owned(),
-        "DELETE FROM config_migration WHERE name = '0049_service_version'".to_owned(),
-        format!(
-            "UPDATE config_deployment SET deploy_approval = '{approval}' WHERE id = '{}'",
-            id(1)
-        ),
-    ] {
-        backend::execute(&url, &sql);
-    }
-    drop(store);
-    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    let digest = signed_spec(&store, &who, "web", P1);
+    let store = upgraded(store, &url, 1, &approval(digest, |_| {}));
 
     // The tag moved to P2, and a Device deployed it.
     set_replicas(&store, &who, "web", 2);
@@ -9299,6 +9274,78 @@ fn a_rollback_across_the_upgrade_runs_the_pin_a_device_approved_after_the_tag_mo
     retry(&store, &who, 3, 1).unwrap();
     assert_eq!(web_runs(&store, 3), Some((P1.to_owned(), 0)));
     drop(dir);
+}
+
+#[test]
+fn a_rollback_across_the_upgrade_runs_no_pin_from_an_approval_the_claim_would_not_read() {
+    for missing in ["cluster", "operation", "signer"] {
+        let (store, who, url, dir) = own_shop();
+        admit(&store, &who, 1, &[], None).unwrap();
+        apply(&store, 1);
+        let digest = signed_spec(&store, &who, "web", P1);
+        let store = upgraded(
+            store,
+            &url,
+            1,
+            &approval(digest, |body| drop(body.remove(missing))),
+        );
+        set_replicas(&store, &who, "web", 2);
+        admit_signed(&store, &who, 2, vec![posted(&store, &who, "web", P2)]);
+        apply(&store, 2);
+
+        retry(&store, &who, 3, 1).unwrap();
+        assert_eq!(web_runs(&store, 3), None, "without {missing}");
+        drop(dir);
+    }
+}
+
+/// Leave Deployment `n` as a Store at 0049 left one a Device approved before signed
+/// versions, with `approval` kept and nothing recorded as what it ran, and reopen the
+/// Store on this build.
+fn upgraded(store: ConfigStore, url: &str, n: u8, approval: &str) -> ConfigStore {
+    legacy(url, n);
+    for sql in [
+        format!(
+            "UPDATE config_deployment SET deploy_approval = '{approval}' WHERE id = '{}'",
+            id(n)
+        ),
+        "DELETE FROM config_migration WHERE name > '0049_service_version'".to_owned(),
+    ] {
+        backend::execute(url, &sql);
+    }
+    drop(store);
+    ConfigStore::open(url, backend::key()).unwrap()
+}
+
+/// A Device's approval of Deployment 1 that pins web's tag to P1 at `digest`, as a CLI
+/// before signed versions signed it, with `edit` applied to its body.
+fn approval(
+    digest: ployz_core::authority::PayloadDigest,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+) -> String {
+    use ployz_core::authority::{Purpose, Signed, Signer, SignerKey, Statement, Timestamp};
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(transparent)]
+    struct Historical(serde_json::Value);
+    impl Statement for Historical {
+        const PURPOSE: Purpose = Purpose::Workflow;
+    }
+
+    let signer = Signer::from_seed(&[7; 32]);
+    let at = Timestamp::now();
+    let mut body = json!({
+        "cluster": ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        "operation": ployz_core::OperationId::from_uuid(id(1).as_str()).unwrap(),
+        "namespace": "shop-production",
+        "machines": [],
+        "services": [{ "name": "web", "digest": digest, "image": P1 }],
+        "issued_at": at,
+        "expires_at": at.plus(600_000),
+        "signer": SignerKey::Device(signer.public().into()),
+    });
+    edit(body.as_object_mut().unwrap());
+    serde_json::to_string(&Signed::sign(&Historical(body), &signer).unwrap()).unwrap()
 }
 
 #[test]
