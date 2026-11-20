@@ -20,7 +20,7 @@ use crate::{
     LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, METRIC_HISTORY_CAPABILITY,
     MINT_BUILD_GRANT_CAPABILITY, PENDING_JOINS_CAPABILITY, PREPARE_VOLUMES_CAPABILITY,
     PRIVATE_ACCESS_APPROVAL_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
-    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
+    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_FREE_IMAGE_CAPABILITY, PULL_IMAGE_CAPABILITY,
     PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
@@ -81,7 +81,7 @@ pub enum Authorization {
 use Authorization::{Bound, Full, Read, Signed};
 use Statement::{Deploy, Join, PrivateAccess, Proposal, Rule};
 
-const IMAGE_BOUND: &str = "a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
+const IMAGE_BOUND: &str = "writes no name but a retention name its content certifies, so a Full creation's tag keeps naming what it named; a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
 
 /// Every catalog route's class, in catalog order.
 pub const AUTHORIZATION: &[(&str, Authorization)] = &[
@@ -181,6 +181,10 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     ),
     (ENSURE_IMAGE_INGEST_CAPABILITY, Bound(IMAGE_BOUND)),
     (PULL_IMAGE_CAPABILITY, Bound(IMAGE_BOUND)),
+    (
+        PULL_FREE_IMAGE_CAPABILITY,
+        Bound("writes no name; records an image ID only an unsigned creation reads"),
+    ),
     (PULL_IMAGE_FROM_MACHINE_CAPABILITY, Bound(IMAGE_BOUND)),
     (MINT_BUILD_GRANT_CAPABILITY, Signed(&[Rule])),
     (INSPECT_BUILD_GRANT_CAPABILITY, Read),
@@ -277,6 +281,7 @@ const MOUNTS_NOTHING: &str =
 const PULLS_AGAIN: &str =
     "a following unsigned EnsureContainer create that uses it pulls the image again itself";
 const PULLS_ITS_OWN: &str = "the Machine pulls the image itself";
+const WRITES_NO_NAME: &str = "the Machine pulls the image by digest and writes no name";
 const PINNED_DOORS: &str = "only pinned images run";
 
 /// Every case an enforcing Machine is held to, in catalog order.
@@ -595,14 +600,32 @@ pub const CASES: &[Case] = &[
     ),
     case(
         PULL_IMAGE_CAPABILITY,
-        "any image",
-        "a PullImage of a public image",
+        "tag",
+        "a PullImage of a public image by tag",
+        Expected::Refused(&[PULL_IMAGE_CAPABILITY]),
+    ),
+    case(
+        PULL_IMAGE_CAPABILITY,
+        "digest",
+        "a PullImage of a public image by digest",
         Expected::Bounded(PULLS_AGAIN),
     ),
     case(
-        PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+        PULL_FREE_IMAGE_CAPABILITY,
         "any image",
-        "a PullImageFromMachine of another Machine's image",
+        "a PullFreeImage of a public image by tag",
+        Expected::Bounded(WRITES_NO_NAME),
+    ),
+    case(
+        PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+        "tag",
+        "a PullImageFromMachine of another Machine's image by tag",
+        Expected::Refused(&[PULL_IMAGE_FROM_MACHINE_CAPABILITY]),
+    ),
+    case(
+        PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+        "digest",
+        "a PullImageFromMachine of another Machine's image by digest",
         Expected::Bounded(PULLS_AGAIN),
     ),
     case(

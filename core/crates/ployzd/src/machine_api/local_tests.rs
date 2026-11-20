@@ -1,6 +1,6 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, store_error, withhold_opened};
+use super::{MachineService, names_content, store_error, withhold_opened};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
@@ -14,6 +14,37 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tonic::{Code, Request};
+
+/// An Operator's peer copy may write only the retention name its own content certifies: a
+/// drain's user tag, a tag reference, or a retention name of other content would leave a
+/// name a Full creation runs.
+#[test]
+fn an_operator_copies_only_under_the_retention_name_of_its_content() {
+    use ployz_core::{ImageDigestReference, PeerImagePull};
+    let hex = "a".repeat(64);
+    let pinned = ImageDigestReference::parse(format!("app@sha256:{hex}")).unwrap();
+    let publish = |tag: String| PeerImagePull::Publish {
+        image: pinned.clone(),
+        tag,
+    };
+    let reference = |image: String| PeerImagePull::Reference { image };
+    for allowed in [
+        reference(format!("app@sha256:{hex}")),
+        reference(format!("app:v1@sha256:{hex}")),
+        publish(format!("app:ployz-sha256-{hex}")),
+    ] {
+        assert!(names_content(&allowed), "{allowed:?}");
+    }
+    for refused in [
+        reference("app:v1".into()),
+        reference("app".into()),
+        publish("app:v1".into()),
+        publish(format!("app:ployz-sha256-{}", "b".repeat(64))),
+        publish("app:ployz-sha256-staging".into()),
+    ] {
+        assert!(!names_content(&refused), "{refused:?}");
+    }
+}
 
 #[test]
 fn an_operator_reads_every_env_key_but_the_opened_ones() {

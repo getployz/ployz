@@ -127,7 +127,16 @@ pub struct PullImageRequest {
     pub registry_auth: Option<crate::RegistryAuth>,
 }
 
-/// Successful `PullImage` and `PullImageFromMachine` payload.
+/// Make one image present on this Machine as `policy` asks, the way it pulls for a
+/// Container nothing signed: from a public registry, with no login, recording only the
+/// image ID that pull placed. Writes no name, so a tag here keeps naming what it named.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PullFreeImageRequest {
+    pub image: String,
+    pub policy: crate::PullPolicy,
+}
+
+/// Successful `PullImage`, `PullFreeImage` and `PullImageFromMachine` payload.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {
     /// The ports the image's config exposes, as Docker reports them. A Machine that

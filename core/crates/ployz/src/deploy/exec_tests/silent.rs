@@ -70,61 +70,73 @@ async fn destination_and_holder(
             "deadline has elapsed",
         ))
     };
-    crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| async move {
-        let target = rpc
-            .metadata()
-            .get("machine")
-            .map(|value| MachineId::parse(value.to_str().unwrap()).unwrap());
-        #[expect(
-            clippy::wildcard_enum_match_arm,
-            reason = "the fixture answers only what an image pull and a start send"
-        )]
-        let response = match rpc.into_inner().decode_request().unwrap().body {
-            RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
-                attest: None,
-                machine_id: machine('1'),
-                protocol_major: PROTOCOL_MAJOR,
-                daemon_version: "fixture".into(),
-                capabilities: Default::default(),
-                sealing: None,
-            }),
-            RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
-                enrollment: None,
-                machines: ['1', '2']
-                    .map(|hex| MachineObservation::new(holder(hex), MembershipObservation::Up))
-                    .into(),
-            }),
-            RpcRequestBody::ListImages(_) => {
-                RpcResponse::from(images(image, target == Some(machine('2'))))
-            }
-            RpcRequestBody::EnsureImageIngest(_) if silent == Silent::Ingest => {
-                return Err(powered_off());
-            }
-            RpcRequestBody::EnsureImageIngest(_) => RpcResponse::from(ImageIngestOpened {
-                destination: ImageIngestDestination {
-                    management_address: holder('2').management_address(),
-                    port: ployz_core::UNREGISTRY_PORT,
-                },
-            }),
-            RpcRequestBody::PullImageFromMachine(_) if silent == Silent::PeerPull => {
-                return Err(powered_off());
-            }
-            RpcRequestBody::PullImage(_) if silent == Silent::RegistryPull => {
-                return Err(powered_off());
-            }
-            RpcRequestBody::PullImage(_) if silent == Silent::ClusterDown => {
-                return Err(Status::unavailable("Cluster is not available"));
-            }
-            RpcRequestBody::ListContainers(_) | RpcRequestBody::EnsureContainer(_)
-                if silent == Silent::NeverSettles =>
-            {
-                return std::future::pending().await;
-            }
-            other => panic!("unexpected request: {other:?}"),
-        };
-        Ok(Response::new(response.encode().unwrap()))
-    })
-    .await
+    // The client enters the destination over SSH: a tag is copied from a peer only there.
+    let (mut client, server) = crate::connect::test_support::rpc_client_over(
+        crate::context::Connection::ssh(
+            crate::context::SshDestination::parse("root@203.0.113.7").unwrap(),
+        ),
+        move |rpc: Request<OpaquePayload>| async move {
+            let target = rpc
+                .metadata()
+                .get("machine")
+                .map(|value| MachineId::parse(value.to_str().unwrap()).unwrap());
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "the fixture answers only what an image pull and a start send"
+            )]
+            let response = match rpc.into_inner().decode_request().unwrap().body {
+                RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                    attest: None,
+                    machine_id: machine('1'),
+                    protocol_major: PROTOCOL_MAJOR,
+                    daemon_version: "fixture".into(),
+                    capabilities: Default::default(),
+                    sealing: None,
+                }),
+                RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                    enrollment: None,
+                    machines: ['1', '2']
+                        .map(|hex| MachineObservation::new(holder(hex), MembershipObservation::Up))
+                        .into(),
+                }),
+                RpcRequestBody::ListImages(_) => {
+                    RpcResponse::from(images(image, target == Some(machine('2'))))
+                }
+                RpcRequestBody::EnsureImageIngest(_) if silent == Silent::Ingest => {
+                    return Err(powered_off());
+                }
+                RpcRequestBody::EnsureImageIngest(_) => RpcResponse::from(ImageIngestOpened {
+                    destination: ImageIngestDestination {
+                        management_address: holder('2').management_address(),
+                        port: ployz_core::UNREGISTRY_PORT,
+                    },
+                }),
+                RpcRequestBody::PullImageFromMachine(_) if silent == Silent::PeerPull => {
+                    return Err(powered_off());
+                }
+                RpcRequestBody::PullImage(_) | RpcRequestBody::PullFreeImage(_)
+                    if silent == Silent::RegistryPull =>
+                {
+                    return Err(powered_off());
+                }
+                RpcRequestBody::PullImage(_) | RpcRequestBody::PullFreeImage(_)
+                    if silent == Silent::ClusterDown =>
+                {
+                    return Err(Status::unavailable("Cluster is not available"));
+                }
+                RpcRequestBody::ListContainers(_) | RpcRequestBody::EnsureContainer(_)
+                    if silent == Silent::NeverSettles =>
+                {
+                    return std::future::pending().await;
+                }
+                other => panic!("unexpected request: {other:?}"),
+            };
+            Ok(Response::new(response.encode().unwrap()))
+        },
+    )
+    .await;
+    client.enter_at(machine('1'));
+    (client, server)
 }
 
 fn silence(machine_id: MachineId, transport: &str) -> String {
@@ -361,7 +373,7 @@ async fn live_and_second(
                     })
                 }
                 RpcRequestBody::ListImages(_) => RpcResponse::from(images("alpine:3.23.3", true)),
-                RpcRequestBody::PullImage(_) => {
+                RpcRequestBody::PullImage(_) | RpcRequestBody::PullFreeImage(_) => {
                     RpcResponse::from(ployz_core::ImagePulled::default())
                 }
                 RpcRequestBody::ListContainers(_) if target == Some(machine('2')) => {

@@ -199,6 +199,17 @@ impl MachineService {
         self.local.record()
     }
 
+    /// An Operator's request to write an image tag here, refused before anything is
+    /// pulled: a Full creation runs whatever a tag names, with the Service's Sealed
+    /// values and Volumes, so only a caller with Full access here writes one.
+    fn tag_refusal(&self, capability: &str) -> RpcError {
+        RpcError::unsupported("This Server writes an image tag only for a caller with Full access.")
+            .with_details(serde_json::json!({
+                "target": self.local_record().id().to_string(),
+                "capability": capability,
+            }))
+    }
+
     fn replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         self.local
             .replicated()
@@ -971,20 +982,46 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::PullImage>(request)?;
+        let operator = Provenance::of(&request).operator();
+        let mut request = expect::<op::PullImage>(request)?;
         if request.image.is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
         }
+        if operator {
+            if !ployz_core::authority::deploy::content_addressed(&request.image) {
+                return respond(self.tag_refusal(ployz_core::PULL_IMAGE_CAPABILITY));
+            }
+            if request.image.starts_with("sha256:") {
+                // An image ID names no registry to pull from; it is only looked up.
+                request.policy = ployz_core::PullPolicy::Never;
+            }
+        }
         finish(self.local.pull_image(request).await)
+    }
+
+    async fn pull_free_image(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::PullFreeImage>(request)?;
+        if request.image.is_empty() {
+            return respond(RpcError::invalid_argument("image is required"));
+        }
+        finish(self.local.pull_free_image(request).await)
     }
 
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::PullImageFromMachine>(request)?;
         if request.pull.image().is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
+        }
+        // Refused before the copy starts, so no name, staging or final, is written.
+        if operator && !names_content(&request.pull) {
+            return respond(self.tag_refusal(ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY));
         }
         finish(self.local.pull_image_from_machine(request).await)
     }
@@ -1311,6 +1348,18 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
         return None;
     };
     Some(pinned_refusal(why))
+}
+
+/// Whether every name `pull` writes is the retention name of the content it copies, which
+/// the copy checks against the content before writing. Image Cleanup alone reads those
+/// names, so an Operator may write them; any other name a Full creation may run.
+fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
+    let Some((_, digest)) = pull.image().split_once('@') else {
+        return false;
+    };
+    pull.tag().is_none_or(|tag| {
+        ployz_core::retained_digest(tag).is_some_and(|kept| kept.as_str() == digest)
+    })
 }
 
 fn pinned_refusal(message: &str) -> RpcError {

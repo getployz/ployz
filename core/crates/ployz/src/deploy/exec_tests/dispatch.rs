@@ -522,8 +522,12 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
 
     let captured = Arc::new(Mutex::new(Vec::<PullImageRequest>::new()));
     let requests = captured.clone();
-    let (mut client, server) =
-        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+    // Only a Server the client enters over SSH is asked to pull with a login.
+    let (mut client, server) = crate::connect::test_support::rpc_client_over(
+        crate::context::Connection::ssh(
+            crate::context::SshDestination::parse("root@203.0.113.7").unwrap(),
+        ),
+        move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
                 let RpcRequestBody::PullImage(request) =
@@ -538,8 +542,10 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
                         .unwrap(),
                 ))
             }
-        })
-        .await;
+        },
+    )
+    .await;
+    client.enter_at(machine('1'));
     let mut private = spec(None, None, None);
     private.container.pull_policy = ployz_core::PullPolicy::Always;
     let mut public = private.clone();
@@ -636,6 +642,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::PruneImages(_)
                     | RpcRequestBody::EnsureImageIngest(_)
                     | RpcRequestBody::PullImage(_)
+                    | RpcRequestBody::PullFreeImage(_)
                     | RpcRequestBody::PullImageFromMachine(_)
                     | RpcRequestBody::MintBuildGrant(_)
                     | RpcRequestBody::InspectBuildGrant(_)
@@ -931,7 +938,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         complete: true,
                         ..RoutesRead::default()
                     }),
-                    RpcRequestBody::PullImage(_) => {
+                    RpcRequestBody::PullImage(_) | RpcRequestBody::PullFreeImage(_) => {
                         RpcResponse::from(ployz_core::ImagePulled::default())
                     }
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
