@@ -2,6 +2,7 @@ import { Effect, Option, Result } from "effect";
 import { flow } from "effect/Function";
 import { crashPushInput, decodeCrashPush, decodePushHeader, decodeRequestPush, isObserveStream, requestPushInput } from "#/modules/observe-ingest/ingest";
 import { authenticateObservePush, ingestCrashPush, ingestRequestPush, type ObservePusher, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
+import { authenticateMachineToken, forwardOtlp, type OtlpSignal } from "#/modules/observe-ingest/otlp.server";
 import type { ObserveStream } from "#/modules/observe-ingest/tables";
 import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { readCappedBody } from "#/server/capped-body";
@@ -23,6 +24,21 @@ const ingestStream = {
 function errorResponse(cause: unknown) {
   const publicError = encodePublicError(cause);
   return Response.json({ error: publicError.message }, { status: statusForPublicError(publicError), headers: noStore });
+}
+
+const MAX_OTLP_BYTES = 8 * 1024 * 1024;
+
+export function handleMachineOtlp(request: Request, signal: OtlpSignal) {
+  return Effect.gen(function* () {
+    const organization = yield* Effect.result(authenticateMachineToken(request.headers.get("authorization")));
+    if (Result.isFailure(organization)) return errorResponse(organization.failure);
+    const read = yield* Effect.result(Effect.tryPromise(() => readCappedBody(request, MAX_OTLP_BYTES)));
+    if (Result.isFailure(read)) return Response.json({ error: "Cloud could not read the request body." }, { status: 503, headers: noStore });
+    const body = read.success;
+    if (body === null) return Response.json({ error: "OTLP body is over 8 MiB." }, { status: 413, headers: noStore });
+    const forwarded = yield* Effect.result(forwardOtlp(organization.success, signal, request.headers, body));
+    return Result.isFailure(forwarded) ? errorResponse(forwarded.failure) : forwarded.success;
+  });
 }
 
 export function handleObservePush(request: Request, machineId: string) {

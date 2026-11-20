@@ -1,14 +1,12 @@
 import "@tanstack/react-start/server-only";
-import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
 import { Clock, Effect, Option, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import { createObserveCrashReceivedEvent } from "#/modules/inngest/events";
-import { decryptPairingSecret } from "#/modules/machines/connections.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import { managementIdentity } from "#/modules/machines/management-identity";
-import { organizationMachine } from "#/modules/machines/tables";
 import type { CrashPushInput, RequestPushInput } from "#/modules/observe-ingest/ingest";
+import { organizationOfSigningMachine, verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { classify } from "#/modules/web-analytics/classify";
@@ -38,14 +36,7 @@ export function observePushMessage(machineId: string, timestamp: bigint, body: U
 }
 
 /** Whether `signature` is the ed25519 signature of `message` by the management key `identity` (64 hex digits). */
-export function verifyObservePush(identity: string, message: Uint8Array, signature: Uint8Array) {
-  try {
-    const x = Buffer.from(identity, "hex").toString("base64url");
-    return verify(null, message, createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x }, format: "jwk" }), signature);
-  } catch {
-    return false;
-  }
-}
+export const verifyObservePush = verifyManagementSignature;
 
 const decodeMachineId = Schema.decodeUnknownOption(rustMachineIdSchema);
 
@@ -62,41 +53,13 @@ export const observePushCredentials = Effect.fn("ObserveIngest.credentials")(fun
   return { machineId: machine.value, timestamp, signature: Buffer.from(signature, "base64url") } satisfies ObservePushCredentials;
 });
 
-/**
- * The one Organization whose enrolled Machine signed this body. A row enrolled before Cloud kept management keys gets
- * its key from its capability on first use.
- */
+/** The one Organization whose enrolled Machine signed this body. */
 export const authenticateObservePush = Effect.fn("ObserveIngest.authenticate")(function* (
   { machineId, timestamp, signature }: ObservePushCredentials,
   body: Uint8Array,
 ) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({
-    organizationId: organizationMachine.organizationId,
-    managementIdentity: organizationMachine.managementIdentity,
-    encryptedCapability: organizationMachine.encryptedCapability,
-  }).from(organizationMachine).where(eq(organizationMachine.machineId, machineId));
   const message = observePushMessage(machineId, timestamp, body);
-  const signers: string[] = [];
-  for (const row of rows) {
-    const identity = row.managementIdentity ?? managementIdentity(yield* decryptPairingSecret(row.encryptedCapability));
-    if (identity === null) continue;
-    if (row.managementIdentity === null) {
-      yield* drizzle.update(organizationMachine).set({ managementIdentity: identity }).where(and(
-        eq(organizationMachine.organizationId, row.organizationId),
-        eq(organizationMachine.machineId, machineId),
-        isNull(organizationMachine.managementIdentity),
-      ));
-    }
-    if (verifyObservePush(identity, message, signature)) signers.push(row.organizationId);
-  }
-  const [organizationId, ...others] = signers;
-  if (organizationId === undefined) return yield* new Unauthorized();
-  if (others.length > 0) {
-    // A Machine that left one Organization's Cluster without Cloud seeing it keeps its key, and its row, there.
-    yield* Effect.logWarning("A push verified for more than one Organization; refused.", { machineId, organizations: signers.length });
-    return yield* new Unauthorized();
-  }
+  const organizationId = yield* organizationOfSigningMachine(machineId, (identity) => verifyObservePush(identity, message, signature));
   return { organizationId, machineId } satisfies ObservePusher;
 });
 
