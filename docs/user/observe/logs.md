@@ -89,7 +89,9 @@ Hiding secrets is best effort. A line can still show:
 - a Sealed value of a container that is gone, when another container logged it earlier.
 
 If a container's Sealed value can't be opened, for example after the server's Sealing Key
-changed, the collector doesn't run until that container is gone or redeployed.
+changed, the collector can't learn the new list. It keeps running with the list it has, and it
+isn't started or changed until that container is gone or redeployed. A deploy that adds a Sealed
+value stops the collector first, so the new container's output waits in its own log file.
 
 Don't print secrets from your app. A deploy that adds a Sealed value waits for the collector to
 learn it before the new container starts, so the container's first line is already hidden. The

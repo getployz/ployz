@@ -54,6 +54,11 @@ struct Inner {
     state: Mutex<State>,
 }
 
+struct Connected {
+    identity: store::MachineIdentity,
+    target: reqwest::Url,
+}
+
 struct State {
     values: SealedValues,
     inventoried: bool,
@@ -135,29 +140,37 @@ impl Inner {
         Ok(record.secrets(Some(&self.data_dir))?)
     }
 
+    fn target(&self) -> Option<Connected> {
+        let identity = store::identity(&self.data_dir)?;
+        let target = identity.push_target.clone()?;
+        Some(Connected { identity, target })
+    }
+
     async fn take_values_of(
         &self,
         state: &mut State,
         container_labels: &HashMap<String, String>,
     ) -> Result<(), Error> {
-        let connected =
-            store::identity(&self.data_dir).is_some_and(|identity| identity.push_target.is_some());
-        let found = match self.values_of(container_labels) {
-            _ if !connected => Ok(SealedValues::none()),
-            Ok(found) if state.inventoried => Ok(found),
-            Ok(mut found) => self.live_values().await.map(|live| {
-                found.merge(live);
-                found
-            }),
-            Err(error) => Err(error),
+        let Some(connected) = self.target() else {
+            return self.tear_down(state).await;
         };
-        self.converge(state, found).await
+        let mut found = self.values_of(container_labels)?;
+        if !state.inventoried {
+            found.merge(self.live_values().await?);
+        }
+        self.converge(state, &connected, found).await
     }
 
     async fn tick(&self) -> Duration {
         let mut state = self.state.lock().await;
-        let found = self.live_values().await;
-        if let Err(error) = self.converge(&mut state, found).await {
+        let converged = match self.target() {
+            None => self.tear_down(&mut state).await,
+            Some(connected) => match self.live_values().await {
+                Ok(found) => self.converge(&mut state, &connected, found).await,
+                Err(error) => Err(error),
+            },
+        };
+        if let Err(error) = converged {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector is not converged");
             return TICK;
         }
@@ -177,31 +190,31 @@ impl Inner {
         Ok(found)
     }
 
+    /// Stopping needs no values, so a Machine with no push target tears the Collector
+    /// down once, whatever a Sealed record would say.
+    async fn tear_down(&self, state: &mut State) -> Result<(), Error> {
+        if state.torn_down {
+            return Ok(());
+        }
+        self.service().remove().await?;
+        remove_dir(&self.machine_root.join("run/ployz/collector"))?;
+        state.values = SealedValues::none();
+        state.inventoried = false;
+        state.refresh_token_at = None;
+        state.torn_down = true;
+        Ok(())
+    }
+
     /// Brings the Collector to what `found` says, where `found` is every Sealed value
-    /// there is or the reason it could not be had. Stopping needs no values, so a push
-    /// target gone tears the Collector down whatever `found` is.
+    /// there is, so the mask it writes is never missing one.
     async fn converge(
         &self,
         state: &mut State,
-        found: Result<SealedValues, Error>,
+        connected: &Connected,
+        found: SealedValues,
     ) -> Result<(), Error> {
+        let Connected { identity, target } = connected;
         let service = self.service();
-        let target = store::identity(&self.data_dir).and_then(|identity| {
-            let target = identity.push_target.clone()?;
-            Some((identity, target))
-        });
-        let Some((identity, target)) = target else {
-            if !state.torn_down {
-                service.remove().await?;
-                remove_dir(&self.machine_root.join("run/ployz/collector"))?;
-                state.values = SealedValues::none();
-                state.inventoried = false;
-                state.refresh_token_at = None;
-                state.torn_down = true;
-            }
-            return Ok(());
-        };
-        let found = found?;
         state.torn_down = false;
         state.inventoried = true;
         state.values.merge(found);
@@ -226,7 +239,7 @@ impl Inner {
         write_if_changed(&paths.mask_file(), mask.as_bytes())?;
         let desired = DesiredContainer::new(
             crate::images::COLLECTOR,
-            config::body(&paths, &config::endpoint(&target)),
+            config::body(&paths, &config::endpoint(target)),
             &[config::BASE.as_bytes(), mask.as_bytes()],
         );
         match service.ensure(desired).await? {
