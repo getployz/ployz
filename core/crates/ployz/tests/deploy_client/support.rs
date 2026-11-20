@@ -1862,6 +1862,7 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
                         name: DockerVolumeName::parse(name).unwrap(),
                         driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
                         labels: Default::default(),
+                        birth: None,
                     }
                     .admit()
                     .expect("valid volume declaration"),

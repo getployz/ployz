@@ -911,6 +911,7 @@ pub(super) fn lower(
                 volume_resource_id: volume.resource_id.clone(),
                 storage: volume.storage,
                 deployed: deployed.contains(&volume.resource_id),
+                birth: volume.birth.clone(),
             })
             .collect(),
         lineages: lineages.clone(),

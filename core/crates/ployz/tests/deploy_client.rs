@@ -179,6 +179,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         name,
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
         labels,
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");

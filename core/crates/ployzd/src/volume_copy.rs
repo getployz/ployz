@@ -7,7 +7,8 @@
 //! InspectVolumeCopy reports.
 
 use ployz_core::{
-    DockerVolumeName, ManagementAddress, SnapshotGuid, SnapshotName, VolumeGen, WriterEpoch,
+    DockerVolumeName, ManagementAddress, SnapshotGuid, SnapshotName, VolumeGen, VolumeOrigin,
+    WriterEpoch,
 };
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +40,25 @@ pub const WRITER_ROUTE: &str = "Volume.Copy.Writer";
 pub const PULL_ROUTE: &str = "Volume.Copy.Pull";
 /// The slot destroyed with its copy.
 pub const DESTROY_ROUTE: &str = "Volume.Copy.Destroy";
+/// The dataset a send of `target` reads, with the snapshot's GUID and origin, observed in
+/// one answer under the plugin's mutation, so no receive replaces the copy between them.
+pub const SEND_POINT_ROUTE: &str = "Volume.SendPoint";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SendPointRequest {
+    pub name: DockerVolumeName,
+    pub target: SnapshotName,
+}
+
+/// What a send of one snapshot reads: the root or the slot's `fs`, the snapshot's GUID,
+/// which the stream's BEGIN record must name, and its origin, `None` for Legacy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SendPoint {
+    pub dataset: String,
+    pub guid: SnapshotGuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<VolumeOrigin>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CopyRequest {

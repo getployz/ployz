@@ -486,6 +486,7 @@ mod tests {
             epoch: WriterEpoch::new(epoch),
             seed: false,
             mark: None,
+            origin: None,
         }
     }
 
@@ -496,6 +497,7 @@ mod tests {
             epoch: WriterEpoch::default(),
             seed: true,
             mark: None,
+            origin: None,
         }
     }
 
@@ -508,6 +510,7 @@ mod tests {
             pull,
             role: Some(SlotRole::Mirror),
             pull_state: None,
+            origin: None,
         }
     }
 
@@ -520,6 +523,7 @@ mod tests {
             pull: None,
             role: Some(SlotRole::OldCopy),
             pull_state: None,
+            origin: None,
         }
     }
 

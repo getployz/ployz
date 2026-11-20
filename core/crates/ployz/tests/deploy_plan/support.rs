@@ -168,6 +168,7 @@ pub(super) fn add_named_volume(requested: &mut RequestedServiceSpec, name: &str)
             name: DockerVolumeName::parse(name).unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: Default::default(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),
@@ -200,6 +201,7 @@ pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str,
             std::num::NonZeroU64::new(bytes).unwrap(),
         ),
         labels: labels.clone(),
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");

@@ -21,6 +21,8 @@ use tokio::{
 
 use super::{
     PluginError, Result, VolumeName,
+    marks::Mark,
+    origin::Origin,
     pool::PoolStorage,
     transfer::{RECEIVE_STALL, STOP_DEADLINE},
 };
@@ -157,7 +159,8 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &VolumeName,
         requested: u64,
-        origin: CapacityAdmission,
+        admission: CapacityAdmission,
+        origin: Origin,
     ) -> Result<()> {
         let datasets = self.datasets(pool).await?;
         let layout = DatasetLayout::of(pool);
@@ -181,12 +184,22 @@ impl VolumeStorage {
             )));
         }
 
-        if matches!(origin, CapacityAdmission::Required) {
+        if matches!(admission, CapacityAdmission::Required) {
             self.ensure_commitment(pool, &datasets, requested).await?;
         }
 
         self.ensure_root(&datasets, &root).await?;
-        self.zfs(&["create", "-o", &format!("refquota={requested}"), &volume])
+        // The first create carries the origin, so no crash leaves a born root unmarked.
+        let mut args = vec![
+            "create".to_owned(),
+            "-o".to_owned(),
+            format!("refquota={requested}"),
+        ];
+        if let Some(origin) = origin {
+            args.extend(["-o".to_owned(), format!("{}={origin}", Mark::Origin)]);
+        }
+        args.push(volume);
+        self.zfs(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         Ok(())
     }
@@ -301,16 +314,16 @@ impl VolumeStorage {
     }
 
     pub(super) async fn datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
-        let output = self
-            .zfs(&[
-                "list",
-                "-Hp",
-                "-o",
-                "name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly",
-                "-r",
-                pool.name(),
-            ])
-            .await?;
+        Self::parse_datasets(pool, &self.zfs(&dataset_listing(pool)).await?)
+    }
+
+    /// [`Self::datasets`] from a listing that ZFS finished, for an answer that says a
+    /// dataset is absent.
+    pub(super) async fn complete_datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
+        Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)
+    }
+
+    fn parse_datasets(pool: &MachinePool, output: &str) -> Result<Vec<Dataset>> {
         output
             .lines()
             .map(|line| Dataset::parse(line, pool.name()))
@@ -351,13 +364,32 @@ impl VolumeStorage {
 
     pub(super) async fn exists(&self, dataset: &str) -> Result<bool> {
         let names = self
-            .zfs(&["list", "-H", "-o", "name", "-t", "filesystem"])
+            .zfs_listing(&["list", "-H", "-o", "name", "-t", "filesystem"])
             .await?;
         Ok(names.lines().any(|name| name == dataset))
     }
 
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {
         checked_command(&self.zfs, args).await
+    }
+
+    /// Like [`Self::zfs`], for a listing an absence is judged from. ZFS exits 0 when it
+    /// stopped iterating on an error and says so only on stderr, so any stderr fails it.
+    pub(super) async fn zfs_listing(&self, args: &[&str]) -> Result<String> {
+        let output = run_command(&self.zfs, args).await;
+        if let Ok(output) = &output
+            && output.status.success()
+            && !output.stderr.trim_ascii().is_empty()
+        {
+            return Err(format!(
+                "{} {} stopped early: {}",
+                self.zfs.display(),
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
+        checked_output(&self.zfs, args, output)
     }
 
     /// What this Machine holds for `name` in `datasets`, if anything, with `receiving`
@@ -568,13 +600,34 @@ fn parse_zfs_bytes(value: &str) -> Result<u64> {
     }
 }
 
-pub(super) fn parse_size(options: &BTreeMap<String, String>) -> Result<u64> {
-    if options.len() != 1 || !options.contains_key("size") {
-        return Err("Volume option size is required and is the only supported option".into());
+/// What Docker's Create asks of a Provisioned Volume: its bound, and its origin when born.
+pub(super) struct CreateOptions {
+    pub(super) size: u64,
+    pub(super) origin: Origin,
+}
+
+pub(super) fn parse_create(options: &BTreeMap<String, String>) -> Result<CreateOptions> {
+    let origin_key = ployz_core::PROVISIONED_ORIGIN_OPTION;
+    if options.keys().any(|key| key != "size" && key != origin_key) {
+        return Err(format!("Volume options are size, which is required, and {origin_key}").into());
     }
-    let value = options
-        .get("size")
-        .expect("the only accepted option is size");
+    let Some(size) = options.get("size") else {
+        return Err("Volume option size is required".into());
+    };
+    let origin = options
+        .get(origin_key)
+        .map(|value| {
+            ployz_core::VolumeOrigin::parse(value)
+                .map_err(|error| PluginError::from(format!("invalid Volume origin: {error}")))
+        })
+        .transpose()?;
+    Ok(CreateOptions {
+        size: parse_size(size)?,
+        origin,
+    })
+}
+
+fn parse_size(value: &str) -> Result<u64> {
     let (amount, suffix) = value.split_at(value.len().saturating_sub(1));
     let multiplier = match suffix {
         "b" => 1,
@@ -600,6 +653,17 @@ pub(super) fn parse_size(options: &BTreeMap<String, String>) -> Result<u64> {
     amount
         .checked_mul(multiplier)
         .ok_or_else(|| format!("Volume size {value:?} overflows bytes").into())
+}
+
+fn dataset_listing(pool: &MachinePool) -> [&str; 6] {
+    [
+        "list",
+        "-Hp",
+        "-o",
+        "name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly",
+        "-r",
+        pool.name(),
+    ]
 }
 
 pub(super) async fn run_command(program: &PathBuf, args: &[&str]) -> io::Result<Output> {
