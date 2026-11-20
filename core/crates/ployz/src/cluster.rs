@@ -150,6 +150,24 @@ impl Client {
             )
     }
 
+    /// How a copied image may be named on `dest`. Only a person's own Full access names
+    /// user tags: over SSH or the local socket, on a route Cloud didn't hand over, and only
+    /// on the entry itself. A call forwarded to any other Machine arrives there as Operator,
+    /// and a Management connection may be an Operator slot, so both get retention names only.
+    pub(crate) fn image_naming(&self, dest: &MachineId) -> crate::image::Naming {
+        let full = self.session.entry == Some(*dest)
+            && !matches!(self.connection_source(), ConnectionSource::Cloud)
+            && matches!(
+                self.session.connection().transport(),
+                crate::context::Transport::Ssh { .. } | crate::context::Transport::Unix(_)
+            );
+        if full {
+            crate::image::Naming::UserTags
+        } else {
+            crate::image::Naming::Retention
+        }
+    }
+
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.session.ended()?;
         if self.routes.is_empty()
@@ -1108,14 +1126,42 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
-        let target = MachineTarget::from(machine_id);
-        let request = self.ensure_request(&target, want, Carry::Approvals).await?;
-        let payload = op::EnsureContainer::into_request(request)
+        let request = self.ensure_request_to(machine_id, want).await?;
+        self.send_ensure::<op::EnsureContainer>(machine_id, request, timeout)
+            .await
+    }
+
+    /// The request a Deploy sends to create or settle `want` on `machine_id`, with the
+    /// Deploy's approvals. Failing here, nothing was sent.
+    pub(crate) async fn ensure_request_to(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+    ) -> Result<EnsureContainerRequest, RpcError> {
+        self.ensure_request(&MachineTarget::from(machine_id), want, Carry::Approvals)
+            .await
+    }
+
+    /// Send `request` on route `R`: ensure.v1, or the pinned route, which runs exactly the
+    /// image ID its Container names and which a daemon from before it refuses by name.
+    pub(crate) async fn send_ensure<R>(
+        &self,
+        machine_id: &MachineId,
+        request: EnsureContainerRequest,
+        timeout: Option<Duration>,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError>
+    where
+        R: ployz_core::Rpc<
+                Request = EnsureContainerRequest,
+                Response = ployz_core::EnsuredContainer,
+            >,
+    {
+        let payload = R::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         apply_timeout(
             timeout,
-            self.send::<op::EnsureContainer>(payload, Some(&target)),
+            self.send::<R>(payload, Some(&MachineTarget::from(machine_id))),
         )
         .await
         .map_err(|error| answered_by(machine_id, error))

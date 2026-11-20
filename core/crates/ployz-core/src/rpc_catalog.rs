@@ -84,6 +84,7 @@ macro_rules! rpc_catalog {
                 ListContainers: (list_containers, ListContainersRequest, ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container, Operator),
                 InspectContainer: (inspect_container, InspectContainerRequest, ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container, Operator),
                 EnsureContainer: (ensure_container, EnsureContainerRequest, EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container, Operator),
+                EnsurePinnedContainer: (ensure_pinned_container, EnsureContainerRequest, EnsuredContainer, ENSURE_PINNED_CONTAINER_CAPABILITY, "ployz.container.ensure-pinned.v1", Container, Operator),
                 UpdateContainerLimits: (update_container_limits, UpdateContainerLimitsRequest, ContainerLimitsUpdated, UPDATE_CONTAINER_LIMITS_CAPABILITY, "ployz.container.limits.update.v1", Container, Operator),
                 UpdateContainerPlacement: (update_container_placement, UpdateContainerPlacementRequest, ContainerPlacementUpdated, UPDATE_CONTAINER_PLACEMENT_CAPABILITY, "ployz.container.placement.update.v1", Container, Operator),
                 InspectStorage: (inspect_storage, InspectStorageRequest, StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container, Operator),

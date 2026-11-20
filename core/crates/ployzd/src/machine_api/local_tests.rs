@@ -5968,10 +5968,14 @@ mod ensure_container {
             deploy_ensure(service, new_want("service_container", "k3", &here), None)
                 .await
                 .unwrap();
-            let elsewhere = with_policy(
-                "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc",
-                "never",
-            );
+            let absent = "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc";
+            fixture
+                .fake
+                .images
+                .lock()
+                .unwrap()
+                .insert(absent.into(), None);
+            let elsewhere = with_policy(absent, "never");
             let refused = deploy_ensure(
                 service,
                 new_want("service_container", "k4", &elsewhere),

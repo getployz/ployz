@@ -427,7 +427,7 @@ fn unpinnable(matches: &ArgMatches, spec: &RequestedServiceSpec, error: PinError
             &format!(
                 "{}.image={}@sha256:…",
                 spec.name,
-                repository(&spec.container.image)
+                ployz_core::image_repository(&spec.container.image)
             ),
         ],
     );
@@ -460,15 +460,6 @@ fn unpinnable(matches: &ArgMatches, spec: &RequestedServiceSpec, error: PinError
         }
     };
     failure.hint(Hint::Next(next))
-}
-
-/// `image` without its tag or digest: `ghcr.io/acme/web` of `ghcr.io/acme/web:1.4`.
-fn repository(image: &str) -> &str {
-    let image = image.split_once('@').map_or(image, |(name, _)| name);
-    match image.rsplit_once(':') {
-        Some((name, tag)) if !tag.contains('/') => name,
-        _ => image,
-    }
 }
 
 #[cfg(test)]

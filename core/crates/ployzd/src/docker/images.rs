@@ -15,15 +15,13 @@ use bollard::{
 };
 use ployz_core::{
     DOCKER_ROOT_NEARLY_FULL_BYTES, DiskFull, DiskSpace, ExposedPort, ImageRemoval,
-    ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineImages, PullPolicy, RegistryAuth,
+    ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineImages, PullPolicy, RETENTION_TAG,
+    RegistryAuth,
 };
 
 use super::{Error, LocalDocker, Status, classify, containerd_store, project_image};
 use crate::docker_image::UnsignedImage;
 
-/// What follows a repository in the tag that keeps a pinned image from being pruned. A
-/// daemon of another version reads these tags, so the text does not change.
-const RETENTION_TAG: &str = ":ployz-sha256-";
 /// Unused images kept for rollback.
 const KEEP: usize = 3;
 /// Unused images kept when the Docker root is nearly full.
@@ -294,17 +292,6 @@ impl Images {
     }
 }
 
-/// The tag a pinned `image` is kept under, `repository:ployz-sha256-<hex>`. A pin that also
-/// names a tag (`redis:7-alpine@sha256:…`) drops it, since a Docker reference holds one tag.
-pub(super) fn retention_tag(image: &str) -> Option<String> {
-    let (name, hex) = image.split_once("@sha256:")?;
-    let repository = match name.rsplit_once(':') {
-        Some((repository, tag)) if !tag.contains('/') => repository,
-        _ => name,
-    };
-    Some(format!("{repository}{RETENTION_TAG}{hex}"))
-}
-
 /// Retention tags in `repository` to remove, newest kept. Images a Container uses,
 /// or whose use Docker did not count, are neither kept nor removed.
 fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i64) -> Vec<String> {
@@ -472,7 +459,7 @@ mod tests {
                 format!("localhost:5000/api:ployz-sha256-{hex}"),
             ),
         ] {
-            let tag = retention_tag(&image).unwrap();
+            let tag = ployz_core::retention_tag(&image).unwrap();
             assert_eq!(tag, kept);
             assert!(ployz_core::is_image_reference(&tag), "{tag}");
         }

@@ -1512,6 +1512,10 @@ pub enum Error {
     Clock(String),
     #[error("peer image pull failed: {0}")]
     PeerPull(String),
+    /// A retention name already names another image, or doesn't match the content it
+    /// would keep. Only a pin's own content goes under its retention name.
+    #[error("the retention name {0} names other content")]
+    RetentionNameTaken(String),
     /// The disposable image-ingest helper did not become reachable in time.
     #[error("Unregistry did not accept TCP at {address} within {} seconds", .timeout.as_secs_f64())]
     UnregistryNotReady {
@@ -1551,6 +1555,7 @@ impl Error {
             | Self::VolumeNotWritable(_)
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
+            | Self::RetentionNameTaken(_)
             | Self::ServicePlacementMismatch
             | Self::LimitsRefused { .. }
             | Self::PlacementRefused { .. }

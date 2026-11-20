@@ -249,9 +249,22 @@ fn pulls_on_create(error: RpcError) -> Result<ImagePulled, RpcError> {
     }
 }
 
-/// Copy the image a Container runs, by its local image ID, from `source` to `dest`,
-/// tagged `image` there. Never asks a registry: a tag moved since the Deploy must not
-/// change what runs after Placement convergence.
+/// Who may name what a copied image is called on its destination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Naming {
+    /// Only the retention name, which nothing but Image Cleanup reads.
+    Retention,
+    /// Also the spec's tag, when the destination has none and the source's own tag names
+    /// the copied image: a later `never` Deploy of that tag then finds it there.
+    UserTags,
+}
+
+/// Copy the image a Container runs, by its local image ID, from `source` to `dest`. Never
+/// asks a registry: a tag moved since the Deploy must not change what runs after Placement
+/// convergence. A digest `image` arrives as it names itself; a tag `image` arrives under
+/// its retention name, and with [`Naming::UserTags`] also under `image` when `dest` holds
+/// no such tag and `source`'s own `image` tag names this image. An existing tag never
+/// moves. Nothing is sent when `dest` already holds the image under every name it needs.
 ///
 /// # Errors
 ///
@@ -263,6 +276,7 @@ pub(crate) async fn copy_running_image(
     dest: &Machine,
     image: &str,
     image_id: &str,
+    naming: Naming,
 ) -> Result<(), PushError> {
     let mut client = client.clone();
     let listings = client
@@ -280,10 +294,30 @@ pub(crate) async fn copy_running_image(
             .find(|success| success.machine_id == *id)
             .map(|success| &success.value.images)
     };
-    if store(&dest.id).is_some_and(|images| built::holds_as(images, image, image_id)) {
+    let dest_images = store(&dest.id).expect("every listed target answered");
+    let source_images = store(&source.id).expect("every listed target answered");
+    let names = if ployz_core::authority::deploy::content_addressed(image) {
+        Vec::new()
+    } else {
+        let pinned = format!("{}@{image_id}", ployz_core::image_repository(image));
+        let retention =
+            ployz_core::retention_tag(&pinned).ok_or_else(|| PushError::InvalidReference {
+                reference: pinned.clone(),
+                message: "not pinned to a sha256 digest".to_owned(),
+            })?;
+        let tag = (naming == Naming::UserTags
+            && !built::holds_tag(dest_images, image)
+            && built::holds_as(source_images, image, image_id))
+        .then(|| image.to_owned());
+        std::iter::once(retention).chain(tag).collect()
+    };
+    let held = available_variant(dest_images, image_id, &dest.runtime.architecture).is_some()
+        && names
+            .iter()
+            .all(|name| built::holds_as(dest_images, name, image_id));
+    if held {
         return Ok(());
     }
-    let source_images = store(&source.id).expect("every listed target answered");
     if !source_images.containerd_store {
         return Err(PushError::UnsupportedImageStore);
     }
@@ -295,39 +329,43 @@ pub(crate) async fn copy_running_image(
             platform: dest.runtime.architecture.clone(),
         });
     };
-    let pull = if image.contains('@') {
-        PeerImagePull::Reference {
+    let pulls = if names.is_empty() {
+        vec![PeerImagePull::Reference {
             image: image.to_owned(),
-        }
+        }]
     } else {
         let pinned = format!("{}@{image_id}", repository(image));
-        PeerImagePull::Publish {
-            image: ployz_core::ImageDigestReference::parse(&pinned).map_err(|error| {
-                PushError::InvalidReference {
-                    reference: pinned.clone(),
-                    message: error.to_string(),
-                }
-            })?,
-            tag: image.to_owned(),
-        }
+        let pinned = ployz_core::ImageDigestReference::parse(&pinned).map_err(|error| {
+            PushError::InvalidReference {
+                reference: pinned.clone(),
+                message: error.to_string(),
+            }
+        })?;
+        names
+            .into_iter()
+            .map(|tag| PeerImagePull::Publish {
+                image: pinned.clone(),
+                tag,
+            })
+            .collect()
     };
     let source = PeerSource::open(&mut client, source.id)
         .await
         .map_err(|error| ingest_error(rpc_error(error)))?;
-    source
-        .pull_into(&mut client, &dest.id, pull, platform)
-        .await
-        .map_err(|error| PushError::PeerPull(rpc_error(error)))
+    for pull in pulls {
+        source
+            .pull_into(&mut client, &dest.id, pull, platform)
+            .await
+            .map_err(|error| PushError::PeerPull(rpc_error(error)))?;
+    }
+    Ok(())
 }
 
 /// `image` without its tag or registry: the path a digest pull asks the source for.
 /// The destination pulls it through its own loopback registry, which cannot nest a
 /// registry host like `registry:5000`, and the source serves digests by content alone.
 fn repository(image: &str) -> &str {
-    let repository = match image.rsplit_once(':') {
-        Some((repository, tag)) if !tag.contains('/') => repository,
-        _ => image,
-    };
+    let repository = ployz_core::image_repository(image);
     match repository.split_once('/') {
         Some((host, path)) if host.contains(['.', ':']) || host == "localhost" => path,
         _ => repository,

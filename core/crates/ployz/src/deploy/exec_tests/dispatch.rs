@@ -588,7 +588,8 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                             leaving: false,
                         })
                     }
-                    RpcRequestBody::EnsureContainer(request) => {
+                    RpcRequestBody::EnsureContainer(request)
+                    | RpcRequestBody::EnsurePinnedContainer(request) => {
                         requests.lock().unwrap().push(request);
                         ployz_core::RpcResponse::from(EnsuredContainer::Ensured {
                             health: None,
@@ -1063,6 +1064,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 registry_auth: None,
                 image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
+                image_id: None,
             }),
             rotation: RunRotation::Pending,
         },

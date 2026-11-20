@@ -503,6 +503,7 @@ mod plan {
             registry_auth: None,
             image_prepared: false,
             answer: ployz_core::AnswerWhen::Started,
+            image_id: None,
         }
     }
 
@@ -720,13 +721,13 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
             .count()
     };
 
-    assert_eq!(
+    assert!(matches!(
         local
             .create_and_start(new.clone(), None, admitted.clone(), None)
             .await
             .unwrap(),
-        None
-    );
+        super::Made::Acted(_, None)
+    ));
     assert_eq!(starts(), 1);
     // The first request's hook ran and exited; a second request that saw the slot empty
     // reaches the create and adopts it.
@@ -740,13 +741,13 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     {
         container["State"] = json!({"Status":"exited", "ExitCode":0});
     }
-    assert_eq!(
+    assert!(matches!(
         local
             .create_and_start(new, None, admitted, None)
             .await
             .unwrap(),
-        None
-    );
+        super::Made::Acted(_, None)
+    ));
     assert_eq!(starts(), 1, "the adopted hook is not run again");
     std::fs::remove_dir_all(data_dir).unwrap();
 }
@@ -1275,6 +1276,144 @@ mod settled {
             waited >= Duration::from_millis(6_400) && waited < Duration::from_millis(7_500),
             "waited {waited:?}"
         );
+    }
+
+    /// A drain's start of a tag spec, pinned to the image its old copy ran. The tag
+    /// names another image on this Machine.
+    fn pinned_run() -> (ContainerWant, String) {
+        let pin = format!("sha256:{}", "a".repeat(64));
+        let mut new = new_container("settled");
+        new.resolved_spec.update.monitor_millis = Some(0);
+        // A public registry, so an Operator's start may pull it.
+        new.resolved_spec.container.image = "nginx:1.29-alpine".into();
+        new.image_prepared = true;
+        new.image_id = Some(ployz_core::ImageDigest::parse(&pin).unwrap());
+        (run(new), pin)
+    }
+
+    fn starts(fake: &FakeDocker) -> usize {
+        fake.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, path)| {
+                *method == axum::http::Method::POST && path.ends_with("/start")
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn an_operator_pinned_start_runs_the_pinned_image_not_the_tag() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        let (want, pin) = pinned_run();
+        // The tag names another public image here by now.
+        fake.images.lock().unwrap().insert(
+            "nginx:1.29-alpine".into(),
+            Some(format!("sha256:{}", "b".repeat(64))),
+        );
+        let admitted = local
+            .admit_spec(
+                &want,
+                crate::machine::Presented::Operator {
+                    rule: None,
+                    versions: &[],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));
+
+        let reply = local.ensure_container(want, admitted).await.unwrap();
+
+        let EnsuredContainer::Ensured {
+            now: ContainerNow::Present(observed),
+            ..
+        } = reply
+        else {
+            panic!("expected the pinned Container, got {reply:?}");
+        };
+        let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
+        let made = containers
+            .values()
+            .find(|container| container["Id"] == observed.container_id.as_str())
+            .unwrap();
+        assert_eq!(made["Image"], pin.as_str());
+        drop(containers);
+        // Nothing signed it, so the Machine pulled exactly that image itself.
+        assert!(
+            fake.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| { path.ends_with("/images/create") })
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pinned_start_never_runs_another_image_in_its_slot() {
+        for state in [None, Some("running"), Some("exited")] {
+            let Settling {
+                local,
+                fake,
+                data_dir,
+            } = settling().await;
+            let (want, _) = pinned_run();
+            let EnsuredContainer::Ensured {
+                now: ContainerNow::Present(first),
+                ..
+            } = local.ensure_full_access(want.clone()).await.unwrap()
+            else {
+                panic!("the first start made its Container");
+            };
+            if let Some(state) = state {
+                for container in fake
+                    .named_containers
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .values_mut()
+                {
+                    container["Image"] = format!("sha256:{}", "b".repeat(64)).into();
+                    container["State"] = json!({"Status": state});
+                }
+            }
+            let started = starts(&fake);
+
+            let reply = local.ensure_full_access(want).await.unwrap();
+
+            match (state, reply) {
+                // A resend finds its own Container and answers it.
+                (
+                    None,
+                    EnsuredContainer::Ensured {
+                        now: ContainerNow::Present(again),
+                        ..
+                    },
+                ) => assert_eq!(again.container_id, first.container_id),
+                (
+                    Some(_),
+                    EnsuredContainer::Refused {
+                        now: ContainerNow::Present(occupant),
+                        refusal,
+                    },
+                ) => {
+                    assert_eq!(
+                        refusal.reason,
+                        ployz_core::ContainerRefusalReason::ImageDiffers
+                    );
+                    assert_eq!(occupant.container_id, first.container_id);
+                }
+                (state, reply) => panic!("{state:?}: unexpected {reply:?}"),
+            }
+            assert_eq!(starts(&fake), started, "{state:?}: nothing else started");
+            std::fs::remove_dir_all(data_dir).unwrap();
+        }
     }
 }
 

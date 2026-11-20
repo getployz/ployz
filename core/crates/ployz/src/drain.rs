@@ -909,6 +909,7 @@ impl Behind {
 /// Interrupted one is followed by a Failed refusal when an old copy was refused out.
 fn rows(shape: Shape, moves: Vec<Move>, last_in: bool, leftovers: Leftovers) -> Vec<DrainOutcome> {
     let refused = || MoveFailure::Refused {
+        from: None,
         reason: StayReason::LastIn,
     };
     let then_refused = |outcome| {

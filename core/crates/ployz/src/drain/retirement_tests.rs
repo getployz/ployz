@@ -141,6 +141,14 @@ impl CopyLifecycle for Cluster {
         unreachable!("retirement settles nothing: {want:?}")
     }
 
+    async fn ensure_new(
+        &self,
+        _machine_id: &MachineId,
+        want: ContainerWant,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        panic!("a retirement creates nothing: {want:?}")
+    }
+
     async fn ensure_unsettled(
         &self,
         machine_id: &MachineId,

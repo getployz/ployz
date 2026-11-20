@@ -1239,6 +1239,15 @@ impl CopyLifecycle for Recording {
         CopyLifecycle::ensure_container(&self.client, machine_id, want).await
     }
 
+    async fn ensure_new(
+        &self,
+        machine_id: &MachineId,
+        want: ployz_core::ContainerWant,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        self.wants.lock().unwrap().push(want.clone());
+        CopyLifecycle::ensure_new(&self.client, machine_id, want).await
+    }
+
     async fn ensure_unsettled(
         &self,
         machine_id: &MachineId,

@@ -1407,8 +1407,10 @@ impl Session {
     }
 
     /// Copy the image Container `container` runs on `source` to `dest`, by its local image
-    /// ID and tagged as its spec names it. Never asks a registry, and does nothing when
-    /// `dest` already holds that image.
+    /// ID. A spec that names a digest keeps it; a tag spec's image is kept under its
+    /// retention name, and at Full access also under the spec's tag when `dest` holds none
+    /// and `source`'s own tag names that image. Never asks a registry, and does nothing
+    /// when `dest` already holds that image under those names.
     ///
     /// # Errors
     ///
@@ -1449,7 +1451,8 @@ impl Session {
                 ))
             })?;
             let image = &details.container.resolved_spec.container.image;
-            crate::image::copy_running_image(&client, &source, &dest, image, &image_id)
+            let naming = client.image_naming(&dest.id);
+            crate::image::copy_running_image(&client, &source, &dest, image, &image_id, naming)
                 .await
                 .map_err(crate::failure::push_rpc_error)
         })
