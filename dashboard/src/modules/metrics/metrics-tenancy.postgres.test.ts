@@ -112,7 +112,7 @@ async function seed() {
     MetricName: SERVICE_METRICS.rx, Attributes: { interface: "eth0" }, TimeUnix: clickhouseTime(EDGE + offset), Value: (offset + 1) * 100, IsMonotonic: true,
   })));
   // A rollout: the old replica reports 256 for half of one bucket and its replacement 256 for the other half. Neither
-  // has a limit of its own, so Docker reports the Machine's memory for both. Another Organization runs a Machine of the
+  // has a limit of its own, so Docker reports the Machine's memory for both, and 0 on the old replica's last scrape. Another Organization runs a Machine of the
   // same id with a smaller total, which must not mix in.
   const replica = (container: string, offsets: readonly number[]) => offsets.flatMap((offset) => [SERVICE_METRICS.memory, SERVICE_METRICS.memoryLimit].map((metric) => ({
     ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": ROLL_MACHINE, "ployz.namespace": NAMESPACE, "ployz.service.name": ROLL_SERVICE, "container.id": container },
@@ -120,6 +120,7 @@ async function seed() {
   })));
   await insert("otel_metrics_sum", [
     ...replica("roll-old", [0, 10, 20]),
+    { ResourceAttributes: { "ployz.org": "org-a", "ployz.machine": ROLL_MACHINE, "ployz.namespace": NAMESPACE, "ployz.service.name": ROLL_SERVICE, "container.id": "roll-old" }, MetricName: SERVICE_METRICS.memoryLimit, Attributes: {}, TimeUnix: clickhouseTime(ROLL + 25), Value: 0, IsMonotonic: false },
     ...replica("roll-new", [30, 40, 50]),
     ...[["org-a", ROLL_MACHINE_MEMORY], ["org-b", 99]].map(([org, total]) => ({
       ResourceAttributes: { "ployz.org": org, "ployz.machine": ROLL_MACHINE }, MetricName: HOST_METRICS.memoryTotal, Attributes: {}, TimeUnix: clickhouseTime(ROLL), Value: total, IsMonotonic: false,

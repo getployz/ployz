@@ -46,7 +46,8 @@ const SERVICE_IN = (metrics: string) => `
  * A Service's rows. Beside each container's own, two kinds of row say how to read them. `SCRAPES_METRIC` rows count
  * the distinct scrapes of the Service's memory per Machine and bucket: a replica that lived half a bucket weighs half
  * in it, so a rollout with no overlap never adds the old replica to the new. The Machine's total memory rows tell a
- * container's own limit from the Machine's memory, which Docker reports as the limit of a container with none.
+ * container's own limit from the Machine's memory, which Docker reports as the limit of a container with none. A limit
+ * of 0, which Docker reports on the last scrape of a stopped container, is left out so it never averages into one.
  */
 export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (organizationId: string, range: StoreRange, namespace: string, service: string) {
   const own = { ...bounds(range), namespace, service };
@@ -63,6 +64,7 @@ export const readServiceRows = Effect.fn("MetricsStore.serviceRows")(function* (
       ${VALUE} AS value
     FROM otel.otel_metrics_sum
     WHERE OrgId = {org:String}${SERVICE_IN(names(SERVICE_METRICS))}
+      AND NOT (MetricName = '${SERVICE_METRICS.memoryLimit}' AND Value = 0)
     GROUP BY metric, machine, series, operation, bucket
     ORDER BY bucket`, params(own), metricRow),
     queryObserveOrg(organizationId, `
