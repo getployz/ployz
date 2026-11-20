@@ -214,18 +214,19 @@ copies run, where they run or their CPU and memory limits runs the image the ser
 ran, with its signature, as long as your settings still name the same tag. Change anything else, such as a variable, and it runs the image your
 settings name now. Ployz Cloud can replay a version you signed, but it can't sign one.
 
-A deployment made before Ployz Cloud kept signed versions has no signature to send. What a
-rollback or redeploy of it runs depends on how it was signed:
+A deployment made before Ployz Cloud kept signed versions has no signature of its own. Which
+images a rollback or redeploy of it runs depends on how it was deployed:
 
 - **Signed on a device with an older `ployz`.** Ployz Cloud kept the image that deploy pinned
-  each service to, so a rollback runs those images even after the tag moved. It has no
-  signature to send with them, so a server refuses any of its services that reaches data.
-  This holds for every deployment an older `ployz` signed, however recent.
+  each service to, so a rollback runs those images even after the tag moved. This holds for
+  every deployment an older `ployz` signed, however recent.
 - **Not signed by a device.** Nothing recorded the images it ran. Each service runs the image
   your settings named then: an image written by digest runs that digest, and a tag runs the
-  image it points to now. A server refuses any of these services that reaches data.
+  image it points to now.
 
-Run `ployz deploy` on an approved device to sign the services a server refused.
+Either way, Ployz Cloud sends a signature for a service only when a device has since signed
+that exact version: the same image and settings, in the same environment. A server refuses the
+rest of its services that reach data. Run `ployz deploy` on an approved device to sign them.
 
 A `ployz` from before signed versions sends a kind of signature Ployz Cloud no longer keeps.
 Ployz Cloud refuses its deploy before anything is queued and names the update to run:
@@ -278,6 +279,18 @@ doesn't, the deploy signs nothing and names the server to upgrade:
 ```text
 error: Upgrade web-1 first: it enforces device approval with an older ployz that can't check this device's signature, so it would refuse this deploy. Nothing signed or deployed.
 next: ployz server upgrade beta web-1
+```
+
+The upgrade it names keeps the `--context` or `--connect` you deployed through, so it reaches
+the same cluster.
+
+A server reached through another one can show no capabilities at all, as when the server
+passing its record on runs an older `ployz`. `ployz deploy` then asks that server itself. When
+it doesn't answer, the deploy signs nothing:
+
+```text
+error: Couldn't confirm that web-2 can check this device's signature, so nothing was signed or deployed. It enforces device approval but didn't answer when asked.
+inspect: ployz status
 ```
 
 ### Deploy from the dashboard
