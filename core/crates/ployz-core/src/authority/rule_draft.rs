@@ -11,6 +11,7 @@ use ts_rs::TS;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
+    deploy::run_fields_cleared,
     keys::{Signed, SignerKey},
     rule::{
         AutoDeployRule, BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleId,
@@ -390,7 +391,7 @@ impl AutoDeployRule {
                         .target
                         .iter()
                         .find(|spec| spec.name == service.name)
-                        .map(|spec| settings(spec, Signs::Template))
+                        .map(settings)
                         .unwrap_or_default()
                         .into_iter()
                         .map(String::from)
@@ -484,35 +485,27 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
     .collect()
 }
 
-/// What a statement signs of a spec beyond its name, which decides what its summary leaves
-/// out as shown elsewhere or replaced.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Signs {
-    /// A rule's or a review's template, whose image and pull policy are placeholders.
-    Template,
-    /// A deploy approval, which shows its image on the Service's own line.
-    Deploy,
-}
-
 /// The settings a person reads before approving: each variable, Sealed parts by name only,
-/// the pre-deploy command, then every other field `signs` covers whose value is not the
-/// spec's default, by its wire name. A field added to the spec later shows without a
-/// change here, and a value shows whenever it signs differently from the default, so no
-/// two specs that sign differently read the same, but for a Sealed ciphertext.
+/// the pre-deploy command, then every other field a statement signs whose value is not the
+/// spec's default, by its wire name. The run fields Cloud picks are not shown, since they
+/// are not signed. A field added to the spec later shows without a change here, and a
+/// value shows whenever it signs differently from the default, so no two specs that sign
+/// differently read the same, but for a Sealed ciphertext.
 #[must_use]
-pub fn settings(spec: &RequestedServiceSpec, signs: Signs) -> Vec<Shown> {
-    settings_edited(spec, signs, |_| {})
+pub fn settings(spec: &RequestedServiceSpec) -> Vec<Shown> {
+    settings_edited(spec, |_| {})
 }
 
 /// [`settings`] of `spec`'s JSON after `edit` changed it, as a digest that edits the JSON
 /// it hashes, such as a preview template's placeholders, reads it.
 pub(super) fn settings_edited(
     spec: &RequestedServiceSpec,
-    signs: Signs,
     edit: impl FnOnce(&mut Value),
 ) -> Vec<Shown> {
-    let mut value = serde_json::to_value(spec).expect("a spec serializes to JSON");
+    let mut value =
+        serde_json::to_value(run_fields_cleared(spec)).expect("a spec serializes to JSON");
     drop_nulls(&mut value);
+    hide_cleared_values(&mut value);
     edit(&mut value);
     let Value::Object(mut fields) = value else {
         return Vec::new();
@@ -536,22 +529,35 @@ pub(super) fn settings_edited(
     }
     let defaults = defaults();
     // The name shows on the Service's own line.
-    for unshown in std::iter::once("name").chain(super::deploy::UNSIGNED) {
-        fields.remove(unshown);
-    }
+    fields.remove("name");
     changed(&mut lines, "", fields, &defaults.service);
-    // The image shows on its own line or is a template's placeholder, and the Sealed
-    // identity is bound by each value's ciphertext.
+    // The image shows on its own line or is a template's placeholder, the Sealed
+    // identity is bound by each value's ciphertext, and the pull policy is cleared.
     container.remove("image");
     container.remove("sealed_identity");
-    if signs == Signs::Template {
-        container.remove("pull_policy");
-    }
+    container.remove("pull_policy");
     changed(&mut lines, "", container, &defaults.container);
     if let Some(hook) = hook {
         changed(&mut lines, "pre-deploy ", hook, &defaults.hook);
     }
     lines
+}
+
+/// Hide the fixed values clearing leaves that no person set: a Provisioned Volume's
+/// maximum, and the counts of the regions a host-data spec keeps, which show as names.
+fn hide_cleared_values(spec: &mut Value) {
+    let volumes = spec.get_mut("volumes").and_then(Value::as_array_mut);
+    for volume in volumes.into_iter().flatten() {
+        if let Some(source) = volume.get_mut("source").and_then(Value::as_object_mut) {
+            source.remove("maximum_bytes");
+        }
+    }
+    if let Some(regions) = spec.get_mut("regions") {
+        let names = regions
+            .as_object()
+            .map(|counts| counts.keys().cloned().map(Value::String).collect());
+        *regions = Value::Array(names.unwrap_or_default());
+    }
 }
 
 /// The JSON a spec writes for each field it leaves at its default, per part. A field

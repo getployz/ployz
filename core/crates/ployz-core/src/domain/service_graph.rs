@@ -344,6 +344,27 @@ impl ServiceMountGraph {
         })
     }
 
+    /// This graph with every Provisioned Volume's maximum set to one fixed value.
+    #[must_use]
+    pub(crate) fn with_bounds_cleared(&self) -> Self {
+        let volumes = self
+            .volumes
+            .volumes
+            .iter()
+            .map(|volume| ServiceVolume {
+                reference: volume.reference.clone(),
+                source: volume.source.with_bound_cleared(),
+            })
+            .collect();
+        Self {
+            volumes: ServiceVolumeGraph {
+                volumes,
+                mounts: self.volumes.mounts.clone(),
+            },
+            configs: self.configs.clone(),
+        }
+    }
+
     pub(crate) fn into_parts(self) -> (ServiceVolumeGraph, ServiceConfigGraph) {
         (self.volumes, self.configs)
     }

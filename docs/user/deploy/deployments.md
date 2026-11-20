@@ -153,7 +153,6 @@ Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
   variables DATABASE_HOST=db.internal, DATABASE_URL (sealed), URL="postgres://app:" + (sealed "DB_PASSWORD") + "@db.internal/app"
   command ["nginx","-g","daemon off;"]
   ports [{"container_port":80,"hostname":"web.example.com","http_protocol":"http","load_balancer_port":443,"mode":"ingress"}]
-  pull_policy "missing"
 Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b (adds NET_ADMIN, host port 9000)
   cap_add ["NET_ADMIN"]
   ...
@@ -172,10 +171,21 @@ and `-_./:@+` shows in double quotes. A sealed value shows by the name it was se
 its value, and a value built from text and sealed parts shows its text, quoted. Since the
 approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
 value before a deploy you approve.
-The signature doesn't cover how many replicas a service runs, its
-[count for each region](../services/regions.md#run-a-service-in-more-than-one-region), or the
-order a deploy replaces them in. None of them show here, and Ployz Cloud could change them on a
-deploy you approve.
+The signature doesn't cover where a service runs, how many replicas it runs, its
+[count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a
+deploy replaces them in, its pull policy, its CPU and memory limits or the largest size of a
+managed volume. None of them show here, and Ployz Cloud could change them on a deploy you approve.
+That can stop or slow a service but can't reach more of your data. A service that mounts a volume
+other than a tmpfs, whether a bind mount, an external volume or a volume Ployz manages, or that
+asks anything of the host (privileged mode, devices, added capabilities, PID mode, sysctls, host
+ports, the ingress or tunnel network, a privileged hook), keeps the servers it may run on in the
+signature: its placement and the names of its regions. Two servers can hold a volume of the same
+name with different contents, and a host-level setting acts on whichever server runs it. Only the
+replica count inside each region stays open. A volume the service declares but never mounts
+doesn't count.
+Only a `node.id` constraint pins a service to one server. A region name limits where the service
+runs only as far as the servers' labels are honest, and Ployz Cloud can relabel a server, the same
+way it can mislabel one today.
 Ployz Cloud relays the plan, so read these lines before you answer: a setting you didn't make
 shows here even if Cloud put it there. A control character in a value prints as its escape,
 such as `\u{1b}`, so a value can't redraw the lines around it. Answer no and nothing is signed
@@ -187,7 +197,7 @@ the same lines and signs without asking. `--json` never asks either, so it needs
 Use `--yes` only where you trust the plan Ployz Cloud sends.
 
 Each server checks every container it creates against what you signed: the image, command,
-variables and sealed values, mounts, config files, ports, privileges and hook. Ployz Cloud
+variables and sealed values, mounts, config files, ports, privileges, restart policy and hook. Ployz Cloud
 carries the approval but can't change what it covers. A server logs each one, such as
 `deploy 0f8fad5b… approved by device 3KQ7-M2XD for web digest=cb8d3c6ef656`.
 

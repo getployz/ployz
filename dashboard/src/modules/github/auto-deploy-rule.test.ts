@@ -4,7 +4,7 @@ import { hex } from "#/modules/approval-session/passkey-statement";
 import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn } from "./auto-deploy-rule";
 
 /** `rule_draft_tests::GOLDEN`: the CLI and the Servers draft these bytes from the same view and terms. */
-const GOLDEN = "5fe1b138faa40462100905f967e762cae20eec664bf4a2c9e8e40066ec9fcd20";
+const GOLDEN = "820cfcdda3b2f3d7455a10ba99ec03028861f1eb3a3b63bdd812dded47aa97f7";
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 const BUILDER_SHA = "39e1f488e492c0641e520777e481e8f5b266985b";
 
