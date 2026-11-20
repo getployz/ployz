@@ -1,0 +1,51 @@
+receivers:
+  hostmetrics:
+    collection_interval: 10s
+    root_path: /hostfs
+    scrapers:
+      cpu: {}
+      memory:
+        metrics:
+          system.linux.memory.available:
+            enabled: true
+          system.memory.limit:
+            enabled: true
+      network:
+        exclude:
+          interfaces: ['^lo$', '^veth', '^docker0$', '^br-', '^ployz$']
+          match_type: regexp
+  docker_stats:
+    endpoint: unix:///var/run/docker.sock
+    collection_interval: 10s
+    container_labels_to_metric_labels:
+      ployz.namespace: ployz.namespace
+      ployz.service.name: ployz.service.name
+      ployz.service.id: ployz.service.id
+      ployz.service.hook: ployz.service.hook
+  otlp/ployzd-metrics:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4320
+processors:
+  filter/containers:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'resource.attributes["ployz.namespace"] == nil'
+        - 'resource.attributes["ployz.service.hook"] != nil'
+  transform/metrics:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - keep_matching_keys(attributes, "^(container[.](id|name)|ployz[.](namespace|service[.](name|id)))$")
+service:
+  pipelines:
+    metrics/containers:
+      receivers: [docker_stats]
+      processors: [memory_limiter, filter/containers, transform/metrics, batch]
+      exporters: [otlp_http]
+    metrics:
+      receivers: [hostmetrics, otlp/ployzd-metrics]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http]
