@@ -408,8 +408,9 @@ another image on the other server by then. A service whose image is named by a t
 only to a server on this release of Ployz or later; one named by digest (`app@sha256:…`) can move
 to any server. The image is kept on the other server under a name like `app:ployz-sha256-…`, which
 image cleanup leaves alone while a container uses it. A drain from the CLI over SSH or on the
-server itself also gives the image its tag on the server you connected to, unless that server
-already has an image under that tag. A later deploy with `pull: never` runs whatever image the
+server itself also gives the image its tag on the server you connected to, when the old server's
+own tag names that same image and the server you connected to has no image under that tag yet. A
+later deploy with `pull: never` runs whatever image the
 server holds under the tag.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
 the dialog is the approval. If a global service's last other copy stopped while the dialog was open,

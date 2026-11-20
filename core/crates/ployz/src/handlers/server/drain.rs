@@ -295,7 +295,8 @@ fn stay(service: &QualifiedService, reason: &StayReason) -> String {
         | StayReason::Global
         | StayReason::BindMount { .. }
         | StayReason::Volume { .. }
-        | StayReason::NoDestination { .. }) => other.to_string(),
+        | StayReason::NoDestination { .. }
+        | StayReason::Unrecognized) => other.to_string(),
     }
 }
 

@@ -157,6 +157,10 @@ impl fmt::Display for DrainStop {
     }
 }
 
+/// What a report from a newer Ployz says where it names a reason this release doesn't know.
+const UNRECOGNIZED: &str =
+    "a newer Ployz gave a reason this one can't name; upgrade ployz to see it";
+
 /// Why a Service's Containers stay where they are. Each holds what the snapshot can't
 /// vouch for, or refuses what a move could lose.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -180,6 +184,9 @@ pub enum StayReason {
     /// Only these Servers could take its next Container, and they predate the release
     /// that copies a tag-named image by its ID.
     NeedsUpgrade { servers: Vec<MachineRef> },
+    /// A reason a later release added, which this one reads without its details.
+    #[serde(other)]
+    Unrecognized,
 }
 
 impl fmt::Display for StayReason {
@@ -200,6 +207,7 @@ impl fmt::Display for StayReason {
                     .join(", ");
                 write!(f, "upgrade {names} to move it there")
             }
+            Self::Unrecognized => f.write_str(UNRECOGNIZED),
         }
     }
 }
@@ -254,6 +262,9 @@ pub enum MoveFailure {
         from: Option<MachineRef>,
         reason: StayReason,
     },
+    /// A stage a later release added, which this one reads without its details.
+    #[serde(other)]
+    Unrecognized,
 }
 
 impl MoveFailure {
@@ -300,7 +311,7 @@ impl MoveFailure {
                 replacement_removed,
                 ..
             } => from.id != *server && *replacement_removed,
-            Self::Cancelled { .. } | Self::Refused { from: None, .. } => false,
+            Self::Cancelled { .. } | Self::Refused { from: None, .. } | Self::Unrecognized => false,
         }
     }
 }
@@ -332,6 +343,7 @@ impl fmt::Display for MoveFailure {
                 ),
             },
             Self::Refused { reason, .. } => reason.fmt(f),
+            Self::Unrecognized => f.write_str(UNRECOGNIZED),
         }
     }
 }
@@ -807,7 +819,8 @@ async fn move_one(
         | StayReason::BindMount { .. }
         | StayReason::Volume { .. }
         | StayReason::LastIn
-        | StayReason::NeedsUpgrade { .. }) => MoveFailure::Refused {
+        | StayReason::NeedsUpgrade { .. }
+        | StayReason::Unrecognized) => MoveFailure::Refused {
             from: Some(from.clone()),
             reason,
         },
