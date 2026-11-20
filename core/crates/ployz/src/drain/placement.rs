@@ -34,8 +34,8 @@ use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 use crate::deploy::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
 use crate::deploy::{
-    DeploySnapshot, MachineOperations, MoveEnd, MoveError, health_error, is_active_runtime,
-    move_container, place_one, region_waits,
+    DeploySnapshot, MachineOperations, MoveEnd, MoveError, destinations, health_error,
+    is_active_runtime, move_container, place_one, region_waits,
 };
 
 /// A Server as a move names it.
@@ -590,6 +590,33 @@ fn destination(
     } else {
         Err(StayReason::NeedsUpgrade { servers })
     }
+}
+
+/// Whether converging `service` on `snapshot` could start a copy on a Server that enforces
+/// Device approval: such a Server is among the ones a move of it may pick. That copy needs
+/// a signed version whatever it reaches, since a move copies its image in under pull policy
+/// never, and such a Server runs an unsigned spec only from an image it pulled itself. A
+/// copy that only waits Out, is held, or has nowhere to go starts nothing.
+pub(crate) fn needs_version(snapshot: &DeploySnapshot, service: &QualifiedService) -> bool {
+    let stranded = movable(snapshot, service);
+    if refusal(snapshot, service, &stranded).is_some() {
+        return false;
+    }
+    stranded.iter().any(|container| {
+        destinations(
+            &kept_in_region(
+                &container.resolved_spec,
+                machine(snapshot, &container.machine_id),
+            ),
+            &container.namespace,
+            snapshot,
+        )
+        .is_ok_and(|machines| {
+            machines
+                .iter()
+                .any(|machine| machine.machine.runtime.device_enforcement == Some(true))
+        })
+    })
 }
 
 fn kept_in_region(spec: &ResolvedServiceSpec, source: &Machine) -> RequestedServiceSpec {

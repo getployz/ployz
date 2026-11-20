@@ -2031,6 +2031,7 @@ fn provisioned_spec() -> ResolvedServiceSpec {
             std::num::NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
         ),
         labels: Default::default(),
+        birth: None,
     }
     .admit()
     .unwrap();

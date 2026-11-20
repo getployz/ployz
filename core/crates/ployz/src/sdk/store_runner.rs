@@ -632,7 +632,6 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
-        let approval = claimed.approval.clone();
         let pins = pins(&claimed.ran);
         for spec in &mut claimed.intent.target {
             if let Some(image) = pins.get(&spec.name) {
@@ -680,13 +679,7 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_approved(
-            log_id,
-            ImageCleanup::Auto,
-            approval,
-            rules,
-            versions,
-        ) {
+        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, rules, versions) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };

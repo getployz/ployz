@@ -1,8 +1,17 @@
 use serde_json::{Value, json};
 
+use std::collections::BTreeMap;
+
 use super::*;
-use crate::authority::{keys::Signer, trusted_key::TrustedKeys};
-use crate::{DeviceKey, ResolvedUpdateConfig, ServiceId};
+use crate::authority::{
+    canonical::Timestamp,
+    keys::{Approver, Purpose, Signed, Signer, SignerKey},
+    proposal::ProposalRef,
+    refusal::AuthorityRefusal,
+    trusted_key::TrustedKeys,
+    version::{self, Budget, ServiceVersion, VersionAdmitted, VersionFacts},
+};
+use crate::{DeviceKey, OperationId, ResolvedUpdateConfig, SealingPublicKey, ServiceId};
 
 const IMAGE: &str = "nginx@sha256:0000000000000000000000000000000000000000000000000000000000000001";
 const OTHER: &str = "nginx@sha256:0000000000000000000000000000000000000000000000000000000000000002";
@@ -19,10 +28,6 @@ fn namespace() -> Namespace {
 
 fn web() -> ServiceName {
     ServiceName::parse("web").unwrap()
-}
-
-fn machine_id(fill: char) -> MachineId {
-    MachineId::parse(fill.to_string().repeat(32)).unwrap()
 }
 
 /// One Service holding every field kind the digest must cover.
@@ -104,22 +109,24 @@ fn resolved(spec: &RequestedServiceSpec) -> ResolvedServiceSpec {
     .unwrap()
 }
 
-fn approval(signer: &Signer, spec: &RequestedServiceSpec) -> DeployApproval {
-    DeployApproval {
+fn statement(signer: &Signer, spec: &RequestedServiceSpec) -> ServiceVersion {
+    ServiceVersion {
         cluster: SealingPublicKey::from_bytes([9; 32]),
-        operation: OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
         namespace: namespace(),
-        machines: vec![machine_id('1'), machine_id('2')],
-        services: vec![ApprovedService {
-            name: web(),
-            digest: PayloadDigest::of(spec, &namespace()).unwrap(),
-            image: None,
-        }],
-        issued_at: Timestamp::from_millis(100_000).unwrap(),
-        expires_at: Timestamp::from_millis(1_000_000).unwrap(),
+        service: web(),
+        digest: PayloadDigest::of(spec, &namespace()).unwrap(),
+        signed_at: Timestamp::from_millis(100_000).unwrap(),
         signer: SignerKey::Device(DeviceKey::from(signer.public())),
         proposal: None,
     }
+}
+
+/// What a Machine says to a creation `facts` names, presented with `signed` alone.
+fn verify(
+    signed: &Signed<ServiceVersion>,
+    facts: &VersionFacts<'_>,
+) -> Result<VersionAdmitted, AuthorityRefusal> {
+    version::verify(std::slice::from_ref(signed), facts, &mut Budget::default())
 }
 
 struct Machine {
@@ -141,8 +148,8 @@ impl Machine {
         }
     }
 
-    fn facts<'a>(&'a self, creation: Creation<'a>) -> DeployFacts<'a> {
-        DeployFacts {
+    fn facts<'a>(&'a self, creation: Creation<'a>) -> VersionFacts<'a> {
+        VersionFacts {
             cluster: Some(SealingPublicKey::from_bytes([9; 32])),
             trusted: &self.trusted,
             namespace: &self.namespace,
@@ -166,10 +173,10 @@ fn hook(spec: &ResolvedServiceSpec) -> Creation<'_> {
     }
 }
 
-/// Verify a creation of `changed` against an approval of the fixture.
-fn verify_changed(changed: Value) -> Result<DeployApproved, AuthorityRefusal> {
+/// Verify a creation of `changed` against a signed version of the fixture.
+fn verify_changed(changed: Value) -> Result<VersionAdmitted, AuthorityRefusal> {
     let signer = signer(1);
-    let signed = Signed::sign(&approval(&signer, &requested(requested_json())), &signer).unwrap();
+    let signed = Signed::sign(&statement(&signer, &requested(requested_json())), &signer).unwrap();
     let spec = resolved(&requested(changed));
     verify(&signed, &Machine::new(&[&signer]).facts(service(&spec)))
 }
@@ -195,7 +202,7 @@ fn the_approved_spec_verifies_with_its_digest() {
         approved.digest,
         PayloadDigest::of(&requested(requested_json()), &namespace()).unwrap()
     );
-    assert_eq!(approved.by, Approver::Device(signer(1).public()));
+    assert_eq!(approved.by, [Approver::Device(signer(1).public())]);
 }
 
 #[test]
@@ -313,7 +320,7 @@ fn each_payload_field_changed_alone_is_refused() {
 fn derived_fields_change_nothing() {
     let signer = signer(1);
     let base = requested(requested_json());
-    let signed = Signed::sign(&approval(&signer, &base), &signer).unwrap();
+    let signed = Signed::sign(&statement(&signer, &base), &signer).unwrap();
     let machine = Machine::new(&[&signer]);
     let counted = requested(with(
         &["mode"],
@@ -341,10 +348,10 @@ fn derived_fields_change_nothing() {
     );
 }
 
-/// Verify a creation of `changed` against an approval of `base`.
-fn verify_from(base: Value, changed: Value) -> Result<DeployApproved, AuthorityRefusal> {
+/// Verify a creation of `changed` against a signed version of `base`.
+fn verify_from(base: Value, changed: Value) -> Result<VersionAdmitted, AuthorityRefusal> {
     let signer = signer(1);
-    let signed = Signed::sign(&approval(&signer, &requested(base)), &signer).unwrap();
+    let signed = Signed::sign(&statement(&signer, &requested(base)), &signer).unwrap();
     let spec = resolved(&requested(changed));
     verify(&signed, &Machine::new(&[&signer]).facts(service(&spec)))
 }
@@ -544,7 +551,7 @@ fn where_a_spec_runs_is_signed_unless_it_holds_nothing_per_server() {
 fn a_tag_image_is_refused_even_when_approved() {
     let signer = signer(1);
     let tagged = requested(with(&["container", "image"], json!("nginx:1.29-alpine")));
-    let signed = Signed::sign(&approval(&signer, &tagged), &signer).unwrap();
+    let signed = Signed::sign(&statement(&signer, &tagged), &signer).unwrap();
     let spec = resolved(&tagged);
     assert_eq!(
         verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
@@ -581,20 +588,19 @@ const PINNED: &str =
 const REPOINTED: &str =
     "nginx:1.29-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000004";
 
-/// An approval of the fixture whose Saved State names `TAG`, pinned to `PINNED`.
-fn pinned_approval(signer: &Signer) -> Signed<DeployApproval> {
-    let mut approval = approval(
+/// A signed version of the fixture whose Saved State names `TAG`, pinned to `PINNED`.
+fn pinned_version(signer: &Signer) -> Signed<ServiceVersion> {
+    let body = statement(
         signer,
         &requested(with(&["container", "image"], json!(PINNED))),
     );
-    approval.services.first_mut().unwrap().image = Some(PINNED.to_owned());
-    Signed::sign(&approval, signer).unwrap()
+    Signed::sign(&body, signer).unwrap()
 }
 
 /// What a Machine says to a creation of the fixture running `image`.
-fn pinned_creation(image: &str) -> Result<DeployApproved, AuthorityRefusal> {
+fn pinned_creation(image: &str) -> Result<VersionAdmitted, AuthorityRefusal> {
     let signer = signer(1);
-    let signed = pinned_approval(&signer);
+    let signed = pinned_version(&signer);
     let spec = resolved(&requested(with(&["container", "image"], json!(image))));
     verify(&signed, &Machine::new(&[&signer]).facts(service(&spec)))
 }
@@ -602,60 +608,29 @@ fn pinned_creation(image: &str) -> Result<DeployApproved, AuthorityRefusal> {
 #[test]
 fn a_pinned_tag_runs_only_its_pinned_image() {
     assert!(pinned_creation(PINNED).is_ok());
-    for refused in [TAG, REPOINTED, IMAGE] {
+    assert_eq!(
+        pinned_creation(TAG).unwrap_err(),
+        AuthorityRefusal::Mismatch { field: "an image" }
+    );
+    for refused in [REPOINTED, IMAGE] {
         assert_eq!(
             pinned_creation(refused).unwrap_err(),
-            AuthorityRefusal::Mismatch { field: "an image" },
+            AuthorityRefusal::Mismatch { field: "a payload" },
             "{refused}"
         );
     }
 }
 
 #[test]
-fn the_runner_writes_the_pinned_image_into_the_spec_the_digest_covers() {
+fn a_pinned_change_signs_the_digest_of_the_spec_the_runner_sends() {
     let signer = signer(1);
-    let body = pinned_approval(&signer).open().unwrap();
-    let mut spec = requested(with(&["container", "image"], json!(TAG)));
-    body.pin(&mut spec);
-    assert_eq!(spec.container.image, PINNED);
-    assert_eq!(
-        PayloadDigest::of(&spec, &namespace()).unwrap(),
-        body.digest(&web()).unwrap()
-    );
-    let mut by_digest = requested(requested_json());
-    let digest_only = DeployApproval {
-        services: vec![ApprovedService {
-            image: None,
-            ..body.services.first().unwrap().clone()
-        }],
-        ..body
-    };
-    digest_only.pin(&mut by_digest);
-    assert_eq!(by_digest.container.image, IMAGE);
-}
-
-#[test]
-fn a_drafted_pin_is_in_the_body_and_its_digest_and_the_pinned_spec_creates() {
-    let signer = signer(1);
-    let fixture = approval(&signer, &requested(requested_json()));
-    let terms = DeployTerms {
-        cluster: fixture.cluster,
-        operation: fixture.operation,
-        machines: fixture.machines,
-        issued_at: fixture.issued_at,
-        expires_at: fixture.expires_at,
-        signer: fixture.signer,
-        proposal: None,
-    };
     let tagged = requested(with(&["container", "image"], json!(TAG)));
-    let (body, changes) = DeployApproval::draft(
-        terms,
-        namespace(),
+    let changes = ApprovedChange::of(
         std::slice::from_ref(&tagged),
+        &namespace(),
         &BTreeMap::from([(web(), PINNED.to_owned())]),
     )
     .unwrap();
-    assert_eq!(body, pinned_approval(&signer).open().unwrap());
     let [change] = changes.as_slice() else {
         panic!("one change: {changes:?}");
     };
@@ -663,21 +638,12 @@ fn a_drafted_pin_is_in_the_body_and_its_digest_and_the_pinned_spec_creates() {
         (change.tag.as_deref(), change.image.as_str()),
         (Some(TAG), PINNED)
     );
+    let signed = pinned_version(&signer);
+    assert_eq!(change.digest, signed.open().unwrap().digest);
     let mut sent = tagged;
-    body.pin(&mut sent);
+    sent.container.image = change.image.clone();
     let sent = resolved(&sent);
-    let signed = Signed::sign(&body, &signer).unwrap();
     assert!(verify(&signed, &Machine::new(&[&signer]).facts(service(&sent))).is_ok());
-}
-
-#[test]
-fn an_approval_without_an_image_signs_the_same_bytes_as_before() {
-    let signer = signer(1);
-    let base = requested(requested_json());
-    let body = approval(&signer, &base);
-    assert!(!serde_json::to_string(&body).unwrap().contains("\"image\""));
-    let signed = Signed::sign(&body, &signer).unwrap();
-    assert_eq!(signed.open().unwrap(), body);
 }
 
 #[test]
@@ -686,7 +652,7 @@ fn the_envelope_must_match_this_machine_and_request() {
     let base = requested(requested_json());
     let spec = resolved(&base);
     let mut machine = Machine::new(&[&signer]);
-    let signed = Signed::sign(&approval(&signer, &base), &signer).unwrap();
+    let signed = Signed::sign(&statement(&signer, &base), &signer).unwrap();
 
     let mut facts = machine.facts(service(&spec));
     facts.cluster = Some(SealingPublicKey::from_bytes([8; 32]));
@@ -700,7 +666,7 @@ fn the_envelope_must_match_this_machine_and_request() {
         value.as_object_mut().unwrap().remove("pre_deploy");
         value
     });
-    let hookless = Signed::sign(&approval(&signer, &no_hook), &signer).unwrap();
+    let hookless = Signed::sign(&statement(&signer, &no_hook), &signer).unwrap();
     let hookless_spec = resolved(&no_hook);
     assert_eq!(
         verify(&hookless, &machine.facts(hook(&hookless_spec))).unwrap_err(),
@@ -726,39 +692,20 @@ fn the_envelope_must_match_this_machine_and_request() {
     );
 }
 
-/// A signature is a standing fact about a spec: the approval's window and Machine list
-/// don't bound it, so Cloud can send it again for a restart or to another Machine.
-#[test]
-fn an_approval_admits_its_spec_after_its_window_and_on_a_machine_it_does_not_name() {
-    let signer = signer(1);
-    let base = requested(requested_json());
-    let spec = resolved(&base);
-    let mut body = approval(&signer, &base);
-    body.machines = vec![machine_id('7')];
-    body.issued_at = Timestamp::from_millis(1).unwrap();
-    body.expires_at = Timestamp::from_millis(2).unwrap();
-    let signed = Signed::sign(&body, &signer).unwrap();
-    let approved = verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap();
-    assert_eq!(
-        approved.digest,
-        PayloadDigest::of(&base, &namespace()).unwrap()
-    );
-}
-
 #[test]
 fn a_stranger_or_a_missing_signature_is_refused() {
     let signer = signer(1);
     let base = requested(requested_json());
     let spec = resolved(&base);
     let stranger = self::signer(2);
-    let signed = Signed::sign(&approval(&stranger, &base), &stranger).unwrap();
+    let signed = Signed::sign(&statement(&stranger, &base), &stranger).unwrap();
     assert_eq!(
         verify(&signed, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
         AuthorityRefusal::UnknownKey {
             key: stranger.public()
         }
     );
-    let mut unsigned = Signed::sign(&approval(&signer, &base), &signer).unwrap();
+    let mut unsigned = Signed::sign(&statement(&signer, &base), &signer).unwrap();
     unsigned.signatures.clear();
     assert_eq!(
         verify(&unsigned, &Machine::new(&[&signer]).facts(service(&spec))).unwrap_err(),
@@ -768,21 +715,8 @@ fn a_stranger_or_a_missing_signature_is_refused() {
     );
 }
 
-#[test]
-fn unsorted_services_or_machines_do_not_parse() {
-    let signer = signer(1);
-    let base = requested(requested_json());
-    let mut body = approval(&signer, &base);
-    let first = body.services.first().cloned().unwrap();
-    body.services.push(first);
-    assert!(Signed::sign(&body, &signer).unwrap().open().is_err());
-    let mut body = approval(&signer, &base);
-    body.machines.reverse();
-    assert!(Signed::sign(&body, &signer).unwrap().open().is_err());
-}
-
 /// The digest of the fixture, which every implementation of [`PayloadDigest::of`] must
-/// reproduce. Changing it is a wire change: an approval made before no longer verifies.
+/// reproduce. Changing it is a wire change: a version signed before no longer verifies.
 #[test]
 fn the_fixture_digest_is_golden() {
     assert_eq!(
@@ -909,11 +843,11 @@ fn each_reach_past_the_environment_is_named_and_a_contained_spec_names_none() {
 }
 
 #[test]
-fn a_signed_approval_that_names_a_proposal_is_refused() {
+fn a_signed_version_that_names_a_proposal_is_refused() {
     let signer = signer(1);
     let base = requested(requested_json());
     let spec = resolved(&base);
-    let mut body = approval(&signer, &base);
+    let mut body = statement(&signer, &base);
     body.proposal = Some(ProposalRef {
         operation: proposal_operation(),
         index: 0,
@@ -936,9 +870,9 @@ fn proposal_operation() -> OperationId {
 fn deploy_proposal(
     signer: &Signer,
     listed: impl FnOnce(&mut Vec<crate::authority::ProposalStep>),
-) -> (DeployApproval, Signed<crate::authority::ProposalApproval>) {
+) -> (ServiceVersion, Signed<crate::authority::ProposalApproval>) {
     use crate::authority::{ProposalApproval, ProposalStep, StepDigest, StepKind};
-    let mut step = approval(signer, &requested(requested_json()));
+    let mut step = statement(signer, &requested(requested_json()));
     step.proposal = Some(ProposalRef {
         operation: proposal_operation(),
         index: 1,
@@ -961,18 +895,18 @@ fn deploy_proposal(
         environment: namespace(),
         operation: proposal_operation(),
         steps,
-        issued_at: step.issued_at,
-        expires_at: step.expires_at,
+        issued_at: Timestamp::from_millis(100_000).unwrap(),
+        expires_at: Timestamp::from_millis(1_000_000).unwrap(),
         signer: step.signer,
     };
     (step, Signed::sign(&bundle, signer).unwrap())
 }
 
 fn verify_step(
-    step: &DeployApproval,
+    step: &ServiceVersion,
     bundle: &Signed<crate::authority::ProposalApproval>,
     signer: &Signer,
-) -> Result<DeployApproved, AuthorityRefusal> {
+) -> Result<VersionAdmitted, AuthorityRefusal> {
     let envelope = Signed::proposed(step, bundle.clone()).unwrap();
     let spec = resolved(&requested(requested_json()));
     verify(&envelope, &Machine::new(&[signer]).facts(service(&spec)))
@@ -983,15 +917,14 @@ fn a_deploy_step_whose_body_matches_its_digest_creates() {
     let signer = signer(1);
     let (step, bundle) = deploy_proposal(&signer, |_| {});
     let approved = verify_step(&step, &bundle, &signer).unwrap();
-    assert_eq!(approved.body, step);
-    assert_eq!(approved.by, Approver::Device(signer.public()));
+    assert_eq!(approved.by, [Approver::Device(signer.public())]);
 }
 
 #[test]
 fn a_deploy_step_refuses_another_digest_index_or_kind() {
     let signer = signer(1);
     let (mut step, bundle) = deploy_proposal(&signer, |_| {});
-    step.services.first_mut().unwrap().digest = PayloadDigest::parse(&"0".repeat(64)).unwrap();
+    step.digest = PayloadDigest::parse(&"0".repeat(64)).unwrap();
     assert_eq!(
         verify_step(&step, &bundle, &signer).unwrap_err(),
         AuthorityRefusal::Mismatch { field: "a step" }
@@ -1032,31 +965,14 @@ fn a_deploy_step_in_a_bundle_no_trusted_key_signed_is_refused() {
     );
 }
 
-/// The fixture approval's terms, as a client sets them around a plan.
-fn draft_terms() -> DeployTerms {
-    let fixture = approval(&signer(1), &requested(requested_json()));
-    DeployTerms {
-        cluster: fixture.cluster,
-        operation: fixture.operation,
-        machines: fixture.machines,
-        issued_at: fixture.issued_at,
-        expires_at: fixture.expires_at,
-        signer: fixture.signer,
-        proposal: None,
-    }
-}
-
 /// What the approver reads before signing `spec`, the same lines on the CLI and in a
 /// browser.
 fn draft_lines(spec: Value) -> Vec<String> {
-    let (_, changes) = DeployApproval::draft(
-        draft_terms(),
-        namespace(),
-        &[requested(spec)],
-        &BTreeMap::new(),
-    )
-    .unwrap();
-    changes.iter().flat_map(ApprovedChange::lines).collect()
+    ApprovedChange::of(&[requested(spec)], &namespace(), &BTreeMap::new())
+        .unwrap()
+        .iter()
+        .flat_map(ApprovedChange::lines)
+        .collect()
 }
 
 /// Each field Cloud could plant in the plan it relays changes what the approver reads
@@ -1176,7 +1092,7 @@ fn every_field_cloud_could_plant_shows_before_signing() {
 }
 
 #[test]
-fn an_approval_lists_its_settings_under_the_service_line() {
+fn a_change_lists_its_settings_under_the_service_line() {
     assert_eq!(
         draft_lines(requested_json()),
         [
@@ -1224,19 +1140,19 @@ fn a_planted_escape_shows_as_text() {
 }
 
 #[test]
-fn a_deploy_approval_is_checked_in_one_fixed_order() {
+fn a_signed_version_is_opened_in_one_fixed_order() {
     let approver = signer(1);
     let base = requested(requested_json());
     let spec = resolved(&base);
     let host = Machine::new(&[&approver]);
-    let sign = |body: &DeployApproval| Signed::sign(body, &approver).unwrap();
-    let mut body = DeployApproval {
+    let sign = |body: &ServiceVersion| Signed::sign(body, &approver).unwrap();
+    let mut body = ServiceVersion {
         signer: SignerKey::Device(DeviceKey::from(signer(2).public())),
         proposal: Some(ProposalRef {
             operation: proposal_operation(),
             index: 0,
         }),
-        ..approval(&approver, &base)
+        ..statement(&approver, &base)
     };
     let mut facts = host.facts(service(&spec));
     facts.cluster = None;

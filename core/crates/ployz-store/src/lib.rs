@@ -85,7 +85,7 @@ pub use deployment::{
     DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
     NodeOutcome, NodeStatus, Outcome, Pinned, PostedVersion, RanService, RowPhase, RowState,
     RowTracker, RowTransition, RunEvidence, ServerProgress, ServerRow, StoppedBy, TagPin,
-    Unclaimed, UploadBase, UploadedSource, WaitingService,
+    Unclaimed, UploadBase, UploadedSource, VersionsQuery, VersionsView, WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,

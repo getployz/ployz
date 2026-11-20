@@ -111,6 +111,7 @@ const rawFields = {
   postshibaClusterId: optional(Config.nonEmptyString("POSTSHIBA_CLUSTER_ID")),
   mailFrom: optional(Config.nonEmptyString("MAIL_FROM")),
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
+  observeCollectorUrl: optional(Config.url("OBSERVE_COLLECTOR_URL")),
   uptimeEnabled: Config.boolean("UPTIME_ENABLED").pipe(Config.withDefault(false)),
   analyticsEnabled: Config.boolean("ANALYTICS_ENABLED").pipe(Config.withDefault(false)),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
@@ -342,6 +343,8 @@ const makeAppConfig = Effect.gen(function* () {
     },
     // Unset (Self-hosted Cloud): no marketing proxy; / sends signed-out visitors to /auth.
     marketingOrigin: raw.marketingOrigin,
+    // Unset: Cloud keeps no logs, metrics or traces from Machines, and their OTLP posts get a 503.
+    observeCollectorUrl: raw.observeCollectorUrl,
     // Unset (Self-hosted Cloud): no uptime checker runs, so the dashboard shows no uptime.
     uptimeEnabled: raw.uptimeEnabled,
     analyticsEnabled: polar.mode !== "self_hosted" || raw.analyticsEnabled,

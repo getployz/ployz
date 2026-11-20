@@ -70,6 +70,9 @@ import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/se
 import { Route as ApiMachinesMachineObserveRouteImport } from './routes/api/machines/$machine/observe'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
+import { Route as ApiMachinesOtlpV1LogsRouteImport } from './routes/api/machines/otlp/v1/logs'
+import { Route as ApiMachinesOtlpV1MetricsRouteImport } from './routes/api/machines/otlp/v1/metrics'
+import { Route as ApiMachinesOtlpV1TracesRouteImport } from './routes/api/machines/otlp/v1/traces'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/index'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126AccountRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/account'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126BillingRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/billing'
@@ -411,6 +414,22 @@ const ProtectedCloudOrganizationSlugProjectNewRoute =
     path: '/new',
     getParentRoute: () => ProtectedCloudOrganizationSlugProjectRouteRoute,
   } as any)
+const ApiMachinesOtlpV1LogsRoute = ApiMachinesOtlpV1LogsRouteImport.update({
+  id: '/api/machines/otlp/v1/logs',
+  path: '/api/machines/otlp/v1/logs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMachinesOtlpV1MetricsRoute =
+  ApiMachinesOtlpV1MetricsRouteImport.update({
+    id: '/api/machines/otlp/v1/metrics',
+    path: '/api/machines/otlp/v1/metrics',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiMachinesOtlpV1TracesRoute = ApiMachinesOtlpV1TracesRouteImport.update({
+  id: '/api/machines/otlp/v1/traces',
+  path: '/api/machines/otlp/v1/traces',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProtectedCloudOrganizationSlugOrgChar126IndexRoute =
   ProtectedCloudOrganizationSlugOrgChar126IndexRouteImport.update({
     id: '/~/',
@@ -668,6 +687,9 @@ export interface FileRoutesByFullPath {
   '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/api/machines/otlp/v1/logs': typeof ApiMachinesOtlpV1LogsRoute
+  '/api/machines/otlp/v1/metrics': typeof ApiMachinesOtlpV1MetricsRoute
+  '/api/machines/otlp/v1/traces': typeof ApiMachinesOtlpV1TracesRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -748,6 +770,9 @@ export interface FileRoutesByTo {
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/api/machines/otlp/v1/logs': typeof ApiMachinesOtlpV1LogsRoute
+  '/api/machines/otlp/v1/metrics': typeof ApiMachinesOtlpV1MetricsRoute
+  '/api/machines/otlp/v1/traces': typeof ApiMachinesOtlpV1TracesRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/cloud/$organizationSlug/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -834,6 +859,9 @@ export interface FileRoutesById {
   '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
+  '/api/machines/otlp/v1/logs': typeof ApiMachinesOtlpV1LogsRoute
+  '/api/machines/otlp/v1/metrics': typeof ApiMachinesOtlpV1MetricsRoute
+  '/api/machines/otlp/v1/traces': typeof ApiMachinesOtlpV1TracesRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_org/~/account': typeof ProtectedCloudOrganizationSlugOrgChar126AccountRoute
   '/_protected/cloud/$organizationSlug/_org/~/billing': typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
@@ -920,6 +948,9 @@ export interface FileRouteTypes {
     | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/new'
+    | '/api/machines/otlp/v1/logs'
+    | '/api/machines/otlp/v1/metrics'
+    | '/api/machines/otlp/v1/traces'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
@@ -1000,6 +1031,9 @@ export interface FileRouteTypes {
     | '/api/machines/$machine/observe'
     | '/cloud/account'
     | '/cloud/$organizationSlug/new'
+    | '/api/machines/otlp/v1/logs'
+    | '/api/machines/otlp/v1/metrics'
+    | '/api/machines/otlp/v1/traces'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug'
     | '/cloud/$organizationSlug/~/account'
     | '/cloud/$organizationSlug/~/billing'
@@ -1085,6 +1119,9 @@ export interface FileRouteTypes {
     | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
     | '/_protected/cloud/$organizationSlug/_project/new'
+    | '/api/machines/otlp/v1/logs'
+    | '/api/machines/otlp/v1/metrics'
+    | '/api/machines/otlp/v1/traces'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug'
     | '/_protected/cloud/$organizationSlug/_org/~/account'
     | '/_protected/cloud/$organizationSlug/_org/~/billing'
@@ -1163,6 +1200,9 @@ export interface RootRouteChildren {
   ApiCliServersEnrollRoute: typeof ApiCliServersEnrollRoute
   ApiCliServersEnrollmentRoute: typeof ApiCliServersEnrollmentRoute
   ApiMachinesMachineObserveRoute: typeof ApiMachinesMachineObserveRoute
+  ApiMachinesOtlpV1LogsRoute: typeof ApiMachinesOtlpV1LogsRoute
+  ApiMachinesOtlpV1MetricsRoute: typeof ApiMachinesOtlpV1MetricsRoute
+  ApiMachinesOtlpV1TracesRoute: typeof ApiMachinesOtlpV1TracesRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -1593,6 +1633,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug/new'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectNewRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugProjectRouteRoute
+    }
+    '/api/machines/otlp/v1/logs': {
+      id: '/api/machines/otlp/v1/logs'
+      path: '/api/machines/otlp/v1/logs'
+      fullPath: '/api/machines/otlp/v1/logs'
+      preLoaderRoute: typeof ApiMachinesOtlpV1LogsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/machines/otlp/v1/metrics': {
+      id: '/api/machines/otlp/v1/metrics'
+      path: '/api/machines/otlp/v1/metrics'
+      fullPath: '/api/machines/otlp/v1/metrics'
+      preLoaderRoute: typeof ApiMachinesOtlpV1MetricsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/machines/otlp/v1/traces': {
+      id: '/api/machines/otlp/v1/traces'
+      path: '/api/machines/otlp/v1/traces'
+      fullPath: '/api/machines/otlp/v1/traces'
+      preLoaderRoute: typeof ApiMachinesOtlpV1TracesRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/$organizationSlug/_org/~/': {
       id: '/_protected/cloud/$organizationSlug/_org/~/'
@@ -2043,6 +2104,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliServersEnrollRoute: ApiCliServersEnrollRoute,
   ApiCliServersEnrollmentRoute: ApiCliServersEnrollmentRoute,
   ApiMachinesMachineObserveRoute: ApiMachinesMachineObserveRoute,
+  ApiMachinesOtlpV1LogsRoute: ApiMachinesOtlpV1LogsRoute,
+  ApiMachinesOtlpV1MetricsRoute: ApiMachinesOtlpV1MetricsRoute,
+  ApiMachinesOtlpV1TracesRoute: ApiMachinesOtlpV1TracesRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

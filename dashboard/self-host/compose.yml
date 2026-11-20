@@ -14,6 +14,8 @@ x-app: &app
     NPM_CONFIG_UPDATE_NOTIFIER: 'false'
     ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-false}
     PLOYZ_HOSTED_DNS_URL: ${PLOYZ_HOSTED_DNS_URL:-https://dns.ployz.app/}
+    # Reached only with the observe profile; without it Machines' OTLP posts get a 503.
+    OBSERVE_COLLECTOR_URL: http://observe-collector:4318
   depends_on:
     postgres:
       condition: service_healthy
@@ -90,10 +92,156 @@ services:
       timeout: 5s
       retries: 10
 
+  # The observe profile keeps the logs, metrics and traces Machines send. Start it with
+  # `docker compose --profile observe up -d`. None of these publish a port: Cloud's web service
+  # forwards a verified Machine's OTLP posts to the Collector over the compose network.
+  clickhouse:
+    profiles: [observe]
+    image: clickhouse/clickhouse-server:25.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: otel
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+      CLICKHOUSE_DB: otel
+    entrypoint:
+      - sh
+      - -c
+      - 'test -n "$$CLICKHOUSE_PASSWORD" || { echo "Set CLICKHOUSE_PASSWORD in .env to run the observe profile." >&2; exit 1; }; exec /entrypoint.sh'
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: [CMD-SHELL, 'wget -qO- http://127.0.0.1:8123/ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: creates the tables and exits. Safe to run again on every start.
+  observe-migrate:
+    profiles: [observe]
+    image: ghcr.io/getployz/ployz-cloud:${PLOYZ_CLOUD_VERSION:?set PLOYZ_CLOUD_VERSION to a release tag}
+    restart: 'no'
+    command: [npm, run, observe:migrate]
+    environment:
+      OBSERVE_CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: otel
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  # One-shot: the Collector runs as user 10001 and a new volume belongs to root.
+  observe-collector-queue-init:
+    profiles: [observe]
+    image: busybox:1.37
+    restart: 'no'
+    user: '0'
+    command: [chown, '10001:10001', /queue]
+    volumes:
+      - observe-collector-queue:/queue
+
+  observe-collector:
+    profiles: [observe]
+    # 0.147.0 or newer: Machines run the same Collector line.
+    image: otel/opentelemetry-collector-contrib:0.147.0
+    restart: unless-stopped
+    command: [--config=/etc/otelcol/config.yaml]
+    environment:
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
+    configs:
+      - source: observe-collector
+        target: /etc/otelcol/config.yaml
+    volumes:
+      - observe-collector-queue:/queue
+    depends_on:
+      observe-migrate:
+        condition: service_completed_successfully
+      observe-collector-queue-init:
+        condition: service_completed_successfully
+
 configs:
   inngest-database:
     content: CREATE DATABASE inngest;
+  # Cloud stamps tenancy: the web service sets x-ployz-org from the verified Machine token and
+  # x-ployz-retention-days itself. transform/strip removes every ployz.org and ployz.retention_days
+  # the sender put on a record's resource, scope and own attributes (OTLP allows repeated keys, and a
+  # single delete removes only one), then the stamp processors set them from the request headers.
+  # Span event, link and exemplar attributes keep the sender's values; only OrgId is tenancy. ClickHouse derives OrgId from
+  # the ployz.org resource attribute; the tables come from `npm run observe:migrate`, so the
+  # exporter never creates them.
+  # The 200 a Machine gets means the batch is in the exporter's queue on the observe-collector-queue volume
+  # (fsync'd, so it survives a crash); batching happens behind that queue, not before it, and retries never
+  # give up, so the queue holds a batch until ClickHouse takes it. A full queue refuses with 503 and the
+  # Machine sends again. Keep `batch.min_size` at or below `queue_size`.
+  observe-collector:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            http:
+              endpoint: 0.0.0.0:4318
+              include_metadata: true
+      processors:
+        transform/strip:
+          log_statements:
+            - context: resource
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+            - context: scope
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+            - context: log
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+          metric_statements:
+            - context: resource
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+            - context: scope
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+            - context: datapoint
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+          trace_statements:
+            - context: resource
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+            - context: scope
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+            - context: span
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+        resource/org:
+          attributes:
+            - { key: ployz.org, from_context: metadata.x-ployz-org, action: upsert }
+            - { key: ployz.retention_days, from_context: metadata.x-ployz-retention-days, action: upsert }
+        attributes/org:
+          actions:
+            - { key: ployz.org, from_context: metadata.x-ployz-org, action: upsert }
+      extensions:
+        file_storage/queue:
+          directory: /queue
+          fsync: true
+      exporters:
+        clickhouse:
+          endpoint: tcp://clickhouse:9000
+          username: otel
+          password: $${env:CLICKHOUSE_PASSWORD}
+          database: otel
+          create_schema: false
+          sending_queue:
+            enabled: true
+            storage: file_storage/queue
+            sizer: bytes
+            queue_size: 2147483648
+            block_on_overflow: false
+            batch: { flush_timeout: 2s, min_size: 1048576, max_size: 16777216, sizer: bytes }
+          retry_on_failure: { enabled: true, max_elapsed_time: 0 }
+      service:
+        extensions: [file_storage/queue]
+        telemetry:
+          metrics: { level: none }
+        pipelines:
+          logs: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org], exporters: [clickhouse] }
+          metrics: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org], exporters: [clickhouse] }
+          traces: { receivers: [otlp], processors: [transform/strip, resource/org, attributes/org], exporters: [clickhouse] }
 
 volumes:
   postgres-data:
   redis-data:
+  clickhouse-data:
+  observe-collector-queue:

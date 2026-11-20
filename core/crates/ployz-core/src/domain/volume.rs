@@ -9,10 +9,168 @@ use std::{
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use sha2::{Digest as _, Sha256};
+
 use crate::{
     BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MachinePath,
-    Namespace, ServiceVolumeReference, ValueError, labels,
+    Namespace, ServiceVolumeReference, ValueError,
+    authority::canonical::{self, CanonicalError, Timestamp},
+    labels,
+    value::hex_newtype,
 };
+
+/// Where a Volume's data began. The signer mints it in the approval that first mounts the
+/// Volume, and nothing else makes one.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeBirth {
+    pub namespace: Namespace,
+    /// The Volume's name in the draft the signer approved.
+    pub name: String,
+    pub made_at: Timestamp,
+    pub nonce: BirthNonce,
+}
+
+hex_newtype!(
+    /// The 16 random bytes that set one birth apart from every other.
+    BirthNonce, "birth nonce", 16, "", "32 lowercase hex digits"
+);
+hex_newtype!(
+    /// What every copy of one Volume carries, on its datasets as `ployz:origin` and on its
+    /// Docker Volume as the `ployz.origin` label. Data from before births has no value
+    /// written anywhere and reads as [`VolumeOrigin::legacy`].
+    VolumeOrigin, "volume origin", 32, "", "64 lowercase hex digits"
+);
+
+/// Names the encoding of every origin, and is the capability a Server that checks origins
+/// claims.
+pub const VOLUME_ORIGIN_CAPABILITY: &str = "ployz.volume.origin.v1";
+/// The send request header listing what the pulling Server claims, comma separated.
+pub const CAPABILITIES_HEADER: &str = "ployz-capabilities";
+/// The send reply header carrying the origin of a born copy. Legacy data sends none.
+pub const ORIGIN_HEADER: &str = "ployz-origin";
+
+impl VolumeOrigin {
+    /// The origin of every copy of the Volume `birth` began.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the birth has no canonical form.
+    pub fn of(birth: &VolumeBirth) -> Result<Self, CanonicalError> {
+        let body = canonical::to_canonical(birth)?;
+        Ok(Self::hashed(b"born", body.as_bytes()))
+    }
+
+    /// The origin data from before births reads as, keyed by its physical name.
+    #[must_use]
+    pub fn legacy(physical: &DockerVolumeName) -> Self {
+        Self::hashed(b"legacy", physical.as_str().as_bytes())
+    }
+
+    /// The origin a mount of `physical` expects: its birth's, or Legacy without one.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the birth has no canonical form.
+    pub fn expected(
+        birth: Option<&VolumeBirth>,
+        physical: &DockerVolumeName,
+    ) -> Result<Self, CanonicalError> {
+        birth.map_or_else(|| Ok(Self::legacy(physical)), Self::of)
+    }
+
+    fn hashed(kind: &[u8], body: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        for part in [
+            VOLUME_ORIGIN_CAPABILITY.as_bytes(),
+            b"\0",
+            kind,
+            b"\0",
+            body,
+        ] {
+            hasher.update(part);
+        }
+        Self(hasher.finalize().into())
+    }
+}
+
+/// The `ployz.origins` label of a Container: the origin each named-volume mount expects,
+/// by physical name, as canonical JSON. A Container without it expects Legacy everywhere.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MountOrigins(BTreeMap<DockerVolumeName, VolumeOrigin>);
+
+impl MountOrigins {
+    /// The origins `graph`'s named-volume mounts expect, Legacy ones included, or `None`
+    /// when it has none. Docker fills a label a create leaves out from the image's, so a
+    /// Container with a named mount always carries its own.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when a birth has no canonical form.
+    pub fn of(graph: &crate::ResolvedServiceVolumeGraph) -> Result<Option<Self>, CanonicalError> {
+        let mut origins = BTreeMap::new();
+        for mount in graph.mounts() {
+            let source = &graph.volume_for(mount).source;
+            let Some(name) = source.docker_volume_name() else {
+                continue;
+            };
+            origins.insert(name.clone(), VolumeOrigin::expected(source.birth(), name)?);
+        }
+        Ok((!origins.is_empty()).then_some(Self(origins)))
+    }
+
+    /// The label's value.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] when the map has no canonical form.
+    pub fn label(&self) -> Result<String, CanonicalError> {
+        canonical::to_canonical(self)
+    }
+
+    /// Reads a label written by [`Self::label`], refusing any other encoding of the map.
+    ///
+    /// # Errors
+    /// Returns a [`CanonicalError`] unless `label` is the canonical JSON of such a map.
+    pub fn parse(label: &str) -> Result<Self, CanonicalError> {
+        canonical::from_canonical(label)
+    }
+
+    /// The origin the mount of `physical` expects; `None` for a name the label omits.
+    #[must_use]
+    pub fn get(&self, physical: &DockerVolumeName) -> Option<VolumeOrigin> {
+        self.0.get(physical).copied()
+    }
+}
+
+/// The value a `ployz-origin` reply header, or any other single origin on the wire,
+/// carries: absent is Legacy, one well-formed value is born, anything else refuses.
+///
+/// # Errors
+/// Returns a [`ValueError`] for more than one value or a malformed one.
+pub fn single_origin<'value>(
+    mut values: impl Iterator<Item = &'value str>,
+) -> Result<Option<VolumeOrigin>, ValueError> {
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ValueError::new(
+            "volume origin",
+            first,
+            "one value, not several",
+        ));
+    }
+    VolumeOrigin::parse(first).map(Some)
+}
+
+/// Whether a `ployz-capabilities` request header names `capability`.
+#[must_use]
+pub fn claims_capability<'value>(
+    values: impl Iterator<Item = &'value str>,
+    capability: &str,
+) -> bool {
+    values
+        .flat_map(|value| value.split(','))
+        .any(|claimed| claimed.trim() == capability)
+}
 
 /// A storage source declared under a service-local reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -60,6 +218,10 @@ pub enum RawVolumeSource {
         driver: VolumeDriver,
         #[serde(default)]
         labels: BTreeMap<String, String>,
+        /// Absent for data from before births, which reads as Legacy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        birth: Option<VolumeBirth>,
     },
     /// A bounded Docker Volume backed by a Machine Pool.
     Provisioned {
@@ -70,6 +232,10 @@ pub enum RawVolumeSource {
         /// Labels applied when the Docker Volume is created.
         #[serde(default)]
         labels: BTreeMap<String, String>,
+        /// Absent for data from before births, which reads as Legacy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        birth: Option<VolumeBirth>,
     },
     Tmpfs {
         #[serde(default)]
@@ -106,25 +272,14 @@ impl ScopedVolumeSource {
     }
 }
 
+/// Admits a new declaration. A stored one decodes through [`VolumeSource::decoded`],
+/// which leaves out the origin labels: a spec stored before they were reserved may hold
+/// one as a user label.
 impl TryFrom<RawVolumeSource> for VolumeSource {
     type Error = ValueError;
     fn try_from(source: RawVolumeSource) -> Result<Self, Self::Error> {
-        if let RawVolumeSource::Ordinary { labels, .. }
-        | RawVolumeSource::Provisioned { labels, .. } = &source
-            && let Some(key) = labels
-                .keys()
-                .find(|key| key.as_str() == labels::MANAGED || key.as_str() == labels::NAMESPACE)
-        {
-            return Err(ValueError::new(
-                "volume label",
-                key.clone(),
-                "a non-reserved user label",
-            ));
-        }
-        Ok(Self {
-            source,
-            scope: None,
-        })
+        Self::refuse_labels(&source, &[labels::VOLUME_ORIGIN, labels::VOLUME_ORIGINS])?;
+        Self::decoded(source)
     }
 }
 
@@ -137,6 +292,48 @@ impl From<VolumeSource> for RawVolumeSource {
 }
 
 impl VolumeSource {
+    fn decoded(source: RawVolumeSource) -> Result<Self, ValueError> {
+        Self::refuse_labels(&source, &[labels::MANAGED, labels::NAMESPACE])?;
+        Ok(Self {
+            source,
+            scope: None,
+        })
+    }
+
+    fn refuse_labels(source: &RawVolumeSource, reserved: &[&str]) -> Result<(), ValueError> {
+        if let RawVolumeSource::Ordinary { labels, .. }
+        | RawVolumeSource::Provisioned { labels, .. } = source
+            && let Some(key) = labels.keys().find(|key| reserved.contains(&key.as_str()))
+        {
+            return Err(ValueError::new(
+                "volume label",
+                key.clone(),
+                "a non-reserved user label",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The birth of a managed source; `None` for Legacy and for every other kind.
+    #[must_use]
+    pub fn birth(&self) -> Option<&VolumeBirth> {
+        match self.kind() {
+            RawVolumeSource::Ordinary { birth, .. }
+            | RawVolumeSource::Provisioned { birth, .. } => birth.as_ref(),
+            RawVolumeSource::External { .. }
+            | RawVolumeSource::Bind { .. }
+            | RawVolumeSource::Tmpfs { .. } => None,
+        }
+    }
+
+    /// The origin a born source's datasets and Docker Volume carry; `None` for Legacy,
+    /// which writes no value.
+    fn born_origin(&self) -> Option<VolumeOrigin> {
+        self.birth().map(|birth| {
+            VolumeOrigin::of(birth).expect("a birth's fields all have a canonical form")
+        })
+    }
+
     /// Read the source's current physical shape without granting mutation of provenance.
     #[must_use]
     pub fn kind(&self) -> &RawVolumeSource {
@@ -225,6 +422,9 @@ impl VolumeSource {
             labels.insert(labels::MANAGED.into(), String::new());
             labels.insert(labels::NAMESPACE.into(), scope.namespace.to_string());
         }
+        if let Some(origin) = self.born_origin() {
+            labels.insert(labels::VOLUME_ORIGIN.into(), origin.to_string());
+        }
         labels
     }
 
@@ -281,11 +481,7 @@ impl VolumeSource {
             return None;
         }
         match self.kind() {
-            crate::RawVolumeSource::Ordinary {
-                name,
-                driver,
-                labels: _,
-            } => Some(CreateVolumeRequest {
+            crate::RawVolumeSource::Ordinary { name, driver, .. } => Some(CreateVolumeRequest {
                 name: name.clone(),
                 driver: driver.name().into(),
                 options: driver.options().clone(),
@@ -294,13 +490,20 @@ impl VolumeSource {
             crate::RawVolumeSource::Provisioned {
                 name,
                 maximum_bytes,
-                labels: _,
-            } => Some(CreateVolumeRequest {
-                name: name.clone(),
-                driver: PROVISIONED_VOLUME_DRIVER.into(),
-                options: BTreeMap::from([("size".into(), format!("{}b", maximum_bytes.get()))]),
-                labels: self.creation_labels(),
-            }),
+                ..
+            } => {
+                let mut options =
+                    BTreeMap::from([("size".into(), format!("{}b", maximum_bytes.get()))]);
+                if let Some(origin) = self.born_origin() {
+                    options.insert(PROVISIONED_ORIGIN_OPTION.into(), origin.to_string());
+                }
+                Some(CreateVolumeRequest {
+                    name: name.clone(),
+                    driver: PROVISIONED_VOLUME_DRIVER.into(),
+                    options,
+                    labels: self.creation_labels(),
+                })
+            }
             crate::RawVolumeSource::External { .. }
             | crate::RawVolumeSource::Bind { .. }
             | crate::RawVolumeSource::Tmpfs { .. } => None,
@@ -310,6 +513,9 @@ impl VolumeSource {
 
 /// Reserved Docker driver used only by [`RawVolumeSource::Provisioned`].
 pub const PROVISIONED_VOLUME_DRIVER: &str = "ployz";
+/// The driver option naming a born Provisioned Volume's origin, which its first dataset
+/// is created with.
+pub const PROVISIONED_ORIGIN_OPTION: &str = "origin";
 
 /// A positive maximum byte count for one Provisioned Volume.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -633,7 +839,7 @@ struct ResolvedVolumeSourceWire {
 impl TryFrom<ResolvedVolumeSourceWire> for ResolvedVolumeSource {
     type Error = ValueError;
     fn try_from(wire: ResolvedVolumeSourceWire) -> Result<Self, Self::Error> {
-        let mut source = VolumeSource::try_from(wire.source)?;
+        let mut source = VolumeSource::decoded(wire.source)?;
         if let Some(scope) = &wire.scope
             && (!matches!(
                 source.kind(),
@@ -764,6 +970,7 @@ mod tests {
             name: DockerVolumeName::parse("data").unwrap(),
             maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(2_000).unwrap()),
             labels: BTreeMap::new(),
+            birth: None,
         });
 
         let mut grown = observed(&source, bound(2_000));
@@ -782,6 +989,7 @@ mod tests {
             driver: VolumeDriver::parse("local", BTreeMap::from([("o".into(), "size=1g".into())]))
                 .unwrap(),
             labels: BTreeMap::new(),
+            birth: None,
         });
         let plain = DockerVolumeStorageObservation::Plain {
             driver: "local".into(),
@@ -792,6 +1000,30 @@ mod tests {
         let mut changed = observed(&source, plain);
         changed.options.insert("o".into(), "size=2g".into());
         assert!(!source.matches_managed_volume(&changed));
+    }
+
+    #[test]
+    fn a_stored_spec_with_an_origin_label_still_decodes_but_a_new_declaration_refuses_it() {
+        for key in [labels::VOLUME_ORIGIN, labels::VOLUME_ORIGINS] {
+            let raw = serde_json::json!({
+                "kind": "provisioned",
+                "name": "app_data",
+                "maximum_bytes": 1024,
+                "labels": {key: "inventory"},
+                "scope": {"namespace": "app", "logical_name": "data"},
+            });
+            let stored: ResolvedVolumeSource = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(
+                stored
+                    .into_requested()
+                    .creation_labels()
+                    .get(key)
+                    .map(String::as_str),
+                Some("inventory")
+            );
+            let error = serde_json::from_value::<VolumeSource>(raw).unwrap_err();
+            assert!(error.to_string().contains(key), "{error}");
+        }
     }
 
     #[test]

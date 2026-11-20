@@ -9,15 +9,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    DeployApproval, PayloadDigest, ServiceVersion, Signed, deploy::content_addressed,
-    version::MAX_PRESENTED,
+    PayloadDigest, ProposalRef, Purpose, ServiceVersion, Signed, SignerKey, Statement, Timestamp,
+    deploy::content_addressed, version::MAX_PRESENTED,
 };
-use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
+use ployz_core::{
+    MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
+    ServiceName,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use super::{TargetNode, now};
+use crate::Actor;
 use crate::error;
 use crate::id::DeploymentId;
 use crate::storage::Tx;
@@ -80,9 +84,9 @@ enum Origin {
     /// Service, while only run fields changed since.
     #[default]
     Own,
-    /// A Deployment admitted before the Store kept what each one ran. Like main, it
-    /// pins only what its own approval names and otherwise runs its Saved image as
-    /// written, never a pin another Deployment ran.
+    /// A Deployment admitted before the Store kept what each one ran. It runs its Saved
+    /// image as written, never a pin another Deployment ran, so a Server refuses a
+    /// signed Service whose image is a tag.
     Legacy,
     /// A retry or rollback, which runs what `source` ran and takes nothing from any
     /// later Deployment.
@@ -184,7 +188,7 @@ pub(crate) fn post(
 
 /// What a retry or rollback of `source` records before it is claimed, as JSON for its
 /// `ran` column: only its source. Its claim reads what `source` ran, after what the
-/// retry itself posted or approved.
+/// retry itself posted.
 ///
 /// # Errors
 /// Returns `corrupt` when the record doesn't serialize.
@@ -225,13 +229,44 @@ pub(crate) fn versions_for(
     .collect()
 }
 
+/// The signed versions kept for one spec of a Service, by the digest a Server checks.
+/// Each is a signature Cloud can't make, so a drain that reads them from Cloud gets
+/// nothing a Server would take that a trusted key didn't sign.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VersionsQuery {
+    pub namespace: Namespace,
+    pub service: ServiceName,
+    pub digest: PayloadDigest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct VersionsView {
+    /// Newest first, and at most as many as one request carries.
+    pub versions: Vec<Signed<ServiceVersion>>,
+}
+
+pub(crate) fn versions(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &VersionsQuery,
+) -> Result<VersionsView, RpcError> {
+    versions_for(
+        tx,
+        who.organization.as_str(),
+        (&query.namespace, &query.service),
+        query.digest,
+    )
+    .map(|versions| VersionsView { versions })
+}
+
 /// What each Service of `target` runs in Deployment `id`, written back so a retry of `id`
 /// runs the same, with the versions kept for each digest. A Service runs, in order: what
 /// `id` already records, which is the version posted with it or what an earlier claim
-/// resolved; the pin `id`'s own deploy approval names; for a Deploy, what the Deployment
-/// that last applied it ran, when the spec differs from that one only in run fields; for
-/// a retry or rollback, what its source ran or its source's approval named; else its
-/// Saved image as written, which is all a Deployment from before records ever gets.
+/// resolved; for a Deploy, what the Deployment that last applied it ran, when the spec
+/// differs from that one only in run fields; for a retry or rollback, what its source
+/// ran; else its Saved image as written, which is all a Deployment from before records
+/// ever gets.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a record that doesn't read.
@@ -242,15 +277,11 @@ pub(super) fn pinned(
 ) -> Result<BTreeMap<ServiceName, Pinned>, RpcError> {
     let recorded = record_of(tx, id)?;
     let mut record = recorded.clone();
-    let own = super::device_approval(tx, id)?;
     let replays = match &record.origin {
         Origin::Replay { source } => {
             let pending: Vec<&RequestedServiceSpec> = target
                 .iter()
-                .filter(|spec| {
-                    !record.services.contains_key(&spec.name)
-                        && approved(own.as_ref(), spec).is_none()
-                })
+                .filter(|spec| !record.services.contains_key(&spec.name))
                 .collect();
             replayed(tx, source.clone(), pending)?
         }
@@ -260,13 +291,10 @@ pub(super) fn pinned(
         if record.services.contains_key(&spec.name) {
             continue;
         }
-        let from = match approved(own.as_ref(), spec) {
-            Some(ran) => Some(ran),
-            None => match &record.origin {
-                Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
-                Origin::Legacy => None,
-                Origin::Replay { .. } => replays.get(&spec.name).cloned(),
-            },
+        let from = match &record.origin {
+            Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
+            Origin::Legacy => None,
+            Origin::Replay { .. } => replays.get(&spec.name).cloned(),
         };
         let ran = from.or_else(|| {
             PayloadDigest::of(spec, namespace)
@@ -293,20 +321,102 @@ pub(super) fn pinned(
         .collect()
 }
 
-/// What `approval` names for `spec`'s Service, pinning the tag `spec` saves.
-fn approved(
-    approval: Option<&Signed<DeployApproval>>,
-    spec: &RequestedServiceSpec,
-) -> Option<RanService> {
-    let approval = approval?.open().ok()?;
-    let approved = approval.service(&spec.name)?;
-    Some(RanService {
-        digest: approved.digest,
-        pin: approved.image.clone().map(|image| TagPin {
-            tag: spec.container.image.clone(),
-            image,
-        }),
-    })
+/// A Device's deploy approval as `config_deployment.deploy_approval` kept it before signed
+/// versions, decoded as the claim then decoded it: a canonical body with every field, and
+/// Machines and Services sorted and distinct.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeptApproval {
+    cluster: SealingPublicKey,
+    operation: OperationId,
+    namespace: Namespace,
+    machines: Vec<MachineId>,
+    services: Vec<ApprovedService>,
+    issued_at: Timestamp,
+    expires_at: Timestamp,
+    signer: SignerKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposal: Option<ProposalRef>,
+}
+
+impl Statement for KeptApproval {
+    const PURPOSE: Purpose = Purpose::Workflow;
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovedService {
+    name: ServiceName,
+    digest: PayloadDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<String>,
+}
+
+impl KeptApproval {
+    fn read(text: &str) -> Option<Self> {
+        let approval = serde_json::from_str::<Signed<Self>>(text)
+            .ok()?
+            .open()
+            .ok()?;
+        let sorted = approval.machines.is_sorted_by(|left, right| left < right)
+            && approval
+                .services
+                .is_sorted_by(|left, right| left.name < right.name);
+        sorted.then_some(approval)
+    }
+}
+
+/// Record in `ran`, for each Deployment a Device approved before the Store kept what
+/// each one ran, the digest and pin its approval named for each Service it ships, as a
+/// claim read them from the approval: a retry or rollback of it then runs that pin, not
+/// whatever its tag names now. A Service `ran` already names keeps what it names, so a
+/// second run changes nothing. A Deployment whose approval doesn't read or whose Saved
+/// revision no longer lowers keeps none, and runs its tag as before.
+///
+/// # Errors
+/// Returns a storage error.
+pub(crate) fn record_approved(tx: &mut dyn Tx) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT id, deploy_approval FROM config_deployment WHERE deploy_approval IS NOT NULL",
+        &[],
+    )?;
+    for row in &rows {
+        let id = row.parse::<DeploymentId>(0, "Deployment")?;
+        let Some(approved) = KeptApproval::read(row.text(1)?) else {
+            continue;
+        };
+        let Some(target) = super::load(tx, &id).ok().and_then(|stored| {
+            let saved = super::held_revision(tx, &stored).ok()?;
+            super::lowered(tx, &stored, &saved).ok()
+        }) else {
+            continue;
+        };
+        let recorded = record_of(tx, &id)?;
+        let mut record = recorded.clone();
+        for spec in &target.intent.target {
+            let Some(approved) = approved
+                .services
+                .iter()
+                .find(|service| service.name == spec.name)
+            else {
+                continue;
+            };
+            record
+                .services
+                .entry(spec.name.clone())
+                .or_insert_with(|| RanService {
+                    digest: approved.digest,
+                    pin: approved.image.clone().map(|image| TagPin {
+                        tag: spec.container.image.clone(),
+                        image,
+                    }),
+                });
+        }
+        if record != recorded {
+            write_record(tx, &id, &record)?;
+        }
+    }
+    Ok(())
 }
 
 /// What the Deployment that last applied `spec`'s Service node ran, when `spec` with
@@ -340,10 +450,9 @@ fn reused(
     Ok(same.then_some(last))
 }
 
-/// What `source` ran for each of `pending`'s Services: its record, else its own approval,
-/// else what the Deployment it replays ran, read in one walk back through the chain. A
-/// Service none of them names is left out: before the Store kept what each Deployment
-/// ran, a Service no approval named ran its Saved image as written.
+/// What `source` ran for each of `pending`'s Services: its record, else what the
+/// Deployment it replays ran, read in one walk back through the chain. A Service none of
+/// them names is left out, so it runs its Saved image as written.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a chain that reaches a Deployment twice.
@@ -364,14 +473,6 @@ fn replayed(
             ran.map(|ran| found.insert(spec.name.clone(), ran))
                 .is_none()
         });
-        if !pending.is_empty() {
-            let approval = super::device_approval(tx, &source)?;
-            pending.retain(|spec| {
-                let ran = approved(approval.as_ref(), spec);
-                ran.map(|ran| found.insert(spec.name.clone(), ran))
-                    .is_none()
-            });
-        }
         match record.origin {
             Origin::Replay { source: earlier } => source = earlier,
             Origin::Own | Origin::Legacy => break,

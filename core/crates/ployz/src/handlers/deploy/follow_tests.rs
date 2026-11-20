@@ -39,7 +39,6 @@ fn a_follow_read_error_cannot_detach_owned_work_even_when_cancel_is_refused() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )
@@ -131,7 +130,6 @@ fn following_returns_when_the_owned_runner_ends_not_at_the_next_poll() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )

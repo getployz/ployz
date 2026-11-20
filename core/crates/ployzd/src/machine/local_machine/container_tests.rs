@@ -1319,7 +1319,6 @@ mod settled {
             .admit_spec(
                 &want,
                 crate::machine::Presented::Operator {
-                    deploy: None,
                     rule: None,
                     versions: &[],
                 },

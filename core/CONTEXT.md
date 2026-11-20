@@ -123,7 +123,7 @@ The Machine-local copy of the output of every container Ployz runs, kept after t
 _Avoid_: log database, log cache
 
 **Observe Store**:
-The disposable Machine-local state `ployz-observe` keeps: the Log Store, Metric Samples, and Rollups. It holds only what its own Machine observed, needs no migrations, and Cloud reads it without copying it.
+The disposable Machine-local state `ployz-observe` keeps: the Log Store, Metric Samples, and Rollups. It holds only what its own Machine observed and needs no migrations. A Machine may also send what it observes to Cloud, which keeps its own copy; that copy is not the Observe Store.
 _Avoid_: telemetry store, metrics database, TSDB
 
 **Metric Sample**:

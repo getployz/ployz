@@ -2,9 +2,12 @@
 //! from its Config Store, streams a line per step, and prints the report as `--json`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use clap::ArgMatches;
-use ployz_core::{Machine, MachineName, MachineTarget, QualifiedService, RpcError};
+use ployz_core::{
+    Hint, Machine, MachineName, MachineTarget, QualifiedService, RpcError, RpcErrorCode,
+};
 use ployz_store::NamespacesQuery;
 use reqwest::Method;
 use serde::Deserialize;
@@ -13,11 +16,12 @@ use serde_json::{Value, json};
 use super::target;
 use crate::approval;
 use crate::cloud_account::{self, Credential};
+use crate::cluster::KeptVersions;
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
 };
-use crate::handlers::{Error, leaf_matches, runtime, store, with_client};
+use crate::handlers::{Error, leaf_matches, route, runtime, store};
 use ployz_store::OperationVerb;
 
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
@@ -42,16 +46,38 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     }
     drop(runtime);
     // Store reads block on their own runtime, so they run before the Cluster's.
-    let scope = scope(root)?;
-    with_client(root, |client| {
-        Box::pin(async move {
-            let cancellation = crate::cancellation::on_ctrl_c();
-            let report = client
-                .drain(&target, &scope, &cancellation, &mut show)
-                .await
-                .map_err(refusal)?;
-            render(&report)
-        })
+    let store = store::reachable(root)?;
+    let scope = scope(matches, store.as_ref())?;
+    // The Config Store keeps what each Device signed: Cloud's when signed in, else this
+    // CLI's own. Each Server a copy moves to checks those versions, as a Cloud drain hands
+    // them on.
+    let kept = store
+        .map(store::Store::into_backend)
+        .map(|backend| match backend {
+            store::Backend::Local(local, who) => KeptVersions::new(local, who.organization),
+            store::Backend::Cloud(_, credential) => KeptVersions::Cloud(Arc::new(credential)),
+        });
+    let context = matches.get_one::<String>("context").map(String::as_str);
+    crate::handlers::runtime()?.block_on(async {
+        let mut client = route::connect(matches, context).await?;
+        let mut client = match kept {
+            Some(kept) => client.with_kept_versions(kept),
+            None => {
+                let unsigned = crate::drain::needing_versions(&mut client, &target, &scope)
+                    .await
+                    .map_err(refusal)?;
+                if !unsigned.is_empty() {
+                    return Err(unsigned_moves(matches, selector, &unsigned));
+                }
+                client
+            }
+        };
+        let cancellation = crate::cancellation::on_ctrl_c();
+        let report = client
+            .drain(&target, &scope, &cancellation, &mut show)
+            .await
+            .map_err(refusal)?;
+        render(&report)
     })
 }
 
@@ -168,9 +194,8 @@ fn incomplete(report: &DrainReport) -> Error {
 
 /// Namespaces some Project owns, when a Config Store is reachable. Standalone Clusters
 /// have none, so every user Namespace counts there.
-fn scope(root: &ArgMatches) -> Result<DrainScope, Error> {
-    let matches = leaf_matches(root);
-    let Some(store) = store::reachable(root)? else {
+fn scope(matches: &ArgMatches, store: Option<&store::Store<'_>>) -> Result<DrainScope, Error> {
+    let Some(store) = store else {
         return Ok(DrainScope::EveryNamespace);
     };
     // A Cloud Store owns the signed-in Organization's Namespaces; another Cluster
@@ -189,6 +214,32 @@ fn scope(root: &ArgMatches) -> Result<DrainScope, Error> {
             .map(|owned| owned.namespace)
             .collect(),
     })
+}
+
+/// The refusal for a drain with no Config Store to read signed versions from, before it
+/// turns anything off: each of `services` would move to a Server that refuses it unsigned.
+fn unsigned_moves(matches: &ArgMatches, server: &str, services: &[QualifiedService]) -> Error {
+    let named: Vec<String> = services.iter().map(ToString::to_string).collect();
+    Error::detailed(
+        RpcErrorCode::Unauthenticated,
+        format!(
+            "Nothing drained from {server}: {} {} a device's signature to start on another \
+             server, and a signed-out ployz can't read it.",
+            named.join(", "),
+            if named.len() == 1 {
+                "needs"
+            } else {
+                "each need"
+            },
+        ),
+        json!({ "server": server, "services": named }),
+    )
+    .hint(Hint::Next(shell_words::join(
+        ["ployz"]
+            .into_iter()
+            .chain(super::super::config_flag(matches).into_iter().flatten())
+            .chain(["login"]),
+    )))
 }
 
 fn refusal(error: DrainError) -> Error {

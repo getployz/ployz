@@ -315,6 +315,12 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0049_service_version",
         Step::Sql(include_str!("migrations/0049_service_version.sql")),
     ),
+    (
+        // For each Deployment a Device approved, the pins its approval named, as what it
+        // ran.
+        "0050_approved_pins",
+        Step::Rust(|tx, _| crate::deployment::versions::record_approved(tx).map(|()| None)),
+    ),
 ];
 
 enum Step {

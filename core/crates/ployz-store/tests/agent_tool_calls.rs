@@ -2271,7 +2271,6 @@ fn deploying() -> (ConfigStore, DeploymentId) {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )
@@ -2337,7 +2336,6 @@ fn a_deployment_shows_what_it_left_out_and_what_its_servers_warned() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )
@@ -2684,7 +2682,6 @@ fn deployed_shop() -> ConfigStore {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )
@@ -3302,7 +3299,6 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )
@@ -3451,7 +3447,6 @@ fn store_retry(
                 rolls_back: None,
                 version: confirmed["version"].as_str().map(str::to_owned),
                 accept_volume_loss: serde_json::from_value(accept.clone()).unwrap(),
-                approval: None,
                 versions: Vec::new(),
             }),
             trusted,
@@ -3600,7 +3595,6 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
                     versions: Vec::new(),
                 }),
             )
@@ -3887,7 +3881,6 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )

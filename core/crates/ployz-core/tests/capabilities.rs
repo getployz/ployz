@@ -197,8 +197,8 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
             "ployz.build.grant.rule.v1",
-            "ployz.container.deploy-approval.v1",
-            "ployz.container.deploy-proposal.v1",
+            "ployz.container.signed-version.v1",
+            "ployz.container.signed-version.proposal.v1",
             "ployz.container.deploy-rule.v1",
             "ployz.rule.passkey.v1",
         ]
@@ -385,12 +385,12 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "falls back: `ployz device rm` calls set-device.v1 Remove on an older daemon, which can hold no passkey",
     ),
     (
-        "ployz.container.deploy-approval.v1",
-        "falls back: an older daemon ignores the approval on EnsureContainer; one not enforcing creates as before, and one enforcing refuses every Operator creation as it did, naming the restart capability",
+        "ployz.container.signed-version.v1",
+        "falls back: an older daemon ignores `versions` on EnsureContainer; one not enforcing creates as before, and `ployz deploy` refuses to sign for one that enforces and doesn't advertise this, naming it to upgrade",
     ),
     (
-        "ployz.container.deploy-proposal.v1",
-        "gated: B5 must have Cloud send a deploy step of a proposal only to a Machine that advertises it, since nothing sends one yet; an older enforcing Machine refuses one, as it refuses any deploy approval it can't verify",
+        "ployz.container.signed-version.proposal.v1",
+        "gated: B5 must have Cloud send a deploy step of a proposal only to a Machine that advertises it, since nothing sends one yet; an older enforcing Machine refuses one, as it refuses any signed version it can't verify",
     ),
     (
         "ployz.container.deploy-rule.v1",

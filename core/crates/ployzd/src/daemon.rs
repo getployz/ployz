@@ -295,10 +295,11 @@ impl Daemon {
         let link = corrosion
             .as_ref()
             .map(|running| ClusterLink::start(running, local.clone(), shutdown.clone()));
-        let plugin = config
+        let plugin_socket = config
             .volume_plugin_socket
             .clone()
-            .map_or_else(crate::storage::Plugin::default, crate::storage::Plugin::at);
+            .unwrap_or_else(|| PathBuf::from(crate::VOLUME_PLUGIN_SOCKET));
+        let plugin = crate::storage::Plugin::at(plugin_socket.clone());
         let containers = match (containers, link.as_ref()) {
             (Some(runtime), Some(link)) => Some(runtime.replicating(
                 link.context.replicated.clone(),
@@ -391,6 +392,7 @@ impl Daemon {
                     serve_machine_api(machine_api_listener, machine_api.clone(), shutdown.clone()),
                     serve_volume_send(
                         volume_send_listener,
+                        plugin_socket.clone(),
                         serving_local.clone(),
                         shutdown.clone(),
                     ),
@@ -728,6 +730,7 @@ async fn serve_machine_api(
 /// it may serve.
 async fn serve_volume_send(
     listener: Option<TcpListener>,
+    plugin_socket: PathBuf,
     recipients: crate::machine::LocalMachine,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
@@ -736,6 +739,7 @@ async fn serve_volume_send(
             crate::volume_send::serve(
                 listener,
                 (PathBuf::from("zfs"), PathBuf::from("zpool")),
+                plugin_socket,
                 recipients,
                 shutdown,
             )

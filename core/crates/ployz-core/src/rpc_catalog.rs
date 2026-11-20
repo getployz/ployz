@@ -147,10 +147,10 @@ macro_rules! rpc_catalog {
                 SET_INGRESS_TUNNEL_CAPABILITY: ("ployz.ingress.tunnel.v1", Cluster),
                 /// `SetPrivateAccess` takes a person's approval of its sealed auth key and turns Private Access on for an Operator only with one.
                 PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster),
-                /// `EnsureContainer` takes a deploy approval and creates an Operator's Container only when its spec matches a digest it approves.
-                DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
-                /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
-                DEPLOY_PROPOSAL_CAPABILITY: ("ployz.container.deploy-proposal.v1", Always),
+                /// `EnsureContainer` takes signed versions and creates an Operator's Container only when one signs its spec's digest.
+                SIGNED_VERSION_CAPABILITY: ("ployz.container.signed-version.v1", Always),
+                /// A signed version may be an unsigned step of a signed proposal bundle that rides in its envelope.
+                SIGNED_VERSION_PROPOSAL_CAPABILITY: ("ployz.container.signed-version.proposal.v1", Always),
                 /// `EnsureContainer` takes an automatic deploy rule with its image token and creates an Operator's Container under it only for the head's image built under the rule.
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
                 /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.

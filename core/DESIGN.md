@@ -37,6 +37,10 @@ changes it when the request carries no customer authority, and names the
 route's capability. This is the only semantic 0.x has withdrawn. It is not a
 precedent. The next withdrawal waits for a major.
 
+**The 0.4 observe exception.** 0.4 deletes the observe history a Machine held
+and needs every Service redeployed to log the new way. It withdraws no route,
+and it is not a precedent: the Observe Store stays outside the promise.
+
 **Rules.** Frozen formats only gain optional fields with defaults. Nothing is
 renamed or repurposed, and readers ignore unknown fields. Replicated bodies
 never refuse unknown fields; only secret-bearing sections and
@@ -180,16 +184,20 @@ were unreachable?
 
 **Bet.** Cloud hosts the Config Store and drives Deploys and Volume Runs, but
 holds no runtime truth. Its rows are an operator's bookkeeping. It reaches
-Machines over the same Machine RPC seam as SSH, and reads logs and metrics
-through the daemon without copying them. A verb lives in `ployz` if a
-cloudless Cluster needs it; otherwise Cloud publishes it as data.
+Machines over the same Machine RPC seam as SSH. Cloud may store the observe
+data Machines send it, but holds no runtime truth a Cluster needs: Clusters
+deploy, run and tail live logs without Cloud. A verb lives in `ployz` if a cloudless Cluster needs it;
+otherwise Cloud publishes it as data.
 
 **Why.** The Cluster must stay operable without Cloud. Without an operator, a
-Volume stays put and everything else still works.
+Volume stays put and everything else still works. Observe data is history, not
+truth: losing Cloud's copy loses nothing a Machine decides with, while history
+kept only on a Machine is gone when its Server is.
 
 **Red flags.** Cloud-held runtime truth, a connection catalog treated as
 membership, transport failure used to forget or reset a Cluster, a Cluster
-operation whose correctness needs Cloud, a Cloud copy of the Observe Store.
+operation whose correctness needs Cloud, a Machine shipping a Sealed value it
+knows unmasked, Cloud trusting a sender's labels to say which Organization a record belongs to.
 
 **Test.** If Cloud vanished mid-operation, is every Machine still correct?
 

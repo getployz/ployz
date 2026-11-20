@@ -31,7 +31,7 @@ async fn held_source(stream: &'static str) -> (u16, Arc<Semaphore>) {
             }
             let body = futures_util::stream::once(async move {
                 let _permit = gate.acquire().await;
-                Ok::<_, std::convert::Infallible>(stream)
+                Ok::<_, std::convert::Infallible>(begun(0, stream))
             });
             Body::from_stream(body).into_response()
         }

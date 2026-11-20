@@ -194,16 +194,6 @@ impl Client {
         Ok(Some(client))
     }
 
-    /// Hand every Server the approval of the Deploy this client runs.
-    #[must_use]
-    pub(crate) fn with_deploy_approval(
-        mut self,
-        approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-    ) -> Self {
-        self.deploy.set_deploy(approval);
-        self
-    }
-
     /// Hand every Server, with each new copy, the signed versions `kept` holds for that
     /// copy's own spec.
     #[must_use]
@@ -223,7 +213,7 @@ impl Client {
     }
 
     /// Hand every Server the rule's proof for the Service each change belongs to, in
-    /// place of a person's deploy approval.
+    /// place of a person's signed version.
     #[must_use]
     pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
         self.deploy.set_proofs(proofs);
@@ -1205,7 +1195,6 @@ impl Client {
         };
         Ok(EnsureContainerRequest {
             want,
-            deploy: carried.deploy,
             rule: carried.rule,
             versions: carried.versions,
         })
