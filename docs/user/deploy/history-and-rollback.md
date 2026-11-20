@@ -97,6 +97,7 @@ version or an [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-pu
   version of Ployz can't run an older commit under it. Revert the commit on the branch and push;
   the push deploys like any other.
 - **Redeploy** and **Roll back** in the dashboard, `ployz deployment redeploy` and a redeploy by
-  [the agent](../account/agent-sidebar.md) send no signature. A server runs them for a service
-  that reaches no data, and for a version it already ran under a signature. It refuses any
-  other container, and the deployment fails without changing what runs.
+  [the agent](../account/agent-sidebar.md) sign nothing. They send the signature Ployz Cloud
+  kept for each version that deployment ran, so a server runs a version a device signed, and
+  any service that reaches no data. It refuses any other container, and the deployment fails
+  without changing what runs.
