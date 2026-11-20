@@ -563,14 +563,11 @@ impl MachineRpc for MachineService {
         }
         let presented = if operator {
             Presented::Operator {
-                deploy: request.deploy.as_ref(),
                 rule: request.rule.as_deref(),
                 versions: &request.versions,
             }
         } else {
-            Presented::FullAccess {
-                deploy: request.deploy.as_ref(),
-            }
+            Presented::FullAccess
         };
         let admitted = match local.admit_spec(&request.want, presented).await {
             Ok(admitted) => admitted,

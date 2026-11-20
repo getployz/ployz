@@ -4094,7 +4094,6 @@ fn apply_all(store: &ConfigStore, who: &Actor, trusted: &Trusted) {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
             trusted,
@@ -4470,7 +4469,6 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
             &holding(&stages, Approval::Required, Asks::EveryDeploy),
@@ -4553,7 +4551,6 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
             &Trusted {

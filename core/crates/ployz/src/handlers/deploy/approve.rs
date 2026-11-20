@@ -1,20 +1,20 @@
 //! A Device's approval of one Deploy: when a Server of the Cluster enforces Device
-//! approval, `ployz deploy` lowers the plan as Cloud's runner will, signs the digest of
-//! each Service's spec with this Device's key, and admits the Deploy with it. Each
-//! Server then creates only the specs this Device approved.
+//! approval, `ployz deploy` lowers the plan as Cloud's runner will, signs a version of
+//! each Service with the digest of its spec, and admits the Deploy with them. Each
+//! Server then creates only the specs a trusted Device signed.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    ApprovedChange, DeployApproval, DeployTerms, ServiceVersion, Signed, deploy::content_addressed,
+    ApprovedChange, ServiceVersion, SignerKey, Timestamp, deploy::content_addressed,
 };
 use ployz_core::{
-    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, SealingPublicKey,
-    ServiceName, cluster_sealing_key,
+    Hint, MachineObservation, RequestedServiceSpec, RpcErrorCode, SealingPublicKey, ServiceName,
+    cluster_sealing_key,
 };
-use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery, PostedVersion, TagPin};
+use ployz_store::{EnvironmentRef, PlanQuery, PostedVersion, TagPin};
 use serde_json::json;
 
 use super::super::device::DeviceSigning;
@@ -22,10 +22,9 @@ use super::super::store::Store;
 use super::super::{Error, route};
 use crate::image::{PinError, pin_public};
 
-/// A signed approval, a signed version of each Service with the image it pinned, the
-/// plan version it approves, and what it approved.
+/// A signed version of each Service with the image it pinned, the plan version it
+/// approves, and what it approved.
 pub(in crate::handlers) struct DeviceApproval {
-    pub(in crate::handlers) signed: Signed<DeployApproval>,
     pub(in crate::handlers) versions: Vec<PostedVersion>,
     pub(in crate::handlers) version: String,
     pub(in crate::handlers) approved: Vec<ApprovedChange>,
@@ -36,6 +35,7 @@ pub(in crate::handlers) struct DeviceApproval {
 #[derive(Debug, PartialEq)]
 pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) cluster: SealingPublicKey,
+    /// Every Server, which an automatic deploy rule's approval names.
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
     /// The name each Server reports, which a person reads its signed lines by.
     pub(in crate::handlers) names: BTreeMap<ployz_core::MachineId, String>,
@@ -44,7 +44,7 @@ pub(in crate::handlers) struct Enforcing {
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Sign Deployment `id`'s approval with this CLI's Device key, when it holds one and a
+/// Sign the versions a Deploy ships with this CLI's Device key, when it holds one and a
 /// Server of the Cluster enforces Device approval. None otherwise: the Deploy runs as
 /// before, and a Server that enforces refuses what nobody approved. The Servers are
 /// asked while the Store plans, so a Cluster that doesn't enforce waits for neither.
@@ -58,7 +58,6 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 pub(in crate::handlers) fn sign(
     matches: &ArgMatches,
     store: &Store,
-    id: &DeploymentId,
     (environment, services): (&EnvironmentRef, &[ServiceName]),
 ) -> Result<Option<DeviceApproval>, Error> {
     let key = super::super::device::key::path(&super::super::config_path(matches)?);
@@ -96,19 +95,8 @@ pub(in crate::handlers) fn sign(
     let plan = plan?;
     let target = signable(plan.target)?;
     let pins = pin_tags(matches, &target)?;
-    let window = signing.window();
-    let namespace = plan.namespace.clone();
-    let terms = DeployTerms {
-        cluster: enforcing.cluster,
-        operation: OperationId::from_uuid(id.as_str()).map_err(Error::command)?,
-        machines: enforcing.machines,
-        issued_at: window.issued_at,
-        expires_at: window.expires_at,
-        signer: window.signer,
-        proposal: None,
-    };
-    let (body, approved) =
-        DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
+    let namespace = plan.namespace;
+    let approved = ApprovedChange::of(&target, &namespace, &pins).map_err(Error::command)?;
     for line in approved.iter().flat_map(ApprovedChange::lines) {
         crate::ui::note(format_args!("{line}"));
     }
@@ -121,7 +109,8 @@ pub(in crate::handlers) fn sign(
     consent(&approved, yes, |question, refusal, declined| {
         crate::ui::confirm(question, || refusal, declined)
     })?;
-    let signed = signing.sign(&body)?;
+    let signed_at = Timestamp::now();
+    let signer = SignerKey::Device(signing.device_key());
     let versions = approved
         .iter()
         .map(|change| {
@@ -130,8 +119,8 @@ pub(in crate::handlers) fn sign(
                 namespace: namespace.clone(),
                 service: change.service.clone(),
                 digest: change.digest,
-                signed_at: window.issued_at,
-                signer: window.signer,
+                signed_at,
+                signer,
                 proposal: None,
             })?;
             Ok(PostedVersion {
@@ -144,7 +133,6 @@ pub(in crate::handlers) fn sign(
         })
         .collect::<Result<_, Error>>()?;
     Ok(Some(DeviceApproval {
-        signed,
         versions,
         version: plan.version,
         approved,

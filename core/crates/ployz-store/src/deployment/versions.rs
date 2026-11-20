@@ -9,8 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    DeployApproval, PayloadDigest, ServiceVersion, Signed, deploy::content_addressed,
-    version::MAX_PRESENTED,
+    PayloadDigest, ServiceVersion, Signed, deploy::content_addressed, version::MAX_PRESENTED,
 };
 use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -80,9 +79,9 @@ enum Origin {
     /// Service, while only run fields changed since.
     #[default]
     Own,
-    /// A Deployment admitted before the Store kept what each one ran. Like main, it
-    /// pins only what its own approval names and otherwise runs its Saved image as
-    /// written, never a pin another Deployment ran.
+    /// A Deployment admitted before the Store kept what each one ran. It runs its Saved
+    /// image as written, never a pin another Deployment ran, so a Server refuses a
+    /// signed Service whose image is a tag.
     Legacy,
     /// A retry or rollback, which runs what `source` ran and takes nothing from any
     /// later Deployment.
@@ -184,7 +183,7 @@ pub(crate) fn post(
 
 /// What a retry or rollback of `source` records before it is claimed, as JSON for its
 /// `ran` column: only its source. Its claim reads what `source` ran, after what the
-/// retry itself posted or approved.
+/// retry itself posted.
 ///
 /// # Errors
 /// Returns `corrupt` when the record doesn't serialize.
@@ -228,10 +227,10 @@ pub(crate) fn versions_for(
 /// What each Service of `target` runs in Deployment `id`, written back so a retry of `id`
 /// runs the same, with the versions kept for each digest. A Service runs, in order: what
 /// `id` already records, which is the version posted with it or what an earlier claim
-/// resolved; the pin `id`'s own deploy approval names; for a Deploy, what the Deployment
-/// that last applied it ran, when the spec differs from that one only in run fields; for
-/// a retry or rollback, what its source ran or its source's approval named; else its
-/// Saved image as written, which is all a Deployment from before records ever gets.
+/// resolved; for a Deploy, what the Deployment that last applied it ran, when the spec
+/// differs from that one only in run fields; for a retry or rollback, what its source
+/// ran; else its Saved image as written, which is all a Deployment from before records
+/// ever gets.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a record that doesn't read.
@@ -242,15 +241,11 @@ pub(super) fn pinned(
 ) -> Result<BTreeMap<ServiceName, Pinned>, RpcError> {
     let recorded = record_of(tx, id)?;
     let mut record = recorded.clone();
-    let own = super::device_approval(tx, id)?;
     let replays = match &record.origin {
         Origin::Replay { source } => {
             let pending: Vec<&RequestedServiceSpec> = target
                 .iter()
-                .filter(|spec| {
-                    !record.services.contains_key(&spec.name)
-                        && approved(own.as_ref(), spec).is_none()
-                })
+                .filter(|spec| !record.services.contains_key(&spec.name))
                 .collect();
             replayed(tx, source.clone(), pending)?
         }
@@ -260,13 +255,10 @@ pub(super) fn pinned(
         if record.services.contains_key(&spec.name) {
             continue;
         }
-        let from = match approved(own.as_ref(), spec) {
-            Some(ran) => Some(ran),
-            None => match &record.origin {
-                Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
-                Origin::Legacy => None,
-                Origin::Replay { .. } => replays.get(&spec.name).cloned(),
-            },
+        let from = match &record.origin {
+            Origin::Own => reused(tx, environment, (nodes, spec), namespace)?,
+            Origin::Legacy => None,
+            Origin::Replay { .. } => replays.get(&spec.name).cloned(),
         };
         let ran = from.or_else(|| {
             PayloadDigest::of(spec, namespace)
@@ -291,22 +283,6 @@ pub(super) fn pinned(
             Ok((service, Pinned { ran, versions }))
         })
         .collect()
-}
-
-/// What `approval` names for `spec`'s Service, pinning the tag `spec` saves.
-fn approved(
-    approval: Option<&Signed<DeployApproval>>,
-    spec: &RequestedServiceSpec,
-) -> Option<RanService> {
-    let approval = approval?.open().ok()?;
-    let approved = approval.service(&spec.name)?;
-    Some(RanService {
-        digest: approved.digest,
-        pin: approved.image.clone().map(|image| TagPin {
-            tag: spec.container.image.clone(),
-            image,
-        }),
-    })
 }
 
 /// What the Deployment that last applied `spec`'s Service node ran, when `spec` with
@@ -340,10 +316,9 @@ fn reused(
     Ok(same.then_some(last))
 }
 
-/// What `source` ran for each of `pending`'s Services: its record, else its own approval,
-/// else what the Deployment it replays ran, read in one walk back through the chain. A
-/// Service none of them names is left out: before the Store kept what each Deployment
-/// ran, a Service no approval named ran its Saved image as written.
+/// What `source` ran for each of `pending`'s Services: its record, else what the
+/// Deployment it replays ran, read in one walk back through the chain. A Service none of
+/// them names is left out, so it runs its Saved image as written.
 ///
 /// # Errors
 /// Returns a storage error, or `corrupt` for a chain that reaches a Deployment twice.
@@ -364,14 +339,6 @@ fn replayed(
             ran.map(|ran| found.insert(spec.name.clone(), ran))
                 .is_none()
         });
-        if !pending.is_empty() {
-            let approval = super::device_approval(tx, &source)?;
-            pending.retain(|spec| {
-                let ran = approved(approval.as_ref(), spec);
-                ran.map(|ran| found.insert(spec.name.clone(), ran))
-                    .is_none()
-            });
-        }
         match record.origin {
             Origin::Replay { source: earlier } => source = earlier,
             Origin::Own | Origin::Legacy => break,

@@ -613,7 +613,6 @@ async fn ensure(
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
                 want,
-                deploy: None,
                 rule: None,
                 versions: Vec::new(),
             },

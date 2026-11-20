@@ -805,7 +805,6 @@ fn cancelled_hold_cannot_be_retried() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approval: None,
                 versions: Vec::new(),
             }),
             &Trusted::default(),

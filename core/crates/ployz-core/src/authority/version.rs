@@ -56,9 +56,6 @@ impl StepBody for ServiceVersion {
     fn namespace(&self) -> &Namespace {
         &self.namespace
     }
-    fn window(&self) -> Option<(Timestamp, Timestamp)> {
-        None
-    }
 }
 
 /// Most signed versions one request may carry.

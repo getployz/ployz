@@ -303,7 +303,7 @@ pub(super) fn upload_and_ship(
     // An upload builds an image no Device can name before it exists.
     let device = match &listing {
         Some(_) => None,
-        None => approve::sign(matches, store, &id, (&environment, &services))?,
+        None => approve::sign(matches, store, (&environment, &services))?,
     };
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
@@ -320,9 +320,6 @@ pub(super) fn upload_and_ship(
             message,
             prune: false,
             no_prune,
-            approval: device
-                .as_ref()
-                .map(|device| Box::new(device.signed.clone())),
             versions: device
                 .as_ref()
                 .map(|device| device.versions.clone())
@@ -1514,7 +1511,6 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
             accept_volume_loss: accept,
-            approval: None,
             versions: Vec::new(),
         }))
         .map_err(|error| {

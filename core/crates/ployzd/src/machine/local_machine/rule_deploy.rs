@@ -1,5 +1,5 @@
 //! Deploys under an automatic deploy rule: an Operator's new Container admitted on a
-//! rule and the pinned builder's image token, in place of a person's deploy approval.
+//! rule and the pinned builder's image token, in place of a person's signed version.
 //!
 //! The rule's signature, this Machine's place in it, a live generation, the token's
 //! audience over the claim Cloud relays, and the branch head read from GitHub now all

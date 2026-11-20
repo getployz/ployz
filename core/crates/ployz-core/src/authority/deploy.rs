@@ -1,10 +1,9 @@
-//! The approval a Device signs for one
-//! Deploy, and the checks a Machine runs before it creates a Container under one.
+//! The digest a signed version names for one Service's spec, and what an approver's
+//! client shows before it signs one.
 //!
-//! The approval names one [`PayloadDigest`] per Service. A Machine recomputes the digest
-//! from the spec it is asked to create, so Cloud can carry the approval but cannot change
-//! the image, command, environment, Sealed values, mounts, Config bytes, ports,
-//! privileges or hook it approves. The digest leaves out the run fields, which Cloud picks
+//! A Machine recomputes the [`PayloadDigest`] from the spec it is asked to create, so
+//! Cloud can carry a signature but cannot change the image, command, environment, Sealed
+//! values, mounts, Config bytes, ports, privileges or hook it covers. The digest leaves out the run fields, which Cloud picks
 //! per run: see [`run_fields_cleared`]. The image must also be content-addressed, since a
 //! tag names whatever Cloud last wrote under it.
 
@@ -12,27 +11,21 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::num::NonZeroU32;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
 
 use super::{
-    canonical::{self, CanonicalError, Timestamp, drop_nulls},
-    keys::{Approver, Purpose, Signed, SignerKey, Statement},
-    open::open_approval,
-    proposal::{ProposalRef, StepBody, StepKind},
-    refusal::{AuthorityRefusal, field, first_mismatch},
+    canonical::{self, CanonicalError, drop_nulls},
     rule_draft::settings,
     shown::Shown,
-    trusted_key::TrustedKeys,
 };
 use crate::value::hex_newtype;
 use crate::{
-    ContainerKind, ContainerResources, MachineId, Namespace, OperationId, Placement,
-    PortPublication, PullPolicy, RawVolumeSource, RequestedServiceSpec, ResolvedServiceSpec,
-    SealingPublicKey, ServiceContainerSpec, ServiceMode, ServiceName, ServiceNetwork,
-    ServiceVolume, UpdateConfig, VolumeDriver,
+    ContainerKind, ContainerResources, Namespace, Placement, PortPublication, PullPolicy,
+    RawVolumeSource, RequestedServiceSpec, ResolvedServiceSpec, ServiceContainerSpec, ServiceMode,
+    ServiceName, ServiceNetwork, ServiceVolume, UpdateConfig, VolumeDriver,
 };
 
 hex_newtype!(
@@ -219,23 +212,8 @@ pub fn content_addressed(image: &str) -> bool {
     crate::ImageDigest::parse(digest).is_ok()
 }
 
-/// One Service a Deploy approves, by the digest of the spec its Containers run.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct ApprovedService {
-    pub name: ServiceName,
-    pub digest: PayloadDigest,
-    /// The content-addressed reference the approver's client pinned the Service's image
-    /// to, when the Saved State names a tag. The runner writes it into the spec before
-    /// planning, and a Machine creates the Service only from this exact image. None when
-    /// the person wrote the digest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub image: Option<String>,
-}
-
-/// One Service as the approver's client shows it before signing: the digest the approval
-/// names, the image, what the spec asks of the host beyond an ordinary Container, and
+/// One Service as the approver's client shows it before signing: the digest it signs, its
+/// image, what the spec asks of the host beyond an ordinary Container, and
 /// every other setting it signs. The CLI and the browser show these, computed from the
 /// specs they sign.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
@@ -261,8 +239,7 @@ pub struct ApprovedChange {
 }
 
 impl ApprovedChange {
-    /// One change per Service of `target`, sorted by name and distinct, as a
-    /// [`DeployApproval`] lists them. A Service in `pins` is approved with its image set
+    /// One change per Service of `target`, sorted by name and distinct. A Service in `pins` is approved with its image set
     /// to the pinned reference, so the digest covers the spec the runner sends.
     ///
     /// # Errors
@@ -325,15 +302,6 @@ impl ApprovedChange {
         std::iter::once(self.line())
             .chain(self.settings.iter().map(|setting| format!("  {setting}")))
             .collect()
-    }
-
-    #[must_use]
-    pub fn approved(&self) -> ApprovedService {
-        ApprovedService {
-            name: self.service.clone(),
-            digest: self.digest,
-            image: self.tag.is_some().then(|| self.image.clone()),
-        }
     }
 }
 
@@ -474,240 +442,12 @@ fn plain_local(driver: &VolumeDriver) -> bool {
                 })))
 }
 
-/// A Device approves one Deploy: the Services it may create in one Cluster and Namespace.
-/// A Machine checks neither `machines` nor the window when it creates a Container.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct DeployApproval {
-    /// The Cluster's Sealing public key, which every Machine holds and Cloud cannot mint.
-    pub cluster: SealingPublicKey,
-    /// The Deployment.
-    pub operation: OperationId,
-    pub namespace: Namespace,
-    /// Sorted and distinct.
-    #[serde(deserialize_with = "canonical::sorted_distinct")]
-    pub machines: Vec<MachineId>,
-    /// Sorted by name and distinct.
-    #[serde(deserialize_with = "services_by_name")]
-    pub services: Vec<ApprovedService>,
-    pub issued_at: Timestamp,
-    pub expires_at: Timestamp,
-    /// The key that signed, which the signature must come from.
-    pub signer: SignerKey,
-    /// Which step of a signed proposal this is, when it is one. Absent from a single
-    /// approval, which keeps the bytes a daemon from before deploy steps reads.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub proposal: Option<ProposalRef>,
-}
-
-impl Statement for DeployApproval {
-    const PURPOSE: Purpose = Purpose::Workflow;
-}
-
-/// What an approver's client sets around the Services a plan ships.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct DeployTerms {
-    pub cluster: SealingPublicKey,
-    /// The Deployment's ID, without its dashes.
-    pub operation: OperationId,
-    pub machines: Vec<MachineId>,
-    pub issued_at: Timestamp,
-    pub expires_at: Timestamp,
-    pub signer: SignerKey,
-    /// The proposal step this approval is, if it is one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub proposal: Option<ProposalRef>,
-}
-
-impl StepBody for DeployApproval {
-    fn kind(&self) -> StepKind {
-        StepKind::Deploy
-    }
-    fn place(&self) -> Option<ProposalRef> {
-        self.proposal
-    }
-    fn signer(&self) -> SignerKey {
-        self.signer
-    }
-    fn cluster(&self) -> SealingPublicKey {
-        self.cluster
-    }
-    fn namespace(&self) -> &Namespace {
-        &self.namespace
-    }
-    fn window(&self) -> Option<(Timestamp, Timestamp)> {
-        Some((self.issued_at, self.expires_at))
-    }
-}
-
-impl DeployApproval {
-    /// The approval of every Service of `target` in `namespace` under `terms`, with each
-    /// Service in `pins` pinned to its reference, and what each Service shows the
-    /// approver. The CLI and Cloud's SDK both build it here, so the browser signs a body
-    /// it never hashed.
-    ///
-    /// # Errors
-    /// Returns a [`CanonicalError`] when a spec has no [`PayloadDigest`] in `namespace`.
-    pub fn draft(
-        terms: DeployTerms,
-        namespace: Namespace,
-        target: &[RequestedServiceSpec],
-        pins: &BTreeMap<ServiceName, String>,
-    ) -> Result<(Self, Vec<ApprovedChange>), CanonicalError> {
-        let changes = ApprovedChange::of(target, &namespace, pins)?;
-        let mut machines = terms.machines;
-        machines.sort_unstable();
-        machines.dedup();
-        let body = Self {
-            cluster: terms.cluster,
-            operation: terms.operation,
-            namespace,
-            machines,
-            services: changes.iter().map(ApprovedChange::approved).collect(),
-            issued_at: terms.issued_at,
-            expires_at: terms.expires_at,
-            signer: terms.signer,
-            proposal: terms.proposal,
-        };
-        Ok((body, changes))
-    }
-
-    /// What this approval names for `service`.
-    #[must_use]
-    pub fn service(&self, service: &ServiceName) -> Option<&ApprovedService> {
-        self.services
-            .binary_search_by(|approved| approved.name.cmp(service))
-            .ok()
-            .and_then(|at| self.services.get(at))
-    }
-
-    /// The digest this approval names for `service`.
-    #[must_use]
-    pub fn digest(&self, service: &ServiceName) -> Option<PayloadDigest> {
-        self.service(service).map(|approved| approved.digest)
-    }
-
-    /// Write the pinned image this approval names for `spec`'s Service into `spec`, so
-    /// it is the spec the approval's digest was taken over. A Service the approver wrote
-    /// by digest keeps its image.
-    pub fn pin(&self, spec: &mut RequestedServiceSpec) {
-        if let Some(image) = self
-            .service(&spec.name)
-            .and_then(|approved| approved.image.as_ref())
-        {
-            spec.container.image.clone_from(image);
-        }
-    }
-}
-
-fn services_by_name<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Vec<ApprovedService>, D::Error> {
-    canonical::sorted_by(deserializer, |service: &ApprovedService| &service.name)
-}
-
 /// A Container this Machine is asked to create.
 #[derive(Clone, Copy, Debug)]
 pub struct Creation<'a> {
     pub service: &'a ServiceName,
     pub kind: ContainerKind,
     pub spec: &'a ResolvedServiceSpec,
-}
-
-/// What a Machine knows when it checks a deploy approval against one creation.
-#[derive(Clone, Debug)]
-pub struct DeployFacts<'a> {
-    /// The Sealing public key this Machine holds, or `None` while it holds none.
-    pub cluster: Option<SealingPublicKey>,
-    pub trusted: &'a TrustedKeys,
-    /// The Namespace of the Container the request creates.
-    pub namespace: &'a Namespace,
-    pub creation: Creation<'a>,
-}
-
-/// A deploy approval a Machine checked, who approved it, and the digest of the creation
-/// it admitted.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DeployApproved {
-    pub body: DeployApproval,
-    pub by: Approver,
-    pub digest: PayloadDigest,
-}
-
-/// Check `approval` approves this creation, signed by one of this Machine's Devices, or
-/// riding unsigned as a step of a proposal bundle one of them signed.
-///
-/// It recomputes the [`PayloadDigest`] of the requested spec and requires the one the
-/// approval names for that Service, a hook in that spec for a hook creation, and a
-/// content-addressed image. An approval is a standing fact about a spec: neither its
-/// window nor its Machine list is checked, so the same approval admits the spec later
-/// and on another Machine of the Cluster.
-///
-/// # Errors
-/// Returns the first [`AuthorityRefusal`] found, a [`AuthorityRefusal::Mismatch`] naming
-/// the field for any part of the request the approval does not cover.
-pub fn verify(
-    approval: &Signed<DeployApproval>,
-    facts: &DeployFacts<'_>,
-) -> Result<DeployApproved, AuthorityRefusal> {
-    let (body, by, cluster) = open_approval(approval, facts.trusted, facts.cluster)?;
-    first_mismatch([
-        (field::CLUSTER, body.cluster == cluster),
-        (field::ENVIRONMENT, &body.namespace == facts.namespace),
-    ])?;
-    let digest = creation_digest(&body, facts.creation)?;
-    Ok(DeployApproved { body, by, digest })
-}
-
-fn creation_digest(
-    body: &DeployApproval,
-    creation: Creation<'_>,
-) -> Result<PayloadDigest, AuthorityRefusal> {
-    let approved = body
-        .service(creation.service)
-        .ok_or(AuthorityRefusal::Mismatch { field: "a Service" })?;
-    approved_creation(approved, &body.namespace, creation)
-}
-
-/// Check `creation` is the Service `approved` names, in `namespace`: the same name, the
-/// pinned image when there is one, a content-addressed image, a hook for a hook creation,
-/// and a spec whose [`PayloadDigest`] is the approved one. A Deploy's approval checks each
-/// creation here, and so does a Volume Move's start.
-///
-/// # Errors
-/// Returns [`AuthorityRefusal::Mismatch`] naming the Service, the hook, the image or the
-/// payload that differs.
-pub fn approved_creation(
-    approved: &ApprovedService,
-    namespace: &Namespace,
-    creation: Creation<'_>,
-) -> Result<PayloadDigest, AuthorityRefusal> {
-    let payload = AuthorityRefusal::Mismatch { field: "a payload" };
-    if &approved.name != creation.service || &creation.spec.name != creation.service {
-        return Err(AuthorityRefusal::Mismatch { field: "a Service" });
-    }
-    if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
-        return Err(AuthorityRefusal::Mismatch { field: "a hook" });
-    }
-    if approved
-        .image
-        .as_ref()
-        .is_some_and(|image| image != &creation.spec.container.image)
-    {
-        return Err(AuthorityRefusal::Mismatch { field: "an image" });
-    }
-    let digest =
-        PayloadDigest::of(&creation.spec.to_requested(), namespace).map_err(|_| payload.clone())?;
-    if digest != approved.digest {
-        return Err(payload);
-    }
-    if !content_addressed(&creation.spec.container.image) {
-        return Err(AuthorityRefusal::Mismatch { field: "an image" });
-    }
-    Ok(digest)
 }
 
 #[cfg(test)]

@@ -4992,12 +4992,9 @@ mod ensure_container {
         //! runs only the spec an approved Device signed.
 
         use ployz_core::{
-            DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+            DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER,
             SealingPublicKey,
-            authority::{
-                ApprovedService, DeployApproval, PayloadDigest, ServiceVersion, Signed, Signer,
-                Timestamp,
-            },
+            authority::{PayloadDigest, ServiceVersion, Signed, Signer, Timestamp},
             rpc::status_details,
         };
         use tonic::Status;
@@ -5312,47 +5309,22 @@ mod ensure_container {
         const PINNED: &str = "example.test/api@sha256:00000000000000000000000000000000000000000000000000000000000000aa";
 
         impl Enforced {
-            /// A deploy approval of `spec` for Service `api` in Namespace `app` on this Machine.
-            fn deploy(&self, spec: &Value) -> Signed<DeployApproval> {
-                let approval = self.deploy_body(
-                    &[spec],
-                    ployz_core::authority::SignerKey::Device(self.signer.public().into()),
-                );
-                Signed::sign(&approval, &self.signer).unwrap()
-            }
-
-            fn deploy_body(
-                &self,
-                specs: &[&Value],
-                signer: ployz_core::authority::SignerKey,
-            ) -> DeployApproval {
+            /// A version of `spec` for its Service in Namespace `app`, signed by this
+            /// Machine's Device.
+            fn version(&self, spec: &Value) -> Signed<ServiceVersion> {
                 let namespace = Namespace::parse("app").unwrap();
-                let mut services: Vec<ApprovedService> = specs
-                    .iter()
-                    .map(|spec| {
-                        let resolved: ployz_core::ResolvedServiceSpec =
-                            serde_json::from_value((*spec).clone()).unwrap();
-                        ApprovedService {
-                            digest: PayloadDigest::of(&resolved.to_requested(), &namespace)
-                                .unwrap(),
-                            name: resolved.name,
-                            image: None,
-                        }
-                    })
-                    .collect();
-                services.sort_by(|left, right| left.name.cmp(&right.name));
-                let issued_at = Timestamp::now();
-                DeployApproval {
+                let resolved: ployz_core::ResolvedServiceSpec =
+                    serde_json::from_value(spec.clone()).unwrap();
+                let body = ServiceVersion {
                     cluster: self.cluster,
-                    operation: OperationId::random(),
+                    digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
                     namespace,
-                    machines: vec![self.service.local.record().id()],
-                    services,
-                    issued_at,
-                    expires_at: issued_at.plus(60_000),
-                    signer,
+                    service: resolved.name,
+                    signed_at: Timestamp::now(),
+                    signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
                     proposal: None,
-                }
+                };
+                Signed::sign(&body, &self.signer).unwrap()
             }
         }
 
@@ -5360,11 +5332,11 @@ mod ensure_container {
         async fn deploy_ensure(
             service: &MachineService,
             want: Value,
-            deploy: Option<&Signed<DeployApproval>>,
+            version: Option<&Signed<ServiceVersion>>,
         ) -> Result<EnsuredContainer, Status> {
             let mut body = json!({"want": want});
-            if let Some(deploy) = deploy {
-                body["deploy"] = serde_json::to_value(deploy).unwrap();
+            if let Some(version) = version {
+                body["versions"] = json!([version]);
             }
             let mut request = Request::new(
                 op::EnsureContainer::into_request(serde_json::from_value(body).unwrap())
@@ -5502,11 +5474,12 @@ mod ensure_container {
         }
 
         #[tokio::test]
-        async fn a_spec_a_device_signed_runs_again_for_an_operator_until_the_device_is_removed() {
+        async fn a_signed_spec_runs_for_an_operator_only_with_its_version_until_the_device_is_removed()
+         {
             let fixture = enforced("ployzd-signed-spec").await;
             let service = &fixture.service;
             let approved = reaching(PINNED);
-            let signed = fixture.deploy(&approved);
+            let signed = fixture.version(&approved);
             let seen = requests(&fixture.fake).len();
 
             deploy_refused(
@@ -5523,28 +5496,37 @@ mod ensure_container {
                 deploy_ensure(
                     service,
                     new_want("service_container", "k1", &tagged),
-                    Some(&fixture.deploy(&tagged)),
+                    Some(&fixture.version(&tagged)),
                 )
                 .await,
                 "runs only images pinned by digest",
             );
             assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
 
-            deploy_ensure(
-                service,
-                new_want("service_container", "k1", &approved),
-                Some(&signed),
-            )
-            .await
-            .unwrap();
-            // A scale and a restart are new creations of the same spec. Nothing is
-            // presented, and a restarted daemon reads what it admitted from disk.
-            for (service, key) in [(service, "k2"), (&fixture.restarted(), "k3")] {
-                deploy_ensure(service, new_want("service_container", key, &approved), None)
-                    .await
-                    .unwrap();
+            // A scale and a restarted daemon each carry the version again.
+            let restarted = fixture.restarted();
+            for (service, key) in [(service, "k1"), (service, "k2"), (&restarted, "k3")] {
+                deploy_ensure(
+                    service,
+                    new_want("service_container", key, &approved),
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
             }
             assert_eq!(creates(&fixture.fake, seen), 3);
+            // What it admitted before admits nothing more: no Server keeps a version.
+            for service in [service, &restarted] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("service_container", "k4", &approved),
+                        None,
+                    )
+                    .await,
+                    "reaches its server",
+                );
+            }
 
             let code = DeviceKey::from(fixture.signer.public()).code();
             fixture
@@ -5557,37 +5539,17 @@ mod ensure_container {
             deploy_refused(
                 deploy_ensure(
                     service,
-                    new_want("service_container", "k4", &approved),
-                    None,
+                    new_want("service_container", "k5", &approved),
+                    Some(&signed),
                 )
                 .await,
-                "reaches its server",
+                "doesn't trust the device",
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
         #[tokio::test]
-        async fn what_full_access_made_runs_again_for_an_operator_only_from_a_pinned_image() {
-            let fixture = enforced("ployzd-full-access-spec").await;
-            let service = &fixture.service;
-            let pinned = reaching(PINNED);
-            let tagged = reaching("example.test/api:1");
-
-            ensure(service, run_new("k1", pinned.clone())).await;
-            deploy_ensure(service, new_want("service_container", "k2", &pinned), None)
-                .await
-                .unwrap();
-            // An Operator can point a tag at another image, so a tag is not remembered.
-            ensure(service, run_new("t1", tagged.clone())).await;
-            deploy_refused(
-                deploy_ensure(service, new_want("service_container", "t2", &tagged), None).await,
-                "reaches its server",
-            );
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        async fn what_a_device_made_on_its_own_connection_runs_again_until_the_device_is_removed() {
+        async fn a_device_removed_after_its_call_arrived_creates_nothing_on_its_own_connection() {
             let fixture = enforced("ployzd-device-connection-spec").await;
             let service = &fixture.service;
             let pinned = reaching(PINNED);
@@ -5597,9 +5559,6 @@ mod ensure_container {
                 .with_management_client(ployz_core::ClientKey::from(device));
 
             ensure(&direct, run_new("k1", pinned.clone())).await;
-            deploy_ensure(service, new_want("service_container", "k2", &pinned), None)
-                .await
-                .unwrap();
             fixture
                 .store
                 .mutate(move |store| {
@@ -5618,262 +5577,6 @@ mod ensure_container {
                 ))
                 .await;
             assert_eq!(late.unwrap_err().code(), Code::PermissionDenied);
-            deploy_refused(
-                deploy_ensure(service, new_want("service_container", "k4", &pinned), None).await,
-                "reaches its server",
-            );
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn a_version_two_devices_signed_is_one_of_the_versions_kept() {
-            let fixture = enforced("ployzd-two-signers-history").await;
-            let service = &fixture.service;
-            let version = |number: usize| {
-                let mut spec = reaching(PINNED);
-                spec["container"]["command"] = json!(["serve", number.to_string()]);
-                spec
-            };
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 0..32 {
-                let spec = version(number);
-                deploy_ensure(
-                    service,
-                    new_want("service_container", &format!("k{number}"), &spec),
-                    Some(&fixture.deploy(&spec)),
-                )
-                .await
-                .unwrap();
-            }
-            let newest = version(31);
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&newest],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "second", &newest),
-                Some(&by_second),
-            )
-            .await
-            .unwrap();
-
-            deploy_ensure(
-                service,
-                new_want("service_container", "oldest", &version(0)),
-                None,
-            )
-            .await
-            .unwrap();
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn removing_a_device_leaves_a_version_another_signed_as_new_as_it_was() {
-            let fixture = enforced("ployzd-removed-signer-history").await;
-            let service = &fixture.service;
-            let version = |number: usize| {
-                let mut spec = reaching(PINNED);
-                spec["container"]["command"] = json!(["serve", number.to_string()]);
-                spec
-            };
-            let deploy = async |number: usize| {
-                let spec = version(number);
-                deploy_ensure(
-                    service,
-                    new_want("service_container", &format!("k{number}"), &spec),
-                    Some(&fixture.deploy(&spec)),
-                )
-                .await
-                .unwrap();
-            };
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 0..32 {
-                deploy(number).await;
-            }
-            // The second Device runs the oldest version again, which makes it the newest.
-            let oldest = version(0);
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&oldest],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "second", &oldest),
-                Some(&by_second),
-            )
-            .await
-            .unwrap();
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.remove_device(second_device.code()).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 32..34 {
-                deploy(number).await;
-            }
-
-            deploy_ensure(
-                service,
-                new_want("service_container", "again", &oldest),
-                None,
-            )
-            .await
-            .unwrap();
-            deploy_refused(
-                deploy_ensure(
-                    service,
-                    new_want("service_container", "evicted", &version(1)),
-                    None,
-                )
-                .await,
-                "reaches its server",
-            );
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn a_version_only_a_removed_device_signed_takes_no_place_from_older_ones() {
-            let fixture = enforced("ployzd-removed-signer-place").await;
-            let service = &fixture.service;
-            let version = |number: usize| {
-                let mut spec = reaching(PINNED);
-                spec["container"]["command"] = json!(["serve", number.to_string()]);
-                spec
-            };
-            let deploy = async |number: usize| {
-                let spec = version(number);
-                deploy_ensure(
-                    service,
-                    new_want("service_container", &format!("k{number}"), &spec),
-                    Some(&fixture.deploy(&spec)),
-                )
-                .await
-                .unwrap();
-            };
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 0..31 {
-                deploy(number).await;
-            }
-            let only_second = version(31);
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&only_second],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "second", &only_second),
-                Some(&by_second),
-            )
-            .await
-            .unwrap();
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.remove_device(second_device.code()).unwrap();
-                })
-                .await
-                .unwrap();
-            deploy(32).await;
-
-            deploy_ensure(
-                service,
-                new_want("service_container", "oldest", &version(0)),
-                None,
-            )
-            .await
-            .unwrap();
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        async fn a_spec_two_devices_signed_runs_again_while_either_is_trusted() {
-            let fixture = enforced("ployzd-two-signers-spec").await;
-            let service = &fixture.service;
-            let approved = reaching(PINNED);
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&approved],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-
-            for (key, signed) in [("k1", fixture.deploy(&approved)), ("k2", by_second)] {
-                deploy_ensure(
-                    service,
-                    new_want("service_container", key, &approved),
-                    Some(&signed),
-                )
-                .await
-                .unwrap();
-            }
-            let first = DeviceKey::from(fixture.signer.public()).code();
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.remove_device(first).unwrap();
-                })
-                .await
-                .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "k3", &approved),
-                None,
-            )
-            .await
-            .unwrap();
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
@@ -5936,10 +5639,10 @@ mod ensure_container {
         }
 
         #[tokio::test]
-        async fn a_deploy_approval_never_starts_a_hook_again_but_adopts_a_resent_one() {
+        async fn a_signed_hook_never_starts_again_but_adopts_a_resent_one() {
             let fixture = enforced("ployzd-deploy-hook-start").await;
             let approved = spec(PINNED);
-            let signed = fixture.deploy(&approved);
+            let signed = fixture.version(&approved);
             let hook = deploy_ensure(
                 &fixture.service,
                 new_want("pre_deploy_hook", "h1", &approved),
@@ -5969,69 +5672,6 @@ mod ensure_container {
                 ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
                 0
             );
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn signed_versions_and_a_deploy_approval_in_one_request_share_eight_checks() {
-            let fixture = enforced("ployzd-mixed-proof-budget").await;
-            let approved = reaching(PINNED);
-            let mut elsewhere = approved.clone();
-            elsewhere["container"]["environment"] = json!({"MODE": "elsewhere"});
-            let namespace = Namespace::parse("app").unwrap();
-            let resolved: ployz_core::ResolvedServiceSpec =
-                serde_json::from_value(elsewhere).unwrap();
-            let version = ServiceVersion {
-                cluster: fixture.cluster,
-                namespace: namespace.clone(),
-                service: resolved.name.clone(),
-                digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
-                signed_at: Timestamp::now(),
-                signer: ployz_core::authority::SignerKey::Device(fixture.signer.public().into()),
-                proposal: None,
-            };
-            let version = Signed::sign(&version, &fixture.signer).unwrap();
-            let deploy = fixture.deploy(&approved);
-            let seen = requests(&fixture.fake).len();
-
-            let mut request = Request::new(
-                op::EnsureContainer::into_request(
-                    serde_json::from_value(json!({
-                        "want": new_want("service_container", "k1", &approved),
-                        "deploy": deploy,
-                        "versions": vec![version; 8],
-                    }))
-                    .unwrap(),
-                )
-                .encode()
-                .unwrap(),
-            );
-            request
-                .metadata_mut()
-                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
-            let mixed = fixture
-                .service
-                .ensure_container(request)
-                .await
-                .map(|response| {
-                    response
-                        .into_inner()
-                        .decode_response()
-                        .unwrap()
-                        .decode::<op::EnsureContainer>()
-                        .unwrap()
-                });
-            deploy_refused(mixed, "more signatures than a server checks at once");
-            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
-
-            deploy_ensure(
-                &fixture.service,
-                new_want("service_container", "k2", &approved),
-                Some(&deploy),
-            )
-            .await
-            .unwrap();
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
     }

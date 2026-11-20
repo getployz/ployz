@@ -1,14 +1,13 @@
 //! What a Deploy hands the Client it runs through: the log it writes under, the pull
-//! credentials of its Services, and the approvals every Server gets with a Container change.
+//! credentials of its Services, and the signatures every Server gets with a Container
+//! change.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use ployz_core::{
     ContainerLocator, ContainerWant, DeploymentLogId, NewContainer, RegistryAuth, RunTarget,
     ServiceName,
-    authority::{
-        DeployApproval, PayloadDigest, RuleProof, ServiceVersion, Signed, version::MAX_PRESENTED,
-    },
+    authority::{PayloadDigest, RuleProof, ServiceVersion, Signed, version::MAX_PRESENTED},
 };
 use ployz_store::{ConfigStore, OrganizationId};
 
@@ -23,13 +22,11 @@ pub(crate) struct DeployContext {
     approvals: Arc<Approvals>,
 }
 
-/// The approvals a client hands each Server with a Container change.
+/// The signatures a client hands each Server with a Container change.
 #[derive(Clone, Debug, Default)]
 struct Approvals {
-    /// The approval of the Deploy every Container this client creates or steps belongs to.
-    deploy: Option<Signed<DeployApproval>>,
     /// A rule's proof for each Service it built, when a rule deploys in place of a
-    /// person's approval.
+    /// person's signature.
     proofs: RuleProofs,
     versions: Versions,
 }
@@ -96,16 +93,16 @@ impl KeptVersions {
 }
 
 /// The proof each Service an automatic deploy rule built carries to every Server, in
-/// place of a person's deploy approval.
+/// place of a person's signed version.
 #[derive(Clone, Debug, Default)]
 pub struct RuleProofs {
     pub rules: BTreeMap<ServiceName, RuleProof>,
 }
 
-/// What a Container change carries to the Server: the approvals and the proofs for `want`.
+/// What a Container change carries to the Server: the signed versions and the proofs for
+/// `want`.
 pub(super) struct Carried {
     pub(super) rule: Option<Box<RuleProof>>,
-    pub(super) deploy: Option<Signed<DeployApproval>>,
     pub(super) versions: Vec<Signed<ServiceVersion>>,
 }
 
@@ -113,17 +110,12 @@ impl Carried {
     pub(super) fn none() -> Self {
         Self {
             rule: None,
-            deploy: None,
             versions: Vec::new(),
         }
     }
 }
 
 impl DeployContext {
-    pub(super) fn set_deploy(&mut self, approval: Option<Signed<DeployApproval>>) {
-        Arc::make_mut(&mut self.approvals).deploy = approval;
-    }
-
     pub(super) fn set_proofs(&mut self, proofs: RuleProofs) {
         Arc::make_mut(&mut self.approvals).proofs = proofs;
     }
@@ -188,7 +180,6 @@ impl DeployContext {
         };
         Carried {
             rule: proof_for(&self.approvals.proofs.rules, want),
-            deploy: self.approvals.deploy.clone(),
             versions,
         }
     }

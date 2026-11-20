@@ -307,7 +307,6 @@ impl Tool for DeployInput {
             message: self.message,
             prune: false,
             no_prune: self.no_prune,
-            approval: None,
             versions: Vec::new(),
         }))?;
         Ok(json!({

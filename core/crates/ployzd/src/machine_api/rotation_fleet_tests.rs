@@ -829,7 +829,6 @@ fn gone(container: ContainerId) -> ContainerWant {
 async fn ensure(node: &Node, want: ContainerWant) -> EnsuredContainer {
     let request = op::EnsureContainer::into_request(EnsureContainerRequest {
         want,
-        deploy: None,
         rule: None,
         versions: Vec::new(),
     });
@@ -2452,7 +2451,6 @@ fn creation_on_wire(
         };
         let request = op::EnsureContainer::into_request(EnsureContainerRequest {
             want,
-            deploy: None,
             rule: None,
             versions: Vec::new(),
         });

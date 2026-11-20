@@ -2,9 +2,9 @@
 //!
 //! Cloud carries these but cannot mint them: a Machine checks the signature against the
 //! keys it trusts, checks every bound field against the request in hand, and keeps
-//! its own record of what it already acted on. Joins, deploys and automatic deploy rules
-//! each have a statement type here. A proposal signs an ordered plan of deploys once, and
-//! each step travels unsigned with the bundle in its envelope.
+//! its own record of what it already acted on. Joins, signed versions and automatic deploy
+//! rules each have a statement type here. A proposal signs an ordered plan of versions
+//! once, and each step travels unsigned with the bundle in its envelope.
 
 pub mod admission;
 pub mod canonical;
@@ -25,10 +25,7 @@ pub mod version;
 
 pub use admission::{DataReach, needs_signature};
 pub use canonical::{CanonicalError, Timestamp};
-pub use deploy::{
-    ApprovedChange, ApprovedService, DeployApproval, DeployApproved, DeployFacts, DeployTerms,
-    PayloadDigest,
-};
+pub use deploy::{ApprovedChange, PayloadDigest};
 pub use join::{JoinApproval, Member};
 pub use keys::{
     Approver, KeySignature, OwnPrompt, Purpose, Signed, Signer, SignerKey, SigningPublicKey,

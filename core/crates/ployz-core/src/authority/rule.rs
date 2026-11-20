@@ -545,7 +545,7 @@ pub fn template(
     PayloadDigest::of(&spec, namespace)
 }
 
-/// What a creation under a rule carries in place of a deploy approval: the signed rule,
+/// What a creation under a rule carries in place of a signed version: the signed rule,
 /// the pinned builder's image token, and the claim whose audience it names. Cloud relays
 /// all of it; a Machine trusts the claim only once the token's audience is its hash.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

@@ -121,7 +121,6 @@ fn admit(
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )
@@ -299,7 +298,6 @@ fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
                 versions: Vec::new(),
             }),
         )
@@ -340,7 +338,6 @@ fn a_rollback_reads_back_the_services_it_ships_as_admitted() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approval: None,
                 versions: Vec::new(),
             }),
         )
