@@ -29,14 +29,15 @@ fi
 
 # Servers mark origins before they check them, and a build that marks without checking
 # would run born data under a Legacy label. No release carries one: the catalog declares
-# the capability, and pulls claim it outside verify builds.
+# the capability, and every build's pulls claim it. The claim is read as written, so any
+# other spelling holds the tag until this check learns it.
 if grep -q '^impl VolumeOrigin' "$root/crates/ployz-core/src/domain/volume.rs"; then
     if ! grep -Eq '^[[:space:]]*[A-Z_]+: \("ployz\.volume\.origin\.v1",' "$root/crates/ployz-core/src/rpc_catalog.rs"; then
         echo "tag '$tag' carries Volume origins, but the catalog does not declare ployz.volume.origin.v1" >&2
         exit 1
     fi
-    if grep -q 'const CLAIMS_ORIGIN: bool = cfg!' "$root/crates/ployzd/src/volume_plugin/transfer.rs"; then
-        echo "tag '$tag' carries Volume origins, but only verify builds claim ployz.volume.origin.v1" >&2
+    if ! grep -Eq '^const CLAIMS_ORIGIN: bool = true;$' "$root/crates/ployzd/src/volume_plugin/transfer.rs"; then
+        echo "tag '$tag' carries Volume origins, but its pulls do not claim ployz.volume.origin.v1 in every build" >&2
         exit 1
     fi
 fi
