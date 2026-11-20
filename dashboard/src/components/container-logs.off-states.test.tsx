@@ -5,7 +5,7 @@ import { createMemoryHistory, createRootRoute, createRoute, createRouter, Router
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
-import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
+import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 import { getRuntimeCollections } from "#/modules/runtime/runtime.collection";
 import { ContainerLogs } from "./container-logs";
 
@@ -14,7 +14,7 @@ const container = (machineId: string, logDriver: string) => ({
   id: machineId, displayName: "api", machineId, namespace: "shop-production", kind: "service_container", runtime: { state: "running" }, logDriver,
 });
 
-it("shows the off states for the Service the selection names, and not for another Service's containers", async () => {
+async function withViewer(selection: ContainerLogSelection, run: (services: ReturnType<typeof getRuntimeCollections>["services"]) => Promise<void>) {
   const sources: EventTarget[] = [];
   class FakeEventSource extends EventTarget {
     constructor() { super(); sources.push(this); }
@@ -33,23 +33,14 @@ it("shows the off states for the Service the selection names, and not for anothe
   const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
   await router.load();
   const scope = { queryClient: client, sessionId: "session", userId: "user" };
-  const selection = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production", serviceId: "e0eccf29-1258-4c57-829f-2250eec054c4", serviceIdentity: SERVICE };
   const stream = getContainerLogStream(selection, scope);
   render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
     <ContainerLogs selection={selection} />
   </RouterContextProvider></DbProvider></QueryClientProvider>);
   try {
     await act(async () => (sources.at(-1) ?? expect.fail("The viewer did not open its log stream")).dispatchEvent(new Event("live")));
-    await waitFor(() => expect(screen.getByLabelText("Search logs")).toBeTruthy());
-    const services = getRuntimeCollections("acme", scope).services;
-    const record = (identity: string, containers: ReturnType<typeof container>[]) => ({
-      id: identity, identity, serviceId: "ae4d79d2ba6b4c53b2297d5a40ef5c92", containers, hookContainers: [], observedAt: new Date().toISOString(),
-    });
-    await act(async () => { services.insert(record("shop-production/worker", [container("elsewhere", "local")])); });
-    expect(screen.queryByText("This service isn’t sending logs yet")).toBeNull();
-    await act(async () => { services.insert(record(SERVICE, [container("old", "local"), container("quiet", "json-file")])); });
-    await waitFor(() => expect(screen.getByText("This service isn’t sending logs yet")).toBeTruthy());
-    await waitFor(() => expect(screen.getByText(/hasn’t sent logs for 10 minutes/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByLabelText(/^Search/)).toBeTruthy());
+    await run(getRuntimeCollections("acme", scope).services);
   } finally {
     cleanup();
     await stream.collection.cleanup();
@@ -58,4 +49,27 @@ it("shows the off states for the Service the selection names, and not for anothe
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   }
+}
+
+const record = (identity: string, containers: ReturnType<typeof container>[]) => ({
+  id: identity, identity, serviceId: "ae4d79d2ba6b4c53b2297d5a40ef5c92", containers, hookContainers: [], observedAt: new Date().toISOString(),
+});
+
+it("shows the off states for the Service the selection names, and not for another Service's containers", async () => {
+  const selection = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production", serviceId: "e0eccf29-1258-4c57-829f-2250eec054c4", serviceIdentity: SERVICE };
+  await withViewer(selection, async (services) => {
+    await act(async () => { services.insert(record("shop-production/worker", [container("elsewhere", "local")])); });
+    expect(screen.queryByText("This service isn’t sending logs yet")).toBeNull();
+    await act(async () => { services.insert(record(SERVICE, [container("old", "local"), container("quiet", "json-file")])); });
+    await waitFor(() => expect(screen.getByText("This service isn’t sending logs yet")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/hasn’t sent logs for 10 minutes/)).toBeTruthy());
+  });
+});
+
+it("searches only the loaded lines on a Deployment's card, since Cloud's lines name no Deployment", async () => {
+  const selection = { organizationSlug: "acme", deploymentId: "00000000-0000-4000-8000-000000000001", serviceId: "00000000-0000-4000-8000-000000000002", serviceIdentity: SERVICE };
+  await withViewer(selection, async () => {
+    expect(screen.getByLabelText("Search loaded logs")).toBeTruthy();
+    expect(screen.queryByText("Log history isn’t set up")).toBeNull();
+  });
 });

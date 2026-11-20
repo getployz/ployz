@@ -60,6 +60,8 @@ export const readHistoryPage = Effect.fn("Runtime.readHistoryPage")(function* (r
   const endpoint = yield* clickhouseEndpoint;
   if (endpoint === undefined) return { rows: [], failures: [], cursor: null };
   const filter = yield* resolveLogFilter(organizationId, input);
+  // Cloud's lines carry no Deployment, so a Deployment's card reads its older lines from the server instead.
+  if (filter.deploymentId !== undefined) return { rows: [], failures: [], cursor: null };
   const page = yield* readLogHistory(endpoint, {
     organizationId, namespace: filter.namespace, serviceName: filter.serviceName,
     machineId: input.machineId, search: input.contains,

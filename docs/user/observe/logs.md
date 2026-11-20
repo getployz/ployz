@@ -105,7 +105,7 @@ which a reboot clears.
 ## When logs are off
 
 Live output always streams from your servers. Older lines and search come from Ployz Cloud's log
-history, and the Logs page says when something keeps them from arriving:
+history. The Logs page says when Cloud has none, and a service's **Logs** tab says the rest:
 
 - **Log history isn’t set up.** This Cloud has no ClickHouse. On
   [self-hosted](../self-hosting.md#keep-logs-metrics-and-traces-in-cloud-optional) Cloud, set
@@ -159,7 +159,8 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   reads **killed out of memory**.
 - **Deleted environments and removed services keep their logs until retention removes them.**
   Recreating an environment with the same name can show its earlier logs. A service's card
-  on a deployment shows only that deployment's output.
+  on a deployment shows only that deployment's output. Cloud's history doesn't cover a
+  deployment's card yet, so there search reads only the lines loaded in the page.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't sent to Ployz Cloud until their next deploy. `ployz deploy` or **Redeploy** on
   the Logs page replaces them, even when nothing else about the service changed.

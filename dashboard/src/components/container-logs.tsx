@@ -53,7 +53,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const timestamp = logTimestamp(useTimeZone());
   const [search, setSearch] = useState(searching);
   const status = useQuery(logHistoryStatusQueryOptions(selection.organizationSlug)).data;
-  const historyOn = status?.history === true;
+  const historyOn = status?.history === true && selection.deploymentId === undefined;
   useEffect(() => {
     if (!historyOn) return;
     const wait = setTimeout(() => stream.search(search), 350);
@@ -125,7 +125,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
         {LEVELS.map(level => <ToggleGroupItem key={level} value={level} className="capitalize">{level}</ToggleGroupItem>)}
       </ToggleGroup>
     </div>
-    {status && !historyOn ? <ObserveOffState title="Log history isn’t set up" action={<a href={LOG_HISTORY_DOCS} target="_blank" rel="noreferrer" className={linkClass}>Set up log history</a>}>
+    {status && !status.history ? <ObserveOffState title="Log history isn’t set up" action={<a href={LOG_HISTORY_DOCS} target="_blank" rel="noreferrer" className={linkClass}>Set up log history</a>}>
       Live output still works. Add ClickHouse to keep logs and search them.
     </ObserveOffState> : null}
     {off.onLocal ? <ObserveOffState title="This service isn’t sending logs yet" action={<Redeploy selection={selection} />}>
