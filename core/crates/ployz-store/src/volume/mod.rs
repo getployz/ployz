@@ -172,6 +172,7 @@ pub(crate) fn create_volume(
         storage: create.storage,
         shared_writes: create.shared_writes,
         restored_from: create.restored_from.clone(),
+        birth: None,
     };
     environment.working.volumes.push(node.clone());
     let mut staged = vec![SettingPath::volume(&create.name)];

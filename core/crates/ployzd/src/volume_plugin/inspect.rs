@@ -3,7 +3,7 @@
 use axum::{Json, extract::State};
 use ployz_core::{
     InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, Snapshot, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
+    SnapshotName, VolumeCopy, VolumeCopyView, VolumeOrigin, WriterEpoch,
 };
 use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
@@ -65,7 +65,12 @@ impl RootCopy {
     }
 
     /// The root as `Volume.Inspect` and every `SetVolumeCopy` reply carry it.
-    pub(super) fn view(self, newest: Option<Snapshot>, epoch: WriterEpoch) -> VolumeCopy {
+    pub(super) fn view(
+        self,
+        newest: Option<Snapshot>,
+        epoch: WriterEpoch,
+        origin: Option<VolumeOrigin>,
+    ) -> VolumeCopy {
         let (readonly, seed, mark) = match self {
             Self::Writable { seed } => (false, seed, None),
             Self::Cut { seed } => (true, seed, Some(RootMark::Cut)),
@@ -78,6 +83,7 @@ impl RootCopy {
             epoch,
             seed,
             mark,
+            origin,
         }
     }
 }
@@ -256,6 +262,7 @@ impl VolumeStorage {
             return Ok(Some(copy.view(
                 self.newest_snapshot(&root.name).await?,
                 self.marks(&root.name).epoch().await?,
+                self.origin_of(None, Some(&root.name)).await?,
             )));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
@@ -282,6 +289,9 @@ impl VolumeStorage {
             pull,
             role: Some(self.marks(&slot.name).role().await?),
             pull_state,
+            origin: self
+                .origin_of(Some(&slot.name), fs.map(|fs| fs.name.as_str()))
+                .await?,
         }))
     }
 

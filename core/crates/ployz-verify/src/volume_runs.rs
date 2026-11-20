@@ -781,6 +781,7 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             epoch: WriterEpoch::new(epoch),
             seed: false,
             mark: None,
+            origin: None,
         }),
         Held::Slot { newest } => Some(VolumeCopy::Slot {
             slot: slot_id(machine),
@@ -790,6 +791,7 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             pull: None,
             role: Some(SlotRole::Mirror),
             pull_state: None,
+            origin: None,
         }),
     }
 }

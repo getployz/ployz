@@ -729,6 +729,7 @@ impl Plan {
             let copy = SavedVolumeIntent {
                 resource_id: uuid::Uuid::new_v4().to_string(),
                 restored_from: None,
+                birth: Some(super::super::BirthState::Unborn),
                 ..source.clone()
             };
             if let Some(base) = base {

@@ -21,6 +21,8 @@ use tokio::{
 
 use super::{
     PluginError, Result, VolumeName,
+    marks::Mark,
+    origin::Origin,
     pool::PoolStorage,
     transfer::{RECEIVE_STALL, STOP_DEADLINE},
 };
@@ -157,7 +159,8 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &VolumeName,
         requested: u64,
-        origin: CapacityAdmission,
+        admission: CapacityAdmission,
+        origin: Origin,
     ) -> Result<()> {
         let datasets = self.datasets(pool).await?;
         let layout = DatasetLayout::of(pool);
@@ -181,12 +184,22 @@ impl VolumeStorage {
             )));
         }
 
-        if matches!(origin, CapacityAdmission::Required) {
+        if matches!(admission, CapacityAdmission::Required) {
             self.ensure_commitment(pool, &datasets, requested).await?;
         }
 
         self.ensure_root(&datasets, &root).await?;
-        self.zfs(&["create", "-o", &format!("refquota={requested}"), &volume])
+        // The first create carries the origin, so no crash leaves a born root unmarked.
+        let mut args = vec![
+            "create".to_owned(),
+            "-o".to_owned(),
+            format!("refquota={requested}"),
+        ];
+        if let Some(origin) = origin {
+            args.extend(["-o".to_owned(), format!("{}={origin}", Mark::Origin)]);
+        }
+        args.push(volume);
+        self.zfs(&args.iter().map(String::as_str).collect::<Vec<_>>())
             .await?;
         Ok(())
     }
@@ -568,13 +581,34 @@ fn parse_zfs_bytes(value: &str) -> Result<u64> {
     }
 }
 
-pub(super) fn parse_size(options: &BTreeMap<String, String>) -> Result<u64> {
-    if options.len() != 1 || !options.contains_key("size") {
-        return Err("Volume option size is required and is the only supported option".into());
+/// What Docker's Create asks of a Provisioned Volume: its bound, and its origin when born.
+pub(super) struct CreateOptions {
+    pub(super) size: u64,
+    pub(super) origin: Origin,
+}
+
+pub(super) fn parse_create(options: &BTreeMap<String, String>) -> Result<CreateOptions> {
+    let origin_key = ployz_core::PROVISIONED_ORIGIN_OPTION;
+    if options.keys().any(|key| key != "size" && key != origin_key) {
+        return Err(format!("Volume options are size, which is required, and {origin_key}").into());
     }
-    let value = options
-        .get("size")
-        .expect("the only accepted option is size");
+    let Some(size) = options.get("size") else {
+        return Err("Volume option size is required".into());
+    };
+    let origin = options
+        .get(origin_key)
+        .map(|value| {
+            ployz_core::VolumeOrigin::parse(value)
+                .map_err(|error| PluginError::from(format!("invalid Volume origin: {error}")))
+        })
+        .transpose()?;
+    Ok(CreateOptions {
+        size: parse_size(size)?,
+        origin,
+    })
+}
+
+fn parse_size(value: &str) -> Result<u64> {
     let (amount, suffix) = value.split_at(value.len().saturating_sub(1));
     let multiplier = match suffix {
         "b" => 1,

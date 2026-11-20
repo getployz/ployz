@@ -924,6 +924,7 @@ impl Fleet {
                             pull: None,
                             role: Some(SlotRole::Mirror),
                             pull_state: None,
+                            origin: None,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,
@@ -931,6 +932,7 @@ impl Fleet {
                             epoch: WriterEpoch::default(),
                             seed: false,
                             mark: None,
+                            origin: None,
                         },
                     });
                 unary(VolumeCopyView { copy }.into())

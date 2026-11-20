@@ -2,8 +2,9 @@
 //!
 //! Marker files in the fixture directory stand for datasets; `props/<dataset>/<property>`
 //! files stand for properties, and `props/<dataset>/snapshots` for a dataset's snapshots
-//! (`name<TAB>guid<TAB>creation` per line, newest first). A `zfs receive` reads one line
-//! of stream text: `snapshot <name> <guid>` lands that snapshot; `break` leaves a resume
+//! (`name<TAB>guid<TAB>creation` per line, newest first). A stream is a BEGIN record, as
+//! [`begun`] writes it, then one line of text. A `zfs receive` skips the record and reads
+//! the line: `snapshot <name> <guid>` lands that snapshot; `break` leaves a resume
 //! token behind and fails like an interrupted stream. The `readonly-lost` marker stands for
 //! a ZFS that does not keep `readonly=on` on the received copy, however it is set, and
 //! `props/receive-fails` a receive that fails outright. Like ZFS,
@@ -20,6 +21,18 @@ pub(super) const USABLE_POOL: &str = "tank\t4294967296\t0\t4294967296\tONLINE\to
 
 /// The `slot` marker's mirror slot bound: 3 GiB of the 4 GiB [`USABLE_POOL`].
 pub(super) const SLOT_BOUND_BYTES: u64 = 3 * 1024 * 1024 * 1024;
+
+/// A stream as `zfs send` writes it: a substream BEGIN record naming `guid`, then `text`.
+pub(super) fn begun(guid: u64, text: &str) -> Vec<u8> {
+    let mut stream = vec![0; 8];
+    stream.extend(0x2_F5BA_CBAC_u64.to_le_bytes());
+    stream.extend(1_u64.to_le_bytes());
+    stream.extend([0; 16]);
+    stream.extend(guid.to_le_bytes());
+    stream.resize(ployzd::volume_send::begin::RECORD_BYTES, 0);
+    stream.extend_from_slice(text.as_bytes());
+    stream
+}
 
 /// Creates fake `zpool` and `zfs` programs backed by marker files in `directory`.
 pub(super) fn fake_zfs(directory: &Path, pools: &str) -> (PathBuf, PathBuf) {
@@ -108,6 +121,15 @@ exists() {{
     tank/ployz-mirror/{seed}/fs) [ -e '{seed_slot}' ] && [ -e '{seed_fs}' ] ;;
     *) false ;;
   esac
+}}
+# Writes a substream BEGIN record naming guid $1, as [`begun`] does.
+begin() {{
+  head -c 8 /dev/zero
+  printf '\254\313\272\365\002\000\000\000\001\000\000\000\000\000\000\000'
+  head -c 16 /dev/zero
+  g=$1; i=0
+  while [ "$i" -lt 8 ]; do printf "\\$(printf %03o $((g & 255)))"; g=$((g >> 8)); i=$((i + 1)); done
+  head -c 264 /dev/zero
 }}
 require() {{
   exists "${{1%%@*}}" || {{ echo "cannot open '${{1%%@*}}': dataset does not exist" >&2; exit 1; }}
@@ -224,6 +246,27 @@ case "$*" in
       cat '{props}'/inherited/"$6/$5"
     fi
     ;;
+  'get -Hp -o value,source '*)
+    require "$6"
+    v=$(prop "$6" "$5" -)
+    if [ "$v" = - ]; then printf -- '-\t-\n'; else printf '%s\tlocal\n' "$v"; fi
+    ;;
+  'get -Hp -o name,property,value,source guid,ployz:origin '*)
+    require "$6"
+    require "$7"
+    fs=$7
+    guid=$(grep "^$6	" '{props}'/"$fs/snapshots" | cut -f2)
+    [ -n "$guid" ] || {{ echo "cannot open '$6': dataset does not exist" >&2; exit 1; }}
+    v=$(prop "$fs" ployz:origin -)
+    printf '%s\tguid\t%s\t-\n' "$6" "$guid"
+    if [ "$v" = - ]; then
+      printf '%s\tployz:origin\t-\t-\n%s\tployz:origin\t-\t-\n' "$6" "$fs"
+    else
+      # props/received/<dataset> stands for a value `zfs receive -p` wrote.
+      if [ -e '{props}'/received/"$fs" ]; then source=received; else source=local; fi
+      printf '%s\tployz:origin\t%s\tinherited from %s\n%s\tployz:origin\t%s\t%s\n' "$6" "$v" "$fs" "$fs" "$v" "$source"
+    fi
+    ;;
   'get -Hp -o value written@'*)
     require "$6"
     prop "$6" "$5" 1
@@ -275,6 +318,9 @@ case "$*" in
   'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes tank/ployz') touch '{root}' ;;
   'create -o refquota=1 tank/ployz/data') touch '{volume}' ;;
   'create -o refquota=1073741824 tank/ployz/data') touch '{volume}' ;;
+  'create -o refquota=1073741824 -o ployz:origin='*' tank/ployz/data')
+    touch '{volume}'
+    put '{props}/tank/ployz/data/ployz:origin' "${{4#ployz:origin=}}" ;;
   'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror')
     if exists tank/ployz-mirror; then echo "cannot create 'tank/ployz-mirror': dataset already exists" >&2; exit 1; fi
     touch '{mirror_root}'
@@ -387,7 +433,9 @@ case "$*" in
     require "$2"
     f='{props}'/"${{2%%@*}}/snapshots"
     line=$(grep "^$2	" "$f" 2>/dev/null) || {{ echo "cannot open '$2': snapshot does not exist" >&2; exit 1; }}
-    printf 'snapshot %s %s\n' "${{2#*@}}" "$(printf '%s' "$line" | cut -f2)"
+    guid=$(printf '%s' "$line" | cut -f2)
+    begin "$guid"
+    printf 'snapshot %s %s\n' "${{2#*@}}" "$guid"
     ;;
   'send -i '*)
     require "$3"
@@ -395,7 +443,9 @@ case "$*" in
     f='{props}'/"${{4%%@*}}/snapshots"
     grep -q "^$3	" "$f" 2>/dev/null || {{ echo "cannot open '$3': snapshot does not exist" >&2; exit 1; }}
     line=$(grep "^$4	" "$f" 2>/dev/null) || {{ echo "cannot open '$4': snapshot does not exist" >&2; exit 1; }}
-    printf 'snapshot %s %s\n' "${{4#*@}}" "$(printf '%s' "$line" | cut -f2)"
+    guid=$(printf '%s' "$line" | cut -f2)
+    begin "$guid"
+    printf 'snapshot %s %s\n' "${{4#*@}}" "$guid"
     ;;
   'destroy -r tank/ployz-mirror/data/fs')
     require tank/ployz-mirror/data/fs
@@ -455,6 +505,7 @@ case "$*" in
     # Apart from the pid, so a departure test can stop a receive that already holds its dataset.
     put '{props}/receive-ready' $$
     while [ -e '{props}/stall-read' ]; do sleep 0.01; done
+    head -c 312 >/dev/null
     read -r verb arg guid || verb=empty
     if [ -e '{props}/stall-exit' ]; then cat >/dev/null; exec sleep 30; fi
     # A resumable receive that fails partway names its resume token, as OpenZFS does.

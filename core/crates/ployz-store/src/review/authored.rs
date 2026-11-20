@@ -452,6 +452,8 @@ impl Plan {
                         shared_writes,
                         // Only creating a Volume sets it, so no edit changes it.
                         restored_from: _,
+                        // A signed version records it, never an edit.
+                        birth: _,
                     } = after;
                     invariant(
                         *resource_lineage_id == before.resource_lineage_id,

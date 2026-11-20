@@ -397,6 +397,16 @@ impl Receives {
     }
 }
 
+/// Whether a pull claims [`ployz_core::VOLUME_ORIGIN_CAPABILITY`]. A Server claims it once
+/// it checks origins at every rename; until then only a verify build does, for the
+/// harness.
+const CLAIMS_ORIGIN: bool = cfg!(any(test, feature = "verify-faults"));
+
+/// An origin as a message names it; `None` is Legacy.
+pub(super) fn shown_origin(origin: Option<ployz_core::VolumeOrigin>) -> String {
+    origin.map_or_else(|| "Legacy".to_owned(), |origin| origin.to_string())
+}
+
 /// A stream the writer answered 200 for, not yet read.
 pub(super) struct OpenedStream {
     /// The stream's URL as [`SendStream::shown`] prints it.
@@ -433,15 +443,69 @@ impl VolumeStorage {
         &self,
         from: ManagementAddress,
         stream: &SendStream,
-        fs: &str,
+        (parent, fs): (&str, &str),
         bound: u64,
         fault: &'static str,
         r#gen: VolumeGen,
         stop: &Stop,
     ) -> Result<(), ReceiveFailure> {
         let opened = self.open_stream(from, stream, stop).await?;
+        self.admit_origin(parent, fs, &opened).await?;
         self.receive_opened(opened, fs, bound, fault, pulling(stream, r#gen), stop)
             .await
+    }
+
+    /// Admits the origin `opened` carries into the slot `parent`, before any byte of it is
+    /// piped: a slot with a copy or a record must already carry that origin. A refusal
+    /// changes nothing. Otherwise the record becomes exactly that origin, so a crash from
+    /// here on reads the bytes as what the writer said they are.
+    pub(super) async fn admit_origin(
+        &self,
+        parent: &str,
+        fs: &str,
+        opened: &OpenedStream,
+    ) -> Result<(), ReceiveFailure> {
+        let failed = |error: String| ReceiveFailure::Failed(error);
+        let sent = ployz_core::single_origin(
+            opened
+                .response
+                .headers()
+                .get_all(ployz_core::ORIGIN_HEADER)
+                .iter()
+                .map(|value| value.to_str().unwrap_or_default()),
+        )
+        .map_err(|error| failed(format!("{} answered {error}", opened.shown)))?;
+        let fs_exists = self
+            .exists(fs)
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+        let record = self
+            .record(parent)
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+        if fs_exists || record.is_some() {
+            let held = match record {
+                Some(record) => Some(record),
+                None => self
+                    .origin_of(None, Some(fs))
+                    .await
+                    .map_err(|error| failed(error.to_string()))?,
+            };
+            if held != sent {
+                return Err(failed(format!(
+                    "{} sent data of origin {}, and {fs} holds origin {}; this Server keeps its copy",
+                    opened.shown,
+                    shown_origin(sent),
+                    shown_origin(held)
+                )));
+            }
+        }
+        if record == sent {
+            return Ok(());
+        }
+        self.write_record(parent, sent)
+            .await
+            .map_err(|error| failed(error.to_string()))
     }
 
     /// The writer's answer to `stream`, before anything touches the slot. A writer that
@@ -482,7 +546,14 @@ impl VolumeStorage {
                     inline(&error)
                 ))
             })?;
-        let response = client.get(&url).send().await.map_err(|error| {
+        let mut request = client.get(&url);
+        if CLAIMS_ORIGIN {
+            request = request.header(
+                ployz_core::CAPABILITIES_HEADER,
+                ployz_core::VOLUME_ORIGIN_CAPABILITY,
+            );
+        }
+        let response = request.send().await.map_err(|error| {
             ReceiveFailure::Failed(format!("GET {shown}: {}", inline(&error.without_url())))
         })?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {

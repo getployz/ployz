@@ -180,6 +180,9 @@ pub struct LowerDeploymentVolume {
     /// A Deploy applied it, so its data is on some Server. Written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deployed: bool,
+    /// Written only when the Store holds one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth: Option<super::BirthState>,
 }
 
 /// One Config the Namespace holds, its references resolved.
@@ -230,7 +233,16 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     let volume_sources: BTreeMap<_, _> = input
         .volumes
         .iter()
-        .map(|v| (v.volume_resource_id.as_str(), (v.storage, v.deployed)))
+        .map(|v| {
+            let birth = v
+                .birth
+                .as_ref()
+                .and_then(|birth| birth.in_namespace(&input.namespace));
+            (
+                v.volume_resource_id.as_str(),
+                (v.storage, v.deployed, birth),
+            )
+        })
         .collect();
     let config_sources: BTreeMap<_, _> = input
         .configs
@@ -295,8 +307,8 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
 struct Sources<'a> {
     namespace: &'a Namespace,
     sealed_for: Option<&'a SealedFor>,
-    /// Storage, whether a Deploy applied it, and the ID its Docker Volume is named for.
-    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool)>,
+    /// Storage, whether a Deploy applied it, and the birth its mounts carry.
+    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool, Option<&'a crate::VolumeBirth>)>,
     configs: &'a BTreeMap<&'a str, &'a LowerDeploymentConfig>,
     region: Option<&'a Region>,
 }
@@ -574,7 +586,8 @@ fn lower_volumes(
         deployed: BTreeSet::new(),
     };
     for mount in configured_mounts {
-        let Some((storage, deployed)) = sources.volumes.get(mount.volume_resource_id.as_str())
+        let Some((storage, deployed, birth)) =
+            sources.volumes.get(mount.volume_resource_id.as_str())
         else {
             continue;
         };
@@ -599,11 +612,13 @@ fn lower_volumes(
                 name,
                 driver: VolumeDriver::parse("local", BTreeMap::new()).map_err(lowering_error)?,
                 labels: BTreeMap::new(),
+                birth: birth.cloned(),
             },
             VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
                 name,
                 maximum_bytes: *maximum_bytes,
                 labels: BTreeMap::new(),
+                birth: birth.cloned(),
             },
         };
         lowered.volumes.push(ServiceVolume {

@@ -10,6 +10,7 @@ fn volume(id: &str, name: &str) -> SavedVolumeIntent {
         storage: VolumeKind::Docker {},
         shared_writes: false,
         restored_from: None,
+        birth: None,
     }
 }
 

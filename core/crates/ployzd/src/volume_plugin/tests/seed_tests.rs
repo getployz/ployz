@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::copy_tests::{eventually, let_requests_act, poll, receive_ready};
+use super::copy_tests::{BORN, eventually, let_requests_act, poll, receive_ready};
 use super::inspect_tests::{set_property, start};
 use super::*;
 
@@ -876,4 +876,59 @@ async fn a_seed_answers_once_a_failed_copy_whose_receive_already_ended() {
         "{restarted}"
     );
     assert_eq!(commands(&test).matches("zfs send ").count(), 2);
+}
+
+/// A point carrying an origin a receive wrote was not stamped here, so the Seed refuses
+/// it before it clears the destination, and the Mirror there keeps its bytes and marks.
+/// The same value stamped here seeds, and the root carries it.
+#[tokio::test]
+async fn a_seed_of_a_received_origin_refuses_and_keeps_the_mirror_in_its_slot() {
+    let test = TestDir::new();
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    set_property(&test, "tank/ployz/data", "ployz:origin", BORN);
+    let received = test.0.join("props/received/tank/ployz/data");
+    fs::create_dir_all(received.parent().unwrap()).unwrap();
+    fs::write(&received, "").unwrap();
+    set_property(
+        &test,
+        "tank/ployz-mirror/seed/fs",
+        "snapshots",
+        "tank/ployz-mirror/seed/fs@w-0-0\t55\t1690000000",
+    );
+    set_property(&test, "tank/ployz-mirror/seed/fs", "ployz:pulled", "55");
+    set_property(&test, "tank/ployz-mirror/seed", "ployz:pull", "w-0-0");
+
+    let reply = post(&socket, "/Volume.Seed", seed(77)).await;
+    let message = reply.pointer("/Err/message").and_then(Value::as_str);
+    assert!(
+        message.is_some_and(|message| message.contains("did not stamp")),
+        "{reply}"
+    );
+    assert!(test.0.join("seed-fs").exists(), "the Mirror survives");
+    assert_eq!(
+        snapshot_names(&test, "tank/ployz-mirror/seed/fs"),
+        ["w-0-0"]
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/seed/fs", "ployz:pulled").as_deref(),
+        Some("55")
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/seed", "ployz:pull").as_deref(),
+        Some("w-0-0")
+    );
+    assert!(!commands(&test).contains("zfs destroy"));
+
+    fs::remove_file(&received).unwrap();
+    let landed = settled(&socket).await;
+    assert_eq!(landed.pointer("/Ok/copy/kind").unwrap(), "root", "{landed}");
+    assert_eq!(
+        property(&test, "tank/ployz/seed", "ployz:origin").as_deref(),
+        Some(BORN)
+    );
 }

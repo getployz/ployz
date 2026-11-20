@@ -897,6 +897,7 @@ pub(crate) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource
             std::num::NonZeroU64::new(maximum_bytes).unwrap(),
         ),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");
@@ -913,6 +914,7 @@ pub(crate) fn ordinary_source(name: &str) -> VolumeSource {
         )
         .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");

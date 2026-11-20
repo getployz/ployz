@@ -155,6 +155,14 @@ pub(super) fn container_create_body(
             serde_json::to_string(record).expect("a sealed record serializes"),
         );
     }
+    // Fixed at create from the signed spec, so a later start opens only data it names.
+    labels.remove(labels::VOLUME_ORIGINS);
+    let origins = ployz_core::MountOrigins::of(spec.volume_graph())
+        .and_then(|origins| origins.map(|origins| origins.label()).transpose())
+        .map_err(|error| Error::InvalidContainerConfig(format!("mount origins: {error}")))?;
+    if let Some(origins) = origins {
+        labels.insert(labels::VOLUME_ORIGINS.into(), origins);
+    }
     let mounts = docker_mounts(spec.volume_graph())?;
     let interface_addresses = if hook.is_none()
         && spec.ports.iter().any(|port| {

@@ -26,3 +26,11 @@ if [ "$workspace" != "$version" ]; then
     echo "tag '$tag' does not match workspace version '$workspace'" >&2
     exit 1
 fi
+
+# Servers mark origins before they check them, and a build that marks without checking
+# would run born data under a Legacy label. No release carries one.
+if grep -q '^impl VolumeOrigin' "$root/crates/ployz-core/src/domain/volume.rs" \
+    && ! grep -q 'ployz\.volume\.origin\.v1\|VOLUME_ORIGIN_CAPABILITY' "$root/crates/ployz-core/src/rpc/catalog.rs"; then
+    echo "tag '$tag' carries Volume origins, but the catalog does not claim ployz.volume.origin.v1" >&2
+    exit 1
+fi

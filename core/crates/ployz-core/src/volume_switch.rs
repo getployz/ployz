@@ -270,6 +270,10 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         mark: Option<RootMark>,
+        /// The born origin the root carries. Absent for Legacy data and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        origin: Option<crate::VolumeOrigin>,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -296,6 +300,11 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         pull_state: Option<PullState>,
+        /// The born origin of the copy: the pull's record until it is stamped on `fs`, then
+        /// `fs`'s own. Absent for Legacy data and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        origin: Option<crate::VolumeOrigin>,
     },
 }
 
@@ -733,6 +742,7 @@ mod tests {
             epoch: WriterEpoch::default(),
             seed: false,
             mark: None,
+            origin: None,
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),
@@ -742,6 +752,7 @@ mod tests {
             pull: None,
             role: Some(SlotRole::Mirror),
             pull_state: None,
+            origin: None,
         };
         let known = |role| {
             vec![KnownCopy {

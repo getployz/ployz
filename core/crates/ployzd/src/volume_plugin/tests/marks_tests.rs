@@ -79,6 +79,7 @@ async fn copy_writer_promotes_a_pulled_slot_in_this_order() {
         [
             "zfs get -H -o value receive_resume_token tank/ployz-mirror/data/fs",
             "zfs receive -A tank/ployz-mirror/data/fs",
+            "zfs get -Hp -o value,source ployz:pull-origin tank/ployz-mirror/data",
             "zfs inherit ployz:pulled tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
             "zfs inherit ployz:seed tank/ployz-mirror/data/fs",
@@ -90,6 +91,7 @@ async fn copy_writer_promotes_a_pulled_slot_in_this_order() {
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:seed tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -Hp -o value,source ployz:origin tank/ployz/data",
         ]
     );
     server.abort();
@@ -112,6 +114,7 @@ async fn copy_writer_leaves_a_cut_slot_registered_and_drops_the_cut_after_the_re
         trace(&commands(&test)),
         [
             "zfs get -H -o value receive_resume_token tank/ployz-mirror/data/fs",
+            "zfs get -Hp -o value,source ployz:pull-origin tank/ployz-mirror/data",
             "zfs inherit ployz:pulled tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
             "zfs set ployz:epoch=0 tank/ployz-mirror/data/fs",
@@ -121,6 +124,7 @@ async fn copy_writer_leaves_a_cut_slot_registered_and_drops_the_cut_after_the_re
             "zfs inherit ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -Hp -o value,source ployz:origin tank/ployz/data",
         ]
     );
     server.abort();
@@ -154,6 +158,7 @@ async fn copy_writer_raises_a_roots_epoch_before_it_reopens_it() {
             "zfs inherit ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -Hp -o value,source ployz:origin tank/ployz/data",
         ]
     );
     server.abort();
@@ -180,6 +185,8 @@ async fn copy_cut_marks_the_root_cut_before_it_parks_it_as_an_old_copy() {
             "zfs get -H -o value receive_resume_token tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:pull tank/ployz-mirror/data",
             "zfs get -H -o value ployz:role tank/ployz-mirror/data",
+            "zfs get -Hp -o value,source ployz:pull-origin tank/ployz-mirror/data",
+            "zfs get -Hp -o value,source ployz:origin tank/ployz-mirror/data/fs",
         ],
     );
     server.abort();
@@ -295,9 +302,10 @@ async fn a_landing_seed_marks_the_slot_before_it_renames_it_the_root() {
         "{reply}"
     );
     assert_eq!(
-        trace(&commands(&test)).get(..6).unwrap(),
+        trace(&commands(&test)).get(..7).unwrap(),
         [
             "zfs get -H -o value ployz:pull tank/ployz-mirror/seed",
+            "zfs get -Hp -o value,source ployz:pull-origin tank/ployz-mirror/seed",
             "zfs inherit ployz:pulled tank/ployz-mirror/seed/fs",
             "zfs set ployz:seed=77 tank/ployz-mirror/seed/fs",
             "zfs set ployz:promote=on tank/ployz-mirror/seed/fs",
@@ -636,6 +644,7 @@ async fn inspect_reads_the_marks_of_a_read_only_root_in_order() {
             "zfs get -H -o value ployz:seed tank/ployz/data",
             "zfs get -H -o value ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -Hp -o value,source ployz:origin tank/ployz/data",
         ]
     );
     server.abort();
@@ -652,6 +661,7 @@ async fn inspect_of_an_unmarked_root_reads_promote_alone() {
         [
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -Hp -o value,source ployz:origin tank/ployz/data",
         ]
     );
     server.abort();
@@ -669,6 +679,8 @@ async fn inspect_of_a_slot_reads_its_role_pull_and_resume_token() {
             "zfs get -H -o value receive_resume_token tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:pull tank/ployz-mirror/data",
             "zfs get -H -o value ployz:role tank/ployz-mirror/data",
+            "zfs get -Hp -o value,source ployz:pull-origin tank/ployz-mirror/data",
+            "zfs get -Hp -o value,source ployz:origin tank/ployz-mirror/data/fs",
         ]
     );
     server.abort();
@@ -731,9 +743,11 @@ async fn a_stale_seed_slot_reads_the_four_marks_before_it_clears() {
     assert!(reply.get("Err").is_some(), "{reply}");
     let trace = trace(&commands(&test));
     assert_eq!(
-        trace.get(..5).unwrap(),
+        trace.get(..6).unwrap(),
         [
             "zfs get -H -o value ployz:pull tank/ployz-mirror/seed",
+            // The source's point and origin, read before anything clears the slot.
+            "zfs get -Hp -o name,property,value,source guid,ployz:origin tank/ployz/data@w-1-1 tank/ployz/data",
             "zfs get -H -o value ployz:seed tank/ployz-mirror/seed/fs",
             "zfs get -H -o value ployz:promote tank/ployz-mirror/seed/fs",
             "zfs get -H -o value ployz:cut tank/ployz-mirror/seed/fs",
