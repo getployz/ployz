@@ -13,11 +13,12 @@ use serde_json::{Value, json};
 use super::target;
 use crate::approval;
 use crate::cloud_account::{self, Credential};
+use crate::cluster::KeptVersions;
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
     Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
 };
-use crate::handlers::{Error, leaf_matches, runtime, store, with_client};
+use crate::handlers::{Error, leaf_matches, route, runtime, store};
 use ployz_store::OperationVerb;
 
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
@@ -42,16 +43,29 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     }
     drop(runtime);
     // Store reads block on their own runtime, so they run before the Cluster's.
-    let scope = scope(root)?;
-    with_client(root, |client| {
-        Box::pin(async move {
-            let cancellation = crate::cancellation::on_ctrl_c();
-            let report = client
-                .drain(&target, &scope, &cancellation, &mut show)
-                .await
-                .map_err(refusal)?;
-            render(&report)
-        })
+    let store = store::reachable(root)?;
+    let scope = scope(matches, store.as_ref())?;
+    // Without Cloud this CLI's own Store keeps what each Device signed, and each Server
+    // a copy moves to checks those versions, as a Cloud drain hands them on.
+    let kept = match store.as_ref().map(store::Store::backend) {
+        Some(store::Backend::Local(local, who)) => {
+            Some(KeptVersions::new(local.clone(), who.organization.clone()))
+        }
+        Some(store::Backend::Cloud(..)) | None => None,
+    };
+    let context = matches.get_one::<String>("context").map(String::as_str);
+    crate::handlers::runtime()?.block_on(async {
+        let client = route::connect(matches, context).await?;
+        let mut client = match kept {
+            Some(kept) => client.with_kept_versions(kept),
+            None => client,
+        };
+        let cancellation = crate::cancellation::on_ctrl_c();
+        let report = client
+            .drain(&target, &scope, &cancellation, &mut show)
+            .await
+            .map_err(refusal)?;
+        render(&report)
     })
 }
 
@@ -167,9 +181,8 @@ fn incomplete(report: &DrainReport) -> Error {
 
 /// Namespaces some Project owns, when a Config Store is reachable. Standalone Clusters
 /// have none, so every user Namespace counts there.
-fn scope(root: &ArgMatches) -> Result<DrainScope, Error> {
-    let matches = leaf_matches(root);
-    let Some(store) = store::reachable(root)? else {
+fn scope(matches: &ArgMatches, store: Option<&store::Store<'_>>) -> Result<DrainScope, Error> {
+    let Some(store) = store else {
         return Ok(DrainScope::EveryNamespace);
     };
     // A Cloud Store owns the signed-in Organization's Namespaces; another Cluster
