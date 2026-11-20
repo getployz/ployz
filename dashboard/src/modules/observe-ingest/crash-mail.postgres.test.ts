@@ -101,6 +101,14 @@ it.live("five crashes queue one mail that counts them, naming the service, its S
   expect(mail?.data.text).toContain(`https://cloud.example.com/cloud/acme/shop/production/services/${WEB}?tab=monitoring`);
 }));
 
+it.live("an exit code wider than 32 bits still mails", () => Effect.gen(function* () {
+  const { crash, unmailed, claim } = yield* setup();
+  yield* crash("2026-10-15T03:01:00Z", { exitCode: 10_000_000_000, oom: false });
+
+  expect(yield* claim("2026-10-15T03:02:00Z")).toEqual({ kind: "mailed", count: 1 });
+  expect(yield* unmailed()).toEqual([]);
+}));
+
 it.live("a crash within the hour after a mail waits for the hour to pass, then mails alone", () => Effect.gen(function* () {
   const { crash, unmailed, mails, claim } = yield* setup();
   yield* crash("2026-10-15T03:01:00Z");
