@@ -54,7 +54,9 @@ With a Cloud credential, `ployz metrics` prints one row per metric from Cloud's 
 the newest reading, and **AVG** and **PEAK** cover the last hour. Add `--since` for another
 range, such as `--since 6h`, `--since 7d`, `--since 2026-01-31` or an RFC 3339 timestamp, and
 `--json` for the full reply. Below the table, Ployz counts the OOM kills and exits in the range.
-`--since` has no effect without Cloud, which keeps no history.
+`--since` has no effect without Cloud, which keeps no history. On a Cloud without metrics
+enabled, `ployz metrics` prints live numbers and says **Metrics history isn’t enabled on this
+Cloud.**
 
 A name the environment doesn't have, and that has no readings, fails with
 `No Service named nosvc in Environment production` and lists the services you can name. It exits
