@@ -662,6 +662,7 @@ fn deploy_by_hand(
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1212,6 +1213,7 @@ fn retry(
             version: None,
             accept_volume_loss: Vec::new(),
             approval: None,
+            versions: Vec::new(),
         }),
         &Trusted::default(),
     )?;

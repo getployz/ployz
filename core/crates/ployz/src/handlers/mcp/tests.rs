@@ -2042,6 +2042,7 @@ fn removed_but_unswept() -> ConfigStore {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
         )
         .unwrap();

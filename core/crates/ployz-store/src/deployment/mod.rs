@@ -28,6 +28,7 @@ mod status;
 mod status_tests;
 mod targeting;
 pub(crate) mod uploads;
+pub(crate) mod versions;
 pub(crate) use claim::*;
 pub(crate) use history::*;
 pub(crate) use landing::*;
@@ -40,6 +41,7 @@ pub(crate) use rows::server_names;
 pub(crate) use status::*;
 pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
+pub use versions::{Pinned, PostedVersion, RanService, TagPin};
 
 pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
@@ -654,6 +656,9 @@ pub struct Claimed {
     pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
     /// The image token each Service's GitHub build under `rule` reported.
     pub image_tokens: BTreeMap<ServiceName, crate::ImageToken>,
+    /// What each target Service runs, by runtime name, with the signed versions kept for
+    /// it. A Service without one sends its Saved image and no statement.
+    pub ran: BTreeMap<ServiceName, Pinned>,
 }
 
 /// One node a Deployment targets, as frozen at admission. A row stores a Service the

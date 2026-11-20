@@ -477,6 +477,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                         prune: false,
                         no_prune: false,
                         approval: None,
+                        versions: Vec::new(),
                     }),
                     &ployz_store::Trusted::default(),
                 )
@@ -501,7 +502,6 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                     checkouts,
                     upload: None,
                     reader: None,
-                    versions: Vec::new(),
                 }),
             )
             .await
@@ -675,6 +675,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                         prune: false,
                         no_prune: false,
                         approval: None,
+                        versions: Vec::new(),
                     }),
                     &ployz_store::Trusted::default(),
                 )
@@ -689,7 +690,6 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                     checkouts: std::collections::BTreeMap::new(),
                     upload: dir,
                     reader: None,
-                    versions: Vec::new(),
                 }),
             )
             .await

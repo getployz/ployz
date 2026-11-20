@@ -972,6 +972,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -1027,6 +1028,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         prune: false,
         no_prune: false,
         approval: None,
+        versions: Vec::new(),
     };
     store
         .write_trusted(
@@ -1305,6 +1307,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1438,6 +1441,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
                     prune: false,
                     no_prune: false,
                     approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -1599,6 +1603,7 @@ async fn restarting_deploy_names_its_exit_and_last_line(
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1733,6 +1738,7 @@ async fn cloud_runner_applies_an_environment_removal() {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1859,6 +1865,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                     prune: false,
                     no_prune: false,
                     approval: None,
+                    versions: Vec::new(),
                 }),
                 &trusted,
             )
@@ -2033,6 +2040,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                     prune: false,
                     no_prune: false,
                     approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -2145,6 +2153,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
                         prune: false,
                         no_prune: false,
                         approval: None,
+                        versions: Vec::new(),
                     }),
                     &ployz_store::Trusted::default(),
                 )

@@ -59,6 +59,7 @@ mod session;
 pub(crate) use call::setup_outcome;
 pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
+pub(crate) use deploy_context::KeptVersions;
 pub use deploy_context::RuleProofs;
 use deploy_context::{Carried, DeployContext};
 pub(crate) use fan_out::{fan_out, fan_out_entry_last};
@@ -182,6 +183,14 @@ impl Client {
         approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
     ) -> Self {
         self.deploy.set_deploy(approval);
+        self
+    }
+
+    /// Hand every Server, with each new copy, the signed versions `kept` holds for that
+    /// copy's own spec.
+    #[must_use]
+    pub(crate) fn with_kept_versions(mut self, kept: KeptVersions) -> Self {
+        self.deploy.set_kept(kept);
         self
     }
 
@@ -1145,7 +1154,7 @@ impl Client {
     ) -> Result<EnsureContainerRequest, RpcError> {
         crate::sealed_compat::admit(self, target, &want).await?;
         let carried = match carry {
-            Carry::Approvals => self.deploy.carried(&want),
+            Carry::Approvals => self.deploy.carried(&want).await,
             Carry::Nothing => Carried::none(),
         };
         Ok(EnsureContainerRequest {

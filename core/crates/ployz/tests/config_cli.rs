@@ -6049,6 +6049,7 @@ fn applied(store: &Target, environment: &str) {
                 prune: false,
                 no_prune: false,
                 approval: None,
+                versions: Vec::new(),
             });
             local
                 .write_trusted(&who, &deploy, &Trusted::default())

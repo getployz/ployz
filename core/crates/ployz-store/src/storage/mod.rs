@@ -310,6 +310,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0048_region_name",
         Step::Sql(include_str!("migrations/0048_region_name.sql")),
     ),
+    (
+        // Each signed version a client posted, and what each Deployment ran.
+        "0049_service_version",
+        Step::Sql(include_str!("migrations/0049_service_version.sql")),
+    ),
 ];
 
 enum Step {
