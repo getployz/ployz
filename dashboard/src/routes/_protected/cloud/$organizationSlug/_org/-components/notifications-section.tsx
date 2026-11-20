@@ -16,10 +16,7 @@ const LINK = "underline underline-offset-4 hover:text-foreground";
 
 const CHANNEL_LABELS = { email: "Email", none: "None" } satisfies Record<NotificationChannel, string>;
 
-/**
- * One row per email type. With no Mailer the rows still show what each type would do, and can't be changed. With no log
- * shipping the crash row stays and says what to set up.
- */
+/** One row per email type. With no Mailer the rows still show what each type would do, and can't be changed. */
 export function NotificationsSection({ settings, onChange }: {
   settings: NotificationSettings;
   onChange: (change: SetNotificationChannel) => void;

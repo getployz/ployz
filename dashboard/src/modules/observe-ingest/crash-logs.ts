@@ -3,8 +3,7 @@ import { Option, Schema } from "effect";
 export const CRASH_EVENT_NAME = "ployz.container.exit";
 export const MAX_CRASH_RECORDS = 1000;
 
-// Unix nanos up to the last instant a Date can hold.
-const MAX_MS = 8.64e15;
+const MAX_DATE_MS = 8.64e15;
 const Text = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 
 // OTLP/JSON writes an int64 as a decimal string, and proto3 JSON readers also take a number.
@@ -48,7 +47,7 @@ const nanosToMs = (nanos: typeof Int64.Type | undefined): Option.Option<number> 
   const digits = String(nanos);
   if (!/^[1-9]\d{0,24}$/.test(digits)) return Option.none();
   const ms = BigInt(digits) / 1_000_000n;
-  return ms <= BigInt(MAX_MS) ? Option.some(Number(ms)) : Option.none();
+  return ms <= BigInt(MAX_DATE_MS) ? Option.some(Number(ms)) : Option.none();
 };
 
 const exitCodeOf = (value: typeof Value.Type | undefined): Option.Option<number | null> => {

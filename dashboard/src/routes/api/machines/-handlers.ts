@@ -37,7 +37,6 @@ export function handleMachineOtlp(request: Request, signal: OtlpSignal) {
     const forwarded = yield* Effect.result(forwardOtlp(machine.success.organizationId, signal, request.headers, body));
     if (Result.isFailure(forwarded)) return errorResponse(forwarded.failure);
     if (signal !== "logs" || !forwarded.success.ok) return forwarded.success;
-    // The Collector has the batch, so a failure here answers 503 and the Machine's retry meets the ledger's dedupe.
     const recorded = yield* Effect.result(recordCrashEventsOf(machine.success, request.headers, body));
     return Result.isFailure(recorded) ? errorResponse(recorded.failure) : forwarded.success;
   });
