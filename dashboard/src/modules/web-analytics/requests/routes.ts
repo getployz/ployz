@@ -72,7 +72,7 @@ const toSample = (row: SampleRow): RequestSample => ({ ...row, ts: new Date(row.
 
 const SAMPLE_COLUMNS = "RequestId AS requestId, toUnixTimestamp64Milli(Timestamp) AS ts, Service AS service, Method AS method, Path AS path, Status AS status, duration_ms AS durationMs";
 
-const requestsCte = (query: RouteQuery, params: Params, bots: ReadonlyArray<string>, service = query.service) => `
+const requestsCte = (query: RouteQuery, params: Params, bots: ReadonlyArray<string>, service: string | undefined) => `
   rows AS (
     SELECT ${routeOf("Path")} AS route, Timestamp, RequestId, Service, Method, Path, Status, DurationUs / 1000 AS duration_ms
     FROM scoped
@@ -100,7 +100,7 @@ export const api = Effect.fn("WebAnalytics.api")(function* (query: RouteQuery) {
   const bots = yield* botHashes(query, query.range, false);
   const run = <Row>(select: (params: Params) => string, row: Schema.Decoder<Row>, withTop = false) => Effect.gen(function* () {
     const params = new Params();
-    return yield* readRequests(query, params, [requestsCte(query, params, bots), ...(withTop ? [TOP] : [])], select(params), row);
+    return yield* readRequests(query, params, [requestsCte(query, params, bots, query.service), ...(withTop ? [TOP] : [])], select(params), row);
   });
   const [routes, slowest, serviceNames] = yield* Effect.all([
     run(() => `
@@ -126,7 +126,7 @@ export const errors = Effect.fn("WebAnalytics.errors")(function* (query: RouteQu
   const bots = yield* botHashes(query, query.range, false);
   const run = <Row>(select: (params: Params) => string, row: Schema.Decoder<Row>, withTop = false) => Effect.gen(function* () {
     const params = new Params();
-    return yield* readRequests(query, params, [requestsCte(query, params, bots), ...(withTop ? [TOP_FAILED] : [])], select(params), row);
+    return yield* readRequests(query, params, [requestsCte(query, params, bots, query.service), ...(withTop ? [TOP_FAILED] : [])], select(params), row);
   });
   const seconds = "intDiv(toUnixTimestamp64Milli(Timestamp), 1000)";
   const [hourly, byRoute, newest, serviceNames] = yield* Effect.all([

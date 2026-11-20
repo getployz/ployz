@@ -195,6 +195,20 @@ describe.skipIf(URL_UNSET)("request analytics on ClickHouse (needs OBSERVE_CLICK
       expect(filtered.values("page")).toEqual([{ value: path, pageviews: 1, visitors: 1 }]);
     }
   }).pipe(Effect.provide(config)), 60_000);
+  it.live("lists every Service that took a request, before and after one is picked", () => Effect.gen(function* () {
+    const org = randomUUID();
+    yield* Effect.promise(() => seed(org, "services", [
+      { at: at(first, "09:00:00"), path: "/v1/users", visitor: null, service: "api", status: 500 },
+      { at: at(first, "09:01:00"), path: "/", visitor: null, service: "web" },
+    ]));
+    const q = query(org);
+    for (const read of [analytics.api, analytics.errors]) {
+      expect((yield* read(q)).services).toEqual(["api", "web"]);
+      const picked = yield* read(q, "api");
+      expect(picked.services).toEqual(["api", "web"]);
+    }
+    expect((yield* analytics.api(q, "api")).routes.map((row) => row.route)).toEqual(["/v1/users"]);
+  }).pipe(Effect.provide(config)), 60_000);
   it.live("reads a goal whose pattern holds a quote", () => Effect.gen(function* () {
     const org = randomUUID();
     yield* Effect.promise(() => seed(org, "quote", [{ at: at(first, "09:00:00"), path: "/it's here", visitor: 1 }]));
