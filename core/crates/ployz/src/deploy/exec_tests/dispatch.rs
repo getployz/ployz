@@ -655,7 +655,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::ReadClusterName(_)
                     | RpcRequestBody::SetClusterName(_)
                     | RpcRequestBody::SetClusterDoors(_)
-                    | RpcRequestBody::MetricHistory(_)
+                    | RpcRequestBody::MetricsLive(_)
                     | RpcRequestBody::TailLogs(_)
                     | RpcRequestBody::RuntimeWatch(_)) => {
                         panic!("only inspect and ensure are expected: {other:?}")

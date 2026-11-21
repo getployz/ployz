@@ -471,24 +471,6 @@ impl Client {
         })
     }
 
-    /// Read one Machine's or one Service's metric history across the Cluster.
-    /// # Errors
-    /// Returns malformed input, a closed session, or a failure to list Machines.
-    #[napi(ts_return_type = "Promise<MetricHistory>")]
-    pub async fn metric_history(
-        &self,
-        #[napi(ts_arg_type = "MetricHistoryInput")] input: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let input = from_js(input).map_err(invalid_argument)?;
-        to_json(
-            &self
-                .inner
-                .metric_history(input)
-                .await
-                .map_err(rpc_to_napi)?,
-        )
-    }
-
     /// Open a Runtime Watch stream of complete frames.
     ///
     /// # Errors

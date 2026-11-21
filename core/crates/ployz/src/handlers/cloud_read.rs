@@ -5,7 +5,7 @@
 use std::{collections::BTreeSet, time::Duration};
 
 use chrono::Utc;
-use ployz_core::{MachineName, QualifiedService, ServiceName, ServiceSelector};
+use ployz_core::{MachineName, QualifiedService, RpcErrorCode, ServiceName, ServiceSelector};
 use ployz_store::tools::{
     CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, Timestamp,
     cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
@@ -18,6 +18,7 @@ use super::{Error, operator::Scoped};
 use crate::operator::history::{self, StoredLine, StoredPage};
 use crate::{
     cloud_account::{self, Credential, StoreCallError},
+    cloud_login::LoginError,
     ui::{self, Table},
 };
 
@@ -267,11 +268,23 @@ pub(super) enum MetricsAsked {
     Server(String),
 }
 
+/// A Cloud that answers no CLI route has no history to read, so the Servers answer instead.
+fn offers_no_cli_access(error: &StoreCallError) -> bool {
+    matches!(error, StoreCallError::Cloud(LoginError::Unsupported(_)))
+}
+
+/// What Cloud did with a `metrics` read.
+pub(super) enum CloudMetrics {
+    Shown,
+    /// This Cloud keeps no metrics; its refusal, for when nothing else can answer.
+    NotEnabled(Error),
+}
+
 pub(super) fn metrics(
     credential: &Credential,
     asked: MetricsAsked,
     since_seconds: i64,
-) -> Result<(), Error> {
+) -> Result<CloudMetrics, Error> {
     let (subject, name, unknown) = match asked {
         MetricsAsked::Service { service, unknown } => (
             MetricsSubject::Service {
@@ -284,11 +297,23 @@ pub(super) fn metrics(
         MetricsAsked::Server(named) => {
             let only = MachineName::parse(named.as_str())
                 .map_err(|_| Error::usage(format!("{named:?} is not a Server name")))?;
-            let servers: ServersAnswer = ask(credential, CloudQuery::Servers { only: Some(only) })?;
-            let server = servers
-                .servers
-                .first()
-                .ok_or_else(|| Error::usage(format!("No Server is named {named:?}")))?;
+            let servers: ServersAnswer =
+                match refusable(credential, CloudQuery::Servers { only: Some(only) })? {
+                    Ok(answer) => answer,
+                    Err(error) if offers_no_cli_access(&error) => {
+                        return Ok(CloudMetrics::NotEnabled(error.into()));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+            let server = match servers.servers.as_slice() {
+                [] => return Err(Error::usage(format!("No Server is named {named:?}"))),
+                [server] => server,
+                [_, _, ..] => {
+                    return Err(Error::usage(format!(
+                        "More than one Server is named {named:?}"
+                    )));
+                }
+            };
             (
                 MetricsSubject::Server {
                     server: server.reference(),
@@ -298,7 +323,7 @@ pub(super) fn metrics(
             )
         }
     };
-    let answer: MetricsAnswer = ask(
+    let answer: MetricsAnswer = match refusable(
         credential,
         CloudQuery::Metrics(MetricsQuery {
             subject,
@@ -307,7 +332,18 @@ pub(super) fn metrics(
             },
             deployment: None,
         }),
-    )?;
+    )? {
+        Ok(answer) => answer,
+        Err(StoreCallError::Refused(refused)) if refused.code == RpcErrorCode::Conflict => {
+            return Ok(CloudMetrics::NotEnabled(
+                StoreCallError::Refused(refused).into(),
+            ));
+        }
+        Err(error) if offers_no_cli_access(&error) => {
+            return Ok(CloudMetrics::NotEnabled(error.into()));
+        }
+        Err(error) => return Err(error.into()),
+    };
     if let Some(refusal) = unknown
         && answer.metrics.is_empty()
         && answer.seen.unanswered.is_empty()
@@ -338,7 +374,7 @@ pub(super) fn metrics(
             ui::note(note);
         }
     })?;
-    ui::unanswered(&answer.seen.unanswered)
+    ui::unanswered(&answer.seen.unanswered).map(|()| CloudMetrics::Shown)
 }
 
 pub(super) fn processes(

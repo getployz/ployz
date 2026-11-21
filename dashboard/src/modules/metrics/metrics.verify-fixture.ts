@@ -1,184 +1,120 @@
-import type {
-  HostPoint,
-  MachineId,
-  MetricGap,
-  MetricHistory,
-  MetricHistoryInput,
-  MetricHistoryReply,
-  MetricMarker,
-  ServicePoint,
-} from "@ployz/sdk";
-import { requirements } from "#/modules/runtime/daemon-compat";
-import { containerId, machineId, serviceId } from "#/test/ids";
+import { DISK_KINDS, HOST_METRICS, SERVICE_METRICS, type CrashEvent, type DiskRow, type MetricRow } from "./metrics-history";
 
-type RpcError = MetricHistory["unanswered"][number]["error"];
-type Answer = MetricHistory["machines"][number];
-type Failure = MetricHistory["unanswered"][number];
-
-export const NORMAL = machineId("0123456789abcdef0123456789abcdef");
-export const ONES = machineId("1");
-export const TWOS = machineId("2");
-const THREES = machineId("3");
-/** Up and answering, with nothing sampled yet. */
-export const FOURS = machineId("4");
+export const NORMAL = "0123456789abcdef0123456789abcdef";
+export const ONES = "1".repeat(32);
+export const TWOS = "2".repeat(32);
+/** Up and sending metrics, with nothing in the range. */
+export const FOURS = "4".repeat(32);
 const MIB = 1024 * 1024;
+const CORES = 16;
 
-type Buckets = { readonly since: number; readonly until: number; readonly step: number; readonly ts: readonly number[] };
+type Range = { readonly window: { readonly from: number; readonly to: number }; readonly stepMs: number };
 
-function buckets(input: MetricHistoryInput): Buckets {
-  const since = Number(input.since_nanos);
-  const until = Number(input.until_nanos);
-  const step = Math.max(1, Math.floor((until - since) / 120));
-  const ts: number[] = [];
-  for (let at = since; at < until; at += step) ts.push(at);
-  return { since, until, step, ts };
+/** The bucket starts of the range, in Unix seconds, as ClickHouse buckets it. */
+const bucketsOf = ({ window, stepMs }: Range): number[] => {
+  const starts: number[] = [];
+  for (let at = Math.floor(window.from / stepMs) * stepMs; at < window.to; at += stepMs) starts.push(at / 1000);
+  return starts;
+};
+
+const wave = (index: number, base: number, swing: number, seed: number) => base + swing * Math.sin(index / 9 + seed);
+
+/** A counter that grows by `rate(index)` each second, as one cumulative value per bucket. */
+const counter = (count: number, stepSec: number, rate: (index: number) => number): number[] => {
+  let total = 0;
+  return Array.from({ length: count }, (_, index) => (total += rate(index) * stepSec));
+};
+
+const row = (metric: string, machine: string, bucket: number, value: number, extra: Partial<MetricRow> = {}): MetricRow =>
+  ({ metric, machine, series: "c0", state: "", direction: "", device: "", operation: "", bucket, sampledAt: bucket * 1000, samples: 1, value, ...extra });
+
+/** `skipped` buckets send nothing, so the range shows a gap there. */
+const sent = <T>(starts: readonly number[], skipped: (index: number) => boolean, make: (bucket: number, index: number) => readonly T[]) =>
+  starts.flatMap((bucket, index) => skipped(index) ? [] : make(bucket, index));
+
+function serviceRows(machine: string, range: Range, seed: number, io: boolean, skipped: (index: number) => boolean = () => false): MetricRow[] {
+  const starts = bucketsOf(range);
+  const stepSec = range.stepMs / 1000;
+  const cpu = counter(starts.length, stepSec, (index) => wave(index, 0.3, 0.2, seed) * 1e9);
+  const rx = counter(starts.length, stepSec, (index) => wave(index, 40_000, 30_000, seed));
+  const tx = counter(starts.length, stepSec, (index) => wave(index, 25_000, 20_000, seed + 1));
+  const read = counter(starts.length, stepSec, (index) => wave(index, 2 * MIB, 1.5 * MIB, seed + 2));
+  const write = counter(starts.length, stepSec, (index) => wave(index, MIB, 0.8 * MIB, seed + 3));
+  return sent(starts, skipped, (bucket, index) => [
+    row(SERVICE_METRICS.cpu, machine, bucket, cpu[index] ?? 0),
+    row(SERVICE_METRICS.memory, machine, bucket, wave(index, 200 * MIB, 40 * MIB, seed)),
+    row(SERVICE_METRICS.memoryLimit, machine, bucket, 512 * MIB),
+    row(HOST_METRICS.memoryTotal, machine, bucket, 8192 * MIB),
+    row(SERVICE_METRICS.rx, machine, bucket, rx[index] ?? 0),
+    row(SERVICE_METRICS.tx, machine, bucket, tx[index] ?? 0),
+    ...(io ? [
+      row(SERVICE_METRICS.io, machine, bucket, read[index] ?? 0, { operation: "read" }),
+      row(SERVICE_METRICS.io, machine, bucket, write[index] ?? 0, { operation: "write" }),
+    ] : []),
+  ]);
 }
 
-const wave = (index: number, base: number, swing: number, seed: number) =>
-  Math.round(base + swing * Math.sin(index / 9 + seed));
+export type ServiceData = { readonly rows: MetricRow[]; readonly crashes: CrashEvent[] };
+export type ServerData = { readonly rows: MetricRow[]; readonly disk: DiskRow[]; readonly reporting: boolean };
 
-function servicePoints(ts: readonly number[], seed: number, io: boolean): ServicePoint[] {
-  return ts.map((at, index) => {
-    const point: ServicePoint = {
-      ts: at,
-      cpu_usec: wave(index, 300_000, 200_000, seed),
-      mem_bytes: wave(index, 200 * MIB, 40 * MIB, seed),
-      mem_limit: 512 * MIB,
-      rx: wave(index, 40_000, 30_000, seed),
-      tx: wave(index, 25_000, 20_000, seed + 1),
-    };
-    if (io) {
-      point.io_r = wave(index, 2 * MIB, 1.5 * MIB, seed + 2);
-      point.io_w = wave(index, MIB, 0.8 * MIB, seed + 3);
-    }
-    return point;
-  });
-}
-
-const SERVICE_FIELDS = ["cpu_usec", "mem_bytes", "mem_limit", "rx", "tx", "io_r", "io_w"] as const;
-
-/** The top-level series: every reply's bucket summed, as the daemon fans in. */
-function sumServicePoints(replies: readonly (readonly ServicePoint[])[]): ServicePoint[] {
-  const byTs = new Map<number, ServicePoint>();
-  for (const point of replies.flat()) {
-    const sum = byTs.get(point.ts) ?? { ts: point.ts };
-    for (const field of SERVICE_FIELDS) {
-      const value = point[field];
-      if (value !== undefined) sum[field] = (sum[field] ?? 0) + value;
-    }
-    byTs.set(point.ts, sum);
-  }
-  return [...byTs.values()].sort((left, right) => left.ts - right.ts);
-}
-
-const refusal = (machine: MachineId): Failure => ({
-  machine_id: machine,
-  error: { code: "unsupported", message: "this Server's daemon does not serve metric history", details: { capability: requirements.metrics.capability, target: machine } } satisfies RpcError,
-});
-const down = (machine: MachineId): Failure => ({
-  machine_id: machine,
-  error: { code: "unavailable", message: "the Server is not up, so it was not asked", details: null } satisfies RpcError,
-});
-
-function serviceReply(machine: MachineId, points: ServicePoint[], step: number, extra: Partial<MetricHistoryReply> = {}): Answer {
-  return { machine_id: machine, value: { points: { service: points }, step_nanos: step, gaps: [], ...extra } };
-}
-
-/** What an up Server without the Service answers: no points and one gap over the whole range. */
-function absent(machine: MachineId, { since, until, step }: Buckets): Answer {
-  return serviceReply(machine, [], step, { gaps: [{ from: since, to: until, reason: "not_sampled" }] });
-}
-
-function serviceHistory(answers: readonly Answer[], unanswered: readonly Failure[], step: number): MetricHistory {
-  const history: MetricHistory = {
-    points: { service: sumServicePoints(answers.map((answer) => "service" in answer.value.points ? answer.value.points.service : [])) },
-    machines: [...answers],
-    unanswered: [...unanswered],
-  };
-  if (answers.length > 0) history.step_nanos = step;
-  return history;
-}
-
-function marker(service: string, machine: MachineId, ts: number, kind: "oom" | "restart"): MetricMarker {
-  return {
-    machine_id: machine,
-    container_id: containerId("c0ffee000000"),
-    service_id: serviceId("svc-postgres"),
-    service,
-    deployment_id: "dep-verify",
-    replica: "postgres-1",
-    ts,
-    kind,
-  };
-}
-
-function postgres(service: string, range: Buckets): MetricHistory {
-  const { step, ts } = range;
-  const third = Math.floor(ts.length / 3);
-  const gapFrom = ts[third];
-  const gapTo = ts[2 * third];
-  const gaps: MetricGap[] = gapFrom === undefined || gapTo === undefined ? [] : [{ from: gapFrom, to: gapTo, reason: "not_sampled" }];
-  const points = servicePoints(ts, 2, true).filter((_, index) => index < third || index >= 2 * third);
-  const oomAt = ts[2 * third + 2] ?? ts.at(-1) ?? 0;
-  const markers = [marker(service, NORMAL, oomAt, "oom"), marker(service, NORMAL, oomAt + Math.floor(step / 2), "restart")];
-  return serviceHistory([serviceReply(NORMAL, points, step, { gaps, markers }), absent(ONES, range)], [], step);
-}
-
-function serviceFixture(service: string, range: Buckets): MetricHistory {
-  const { step, ts } = range;
-  switch (service.split("/").at(-1)) {
+/** A Service's rows and crash events as ClickHouse would hold them, so the verify dashboard draws what a real read would. */
+export function verifyServiceData(service: string, range: Range): ServiceData {
+  switch (service) {
     case "web":
-      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 0, false), step), serviceReply(ONES, servicePoints(ts, 1.3, false), step)], [], step);
+      return { rows: [...serviceRows(NORMAL, range, 0, false), ...serviceRows(ONES, range, 1.3, false)], crashes: [] };
     case "api":
-      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 0.6, false), step)], [refusal(TWOS), down(THREES)], step);
+      return { rows: serviceRows(NORMAL, range, 0.6, false), crashes: [] };
     case "worker":
-      return serviceHistory([serviceReply(NORMAL, servicePoints(ts, 2.1, false), step), absent(ONES, range)], [], step);
-    case "redis":
-      return serviceHistory([], [refusal(ONES), refusal(TWOS)], step);
-    case "postgres":
-      return postgres(service, range);
+      return { rows: serviceRows(NORMAL, range, 2.1, false), crashes: [] };
+    case "postgres": {
+      const starts = bucketsOf(range);
+      const third = Math.floor(starts.length / 3);
+      const crashAt = (starts[2 * third + 2] ?? starts.at(-1) ?? 0) * 1000;
+      const crash = { machine: NORMAL, container: "c0ffee000000", serviceId: "svc-postgres", namespace: "shop-production", service };
+      return {
+        rows: serviceRows(NORMAL, range, 2, true, (index) => index >= third && index < 2 * third),
+        crashes: [{ ...crash, at: crashAt, reason: "out_of_memory", exitCode: null }, { ...crash, at: crashAt + range.stepMs / 2, reason: "exit_nonzero", exitCode: 1 }],
+      };
+    }
     default:
-      return serviceHistory([absent(NORMAL, range), absent(ONES, range)], [], step);
+      return { rows: [], crashes: [] };
   }
 }
 
-function hostPoints(ts: readonly number[]): HostPoint[] {
+/** A Server's rows as ClickHouse would hold them. `reporting` is whether it sent anything in the last minute. */
+export function verifyServerData(machine: string, range: Range): ServerData {
+  if (machine !== NORMAL) return { rows: [], disk: [], reporting: machine === FOURS };
+  const starts = bucketsOf(range);
+  const stepSec = range.stepMs / 1000;
+  const middle = Math.floor(starts.length / 2);
+  const skipped = (index: number) => index >= middle && index < middle + 8;
+  const busy = counter(starts.length, stepSec, (index) => wave(index, 0.35, 0.2, 0) * CORES);
+  const idle = counter(starts.length, stepSec, (index) => (1 - wave(index, 0.35, 0.2, 0)) * CORES);
   const total = 64 * 1024 * MIB;
+  const links = [
+    { device: "eth0", receive: (index: number) => wave(index, 900_000, 600_000, 0), transmit: (index: number) => wave(index, 400_000, 300_000, 1) },
+    { device: "lo", receive: () => 12_000, transmit: () => 12_000 },
+    { device: "docker0", receive: (index: number) => wave(index, 300_000, 100_000, 2), transmit: (index: number) => wave(index, 280_000, 100_000, 3) },
+  ].map((link) => ({ ...link, received: counter(starts.length, stepSec, link.receive), transmitted: counter(starts.length, stepSec, link.transmit) }));
+  const rows = sent(starts, skipped, (bucket, index) => [
+    row(HOST_METRICS.cpu, machine, bucket, busy[index] ?? 0, { state: "user" }),
+    row(HOST_METRICS.cpu, machine, bucket, idle[index] ?? 0, { state: "idle" }),
+    row(HOST_METRICS.memoryTotal, machine, bucket, total),
+    row(HOST_METRICS.memoryAvailable, machine, bucket, total - wave(index, 24 * 1024 * MIB, 4 * 1024 * MIB, 1)),
+    ...links.flatMap((link) => [
+      row(HOST_METRICS.network, machine, bucket, link.received[index] ?? 0, { device: link.device, direction: "receive" }),
+      row(HOST_METRICS.network, machine, bucket, link.transmitted[index] ?? 0, { device: link.device, direction: "transmit" }),
+    ]),
+  ]);
   const disk = 2_000_000 * MIB;
-  return ts.map((at, index) => ({
-    ts: at,
-    cpu_busy: wave(index, 350, 200, 0) / 1000,
-    memory: { total, available: total - wave(index, 24 * 1024 * MIB, 4 * 1024 * MIB, 1) },
-    interfaces: {
-      eth0: { rx: wave(index, 900_000, 600_000, 0), tx: wave(index, 400_000, 300_000, 1) },
-      lo: { rx: 12_000, tx: 12_000 },
-      docker0: { rx: wave(index, 300_000, 100_000, 2), tx: wave(index, 280_000, 100_000, 3) },
-    },
-    disk: { total: disk, free: disk - 800_000 * MIB - index * 100 * MIB, volumes: 500_000 * MIB + index * 100 * MIB, mirror_slots: 120_000 * MIB, observe_store: 30_000 * MIB, other: 150_000 * MIB },
-  }));
-}
-
-function machineFixture(machine: MachineId, { step, ts }: Buckets): MetricHistory {
-  if (machine === NORMAL) {
-    const gapFrom = ts[Math.floor(ts.length / 2)];
-    const gapTo = ts[Math.floor(ts.length / 2) + 8];
-    const gaps: MetricGap[] = gapFrom === undefined || gapTo === undefined ? [] : [{ from: gapFrom, to: gapTo, reason: "not_sampled" }];
-    const points = hostPoints(ts).filter((point) => !gaps.some((gap) => point.ts >= gap.from && point.ts < gap.to));
-    return {
-      step_nanos: step,
-      points: { machine: points },
-      machines: [{ machine_id: machine, value: { points: { machine: points }, step_nanos: step, gaps } }],
-      unanswered: [],
-    };
-  }
-  if (machine === FOURS) {
-    return { step_nanos: step, points: { machine: [] }, machines: [{ machine_id: machine, value: { points: { machine: [] }, step_nanos: step, gaps: [] } }], unanswered: [] };
-  }
-  return { points: { machine: [] }, machines: [], unanswered: [machine === TWOS ? refusal(machine) : down(machine)] };
-}
-
-/** A canned metric history for the verify dashboard, which has no real Servers to ask. Same input, same reply. */
-export function verifyMetricHistory(input: MetricHistoryInput): MetricHistory {
-  const range = buckets(input);
-  return input.subject.kind === "service" ? serviceFixture(input.subject.service, range) : machineFixture(input.subject.machine_id, range);
+  const disks = sent(starts, skipped, (bucket, index) => {
+    const parts: [string, number][] = [
+      [DISK_KINDS.volumes, 500_000 * MIB + index * 100 * MIB], [DISK_KINDS.mirrors, 120_000 * MIB],
+      [DISK_KINDS.logsAndMetrics, 30_000 * MIB], [DISK_KINDS.other, 150_000 * MIB],
+    ];
+    const used = parts.reduce((sum, [, bytes]) => sum + bytes, 0);
+    const kinds: [string, number][] = [[DISK_KINDS.total, disk], [DISK_KINDS.free, disk - used], ...parts];
+    return kinds.map(([kind, value]): DiskRow => ({ machine, kind, bucket, value }));
+  });
+  return { rows, disk: disks, reporting: true };
 }

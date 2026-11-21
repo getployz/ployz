@@ -4,7 +4,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import type { MachineId } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import * as functions from "#/modules/metrics/metrics.functions";
-import type { MetricRead } from "#/modules/metrics/metrics";
+import type { MetricRead, ServiceHistory } from "#/modules/metrics/metrics";
 import { runtimeServiceMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
 import { NOW_RANGE } from "./server-now";
 import { ServiceUsage } from "./service-usage";
@@ -13,20 +13,19 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const SYD_1 = "1".repeat(32) as MachineId;
 const HOUR = 3_600_000;
-const nanos = (ms: number) => ms * 1e6;
 const options = runtimeServiceMetricsQueryOptions({ organizationSlug: "acme", namespace: "shop", name: "api", ...NOW_RANGE });
 
-function readAt(to: number): MetricRead {
-  const points = { service: [{ ts: nanos(to - 10_000), cpu_usec: 370_000, mem_bytes: 2 * 1024 * 1024 }] };
+function readAt(to: number): MetricRead<ServiceHistory> {
+  const points = [{ at: to - 10_000, cpu: 0.37, memory: 2 * 1024 * 1024 }];
   return {
     type: "history",
     window: { from: to - 300_000, to },
     at: to,
-    history: { step_nanos: nanos(10_000), points, machines: [{ machine_id: SYD_1, value: { points, step_nanos: nanos(10_000), gaps: [] } }], unanswered: [] },
+    history: { stepMs: 10_000, points, servers: [{ machine: SYD_1, points, gaps: [], markers: [] }] },
   };
 }
 
-function show(read: MetricRead, landedAt: number) {
+function show(read: MetricRead<ServiceHistory>, landedAt: number) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(options.queryKey, read, { updatedAt: landedAt });
   render(

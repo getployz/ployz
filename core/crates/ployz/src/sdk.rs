@@ -32,7 +32,6 @@ mod deploy;
 mod github_build;
 mod logs;
 mod metrics;
-pub(crate) mod metrics_rows;
 mod observe;
 mod payloads;
 pub(crate) mod preparation;
@@ -114,7 +113,7 @@ fn unprepared(
 }
 pub(crate) use logs::{AgentTail, inspect_container, process_tail, service_tail, tail_frames};
 pub use logs::{ContainerLogInput, ContainerLogStream};
-pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
+pub use metrics::{LiveMetrics, MetricSubject, metrics_live};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,

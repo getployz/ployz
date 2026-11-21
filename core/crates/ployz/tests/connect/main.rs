@@ -40,7 +40,6 @@ mod sdk_destroy_cluster;
 mod sdk_destroy_namespace;
 mod sdk_drain;
 mod sdk_lost_reply;
-mod sdk_metrics;
 mod sdk_prepare;
 mod sdk_register;
 mod sdk_remove_machine;

@@ -110,7 +110,7 @@ macro_rules! rpc_catalog {
                 ReadClusterName: (read_cluster_name, ReadClusterNameRequest, ClusterNamed, READ_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.read.v1", Cluster, Operator),
                 SetClusterName: (set_cluster_name, SetClusterNameRequest, ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
                 SetClusterDoors: (set_cluster_doors, SetClusterDoorsRequest, ClusterDoorsDeclared, SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1", Cluster, Operator),
-                MetricHistory: (metric_history, MetricHistoryRequest, MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),
+                MetricsLive: (metrics_live, MetricsLiveRequest, MetricsLiveReply, METRICS_LIVE_CAPABILITY, "ployz.metrics.live.v1", Container, Operator),
             }
             server_streaming {
                 TailLogs: (tail_logs, TailLogsRequest, TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1", Container, Operator),

@@ -226,9 +226,10 @@ In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 
 ## Keep logs, metrics and traces in Cloud (optional)
 
-By default your servers keep their own logs and metrics, and Ployz Cloud keeps none. The
-`observe` profile adds ClickHouse and a Collector, so Cloud can keep a copy of the logs, metrics
-and traces a server sends to it over the address it already uses. Neither is published on a port.
+By default your servers keep their own logs, and Ployz Cloud keeps no logs and no metrics, so
+charts say **Metrics aren't enabled**. Servers keep no metrics history at all. The
+`observe` profile adds ClickHouse and a Collector, so Cloud can keep a copy of the logs and
+traces, and the only copy of the metrics, that a server sends to it over the address it already uses. Neither is published on a port.
 Servers don't send them yet, so turning the profile on prepares Cloud and collects nothing until
 they do.
 

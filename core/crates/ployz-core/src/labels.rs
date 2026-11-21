@@ -89,8 +89,7 @@ pub fn system_labels() -> HashMap<String, String> {
     HashMap::from([(SYSTEM_MANAGED.to_owned(), String::new())])
 }
 
-/// What a container is, read leniently from its labels. Observe writes it to `meta.json`
-/// and the sampler decides what to book from it.
+/// What a container is, read leniently from its labels. Observe writes it to `meta.json`.
 ///
 /// It is not core's replicated [`ContainerKind`]: that one has no system variant, and a new
 /// variant would not be additive.

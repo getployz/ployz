@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 
@@ -10,9 +10,9 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished, ClientKey,
     ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
     ContractDescription, EndpointSelected, EnvironmentValues, Evidence, Gate, GateReason,
-    LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLayout, MachineLogService,
-    MachineRpc, OpaquePayload, PROTOCOL_MAJOR, RoutedAddresses, RoutesRead, Rpc, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
+    OpaquePayload, PROTOCOL_MAJOR, RoutedAddresses, RoutesRead, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, SelectEndpointRequest, metrics::MetricsLiveReply, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -34,7 +34,6 @@ use crate::{
 #[derive(Clone)]
 pub struct MachineService {
     local: LocalMachine,
-    observe: crate::observe::ObserveClient,
     ingest: Arc<ImageIngest>,
     machine_api_port: u16,
     runtime_watch: Arc<RuntimeWatch>,
@@ -91,9 +90,6 @@ impl MachineService {
     pub fn over(local: LocalMachine) -> Self {
         Self {
             local,
-            observe: crate::observe::ObserveClient::new(
-                MachineLayout::production().observe_socket(),
-            ),
             ingest: ImageIngest::new(None, None),
             machine_api_port: MACHINE_API_PORT,
             runtime_watch: Arc::default(),
@@ -150,13 +146,6 @@ impl MachineService {
     #[must_use]
     pub(crate) fn with_volume_plugin(mut self, plugin: crate::storage::Plugin) -> Self {
         self.local = self.local.with_plugin(plugin);
-        self
-    }
-
-    /// Serve metric history from the ployz-observe that listens on `socket`.
-    #[must_use]
-    pub fn with_observe_socket(mut self, socket: PathBuf) -> Self {
-        self.observe = crate::observe::ObserveClient::new(socket);
         self
     }
 
@@ -748,13 +737,19 @@ impl MachineRpc for MachineService {
             .map(Response::new)
     }
 
-    async fn metric_history(
+    async fn metrics_live(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::MetricHistory>(request)?;
-        request.validate().map_err(Status::invalid_argument)?;
-        respond(self.observe.metrics(request).await?)
+        let request = expect::<op::MetricsLive>(request)?;
+        let containers = self
+            .containers()
+            .map_err(|error| Status::unavailable(error.message))?
+            .local_docker()
+            .live_stats(&request.scope)
+            .await
+            .map_err(|error| Status::unavailable(ployz_core::error_chain::inline(&error)))?;
+        respond(MetricsLiveReply { containers })
     }
 
     async fn tail_logs(

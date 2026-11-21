@@ -627,16 +627,16 @@ describe("callCloud", () => {
       }
       expect(yield* heard(deployer, { query: "server_logs", process: "ployz", server: null, lines: 100, since: null })).toEqual(refused);
       expect(asked).toHaveLength(2);
-      expect(yield* heard(deployer, metrics(staging))).toEqual({ ok: true, value: TAIL });
       expect(yield* heard(deployer, containers(staging))).toEqual({ ok: true, value: TAIL });
 
-      // A Server's metrics keep its host totals for the Deploy token, but describe only the Services it may read.
-      const readables: Array<ReadonlyArray<string> | null> = [];
+      // Metrics come from Cloud's ClickHouse, not a Server. Past the permission and Environment checks, a Cloud without
+      // ClickHouse says so, and no Server is asked.
+      const notEnabled = { ok: false, refusal: { code: "conflict", message: "Metrics aren’t enabled on this Cloud.", details: null } };
+      const before = asked.length;
+      expect(yield* heard(deployer, metrics(staging))).toEqual(notEnabled);
       const serverMetrics: CloudQuery = { query: "metrics", subject: { kind: "server", server: { machine: MACHINE, name: "web-2" } }, since: { kind: "minutes_ago", minutes: 10 }, deployment: null };
-      for (const caller of [member, reader, deployer]) {
-        expect(yield* callCloud(caller, { ask: serverMetrics }).pipe(runtime(connected([], readables), []), Effect.provide(services))).toEqual({ ok: true, value: TAIL });
-      }
-      expect(readables).toEqual([null, null, [staging]]);
+      for (const caller of [member, reader, deployer]) expect(yield* heard(caller, serverMetrics)).toEqual(notEnabled);
+      expect(asked).toHaveLength(before);
     }));
 
   const REMOVE: Act = {

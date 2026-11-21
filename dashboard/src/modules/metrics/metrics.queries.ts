@@ -20,7 +20,8 @@ export function serverMetricsQueryOptions(input: typeof ReadServerMetricsInput.E
     queryKey: ["metrics", "server", input.machineId, input.from, input.to] as const,
     queryFn: () => readServerMetricsServerFn({ data: input }),
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    // A Server is not reporting after a minute without a reading, so a page shows it within 90 seconds of the last one.
+    refetchInterval: 30_000,
   });
 }
 

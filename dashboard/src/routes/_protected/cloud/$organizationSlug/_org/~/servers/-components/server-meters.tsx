@@ -32,7 +32,7 @@ export function ServerMeters({ organizationSlug, server }: { organizationSlug: s
   return (
     <span ref={observe} className="hidden @4xl:flex">
       {offline || !read.isSuccess ? null : (
-        <Readings now={serverNow(serverMetrics(read.data, new Map([[server.machine.id, server.name]])), Date.now() - read.dataUpdatedAt)} />
+        <Readings now={serverNow(serverMetrics(read.data), Date.now() - read.dataUpdatedAt)} />
       )}
     </span>
   );
