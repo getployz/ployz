@@ -2039,6 +2039,7 @@ fn machine_upgrade_request_and_receipt_have_one_typed_wire_contract() {
     );
 
     let mut details = ployz_core::MachineDetails {
+        devices: Vec::new(),
         id: MachineId::parse(MACHINE_ID).unwrap(),
         phase: ployz_core::LocalMachinePhase::Participating,
         machine: None,

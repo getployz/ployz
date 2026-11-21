@@ -770,6 +770,7 @@ impl LocalMachine {
             store_version,
             rtts,
             management_clients: record.management_clients().cloned().collect(),
+            devices: record.devices().collect(),
             passkeys: record.passkeys().to_vec(),
             founding: record.founding(),
             telemetry,
@@ -942,9 +943,12 @@ impl LocalMachine {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<Enrolled, Error> {
+        let now = self
+            .approvals
+            .observed_now(ployz_core::authority::Timestamp::now())?;
         let (plan, installation) = self
             .owner
-            .mutate(move |store| store.plan_enrollment(request, recovery))
+            .mutate(move |store| store.plan_enrollment(request, recovery, now))
             .await??;
         let machine = match plan {
             EnrollPlan::Fresh => {
@@ -1011,9 +1015,12 @@ impl LocalMachine {
         .await
     }
 
+    /// Admit a joiner, or publish the row of one already admitted. A Forget here never
+    /// lands between the removal check and the row write, since both take this Machine's
+    /// exclusive mutation admission. A delete gossiped from another Member can, so the
+    /// write itself refuses a row this store deleted, and a write that left no row is
+    /// refused as a removal.
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
-        self.refuse_removed(request.machine_id, Some(request.public_key))
-            .await?;
         let replicated = self.replicated()?;
         let declared = replicated
             .cluster_doors()
@@ -1021,6 +1028,8 @@ impl LocalMachine {
             .map_err(Error::DeclaredDoorsUnread)?;
         admit_joiner(&declared, &request)?;
         let publication = replicated.machine_publication().await;
+        self.refuse_removed(request.machine_id, Some(request.public_key))
+            .await?;
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
             machines: replicated.machines().await?.observations,
@@ -1061,9 +1070,29 @@ impl LocalMachine {
                             },
                         ));
                     }
-                    publication
-                        .register(registration.assigned_machine.clone())
-                        .await?;
+                    // The approval must still hold here: its window on the floored clock,
+                    // its signer and every key it lists. Once it lapses, a resend of a row
+                    // already out changes nothing and still answers.
+                    let machine = &registration.assigned_machine;
+                    let body = stored.approval.open().map_err(Error::JoinRefused)?;
+                    if let Err(refused) =
+                        self.verify_join(&stored.approval, &body.machine, body.network)
+                    {
+                        let published = replicated
+                            .machine(machine.id.as_str())
+                            .await?
+                            .is_some_and(|row| row.public_key == machine.public_key);
+                        return if published {
+                            Ok(*registration)
+                        } else {
+                            Err(refused)
+                        };
+                    }
+                    publication.register(machine.clone()).await?;
+                    if replicated.machine(machine.id.as_str()).await?.is_none() {
+                        self.refuse_removed(machine.id, None).await?;
+                        return Err(Error::MemberRemoved(machine.id));
+                    }
                 }
                 return Ok(*registration);
             }
@@ -1389,8 +1418,11 @@ impl LocalMachine {
     /// what the mirror holds (#3591). Only a Leave destroys mirrors.
     async fn install(&self, installation: Installation) -> Result<(), Error> {
         self.depart_storage(StorageExit::KeepEveryCopy).await?;
+        let now = self
+            .approvals
+            .observed_now(ployz_core::authority::Timestamp::now())?;
         self.owner
-            .mutate(move |store| store.install(installation))
+            .mutate(move |store| store.install(installation, now))
             .await??;
         Ok(())
     }

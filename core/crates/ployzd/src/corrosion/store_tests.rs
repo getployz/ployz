@@ -1786,45 +1786,10 @@ async fn a_forgotten_registered_id_keeps_only_itself_off_the_list() {
         .register(forgotten.clone())
         .await
         .unwrap();
-    assert_eq!(
-        store.machine(forgotten.id.as_str()).await.unwrap(),
-        Some(forgotten.clone())
-    );
+    assert_eq!(store.machine(forgotten.id.as_str()).await.unwrap(), None);
     let republished = joined(forgotten);
     store.publish_local_machine(&republished).await.unwrap();
-    assert_eq!(
-        store.machine(republished.id.as_str()).await.unwrap(),
-        Some(republished)
-    );
-    task.abort();
-}
-
-#[tokio::test]
-async fn a_register_takes_back_the_forget_of_a_registered_row() {
-    let (store, task) = identity_store(corrosion_db()).await;
-    let (machine, local) = participating_record();
-    store.publish_local_machine(&machine).await.unwrap();
-    store.forget_machine(&machine.id).await.unwrap();
-
-    store
-        .machine_publication()
-        .await
-        .register(machine.clone())
-        .await
-        .unwrap();
-
-    assert_eq!(
-        store.machine(machine.id.as_str()).await.unwrap(),
-        Some(machine.clone())
-    );
-    let publication = store.machine_publication().await;
-    let caught_up = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
-    publication.publish(&caught_up).await.unwrap();
-    drop(publication);
-    assert_eq!(
-        store.machine(machine.id.as_str()).await.unwrap(),
-        Some(caught_up)
-    );
+    assert_eq!(store.machine(republished.id.as_str()).await.unwrap(), None);
     task.abort();
 }
 
@@ -2396,10 +2361,12 @@ async fn container_rows_expose_rotation_and_gen_against_the_schema() {
     task.abort();
 }
 
+/// A Server forgotten before it finished joining stays gone: a resent Register writes no
+/// row, and neither does the Server's own publish once it catches up.
 #[tokio::test]
-async fn a_register_row_names_no_identity_so_its_forget_is_taken_back() {
+async fn a_server_forgotten_while_joining_stays_gone_through_a_resent_register() {
     let (store, task) = identity_store(corrosion_db()).await;
-    let (machine, _) = participating_record();
+    let (machine, local) = participating_record();
     let claimed = joined(machine.clone());
     store
         .machine_publication()
@@ -2418,10 +2385,10 @@ async fn a_register_row_names_no_identity_so_its_forget_is_taken_back() {
         .register(claimed)
         .await
         .unwrap();
-    assert_eq!(
-        store.machine(machine.id.as_str()).await.unwrap(),
-        Some(machine)
-    );
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
+    let caught_up = publishable_machine(&local, RuntimeOverlay::default()).unwrap();
+    store.publish_local_machine(&caught_up).await.unwrap();
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
     task.abort();
 }
 
@@ -2585,8 +2552,8 @@ async fn each_written_machine_row_decodes_to_its_standing() {
     publication().await.register(cloud_shaped).await.unwrap();
     assert_eq!(
         read().await,
-        Some(((true, false), Registered)),
-        "row 13: Cloud's Register takes the forget back"
+        None,
+        "row 13: Cloud's Register leaves the forget standing"
     );
     task.abort();
 }
@@ -3223,12 +3190,41 @@ async fn a_forget_writes_the_tombstone_rows_the_fence_and_the_guards_read() {
         .register(machine.clone())
         .await
         .unwrap();
-    assert_eq!(cluster_rows(&store).await, vec![]);
+    assert_eq!(
+        cluster_rows(&store).await,
+        vec![(format!("forgotten-id:{id}"), id.clone())],
+        "a Register never takes back a forget"
+    );
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
     task.abort();
 
     let (store, task) = identity_store(corrosion_db()).await;
     store.forget_machine(&machine.id).await.unwrap();
     assert_eq!(cluster_rows(&store).await, vec![]);
+    task.abort();
+}
+
+/// A delete that reaches this store between the Entry's removal check and its write still
+/// wins: a Register writes no row over one this store deleted, tombstone or not.
+#[tokio::test]
+async fn a_register_writes_no_row_this_store_deleted() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let (machine, _local) = participating_record();
+    store
+        .machine_publication()
+        .await
+        .register(machine.clone())
+        .await
+        .unwrap();
+    store.remove_machine(&machine.id).await.unwrap();
+    assert_eq!(cluster_rows(&store).await, vec![]);
+    store
+        .machine_publication()
+        .await
+        .register(machine.clone())
+        .await
+        .unwrap();
+    assert_eq!(store.machine(machine.id.as_str()).await.unwrap(), None);
     task.abort();
 }
 

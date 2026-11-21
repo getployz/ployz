@@ -48,18 +48,6 @@ pub enum StepKind {
     Key,
 }
 
-impl StepKind {
-    /// Whether Cloud asks a person to sign this step. Every kind does: a Version needs no
-    /// tap only when [`super::needs_signature`] says its spec reaches no data. Advisory,
-    /// since the Machine checks each step itself.
-    #[must_use]
-    pub const fn needs_person(self) -> bool {
-        match self {
-            Self::Version | Self::Join | Self::Key => true,
-        }
-    }
-}
-
 /// One step of a proposal: its place in the order, what it runs, and the digest of the
 /// step body a Machine must be handed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

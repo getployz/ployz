@@ -99,14 +99,11 @@ impl LocalMachine {
                         }
                         SetDeviceRequest::Remove { code } => {
                             let removed = store.remove_by_code(code)?;
-                            if removed {
-                                tracing::info!("trusted key removed code={code} by={by}");
-                            }
-                            Ok(if removed {
-                                DeviceSet::Removed { code }
-                            } else {
-                                DeviceSet::NotPresent { code }
-                            })
+                            Ok(removal(code, removed, by))
+                        }
+                        SetDeviceRequest::RemoveKey { key } => {
+                            let removed = store.remove_key(key)?;
+                            Ok(removal(key.code(), removed, by))
                         }
                     }
                 })
@@ -159,16 +156,8 @@ impl LocalMachine {
                     match change {
                         KeyChange::Trust { key, .. } => trust(store, key, by),
                         KeyChange::Remove { key } => {
-                            let code = key.code();
                             let removed = store.remove_key(key)?;
-                            if removed {
-                                tracing::info!("trusted key removed code={code} by={by}");
-                            }
-                            Ok(if removed {
-                                DeviceSet::Removed { code }
-                            } else {
-                                DeviceSet::NotPresent { code }
-                            })
+                            Ok(removal(key.code(), removed, by))
                         }
                     }
                 })
@@ -212,6 +201,16 @@ impl LocalMachine {
                 .await?
         })
         .await
+    }
+}
+
+/// The answer to a removal of the key `code` names, which `by` asked for.
+fn removal(code: DeviceCode, removed: bool, by: PasskeyApprover) -> DeviceSet {
+    if removed {
+        tracing::info!("trusted key removed code={code} by={by}");
+        DeviceSet::Removed { code }
+    } else {
+        DeviceSet::NotPresent { code }
     }
 }
 
@@ -882,6 +881,31 @@ mod tests {
             ),
             "a removal reaches a Server before the trust it outlives"
         );
+    }
+
+    /// `device rm` hands a Server that never held the key its full key. The Server marks it
+    /// removed, so a grant of that key that reaches it later is refused.
+    #[tokio::test]
+    async fn a_full_key_removal_on_a_server_that_never_held_it_refuses_a_later_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let never = device();
+        assert_eq!(
+            local
+                .set_device(SetDeviceRequest::RemoveKey {
+                    key: KeyRef::Device { key: never }
+                })
+                .await
+                .unwrap(),
+            DeviceSet::NotPresent { code: never.code() }
+        );
+        assert!(matches!(
+            local
+                .key_step(trust_step(&local, NewKey::Device { key: never }))
+                .await,
+            Err(Error::Store(StoreError::KeyRemoved(_)))
+        ));
+        assert!(!local.record().devices().any(|device| device == never));
     }
 
     #[tokio::test]

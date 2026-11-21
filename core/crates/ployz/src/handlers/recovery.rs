@@ -622,6 +622,7 @@ mod tests {
 
     fn inspected(id: MachineId, held: SealingPublicKey) -> ployz_core::MachineDetails {
         ployz_core::MachineDetails {
+            devices: Vec::new(),
             id,
             public_key: ployz_core::WireGuardPublicKey([3; 32]),
             machine: None,

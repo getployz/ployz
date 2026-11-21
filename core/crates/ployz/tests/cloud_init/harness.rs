@@ -663,6 +663,7 @@ impl FakeMachine for JoinDaemon {
         let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
+            devices: Vec::new(),
             id: self.id(),
             phase: if joined {
                 LocalMachinePhase::Participating

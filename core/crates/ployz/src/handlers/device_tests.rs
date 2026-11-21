@@ -88,6 +88,7 @@ async fn cluster(
                 let target = target.unwrap();
                 let listed = machine(target.to_string().chars().next().unwrap(), "fixture");
                 RpcResponse::from(ployz_core::MachineDetails {
+                    devices: Vec::new(),
                     id: target,
                     public_key: listed.public_key,
                     machine: Some(listed),
@@ -785,7 +786,7 @@ async fn full_mutations_report_servers_without_a_direct_connection_as_omissions(
     let mut client =
         client.with_full_routes(crate::cluster::FullRoutes::chosen(vec![connection], false));
     let removed = set_everywhere(&mut client, |client, machine_id| {
-        remove_on(client, machine_id, key(1).code())
+        remove_on(client, machine_id, key(1).code(), None)
     })
     .await
     .unwrap();
@@ -840,7 +841,7 @@ async fn rm_names_each_passkey_a_device_that_removed_itself_approved_which_stays
     let code = key(1).code();
 
     let removed = set_everywhere(&mut client, |client, machine_id| {
-        remove_on(client, machine_id, code)
+        remove_on(client, machine_id, code, None)
     })
     .await
     .unwrap();
@@ -896,7 +897,7 @@ async fn rm_on_a_passkey_code_removes_the_passkey() {
     let code = passkey_key(1).code();
 
     let removed = set_everywhere(&mut client, |client, machine_id| {
-        remove_on(client, machine_id, code)
+        remove_on(client, machine_id, code, None)
     })
     .await
     .unwrap();
@@ -918,6 +919,114 @@ async fn rm_on_a_passkey_code_removes_the_passkey() {
     let json = serde_json::to_value(removed.answers.first().unwrap()).unwrap();
     assert_eq!(json.get("outcome"), Some(&json!("removed")));
     assert_eq!(json.get("kind"), Some(&json!("passkey")));
+    server.abort();
+}
+
+/// Machine 1 trusts Device 1, machine 2 has key-step.v1 and never held it, and machine 3
+/// predates key-step.v1. `device rm` hands machine 2 the full key, so a grant of that key
+/// still on its way there is refused, and machine 3 the code as 0.3 takes it.
+#[tokio::test]
+async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
+    let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = sent.clone();
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let seen = seen.clone();
+            async move {
+                let target = rpc.metadata().get("machine").map_or(id('1'), |value| {
+                    MachineId::parse(value.to_str().unwrap()).unwrap()
+                });
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "the fixture answers only what device rm sends"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: ['1', '2', '3']
+                            .map(|hex| {
+                                MachineObservation::new(
+                                    machine(hex, &format!("machine-{hex}")),
+                                    MembershipObservation::Up,
+                                )
+                            })
+                            .into(),
+                    }),
+                    RpcRequestBody::DescribeContract(_) => RpcResponse::from(ContractDescription {
+                        attest: None,
+                        machine_id: target,
+                        protocol_major: PROTOCOL_MAJOR,
+                        daemon_version: "fixture".into(),
+                        capabilities: if target == id('3') {
+                            vec![SET_DEVICE_CAPABILITY]
+                        } else {
+                            vec![SET_DEVICE_CAPABILITY, KEY_STEP_CAPABILITY]
+                        }
+                        .into_iter()
+                        .map(|capability| CapabilityName::parse(capability).unwrap())
+                        .collect(),
+                        sealing: None,
+                    }),
+                    RpcRequestBody::Inspect(_) => {
+                        let listed = machine(target.to_string().chars().next().unwrap(), "fixture");
+                        RpcResponse::from(ployz_core::MachineDetails {
+                            devices: if target == id('1') {
+                                vec![key(1)]
+                            } else {
+                                Vec::new()
+                            },
+                            id: target,
+                            public_key: listed.public_key,
+                            machine: Some(listed),
+                            phase: ployz_core::LocalMachinePhase::Participating,
+                            advertised_endpoints: Vec::new(),
+                            store_version: Default::default(),
+                            rtts: Vec::new(),
+                            management_clients: Vec::new(),
+                            passkeys: Vec::new(),
+                            storage: None,
+                            upgrade: None,
+                            telemetry: None,
+                            token: None,
+                            sealing: None,
+                            founding: Default::default(),
+                        })
+                    }
+                    RpcRequestBody::SetDevice(request) => {
+                        seen.lock().unwrap().push((target, request));
+                        let code = key(1).code();
+                        RpcResponse::from(if target == id('1') {
+                            DeviceSet::Removed { code }
+                        } else {
+                            DeviceSet::NotPresent { code }
+                        })
+                    }
+                    other => panic!("device rm sent {other:?}"),
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+    let code = key(1).code();
+
+    let full = full_key(&mut client, code).await.unwrap();
+    set_everywhere(&mut client, |client, machine_id| {
+        remove_on(client, machine_id, code, full)
+    })
+    .await
+    .unwrap();
+
+    let mut sent = sent.lock().unwrap().clone();
+    sent.sort_by_key(|(machine_id, _)| *machine_id);
+    let removed = KeyRef::Device { key: key(1) };
+    assert_eq!(
+        sent,
+        [
+            (id('1'), SetDeviceRequest::RemoveKey { key: removed }),
+            (id('2'), SetDeviceRequest::RemoveKey { key: removed }),
+            (id('3'), SetDeviceRequest::Remove { code }),
+        ]
+    );
     server.abort();
 }
 
@@ -968,6 +1077,7 @@ async fn raced(
                 RpcRequestBody::Inspect(_) => {
                     let listed_machine = machine('1', "fixture");
                     RpcResponse::from(ployz_core::MachineDetails {
+                        devices: Vec::new(),
                         id: id('1'),
                         public_key: listed_machine.public_key,
                         machine: Some(listed_machine),
@@ -1016,7 +1126,7 @@ async fn rm_removes_the_key_a_code_names_even_after_it_changed_kind() {
         let code = passkey_key(1).code();
 
         let removed = set_everywhere(&mut client, |client, machine_id| {
-            remove_on(client, machine_id, code)
+            remove_on(client, machine_id, code, None)
         })
         .await
         .unwrap();

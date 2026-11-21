@@ -11,7 +11,7 @@ use ployz_core::{
     CheckCode, DeviceCode, DeviceKey, DeviceSet, InspectRequest, KEY_STEP_CAPABILITY, MachineId,
     MachineName, MachineTarget, Rpc, RpcError, RpcErrorCode, SET_DEVICE_CAPABILITY,
     SetDeviceRequest,
-    authority::{PasskeyAccount, PasskeyApprover, SignerKey},
+    authority::{KeyRef, PasskeyAccount, PasskeyApprover, SignerKey},
     op,
 };
 use reqwest::Method;
@@ -475,8 +475,12 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     }
     runtime()?.block_on(async {
         let mut client = route::connect_full(leaf, context(leaf)).await?;
+        let key = match own.filter(|own| own.code() == code) {
+            Some(own) => Some(KeyRef::Device { key: own }),
+            None => full_key(&mut client, code).await?,
+        };
         let settled = set_everywhere(&mut client, |client, machine_id| {
-            remove_on(client, machine_id, code)
+            remove_on(client, machine_id, code, key)
         })
         .await?;
         settled.warn_approved_passkeys(code);
@@ -646,14 +650,71 @@ async fn set_on<T: Rpc<Response = DeviceSet>>(
         .map(Some)
 }
 
+/// The full key `code` names on the Servers that list one, so a Server that never held it
+/// can still mark it removed. `None` when no Server lists it.
+///
+/// # Errors
+/// Refuses a code that names two different keys across the Servers.
+async fn full_key(client: &mut Client, code: DeviceCode) -> Result<Option<KeyRef>, Error> {
+    let reach = Reach::full(client).await?;
+    let (answers, _) = reach
+        .fan_out(|machine_id| keys_on(client.clone(), machine_id, code))
+        .await;
+    let mut keys: Vec<KeyRef> = Vec::new();
+    for key in answers.into_iter().flat_map(|(_, keys)| keys) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    match keys.as_slice() {
+        [] => Ok(None),
+        [key] => Ok(Some(*key)),
+        _ => Err(Error::conflict(format!(
+            "Code {code} names more than one key on your Servers. Nothing was removed."
+        ))),
+    }
+}
+
+/// The keys one Server with key-step.v1 trusts under `code`, by full key.
+async fn keys_on(
+    client: Client,
+    machine_id: MachineId,
+    code: DeviceCode,
+) -> Result<Option<Vec<KeyRef>>, RpcError> {
+    let target = MachineTarget::from(&machine_id);
+    if !compat::supports(&client, &target, KEY_STEP_CAPABILITY).await? {
+        return Ok(None);
+    }
+    let details = client
+        .call_shared::<op::Inspect>(InspectRequest::default(), Call::once().to(&target))
+        .await
+        .map_err(crate::connect::rpc_error)?;
+    let devices = details
+        .devices
+        .into_iter()
+        .filter(|key| key.code() == code)
+        .map(|key| KeyRef::Device { key });
+    let passkeys = details
+        .passkeys
+        .into_iter()
+        .filter(|trusted| trusted.passkey.code() == code)
+        .map(|trusted| KeyRef::Passkey {
+            key: trusted.passkey.public_key,
+        });
+    Ok(Some(devices.chain(passkeys).collect()))
+}
+
 /// Remove the key `code` names on one Server, Device or passkey, for good. A Server with
 /// key-step.v1 may hold passkeys: its Inspect says which kind the code names and, for a
 /// Device, the passkeys it approved there, since a Device that removed itself can no
-/// longer ask. Set-device.v1 answers as 0.3 did, so the kind shown is the one Inspect read.
+/// longer ask. It is handed `key` in full when one is known, so it marks the key removed
+/// even if it never held it and a grant still on its way there is refused. Set-device.v1
+/// answers as 0.3 did, so the kind shown is the one Inspect read.
 async fn remove_on(
     client: Client,
     machine_id: MachineId,
     code: DeviceCode,
+    key: Option<KeyRef>,
 ) -> Result<Option<Removal>, RpcError> {
     let target = MachineTarget::from(&machine_id);
     if !compat::supports(&client, &target, SET_DEVICE_CAPABILITY).await? {
@@ -661,7 +722,11 @@ async fn remove_on(
     }
     let mut passkey = false;
     let mut approved_passkeys = Vec::new();
+    let mut request = SetDeviceRequest::Remove { code };
     if compat::supports(&client, &target, KEY_STEP_CAPABILITY).await? {
+        if let Some(key) = key {
+            request = SetDeviceRequest::RemoveKey { key };
+        }
         let listed = client
             .call_shared::<op::Inspect>(InspectRequest::default(), Call::once().to(&target))
             .await
@@ -676,7 +741,7 @@ async fn remove_on(
             .collect();
     }
     let removed = match client
-        .call_shared::<op::SetDevice>(SetDeviceRequest::Remove { code }, Call::once().to(&target))
+        .call_shared::<op::SetDevice>(request, Call::once().to(&target))
         .await
         .map_err(crate::connect::rpc_error)?
     {

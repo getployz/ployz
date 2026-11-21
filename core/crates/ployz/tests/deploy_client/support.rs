@@ -1047,6 +1047,7 @@ impl FakeMachine for DeployService {
             .find(|observed| observed.machine.id == machine_id)
             .map(|observed| observed.machine);
         encoded(RpcResponse::from(MachineDetails {
+            devices: Vec::new(),
             id: machine_id,
             phase: LocalMachinePhase::Participating,
             machine: record,

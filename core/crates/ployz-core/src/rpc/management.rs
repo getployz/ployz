@@ -28,14 +28,17 @@ pub struct SetManagementClientResponse {
 ///
 /// `Approve` carries the Device's public key, never a secret; the Machine stores it in
 /// the slot the key's [`DeviceCode`] names, and is refused while a trusted passkey holds
-/// that key, so a code names one kind of key. `Remove` clears only the Device slot and
-/// removes the Device the code names, or else the passkey, and leaves its key removed for
-/// good. Strict for the same reason as [`SetManagementClientRequest`].
+/// that key, so a code names one kind of key. `Remove` removes the Device the code names, or
+/// else the passkey, and leaves its key removed for good. `RemoveKey` removes a key by its
+/// full public key, and marks it removed even on a Machine that never held it, so a grant
+/// still in flight never lands there; only a Machine with key-step.v1 takes it. Strict for
+/// the same reason as [`SetManagementClientRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetDeviceRequest {
     Approve { key: DeviceKey },
     Remove { code: DeviceCode },
+    RemoveKey { key: crate::authority::KeyRef },
 }
 
 /// What a [`SetDeviceRequest`] or [`KeyStepRequest`] changed on this Machine. Each outcome

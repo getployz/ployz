@@ -732,6 +732,7 @@ impl FakeMachine for DiscoveryService {
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
+                devices: Vec::new(),
                 id: self.description.machine_id,
                 phase: LocalMachinePhase::Participating,
                 machine: None,

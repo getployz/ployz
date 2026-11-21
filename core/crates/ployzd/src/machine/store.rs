@@ -350,19 +350,22 @@ impl LocalMachineStore {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<EnrollPlan, StoreError> {
-        let (plan, installation) = self.plan_enrollment(request, recovery)?;
+        let now = ployz_core::authority::Timestamp::now();
+        let (plan, installation) = self.plan_enrollment(request, recovery, now)?;
         if matches!(plan, EnrollPlan::Fresh) {
-            self.install(installation)?;
+            self.install(installation, now)?;
         }
         Ok(plan)
     }
 
     /// The Installation this request would persist, and whether this Machine
-    /// takes it fresh, already holds it, or holds another enrollment.
+    /// takes it fresh, already holds it, or holds another enrollment. `now` is this
+    /// Machine's floored clock, which a Member's join approval must be open at.
     pub(crate) fn plan_enrollment(
         &self,
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
+        now: ployz_core::authority::Timestamp,
     ) -> Result<(EnrollPlan, Installation), StoreError> {
         let enrollment = request.clone();
         if self.record.enrollment.as_ref() == Some(&request) {
@@ -425,7 +428,7 @@ impl LocalMachineStore {
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
             }
-            EnrollAs::Member { registration, pin } => self.member(registration, pin)?,
+            EnrollAs::Member { registration, pin } => self.member(registration, pin, now)?,
         };
         let wanted = body.machine().expect("an enrollment owns its Machine");
         let plan = plan_enroll(
@@ -493,6 +496,7 @@ impl LocalMachineStore {
         &self,
         registration: Registered,
         pin: Option<ployz_core::JoinPin>,
+        now: ployz_core::authority::Timestamp,
     ) -> Result<Enrolled, StoreError> {
         let Registered {
             assigned_machine: mut machine,
@@ -536,7 +540,7 @@ impl LocalMachineStore {
                 pin.as_ref().map(|pin| pin.devices.as_slice()),
                 &machine,
                 sealing_key.as_ref().map(SealingKey::public_key),
-                ployz_core::authority::Timestamp::now(),
+                now,
             )
             .map_err(StoreError::JoinRefused)?;
         visible_peers = body
@@ -600,8 +604,26 @@ impl LocalMachineStore {
         ))
     }
 
-    pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
+    /// Persist a fresh enrollment. A join's approval, and the bundle it rides in, must
+    /// still be open at `now`, this Machine's floored clock, so work done since the plan
+    /// can't carry an approval past its window.
+    pub(crate) fn install(
+        &mut self,
+        installation: Installation,
+        now: ployz_core::authority::Timestamp,
+    ) -> Result<(), StoreError> {
         self.require_uninitialized()?;
+        if let LocalMachineBody::Joining { machine, .. } = &installation.body {
+            let approval = machine
+                .join_approval
+                .as_ref()
+                .ok_or(StoreError::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Unsigned {
+                        purpose: ployz_core::authority::Purpose::Join,
+                    },
+                ))?;
+            ployz_core::authority::join::windows(approval, now).map_err(StoreError::JoinRefused)?;
+        }
         self.set_sealing_key(installation.sealing_key.as_ref())?;
         self.commit(|installed| {
             installed.body = installation.body;
@@ -622,22 +644,16 @@ impl LocalMachineStore {
                     .retain(|label, _| !DeviceCode::reserves(label));
                 installed.passkeys = installation.keys.passkeys.clone();
             }
-            let removed = installed.removed_keys.clone();
-            installed.management_clients.extend(
-                installation
-                    .keys
-                    .devices
-                    .iter()
-                    .filter(|&&key| !removed.contains(&KeyRef::Device { key }))
-                    .map(|&key| {
-                        (
-                            key.label(),
-                            ManagementClientSlot::Live(LiveSlot::Active {
-                                accepted: ClientKey::from(key),
-                            }),
-                        )
-                    }),
-            );
+            installed
+                .management_clients
+                .extend(installation.keys.devices.iter().map(|&key| {
+                    (
+                        key.label(),
+                        ManagementClientSlot::Live(LiveSlot::Active {
+                            accepted: ClientKey::from(key),
+                        }),
+                    )
+                }));
             Ok(())
         })
     }
@@ -843,32 +859,33 @@ impl LocalMachineStore {
     }
 
     /// Remove the key `code` names, as [`Self::remove_key`] does: the Device its slot holds,
-    /// or else the trusted passkey with that code. Returns whether either held it.
+    /// or the trusted passkey with that code. Returns whether either held it.
     ///
     /// # Errors
-    /// As [`Self::remove_key`].
+    /// Returns [`StoreError::AmbiguousCode`] when `code` names more than one key here, and
+    /// otherwise as [`Self::remove_key`].
     pub fn remove_by_code(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
         let device = self
             .record
             .management_clients
             .get(&code.label())
-            .and_then(|slot| slot.live())
-            .and_then(LiveSlot::accepted)
+            .and_then(|slot| slot.accepted())
             .map(|accepted| KeyRef::Device {
                 key: DeviceKey::from_bytes(*accepted.as_bytes()),
             });
-        let passkey = || {
-            self.record
-                .passkeys
-                .iter()
-                .find(|held| held.passkey.code() == code)
-                .map(|held| KeyRef::Passkey {
-                    key: held.passkey.public_key,
-                })
-        };
-        match device.or_else(passkey) {
-            Some(key) => self.remove_key(key),
-            None => Ok(false),
+        let passkeys = self
+            .record
+            .passkeys
+            .iter()
+            .filter(|held| held.passkey.code() == code)
+            .map(|held| KeyRef::Passkey {
+                key: held.passkey.public_key,
+            });
+        let named: Vec<KeyRef> = device.into_iter().chain(passkeys).collect();
+        match named.as_slice() {
+            [] => Ok(false),
+            [key] => self.remove_key(*key),
+            _ => Err(StoreError::AmbiguousCode(code)),
         }
     }
 
@@ -903,6 +920,7 @@ impl LocalMachineStore {
                         .management_clients
                         .get(&label)
                         .and_then(|slot| slot.live())
+                        .filter(|live| live.accepted() == Some(ClientKey::from(key)))
                     {
                         record
                             .management_clients
@@ -1211,6 +1229,8 @@ pub enum StoreError {
     KeyRemoved(KeyRef),
     #[error("Key {0} is the last key this Server trusts. Approve another key first.")]
     LastKey(DeviceCode),
+    #[error("Code {0} names more than one key on this Server. Remove it by its full key.")]
+    AmbiguousCode(DeviceCode),
     #[error("local Machine record I/O failed")]
     Io(#[from] io::Error),
     #[error("local Machine record JSON is invalid")]

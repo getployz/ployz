@@ -5,6 +5,8 @@ use ployz_core::{
     authority::{AuthorityRefusal, Signed, Signer, Timestamp},
 };
 
+use crate::machine::StoreError;
+
 /// Approve `signer` at `entry`'s console, as a person does on a Server born enforcing.
 async fn enforce(entry: &LocalMachine, signer: &Signer) {
     entry
@@ -1034,6 +1036,9 @@ async fn removing_the_signing_device_keeps_an_admitted_machine_peered() {
             .any(|key| key == signer.public().into())
     );
     assert!(members().await);
+    // A resend after the row is out publishes nothing new, so it still answers.
+    confirm(&entry, &request, &approval, join_dir.path()).await;
+    assert!(members().await);
     server.abort();
     drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
@@ -1187,4 +1192,202 @@ async fn a_saved_bootstrap_peer_it_does_not_trust_is_not_offered_after_restart()
             .collect::<Vec<_>>(),
         vec![cluster.admitting.id]
     );
+}
+
+/// The confirmation a joiner relays for its own approval.
+fn confirmation(
+    joiner: &std::path::Path,
+    request: &ployz_core::RegisterRequest,
+    approval: &Signed<ployz_core::authority::JoinApproval>,
+) -> ployz_core::RegisterRequest {
+    let key = crate::sealing_key::SealingKey::load(joiner)
+        .unwrap()
+        .unwrap();
+    ployz_core::RegisterRequest {
+        join_confirmation: Some(key.confirm_join(approval)),
+        ..request.clone()
+    }
+}
+
+fn member(registration: ployz_core::Registered) -> EnrollRequest {
+    EnrollRequest {
+        role: EnrollAs::Member {
+            registration,
+            pin: None,
+        },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    }
+}
+
+/// Another Member forgets a joined Server while a resend of its confirmed Register waits
+/// to publish here. The forget wins: the resend is refused, the row stays deleted, and this
+/// Machine records the Server removed.
+#[tokio::test]
+async fn a_resent_register_is_refused_when_another_members_forget_lands_mid_call() {
+    let (entry, raw, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let (request, registration) = approved_registration(&entry, &joiner, &signer).await;
+    let approval = registration.assigned_machine.join_approval.clone().unwrap();
+    joiner.enroll(member(registration)).unwrap();
+    confirm(&entry, &request, &approval, join_dir.path()).await;
+    let gone = request.machine_id;
+    assert!(raw.machine(gone.as_str()).await.unwrap().is_some());
+
+    let guard = raw.machine_publication().await;
+    let registering = tokio::spawn({
+        let entry = entry.clone();
+        let resent = confirmation(join_dir.path(), &request, &approval);
+        async move { entry.register(resent).await }
+    });
+    // real-wait: the resend passes admission and reaches the publication guard.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    raw.receive_forget(&gone).await.unwrap();
+    drop(guard);
+
+    assert!(matches!(
+        registering.await.unwrap(),
+        Err(LocalMachineError::MemberRemoved(id)) if id == gone
+    ));
+    assert!(raw.machine(gone.as_str()).await.unwrap().is_none());
+    assert!(entry.record().removes_member(gone, None));
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A Register naming a Server whose row this store shows deleted is refused. The removal is
+/// recorded under what this Machine verified for that Server, never the WireGuard key the
+/// request names, so a live Server holding that key is not shut out.
+#[tokio::test]
+async fn a_removal_a_register_finds_never_takes_the_requests_wireguard_key() {
+    let (entry, raw, founder, directory, server) = participating().await;
+    enforce(&entry, &Signer::from_seed(&[1; 32])).await;
+    let live = WireGuardPublicKey([6; 32]);
+    let request = request("gone", live);
+    raw.publish_local_machine(&ployz_core::Machine {
+        id: request.machine_id,
+        public_key: WireGuardPublicKey([5; 32]),
+        ..founder
+    })
+    .await
+    .unwrap();
+    raw.receive_forget(&request.machine_id).await.unwrap();
+
+    assert!(matches!(
+        entry.register(request.clone()).await,
+        Err(LocalMachineError::MemberRemoved(id)) if id == request.machine_id
+    ));
+    assert!(entry.record().removes_member(request.machine_id, None));
+    assert!(
+        !entry
+            .record()
+            .removes_member(MachineId::random(), Some(live)),
+        "a live Server with the request's WireGuard key stays admitted"
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A joiner is published only while its approval still holds here. Once the Device that
+/// signed it is removed, its first confirmed Register publishes nothing.
+#[tokio::test]
+async fn a_confirmed_register_publishes_nothing_once_its_signer_is_removed() {
+    let (entry, raw, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let (request, registration) = approved_registration(&entry, &joiner, &signer).await;
+    let approval = registration.assigned_machine.join_approval.clone().unwrap();
+    joiner.enroll(member(registration)).unwrap();
+    entry
+        .set_device(SetDeviceRequest::Approve {
+            key: DeviceKey::from_bytes([7; 32]),
+        })
+        .await
+        .unwrap();
+    entry
+        .set_device(SetDeviceRequest::Remove {
+            code: DeviceKey::from(signer.public()).code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        entry
+            .register(confirmation(join_dir.path(), &request, &approval))
+            .await,
+        Err(LocalMachineError::JoinRefused(_))
+    ));
+    assert!(
+        raw.machine(request.machine_id.as_str())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// A joiner checks its approval on the clock it keeps, which never runs back, so a clock
+/// turned back can't reopen an approval it already saw expire.
+#[tokio::test]
+async fn a_joiner_refuses_an_approval_its_kept_clock_has_passed() {
+    let (entry, _, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let store = LocalMachineStore::open(join_dir.path()).unwrap();
+    let (_, registration) = approved_registration(&entry, &store, &signer).await;
+    let later = Timestamp::now().plus(24 * 60 * 60 * 1000);
+    std::fs::write(
+        join_dir.path().join("restart-approvals.json"),
+        serde_json::to_vec(&serde_json::json!({ "expiry_time_floor": later })).unwrap(),
+    )
+    .unwrap();
+    let joiner = LocalMachine::new(RecordOwner::spawn(store).unwrap());
+
+    assert!(matches!(
+        Box::pin(joiner.enroll(member(registration))).await,
+        Err(LocalMachineError::Store(StoreError::JoinRefused(
+            AuthorityRefusal::Expired
+        )))
+    ));
+    assert_eq!(joiner.record().phase(), LocalMachinePhase::Uninitialized);
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// An approval open when the enrollment was planned but closed by the time it commits
+/// installs nothing.
+#[tokio::test]
+async fn an_approval_that_closes_before_the_install_commits_installs_nothing() {
+    let (entry, _, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let join_dir = tempfile::tempdir().unwrap();
+    let mut joiner = LocalMachineStore::open(join_dir.path()).unwrap();
+    let (_, registration) = approved_registration(&entry, &joiner, &signer).await;
+    let now = Timestamp::now();
+    let (plan, installation) = joiner
+        .plan_enrollment(member(registration), None, now)
+        .unwrap();
+    assert_eq!(plan, EnrollPlan::Fresh);
+
+    let closed = now.plus(24 * 60 * 60 * 1000);
+    assert!(matches!(
+        joiner.install(installation, closed),
+        Err(StoreError::JoinRefused(AuthorityRefusal::Expired))
+    ));
+    assert_eq!(joiner.record().phase(), LocalMachinePhase::Uninitialized);
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
 }

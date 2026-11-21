@@ -45,6 +45,10 @@ pub struct MachineDetails {
     /// Labels of Management Client slots holding an accepted or pending key.
     #[serde(default)]
     pub management_clients: Vec<ManagementClientLabel>,
+    /// The Devices this Machine trusts, by full key, so a removal can name a Device in
+    /// full on a Machine that never held it. A daemon from before key-step.v1 omits it.
+    #[serde(default)]
+    pub devices: Vec<crate::DeviceKey>,
     /// The passkeys this Machine trusts to approve workflows. A daemon from before
     /// passkeys omits it, and an entry this build can't read is left out.
     #[serde(

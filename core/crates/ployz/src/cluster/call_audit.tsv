@@ -79,6 +79,7 @@ src/handlers/device.rs::approve_own	op::SetDevice	call_shared	single	-	-	once
 src/handlers/device.rs::approve_waiting_join	op::ApproveJoin	invoke	single	-	-	once
 src/handlers/device.rs::approve_waiting_join	op::PendingJoins	invoke	single	-	-	once
 src/handlers/device.rs::devices_on	op::Inspect	invoke	single	-	-	once
+src/handlers/device.rs::keys_on	op::Inspect	invoke	single	-	-	once
 src/handlers/device.rs::remove_on	op::Inspect	invoke	single	-	-	once
 src/handlers/device.rs::remove_on	op::SetDevice	invoke	single	-	-	once
 src/handlers/device.rs::set_on	T	invoke	single	-	-	once

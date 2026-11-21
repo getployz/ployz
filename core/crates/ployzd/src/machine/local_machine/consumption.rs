@@ -276,18 +276,7 @@ impl ConsumptionLog {
                 return Err(Error::JoinConsumed(approval.machine.id));
             }
             log.expiry_time_floor = Some(now);
-            let open = ployz_core::authority::validity::verify(
-                approval.issued_at,
-                approval.expires_at,
-                now,
-            )
-            .and_then(|()| match &result.approval.proposal {
-                Some(bundle) => bundle.open().and_then(|plan| {
-                    ployz_core::authority::validity::verify(plan.issued_at, plan.expires_at, now)
-                }),
-                None => Ok(()),
-            });
-            if let Err(refusal) = open {
+            if let Err(refusal) = ployz_core::authority::join::windows(&result.approval, now) {
                 return Ok(Edit::Write(Err(Error::JoinRefused(refusal))));
             }
             log.joins.insert(approval.machine.id, result);

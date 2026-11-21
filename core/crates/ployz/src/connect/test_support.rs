@@ -287,6 +287,7 @@ pub(crate) async fn sealed_channel(
                 }
             }
             RpcResponse::from(ployz_core::MachineDetails {
+                devices: Vec::new(),
                 id,
                 phase: ployz_core::LocalMachinePhase::Participating,
                 machine: daemon_version.map(|version| ployz_core::Machine {

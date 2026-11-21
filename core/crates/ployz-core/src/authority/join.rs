@@ -327,9 +327,19 @@ pub fn verify_signature(
             field: "one admitting Machine",
         });
     }
-    super::validity::verify(body.issued_at, body.expires_at, now)?;
-    bundle_window(signed, now)?;
+    windows(signed, now)?;
     Ok((body, by))
+}
+
+/// Refuse a join whose own window, or the window of the bundle it rides in, does not hold
+/// at `now`, a Machine's floored clock. It checks no signature; callers verify it first.
+///
+/// # Errors
+/// Returns a malformed body or the window's refusal.
+pub fn windows(signed: &Signed<JoinApproval>, now: Timestamp) -> Result<(), AuthorityRefusal> {
+    let body = signed.open()?;
+    super::validity::verify(body.issued_at, body.expires_at, now)?;
+    bundle_window(signed, now)
 }
 
 /// Whether the key that signed `body` is one it lists for the joiner to trust: a Device

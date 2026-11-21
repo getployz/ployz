@@ -551,7 +551,15 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
     for statement in &statements {
         match statement.query.as_str() {
             query if query.starts_with("INSERT INTO machines (id, info)") => {
-                kv.deleted_machines.remove(text_param(&statement.params, 0));
+                let id = text_param(&statement.params, 0);
+                // A Register's insert, like the real one, never writes over a deleted row.
+                if query.contains("machines__crsql_pks")
+                    && !kv.machines.contains_key(id)
+                    && kv.deleted_machines.contains(id)
+                {
+                    continue;
+                }
+                kv.deleted_machines.remove(id);
                 kv.machines.insert(
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
@@ -662,8 +670,6 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             {
                 set_leaving(&mut kv, text_param(&statement.params, 0), false);
             }
-            // This fake keeps no tombstones, so a Register has none to take back.
-            query if Tombstone::is_clear(query) => {}
             "DELETE FROM volumes WHERE machine_id = ?" => {
                 let machine_id = text_param(&statement.params, 0);
                 kv.volumes.retain(|(owner, _), _| owner != machine_id);

@@ -16,17 +16,23 @@
 //!   the accept filter (`accepts_machine`) and the pin commit (`pin_machines`), which runs
 //!   the filter again inside the record write.
 //! - A Register resent to M1, as Cloud or a rerun of `ployz server add` sends it after a
-//!   Forget: `refuse_removed` (join_approval.rs) checks the local denial, then the
-//!   deletion evidence, before it writes the row back.
+//!   Forget, in two steps (`publish_assignment`): `refuse_removed` (join_approval.rs)
+//!   checks the local denial, then the deletion evidence; then `register` writes the row,
+//!   with gossip free to land in between. The write (`registration_upsert`,
+//!   corrosion/store.rs) inserts no row over one its replica deleted, and a write that
+//!   left no row refuses and records S removed. A Forget at M1 can't run between the two:
+//!   both take M1's exclusive mutation admission.
 //! - Gossip between replicas, and a crash of any Member.
 //!
 //! A row carries cr-sqlite's causal length: odd while it exists, even once deleted. A
 //! merge keeps the longer one, so a Register that upserts a row it still holds never
-//! outlives a delete; only an insert over a deleted row would.
+//! outlives a delete; only an insert over a deleted row would, which is why the write
+//! refuses one.
 //!
 //! The properties: a Member that recorded S removed keeps the record, and never pins or
-//! accepts S again; no Member records S removed unless someone forgot S; and a Member that
-//! read the deletion evidence records it before its observation applies.
+//! accepts S again; no Member records S removed unless someone forgot S; a Member that
+//! read the deletion evidence records it before its observation applies; and a replica
+//! that held S's row deleted never holds it again.
 //!
 //! Out of scope: a Server other than S, the WireGuard peers an observation applies (the
 //! filter's answer stands for them), Leave, and a Register at a Member other than M1.
@@ -102,6 +108,8 @@ struct Member {
     /// `removed_members` holds S.
     removed: bool,
     observing: Option<Observing>,
+    /// Ghost: this replica held S's row deleted at some point.
+    saw_deleted: bool,
     /// Ghost: this Member recorded S removed at some point.
     ever_removed: bool,
     /// Ghost: an observation accepted S while this Member held S removed.
@@ -119,6 +127,8 @@ struct State {
     members: [Member; MEMBERS],
     forgets: u8,
     registers: u8,
+    /// A resent Register passed its check at M1 and has not written.
+    registering: bool,
     crashed: bool,
     /// Ghost: some Forget wrote its denial.
     forgotten: bool,
@@ -127,6 +137,7 @@ struct State {
     /// Ghost: a Register was refused, and on what.
     refused_on_denial: bool,
     refused_on_evidence: bool,
+    refused_at_write: bool,
     /// Ghost: an observation that read S's row before a Forget answered here accepted S
     /// after it answered.
     accepted_in_flight: bool,
@@ -161,7 +172,8 @@ enum Action {
     Record(usize),
     Filter(usize),
     Pin(usize),
-    Register,
+    RegisterCheck,
+    RegisterWrite,
     Crash(usize),
 }
 
@@ -179,6 +191,9 @@ enum Mutation {
     /// `record_removed` records each trusted Member missing from the snapshot, without
     /// asking `removed_machines`.
     RemovalFromAbsence,
+    /// The Register's write trusts its earlier check and inserts over a row its replica
+    /// deleted since, as `registration_upsert` did before it asked `machines__crsql_pks`.
+    RegisterWritesOverDeleted,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -213,6 +228,7 @@ impl Model for MemberRemoval {
             pins: true,
             removed: false,
             observing: None,
+            saw_deleted: false,
             ever_removed: false,
             accepted_removed: false,
             filtered_unrecorded: false,
@@ -227,18 +243,21 @@ impl Model for MemberRemoval {
             ],
             forgets: 0,
             registers: 0,
+            registering: false,
             crashed: false,
             forgotten: false,
             delete_failed: false,
             refused_on_denial: false,
             refused_on_evidence: false,
+            refused_at_write: false,
             accepted_in_flight: false,
         }]
     }
 
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
         for at in 0..MEMBERS {
-            if state.forgets < ATTEMPTS {
+            let admitted = at == ADMITTER && state.registering;
+            if state.forgets < ATTEMPTS && !admitted {
                 actions.push(Action::Forget { at, deletes: true });
                 actions.push(Action::Forget { at, deletes: false });
             }
@@ -254,12 +273,14 @@ impl Model for MemberRemoval {
                 Some(Observing::Recorded { .. }) => Action::Filter(at),
                 Some(Observing::Accepted) => Action::Pin(at),
             });
-            if !state.crashed && state.member(at).observing.is_some() {
+            if !state.crashed && (state.member(at).observing.is_some() || admitted) {
                 actions.push(Action::Crash(at));
             }
         }
-        if state.registers < ATTEMPTS {
-            actions.push(Action::Register);
+        if state.registering {
+            actions.push(Action::RegisterWrite);
+        } else if state.registers < ATTEMPTS {
+            actions.push(Action::RegisterCheck);
         }
     }
 
@@ -335,7 +356,7 @@ impl Model for MemberRemoval {
                 }
                 member.observing = None;
             }
-            Action::Register => {
+            Action::RegisterCheck => {
                 state.registers += 1;
                 let clears = self.has(Mutation::RegisterClearsDenial);
                 let member = state.member_mut(ADMITTER);
@@ -348,16 +369,35 @@ impl Model for MemberRemoval {
                     let evidence = member.replica.deleted_evidence();
                     if evidence {
                         Self::remove(member);
-                    } else if member.replica == Row::Absent {
-                        member.replica = Row::Present(1);
                     }
                     state.refused_on_evidence |= evidence;
+                    state.registering = !evidence;
+                }
+            }
+            Action::RegisterWrite => {
+                state.registering = false;
+                let over_deleted = self.has(Mutation::RegisterWritesOverDeleted);
+                let member = state.member_mut(ADMITTER);
+                member.replica = match member.replica {
+                    Row::Absent => Row::Present(1),
+                    Row::Deleted(length) if over_deleted => Row::Present(length + 1),
+                    row @ (Row::Present(_) | Row::Deleted(_)) => row,
+                };
+                if member.replica.deleted_evidence() {
+                    Self::remove(member);
+                    state.refused_at_write = true;
                 }
             }
             Action::Crash(at) => {
                 state.crashed = true;
                 state.member_mut(at).observing = None;
+                if at == ADMITTER {
+                    state.registering = false;
+                }
             }
+        }
+        for member in &mut state.members {
+            member.saw_deleted |= member.replica.deleted_evidence();
         }
         Some(state)
     }
@@ -379,6 +419,12 @@ impl Model for MemberRemoval {
                     .iter()
                     .all(|member| !member.filtered_unrecorded)
             }),
+            Property::always(DELETED_STAYS_DELETED, |_, state: &State| {
+                state
+                    .members
+                    .iter()
+                    .all(|member| !member.saw_deleted || !matches!(member.replica, Row::Present(_)))
+            }),
             Property::sometimes(
                 "after a Forget's delete failed, a Forget run again deletes the row",
                 |_, state: &State| {
@@ -396,6 +442,10 @@ impl Model for MemberRemoval {
             Property::sometimes(
                 "a Register resent to the admitter after a Forget elsewhere is refused on the deletion evidence",
                 |_, state: &State| state.refused_on_evidence && !state.member(ADMITTER).forgot,
+            ),
+            Property::sometimes(
+                "a Register that passed its check is refused at its write by a delete gossiped in between",
+                |_, state: &State| state.refused_at_write,
             ),
             Property::sometimes(
                 "a Member that never ran Forget records S removed from deletion evidence",
@@ -422,6 +472,7 @@ const REMOVED_STAYS_OUT: &str =
 const ONLY_A_FORGET_REMOVES: &str = "no Member records S removed unless S was forgotten";
 const EVIDENCE_RECORDED_FIRST: &str =
     "a Member that read deletion evidence records it before its observation filters";
+const DELETED_STAYS_DELETED: &str = "a replica that held S's row deleted never holds S's row again";
 
 fn story(path: &[(State, Option<Action>)]) -> String {
     let mut story = String::new();
@@ -458,10 +509,11 @@ fn reads_as(action: Action) -> String {
         ),
         Action::Filter(at) => format!("{}: accepts_machine filters the snapshot", name(at)),
         Action::Pin(at) => format!("{}: pin_machines commits", name(at)),
-        Action::Register => format!(
+        Action::RegisterCheck => format!(
             "{}: a resent Register checks the denial and the deletion evidence",
             name(ADMITTER)
         ),
+        Action::RegisterWrite => format!("{}: the resent Register writes S's row", name(ADMITTER)),
         Action::Crash(at) => format!("{}: crashes; the record stays", name(at)),
     }
 }
@@ -525,6 +577,16 @@ mod tests {
     #[test]
     fn a_register_never_clears_a_denial() {
         breaks(mutated(Mutation::RegisterClearsDenial), REMOVED_STAYS_OUT);
+    }
+
+    /// A Register whose write trusts its check brings S's row back over a delete that
+    /// gossiped into M1 between the two, and the row outlives the delete everywhere.
+    #[test]
+    fn a_register_writes_no_row_over_a_delete_that_landed_after_its_check() {
+        breaks(
+            mutated(Mutation::RegisterWritesOverDeleted),
+            DELETED_STAYS_DELETED,
+        );
     }
 
     /// Recording removal from a missing row removes S on M3, which joined before S's row

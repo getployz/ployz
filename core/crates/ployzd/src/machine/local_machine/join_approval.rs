@@ -104,7 +104,9 @@ impl LocalMachine {
     /// Refuse a join for a Member this Machine saw removed: in its own record, or by its
     /// store showing the Member's row deleted, which it then records. Every join entry runs
     /// it before [`Self::enter_join`], so neither a fresh join nor a stored answer brings a
-    /// removed Member back.
+    /// removed Member back. `public_key` comes from the request, so it only refuses: the
+    /// removal is recorded with the key this Machine verified for the Member, if any, so a
+    /// request can't pair a deleted ID with a live Server's key.
     pub(crate) async fn refuse_removed(
         &self,
         machine: MachineId,
@@ -121,7 +123,7 @@ impl LocalMachine {
         {
             let removed = crate::machine::RemovedMember {
                 id: machine,
-                public_key,
+                public_key: self.joining_key(machine)?,
             };
             self.owner
                 .mutate(move |store| store.remove_members(&[removed]))
@@ -131,8 +133,8 @@ impl LocalMachine {
         Ok(())
     }
 
-    /// The WireGuard key this Machine last saw for a joining `machine`: from its stored
-    /// answer or its pending join. `None` when it holds neither.
+    /// The WireGuard key a signed approval gave a joining `machine` here: from its stored
+    /// answer or its approved pending join. `None` when it holds neither.
     pub(crate) fn joining_key(
         &self,
         machine: MachineId,
@@ -148,6 +150,7 @@ impl LocalMachine {
             .read_joins()?
             .proposals
             .get(&machine)
+            .filter(|proposal| proposal.approval.is_some())
             .map(|proposal| proposal.body.machine.public_key))
     }
 

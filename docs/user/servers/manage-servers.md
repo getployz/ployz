@@ -269,7 +269,10 @@ that answers. A server that doesn't answer is listed under failures, and one wit
 connection under omissions. Either way the command exits 3.
 
 A removal is for good: a server that removed a key never trusts it again, even when someone
-approves it later. A server refuses to remove the last key it trusts; approve another one first.
+approves it later. Every server that answers marks the key removed, including one that never
+trusted it, so an approval of that key still on its way there is refused. A server that is
+still joining when you remove the key that approved its join is refused too; approve the join
+again with another key. A server refuses to remove the last key it trusts; approve another one first.
 Removing this computer's own device warns first. To manage your servers from it again, delete the
 `device.key` file the warning names, then run
 `ployz device approve --this-device --connect ssh://root@HOST`.

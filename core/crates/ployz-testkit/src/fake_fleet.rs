@@ -776,6 +776,7 @@ impl Fleet {
                 let record = machine.record();
                 unary(
                     MachineDetails {
+                        devices: Vec::new(),
                         id: machine.id,
                         phase: LocalMachinePhase::Participating,
                         public_key: record.public_key,
