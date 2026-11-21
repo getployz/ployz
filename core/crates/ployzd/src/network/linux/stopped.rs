@@ -129,6 +129,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         started: Mutex<Vec<String>>,
+        /// Wakes a holder's start when a second start arrives.
+        second: tokio::sync::Notify,
         holders: Mutex<BTreeMap<String, &'static str>>,
     }
 
@@ -136,6 +138,7 @@ mod tests {
         fn holding(holders: &[(&str, &'static str)]) -> Arc<Self> {
             Arc::new(Self {
                 started: Mutex::default(),
+                second: tokio::sync::Notify::new(),
                 holders: Mutex::new(
                     holders
                         .iter()
@@ -164,14 +167,19 @@ mod tests {
             else {
                 return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({})));
             };
-            fake.started.lock().unwrap().push(id.to_owned());
+            let second = fake.second.notified();
+            let starts = {
+                let mut started = fake.started.lock().unwrap();
+                started.push(id.to_owned());
+                started.len()
+            };
+            if starts >= 2 {
+                fake.second.notify_waiters();
+            }
             if fake.holders.lock().unwrap().contains_key(id) {
-                let _ = tokio::time::timeout(Duration::from_millis(200), async {
-                    while fake.started.lock().unwrap().len() < 2 {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
-                })
-                .await;
+                if starts < 2 {
+                    let _ = tokio::time::timeout(Duration::from_millis(200), second).await;
+                }
                 fake.holders
                     .lock()
                     .unwrap()
