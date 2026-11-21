@@ -254,7 +254,7 @@ pub enum Error {
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]
     PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
-    #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
+    #[error("ployz.machine.join.device-approval.v1 needs a signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("could not keep the record of join approvals")]
     JoinRecord(#[source] std::io::Error),

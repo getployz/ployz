@@ -101,7 +101,7 @@ pub struct JoinApproval {
     pub sealing_recipient: WireGuardPublicKey,
     pub devices: Vec<DeviceKey>,
     /// The passkeys the admitting Machine trusts, so a Server that joins later approves what
-    /// the first one does. A passkey installed from here approves workflows and nothing else.
+    /// the first one does. A passkey installed from here approves what any trusted passkey does.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<super::Passkey>>")]
     pub passkeys: Vec<super::Passkey>,

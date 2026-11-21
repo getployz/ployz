@@ -1,11 +1,11 @@
 //! The keys a Machine trusts: its Devices, which manage it and sign statements, and its
-//! passkeys, which may only approve workflows, automatic deploy rules, Volume workflows and
-//! Release Channels.
+//! passkeys, which may only approve workflows, automatic deploy rules, Volume workflows,
+//! Release Channels, and bundles, whose steps include joins and key changes.
 //!
 //! A passkey is not a Device. It never holds a Management Client slot, so it never opens a
-//! connection, and it never signs a statement's envelope. A Machine records one only when a
-//! Full caller approves it, and checks its WebAuthn assertions itself against the public key
-//! it recorded.
+//! connection, and it never signs a statement's envelope. A Machine records one only from a
+//! signed key change or join approval, and checks its WebAuthn assertions itself against
+//! the public key it recorded.
 
 use std::fmt;
 
@@ -334,7 +334,7 @@ impl RelyingParty {
     }
 }
 
-/// A passkey as a Full caller approves it on a Machine.
+/// A passkey as a signed key change or join approval names it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Passkey {
     pub credential_id: CredentialId,
@@ -452,7 +452,7 @@ impl fmt::Display for PasskeyApprover {
     }
 }
 
-/// A passkey this Machine trusts to approve workflows, and nothing else.
+/// A passkey this Machine trusts to approve workflows, rules and bundles, and nothing else.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct TrustedPasskey {
     pub passkey: Passkey,
