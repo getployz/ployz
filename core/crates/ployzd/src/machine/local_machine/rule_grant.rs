@@ -242,6 +242,7 @@ impl LocalMachine {
         }
         self.approvals.consume_rule_proof(
             &rule,
+            &super::consumption::floor_key(cluster, &qualified),
             Error::RuleGrantRefused,
             &claims.jti,
             claims.exp,

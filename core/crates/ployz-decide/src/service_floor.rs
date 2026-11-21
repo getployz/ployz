@@ -35,6 +35,60 @@ pub fn admits(at: Timestamp, floor: Option<Timestamp>, now: Timestamp) -> Result
     }
 }
 
+/// One signature on the versions a creation presents: who signed, when, and whether the
+/// version is marked to forget the older ones.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Signature<K> {
+    pub key: K,
+    pub at: Timestamp,
+    pub forget: bool,
+}
+
+/// The signatures that admit a creation, and the floor once its forgets are taken.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Admitted<K> {
+    /// Each key that stands, with the newest time it signed.
+    pub keys: Vec<(K, Timestamp)>,
+    pub floor: Option<Timestamp>,
+}
+
+/// Which of `signatures` admit a new Container at `now` on a Machine whose floor for its
+/// Service is `floor`. The guard runs on each signature, so one signed ahead never hides
+/// another by the same key. A forget among them raises the floor first, so the versions
+/// it forgets admit nothing.
+///
+/// # Errors
+/// Returns [`Refused::Ahead`] when a forget is past the guard, since a forget that can't
+/// apply must not create, and otherwise the first signature's refusal when none admits.
+pub fn admit<K: Copy + PartialEq>(
+    signatures: &[Signature<K>],
+    floor: Option<Timestamp>,
+    now: Timestamp,
+) -> Result<Admitted<K>, Refused> {
+    let mut floor = floor;
+    for forget in signatures.iter().filter(|signature| signature.forget) {
+        if let Raise::Raised(raised) = raise(floor, forget.at, now)? {
+            floor = Some(raised);
+        }
+    }
+    let mut keys: Vec<(K, Timestamp)> = Vec::new();
+    let mut first = None;
+    for signature in signatures {
+        if let Err(refused) = admits(signature.at, floor, now) {
+            first.get_or_insert(refused);
+            continue;
+        }
+        match keys.iter_mut().find(|(key, _)| *key == signature.key) {
+            Some((_, newest)) => *newest = signature.at.max(*newest),
+            None => keys.push((signature.key, signature.at)),
+        }
+    }
+    match first {
+        Some(refused) if keys.is_empty() => Err(refused),
+        _ => Ok(Admitted { keys, floor }),
+    }
+}
+
 /// What a kept admission's times say against `floor`: whether one key that is still
 /// trusted signed at or after it. Each key keeps its own time, so removing the key that
 /// signed after the floor ends the admission even while one that signed before is trusted.

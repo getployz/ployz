@@ -17,7 +17,7 @@ use ployz_core::{
         needs_signature, refusal::field, version,
     },
 };
-use ployz_decide::service_floor::{self, Refused};
+use ployz_decide::service_floor::{self, Refused, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -105,16 +105,28 @@ impl Standing {
     /// # Errors
     /// The outer error is `unread`'s, when the record cannot be read. The inner one is the
     /// refusal: the first key's when none is trusted, the floor when every trusted one is
-    /// below it, a generation for a rule a newer one replaced, and an admission for a rule
-    /// this Machine has no mark of.
+    /// below it, a generation for a rule a newer one replaced, an admission for a rule
+    /// this Machine has no mark of, and no Cluster identity when the Sealing Key file can't
+    /// be read on a Machine that keeps a floor.
     pub(crate) fn admits<E>(
         &self,
         by: &AdmittedBy,
         unread: fn(io::Error) -> E,
     ) -> Result<Result<(), AuthorityRefusal>, E> {
+        if *by == AdmittedBy::Free {
+            return Ok(Ok(()));
+        }
         let record = self.owner.record();
         let trusted = record.trusted_keys();
-        let cluster = super::held_key(&self.owner, record.phase());
+        // Floors are kept by Cluster, so without the Sealing Key file this Machine can't
+        // tell which apply, and refuses rather than read none.
+        let cluster = match super::held_key(&self.owner, record.phase()) {
+            Some(cluster) => Some(cluster),
+            None if self.rules.keeps_floors(unread)? => {
+                return Ok(Err(AuthorityRefusal::NoClusterIdentity));
+            }
+            None => None,
+        };
         let floor = |service| match cluster {
             Some(cluster) => Ok(self
                 .rules
@@ -123,8 +135,8 @@ impl Standing {
             None => Ok(None),
         };
         let stands = |at, floor: Option<Timestamp>| match floor {
-            Some(floor) if !service_floor::keys_stand([(true, at)], Some(floor)) => {
-                Err(AuthorityRefusal::Forgotten { floor })
+            Some(below) if !service_floor::keys_stand([(true, at)], floor) => {
+                Err(AuthorityRefusal::Forgotten { floor: below })
             }
             _ => Ok(()),
         };
@@ -350,10 +362,16 @@ impl LocalMachine {
         // One budget for every signature this attempt opens, whichever proof carries it.
         let mut budget = Budget::default();
         let mut unapproved = None;
-        let service = QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone());
+        // Docker makes the spec's own Service, so its floor is the one a later start reads.
+        let service = QualifiedService::new(
+            new.slot.namespace.clone(),
+            new.resolved_spec.name.clone(),
+        );
         if !versions.is_empty() {
             match self.approved_versions(new, &service, versions, &mut budget)? {
                 Ok(keys) => return admitted(AdmittedBy::Keys { service, keys }, None),
+                // A creation at Full access would hide that the forget failed.
+                Err(refusal) if asks_to_forget(versions) => return Err(refused(refusal)),
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
@@ -377,11 +395,13 @@ impl LocalMachine {
 
     /// Every key that signed one of `versions` for `new`'s spec, among those this Machine
     /// trusts, with the newest time it signed one that `service`'s floor and this
-    /// Machine's clock admit.
+    /// Machine's clock admit. A version marked to forget raises the floor here first, in
+    /// the transaction that reads it.
     ///
     /// # Errors
-    /// The outer error is [`Error::ApprovalRecord`], when the floor cannot be read. The
-    /// inner one is the refusal of the versions, or of the first time refused.
+    /// The outer error is [`Error::ApprovalRecord`], when the floor cannot be read or
+    /// written. The inner one is the refusal of the versions, or of the first time
+    /// refused.
     fn approved_versions(
         &self,
         new: &NewContainer,
@@ -404,29 +424,27 @@ impl LocalMachine {
             Ok(approved) => approved,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let (floor, now) = match cluster {
-            Some(cluster) => {
-                self.approvals
-                    .floor(cluster, service, Timestamp::now(), Error::ApprovalRecord)?
-            }
-            None => (None, Timestamp::now()),
+        let Some(cluster) = cluster else {
+            return Ok(Err(AuthorityRefusal::NoClusterIdentity));
         };
-        let mut refused = None;
-        let keys: Vec<(KeptKey, Timestamp)> = approved
+        let signatures: Vec<_> = approved
             .by
             .into_iter()
-            .filter(|(_, at)| match service_floor::admits(*at, floor, now) {
-                Ok(()) => true,
-                Err(refusal) => {
-                    refused.get_or_insert(floor_refusal(refusal));
-                    false
-                }
+            .map(|approved| Signature {
+                key: KeptKey::from(approved.by),
+                at: approved.signed_at,
+                forget: approved.forget_older,
             })
-            .map(|(approver, at)| (KeptKey::from(approver), at))
             .collect();
-        if let Some(refusal) = refused.filter(|_| keys.is_empty()) {
-            return Ok(Err(refusal));
-        }
+        let keys = match self.approvals.admit_versions(
+            cluster,
+            service,
+            &signatures,
+            Timestamp::now(),
+        )? {
+            Ok(keys) => keys,
+            Err(refused) => return Ok(Err(floor_refusal(refused))),
+        };
         tracing::info!(
             kind = %new.slot.kind,
             "{} admitted by signed version from {:?} digest={}",
@@ -590,6 +608,13 @@ impl LocalMachine {
             .await?;
         self.ensure_container(want, admitted).await
     }
+}
+
+/// Whether any of `versions` says it is marked to forget, signed or not.
+fn asks_to_forget(versions: &[Signed<ServiceVersion>]) -> bool {
+    versions
+        .iter()
+        .any(|version| version.open().is_ok_and(|body| body.forget_older))
 }
 
 fn creation(new: &NewContainer) -> Creation<'_> {

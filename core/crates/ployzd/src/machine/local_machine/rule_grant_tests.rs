@@ -316,6 +316,71 @@ async fn a_valid_token_mints_and_its_secrets_open_only_for_the_build() {
     assert!(mint.is_ok(), "{:?}", mint.err());
 }
 
+/// GitHub as [`github`] answers it, while a forget of `app/web` reaches the Machine as it
+/// waits for the branch head.
+struct ForgetDuringWait<'a> {
+    github: FixedGithub,
+    machine: &'a LocalMachine,
+    cluster: SealingPublicKey,
+}
+
+impl Github for ForgetDuringWait<'_> {
+    async fn claims(
+        &self,
+        rule: &impl ClaimRule,
+        token: &str,
+        now: Timestamp,
+    ) -> Result<GithubClaims, ProofRefusal> {
+        self.github.claims(rule, token, now).await
+    }
+
+    async fn head(
+        &self,
+        repository_id: u64,
+        branch: &str,
+        reader: Option<&GithubToken>,
+    ) -> Result<CommitSha, HeadError> {
+        let forget = ployz_core::authority::version::Forget {
+            service: ployz_core::QualifiedService::parse("app/web").unwrap(),
+            signed_at: now(),
+        };
+        self.machine
+            .approvals
+            .raise_floors(self.cluster, &[forget], now())
+            .unwrap();
+        self.github.head(repository_id, branch, reader).await
+    }
+}
+
+#[tokio::test]
+async fn a_forget_acknowledged_while_github_answers_refuses_the_grant() {
+    let fixture = fixture().await;
+    let rule = fixture.rule();
+    let grant = fixture.grant(&rule, fixture.token(&fixture.claim(&rule), "forgotten"));
+    let github = ForgetDuringWait {
+        github: github(commit()),
+        machine: &fixture.machine,
+        cluster: fixture.cluster,
+    };
+    let admitted = fixture
+        .machine
+        .admit_rule_grant(
+            &grant,
+            Some(&holder()),
+            Some(&fixture.record()),
+            &github,
+            now(),
+        )
+        .await;
+    assert!(
+        matches!(
+            admitted,
+            Err(Error::RuleGrantRefused(AuthorityRefusal::Forgotten { .. }))
+        ),
+        "{admitted:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_grant_token_is_spent_once() {
     let fixture = fixture().await;

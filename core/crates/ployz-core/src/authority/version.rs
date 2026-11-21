@@ -125,12 +125,20 @@ pub struct VersionFacts<'a> {
     pub creation: Creation<'a>,
 }
 
-/// Every key whose signed version admitted a creation, never empty, with the newest time
-/// it signed one, and the creation's digest.
+/// Every signed version that admitted a creation, never empty, and the creation's digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VersionAdmitted {
-    pub by: Vec<(Approver, Timestamp)>,
+    pub by: Vec<Approved>,
     pub digest: PayloadDigest,
+}
+
+/// One signed version that admitted a creation. A key that signed several appears once
+/// for each, so the Machine can check each time before it keeps the newest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approved {
+    pub by: Approver,
+    pub signed_at: Timestamp,
+    pub forget_older: bool,
 }
 
 /// Check `versions` against the creation `facts` names. Each statement whose signature a
@@ -157,10 +165,7 @@ pub fn verify(
             break;
         }
         match admits(version, facts, digest) {
-            Ok((approver, at)) => match by.iter_mut().find(|(kept, _)| *kept == approver) {
-                Some((_, newest)) => *newest = at.max(*newest),
-                None => by.push((approver, at)),
-            },
+            Ok(approved) => by.push(approved),
             Err(refusal) => {
                 first.get_or_insert(refusal);
             }
@@ -178,7 +183,7 @@ fn admits(
     version: &Signed<ServiceVersion>,
     facts: &VersionFacts<'_>,
     digest: PayloadDigest,
-) -> Result<(Approver, Timestamp), AuthorityRefusal> {
+) -> Result<Approved, AuthorityRefusal> {
     let (body, by, cluster) = open_approval(version, facts.trusted, facts.cluster)?;
     let creation = facts.creation;
     first_mismatch([
@@ -191,7 +196,11 @@ fn admits(
         ("a Service", &body.service == creation.service),
         ("a payload", body.digest == digest),
     ])?;
-    Ok((by, body.signed_at))
+    Ok(Approved {
+        by,
+        signed_at: body.signed_at,
+        forget_older: body.forget_older,
+    })
 }
 
 /// A signed version that asks every Member to forget the versions of its Service signed

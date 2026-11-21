@@ -29,7 +29,7 @@ impl LocalMachine {
             .iter()
             .filter_map(|forget| forget.clone().ok())
             .collect();
-        let (Some(cluster), false) = (cluster, forgets.is_empty()) else {
+        let Some(cluster) = cluster.filter(|_| !forgets.is_empty()) else {
             let refusal = opened.into_iter().find_map(Result::err);
             return Err(Error::ForgetRefused(refusal.unwrap_or(
                 AuthorityRefusal::Unsigned {
@@ -63,6 +63,16 @@ impl LocalMachine {
 
 fn refused(refusal: &AuthorityRefusal) -> ForgetOutcome {
     ForgetOutcome::Refused {
-        reason: admission::refusal_text(refusal),
+        reason: refusal_text(refusal),
+    }
+}
+
+/// What a refused forget says to the person who asked for it.
+pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
+    match refusal {
+        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
+            "This server doesn't trust the device that signed this forget.".to_owned()
+        }
+        refusal => admission::refusal_text(refusal),
     }
 }

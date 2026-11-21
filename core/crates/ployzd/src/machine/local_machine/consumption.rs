@@ -15,11 +15,12 @@ use std::{
 use ployz_core::{
     QualifiedService, SealingPublicKey, ServiceName,
     authority::{
-        AuthorityRefusal, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed, Timestamp,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed,
+        Timestamp,
         version::Forget,
     },
 };
-use ployz_decide::service_floor::{self, Raise, Refused};
+use ployz_decide::service_floor::{self, Raise, Refused, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -248,6 +249,45 @@ impl ConsumptionLog {
         })
     }
 
+    /// Admit `signatures` for a new Container of `service` in `cluster` at `now`, as
+    /// [`service_floor::admit`] decides, and keep the floor a forget among them raised. The
+    /// floor is read and raised in one transaction, so no forget lands between them.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn admit_versions<K: Copy + PartialEq>(
+        &self,
+        cluster: SealingPublicKey,
+        service: &QualifiedService,
+        signatures: &[Signature<K>],
+        now: Timestamp,
+    ) -> Result<Result<Vec<(K, Timestamp)>, Refused>, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let key = floor_key(cluster, service);
+            let floor = log.floors.get(&key).copied();
+            Ok(
+                match service_floor::admit(signatures, floor, log.floored(now)) {
+                    Ok(admitted) => match admitted.floor {
+                        Some(raised) if admitted.floor != floor => {
+                            log.floors.insert(key, raised);
+                            Edit::Write(Ok(admitted.keys))
+                        }
+                        _ => Edit::Keep(Ok(admitted.keys)),
+                    },
+                    Err(refused) => Edit::Keep(Err(refused)),
+                },
+            )
+        })
+    }
+
+    /// Whether this Machine keeps a floor for any Service of any Cluster.
+    ///
+    /// # Errors
+    /// Returns `unread`'s error when the record cannot be read.
+    pub(crate) fn keeps_floors<E>(&self, unread: fn(io::Error) -> E) -> Result<bool, E> {
+        self.read(unread, |log| !log.floors.is_empty())
+    }
+
     /// Raise the floor of each forget's Service in `cluster` to its time, at `now`, and
     /// answer each one. A forget signed past the guard leaves its floor.
     ///
@@ -367,14 +407,16 @@ impl ConsumptionLog {
         })
     }
 
-    /// Spend the GitHub token `jti`, valid until `expires_at`, on a grant under `rule`.
-    /// Refuses a token already spent, a generation lower than the highest this Machine has
-    /// seen of the rule, and a generation that moves the rule to another repository,
-    /// branch or Namespace. Raises the rule's mark. Written before the grant is minted, so
-    /// a crash after it costs the builder a new token, never a second grant.
+    /// Spend the GitHub token `jti`, valid until `expires_at`, on a grant under `rule` for
+    /// the Service whose floor [`floor_key`] names `floor`. Refuses a token already spent,
+    /// a generation lower than the highest this Machine has seen of the rule, a generation
+    /// that moves the rule to another repository, branch or Namespace, and a rule the
+    /// floor refuses. Raises the rule's mark. Written before the grant is minted, so a
+    /// crash after it costs the builder a new token, never a second grant.
     pub(crate) fn consume_rule_proof(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
+        floor: &str,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
         jti: &str,
         expires_at: Timestamp,
@@ -384,6 +426,13 @@ impl ConsumptionLog {
             let now = log.floored(now);
             if let Err(refusal) = log.check_mark(rule.identity()) {
                 return Err(refused(refusal));
+            }
+            // Read after GitHub answered, so a forget acknowledged during that wait
+            // refuses the grant.
+            if let Err(below) =
+                service_floor::admits(rule.issued_at, log.floors.get(floor).copied(), now)
+            {
+                return Err(refused(super::admission::floor_refusal(below)));
             }
             let spent = hex::encode(Sha256::digest(jti.as_bytes()));
             if log.proofs.contains_key(&spent) {

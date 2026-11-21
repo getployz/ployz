@@ -318,5 +318,5 @@ fn a_version_naming_a_volume_born_in_another_environment_is_refused() {
 }
 
 fn approvers(admitted: &crate::authority::VersionAdmitted) -> Vec<Approver> {
-    admitted.by.iter().map(|(by, _)| by.clone()).collect()
+    admitted.by.iter().map(|approved| approved.by.clone()).collect()
 }

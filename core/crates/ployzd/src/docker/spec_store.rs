@@ -146,7 +146,8 @@ impl MachineSpecStore {
                 container_id,
             )
             .await?;
-        // A 0.4 beta kept no Service or time with an admission, which reads as none kept.
+        // A build from before floors, never released, kept no Service or time with an
+        // admission, which reads as none kept.
         Ok(kept.and_then(|kept| serde_json::from_value(kept).ok()))
     }
 

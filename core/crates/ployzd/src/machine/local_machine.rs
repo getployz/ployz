@@ -200,7 +200,7 @@ pub enum Error {
     KeyRefused(ployz_core::authority::AuthorityRefusal),
     /// No version of a forget opened here. The refusal names
     /// [`ployz_core::FORGET_VERSIONS_CAPABILITY`] in its details.
-    #[error("This Server refused to forget older versions: {}", admission::refusal_text(.0))]
+    #[error("This Server refused to forget older versions: {}", forget::refusal_text(.0))]
     ForgetRefused(ployz_core::authority::AuthorityRefusal),
     /// A join for a Member this Machine saw removed. A removed Member comes back only with a
     /// new identity.
