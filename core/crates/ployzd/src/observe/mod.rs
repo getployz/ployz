@@ -1,4 +1,4 @@
-//! The observe process: the metric sampler, the crash and request outboxes,
+//! The observe process: the metric sampler, the crash outbox,
 //! and the Docker events loop that settles each container exit.
 //!
 //! It only observes this Machine: it never places, moves, restarts or removes a
@@ -78,15 +78,17 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         data_dir.to_path_buf(),
     ));
     let crashes = ship::Outbox::open(&store)?;
-    spawn_shipper(crashes.clone(), data_dir)?;
+    spawn_crash_sender(crashes.clone(), data_dir)?;
     harvest::Harvester::run(docker, store, data_dir.to_path_buf(), crashes).await
 }
 
-fn spawn_shipper<S: ship::Stream>(outbox: Arc<S>, data_dir: &Path) -> io::Result<()> {
+fn spawn_crash_sender(crashes: Arc<ship::Outbox>, data_dir: &Path) -> io::Result<()> {
     let machine_dir = data_dir.to_path_buf();
-    let shipper = ship::Shipper::new(outbox, move || ship::push_target(&machine_dir))
-        .map_err(io::Error::other)?;
-    tokio::spawn(shipper.run());
+    let sender = ship::CrashSender::new(crashes, collector::CRASH_RECEIVER, move || {
+        ship::push_target(&machine_dir).is_some()
+    })
+    .map_err(io::Error::other)?;
+    tokio::spawn(sender.run());
     Ok(())
 }
 

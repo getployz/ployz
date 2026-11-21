@@ -7,6 +7,10 @@ use url::Url;
 pub(super) const NAME: &str = "ployz-collector";
 pub(super) const HEALTH_ADDRESS: &str = "127.0.0.1:13133";
 pub(super) const BASE: &str = include_str!("base.yaml");
+pub(super) const CRASH: &str = include_str!("crash.yaml");
+/// Where the Collector's crash receiver listens on the Machine's loopback, and where the
+/// daemon posts crash events.
+pub(crate) const CRASH_RECEIVER: &str = "127.0.0.1:4321";
 
 const CONFIG_MOUNT: &str = "/etc/ployz/config";
 const TOKEN_MOUNT: &str = "/etc/ployz/token";
@@ -55,6 +59,10 @@ impl Paths {
     pub(super) fn requests_file(&self) -> PathBuf {
         self.config.join("requests.yaml")
     }
+
+    pub(super) fn crash_file(&self) -> PathBuf {
+        self.config.join("crash.yaml")
+    }
 }
 
 pub(super) fn endpoint(push_target: &Url) -> String {
@@ -77,11 +85,13 @@ pub(super) fn body(paths: &Paths, endpoint: &str) -> ContainerCreateBody {
             format!("--config={CONFIG_MOUNT}/base.yaml"),
             format!("--config={CONFIG_MOUNT}/mask.yaml"),
             format!("--config={CONFIG_MOUNT}/requests.yaml"),
+            format!("--config={CONFIG_MOUNT}/crash.yaml"),
         ]),
         env: Some(vec![
             "GOMAXPROCS=1".into(),
             "GOMEMLIMIT=160MiB".into(),
             format!("PLOYZ_OTLP_ENDPOINT={endpoint}"),
+            format!("PLOYZ_CRASH_RECEIVER={CRASH_RECEIVER}"),
         ]),
         labels: Some(labels::system_labels()),
         host_config: Some(HostConfig {

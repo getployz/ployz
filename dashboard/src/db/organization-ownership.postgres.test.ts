@@ -76,7 +76,7 @@ const organizationOwnedWithoutChangeLog = {
   uptime_result: "Probe results, read as a Remote Read; growing history that would flood the change log.",
   uptime_result_hourly: "Hourly probe rollups, read as a Remote Read; growing history that would flood the change log.",
   observe_ingest_cursor: "The last observe push each Machine stream delivered, read to refuse a replay and, by its push time, to warn the Enroll sheet that every Server is offline; no view reads it, so it needs no change log.",
-  crash_event: "Crashes a Machine pushed, read only by the crash mailer; growing history no view reads, so it needs no change log.",
+  crash_event: "Crashes a Machine reported through its logs, read only by the crash mailer; growing history no view reads, so it needs no change log.",
   server_enrollment: "One host's Server Enrollment, read by its run, the host's check-in and the enrollments route; no view reads it, so it needs no change log.",
   cluster_sealing_key: "Each pairing's Sealing public key, read only by enrollment completion to keep the first one; no view reads it, so it needs no change log.",
   cluster_sealing_key_generator: "The Machine each pairing chose to generate its Sealing Key, read only by the Sealing Key backfill; no view reads it, so it needs no change log.",

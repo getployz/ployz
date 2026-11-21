@@ -71,7 +71,6 @@ import { Route as ApiCliSealingRotateRouteImport } from './routes/api/cli/sealin
 import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
 import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/servers/enrollment'
 import { Route as ApiMachinesMachineAnalyticsSaltsRouteImport } from './routes/api/machines/$machine/analytics-salts'
-import { Route as ApiMachinesMachineObserveRouteImport } from './routes/api/machines/$machine/observe'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
 import { Route as ApiMachinesOtlpV1LogsRouteImport } from './routes/api/machines/otlp/v1/logs'
@@ -423,12 +422,6 @@ const ApiMachinesMachineAnalyticsSaltsRoute =
     path: '/api/machines/$machine/analytics-salts',
     getParentRoute: () => rootRouteImport,
   } as any)
-const ApiMachinesMachineObserveRoute =
-  ApiMachinesMachineObserveRouteImport.update({
-    id: '/api/machines/$machine/observe',
-    path: '/api/machines/$machine/observe',
-    getParentRoute: () => rootRouteImport,
-  } as any)
 const ProtectedCloudOrganizationSlugProjectProjectSlugRouteRoute =
   ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport.update({
     id: '/$projectSlug',
@@ -713,7 +706,6 @@ export interface FileRoutesByFullPath {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/analytics-salts': typeof ApiMachinesMachineAnalyticsSaltsRoute
-  '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/$organizationSlug/': typeof ProtectedCloudOrganizationSlugIndexRoute
   '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
@@ -802,7 +794,6 @@ export interface FileRoutesByTo {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/analytics-salts': typeof ApiMachinesMachineAnalyticsSaltsRoute
-  '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
   '/api/machines/otlp/v1/logs': typeof ApiMachinesOtlpV1LogsRoute
@@ -893,7 +884,6 @@ export interface FileRoutesById {
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
   '/api/machines/$machine/analytics-salts': typeof ApiMachinesMachineAnalyticsSaltsRoute
-  '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/_protected/cloud/$organizationSlug/': typeof ProtectedCloudOrganizationSlugIndexRoute
   '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
@@ -986,7 +976,6 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/analytics-salts'
-    | '/api/machines/$machine/observe'
     | '/cloud/$organizationSlug/'
     | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
@@ -1075,7 +1064,6 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/analytics-salts'
-    | '/api/machines/$machine/observe'
     | '/cloud/account'
     | '/cloud/$organizationSlug/new'
     | '/api/machines/otlp/v1/logs'
@@ -1165,7 +1153,6 @@ export interface FileRouteTypes {
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
     | '/api/machines/$machine/analytics-salts'
-    | '/api/machines/$machine/observe'
     | '/_protected/cloud/$organizationSlug/'
     | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
@@ -1254,7 +1241,6 @@ export interface RootRouteChildren {
   ApiCliServersEnrollRoute: typeof ApiCliServersEnrollRoute
   ApiCliServersEnrollmentRoute: typeof ApiCliServersEnrollmentRoute
   ApiMachinesMachineAnalyticsSaltsRoute: typeof ApiMachinesMachineAnalyticsSaltsRoute
-  ApiMachinesMachineObserveRoute: typeof ApiMachinesMachineObserveRoute
   ApiMachinesOtlpV1LogsRoute: typeof ApiMachinesOtlpV1LogsRoute
   ApiMachinesOtlpV1MetricsRoute: typeof ApiMachinesOtlpV1MetricsRoute
   ApiMachinesOtlpV1TracesRoute: typeof ApiMachinesOtlpV1TracesRoute
@@ -1694,13 +1680,6 @@ declare module '@tanstack/react-router' {
       path: '/api/machines/$machine/analytics-salts'
       fullPath: '/api/machines/$machine/analytics-salts'
       preLoaderRoute: typeof ApiMachinesMachineAnalyticsSaltsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/machines/$machine/observe': {
-      id: '/api/machines/$machine/observe'
-      path: '/api/machines/$machine/observe'
-      fullPath: '/api/machines/$machine/observe'
-      preLoaderRoute: typeof ApiMachinesMachineObserveRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud/$organizationSlug/_project/$projectSlug': {
@@ -2190,7 +2169,6 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliServersEnrollRoute: ApiCliServersEnrollRoute,
   ApiCliServersEnrollmentRoute: ApiCliServersEnrollmentRoute,
   ApiMachinesMachineAnalyticsSaltsRoute: ApiMachinesMachineAnalyticsSaltsRoute,
-  ApiMachinesMachineObserveRoute: ApiMachinesMachineObserveRoute,
   ApiMachinesOtlpV1LogsRoute: ApiMachinesOtlpV1LogsRoute,
   ApiMachinesOtlpV1MetricsRoute: ApiMachinesOtlpV1MetricsRoute,
   ApiMachinesOtlpV1TracesRoute: ApiMachinesOtlpV1TracesRoute,

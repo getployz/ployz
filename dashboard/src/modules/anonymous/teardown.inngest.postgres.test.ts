@@ -71,9 +71,9 @@ const seeded = Effect.fn(function* (expiresAt: Date, has: { project?: boolean; s
   if (has.server) {
     yield* enrollStoreServer(ORGANIZATION);
     yield* drizzle.update(organizationPairing).set({ founderMachineId: FOUNDER as MachineId });
-    yield* drizzle.insert(observeIngestCursor).values({ organizationId: ORGANIZATION, machineId: machineId("0"), stream: "crash", seq: 1n });
+    yield* drizzle.insert(observeIngestCursor).values({ organizationId: ORGANIZATION, machineId: machineId("0"), stream: "salts", seq: 1n });
     yield* drizzle.insert(crashEvent).values({
-      organizationId: ORGANIZATION, machineId: machineId("0"), seq: 1n, serviceId: SERVICE, serviceName: "web", replica: "0", containerId: "c0", oom: false, occurredAt: new Date(),
+      organizationId: ORGANIZATION, machineId: machineId("0"), eventId: "c0:1", serviceId: SERVICE, serviceName: "web", replica: "0", containerId: "c0", oom: false, occurredAt: new Date(),
     });
   }
   const store = yield* cloudStore;

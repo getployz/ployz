@@ -1,30 +1,17 @@
-//! Pushing a stream to Cloud: the signed request, the retry rhythm, and what each status
-//! Cloud answers means for the batch.
+//! The Machine's signed requests to Cloud: the push target, the signature, and the salts fetch.
 
 use std::{
     io,
     path::Path,
-    sync::{Arc, Mutex, PoisonError},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_core::{MachineId, separation};
-use reqwest::{
-    RequestBuilder, StatusCode, Url,
-    header::{CONTENT_TYPE, RETRY_AFTER},
-};
+use reqwest::{RequestBuilder, Url, header::CONTENT_TYPE};
 use sha2::{Digest, Sha256};
-use tokio::sync::Notify;
 
-use crate::{backoff::Doubling, machine::store, management::ManagementSecret};
-
-const TICK: Duration = Duration::from_secs(30);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
-const BACKOFF_CAP: Duration = Duration::from_secs(5 * 60);
-const RETRY_AFTER_CAP: Duration = Duration::from_secs(60 * 60);
-const UNHEARD_WARN_EVERY: Duration = Duration::from_secs(5 * 60);
+use crate::{machine::store, management::ManagementSecret};
 
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
@@ -100,160 +87,6 @@ pub(in crate::observe) fn unix_seconds() -> i64 {
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
         })
-}
-
-#[derive(Debug)]
-pub(in crate::observe) struct Held {
-    pub(super) body: Vec<u8>,
-    pub(super) seqs: Vec<u64>,
-}
-
-pub(in crate::observe) trait Stream: Send + Sync + 'static {
-    const NAME: &'static str;
-
-    fn next(&self) -> io::Result<Option<Held>>;
-
-    fn ack(&self, seqs: &[u64]) -> io::Result<()>;
-
-    /// Deletes a batch Cloud will never take, counting its events dropped.
-    fn refuse(&self, seqs: &[u64]) -> io::Result<()>;
-
-    fn wake(&self) -> &Notify;
-}
-
-#[derive(Debug, PartialEq)]
-enum Shipped {
-    Idle,
-    Progress,
-    Retry { after: Option<Duration> },
-}
-
-pub struct Shipper<S, T> {
-    outbox: Arc<S>,
-    client: reqwest::Client,
-    target: T,
-    /// When the journal last heard that Cloud does not know this Machine.
-    unheard_warned: Mutex<Option<Instant>>,
-}
-
-impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
-    pub fn new(outbox: Arc<S>, target: T) -> reqwest::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()?;
-        Ok(Self {
-            outbox,
-            client,
-            target,
-            unheard_warned: Mutex::new(None),
-        })
-    }
-
-    pub async fn run(self) {
-        let mut backoff = Doubling::between(BACKOFF_FLOOR, BACKOFF_CAP);
-        loop {
-            match self.ship_once().await {
-                Shipped::Progress => backoff.reset(),
-                Shipped::Idle => {
-                    backoff.reset();
-                    tokio::select! {
-                        () = self.outbox.wake().notified() => {}
-                        () = tokio::time::sleep(TICK) => {}
-                    }
-                }
-                Shipped::Retry { after } => {
-                    tokio::time::sleep(retry_delay(&mut backoff, after)).await
-                }
-            }
-        }
-    }
-
-    async fn ship_once(&self) -> Shipped {
-        let Some(pusher) = (self.target)() else {
-            return Shipped::Idle;
-        };
-        let held = match self.outbox.next() {
-            Ok(Some(held)) => held,
-            Ok(None) => return Shipped::Idle,
-            Err(error) => {
-                tracing::warn!(stream = S::NAME, %error, "cannot read the outbox");
-                return Shipped::Retry { after: None };
-            }
-        };
-        let request = self.client.post(pusher.url.clone());
-        let response = match authenticate(request, &pusher, unix_seconds(), held.body)
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                tracing::debug!(stream = S::NAME, %error, "cannot reach Cloud to ship a batch");
-                return Shipped::Retry { after: None };
-            }
-        };
-        let status = response.status();
-        let settled = match status {
-            status if status.is_success() => self.outbox.ack(&held.seqs),
-            StatusCode::BAD_REQUEST
-            | StatusCode::PAYLOAD_TOO_LARGE
-            | StatusCode::UNPROCESSABLE_ENTITY => {
-                tracing::warn!(stream = S::NAME, %status, "Cloud refused a batch; dropping it");
-                self.outbox.refuse(&held.seqs)
-            }
-            status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
-                return Shipped::Retry {
-                    after: retry_after(&response),
-                };
-            }
-            StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND => {
-                if self.warn_unheard() {
-                    tracing::warn!(stream = S::NAME, %status, "Cloud does not accept this Machine's batches; keeping them");
-                }
-                return Shipped::Retry { after: None };
-            }
-            status => {
-                tracing::debug!(stream = S::NAME, %status, "Cloud did not take a batch; keeping it");
-                return Shipped::Retry { after: None };
-            }
-        };
-        match settled {
-            Ok(()) => Shipped::Progress,
-            Err(error) => {
-                tracing::warn!(stream = S::NAME, %error, "cannot delete shipped outbox entries");
-                Shipped::Retry { after: None }
-            }
-        }
-    }
-}
-
-impl<S, T> Shipper<S, T> {
-    /// Whether to warn that Cloud turned this Machine away. A Machine Cloud
-    /// lost keeps retrying, so the journal hears it once every few minutes.
-    fn warn_unheard(&self) -> bool {
-        once_every(&self.unheard_warned, UNHEARD_WARN_EVERY)
-    }
-}
-
-fn once_every(last: &Mutex<Option<Instant>>, every: Duration) -> bool {
-    let now = Instant::now();
-    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
-    if last.is_some_and(|at| now.duration_since(at) < every) {
-        return false;
-    }
-    *last = Some(now);
-    true
-}
-
-fn retry_after(response: &reqwest::Response) -> Option<Duration> {
-    let seconds = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
-    seconds.trim().parse().ok().map(Duration::from_secs)
-}
-
-/// How long to wait before the next try: what Cloud asked, within the cap, or the next jittered
-/// backoff step. The step advances either way.
-fn retry_delay(backoff: &mut Doubling, asked: Option<Duration>) -> Duration {
-    let step = backoff.take_jittered();
-    asked.map_or(step, |asked| asked.min(RETRY_AFTER_CAP))
 }
 
 #[cfg(test)]

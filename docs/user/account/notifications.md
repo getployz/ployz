@@ -21,7 +21,8 @@ Each kind of email has a row, set to **Email** or **None**:
 - **Crashed services**: when a service's replica exits with an error or runs out of memory. The
   email names the service and the Server, says how many times it crashed, and gives the last
   exit code. A service that keeps crashing sends at most one email an hour, with the crashes since
-  the last one counted in. A stop, a restart or a Deploy you asked for doesn't send one.
+  the last one counted in. A stop, a restart or a Deploy you asked for doesn't send one. A
+  [self-hosted](#on-a-self-hosted-ployz-cloud) Cloud sends these only with log shipping on.
 
 Everything starts at **Email**. A change saves as you pick it.
 
@@ -41,3 +42,8 @@ An invitation to an organization is sent once and has no **Turn off** link.
 A [self-hosted Ployz Cloud](../self-hosting.md#2-configure) sends email only once its operator
 sets it up. Until then the rows show your choices but can't be changed, and the page says
 **Email isn't set up on this Cloud**.
+
+Crash emails also need the `observe` profile, which makes Cloud keep logs. Without it the
+**Crashed services** row stays and says **Crash emails need Cloud log shipping**. Turn the
+profile on as [Keep logs, metrics and traces in Cloud](../self-hosting.md#keep-logs-metrics-and-traces-in-cloud-optional)
+describes, and a server's crashes email you from then on.

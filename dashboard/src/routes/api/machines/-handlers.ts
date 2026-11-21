@@ -1,13 +1,12 @@
-import { Effect, Option, Result } from "effect";
-import { crashPushInput, decodeCrashPush, decodePushHeader } from "#/modules/observe-ingest/ingest";
-import { authenticateObservePush, ingestCrashPush, observePushCredentials, recordSaltFetch } from "#/modules/observe-ingest/ingest.server";
+import { Effect, Result } from "effect";
+import { recordCrashEventsOf } from "#/modules/observe-ingest/crash-ledger.server";
+import { authenticateObservePush, observePushCredentials, recordSaltFetch } from "#/modules/observe-ingest/ingest.server";
 import { authenticateMachineToken, forwardOtlp, type OtlpSignal } from "#/modules/observe-ingest/otlp.server";
 import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { readCappedBody } from "#/server/capped-body";
-import { encodePublicError, NotFound, statusForPublicError, Validation } from "#/server/public-error";
+import { encodePublicError, statusForPublicError, Validation } from "#/server/public-error";
 
 const noStore = { "cache-control": "no-store" };
-const MAX_PUSH_BYTES = 256 * 1024;
 const MAX_SALTS_BYTES = 1024;
 
 function errorResponse(cause: unknown) {
@@ -26,31 +25,10 @@ export function handleMachineOtlp(request: Request, signal: OtlpSignal) {
     const body = read.success;
     if (body === null) return Response.json({ error: "OTLP body is over 8 MiB." }, { status: 413, headers: noStore });
     const forwarded = yield* Effect.result(forwardOtlp(sender.success, signal, request.headers, body));
-    return Result.isFailure(forwarded) ? errorResponse(forwarded.failure) : forwarded.success;
-  });
-}
-
-export function handleObservePush(request: Request, machineId: string) {
-  return Effect.gen(function* () {
-    const credentials = yield* Effect.result(observePushCredentials(machineId, request.headers));
-    if (Result.isFailure(credentials)) return errorResponse(credentials.failure);
-    const body = yield* Effect.tryPromise(() => readCappedBody(request, MAX_PUSH_BYTES)).pipe(Effect.orElseSucceed(() => new Uint8Array(0)));
-    if (body === null) return Response.json({ error: "Observe push is over 256 KiB." }, { status: 413, headers: noStore });
-    const pusher = yield* Effect.result(authenticateObservePush(credentials.success, body));
-    if (Result.isFailure(pusher)) return errorResponse(pusher.failure);
-
-    const json: unknown = Option.getOrNull(yield* Effect.option(Effect.try(() => JSON.parse(new TextDecoder().decode(body)))));
-    const malformed = () => errorResponse(new Validation({ message: "Invalid observe push." }));
-    const header = decodePushHeader(json);
-    if (Option.isNone(header)) return malformed();
-    if (header.value.stream !== "crash") {
-      return errorResponse(new NotFound({ message: `Unknown observe stream ${header.value.stream}.` }));
-    }
-    const push = Option.flatMap(decodeCrashPush(json), crashPushInput);
-    if (Option.isNone(push)) return malformed();
-    const ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
-    if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
-    return new Response(null, { status: 204, headers: noStore });
+    if (Result.isFailure(forwarded)) return errorResponse(forwarded.failure);
+    if (signal !== "logs" || !forwarded.success.ok) return forwarded.success;
+    const recorded = yield* Effect.result(recordCrashEventsOf(sender.success, request.headers, body));
+    return Result.isFailure(recorded) ? errorResponse(recorded.failure) : forwarded.success;
   });
 }
 

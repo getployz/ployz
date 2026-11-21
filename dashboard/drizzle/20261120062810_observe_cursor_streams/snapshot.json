@@ -1,8 +1,10 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "c49e01f2-121e-4710-9b6e-87cfd57e595e",
+  "id": "7fe8e642-0680-4fba-b4c7-8811c2b127c4",
   "prevIds": [
+    "166b2ac8-9647-4584-a90a-90a11bb1092a",
+    "dac3fe26-9374-4c3e-adbf-dde90c79cee6",
     "fe581518-3c86-4e12-bb42-9978b2cb5e1a"
   ],
   "ddl": [
@@ -4247,6 +4249,19 @@
       "generated": null,
       "identity": null,
       "name": "is_dial_entry",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_machine"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "observe_seen_at",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_machine"
@@ -10410,14 +10425,14 @@
       "table": "crash_event"
     },
     {
-      "type": "bigint",
+      "type": "text",
       "typeSchema": null,
       "notNull": true,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "seq",
+      "name": "event_id",
       "entityType": "columns",
       "schema": "public",
       "table": "crash_event"
@@ -13122,7 +13137,7 @@
           "opclass": null
         },
         {
-          "value": "seq",
+          "value": "event_id",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
@@ -13134,7 +13149,7 @@
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "crash_event_machine_seq_idx",
+      "name": "crash_event_machine_event_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "crash_event"
@@ -16824,7 +16839,7 @@
       "table": "notification_preference"
     },
     {
-      "value": "\"stream\" in ('crash', 'salts')",
+      "value": "\"stream\" in ('salts')",
       "name": "observe_ingest_cursor_stream_check",
       "entityType": "checks",
       "schema": "public",

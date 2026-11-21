@@ -38,24 +38,24 @@ const setup = Effect.fn(function* () {
     return row.namespace;
   }).pipe(Effect.orDie));
 
-  let seq = 0n;
+  let count = 0;
   const crash = (at: string, last: { exitCode: number | null; oom: boolean } = { exitCode: 1, oom: false }) =>
     provide(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      seq += 1n;
+      count += 1;
       yield* drizzle.insert(crashEvent).values({
-        organizationId: ORGANIZATION, machineId: MACHINE, seq, serviceId: WEB, serviceName: `${namespace}/web`, replica: "1",
+        organizationId: ORGANIZATION, machineId: MACHINE, eventId: `crash-${count}`, serviceId: WEB, serviceName: `${namespace}/web`, replica: "1",
         containerId: "b".repeat(64), deploymentId: null, ...last, occurredAt: new Date(at), receivedAt: new Date(at),
       });
     }).pipe(Effect.orDie));
   const unmailed = () => provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    return (yield* drizzle.select({ seq: crashEvent.seq, mailedAt: crashEvent.mailedAt }).from(crashEvent).orderBy(asc(crashEvent.seq)))
-      .filter(({ mailedAt }) => mailedAt === null).map((row) => row.seq);
+    return (yield* drizzle.select({ eventId: crashEvent.eventId, mailedAt: crashEvent.mailedAt }).from(crashEvent).orderBy(asc(crashEvent.eventId)))
+      .filter(({ mailedAt }) => mailedAt === null).map((row) => row.eventId);
   }).pipe(Effect.orDie));
   const remaining = () => provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    return (yield* drizzle.select({ seq: crashEvent.seq }).from(crashEvent).orderBy(asc(crashEvent.seq))).map((row) => row.seq);
+    return (yield* drizzle.select({ eventId: crashEvent.eventId }).from(crashEvent).orderBy(asc(crashEvent.eventId))).map((row) => row.eventId);
   }).pipe(Effect.orDie));
   const mails = () => send.mock.calls.flatMap(([event]) => (Array.isArray(event) ? event : [event]))
     .map((event) => ({ id: event.id, data: event.data as MailSendRequestedEventData }));
@@ -101,6 +101,14 @@ it.live("five crashes queue one mail that counts them, naming the service, its S
   expect(mail?.data.text).toContain(`https://cloud.example.com/cloud/acme/shop/production/services/${WEB}?tab=monitoring`);
 }));
 
+it.live("an exit code wider than 32 bits still mails", () => Effect.gen(function* () {
+  const { crash, unmailed, claim } = yield* setup();
+  yield* crash("2026-10-15T03:01:00Z", { exitCode: 10_000_000_000, oom: false });
+
+  expect(yield* claim("2026-10-15T03:02:00Z")).toEqual({ kind: "mailed", count: 1 });
+  expect(yield* unmailed()).toEqual([]);
+}));
+
 it.live("a crash within the hour after a mail waits for the hour to pass, then mails alone", () => Effect.gen(function* () {
   const { crash, unmailed, mails, claim } = yield* setup();
   yield* crash("2026-10-15T03:01:00Z");
@@ -109,7 +117,7 @@ it.live("a crash within the hour after a mail waits for the hour to pass, then m
 
   expect(yield* claim("2026-10-15T03:21:00Z")).toEqual({ kind: "wait", until: "2026-10-15T04:02:00.000Z" });
   expect(mails()).toHaveLength(1);
-  expect(yield* unmailed()).toEqual([2n]);
+  expect(yield* unmailed()).toEqual(["crash-2"]);
 
   expect(yield* claim("2026-10-15T04:02:00Z")).toEqual({ kind: "mailed", count: 1 });
   expect(mails().map((mail) => mail.data.subject)).toEqual(["web crashed in shop / production", "web crashed in shop / production"]);
@@ -139,7 +147,7 @@ it.live("pruning deletes crashes older than 30 days and keeps the rest", () => E
   yield* crash("2026-09-16T03:00:00Z");
 
   expect(yield* prune("2026-10-15T03:00:00Z")).toBe(1);
-  expect(yield* remaining()).toEqual([2n]);
+  expect(yield* remaining()).toEqual(["crash-2"]);
 }));
 
 it.live("pruning keeps an old crash mailed within the hour, because it holds the next mail back", () => Effect.gen(function* () {
@@ -148,6 +156,6 @@ it.live("pruning keeps an old crash mailed within the hour, because it holds the
   expect(yield* claim("2026-10-15T02:30:00Z")).toEqual({ kind: "mailed", count: 1 });
 
   expect(yield* prune("2026-10-15T03:00:00Z")).toBe(0);
-  expect(yield* remaining()).toEqual([1n]);
+  expect(yield* remaining()).toEqual(["crash-1"]);
   expect(yield* prune("2026-10-15T03:30:00Z")).toBe(1);
 }));
