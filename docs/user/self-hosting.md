@@ -137,7 +137,9 @@ separate OAuth App, a sign-in token only reads the person's profile and email ad
    analytics. If a required value is missing or malformed, `web` and `worker` stop at startup,
    and `docker compose logs web worker` names each variable to fix.
    To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`. To count
-   visits on an environment's [Analytics](observe/analytics.md) page, set `ANALYTICS_ENABLED=true`.
+   visits on an environment's [Analytics](observe/analytics.md) page, set `ANALYTICS_ENABLED=true`
+   and run the [`observe` profile](#keep-logs-metrics-and-traces-in-cloud-optional), which keeps
+   the requests Analytics reads.
    Email is optional too. Ployz Cloud sends none while `POSTSHIBA_API_KEY`, `POSTSHIBA_TEAM_ID`,
    `POSTSHIBA_CLUSTER_ID`, and `MAIL_FROM` are unset. Set all four to send through
    PostShiba. With only some of them set, `web` and `worker` stop at startup. Each person

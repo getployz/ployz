@@ -159,7 +159,11 @@ step against its own facts. Two operators at once may collide, and Ployz does
 not detect, prevent or repair that. A late step from a dead run can at worst
 leave a Volume with no Writer, never two. A copy restored elsewhere while its
 old Machine was away may take writes until Cloud demotes the older epoch; that
-window is accepted, not prevented.
+window is accepted, not prevented. A Machine starts no second running Service
+Container on a Volume, but Docker's own restart of a stopped Container, by
+restart policy or when dockerd restarts, bypasses Ployz. A dockerd restart
+during a stop-first handoff can briefly run two on one Volume (#4467); that is
+accepted too.
 
 **Why.** In an eventually consistent Cluster, a Machine knows only itself for
 certain. A single writer inside the Cluster needs the consensus bet 2 refuses.

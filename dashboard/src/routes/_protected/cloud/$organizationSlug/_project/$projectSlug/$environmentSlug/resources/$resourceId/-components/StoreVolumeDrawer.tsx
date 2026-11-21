@@ -257,21 +257,22 @@ function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
 }
 
 /**
- * Whether more than one container may write this volume. Off by default, and the Store then refuses a second writer.
- * Applies at once, not staged. Turning it off with several writers is refused; the reason shows here.
+ * Whether more than one container may write this volume. Shared writes are paused, so the switch only turns them off,
+ * for a volume that had them on before. Applies at once, not staged. Turning it off with several writers is refused;
+ * the reason shows here.
  */
 function StoreSharedWrites({ state }: { state: StoreVolume }) {
   const writer = useStoreWriter(state.organizationSlug);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [shared, holdShared] = useCommitHold(state.volume.shared_writes);
   return (
-    <SettingsRow label="Allow shared writes" commit="change"
+    <SettingsRow label="Shared writes" commit="change"
       hint={<>
-        Lets more than one container write here. Applies at once.{" "}
+        {shared ? "Paused. Turn off to deploy." : "Paused for now."}{" "}
         <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>
       </>}
       control={(
-        <Switch id="volume-shared-writes" aria-label="Allow shared writes" checked={shared}
+        <Switch id="volume-shared-writes" aria-label="Shared writes" checked={shared} disabled={!shared}
           onCheckedChange={(sharedWrites) => {
             setRefusal(null);
             const write = writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites });

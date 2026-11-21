@@ -36,7 +36,7 @@ pub(crate) const TAILSCALE: &str = PinnedImage::new(
 .as_str();
 
 pub(crate) const COLLECTOR: PinnedImage = PinnedImage::new(
-    "ghcr.io/getployz/ployz-collector:0.147.0@sha256:360743e52535b067edeb24ce7563e60ca3393694a23e97f9a8ea1ffbfb4442d6",
+    "ghcr.io/getployz/ployz-collector:0.147.0@sha256:aab30d697a4cc2c9ef2cbb320851beacab90e9b0327cb0367ab0f426add46408",
 );
 
 /// The reserved Ingress door specs this daemon builds for one set of Doors: the

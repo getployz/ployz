@@ -1,20 +1,20 @@
-// Seeds request rows for the verify stack's `shop/production` through the Machine push path, so Analytics shows Web,
-// API and Errors. Turns analytics on for production in UTC, then pushes 30 days of requests as the fake Machine.
-// Needs analytics on in Cloud: run up.sh with BILLING=1 (hosted), or set ANALYTICS_ENABLED=true.
+// Seeds request rows for the verify stack's `shop/production` straight into ClickHouse's `otel.ployz_request`, so Analytics
+// shows Web, API and Errors. Turns analytics on for production in UTC, then inserts 30 days of requests.
+// Needs OBSERVE_CLICKHOUSE_URL (and CLICKHOUSE_USER / CLICKHOUSE_PASSWORD) in the Cloud's env, and analytics on in Cloud:
+// run up.sh with BILLING=1 (hosted), or set ANALYTICS_ENABLED=true.
 // To run from dashboard/: node --env-file=.verify/run/env scripts/verify/runner.mjs /scripts/verify/seed-requests.ts
 //   web   HTML pages with visitors, sources and campaigns, a few 404s, and Googlebot crawling
 //   api   JSON routes with ids in their paths, a slow /reports/:id, and 5xx bursts on /checkout
-// Rows land on fixed request ids and push seqs, so a rerun converges.
+// Rows land on fixed request ids, so a rerun converges once ClickHouse merges them. Timestamps are written in UTC, which
+// is the zone of ClickHouse's stock image.
 import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { Effect, Option } from "effect";
-import { ingestRequestPush } from "#/modules/observe-ingest/ingest.server";
-import { decodeRequestPush, MAX_PUSH_EVENTS, requestPushInput, type RequestWireRow } from "#/modules/observe-ingest/ingest";
+import { Effect, Redacted } from "effect";
+import { clickhouseEndpoint } from "#/modules/observe-store/clickhouse.server";
 import { namespacesByEnvironment, setSiteAnalytics } from "#/modules/web-analytics/salts.server";
 import { Database } from "#/server/database.server";
 import { AppRuntime } from "#/server/runtime.server";
 
-const MACHINE_ID = "0123456789abcdef0123456789abcdef";
 const HOUR = 3_600_000;
 const DAYS = 30;
 
@@ -28,7 +28,7 @@ function random(seed: number) {
 }
 
 const PAGES = ["/", "/", "/", "/pricing", "/pricing", "/docs", "/docs/install", "/blog/launch", "/signup", "/signup/done"];
-const SOURCES = [
+const SOURCES: ReadonlyArray<{ referrer: string | null; query: Utm }> = [
   { referrer: null, query: {} },
   { referrer: "www.google.com", query: {} },
   { referrer: "news.ycombinator.com", query: {} },
@@ -48,7 +48,27 @@ const BROWSER = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.
 const GOOGLEBOT = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 const CLIENT = "ployz-shop-ios/3.2 CFNetwork/1494 Darwin/23.4.0";
 
-const visitor = (n: number) => createHash("sha256").update(`visitor:${n}`).digest("hex");
+/** A visitor's id for one UTC day, as the Collector would hash it: it changes with the day's salt. */
+const visitor = (n: number, at: number) =>
+  createHash("sha256").update(`visitor:${n}:${new Date(at).toISOString().slice(0, 10)}`).digest().readBigUInt64LE(0).toString();
+
+type Utm = { utm_source?: string; utm_medium?: string; utm_campaign?: string; utm_term?: string; utm_content?: string };
+
+type RequestWireRow = {
+  ts: number; namespace: string; service: string; host: string; method: string; path: string; status: number; ua: string;
+  query: Utm; duration_us: number; bytes_in: number; bytes_out: number; request_id: string;
+  referrer_host: string | null; language: string | null; content_type: string | null; sec_purpose: string | null; visitor: string | null;
+};
+
+/** One row as `otel.ployz_request` holds it: optional text is '' when absent. */
+const stored = (orgId: string, row: RequestWireRow) => ({
+  OrgId: orgId, RetentionDays: 30, Timestamp: `${new Date(row.ts).toISOString().replace("T", " ").replace("Z", "")}000`,
+  Namespace: row.namespace, Service: row.service, Host: row.host, Method: row.method, Path: row.path, Status: row.status,
+  DurationUs: row.duration_us, BytesIn: row.bytes_in, BytesOut: row.bytes_out, RequestId: row.request_id, Ua: row.ua,
+  ReferrerHost: row.referrer_host ?? "", Language: row.language ?? "", ContentType: row.content_type ?? "", SecPurpose: row.sec_purpose ?? "",
+  Visitor: row.visitor, UtmSource: row.query.utm_source ?? "", UtmMedium: row.query.utm_medium ?? "", UtmCampaign: row.query.utm_campaign ?? "",
+  UtmTerm: row.query.utm_term ?? "", UtmContent: row.query.utm_content ?? "", Ref: row.referrer_host ?? "",
+});
 
 /** One hour's requests: busier in the site's afternoon, and API errors burst every 9th hour. */
 function hourRows(namespace: string, at: number, next: () => number): RequestWireRow[] {
@@ -71,7 +91,7 @@ function hourRows(namespace: string, at: number, next: () => number): RequestWir
       service: "web", method: "GET", path: missing ? "/old-pricing" : PAGES[Math.floor(next() * PAGES.length)] ?? "/",
       status: missing ? 404 : 200, ua: BROWSER, duration_us: Math.round((8 + next() * 40) * 1000), bytes_out: 24_000,
       content_type: "text/html; charset=utf-8", referrer_host: source.referrer, query: source.query,
-      language: LANGUAGES[Math.floor(next() * LANGUAGES.length)] ?? null, visitor: visitor(Math.floor(next() * 400)),
+      language: LANGUAGES[Math.floor(next() * LANGUAGES.length)] ?? null, visitor: visitor(Math.floor(next() * 400), at),
     });
   }
   if (next() < 0.5) row({ service: "web", method: "GET", path: "/sitemap.xml", status: 200, ua: GOOGLEBOT, content_type: "application/xml" });
@@ -110,18 +130,18 @@ const seed = Effect.gen(function* () {
   const rows: RequestWireRow[] = [];
   for (let at = first; at <= Date.now(); at += HOUR) rows.push(...hourRows(namespace, at, next).filter((row) => row.ts <= Date.now()));
 
-  for (let seq = 0; seq * MAX_PUSH_EVENTS < rows.length; seq++) {
-    const push = Option.flatMap(
-      decodeRequestPush({ stream: "requests", seq: String(seq + 1), dropped: 0, rows: rows.slice(seq * MAX_PUSH_EVENTS, (seq + 1) * MAX_PUSH_EVENTS) }),
-      requestPushInput,
-    );
-    if (Option.isNone(push)) return yield* Effect.die(`Push ${seq + 1} did not decode.`);
-    yield* ingestRequestPush({ organizationId, machineId: MACHINE_ID as never }, push.value);
+  const endpoint = yield* clickhouseEndpoint;
+  if (endpoint === undefined) return yield* Effect.die("Set OBSERVE_CLICKHOUSE_URL in the Cloud's env to seed requests.");
+  const target = new URL("/", endpoint.url);
+  target.searchParams.set("query", "INSERT INTO otel.ployz_request FORMAT JSONEachRow");
+  const authorization = `Basic ${Buffer.from(`${endpoint.user}:${Redacted.value(endpoint.password)}`).toString("base64")}`;
+  const BATCH = 20_000;
+  for (let from = 0; from < rows.length; from += BATCH) {
+    const body = rows.slice(from, from + BATCH).map((row) => JSON.stringify(stored(organizationId, row))).join("\n");
+    const response = yield* Effect.promise(() => fetch(target, { method: "POST", headers: { authorization }, body }));
+    if (!response.ok) return yield* Effect.die(`ClickHouse refused the rows: ${(yield* Effect.promise(() => response.text())).slice(0, 300)}`);
   }
-  const [stored] = yield* drizzle.execute<{ count: number }>(sql`
-    select count(*)::int as count from analytics.request where environment_id = ${environmentId}
-  `, "objects");
-  return { environmentId, pushed: rows.length, stored: stored?.count ?? 0 };
+  return { environmentId, organizationId, namespace, inserted: rows.length };
 });
 
 export async function run() {

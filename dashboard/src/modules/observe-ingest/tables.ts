@@ -5,7 +5,8 @@ import { organizationMachine } from "#/modules/machines/tables";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
-export const OBSERVE_STREAMS = ["requests"] as const;
+/** `salts` marks a signed salt fetch, so a Machine that only fetches salts still counts as in contact. */
+export const OBSERVE_STREAMS = ["salts"] as const;
 export type ObserveStream = (typeof OBSERVE_STREAMS)[number];
 
 export const observeIngestCursor = pgTable(
@@ -24,7 +25,7 @@ export const observeIngestCursor = pgTable(
       foreignColumns: [organizationMachine.organizationId, organizationMachine.machineId],
       name: "observe_ingest_cursor_machine_fk",
     }).onDelete("cascade"),
-    check("observe_ingest_cursor_stream_check", sql`${table.stream} in ('requests')`),
+    check("observe_ingest_cursor_stream_check", sql`${table.stream} in ('salts')`),
   ],
 );
 

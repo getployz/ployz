@@ -8,8 +8,8 @@ use bollard::{
     errors::Error as DockerError,
     models::{ContainerCreateBody, ContainerInspectResponse},
     query_parameters::{
-        CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptions,
-        StopContainerOptionsBuilder,
+        CreateContainerOptionsBuilder, KillContainerOptionsBuilder, RemoveContainerOptionsBuilder,
+        StopContainerOptions, StopContainerOptionsBuilder,
     },
 };
 use ployz_core::{PinnedImage, PullPolicy, labels};
@@ -130,6 +130,10 @@ impl ServiceRuntime for Docker {
         self
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a system Container of ployzd mounts no Service Volume"
+    )]
     async fn create(&self, name: &str, config: ContainerCreateBody) -> Result<(), DockerError> {
         self.create_container(
             Some(CreateContainerOptionsBuilder::default().name(name).build()),
@@ -147,6 +151,10 @@ impl ServiceRuntime for LocalDocker {
         &self.client
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a system Container of ployzd mounts no Service Volume"
+    )]
     async fn create(&self, name: &str, config: ContainerCreateBody) -> Result<(), Error> {
         self.create_container(
             Some(CreateContainerOptionsBuilder::default().name(name).build()),
@@ -181,6 +189,10 @@ impl<R: ServiceRuntime> ManagedService<R> {
         self
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a system Container of ployzd mounts no Service Volume"
+    )]
     pub(crate) async fn ensure(&self, desired: DesiredContainer) -> Result<Ensure, R::Error> {
         let docker = self.runtime.client();
         let existing = match docker.inspect_container(&self.name, None).await {
@@ -230,6 +242,20 @@ impl<R: ServiceRuntime> ManagedService<R> {
     fn stop_options(&self) -> Option<StopContainerOptions> {
         self.stop_grace_seconds
             .map(|seconds| StopContainerOptionsBuilder::default().t(seconds).build())
+    }
+
+    pub(crate) async fn signal(&self, signal: &str) -> Result<(), DockerError> {
+        self.runtime
+            .client()
+            .kill_container(
+                &self.name,
+                Some(
+                    KillContainerOptionsBuilder::default()
+                        .signal(signal)
+                        .build(),
+                ),
+            )
+            .await
     }
 
     pub(crate) async fn remove(&self) -> Result<(), DockerError> {

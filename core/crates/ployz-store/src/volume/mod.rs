@@ -44,7 +44,8 @@ pub struct CreateVolume {
     /// Where Services mount it.
     #[serde(default)]
     pub mounts: Vec<Mount>,
-    /// Let more than one container write it; off refuses a second writer.
+    /// Let more than one container write it; off refuses a second writer. Paused:
+    /// on is refused.
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     pub shared_writes: bool,
@@ -106,14 +107,16 @@ pub struct SetVolumeStorage {
 }
 
 /// Allow or refuse more than one writer of a Volume: replicas of one Service, or
-/// several Services. It changes nothing that runs, so it applies at once.
+/// several Services. It changes nothing that runs, so it applies at once. Allowing
+/// is paused: the Store refuses turning it on.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SetVolumeSharedWrites {
     #[serde(default)]
     pub environment: EnvironmentRef,
     pub volume: VolumeName,
-    /// On allows several writers; off refuses while it has more than one.
+    /// On is refused while shared writes are paused; off refuses while it has more
+    /// than one writer.
     pub shared_writes: bool,
 }
 

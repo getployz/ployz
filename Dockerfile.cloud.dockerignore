@@ -6,7 +6,6 @@
 !dashboard/node_modules/**
 !dashboard/package.json
 !dashboard/drizzle.config.ts
-!dashboard/drizzle.analytics.config.ts
 !dashboard/drizzle/
 !dashboard/drizzle/**
 !dashboard/scripts/

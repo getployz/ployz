@@ -4156,7 +4156,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "shell-words",
  "tantivy",
  "tempfile",
  "tokio-postgres-rustls",

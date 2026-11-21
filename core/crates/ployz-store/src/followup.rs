@@ -51,15 +51,6 @@ pub(crate) enum SetupLeft {
     Several,
 }
 
-/// How a Volume a command line adds is stored.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Storage {
-    Docker,
-    /// A size such as `10GiB`, written without spaces.
-    Size(String),
-}
-
 /// The next step of a refused write: one variant per command a Store refusal names,
 /// with what that command takes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -147,15 +138,8 @@ pub(crate) enum FollowUp {
         volume: String,
         place: Place,
     },
-    VolumeAllowSharedWrites {
+    VolumeStopSharedWrites {
         volume: String,
-        place: Place,
-    },
-    VolumeAdd {
-        volume: String,
-        /// `SERVICE:PATH` of each mount.
-        mounts: Vec<String>,
-        storage: Storage,
         place: Place,
     },
     /// Update the client. `beta` installs the highest published release on either
@@ -318,38 +302,10 @@ impl FollowUp {
                 "ployz volume inspect {volume} {}",
                 place.environment_first()
             )),
-            Self::VolumeAllowSharedWrites { volume, place } => line(format!(
-                "ployz volume set {volume} --shared-writes {}",
+            Self::VolumeStopSharedWrites { volume, place } => line(format!(
+                "ployz volume set {volume} --shared-writes=false {}",
                 place.environment_first()
             )),
-            Self::VolumeAdd {
-                volume,
-                mounts,
-                storage,
-                place,
-            } => {
-                let mut words = vec!["ployz".to_owned(), "volume".into(), "add".into()];
-                words.push(volume.clone());
-                for mount in mounts {
-                    words.push("--mount".into());
-                    words.push(mount.clone());
-                }
-                match storage {
-                    Storage::Docker => words.push("--docker".into()),
-                    Storage::Size(size) => {
-                        words.push("--size".into());
-                        words.push(size.clone());
-                    }
-                }
-                words.extend([
-                    "--shared-writes".into(),
-                    "--env".into(),
-                    place.environment.to_string(),
-                    "--project".into(),
-                    place.project.to_string(),
-                ]);
-                line(shell_words::join(words))
-            }
             Self::UpdateClient { beta: false } => line("curl -fsSL https://ployz.sh | sh".into()),
             Self::UpdateClient { beta: true } => {
                 line("curl -fsSL https://ployz.sh | sh -s -- beta".into())

@@ -9,13 +9,17 @@
 
 mod config;
 mod mask;
+mod requests;
 mod token;
 
 use std::{
     collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    },
     time::Duration,
 };
 
@@ -31,6 +35,7 @@ use crate::{
     docker::{DesiredContainer, Ensure, Error, LocalDocker, ManagedService},
     filesystem::atomic_write,
     machine::store,
+    observe::{salts::Salts, ship},
     sealed_env::{Unseal as _, record_from_label},
 };
 
@@ -44,6 +49,9 @@ const HEALTH_RETRY: Duration = Duration::from_millis(200);
 const DEFAULT_TOKEN_SECONDS: i64 = 3_600;
 const TOKEN_SECONDS_ENV: &str = "PLOYZ_OTLP_TOKEN_SECONDS";
 const PRIVATE_FILE: u32 = 0o600;
+const SALTS_FILE: &str = "analytics-salts.json";
+const SALTS_RETRY_SECONDS: i64 = 30;
+const SALTS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The Collector of one daemon, or nothing where the daemon runs no containers.
 #[derive(Clone, Default)]
@@ -54,6 +62,9 @@ struct Inner {
     data_dir: PathBuf,
     machine_root: PathBuf,
     token_seconds: i64,
+    salts: Salts,
+    salts_retry_at: AtomicI64,
+    http: reqwest::Client,
     state: Mutex<State>,
 }
 
@@ -66,6 +77,7 @@ struct State {
     values: SealedValues,
     inventoried: bool,
     refresh_token_at: Option<i64>,
+    requests_loaded: Option<Vec<u8>>,
     torn_down: bool,
 }
 
@@ -77,13 +89,20 @@ impl Collector {
             .map_or(DEFAULT_TOKEN_SECONDS, |seconds| seconds.clamp(4, 86_400));
         Self(Some(Arc::new(Inner {
             docker,
+            salts: Salts::open(data_dir.join(SALTS_FILE), unix_seconds()),
             data_dir,
             machine_root,
             token_seconds,
+            salts_retry_at: AtomicI64::new(0),
+            http: reqwest::Client::builder()
+                .timeout(SALTS_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
             state: Mutex::new(State {
                 values: SealedValues::none(),
                 inventoried: false,
                 refresh_token_at: None,
+                requests_loaded: None,
                 torn_down: false,
             }),
         })))
@@ -164,7 +183,27 @@ impl Inner {
         self.converge(state, &connected, found).await
     }
 
+    /// Runs outside the state lock, so a slow Cloud never holds up a container start.
+    async fn refresh_salts(&self) {
+        let now = unix_seconds();
+        if !self.salts.stale(now) || now < self.salts_retry_at.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(pusher) = ship::push_target(&self.data_dir) else {
+            return;
+        };
+        match pusher.analytics_salts(&self.http).await {
+            Ok(body) => self.salts.accept(&body, now),
+            Err(error) => tracing::debug!(%error, "cannot fetch the analytics salts"),
+        }
+        if self.salts.stale(now) {
+            self.salts_retry_at
+                .store(now + SALTS_RETRY_SECONDS, Ordering::Relaxed);
+        }
+    }
+
     async fn tick(&self) -> Duration {
+        self.refresh_salts().await;
         let mut state = self.state.lock().await;
         let converged = match self.target() {
             None => self.tear_down(&mut state).await,
@@ -204,6 +243,7 @@ impl Inner {
         state.values = SealedValues::none();
         state.inventoried = false;
         state.refresh_token_at = None;
+        state.requests_loaded = None;
         state.torn_down = true;
         Ok(())
     }
@@ -238,8 +278,14 @@ impl Inner {
             state.refresh_token_at = Some(now + self.token_seconds / 2);
         }
         let mask = mask::fragment(&state.values);
+        if let Err(error) = self.salts.prune(now) {
+            tracing::warn!(%error, "cannot forget closed salts");
+        }
+        let requests = requests::fragment(&self.salts.sites());
+        fs::create_dir_all(&paths.requests)?;
         write_if_changed(&paths.base_file(), config::BASE.as_bytes())?;
         write_if_changed(&paths.mask_file(), mask.as_bytes())?;
+        write_if_changed(&paths.requests_file(), requests.as_bytes())?;
         write_if_changed(&paths.crash_file(), config::CRASH.as_bytes())?;
         let desired = DesiredContainer::new(
             crate::images::COLLECTOR,
@@ -250,10 +296,19 @@ impl Inner {
                 config::CRASH.as_bytes(),
             ],
         );
+        let loaded = state.requests_loaded.as_deref() == Some(requests.as_bytes());
         match service.ensure(desired).await? {
-            Ensure::Keep => Ok(()),
-            Ensure::Create | Ensure::Replace | Ensure::Start => wait_healthy().await,
+            Ensure::Keep if loaded => {}
+            // The requests config is out of the spec digest, so a new salt reloads the running
+            // Collector, which keeps its file offsets, instead of replacing it.
+            Ensure::Keep => {
+                service.signal("SIGHUP").await?;
+                wait_healthy().await?;
+            }
+            Ensure::Create | Ensure::Replace | Ensure::Start => wait_healthy().await?,
         }
+        state.requests_loaded = Some(requests.into_bytes());
+        Ok(())
     }
 }
 

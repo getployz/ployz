@@ -274,7 +274,7 @@ The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume 
 _Avoid_: Storage class, volume type dropdown
 
 **Shared Writes**:
-A Volume's opt-in to more than one writer: several replicas of one Service, or several Services mounting it. Off by default; while off, the Config Store refuses a change that adds a second writer or turns it off over several. Working State that already had several writers keeps them and still deploys. It changes nothing that runs, so it applies at once and is no diff row; discarding the whole Volume or Environment returns it to the deployed value.
+A Volume's opt-in to more than one writer: several replicas of one Service, or several Services mounting it. Off by default; while off, the Config Store refuses a change that adds a second writer or turns it off over several. Working State that already had several writers keeps them and still deploys. It changes nothing that runs, so it applies at once and is no diff row; discarding the whole Volume or Environment returns it to the deployed value. Paused for now: the Config Store refuses turning it on, and a Deploy refuses an Environment with a Volume that has it on. Whatever the setting, a Machine refuses to create or start a Service Container on a Provisioned Volume while another Service Container there runs on it; pre-deploy hooks are exempt.
 _Avoid_: Multi-attach, ReadWriteMany, shared volume
 
 **Config**:

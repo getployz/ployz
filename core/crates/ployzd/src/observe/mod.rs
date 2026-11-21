@@ -1,4 +1,4 @@
-//! The observe process: the metric sampler, the crash and request outboxes,
+//! The observe process: the metric sampler, the crash outbox,
 //! and the Docker events loop that settles each container exit.
 //!
 //! It only observes this Machine: it never places, moves, restarts or removes a
@@ -15,7 +15,6 @@ mod harvest;
 pub mod layout;
 mod meta;
 pub(crate) mod metrics;
-mod request;
 mod salts;
 mod serve;
 mod settled;
@@ -78,36 +77,9 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         store.clone(),
         data_dir.to_path_buf(),
     ));
-    let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds()));
     let crashes = ship::Outbox::open(&store)?;
     spawn_crash_sender(crashes.clone(), data_dir)?;
-    if let Err(error) = harvest_requests(&store, run_dir, data_dir, salts) {
-        tracing::warn!(%error, "cannot harvest requests; crash events still post");
-    }
     harvest::Harvester::run(docker, store, data_dir.to_path_buf(), crashes).await
-}
-
-fn harvest_requests(
-    store: &StoreRoot,
-    run_dir: &Path,
-    data_dir: &Path,
-    salts: Arc<salts::Salts>,
-) -> io::Result<()> {
-    let requests = ship::RequestOutbox::open(store)?;
-    spawn_shipper(requests.clone(), salts.clone(), data_dir)?;
-    request::spawn(run_dir, salts, requests)
-}
-
-fn spawn_shipper(
-    outbox: Arc<ship::RequestOutbox>,
-    salts: Arc<salts::Salts>,
-    data_dir: &Path,
-) -> io::Result<()> {
-    let machine_dir = data_dir.to_path_buf();
-    let shipper = ship::Shipper::new(outbox, salts, move || ship::push_target(&machine_dir))
-        .map_err(io::Error::other)?;
-    tokio::spawn(shipper.run());
-    Ok(())
 }
 
 fn spawn_crash_sender(crashes: Arc<ship::Outbox>, data_dir: &Path) -> io::Result<()> {
