@@ -111,6 +111,8 @@ After correcting the implementation, keep the Machines and their data while upda
 scripts/verify-cluster update "$run"
 ```
 
+On a `--cloud` run, `update` also rebuilds the dashboard's native SDK when a core source is newer than `core/crates/ployz-sdk/ployz-sdk.node`, restarts the Cloud runner so it loads the new one, and prints `rebuilt the native SDK and restarted the Cloud runner`. No line means the SDK was current.
+
 `update` takes the same `--daemon [MACHINE=]SOURCE` choices, and Machines it does not name keep their source. `scripts/verify-cluster update "$run" --daemon checkout` moves a release cluster to the modified daemon; `--daemon machine-2=0.2.3` moves only machine-2, downgrades included. Either way `update` restarts every Machine's daemon, not only the one named. A "rolling" upgrade driven through `update` is therefore a cluster-wide restart at each step: a harsher test than a real roll, and not a model of one. Say so in its evidence, and use [Roll one Server](#roll-one-server) for a real one. To make a given Server the Entry Machine for a command, pass `--connect ssh://root@<sandbox>` with the run's `private/id_ed25519` loaded in ssh-agent.
 
 ## Roll one Server
