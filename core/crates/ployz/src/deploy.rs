@@ -946,9 +946,9 @@ pub enum PlanError {
     },
     /// A Managed Volume no Server holds yet was placed on a Server that can't take it now.
     #[error(
-        "Volume {volume} was placed on {machine}, which {}. {} or remove {volume} and add it again. It holds no data yet.",
+        "Volume {volume} was placed on {machine}, which {}. {}",
         unfit.why(),
-        unfit.remedy(machine)
+        unfit.remedy(volume, machine)
     )]
     FirstCopyUnfit {
         /// The Volume, as its owner named it.
@@ -1187,11 +1187,16 @@ impl Unfit {
         }
     }
 
-    fn remedy(self, machine: &str) -> String {
+    /// What to do. A Server this plan doesn't list may already hold the Volume and serve
+    /// writes from it, so its advice never calls the Volume empty.
+    fn remedy(self, volume: &str, machine: &str) -> String {
+        let reset = format!("remove {volume} and add it again. It holds no data yet.");
         match self {
-            Self::Unlisted => format!("Bring {machine} back,"),
-            Self::Excluded => format!("Let {machine} run it,"),
-            Self::Full => format!("Free space on {machine},"),
+            Self::Unlisted => format!(
+                "Bring {machine} back. If it's gone for good, check it held no data in {volume} before you remove {volume} and add it again."
+            ),
+            Self::Excluded => format!("Let {machine} run it, or {reset}"),
+            Self::Full => format!("Free space on {machine}, or {reset}"),
         }
     }
 }

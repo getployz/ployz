@@ -3833,7 +3833,7 @@ fn a_first_copy_waits_for_the_server_it_was_placed_on() {
         };
     }
     let unlisted_refusal = format!(
-        "Volume data was placed on {id}, which the server running this deploy doesn't list. Bring {id} back, or remove data and add it again. It holds no data yet.",
+        "Volume data was placed on {id}, which the server running this deploy doesn't list. Bring {id} back. If it's gone for good, check it held no data in data before you remove data and add it again.",
         id = machine_id('2')
     );
     for (case, snapshot, refusal) in [
