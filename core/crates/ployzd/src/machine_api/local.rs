@@ -22,8 +22,8 @@ use crate::{
     docker::{ContainerRuntime, ImageIngest},
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{
-        LocalMachine, LocalMachineError, LocalMachineRecord, Presented, RecoveryError,
-        SealingError, StoreError,
+        AdmittedSpec, LocalMachine, LocalMachineError, LocalMachineRecord, Presented,
+        RecoveryError, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
     observe::layout::RetainedEnv,
@@ -197,6 +197,17 @@ impl MachineService {
 
     fn local_record(&self) -> Arc<LocalMachineRecord> {
         self.local.record()
+    }
+
+    /// An Operator's request to write an image tag here, refused before anything is
+    /// pulled: a Full creation runs whatever a tag names, with the Service's Sealed
+    /// values and Volumes, so only a caller with Full access here writes one.
+    fn tag_refusal(&self, capability: &str) -> RpcError {
+        RpcError::unsupported("This Server writes an image tag only for a caller with Full access.")
+            .with_details(serde_json::json!({
+                "target": self.local_record().id().to_string(),
+                "capability": capability,
+            }))
     }
 
     fn replicated(&self) -> Result<&ReplicatedStore, RpcError> {
@@ -555,28 +566,22 @@ impl MachineRpc for MachineService {
     ) -> Result<Response<OpaquePayload>, Status> {
         let operator = Provenance::of(&request).operator();
         let request = expect::<op::EnsureContainer>(request)?;
-        let mut local = self.local_at(operator);
-        if operator {
-            // An Operator's start of a Provisioned Volume's holder waits out a switch of
-            // that Volume, as a Writer's start does.
-            local = local.with_switch(Arc::clone(&self.switch_mutation));
+        if let Some(refusal) = pin_on_ensure(&request.want) {
+            return respond(refusal);
         }
-        let presented = if operator {
-            Presented::Operator {
-                deploy: request.deploy.as_ref(),
-                rule: request.rule.as_deref(),
-                versions: &request.versions,
-            }
-        } else {
-            Presented::FullAccess {
-                deploy: request.deploy.as_ref(),
-            }
-        };
-        let admitted = match local.admit_spec(&request.want, presented).await {
-            Ok(admitted) => admitted,
-            Err(error) => return local_error(error),
-        };
-        finish(local.ensure_container(request.want, admitted).await)
+        self.ensure(operator, request).await
+    }
+
+    async fn ensure_pinned_container(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = Provenance::of(&request).operator();
+        let request = expect::<op::EnsurePinnedContainer>(request)?;
+        if let Some(refusal) = pinned_shape(&request.want) {
+            return respond(refusal);
+        }
+        self.ensure(operator, request).await
     }
 
     async fn update_container_limits(
@@ -624,7 +629,13 @@ impl MachineRpc for MachineService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let request = expect::<op::PrepareVolumes>(request)?;
-        finish(self.local.prepare_volumes(request.specs).await)
+        finish(
+            self.local
+                .clone()
+                .with_switch(Arc::clone(&self.switch_mutation))
+                .prepare_volumes(request.specs)
+                .await,
+        )
     }
 
     async fn list_volumes(
@@ -977,20 +988,59 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::PullImage>(request)?;
+        let operator = Provenance::of(&request).operator();
+        let mut request = expect::<op::PullImage>(request)?;
         if request.image.is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
         }
+        if operator {
+            if !ployz_core::authority::deploy::content_addressed(&request.image) {
+                return respond(self.tag_refusal(ployz_core::PULL_IMAGE_CAPABILITY));
+            }
+            if request.image.starts_with("sha256:") {
+                // An image ID names no registry to pull from; it is only looked up.
+                request.policy = ployz_core::PullPolicy::Never;
+            }
+        }
         finish(self.local.pull_image(request).await)
+    }
+
+    async fn pull_free_image(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = Provenance::of(&request).operator();
+        let request = expect::<op::PullFreeImage>(request)?;
+        if request.image.is_empty() {
+            return respond(RpcError::invalid_argument("image is required"));
+        }
+        if !operator {
+            // A Full creation runs the tag by name, so the tag is what this pull must place.
+            return finish(
+                self.local
+                    .pull_image(ployz_core::PullImageRequest {
+                        image: request.image,
+                        policy: request.policy,
+                        registry_auth: request.registry_auth,
+                    })
+                    .await,
+            );
+        }
+        finish(self.local.pull_free_image(request).await)
     }
 
     async fn pull_image_from_machine(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let operator = Provenance::of(&request).operator();
         let request = expect::<op::PullImageFromMachine>(request)?;
         if request.pull.image().is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
+        }
+        // Refused before the copy starts, so no name, staging or final, is written.
+        if operator && !names_content(&request.pull) {
+            return respond(self.tag_refusal(ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY));
         }
         finish(self.local.pull_image_from_machine(request).await)
     }
@@ -1234,6 +1284,120 @@ fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
         .copied()
 }
 
+impl MachineService {
+    /// Admit and converge one Container, for ensure.v1 and the pinned route alike. Admission
+    /// reads the spec alone, never the pin.
+    async fn ensure(
+        &self,
+        operator: bool,
+        request: ployz_core::EnsureContainerRequest,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        // Every start or create of a Provisioned Volume's holder, a hook's included, waits
+        // out any switch on this Machine, as a Writer's start does. The lock is one for the
+        // Machine, not one per Volume: a create reads each Volume's origin, and no promote
+        // or seed may land between that read and Docker.
+        let local = self
+            .local_at(operator)
+            .with_switch(Arc::clone(&self.switch_mutation));
+        let presented = if operator {
+            Presented::Operator {
+                rule: request.rule.as_deref(),
+                versions: &request.versions,
+            }
+        } else {
+            Presented::FullAccess {
+                versions: &request.versions,
+            }
+        };
+        let admitted = match local.admit_spec(&request.want, presented).await {
+            Ok(admitted) => admitted,
+            Err(error) => return local_error(error),
+        };
+        let issued = admitted.as_ref().and_then(AdmittedSpec::verified);
+        let ensured = local.ensure_container(request.want, admitted).await;
+        finish(ensured.map(|ensured| match ensured {
+            ployz_core::EnsuredContainer::Ensured { now, health, .. } => {
+                ployz_core::EnsuredContainer::Ensured {
+                    now,
+                    health,
+                    verified: issued,
+                }
+            }
+            refused @ ployz_core::EnsuredContainer::Refused { .. } => refused,
+        }))
+    }
+}
+
+/// ensure.v1 refuses a pin, now and later: a daemon from before the pinned route ignores
+/// one, so a pin travels only on the route that requires it.
+fn pin_on_ensure(want: &ployz_core::ContainerWant) -> Option<RpcError> {
+    let ployz_core::ContainerWant::Running {
+        container: ployz_core::RunTarget::New(new),
+        ..
+    } = want
+    else {
+        return None;
+    };
+    new.image_id
+        .is_some()
+        .then(|| pinned_refusal("ensure.v1 takes no image ID; send it on the pinned route"))
+}
+
+/// Why the pinned route refuses `want` before admission, if it does. It takes one
+/// Pending Service Container whose spec names its image by tag, with the image ID it
+/// must run, answered once health settles, and nothing a Deploy's pull would carry.
+fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
+    let ployz_core::ContainerWant::Running {
+        container: ployz_core::RunTarget::New(new),
+        rotation: ployz_core::RunRotation::Pending,
+    } = want
+    else {
+        return Some(pinned_refusal(
+            "the pinned route only creates a new Pending Container",
+        ));
+    };
+    let spec = &new.resolved_spec;
+    let why = if new.image_id.is_none() {
+        "a pinned creation names the image ID it runs"
+    } else if ployz_core::authority::deploy::content_addressed(&spec.container.image) {
+        "the spec's image already names its content; send it on ensure.v1"
+    } else if new.slot.kind != ployz_core::ContainerKind::ServiceContainer {
+        "the pinned route creates only Service Containers"
+    } else if new.answer != ployz_core::AnswerWhen::Settled {
+        "a pinned creation answers once its health settles"
+    } else if new.slot.service != spec.name {
+        "the slot names another Service than the spec"
+    } else if ployz_core::QualifiedService::new(new.slot.namespace.clone(), spec.name.clone())
+        .reserved()
+        .is_some()
+    {
+        "the pinned route creates no reserved Service"
+    } else if new.registry_auth.is_some() || !new.image_prepared {
+        "a pinned creation pulls nothing for the caller"
+    } else {
+        return None;
+    };
+    Some(pinned_refusal(why))
+}
+
+/// Whether every name `pull` writes is the retention name of the content it copies, which
+/// the copy checks against the content before writing. Image Cleanup alone reads those
+/// names, so an Operator may write them; any other name a Full creation may run.
+fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
+    let Some((_, digest)) = pull.image().split_once('@') else {
+        return false;
+    };
+    pull.tag().is_none_or(|tag| {
+        ployz_core::retained_digest(tag).is_some_and(|kept| kept.as_str() == digest)
+    })
+}
+
+fn pinned_refusal(message: &str) -> RpcError {
+    RpcError::invalid_argument(message).with_details(
+        serde_json::json!({ "capability": ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY }),
+    )
+}
+
 #[expect(
     clippy::result_large_err,
     reason = "tonic::Status is the RPC error type"
@@ -1263,7 +1427,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::DeployRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            &Gate::new(ployz_core::DEPLOY_APPROVAL_CAPABILITY).next("ployz deploy from an approved device"),
+            &Gate::new(ployz_core::SIGNED_VERSION_CAPABILITY).next("ployz deploy from an approved device"),
         )),
         LocalMachineError::RuleDeployRefused(ref refusal) => {
             let gate = Gate::new(ployz_core::DEPLOY_RULE_CAPABILITY);

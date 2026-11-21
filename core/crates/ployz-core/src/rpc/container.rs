@@ -9,7 +9,7 @@ use super::error::{RpcError, RpcErrorCode};
 use super::evidence::{Departure, Evidence};
 use crate::{
     ContainerId, ContainerKind, ContainerLimits, ContainerObservation, Namespace,
-    ResolvedServiceSpec, authority::DeployApproval, authority::Signed,
+    ResolvedServiceSpec, authority::Signed,
 };
 
 /// Whether listed Container observations carry real environment values.
@@ -73,15 +73,9 @@ pub enum ContainerLocator {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnsureContainerRequest {
     pub want: ContainerWant,
-    /// The approval of the Deploy this want is part of. A Machine under Device
-    /// enforcement requires it from an Operator caller for a new creation, and takes
-    /// it for a step on a Container in its Namespace; an older daemon ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub deploy: Option<Signed<DeployApproval>>,
     /// The automatic deploy rule this want is part of, with the pinned builder's image
     /// token for its Service. A Machine under Device enforcement takes it in place of a
-    /// deploy approval from an Operator caller. Sent only to a daemon advertising
+    /// signed version from an Operator caller. Sent only to a daemon advertising
     /// [`crate::DEPLOY_RULE_CAPABILITY`]; an older daemon ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -204,6 +198,12 @@ pub struct NewContainer {
     pub image_prepared: bool,
     #[serde(default, skip_serializing_if = "AnswerWhen::is_started")]
     pub answer: AnswerWhen,
+    /// The image the Container must run, by its content. Only the pinned route takes
+    /// one, for a spec whose image is a tag; the Machine runs exactly this image or
+    /// refuses with [`ContainerRefusalReason::ImageDiffers`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub image_id: Option<crate::ImageDigest>,
 }
 
 /// When the Machine answers a new creation: once it starts, or once its health settles.
@@ -259,6 +259,12 @@ pub enum EnsuredContainer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         health: Option<HealthVerdict>,
+        /// What this Machine issued for the rule build it checked online to admit this
+        /// creation, which the caller keeps so a later creation of that build needs no
+        /// GitHub token. `None` for any other change, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        verified: Option<crate::authority::VerifiedBuild>,
     },
     Refused {
         now: ContainerNow,
@@ -370,7 +376,7 @@ impl EnsuredContainer {
     /// The observed Container with its health verdict, or the refusal as an error.
     pub fn into_settled(self) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         match self {
-            Self::Ensured { now, health } => Ok((now, health)),
+            Self::Ensured { now, health, .. } => Ok((now, health)),
             Self::Refused { refusal, .. } => Err(refusal.into_error()),
         }
     }
@@ -414,7 +420,9 @@ impl ContainerRefusal {
             | ContainerRefusalReason::OlderThanIn
             | ContainerRefusalReason::HeldByOtherRun
             | ContainerRefusalReason::RotationMismatch
-            | ContainerRefusalReason::InRotation => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::InRotation
+            | ContainerRefusalReason::ImageDiffers
+            | ContainerRefusalReason::ForeignVolume => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -451,6 +459,10 @@ pub enum ContainerRefusalReason {
     SealingKeyMissing,
     /// A Sealed value is bound elsewhere or does not open with this Cluster's key.
     SealedValueUnopenable,
+    /// The Container in the slot runs another image than the one the request pinned.
+    ImageDiffers,
+    /// A Volume on this Machine carries data of another origin than the spec expects.
+    ForeignVolume,
     #[serde(other)]
     Unrecognized,
 }

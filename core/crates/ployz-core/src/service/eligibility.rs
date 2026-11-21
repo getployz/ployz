@@ -214,6 +214,7 @@ mod tests {
                 name: DockerVolumeName::parse("data").unwrap(),
                 maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(100).unwrap()),
                 labels: BTreeMap::new(),
+                birth: None,
             }
             .admit()
             .expect("valid volume declaration"),
@@ -231,6 +232,7 @@ mod tests {
                 name: DockerVolumeName::parse("unused").unwrap(),
                 maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(100).unwrap()),
                 labels: BTreeMap::new(),
+                birth: None,
             }
             .admit()
             .expect("valid volume declaration"),

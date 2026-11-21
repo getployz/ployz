@@ -56,9 +56,6 @@ impl StepBody for ServiceVersion {
     fn namespace(&self) -> &Namespace {
         &self.namespace
     }
-    fn window(&self) -> Option<(Timestamp, Timestamp)> {
-        None
-    }
 }
 
 /// Most signed versions one request may carry.
@@ -201,6 +198,10 @@ fn requested_digest(
         (
             "an image",
             content_addressed(&creation.spec.container.image),
+        ),
+        (
+            "a Volume's Environment",
+            creation.spec.volume_graph().born_in(namespace),
         ),
     ])?;
     PayloadDigest::of(&creation.spec.to_requested(), namespace)

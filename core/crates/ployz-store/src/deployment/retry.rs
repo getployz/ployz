@@ -257,19 +257,20 @@ pub(crate) fn retry(
             ..uploads
         })
     });
+    let ran = super::versions::replaying(source)?;
     let admitted_at = now();
     queue(tx, &stored.summary.environment_id, false, |tx, number| {
         let listed = next_listed(tx, &stored.summary.environment_id)?;
         // Every other frozen column comes from the source, so a retry never re-reads
-        // authored state.
+        // authored state, and runs the images its source ran.
         tx.execute(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed, service_uploads) \
+              message, listed, service_uploads, ran) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
               ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10 \
+              ?10, ?11 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -289,16 +290,17 @@ pub(crate) fn retry(
                 json_text(&nodes).as_str().into(),
                 listed.into(),
                 retried_uploads.as_deref().into(),
+                ran.as_str().into(),
             ],
         )?;
         // A retry builds the commits its source pinned, and may reuse the image its
-        // source built, with that image's token.
+        // source built, with that image's token and verified build.
         tx.execute(
             "INSERT INTO config_build \
              (deployment_id, service, organization_id, commit_sha, status, message, log, \
-              receipt, image_token) \
+              receipt, image_token, verified) \
              SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
-              image_token \
+              image_token, verified \
              FROM config_build WHERE deployment_id = ?2",
             &[id.as_str().into(), source.as_str().into()],
         )?;

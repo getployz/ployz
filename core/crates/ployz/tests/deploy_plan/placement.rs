@@ -3591,3 +3591,74 @@ fn a_docker_volume_is_not_placed_while_a_silent_machine_may_hold_it() {
         );
     }
 }
+
+/// A Service that mounts a born Volume lands only on a Server that checks where a
+/// Volume's data began. With none, the Deploy is refused before anything starts and names
+/// the Server to upgrade. A Legacy mount needs no such Server.
+#[test]
+fn born_volume_lands_only_on_a_server_that_checks_origins() {
+    let mut service = replicated("files", 1);
+    add_named_volume(&mut service, "data");
+    let legacy = service.clone();
+    let mut volumes = service.volume_graph().volumes().to_vec();
+    let mounts = service.volume_graph().mounts().to_vec();
+    let [volume] = volumes.as_mut_slice() else {
+        panic!("one volume")
+    };
+    volume.source = ployz_core::RawVolumeSource::Ordinary {
+        name: ployz_core::DockerVolumeName::parse("data").unwrap(),
+        driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
+        labels: BTreeMap::new(),
+        birth: Some(ployz_core::VolumeBirth {
+            namespace: ployz_core::Namespace::parse("app").unwrap(),
+            name: "data".to_owned(),
+            made_at: ployz_core::authority::Timestamp::from_millis(1).unwrap(),
+            nonce: ployz_core::BirthNonce::from_bytes([7; 16]),
+        }),
+    }
+    .admit()
+    .unwrap();
+    service
+        .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
+        .unwrap();
+    let with = |capabilities: &[&str], hex, name| {
+        let mut server = machine(hex, name);
+        server.machine.runtime.capabilities =
+            capabilities.iter().map(|c| (*c).to_owned()).collect();
+        server
+    };
+    let old = with(&["ployz.volume.copy.v1"], '1', "old");
+    let new = with(
+        &["ployz.volume.copy.v1", ployz_core::VOLUME_ORIGIN_CAPABILITY],
+        '2',
+        "new",
+    );
+
+    let both = DeploySnapshot {
+        machines: vec![old.clone(), new],
+        ..Default::default()
+    };
+    let plan = plan_deploy([&service], &both, PlanOptions::default()).unwrap();
+    assert!(
+        matches!(
+            operations(&plan).as_slice(),
+            [DeployOperation::RunContainer { machine_id: placed, .. }] if *placed == machine_id('2')
+        ),
+        "{:?}",
+        operations(&plan)
+    );
+
+    let only_old = DeploySnapshot {
+        machines: vec![old],
+        ..Default::default()
+    };
+    let refused = plan_deploy([&service], &only_old, PlanOptions::default()).unwrap_err();
+    assert!(
+        refused.to_string().starts_with(
+            "Upgrade old first. files mounts a volume that needs a newer Ployz on every server"
+        ),
+        "{refused}"
+    );
+    plan_deploy([&legacy], &only_old, PlanOptions::default())
+        .expect("a Legacy Volume lands on any Server");
+}

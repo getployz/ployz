@@ -2,27 +2,28 @@ use ployz_core::{
     BUILD_GRANT_HOLDER_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY, BUILD_SEALED_CAPABILITY,
     CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement, CapabilityName, DEPLOY_RULE_CAPABILITY,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
-    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, ENV_SEALED_CAPABILITY,
-    EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY,
-    INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY,
-    INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY,
-    LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
-    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY,
-    MACHINE_STORAGE_OBSERVATION_CAPABILITY, MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY,
-    MINT_BUILD_GRANT_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
-    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
-    READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
-    REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY, RULE_PASSKEY_CAPABILITY,
-    RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY,
-    SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY,
-    SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
-    SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
-    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
-    TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY,
+    ENSURE_PINNED_CONTAINER_CAPABILITY, ENV_SEALED_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
+    FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY,
+    INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY,
+    INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY, LEAVE_MACHINE_CAPABILITY,
+    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
+    MANAGEMENT_SCOPE_CAPABILITY, METRIC_HISTORY_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
+    PREPARE_VOLUMES_CAPABILITY, PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY,
+    PULL_FREE_IMAGE_CAPABILITY, PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+    READ_CLUSTER_NAME_CAPABILITY, READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY,
+    RECOVER_SEALING_KEY_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY,
+    REMOVE_VOLUME_CAPABILITY, REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY,
+    RULE_PASSKEY_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
+    SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY,
+    SET_DEVICE_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY, SET_INGRESS_TUNNEL_CAPABILITY,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
+    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
+    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    VOLUME_FLOOR_CAPABILITY, VOLUME_SHRINK_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY, op,
+    VOLUME_FLOOR_CAPABILITY, VOLUME_ORIGIN_CAPABILITY, VOLUME_SHRINK_CAPABILITY,
+    WRAP_SEALING_KEY_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -81,6 +82,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1"),
         (INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1"),
         (ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1"),
+        (
+            ENSURE_PINNED_CONTAINER_CAPABILITY,
+            "ployz.container.ensure-pinned.v1",
+        ),
         (INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1"),
         (PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1"),
         (LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1"),
@@ -107,6 +112,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
             "ployz.image.ingest.ensure.v1",
         ),
         (PULL_IMAGE_CAPABILITY, "ployz.image.pull.v1"),
+        (PULL_FREE_IMAGE_CAPABILITY, "ployz.image.pull-free.v1"),
         (
             PULL_IMAGE_FROM_MACHINE_CAPABILITY,
             "ployz.image.pull-from-machine.v1",
@@ -149,6 +155,7 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1"),
         (VOLUME_FLOOR_CAPABILITY, "ployz.volume.copy.floor.v1"),
         (VOLUME_SHRINK_CAPABILITY, "ployz.volume.size.shrink.v1"),
+        (VOLUME_ORIGIN_CAPABILITY, "ployz.volume.origin.v1"),
     ];
     for (capability, spelling) in frozen {
         assert_eq!(capability, spelling);
@@ -193,8 +200,8 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.sealed.v1",
             "ployz.build.grant.holder.v1",
             "ployz.build.grant.rule.v1",
-            "ployz.container.deploy-approval.v1",
-            "ployz.container.deploy-proposal.v1",
+            "ployz.container.signed-version.v1",
+            "ployz.container.signed-version.proposal.v1",
             "ployz.container.deploy-rule.v1",
             "ployz.rule.passkey.v1",
         ]
@@ -205,6 +212,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.container.list.v1",
             "ployz.container.inspect.v1",
             "ployz.container.ensure.v1",
+            "ployz.container.ensure-pinned.v1",
             "ployz.container.limits.update.v1",
             "ployz.container.placement.update.v1",
             "ployz.storage.inspect.v1",
@@ -219,6 +227,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.image.prune.v1",
             "ployz.image.ingest.ensure.v1",
             "ployz.image.pull.v1",
+            "ployz.image.pull-free.v1",
             "ployz.image.pull-from-machine.v1",
             "ployz.build.grant.mint.v1",
             "ployz.build.grant.inspect.v1",
@@ -230,6 +239,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.build.v1",
             "ployz.volume.copy.floor.v1",
             "ployz.volume.size.shrink.v1",
+            "ployz.volume.origin.v1",
         ]
     );
     assert_eq!(
@@ -380,12 +390,12 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "falls back: `ployz device rm` calls set-device.v1 Remove on an older daemon, which can hold no passkey",
     ),
     (
-        "ployz.container.deploy-approval.v1",
-        "falls back: an older daemon ignores the approval on EnsureContainer; one not enforcing creates as before, and one enforcing refuses every Operator creation as it did, naming the restart capability",
+        "ployz.container.signed-version.v1",
+        "falls back: an older daemon ignores `versions` on EnsureContainer; one not enforcing creates as before, and `ployz deploy` refuses to sign for one that enforces and doesn't advertise this, naming it to upgrade",
     ),
     (
-        "ployz.container.deploy-proposal.v1",
-        "gated: B5 must have Cloud send a deploy step of a proposal only to a Machine that advertises it, since nothing sends one yet; an older enforcing Machine refuses one, as it refuses any deploy approval it can't verify",
+        "ployz.container.signed-version.proposal.v1",
+        "gated: B5 must have Cloud send a deploy step of a proposal only to a Machine that advertises it, since nothing sends one yet; an older enforcing Machine refuses one, as it refuses any signed version it can't verify",
     ),
     (
         "ployz.container.deploy-rule.v1",
@@ -396,8 +406,16 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
     ),
     (
+        "ployz.container.ensure-pinned.v1",
+        "gated: a drain sends a tag spec only to a Server whose row doesn't lack it, and says to upgrade the rest; an unclaimed older daemon refuses it as unsupported, which the drain reports the same way, with nothing started",
+    ),
+    (
         "ployz.image.pull.v1",
         "falls back: an older daemon pulls when it creates the Container",
+    ),
+    (
+        "ployz.image.pull-free.v1",
+        "falls back: an older daemon answers unsupported, and the client sends ployz.image.pull.v1",
     ),
     (
         "ployz.ingress.tunnel.v1",
@@ -414,6 +432,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.volume.size.shrink.v1",
         "gated: a caller checks the contract on every Machine holding a copy and refuses the shrink, naming the Server whose daemon lacks it",
+    ),
+    (
+        "ployz.volume.origin.v1",
+        "refused legibly: a Server sends a born Volume's data only to a pull that names it, and the refusal names the capability; Legacy data moves between any two daemons as before",
     ),
     (
         "ployz.container.limits.update.v1",

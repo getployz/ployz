@@ -155,6 +155,14 @@ fn write_string(text: &str, out: &mut String) {
 #[ts(type = "number")]
 pub struct Timestamp(u64);
 
+/// A UTC date, and the seconds into its day.
+struct Civil {
+    year: u64,
+    month: u64,
+    day: u64,
+    seconds: u64,
+}
+
 impl Timestamp {
     /// # Errors
     /// Returns [`CanonicalError::Integer`] above 2^53 - 1, which no signed body can hold.
@@ -183,6 +191,50 @@ impl Timestamp {
     /// This time in UTC to the second, as RFC 3339 writes it: `2026-11-12T02:08:13Z`.
     #[must_use]
     pub fn utc(self) -> String {
+        let Civil {
+            year,
+            month,
+            day,
+            seconds,
+        } = self.civil();
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            seconds / 3600,
+            seconds % 3600 / 60,
+            seconds % 60
+        )
+    }
+
+    /// This time in UTC to the minute, as a person reads it beside `now`: `3 Nov 14:02 UTC`,
+    /// with the year when it isn't `now`'s.
+    #[must_use]
+    pub fn day_and_time(self, now: Self) -> String {
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let Civil {
+            year,
+            month,
+            day,
+            seconds,
+        } = self.civil();
+        let month = usize::try_from(month)
+            .ok()
+            .and_then(|month| MONTHS.get(month.checked_sub(1)?))
+            .copied()
+            .unwrap_or_default();
+        let year = match now.civil().year == year {
+            true => String::new(),
+            false => format!(" {year}"),
+        };
+        format!(
+            "{day} {month}{year} {:02}:{:02} UTC",
+            seconds / 3600,
+            seconds % 3600 / 60
+        )
+    }
+
+    fn civil(self) -> Civil {
         let seconds = self.0 / 1000;
         let (days, rest) = (seconds / 86_400, seconds % 86_400);
         // Howard Hinnant's civil_from_days, for days since 1970-01-01.
@@ -198,13 +250,12 @@ impl Timestamp {
         } else {
             month_index - 9
         };
-        let year = year_of_era + era * 400 + u64::from(month <= 2);
-        format!(
-            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-            rest / 3600,
-            rest % 3600 / 60,
-            rest % 60
-        )
+        Civil {
+            year: year_of_era + era * 400 + u64::from(month <= 2),
+            month,
+            day,
+            seconds: rest,
+        }
     }
 
     /// `self` plus `millis`, saturating at the largest safe integer.

@@ -43,6 +43,10 @@ pub struct PreparationInput {
     /// The Service's Preferred Machine, tried before any other Machine.
     #[serde(default)]
     pub preferred_machine: Option<ployz_core::MachineId>,
+    /// The content-addressed image each Service's tag runs as, written into its spec once
+    /// it is lowered. Only a Store runner sets it.
+    #[serde(skip)]
+    pub pins: BTreeMap<ServiceName, String>,
 }
 
 /// The one Git Service's frozen deployment, the commit a build would build, and
@@ -198,11 +202,16 @@ pub(crate) fn prepare(mut input: PreparationInput) -> Result<Prepared, RpcError>
             ));
         }
     }
-    let frozen = freeze(
+    let mut frozen = freeze(
         std::mem::take(&mut input.deployment),
         &mut input.source_commits,
         &mut input.uploads,
     )?;
+    for spec in &mut frozen.intent.target {
+        if let Some(image) = input.pins.get(&spec.name) {
+            spec.container.image.clone_from(image);
+        }
+    }
     Ok(Prepared { input, frozen })
 }
 
@@ -614,6 +623,38 @@ mod tests {
     use super::*;
     use ployz_core::RpcErrorCode;
     #[test]
+    fn a_pin_reaches_the_spec_preparation_lowers() {
+        const PINNED: &str =
+            "nginx@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let deployment = json!({
+            "namespace": "app",
+            "snapshots": (["web", "api"].map(|name| json!({"serviceId": name, "config": {
+                "version": 2, "privateDns": name, "env": {},
+                "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
+                "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}}
+            }}))),
+            "lineages": {}
+        });
+        let prepared = prepare(PreparationInput {
+            deployment,
+            pins: BTreeMap::from([(ServiceName::parse("web").unwrap(), PINNED.to_owned())]),
+            ..PreparationInput::default()
+        })
+        .unwrap();
+        let images: BTreeMap<_, _> = prepared
+            .frozen
+            .intent
+            .target
+            .iter()
+            .map(|spec| (spec.name.as_str(), spec.container.image.as_str()))
+            .collect();
+        assert_eq!(
+            images,
+            BTreeMap::from([("api", "nginx:latest"), ("web", PINNED)])
+        );
+    }
+
+    #[test]
     fn capture_orders_by_cloud_references() {
         let deployment = json!({
             "namespace": "app",
@@ -634,6 +675,7 @@ mod tests {
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
+            pins: BTreeMap::new(),
         })
         .unwrap();
         assert!(captured.build.targets().next().is_none());
@@ -675,6 +717,7 @@ mod tests {
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
+            pins: BTreeMap::new(),
         })
         .unwrap();
         assert!(captured.intent.options.removals.contains(&old));

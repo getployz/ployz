@@ -15,15 +15,13 @@ use bollard::{
 };
 use ployz_core::{
     DOCKER_ROOT_NEARLY_FULL_BYTES, DiskFull, DiskSpace, ExposedPort, ImageRemoval,
-    ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineImages, PullPolicy, RegistryAuth,
+    ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineImages, PullPolicy, RETENTION_TAG,
+    RegistryAuth,
 };
 
 use super::{Error, LocalDocker, Status, classify, containerd_store, project_image};
 use crate::docker_image::UnsignedImage;
 
-/// What follows a repository in the tag that keeps a pinned image from being pruned. A
-/// daemon of another version reads these tags, so the text does not change.
-const RETENTION_TAG: &str = ":ployz-sha256-";
 /// Unused images kept for rollback.
 const KEEP: usize = 3;
 /// Unused images kept when the Docker root is nearly full.
@@ -49,9 +47,18 @@ const DISK_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 #[derive(Clone)]
 pub struct Images {
     docker: LocalDocker,
-    /// The IDs of the images this Machine pulled itself, from a public registry with no
-    /// login, since this daemon started.
-    free: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    free: std::sync::Arc<std::sync::Mutex<Free>>,
+}
+
+/// What this Machine pulled itself, from a public registry with no login, since this
+/// daemon started. Only [`Images::pull_free`] writes it, and only unsigned creations
+/// read it, in place of a Docker tag a caller with Full access may have written.
+#[derive(Default)]
+struct Free {
+    ids: HashSet<String>,
+    /// The image each reference, spelled as [`ployz_core::whole_image_name`] spells it,
+    /// last pulled to.
+    named: HashMap<String, String>,
 }
 
 impl Images {
@@ -63,25 +70,31 @@ impl Images {
     }
 
     /// Make `image` one this Machine pulled itself with no login, for a Container of a
-    /// spec nothing signed. An image here under that name counts only when such a pull
-    /// placed it, so a private image is never run for a caller who only knows its name.
-    /// `policy` pulls again under `Always`, and under `Never` runs only what is here.
+    /// spec nothing signed, and answer its ID. The image this Machine last pulled so for
+    /// `image` comes first, then one here under that name that such a pull placed, so a
+    /// private image is never run for a caller who only knows its name. `policy` pulls
+    /// again under `Always`, and under `Never` runs only what is here. Writes no name.
     ///
     /// # Errors
     ///
     /// Returns [`Error::UnsignedImage`] when the registry is not public, the pull fails,
     /// or `policy` is `Never` and no such pull placed the image, and [`Error::DiskFull`]
     /// when the pull fails on a full disk.
-    pub(crate) async fn pull_free(&self, image: &str, policy: PullPolicy) -> Result<(), Error> {
+    pub(crate) async fn pull_free(&self, image: &str, policy: PullPolicy) -> Result<String, Error> {
         let docker = &self.docker.client;
+        let key = ployz_core::whole_image_name(image).unwrap_or_else(|| image.to_owned());
         if policy != PullPolicy::Always {
-            match docker.inspect_image(image).await {
-                Ok(local) if local.id.as_deref().is_some_and(|id| self.is_free(id)) => {
-                    return Ok(());
+            let pulled = self.free_ids().named.get(&key).cloned();
+            for reference in pulled.iter().map(String::as_str).chain([image]) {
+                match docker.inspect_image(reference).await {
+                    Ok(local) => {
+                        if let Some(id) = local.id.filter(|id| self.is_free(id)) {
+                            return Ok(id);
+                        }
+                    }
+                    Err(error) if crate::docker_image::is_not_found(&error) => {}
+                    Err(error) => return Err(Error::Docker(error)),
                 }
-                Ok(_) => {}
-                Err(error) if crate::docker_image::is_not_found(&error) => {}
-                Err(error) => return Err(Error::Docker(error)),
             }
         }
         if policy == PullPolicy::Never {
@@ -89,8 +102,10 @@ impl Images {
         }
         match crate::docker_image::pull_public(docker, image).await {
             Ok(id) => {
-                self.free_ids().insert(id);
-                Ok(())
+                let mut free = self.free_ids();
+                free.ids.insert(id.clone());
+                free.named.insert(key, id.clone());
+                Ok(id)
             }
             Err(UnsignedImage::Pull(error)) => {
                 let failure = self.pull_failure(Error::ImagePull(error)).await;
@@ -106,10 +121,10 @@ impl Images {
 
     /// Whether `image_id` is an image [`Self::pull_free`] placed.
     pub(crate) fn is_free(&self, image_id: &str) -> bool {
-        self.free_ids().contains(image_id)
+        self.free_ids().ids.contains(image_id)
     }
 
-    fn free_ids(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+    fn free_ids(&self) -> std::sync::MutexGuard<'_, Free> {
         self.free
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -131,8 +146,28 @@ impl Images {
         if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, auth).await {
             return Err(self.pull_failure(Error::ImagePull(error)).await);
         }
-        let inspect = docker
-            .inspect_image(image)
+        self.exposed_ports(image).await
+    }
+
+    /// [`Self::pull_free`] for a Deploy's pull phase: the ports the image it found exposes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::pull_free`], and when Docker no longer holds the image it found.
+    pub async fn pull_free_image(
+        &self,
+        image: &str,
+        policy: PullPolicy,
+    ) -> Result<Vec<ExposedPort>, Error> {
+        let id = self.pull_free(image, policy).await?;
+        self.exposed_ports(&id).await
+    }
+
+    async fn exposed_ports(&self, reference: &str) -> Result<Vec<ExposedPort>, Error> {
+        let inspect = self
+            .docker
+            .client
+            .inspect_image(reference)
             .await
             .map_err(Error::ImagePull)?;
         Ok(exposed_ports(
@@ -292,17 +327,6 @@ impl Images {
         }
         Ok(ImagesRemoved { results })
     }
-}
-
-/// The tag a pinned `image` is kept under, `repository:ployz-sha256-<hex>`. A pin that also
-/// names a tag (`redis:7-alpine@sha256:…`) drops it, since a Docker reference holds one tag.
-pub(super) fn retention_tag(image: &str) -> Option<String> {
-    let (name, hex) = image.split_once("@sha256:")?;
-    let repository = match name.rsplit_once(':') {
-        Some((repository, tag)) if !tag.contains('/') => repository,
-        _ => name,
-    };
-    Some(format!("{repository}{RETENTION_TAG}{hex}"))
 }
 
 /// Retention tags in `repository` to remove, newest kept. Images a Container uses,
@@ -472,7 +496,7 @@ mod tests {
                 format!("localhost:5000/api:ployz-sha256-{hex}"),
             ),
         ] {
-            let tag = retention_tag(&image).unwrap();
+            let tag = ployz_core::retention_tag(&image).unwrap();
             assert_eq!(tag, kept);
             assert!(ployz_core::is_image_reference(&tag), "{tag}");
         }
@@ -921,6 +945,42 @@ mod tests {
             matches!(&error, Error::ImagePull(DockerError::DockerStreamError { error }) if error == MANIFEST_UNKNOWN),
             "{error:?}"
         );
+    }
+
+    /// An unsigned `never` redeploy runs what this Machine last pulled for the name, spelled
+    /// either way, while the registry now serves something else and a Full build holds the
+    /// tag. No pull of the name writes it.
+    #[tokio::test]
+    async fn a_free_pull_is_found_again_by_any_spelling_and_names_nothing() {
+        let (runtime, fake) =
+            crate::docker::test_support::fake_runtime_with(Default::default()).await;
+        let images = runtime.images();
+        let served = format!("sha256:{}", "e".repeat(64));
+        fake.registry
+            .lock()
+            .unwrap()
+            .insert("nginx:latest".into(), served.clone());
+        let pulled = images
+            .pull_free("nginx", PullPolicy::Missing)
+            .await
+            .unwrap();
+        assert_eq!(pulled, served);
+        assert_eq!(fake.images.lock().unwrap().get("nginx:latest"), None);
+
+        let built = format!("sha256:{}", "b".repeat(64));
+        fake.images
+            .lock()
+            .unwrap()
+            .insert("library/nginx:latest".into(), Some(built));
+        fake.registry
+            .lock()
+            .unwrap()
+            .insert("nginx:latest".into(), format!("sha256:{}", "f".repeat(64)));
+        let again = images
+            .pull_free("library/nginx:latest", PullPolicy::Never)
+            .await
+            .unwrap();
+        assert_eq!(again, served);
     }
 
     #[test]

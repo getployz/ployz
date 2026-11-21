@@ -15,6 +15,20 @@ export const placementBlockers = (machines: readonly StorageServer[]) =>
 export const placementUpgradeMessage = (blockers: readonly string[]) =>
   `Every Server with storage needs a newer Ployz. Upgrade ${blockers.join(", ")} first.`;
 
+/** Checks where a copy's data began, so it may hold a born Volume. A Legacy Volume needs no such check. */
+export const checksOrigins = (machine: Daemon) => machine.capabilities.includes(requirements.volumeOrigin.capability);
+
+/** Which of `servers` can't hold a born Volume, by name; one the frame doesn't show, by ID. */
+export const originBlockers = (machines: readonly (Daemon & { readonly id: string; readonly name: string })[], servers: readonly string[]) =>
+  [...new Set(servers)].flatMap((id) => {
+    const machine = machines.find((entry) => entry.id === id);
+    if (machine === undefined) return [id];
+    return checksOrigins(machine) ? [] : [machine.name];
+  });
+
+export const originUpgradeMessage = (volume: string, blockers: readonly string[]) =>
+  `Upgrade ${blockers.join(", ")} first. ${volume} needs a newer Ployz on every Server that holds it.`;
+
 type PlacementMachine = StorageServer & { readonly id: string; readonly acceptsServices: boolean };
 
 /** The Servers a Volume can move or mirror to: none while any Server with storage blocks placement. */

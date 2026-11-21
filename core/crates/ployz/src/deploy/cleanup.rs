@@ -104,7 +104,7 @@ pub(crate) async fn bring_in<C: CopyLifecycle>(
         .ensure_unsettled(&copy.machine_id, want, Some(in_rpc_timeout(spec)))
         .await;
     match answer {
-        Ok(EnsuredContainer::Ensured { now, health }) => Ok(match now.present() {
+        Ok(EnsuredContainer::Ensured { now, health, .. }) => Ok(match now.present() {
             Some(observed) if *observed.rotation() == CopyRotation::In => BroughtIn::In,
             _ => BroughtIn::NotIn { health },
         }),

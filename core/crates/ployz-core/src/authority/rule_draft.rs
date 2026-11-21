@@ -10,6 +10,7 @@ use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use super::{
+    birth::{self, BirthError, Births, Mounts, PlannedVolumes},
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
     deploy::run_fields_cleared,
     keys::{Signed, SignerKey},
@@ -43,14 +44,20 @@ pub struct RuleSourceView {
 }
 
 /// What a rule is drafted from, as the Store's rule view gives it: the Environment's
-/// Namespace, the rule kept for it, where its Saved Services build from, and the latest
-/// Saved revision lowered as a push would deploy it. Other fields of the view are ignored.
+/// Namespace, the rule kept for it, where its Saved Services build from, the latest
+/// Saved revision lowered as a push would deploy it, and the Volumes it mounts. Other
+/// fields of the view are ignored.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct RuleBasis {
     pub namespace: Namespace,
     pub rule: Option<Signed<AutoDeployRule>>,
     pub sources: Vec<RuleSourceView>,
     pub target: Vec<RequestedServiceSpec>,
+    #[serde(default)]
+    pub volumes: PlannedVolumes,
+    /// The births [`AutoDeployRule::draft`] minted into `target`.
+    #[serde(skip)]
+    pub minted: Births,
 }
 
 /// What the approver's client sets around a rule: the Cluster and its Servers as the
@@ -109,21 +116,29 @@ pub enum RuleDraftError {
     #[error("There's no automatic deploy rule to turn off.")]
     NoRule,
     #[error(transparent)]
+    Birth(#[from] BirthError),
+    #[error(transparent)]
     Sealed(#[from] MissingSealedIdentity),
     #[error(transparent)]
     Canonical(#[from] CanonicalError),
 }
 
-/// A rule's canonical body, to sign as it is, and what it shows the person.
+/// A rule's canonical body, to sign as it is, what it shows the person, and the births it
+/// minted, which the Store records beside the signed rule.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct RuleDraft {
     pub body: String,
     pub summary: RuleSummary,
+    #[serde(skip_serializing_if = "Births::is_empty")]
+    #[ts(optional, as = "Option<Births>")]
+    pub births: Births,
 }
 
 /// What a person reads before they sign a rule, taken from the body itself.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct RuleSummary {
+    /// The Namespace the rule deploys into, which every Server checks.
+    pub namespace: String,
     pub repository: String,
     pub branch: String,
     pub workflow: String,
@@ -266,16 +281,31 @@ impl RuleBasis {
 impl AutoDeployRule {
     /// The rule that deploys every push of `names`' one branch with their Saved settings
     /// in `basis`: the kept rule's next generation when it is for the same repository,
-    /// branch and Environment, else a new rule's first.
+    /// branch and Environment, else a new rule's first. Each Volume `basis` lists as unborn
+    /// gets a birth first, written into `basis.target` and kept in `basis.minted`, so the
+    /// rule approves the specs a push sends once the Store records them.
     ///
     /// # Errors
     /// Returns a [`RuleDraftError`] naming what keeps `names` from one rule.
     pub fn draft(
-        basis: &RuleBasis,
+        basis: &mut RuleBasis,
         names: &[ServiceName],
         terms: RuleTerms,
     ) -> Result<Self, RuleDraftError> {
         let (repository, branch, repository_id) = basis.one_branch(names)?;
+        // The client's random ID for a new rule, which no rule keeps when it extends one,
+        // keys each nonce, so every approval mints births no other one can.
+        // Only the specs this rule approves get births, so the Store records none for a
+        // Volume no Service of the rule mounts.
+        basis.minted = birth::mint(
+            basis
+                .target
+                .iter_mut()
+                .filter(|spec| names.contains(&spec.name)),
+            (&basis.namespace, &basis.volumes),
+            terms.issued_at,
+            |name| birth::nonce(terms.new_rule.as_bytes(), name),
+        )?;
         let mut services = names
             .iter()
             .map(|name| basis.rule_service(name, &terms.platform))
@@ -353,6 +383,7 @@ impl AutoDeployRule {
         Ok(RuleDraft {
             body: canonical::to_canonical(self)?,
             summary: self.summary(basis),
+            births: basis.minted.clone(),
         })
     }
 
@@ -362,9 +393,16 @@ impl AutoDeployRule {
     #[must_use]
     pub fn summary(&self, basis: &RuleBasis) -> RuleSummary {
         let kept = basis.kept().filter(|kept| kept.rule == self.rule);
+        let mounts = Mounts {
+            namespace: &self.namespace,
+            volumes: &basis.volumes,
+            minted: &basis.minted,
+            now: self.issued_at,
+        };
         let builder = &self.source.builder;
         let sha = builder.sha.to_string();
         RuleSummary {
+            namespace: self.namespace.to_string(),
             repository: Shown::text(&self.source.repository).into(),
             branch: Shown::text(&self.source.branch).into(),
             workflow: Shown::text(&self.source.workflow).into(),
@@ -391,7 +429,7 @@ impl AutoDeployRule {
                         .target
                         .iter()
                         .find(|spec| spec.name == service.name)
-                        .map(settings)
+                        .map(|spec| settings(spec, &mounts))
                         .unwrap_or_default()
                         .into_iter()
                         .map(String::from)
@@ -486,27 +524,19 @@ fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
 }
 
 /// The settings a person reads before approving: each variable, Sealed parts by name only,
-/// the pre-deploy command, then every other field a statement signs whose value is not the
-/// spec's default, by its wire name. The run fields Cloud picks are not shown, since they
-/// are not signed. A field added to the spec later shows without a change here, and a
-/// value shows whenever it signs differently from the default, so no two specs that sign
-/// differently read the same, but for a Sealed ciphertext.
+/// the pre-deploy command, a line for each mount of a managed or Docker volume naming the
+/// data it holds with the settings it signs, then every other field a statement signs whose value is not the spec's
+/// default, by its wire name. The run fields Cloud picks are not shown, since they are not
+/// signed. A field added to the spec later shows without a change here, and a value shows
+/// whenever it signs differently from the default, so no two specs that sign differently
+/// read the same, but for a Sealed ciphertext and the name a born Volume is declared under,
+/// which its birth stands for.
 #[must_use]
-pub fn settings(spec: &RequestedServiceSpec) -> Vec<Shown> {
-    settings_edited(spec, |_| {})
-}
-
-/// [`settings`] of `spec`'s JSON after `edit` changed it, as a digest that edits the JSON
-/// it hashes, such as a preview template's placeholders, reads it.
-pub(super) fn settings_edited(
-    spec: &RequestedServiceSpec,
-    edit: impl FnOnce(&mut Value),
-) -> Vec<Shown> {
+pub fn settings(spec: &RequestedServiceSpec, mounts: &Mounts<'_>) -> Vec<Shown> {
     let mut value =
         serde_json::to_value(run_fields_cleared(spec)).expect("a spec serializes to JSON");
     drop_nulls(&mut value);
     hide_cleared_values(&mut value);
-    edit(&mut value);
     let Value::Object(mut fields) = value else {
         return Vec::new();
     };
@@ -524,6 +554,9 @@ pub(super) fn settings_edited(
             hook.remove("environment"),
         );
     }
+    let (mounted, shown) = mounts.lines(spec);
+    lines.extend(mounted);
+    leave_out_mounts(spec, &mut fields, &shown);
     if let Some(Value::Array(configs)) = fields.get_mut("configs") {
         configs.iter_mut().for_each(config_text);
     }
@@ -557,6 +590,44 @@ fn hide_cleared_values(spec: &mut Value) {
             .as_object()
             .map(|counts| counts.keys().cloned().map(Value::String).collect());
         *regions = Value::Array(names.unwrap_or_default());
+    }
+}
+
+/// Leave out of `fields` the mounts at `shown`, which have lines of their own, and each
+/// Volume only those mounts use.
+fn leave_out_mounts(
+    spec: &RequestedServiceSpec,
+    fields: &mut Map<String, Value>,
+    shown: &[String],
+) {
+    let graph = spec.volume_graph();
+    let lined = |target: &str| shown.iter().any(|shown| shown == target);
+    let only_lined = |reference: &str| {
+        let mut mounts = graph
+            .mounts()
+            .iter()
+            .filter(|mount| mount.volume.as_str() == reference)
+            .peekable();
+        mounts.peek().is_some() && mounts.all(|mount| lined(mount.target.as_str()))
+    };
+    let field =
+        |item: &Value, name: &str| item.get(name).and_then(Value::as_str).map(str::to_owned);
+    if let Some(Value::Array(mounts)) = fields.get_mut("mounts") {
+        mounts.retain(|mount| field(mount, "target").is_none_or(|target| !lined(&target)));
+    }
+    if let Some(Value::Array(volumes)) = fields.get_mut("volumes") {
+        volumes.retain(|volume| {
+            field(volume, "reference").is_none_or(|reference| !only_lined(&reference))
+        });
+    }
+    for name in ["mounts", "volumes"] {
+        if fields
+            .get(name)
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            fields.remove(name);
+        }
     }
 }
 
@@ -687,4 +758,4 @@ fn config_text(config: &mut Value) {
 
 #[cfg(test)]
 #[path = "rule_draft_tests.rs"]
-mod tests;
+pub(super) mod tests;

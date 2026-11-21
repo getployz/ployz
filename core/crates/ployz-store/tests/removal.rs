@@ -307,7 +307,7 @@ fn admit_deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8) {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
         )
         .unwrap();
@@ -1019,7 +1019,7 @@ fn with_no_server_left_a_removal_applies_at_once() {
             message: None,
             prune: false,
             no_prune: false,
-            approval: None,
+            versions: Vec::new(),
         }),
         &none_left,
     ));
@@ -1044,7 +1044,7 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
         )
         .unwrap();
@@ -1149,7 +1149,7 @@ fn shutting_down_what_never_ran_applies_at_once() {
             rolls_back: None,
             version: None,
             accept_volume_loss: Vec::new(),
-            approval: None,
+            versions: Vec::new(),
         }),
         &Trusted::default(),
     );
@@ -1854,7 +1854,7 @@ fn retrying_a_failed_shutdown_asks_again() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approval: None,
+                versions: Vec::new(),
             }),
             trusted,
         )
@@ -1892,7 +1892,7 @@ fn an_agent_retrying_a_shutdown_with_no_server_left_still_asks_a_human() {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approval: None,
+                versions: Vec::new(),
             }),
             trusted,
         )
@@ -2169,7 +2169,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
             message: None,
             prune: false,
             no_prune: false,
-            approval: None,
+            versions: Vec::new(),
         }))),
         Some("production"),
     );
