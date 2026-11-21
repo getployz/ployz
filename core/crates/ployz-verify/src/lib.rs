@@ -25,6 +25,8 @@ mod harness;
 #[cfg(test)]
 mod mcp_login;
 #[cfg(test)]
+mod member_removal;
+#[cfg(test)]
 mod pool_ownership;
 #[cfg(test)]
 mod region_placement;
