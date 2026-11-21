@@ -223,6 +223,8 @@ pub enum GateReason {
     AwaitingActivation,
     /// The Machine is turning on Device enforcement.
     Activating,
+    /// The joining Machine was forgotten. It joins again only with a new identity.
+    MemberRemoved,
 }
 
 /// What a Machine's refusal of a gated call names: the capability that gates it and the

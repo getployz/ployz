@@ -112,7 +112,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                         .details
                         .get("capability")
                         .and_then(serde_json::Value::as_str)
-                        == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
+                        == Some(ployz_core::JOIN_APPROVAL_CAPABILITY)
+                    // A forgotten Server needs a new identity, not an approval.
+                    && error.details.get("reason").and_then(serde_json::Value::as_str)
+                        != Some("member_removed") =>
             {
                 if !crate::handlers::device::sign_waiting_join(
                     &mut entry,

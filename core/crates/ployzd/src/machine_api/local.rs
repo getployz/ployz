@@ -1401,9 +1401,11 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::MemberRemoved(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
-            &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY).next(
-                "ployz server add --reset with a new token; reinstall first if it never finished joining",
-            ),
+            &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY)
+                .because(GateReason::MemberRemoved)
+                .next(
+                    "ployz server add --reset with a new token; reinstall first if it never finished joining",
+                ),
         )),
         LocalMachineError::JoinConsumed(_) => Err(gated(
             tonic::Code::PermissionDenied,
