@@ -102,3 +102,35 @@ version or an [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-pu
   kept for each version that deployment ran, so a server runs a version a device signed, and
   any service that reaches no data. It refuses any other container, and the deployment fails
   without changing what runs.
+
+## Forget older versions
+
+To make sure an older version never runs again, deploy the version you want with
+`ployz deploy --forget-older` on an approved device. It signs each version it ships marked to
+forget, and every server then refuses any version of those services signed before it. That
+includes the signatures Ployz Cloud kept, so **Redeploy** and **Roll back** to an older
+deployment fail too.
+
+```bash
+ployz deploy api --forget-older
+```
+
+- **Running containers keep running.** Forget only stops new ones. A stopped container that an
+  older version made won't start again.
+- **Every server is asked, not only the ones that run the service.** The command prints what
+  each server did. A server that doesn't answer, or runs a ployz too old to forget, is named, and
+  the command exits 3. Run the same deploy again once it answers. A server that joins later takes
+  what the server that admits it has forgotten, so a forget sent while it joins misses it until
+  you send it again.
+- **Automatic deploy rules stop.** A forget also retires each
+  [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) for those services that
+  was approved before it. Pushes stop deploying them, and Ployz Cloud can't move or drain the
+  containers a rule built, until you approve the rule again with `ployz github rule approve`.
+- **Forget goes by each device's clock.** The forget's time is your device's clock when you said
+  yes. A version signed on a device whose clock runs behind yours can be forgotten even if it was
+  signed after, and one signed on a device whose clock runs ahead can survive. Keep your devices'
+  clocks set automatically. A server refuses a forget stamped more than 10 minutes past its own
+  clock. If that happens, check the server's clock as well as yours.
+
+`--forget-older` needs a deploy your device signs, so it works only when your servers
+[enforce device approval](deployments.md#deploy-from-an-approved-device).
