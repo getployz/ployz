@@ -18,6 +18,7 @@ use super::{Error, operator::Scoped};
 use crate::operator::history::{self, StoredLine, StoredPage};
 use crate::{
     cloud_account::{self, Credential, StoreCallError},
+    cloud_login::LoginError,
     ui::{self, Table},
 };
 
@@ -267,6 +268,11 @@ pub(super) enum MetricsAsked {
     Server(String),
 }
 
+/// A Cloud that answers no CLI route has no history to read, so the Servers answer instead.
+fn offers_no_cli_access(error: &StoreCallError) -> bool {
+    matches!(error, StoreCallError::Cloud(LoginError::Unsupported(_)))
+}
+
 /// What Cloud did with a `metrics` read.
 pub(super) enum CloudMetrics {
     Shown,
@@ -291,7 +297,14 @@ pub(super) fn metrics(
         MetricsAsked::Server(named) => {
             let only = MachineName::parse(named.as_str())
                 .map_err(|_| Error::usage(format!("{named:?} is not a Server name")))?;
-            let servers: ServersAnswer = ask(credential, CloudQuery::Servers { only: Some(only) })?;
+            let servers: ServersAnswer =
+                match refusable(credential, CloudQuery::Servers { only: Some(only) })? {
+                    Ok(answer) => answer,
+                    Err(error) if offers_no_cli_access(&error) => {
+                        return Ok(CloudMetrics::NotEnabled(error.into()));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             let server = match servers.servers.as_slice() {
                 [] => return Err(Error::usage(format!("No Server is named {named:?}"))),
                 [server] => server,
@@ -325,6 +338,9 @@ pub(super) fn metrics(
             return Ok(CloudMetrics::NotEnabled(
                 StoreCallError::Refused(refused).into(),
             ));
+        }
+        Err(error) if offers_no_cli_access(&error) => {
+            return Ok(CloudMetrics::NotEnabled(error.into()));
         }
         Err(error) => return Err(error.into()),
     };
