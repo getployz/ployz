@@ -19,6 +19,19 @@ pub async fn observe_enrollment(entry: &mut Client) -> Result<EnrollmentSnapshot
         .ok_or_else(|| RpcError::unavailable("Entry Machine returned no enrollment snapshot"))
 }
 
+/// What a CLI that runs a joiner's catch-up claims in its Register: it follows the
+/// Cluster's declared Doors, and the joiner opens the floors sealed beside the Sealing Key
+/// when `joiner`, its daemon's own runtime, says so. A Machine sealing floors to an older
+/// daemon would break its join.
+#[must_use]
+pub fn claims(joiner: &ployz_core::MachineRuntime) -> Vec<&'static str> {
+    let mut claimed = vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY];
+    if joiner.claim(ployz_core::FORGET_VERSIONS_CAPABILITY) == ployz_core::Claim::Advertises {
+        claimed.push(ployz_core::FORGET_VERSIONS_CAPABILITY);
+    }
+    claimed
+}
+
 /// The Register request for a saved assignment: what the joiner asked, with the subnet
 /// and runtime the Cluster assigned. The capabilities are the joiner's own claim, which
 /// the caller that runs its catch-up sets and Cloud relays; nothing here adds one.
@@ -164,6 +177,29 @@ mod tests {
         let registered = super::checked_registration(&saved, &snapshot).unwrap();
         assert_eq!(registered.capabilities, [SET_CLUSTER_DOORS_CAPABILITY]);
         assert_eq!(registered.assigned_subnet, Some(saved.machine.subnet));
+    }
+
+    /// A Server added through Cloud registers with no runtime, so only this claim tells
+    /// the admitting Machine to seal floors to it, and only a daemon that opens them may
+    /// claim it.
+    #[test]
+    fn a_joiner_claims_the_floors_only_when_its_daemon_opens_them() {
+        let mut older = ployz_core::MachineRuntime::default();
+        older
+            .capabilities
+            .insert(SET_CLUSTER_DOORS_CAPABILITY.to_owned());
+        assert_eq!(super::claims(&older), [SET_CLUSTER_DOORS_CAPABILITY]);
+        let mut current = older;
+        current
+            .capabilities
+            .insert(ployz_core::FORGET_VERSIONS_CAPABILITY.to_owned());
+        assert_eq!(
+            super::claims(&current),
+            [
+                SET_CLUSTER_DOORS_CAPABILITY,
+                ployz_core::FORGET_VERSIONS_CAPABILITY
+            ]
+        );
     }
 
     fn dropped() -> crate::connect::ConnectError {

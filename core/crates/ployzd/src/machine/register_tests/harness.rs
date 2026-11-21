@@ -145,7 +145,7 @@ pub(super) fn join_signer() -> ployz_core::authority::Signer {
 }
 
 /// Approve `signer` at `entry`'s console, unless it already trusts it.
-async fn trust_device(entry: &LocalMachine, signer: &ployz_core::authority::Signer) {
+pub(super) async fn trust_device(entry: &LocalMachine, signer: &ployz_core::authority::Signer) {
     let key = signer.public().into();
     if entry.record().devices().any(|device| device == key) {
         return;
@@ -156,6 +156,41 @@ async fn trust_device(entry: &LocalMachine, signer: &ployz_core::authority::Sign
         .set_device(ployz_core::SetDeviceRequest::Approve { key })
         .await
         .unwrap();
+}
+
+/// Forget `app/api` at `entry` as of now, signed by [`join_signer`], which `entry` then
+/// trusts, so `entry` keeps a floor for it.
+pub(super) async fn forget_api(entry: &LocalMachine) -> ployz_core::QualifiedService {
+    use ployz_core::authority::{PayloadDigest, ServiceVersion, Signed, SignerKey, Timestamp};
+    let signer = join_signer();
+    trust_device(entry, &signer).await;
+    let body = ServiceVersion {
+        forget_older: true,
+        cluster: crate::sealing_key::SealingKey::load(entry.owner().data_dir())
+            .unwrap()
+            .expect("the entry holds the Sealing Key")
+            .public_key(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        service: ployz_core::ServiceName::parse("api").unwrap(),
+        digest: PayloadDigest::from_bytes([1; 32]),
+        signed_at: Timestamp::now(),
+        signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
+    };
+    let forgot = entry
+        .forget_versions(ployz_core::ForgetVersionsRequest {
+            versions: vec![Signed::sign(&body, &signer).unwrap()],
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            forgot.outcomes[..],
+            [ployz_core::ForgetOutcome::Raised { .. }]
+        ),
+        "{forgot:?}"
+    );
+    ployz_core::QualifiedService::parse("app/api").unwrap()
 }
 
 /// Register `request` at `entry` as a person's driver does: ask, sign the join the entry

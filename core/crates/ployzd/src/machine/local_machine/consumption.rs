@@ -20,6 +20,8 @@ use ployz_core::{
     },
 };
 use ployz_decide::service_floor::{self, Raise, Refused, Signature};
+
+use crate::sealing_key::Floors;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -276,6 +278,51 @@ impl ConsumptionLog {
                     Err(refused) => Edit::Keep(Err(refused)),
                 },
             )
+        })
+    }
+
+    /// Every floor this Machine keeps in `cluster`, to seal beside its Sealing Key.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(crate) fn floors_in(&self, cluster: SealingPublicKey) -> Result<Floors, Error> {
+        let prefix = format!("{cluster}/");
+        self.read(Error::ApprovalRecord, |log| {
+            log.floors
+                .iter()
+                .filter_map(|(key, floor)| {
+                    let service = key.strip_prefix(&prefix)?.parse().ok()?;
+                    Some((service, *floor))
+                })
+                .collect()
+        })
+    }
+
+    /// Take `floors`, sealed beside `cluster`'s Sealing Key, keeping the higher of each and
+    /// this Machine's own. They are written before the key, so a Machine that holds the
+    /// key holds them.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn install_floors(
+        &self,
+        cluster: SealingPublicKey,
+        floors: &Floors,
+    ) -> Result<(), Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let mut raised = false;
+            for (service, &floor) in floors {
+                let key = floor_key(cluster, service);
+                if log.floors.get(&key).is_none_or(|kept| *kept < floor) {
+                    log.floors.insert(key, floor);
+                    raised = true;
+                }
+            }
+            Ok(if raised {
+                Edit::Write(())
+            } else {
+                Edit::Keep(())
+            })
         })
     }
 

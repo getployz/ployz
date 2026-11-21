@@ -421,6 +421,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
                 .seal_from(
                     machine.peer_store.record().private_key(),
                     &machine.machine.public_key,
+                    None,
                 )
                 .unwrap();
             unary::<op::InstallSealingKey>(json!({
@@ -431,7 +432,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
             let other = SealingKey::generate();
             let stranger = crate::network::WireGuardPrivateKey::generate();
             let sealed = other
-                .seal_from(&stranger, &machine.machine.public_key)
+                .seal_from(&stranger, &machine.machine.public_key, None)
                 .unwrap();
             unary::<op::InstallSealingKey>(json!({
                 "from": peer, "sealed": sealed, "public_key": other.public_key(),

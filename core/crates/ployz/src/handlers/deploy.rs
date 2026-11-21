@@ -7,6 +7,7 @@
 pub(super) mod approve;
 #[cfg(test)]
 mod follow_tests;
+mod forget;
 mod progress;
 
 use crate::ui::Next;
@@ -69,6 +70,16 @@ pub(super) fn deploy_command(command: Command) -> Command {
             "Sign without asking when your servers enforce device approval; still prints \
              what it signs",
         ))
+        .arg(
+            switch("forget-older", None)
+                .conflicts_with_all(["plan", "skip-deploy", "upload"])
+                .help(
+                    "Have every server refuse the older versions of what this deploy signs. \
+                     Running containers keep running. Automatic deploy rules for these \
+                     services stop, and Ployz Cloud can't move or drain the containers a rule \
+                     built, until you approve the rule again",
+                ),
+        )
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
         .arg(
@@ -305,6 +316,20 @@ pub(super) fn upload_and_ship(
         Some(_) => None,
         None => approve::sign(matches, store, (&environment, &services))?,
     };
+    // Under `--forget-older` every version this Device signed is marked to forget.
+    let forgets: Vec<_> = if approve::flag(matches, "forget-older") {
+        let forgets: Vec<_> = device
+            .iter()
+            .flat_map(|device| &device.versions)
+            .map(|posted| posted.statement.clone())
+            .collect();
+        if forgets.is_empty() {
+            return Err(unforgettable());
+        }
+        forgets
+    } else {
+        Vec::new()
+    };
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
         store.upload(&id, dir, listing)?;
@@ -326,9 +351,23 @@ pub(super) fn upload_and_ship(
                 .unwrap_or_default(),
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
+    let forgot = (!forgets.is_empty())
+        .then(|| forget::everywhere(matches, forgets))
+        .transpose()?;
     let mut shipped = execute(matches, store, &admitted, source.as_deref(), events)?;
     shipped.approved = device.map(|device| device.approved).unwrap_or_default();
+    shipped.forgot = forgot;
     Ok(shipped)
+}
+
+/// The refusal of `--forget-older` on a deploy this Device doesn't sign: only a signed
+/// version can ask a Server to forget.
+fn unforgettable() -> Error {
+    Error::coded(
+        RpcErrorCode::InvalidArgument,
+        "--forget-older needs this device to sign the deploy, and it didn't: your servers \
+         don't enforce device approval, or this computer has no device key. Nothing deployed.",
+    )
 }
 
 /// Refuse `--detach` on the hidden local Store before anything is queued: it runs
@@ -398,6 +437,8 @@ pub(super) struct Shipped {
     pub(super) presented: bool,
     /// What this Device approved for each Service, when a Server enforces Device approval.
     pub(super) approved: Vec<ployz_core::authority::ApprovedChange>,
+    /// What each Member did with `--forget-older`.
+    pub(super) forgot: Option<forget::Forgot>,
 }
 
 /// A Deployment's view with what this Device approved, under `--json`.
@@ -407,6 +448,8 @@ struct WithApproved<'a> {
     view: &'a DeploymentView,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     approved: &'a [ployz_core::authority::ApprovedChange],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    forgot: Option<&'a forget::Forgot>,
 }
 
 impl Shipped {
@@ -417,6 +460,7 @@ impl Shipped {
         let result = WithApproved {
             view: &self.view,
             approved: &self.approved,
+            forgot: self.forgot.as_ref(),
         };
         let next = Next::new(&result, Some(self.hint));
         if self.presented {
@@ -427,7 +471,16 @@ impl Shipped {
         if self.needs_upload {
             next.say();
         }
-        self.ran
+        // A Member the forget missed keeps admitting older versions: part of the result.
+        let missed = self
+            .forgot
+            .as_ref()
+            .is_some_and(|forgot| !forgot.is_complete());
+        self.ran.and(if missed {
+            Err(Error::partial())
+        } else {
+            Ok(())
+        })
     }
 }
 
@@ -607,6 +660,7 @@ pub(super) fn execute(
         ran,
         needs_upload,
         presented: !detached,
+        forgot: None,
         approved: Vec::new(),
     })
 }
