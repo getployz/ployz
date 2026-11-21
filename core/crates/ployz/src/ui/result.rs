@@ -391,8 +391,11 @@ impl Gaps {
         if let Some(refusal) = failure.error.refusal() {
             return (refusal.naming(name).to_string(), None);
         }
-        // It answered, refusing the caller's access: its reason, never "did not answer".
-        if failure.error.code.as_str() == ployz_core::FORBIDDEN_CODE {
+        // It answered, refusing the caller's access or a change its state rules out: its
+        // reason, never "did not answer".
+        if failure.error.code.as_str() == ployz_core::FORBIDDEN_CODE
+            || failure.error.code == ployz_core::RpcErrorCode::Conflict
+        {
             let next = failure
                 .error
                 .details
@@ -612,6 +615,26 @@ mod tests {
             (
                 "machine-4 did not answer; its rows are missing.".to_owned(),
                 Some(Under::Cause("deadline has elapsed".to_owned()))
+            )
+        );
+    }
+
+    /// A Server that refuses a change its state rules out, such as removing the last key it
+    /// trusts, answered: its reason stands, never "did not answer".
+    #[test]
+    fn a_server_that_refuses_a_change_says_why() {
+        let machine_id = MachineId::parse("4".repeat(32)).unwrap();
+        let name = MachineName::parse("machine-4").unwrap();
+        let error = RpcError::conflict(
+            "Key cm475crwnw is the last key this Server trusts. Approve another key first.",
+        );
+        let gaps = Gaps::default().named([(machine_id, &name)]);
+
+        assert_eq!(
+            gaps.warning(&MachineFailure { machine_id, error }),
+            (
+                "machine-4 refused: Key cm475crwnw is the last key this Server trusts. Approve another key first.".to_owned(),
+                None
             )
         );
     }
