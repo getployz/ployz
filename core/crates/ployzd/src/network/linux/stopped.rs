@@ -59,12 +59,18 @@ impl Stopped {
     /// Starts every member written down, one at a time, so each start's check of its
     /// Volume sees the one before it running. Copies in rotation go first, so of two
     /// holders of one Volume the routed copy starts, not a Pending one a failed Deploy
-    /// left. Drops one Docker no longer has, and keeps every other it couldn't start for
-    /// the next start: one refused beside a running holder starts there once that
-    /// holder is gone.
+    /// left. Once an In copy fails to start, for any reason, copies out of rotation wait
+    /// for the next start, so none of them takes a Volume its routed copy needs. Drops
+    /// one Docker no longer has, and keeps every other it couldn't start for the next
+    /// start: one refused beside a running holder starts there once that holder is gone.
     pub(super) async fn start(mut self, docker: &Docker) {
         let ids = std::mem::take(&mut self.ids);
-        for id in self.routed_first(ids).await {
+        let mut routed_stayed = false;
+        for (id, routed) in self.routed_first(ids).await {
+            if routed_stayed && !routed {
+                self.ids.insert(id);
+                continue;
+            }
             let started = match docker.inspect_container(&id, None).await {
                 Ok(member) => crate::docker::holder::start(docker, &member, None).await,
                 Err(error) => Err(error.into()),
@@ -80,6 +86,7 @@ impl Stopped {
                     error = ployz_core::error_chain::inline(&error),
                 ),
             }
+            routed_stayed |= routed;
             self.ids.insert(id);
         }
         let written = if self.ids.is_empty() {
@@ -98,12 +105,14 @@ impl Stopped {
         }
     }
 
-    /// `ids` with In copies first, then Held ones, then the rest, each part in ID order.
-    /// The rotation each copy last had is in the Machine's spec store, beside the note.
-    async fn routed_first(&self, ids: BTreeSet<String>) -> Vec<String> {
-        let mut ids = Vec::from_iter(ids);
+    /// `ids` with In copies first, then Held ones, then the rest, each part in ID order,
+    /// each with whether it is In. The rotation each copy last had is in the Machine's
+    /// spec store, beside the note. Unread rotations count every copy as In.
+    async fn routed_first(&self, ids: BTreeSet<String>) -> Vec<(String, bool)> {
+        let all_routed = |ids: Vec<String>| ids.into_iter().map(|id| (id, true)).collect();
+        let ids = Vec::from_iter(ids);
         let Some(dir) = self.path.parent().filter(|_| ids.len() > 1) else {
-            return ids;
+            return all_routed(ids);
         };
         let read = async {
             let specs = MachineSpecStore::open(dir.join(MachineSpecStore::FILE)).await?;
@@ -117,20 +126,23 @@ impl Stopped {
                     "starting stopped containers in ID order: their rotations are unreadable: {error}",
                     error = ployz_core::error_chain::inline(&error),
                 );
-                return ids;
+                return all_routed(ids);
             }
         };
-        ids.sort_by_key(|id| {
-            let rotation = ContainerId::parse(id)
-                .ok()
-                .and_then(|id| rotations.get(&id));
-            match rotation {
-                Some(CopyRotation::In) => 0,
-                Some(CopyRotation::Held(_)) => 1,
-                _ => 2,
-            }
-        });
-        ids
+        let rank = |id: &String| match ContainerId::parse(id)
+            .ok()
+            .and_then(|id| rotations.get(&id))
+        {
+            Some(CopyRotation::In) => 0,
+            Some(CopyRotation::Held(_)) => 1,
+            _ => 2,
+        };
+        let mut ranked: Vec<_> = ids.into_iter().map(|id| (rank(&id), id)).collect();
+        ranked.sort();
+        ranked
+            .into_iter()
+            .map(|(rank, id)| (id, rank == 0))
+            .collect()
     }
 
     fn write(&self) -> io::Result<()> {
@@ -334,6 +346,37 @@ mod tests {
         stopped.start(&docker(fake.clone()).await).await;
         assert_eq!(fake.started(), [routed]);
         assert_eq!(Stopped::load(dir.path()).ids, BTreeSet::from([pending]));
+    }
+
+    /// When the routed copy fails to start, a Pending copy waits for the next start
+    /// rather than take the Volume the routed copy needs.
+    #[tokio::test]
+    async fn a_pending_copy_waits_when_the_routed_one_fails_to_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = "1".repeat(64);
+        let routed = "3".repeat(64);
+        drop(
+            MachineSpecStore::open(dir.path().join(MachineSpecStore::FILE))
+                .await
+                .unwrap(),
+        );
+        rusqlite::Connection::open(dir.path().join(MachineSpecStore::FILE))
+            .unwrap()
+            .execute(
+                "INSERT INTO rotations (id, rotation) VALUES (?1, ?2)",
+                [&routed, &serde_json::to_string(&CopyRotation::In).unwrap()],
+            )
+            .unwrap();
+        let mut stopped = Stopped::load(dir.path());
+        stopped.note(&pending).unwrap();
+        stopped.note(&routed).unwrap();
+        let fake = Fake::holding(&[(&pending, "exited")]);
+        stopped.start(&docker(fake.clone()).await).await;
+        assert_eq!(fake.started(), std::slice::from_ref(&routed));
+        assert_eq!(
+            Stopped::load(dir.path()).ids,
+            BTreeSet::from([pending, routed])
+        );
     }
 
     /// A member refused beside a running holder stays written down, and starts at the
