@@ -9,17 +9,17 @@
 //! attest key, with every other setting the rule approves. Nothing here trusts Cloud's
 //! word for a fact.
 //!
-//!   signature ─▶ mark ─▶ evidence (token and head, or verified build) ─▶ verify_creation
-//!     ─▶ mark again and issue (online) ─▶ hook once
+//!   signature and Cluster ─▶ mark ─▶ floor ─▶ evidence (token and head, or verified
+//!     build) ─▶ verify_creation ─▶ mark again and issue (online) ─▶ hook once
 
 use std::time::Instant;
 
 use hkdf::hmac::Mac as _;
 use ployz_core::{
-    ContainerKind, ContainerWant, RunTarget, Sealing, ServiceName,
+    ContainerKind, ContainerWant, QualifiedService, RunTarget, Sealing, ServiceName,
     authority::{
         AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, RuleEvidence, RuleFacts, RuleProof,
-        Signed, Timestamp, VerifiedBuild, deploy::Creation, rule::verify_signature,
+        Signed, Timestamp, VerifiedBuild, deploy::Creation, refusal::field, rule::verify_signature,
     },
 };
 
@@ -47,7 +47,8 @@ impl RuleDeployRefusal {
                     field: "a payload" | "a Service" | "a Machine" | "an Environment" | "a Cluster",
                 }
                 | AuthorityRefusal::UnknownKey { .. }
-                | AuthorityRefusal::UnknownPasskey,
+                | AuthorityRefusal::UnknownPasskey
+                | AuthorityRefusal::Forgotten { .. },
             ) => Some("ployz github rule approve from an approved device"),
             Self::Rule(_) | Self::Proof(_) | Self::Head(_) => None,
         }
@@ -124,15 +125,16 @@ impl LocalMachine {
         let record = self.record();
         let trusted = record.trusted_keys();
         budget.reserve(&proof.rule, &trusted).map_err(refused)?;
-        let (rule, signer) = verify_signature(&proof.rule, &trusted).map_err(refused)?;
-        let held = |field| {
-            tracing::warn!(rule = %rule.rule, field, "refused a deploy under a rule");
-            refused(AuthorityRefusal::Mismatch { field })
-        };
         let key = self.held_sealing_key(record.phase());
         let (cluster, key) = match (self.held_sealing(record.phase()), key) {
             (Some(Sealing::Held { public_key }), Some(key)) => (public_key, key),
             _ => return Err(refused(AuthorityRefusal::NoClusterIdentity)),
+        };
+        let (rule, signer) =
+            verify_signature(&proof.rule, &trusted, Some(cluster)).map_err(refused)?;
+        let held = |field| {
+            tracing::warn!(rule = %rule.rule, field, "refused a deploy under a rule");
+            refused(AuthorityRefusal::Mismatch { field })
         };
         let attest = key.attest().attest();
         record.machine().ok_or(Error::NotParticipating)?;
@@ -147,6 +149,9 @@ impl LocalMachine {
         };
         // An ended generation still supersedes every one below it.
         self.approvals.mark_rule(&rule, superseded)?;
+        let service = QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone());
+        self.rule_floor(cluster, &service, &rule, now)
+            .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         let claim = &proof.claim;
         let head = match &proof.evidence {
             RuleEvidence::Online(token) => {
@@ -231,12 +236,37 @@ impl LocalMachine {
         );
         Ok(RuleAdmitted {
             by: AdmittedBy::Rule {
+                service,
                 signer: signer.into(),
                 rule: rule.rule,
                 generation: rule.generation,
+                issued_at: rule.issued_at,
             },
             verified,
         })
+    }
+
+    /// Refuse `rule` for `service` when it was issued before the Service's floor here, or
+    /// past this Machine's clock by more than the guard. A rule a forget retired stays
+    /// refused until it is approved again.
+    ///
+    /// # Errors
+    /// Returns the refusal, and [`AuthorityRefusal::Mismatch`] naming the record when it
+    /// cannot be read.
+    pub(super) fn rule_floor(
+        &self,
+        cluster: ployz_core::SealingPublicKey,
+        service: &QualifiedService,
+        rule: &AutoDeployRule,
+        now: Timestamp,
+    ) -> Result<(), AuthorityRefusal> {
+        let (floor, now) =
+            self.approvals
+                .floor(cluster, service, now, |_| AuthorityRefusal::Mismatch {
+                    field: "the approval record",
+                })?;
+        ployz_decide::service_floor::admits(rule.issued_at, floor, now)
+            .map_err(super::admission::floor_refusal)
     }
 
     /// Admit `want` on the rule proof Cloud attached, reading GitHub through the daemon's
@@ -320,6 +350,14 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         } => "An automatic deploy rule needs your passkey or an approved device. Approve it again.",
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
             "This server doesn't trust the device that approved the automatic deploy rule."
+        }
+        AuthorityRefusal::Forgotten { .. } => {
+            "This service's older versions were forgotten after the automatic deploy rule was approved. Approve the rule again. Until then it doesn't deploy this service, and Cloud can't move or drain what it built."
+        }
+        AuthorityRefusal::Mismatch {
+            field: field::AHEAD,
+        } => {
+            "The automatic deploy rule was approved more than 10 minutes ahead of this server's clock. Check the clock of the device that approved it, and this server's."
         }
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }

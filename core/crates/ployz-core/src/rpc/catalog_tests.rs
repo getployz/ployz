@@ -111,6 +111,14 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "ForgetVersions",
+        "forget_versions",
+        "ployz.machine.forget-versions.v1",
+        "Always",
+        "Operator",
+        "Unary",
+    ),
+    (
         "SelectEndpoint",
         "select_endpoint",
         "ployz.network.select-endpoint.v1",

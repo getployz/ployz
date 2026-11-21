@@ -137,11 +137,14 @@ impl MachineSpecStore {
         &self,
         container_id: &ContainerId,
     ) -> Result<Option<crate::machine::AdmittedBy>, Error> {
-        self.decoded(
-            "SELECT admitted_by FROM admitted WHERE id = ?1",
-            container_id,
-        )
-        .await
+        let kept: Option<serde_json::Value> = self
+            .decoded(
+                "SELECT admitted_by FROM admitted WHERE id = ?1",
+                container_id,
+            )
+            .await?;
+        // A 0.4 beta kept no Service or time with an admission, which reads as none kept.
+        Ok(kept.and_then(|kept| serde_json::from_value(kept).ok()))
     }
 
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.

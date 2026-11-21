@@ -10,6 +10,7 @@ fn version(digest: PayloadDigest) -> Signed<ServiceVersion> {
     let signer = Signer::from_seed(&[1; 32]);
     Signed::sign(
         &ServiceVersion {
+            forget_older: false,
             cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
             namespace: ployz_core::Namespace::parse("app").unwrap(),
             service: ployz_core::ServiceName::parse("api").unwrap(),

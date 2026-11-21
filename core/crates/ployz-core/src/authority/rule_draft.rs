@@ -349,6 +349,7 @@ impl AutoDeployRule {
             issued_at: terms.issued_at,
             ended: false,
             signer: terms.signer,
+            proposal: None,
         })
     }
 
@@ -370,6 +371,7 @@ impl AutoDeployRule {
             issued_at,
             ended: true,
             signer,
+            proposal: None,
             ..kept
         })
     }

@@ -4,7 +4,7 @@
 //! A module calls the `ployz-core` code its protocol runs where that code is pure:
 //! `issuance_gate`, `issuance_backoff` and `issuance_failure_clock` in `acme_issuance`,
 //! `RestartPolicy` in `bridge_notes`, `MachineUpgradeOutcome::is_terminal` in `upgrade_attempt`,
-//! `plan` in `volume_runs`, and the Deploy planner itself (`ployz::deploy::preview_deploy`) in
+//! `plan` in `volume_runs`, the `ployz_decide::service_floor` decisions in `service_floor`, and the Deploy planner itself (`ployz::deploy::preview_deploy`) in
 //! `region_placement` and `first_placement`. The other modules re-state their protocol's decisions by hand,
 //! and a decision that moves into `ployz-decide` is called, never re-stated.
 
@@ -34,6 +34,8 @@ mod region_placement;
 mod removal_marks;
 #[cfg(test)]
 mod runner_standing;
+#[cfg(test)]
+mod service_floor;
 #[cfg(test)]
 mod sign_in_store;
 #[cfg(test)]

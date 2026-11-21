@@ -39,6 +39,7 @@ fn policy() -> BuildPolicy {
 
 fn rule() -> AutoDeployRule {
     AutoDeployRule {
+        proposal: None,
         cluster: SealingPublicKey::from_bytes([9; 32]),
         rule: RuleId::from_bytes([0x11; 16]),
         generation: 3,
@@ -352,7 +353,12 @@ fn a_device_signs_a_rule() {
         devices: vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
         passkeys: Vec::new(),
     };
-    let (body, key) = verify_signature(&signed, &trusted).unwrap();
+    let (body, key) = verify_signature(
+        &signed,
+        &trusted,
+        Some(SealingPublicKey::from_bytes([9; 32])),
+    )
+    .unwrap();
     assert_eq!(body, rule());
     assert_eq!(key, Approver::Device(signer().public()));
     assert!(
@@ -364,6 +370,7 @@ fn a_device_signs_a_rule() {
 
 fn passkey_rule() -> AutoDeployRule {
     AutoDeployRule {
+        proposal: None,
         signer: SignerKey::Passkey(crate::authority::keys::OwnPrompt::Passkey),
         ..rule()
     }
@@ -383,7 +390,12 @@ fn answered(rule: &AutoDeployRule, passkey: &Authenticator) -> Signed<AutoDeploy
 fn a_passkeys_own_prompt_signs_a_rule() {
     let passkey = Authenticator::es256(4);
     let signed = answered(&passkey_rule(), &passkey);
-    let (body, approver) = verify_signature(&signed, &trusting(&passkey)).unwrap();
+    let (body, approver) = verify_signature(
+        &signed,
+        &trusting(&passkey),
+        Some(SealingPublicKey::from_bytes([9; 32])),
+    )
+    .unwrap();
     assert_eq!(body, passkey_rule());
     assert_eq!(approver, Approver::Passkey(passkey.passkey().code()));
     let input = super::super::keys::signing_input(Purpose::Rule, &signed.body);
@@ -402,18 +414,33 @@ fn a_passkey_answer_counts_only_for_the_rule_it_answered_and_a_trusted_passkey()
     let mut moved = answered(&passkey_rule(), &passkey);
     moved.body = Signed::unsigned(&other).unwrap().body;
     assert_eq!(
-        verify_signature(&moved, &trusting(&passkey)).unwrap_err(),
+        verify_signature(
+            &moved,
+            &trusting(&passkey),
+            Some(SealingPublicKey::from_bytes([9; 32]))
+        )
+        .unwrap_err(),
         AuthorityRefusal::Mismatch {
             field: "a challenge"
         }
     );
     let stranger = Authenticator::es256(5);
     assert_eq!(
-        verify_signature(&answered(&passkey_rule(), &stranger), &trusting(&passkey)).unwrap_err(),
+        verify_signature(
+            &answered(&passkey_rule(), &stranger),
+            &trusting(&passkey),
+            Some(SealingPublicKey::from_bytes([9; 32]))
+        )
+        .unwrap_err(),
         AuthorityRefusal::UnknownPasskey
     );
     assert_eq!(
-        verify_signature(&answered(&rule(), &passkey), &trusting(&passkey)).unwrap_err(),
+        verify_signature(
+            &answered(&rule(), &passkey),
+            &trusting(&passkey),
+            Some(SealingPublicKey::from_bytes([9; 32]))
+        )
+        .unwrap_err(),
         AuthorityRefusal::Mismatch {
             field: "the signer"
         },
@@ -724,6 +751,7 @@ fn each_change_to_an_approved_creation_is_refused_by_name() {
 #[test]
 fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
     let ended = AutoDeployRule {
+        proposal: None,
         ended: true,
         ..approved_rule()
     };
@@ -739,6 +767,7 @@ fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
         })
     );
     let elsewhere = AutoDeployRule {
+        proposal: None,
         machines: vec![MachineId::parse("2".repeat(32)).unwrap()],
         ..approved_rule()
     };
@@ -752,6 +781,7 @@ fn a_rule_refuses_outside_its_environment_machines_and_live_generations() {
         Err(AuthorityRefusal::Mismatch { field: "a Machine" })
     );
     let other = AutoDeployRule {
+        proposal: None,
         namespace: Namespace::parse("other").unwrap(),
         ..approved_rule()
     };

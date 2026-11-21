@@ -115,6 +115,7 @@ fn resolved(spec: &RequestedServiceSpec) -> ResolvedServiceSpec {
 
 fn statement(signer: &Signer, spec: &RequestedServiceSpec) -> ServiceVersion {
     ServiceVersion {
+        forget_older: false,
         cluster: SealingPublicKey::from_bytes([9; 32]),
         namespace: namespace(),
         service: web(),
@@ -206,7 +207,7 @@ fn the_approved_spec_verifies_with_its_digest() {
         approved.digest,
         PayloadDigest::of(&requested(requested_json()), &namespace()).unwrap()
     );
-    assert_eq!(approved.by, [Approver::Device(signer(1).public())]);
+    assert_eq!(approvers(&approved), [Approver::Device(signer(1).public())]);
 }
 
 #[test]
@@ -923,7 +924,7 @@ fn a_deploy_step_whose_body_matches_its_digest_creates() {
     let signer = signer(1);
     let (step, bundle) = deploy_proposal(&signer, |_| {});
     let approved = verify_step(&step, &bundle, &signer).unwrap();
-    assert_eq!(approved.by, [Approver::Device(signer.public())]);
+    assert_eq!(approvers(&approved), [Approver::Device(signer.public())]);
 }
 
 #[test]
@@ -1159,6 +1160,7 @@ fn a_signed_version_is_opened_in_one_fixed_order() {
     let host = Machine::new(&[&approver]);
     let sign = |body: &ServiceVersion| Signed::sign(body, &approver).unwrap();
     let mut body = ServiceVersion {
+        forget_older: false,
         signer: SignerKey::Device(DeviceKey::from(signer(2).public())),
         proposal: Some(ProposalRef {
             operation: proposal_operation(),
@@ -1194,4 +1196,8 @@ fn a_signed_version_is_opened_in_one_fixed_order() {
     );
     body.cluster = SealingPublicKey::from_bytes([9; 32]);
     assert!(verify(&sign(&body), &facts).is_ok());
+}
+
+fn approvers(admitted: &crate::authority::VersionAdmitted) -> Vec<Approver> {
+    admitted.by.iter().map(|(by, _)| by.clone()).collect()
 }

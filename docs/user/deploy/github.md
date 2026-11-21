@@ -192,6 +192,8 @@ deploy of another environment from it builds on your servers.
   service that keeps nothing on its server runs on any server.
 - **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
   longer deploy on those servers.
+- **A server checks the approval's time.** It refuses a rule approved more than 10 minutes ahead
+  of its own clock. Fix the clock on the device or the server, and pushes deploy again.
 - **An older approval stops starting containers.** Once a server has seen a newer approval of
   the rule, or the rule turned off, it won't start a stopped container an older approval made,
   from the dashboard or the CLI. One that's running keeps running, and the next push deploys a

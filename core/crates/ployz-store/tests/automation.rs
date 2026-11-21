@@ -2040,6 +2040,7 @@ fn approve_rule(
         })
         .collect();
     let rule = AutoDeployRule {
+        proposal: None,
         cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
         rule: RuleId::from_bytes([9; 16]),
         generation,

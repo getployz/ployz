@@ -3,6 +3,7 @@
 use thiserror::Error;
 
 use super::admission::DataReach;
+use super::canonical::Timestamp;
 use super::keys::{Purpose, SigningPublicKey};
 use crate::DeviceCode;
 
@@ -36,6 +37,9 @@ pub enum AuthorityRefusal {
     ProofReplayed,
     #[error("the request carries more signatures than this Machine checks for one request")]
     Overspent,
+    /// A forget reached this Machine for the Service, signed at `floor`, after the approval.
+    #[error("the approval was signed before {}, when this Service's older versions were forgotten", .floor.utc())]
+    Forgotten { floor: Timestamp },
 }
 
 /// The first of `checks` that does not hold, as a [`AuthorityRefusal::Mismatch`] naming its field.
@@ -52,7 +56,11 @@ pub(super) fn first_mismatch<const N: usize>(
 }
 
 /// The names `Mismatch` gives the parts of a request that more than one statement checks.
-pub(super) mod field {
+pub mod field {
     pub const CLUSTER: &str = "a Cluster";
     pub const ENVIRONMENT: &str = "an Environment";
+    /// A forget names the system Namespace, whose Containers the daemon itself keeps.
+    pub const SYSTEM: &str = "the system Namespace";
+    /// Signed more than ten minutes past this Machine's clock.
+    pub const AHEAD: &str = "a signing time";
 }

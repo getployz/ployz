@@ -5634,20 +5634,127 @@ mod ensure_container {
             /// A version of `spec` for its Service in Namespace `app`, signed by this
             /// Machine's Device.
             fn version(&self, spec: &Value) -> Signed<ServiceVersion> {
+                self.version_at(spec, Timestamp::now(), false)
+            }
+
+            /// [`Self::version`] signed at `signed_at`, marked to forget older ones or not.
+            fn version_at(
+                &self,
+                spec: &Value,
+                signed_at: Timestamp,
+                forget_older: bool,
+            ) -> Signed<ServiceVersion> {
                 let namespace = Namespace::parse("app").unwrap();
                 let resolved: ployz_core::ResolvedServiceSpec =
                     serde_json::from_value(spec.clone()).unwrap();
                 let body = ServiceVersion {
+                    forget_older,
                     cluster: self.cluster,
                     digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
                     namespace,
                     service: resolved.name,
-                    signed_at: Timestamp::now(),
+                    signed_at,
                     signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
                     proposal: None,
                 };
                 Signed::sign(&body, &self.signer).unwrap()
             }
+
+            /// What this Machine answers an Operator's forget of `version`.
+            async fn forget(
+                &self,
+                version: &Signed<ServiceVersion>,
+            ) -> Vec<ployz_core::ForgetOutcome> {
+                let mut request = Request::new(
+                    op::ForgetVersions::into_request(ployz_core::ForgetVersionsRequest {
+                        versions: vec![version.clone()],
+                    })
+                    .encode()
+                    .unwrap(),
+                );
+                request
+                    .metadata_mut()
+                    .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+                let response = self
+                    .service
+                    .forget_versions(request)
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .decode_response()
+                    .unwrap();
+                response.decode::<op::ForgetVersions>().unwrap().outcomes
+            }
+        }
+
+        fn minutes_from_now(minutes: i64) -> Timestamp {
+            let millis = Timestamp::now().as_millis().cast_signed() + minutes * 60_000;
+            Timestamp::from_millis(millis.cast_unsigned()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_version_signed_before_a_forget_is_refused_and_the_forget_itself_runs() {
+            let fixture = enforced("ployzd-forgotten-version").await;
+            let approved = reaching(PINNED);
+            let older = fixture.version_at(&approved, minutes_from_now(-1), false);
+            let forget = fixture.version_at(&approved, Timestamp::now(), true);
+            let seen = requests(&fixture.fake).len();
+
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                Some(&older),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                fixture.forget(&forget).await.as_slice(),
+                [ployz_core::ForgetOutcome::Raised { .. }]
+            ));
+            // The floor outlives the daemon, and holds on a Server the older one never ran on.
+            let restarted = fixture.restarted();
+            for (service, key) in [(&fixture.service, "k2"), (&restarted, "k3")] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("service_container", key, &approved),
+                        Some(&older),
+                    )
+                    .await,
+                    "older versions were forgotten",
+                );
+            }
+            deploy_ensure(
+                &restarted,
+                new_want("service_container", "k4", &approved),
+                Some(&forget),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 2);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_forget_signed_eleven_minutes_ahead_is_refused_and_leaves_the_floor() {
+            let fixture = enforced("ployzd-forget-ahead").await;
+            let approved = reaching(PINNED);
+            let ahead = fixture.version_at(&approved, minutes_from_now(11), true);
+
+            match fixture.forget(&ahead).await.as_slice() {
+                [ployz_core::ForgetOutcome::Refused { reason }] => {
+                    assert!(reason.contains("ahead of this server's clock"), "{reason}");
+                }
+                other => panic!("a forget past the guard was taken: {other:?}"),
+            }
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                Some(&fixture.version(&approved)),
+            )
+            .await
+            .unwrap();
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 
         #[expect(clippy::indexing_slicing, reason = "JSON fixture")]

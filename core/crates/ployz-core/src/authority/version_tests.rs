@@ -45,6 +45,7 @@ fn resolved(spec: &RequestedServiceSpec) -> ResolvedServiceSpec {
 
 fn body(by: &Signer, spec: &RequestedServiceSpec) -> ServiceVersion {
     ServiceVersion {
+        forget_older: false,
         cluster: SealingPublicKey::from_bytes(CLUSTER),
         namespace: namespace(),
         service: web(),
@@ -102,7 +103,10 @@ fn a_version_admits_its_spec_on_any_machine_that_trusts_its_signer() {
     )
     .unwrap();
 
-    assert_eq!(admitted.by, vec![Approver::Device(device.public())]);
+    assert_eq!(
+        approvers(&admitted),
+        vec![Approver::Device(device.public())]
+    );
 }
 
 #[test]
@@ -159,7 +163,7 @@ fn eight_versions_by_removed_signers_cost_nothing_beside_a_trusted_ninth() {
 
     let admitted = check(&versions, &trusting(&[&kept]), &resolved(&spec)).unwrap();
 
-    assert_eq!(admitted.by, vec![Approver::Device(kept.public())]);
+    assert_eq!(approvers(&admitted), vec![Approver::Device(kept.public())]);
 }
 
 #[test]
@@ -311,4 +315,8 @@ fn a_version_naming_a_volume_born_in_another_environment_is_refused() {
             field: "a Volume's Environment"
         }),
     );
+}
+
+fn approvers(admitted: &crate::authority::VersionAdmitted) -> Vec<Approver> {
+    admitted.by.iter().map(|(by, _)| by.clone()).collect()
 }

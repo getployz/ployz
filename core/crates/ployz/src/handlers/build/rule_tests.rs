@@ -31,6 +31,7 @@ fn golden_policy() -> BuildPolicy {
 fn rule(policy: BuildPolicy) -> AutoDeployRule {
     let signer = Signer::from_seed(&[7; 32]);
     AutoDeployRule {
+        proposal: None,
         cluster: SealingPublicKey::from_bytes([9; 32]),
         rule: RuleId::from_bytes([0x11; 16]),
         generation: 3,

@@ -2,7 +2,7 @@
 //! runs when one step of that plan reaches it.
 //!
 //! Each step is a body nobody signed: a [`super::ServiceVersion`], a
-//! [`super::JoinApproval`] or a [`super::KeyStep`]. What vouches for it is the bundle in
+//! [`super::JoinApproval`], a [`super::KeyStep`] or a [`super::AutoDeployRule`]. What vouches for it is the bundle in
 //! its envelope: a signed list of step digests in order. A Machine checks
 //! that its step sits in the bundle at the index the step names, with the same kind, and
 //! that the body it was handed hashes to that digest. Cloud can carry a step but cannot
@@ -46,6 +46,8 @@ pub enum StepKind {
     Join,
     /// A [`super::KeyStep`]. A trust is one-shot; a removal stands.
     Key,
+    /// A [`super::AutoDeployRule`]. It stands after the bundle's window ends.
+    Source,
 }
 
 /// One step of a proposal: its place in the order, what it runs, and the digest of the

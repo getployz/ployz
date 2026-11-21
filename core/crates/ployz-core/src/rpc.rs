@@ -412,6 +412,7 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     DeviceSet(DeviceSet) => "device_set";
+    VersionsForgotten(VersionsForgotten) => "versions_forgotten";
     PendingJoins(PendingJoins) => "pending_joins";
     JoinApproved(JoinApproved) => "join_approved";
     PushTargetSet(PushTargetSet) => "push_target_set";

@@ -113,6 +113,7 @@ pub(crate) type PeerInspect = std::sync::Arc<
 mod admission;
 mod consumption;
 mod container;
+mod forget;
 mod ingress_doors;
 mod private_access;
 pub(crate) use admission::{AdmittedBy, AdmittedSpec, Presented};
@@ -197,6 +198,10 @@ pub enum Error {
     CredentialHeld { held: DeviceCode },
     #[error("This Server refused the key change: {0}")]
     KeyRefused(ployz_core::authority::AuthorityRefusal),
+    /// No version of a forget opened here. The refusal names
+    /// [`ployz_core::FORGET_VERSIONS_CAPABILITY`] in its details.
+    #[error("This Server refused to forget older versions: {}", admission::refusal_text(.0))]
+    ForgetRefused(ployz_core::authority::AuthorityRefusal),
     /// A join for a Member this Machine saw removed. A removed Member comes back only with a
     /// new identity.
     #[error("Server {0} was removed from this Cluster. It can only join again as a new Server.")]
@@ -786,12 +791,7 @@ impl LocalMachine {
     /// alone: what a confirmation can carry without a replicated read. A key file that holds
     /// no key, or that could not be read, names none.
     pub(crate) fn held_sealing(&self, phase: LocalMachinePhase) -> Option<ployz_core::Sealing> {
-        if !has_cluster_identity(&phase) {
-            return None;
-        }
-        SealingKey::observe(self.owner.data_dir())
-            .and_then(KeyFile::held)
-            .map(|public_key| ployz_core::Sealing::Held { public_key })
+        held_key(&self.owner, phase).map(|public_key| ployz_core::Sealing::Held { public_key })
     }
 
     /// The build attest key this Machine derives from the Sealing Key its file holds, on
@@ -1705,6 +1705,18 @@ fn refusal(code: RpcErrorCode, message: &str) -> RpcError {
 #[cfg(test)]
 #[path = "local_machine/departure_tests.rs"]
 mod departure_tests;
+
+/// The public half of the Sealing Key `owner`'s file holds, on the phases a Machine has a
+/// Cluster identity in.
+pub(super) fn held_key(
+    owner: &RecordOwner,
+    phase: LocalMachinePhase,
+) -> Option<ployz_core::SealingPublicKey> {
+    if !has_cluster_identity(&phase) {
+        return None;
+    }
+    SealingKey::observe(owner.data_dir()).and_then(KeyFile::held)
+}
 
 #[cfg(test)]
 mod tests {

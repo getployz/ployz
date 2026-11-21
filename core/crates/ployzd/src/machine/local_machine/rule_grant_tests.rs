@@ -138,6 +138,7 @@ pub(crate) fn rule_for(
     record: &SealedRecord,
 ) -> AutoDeployRule {
     AutoDeployRule {
+        proposal: None,
         cluster,
         rule: RuleId::from_bytes([0x11; 16]),
         generation: 3,
@@ -568,6 +569,7 @@ pub(crate) fn answer(challenge: &[u8]) -> ployz_core::authority::PasskeyAssertio
 async fn a_rule_a_passkey_answered_with_its_own_prompt_mints() {
     let fixture = fixture().await;
     let rule = AutoDeployRule {
+        proposal: None,
         signer: SignerKey::Passkey(ployz_core::authority::OwnPrompt::Passkey),
         ..fixture.rule()
     };

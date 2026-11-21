@@ -18,7 +18,8 @@ use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
     deploy::{Creation, PayloadDigest, content_addressed, placement_signed},
     keys::{Approver, Purpose, Signed, SignerKey, Statement},
-    open::the_signer,
+    open::open_approval,
+    proposal::{ProposalRef, StepBody, StepKind},
     refusal::{AuthorityRefusal, field, first_mismatch},
     trusted_key::TrustedKeys,
 };
@@ -318,8 +319,9 @@ pub struct RuleService {
 
 /// A person's standing approval of every push to one branch: built by one pinned builder,
 /// deployed with the settings it names, into one Environment on the Machines it names.
-/// Signed by a Device, or answered by a passkey's own prompt; a browser key under a
-/// session grant cannot sign it, because it authorizes every future push.
+/// Signed by a Device, answered by a passkey's own prompt, or a Source step of a bundle
+/// either signed; a browser key under a session grant cannot sign it, because it
+/// authorizes every future push.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct AutoDeployRule {
@@ -340,11 +342,32 @@ pub struct AutoDeployRule {
     /// True for the generation that switches the rule off.
     pub ended: bool,
     pub signer: SignerKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proposal: Option<ProposalRef>,
 }
 
 impl Statement for AutoDeployRule {
     const PURPOSE: Purpose = Purpose::Rule;
     const TAKES_ASSERTION: bool = true;
+}
+
+impl StepBody for AutoDeployRule {
+    fn kind(&self) -> StepKind {
+        StepKind::Source
+    }
+    fn place(&self) -> Option<ProposalRef> {
+        self.proposal
+    }
+    fn signer(&self) -> SignerKey {
+        self.signer
+    }
+    fn cluster(&self) -> SealingPublicKey {
+        self.cluster
+    }
+    fn namespace(&self) -> Option<&Namespace> {
+        Some(&self.namespace)
+    }
 }
 
 impl AutoDeployRule {
@@ -453,31 +476,20 @@ pub struct RuleIdentity<'a> {
     pub namespace: &'a Namespace,
 }
 
-/// A rule statement, which names the Device that signed it.
-pub trait RuleStatement: Statement {
-    fn signer(&self) -> SignerKey;
-}
-
-impl RuleStatement for AutoDeployRule {
-    fn signer(&self) -> SignerKey {
-        self.signer
-    }
-}
-
-/// Open a rule signed by a Device this Machine trusts, or answered by a trusted passkey's
-/// own prompt, as its body says.
+/// Open a rule for this Machine's Cluster `cluster`: signed by a Device it trusts,
+/// answered by a trusted passkey's own prompt, or a Source step of a bundle either signed.
+/// It names this Cluster before anything records a mark of it.
 ///
 /// # Errors
-/// Returns the envelope's refusal from [`Signed::approvers`], a malformed body, and
-/// [`AuthorityRefusal::Mismatch`] naming the signer when no Device or passkey signed as
-/// the body says.
-pub fn verify_signature<T: RuleStatement>(
-    rule: &Signed<T>,
+/// Returns the refusal of [`open_approval`], and [`AuthorityRefusal::Mismatch`] naming
+/// the Cluster for a rule of another.
+pub fn verify_signature(
+    rule: &Signed<AutoDeployRule>,
     trusted: &TrustedKeys,
-) -> Result<(T, Approver), AuthorityRefusal> {
-    let approvers = rule.approvers(trusted)?;
-    let body = rule.open()?;
-    let by = the_signer(approvers, body.signer())?;
+    cluster: Option<SealingPublicKey>,
+) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
+    let (body, by, cluster) = open_approval(rule, trusted, cluster)?;
+    first_mismatch([(field::CLUSTER, body.cluster == cluster)])?;
     Ok((body, by))
 }
 

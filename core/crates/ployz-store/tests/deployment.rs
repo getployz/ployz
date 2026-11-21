@@ -9071,6 +9071,7 @@ fn statement(
     let signer = Signer::from_seed(&[7; 32]);
     Signed::sign(
         &ServiceVersion {
+            forget_older: false,
             cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
             namespace: ployz_core::Namespace::parse(namespace).unwrap(),
             service: ServiceName::parse(service).unwrap(),

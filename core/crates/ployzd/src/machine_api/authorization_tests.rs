@@ -386,6 +386,9 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::KEY_STEP_CAPABILITY, _) => {
             unary::<op::KeyStep>(json!({"step": stranger_removal(machine)}))
         }
+        (ployz_core::FORGET_VERSIONS_CAPABILITY, _) => {
+            unary::<op::ForgetVersions>(json!({"versions": [stranger_forget(machine)]}))
+        }
         (ployz_core::SELECT_ENDPOINT_CAPABILITY, _) => unary::<op::SelectEndpoint>(json!({
             "peer": peer, "endpoint": "192.0.2.9:51820",
         })),
@@ -629,6 +632,26 @@ fn stranger_removal(machine: &Enforcing) -> Value {
         proposal: None,
     };
     serde_json::to_value(Signed::sign(&step, &stranger).unwrap()).unwrap()
+}
+
+/// A forget of `app/web`, signed by a key this Machine does not trust.
+fn stranger_forget(machine: &Enforcing) -> Value {
+    use ployz_core::authority::{PayloadDigest, ServiceVersion, Timestamp};
+    let stranger = Signer::from_seed(&[42; 32]);
+    let version = ServiceVersion {
+        cluster: SealingKey::load(&machine.data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        service: ployz_core::ServiceName::parse("web").unwrap(),
+        digest: PayloadDigest::from_bytes([1; 32]),
+        signed_at: Timestamp::now(),
+        signer: DeviceKey::from(stranger.public()).into(),
+        proposal: None,
+        forget_older: true,
+    };
+    serde_json::to_value(Signed::sign(&version, &stranger).unwrap()).unwrap()
 }
 
 /// A join approval of the peer, signed by a key this Machine does not trust.
