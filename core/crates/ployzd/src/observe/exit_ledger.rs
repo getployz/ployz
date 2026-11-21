@@ -4,8 +4,8 @@
 //! A run's `kill`, `stop` and `oom` events can come before or after the `die`
 //! of the run they belong to, so the ledger keeps each run's evidence until
 //! the inspect that follows its exit settles it. An exit then lands in
-//! the metric segment, the crash `Outbox` and the [`Settlements`] record
-//! through [`Settler::settle`].
+//! the metric segment, the crash `Outbox` (which the crash sender posts to the
+//! Collector) and the [`Settlements`] record through [`Settler::settle`].
 
 use std::{
     collections::{HashMap, HashSet},

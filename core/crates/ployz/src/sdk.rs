@@ -590,7 +590,7 @@ impl Session {
         .await
     }
 
-    /// Point this Machine's crash pushes at `url`, or stop them with `None`.
+    /// Point this Machine's log shipping, crash events and request pushes at `url`, or stop them with `None`.
     ///
     /// # Errors
     /// Returns `unsupported` when the Machine does not advertise the operation,

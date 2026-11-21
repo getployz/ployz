@@ -1,7 +1,8 @@
 //! The Collector: an OpenTelemetry Collector the daemon runs on a Machine connected to
 //! Cloud, reading every Ployz container's `json-file` log, masking Sealed values and
 //! shipping the lines to Cloud's OTLP route, with the Machine's and its containers'
-//! metrics beside them.
+//! metrics beside them. Its crash receiver takes the crash events the daemon posts on
+//! loopback and sends them to the same route.
 //!
 //! The daemon owns it like any helper container. Its config, the mask of Sealed values
 //! and its token live under `/run`, so a Machine that reboots, or one Cloud no longer
@@ -36,6 +37,8 @@ use crate::{
 };
 
 use config::Paths;
+
+pub(crate) use config::CRASH_RECEIVER;
 
 const TICK: Duration = Duration::from_secs(10);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -240,6 +243,7 @@ impl Inner {
         write_if_changed(&paths.base_file(), config::BASE.as_bytes())?;
         write_if_changed(&paths.metrics_file(), config::METRICS.as_bytes())?;
         write_if_changed(&paths.mask_file(), mask.as_bytes())?;
+        write_if_changed(&paths.crash_file(), config::CRASH.as_bytes())?;
         let docker_gid = fs::metadata(&paths.docker_socket)?.gid();
         let desired = DesiredContainer::new(
             crate::images::COLLECTOR,
@@ -248,6 +252,7 @@ impl Inner {
                 config::BASE.as_bytes(),
                 config::METRICS.as_bytes(),
                 mask.as_bytes(),
+                config::CRASH.as_bytes(),
             ],
         );
         match service.ensure(desired).await? {
