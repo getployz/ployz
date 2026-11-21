@@ -613,13 +613,37 @@ impl<'a> Refusing<'a> {
         )
     }
 
-    /// Volume `volume` (lineage) turns Shared Writes on.
+    /// Volume `volume` (lineage) turns Shared Writes on. A restore copies them from
+    /// its source, so its refusal names the source, where the user turns them off.
     fn shared(&self, volume: &str) -> RpcError {
-        let volume = self.volume(volume);
-        RpcError::unsupported(format!(
-            "Shared writes are paused for now, so {volume} can't turn them on"
-        ))
-        .with_details(json!({ "volume": volume }))
+        let working = &self.after.working.volumes;
+        let node = working
+            .iter()
+            .find(|candidate| candidate.resource_lineage_id == volume)
+            .expect("a Volume a rule names is in Working State");
+        let source = node.restored_from.as_ref().and_then(|from| {
+            working
+                .iter()
+                .find(|candidate| candidate.resource_id == from.volume)
+                .filter(|source| source.shared_writes)
+        });
+        let (message, volume) = match source {
+            Some(source) => (
+                format!(
+                    "Shared writes are paused for now, and {} has them on; turn them off, then restore it",
+                    source.name
+                ),
+                &source.name,
+            ),
+            None => (
+                format!(
+                    "Shared writes are paused for now, so {} can't turn them on",
+                    node.name
+                ),
+                &node.name,
+            ),
+        };
+        RpcError::unsupported(message).with_details(json!({ "volume": volume }))
     }
 
     /// Service `service` updates start-first and mounts Volume `volume` (lineages),
@@ -1028,6 +1052,79 @@ pub(crate) mod tests {
             )
             .unwrap();
         deploy().unwrap();
+    }
+
+    /// A Deployment saved with shared writes on, before the pause, never ships again:
+    /// a retry is refused before it queues, though Working State has them off.
+    #[test]
+    fn a_retry_of_a_deployment_with_shared_writes_is_refused_before_it_queues() {
+        let (store, who) = shop();
+        let source = crate::DeploymentId::parse(uuid(10)).unwrap();
+        let deployed = store
+            .write(
+                &who,
+                &crate::Admit::Deploy(crate::Deploy {
+                    id: source.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                    versions: Vec::new(),
+                }),
+            )
+            .unwrap();
+        // How a revision saved before the pause looks.
+        store
+            .storage
+            .write(|tx| {
+                let mut saved = crate::deployment::saved_at(
+                    tx,
+                    &deployed.environment_id,
+                    deployed.saved,
+                )?;
+                saved.volumes[0].shared_writes = true;
+                tx.execute(
+                    "UPDATE config_saved SET intent = ?1 WHERE environment_id = ?2 AND revision = ?3",
+                    &[
+                        serde_json::to_string(&saved).unwrap().as_str().into(),
+                        deployed.environment_id.as_str().into(),
+                        crate::scope::revision_param(deployed.saved)?.into(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .write(
+                &who,
+                &crate::Cancel {
+                    deployment: source.clone(),
+                },
+            )
+            .unwrap();
+
+        let refused = store
+            .write(
+                &who,
+                &crate::Admit::Retry(crate::Retry {
+                    id: crate::DeploymentId::parse(uuid(11)).unwrap(),
+                    deployment: source,
+                    rolls_back: None,
+                    version: None,
+                    accept_volume_loss: Vec::new(),
+                    versions: Vec::new(),
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            refused.message,
+            "Shared writes are paused for now, and this older version ships data with them on; turn them off, then deploy again"
+        );
     }
 
     #[test]

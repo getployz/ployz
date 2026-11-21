@@ -3647,25 +3647,19 @@ mod set_volume_copy {
         let service = service.with_volume_plugin(socket);
         let kept = kept_holder(&service, &fake).await;
         let writer = running_holder(&service, &fake).await;
-        let name = fake
-            .named_containers
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .values()
-            .find(|container| container["Id"] == writer.to_string().as_str())
-            .and_then(|container| container["Name"].as_str().map(str::to_owned))
-            .unwrap();
+        // A stopped helper Ployz didn't make, left on the root, never matters.
+        helper_on_root(&fake, "exited");
         let held = |error: crate::machine::LocalMachineError| {
-            let crate::machine::LocalMachineError::Docker(crate::docker::Error::VolumeHeld {
-                container,
-                ..
-            }) = error
+            let crate::machine::LocalMachineError::Docker(
+                held @ crate::docker::Error::VolumeHeld { .. },
+            ) = error
             else {
                 panic!("expected the running holder named, got {error:?}");
             };
-            assert_eq!(container, name.trim_start_matches('/'));
+            assert_eq!(
+                held.to_string(),
+                "api still runs on the Volume at /data/0 on this Server; deploy again, or stop api first"
+            );
         };
 
         held(
@@ -3684,8 +3678,8 @@ mod set_volume_copy {
         );
         assert_eq!(
             holder_status(&fake).len(),
-            2,
-            "Docker made no third Container"
+            3,
+            "Docker made nothing beside the two holders and the helper"
         );
         held(service.local.start_container(kept, None).await.unwrap_err());
         assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
@@ -3694,6 +3688,21 @@ mod set_volume_copy {
         service.local.start_container(kept, None).await.unwrap();
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Container Ployz didn't make, in `status`, that mounts the Volume.
+    fn helper_on_root(fake: &crate::docker::test_support::FakeDocker, status: &str) {
+        let id = format!("{}{}", MachineId::random(), MachineId::random());
+        fake.named_containers.as_ref().unwrap().lock().unwrap().insert(
+            "helper".into(),
+            json!({"Id": id, "Name": "/helper", "Config": {"Labels": {}}, "State": {"Status": status}}),
+        );
+        fake.volume_users
+            .lock()
+            .unwrap()
+            .entry(VOLUME.into())
+            .or_default()
+            .push(json!({"Id": id}));
     }
 
     fn set_exited(fake: &crate::docker::test_support::FakeDocker, id: &ContainerId) {

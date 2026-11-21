@@ -3,6 +3,8 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
+use std::collections::BTreeSet;
+
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -18,7 +20,7 @@ use crate::followup::{FollowUp, Place};
 use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, VolumeName};
 use crate::registry;
 use crate::review;
-use crate::scope::{self, EnvironmentRef};
+use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::trusted::Evidence;
 use crate::{Actor, Approval, Trusted};
@@ -328,41 +330,74 @@ fn retry_review<'a>(
 pub(crate) fn gate(
     tx: &mut dyn Tx,
     who: &Actor,
-    (environment, intent): (&scope::Environment, &SavedEnvironmentIntent),
+    (environment, intent, shipping): (&scope::Environment, &SavedEnvironmentIntent, Shipping),
     (cluster_domain, namespace): (Option<&Hostname>, &Namespace),
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     trusted.runnable()?;
-    refuse_shared_writes(environment, intent)?;
+    refuse_shared_writes(&environment.summary, intent, shipping)?;
     needs_cluster_domain(environment, intent, cluster_domain)?;
     domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
 }
 
-/// Refuse to deploy a Volume with Shared Writes on: they are paused, and a Server
-/// runs one Container on a Managed volume at a time. Sending nothing beats a Deploy
-/// whose second writer each Server refuses partway.
-fn refuse_shared_writes(
-    environment: &scope::Environment,
+/// Where a Deploy's configuration comes from, which decides how a refusal reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Shipping {
+    /// Working State, saved as a new revision now.
+    Working,
+    /// A revision saved earlier, which no edit changes: a retry, a rollback, a
+    /// redeploy or the Store's own Deploy.
+    Saved,
+}
+
+/// Refuse to ship a Volume with Shared Writes on that a Service of `intent` mounts:
+/// they are paused, and a Server runs one Container on a Managed volume at a time.
+/// Sending nothing beats a Deploy whose second writer each Server refuses partway.
+pub(crate) fn refuse_shared_writes(
+    environment: &EnvironmentSummary,
     intent: &SavedEnvironmentIntent,
+    shipping: Shipping,
 ) -> Result<(), RpcError> {
+    let mounted: BTreeSet<&str> = intent
+        .services
+        .iter()
+        .flat_map(|service| &service.volume_attachments)
+        .map(|mount| mount.volume_resource_id.as_str())
+        .collect();
     let shared: Vec<&str> = intent
         .volumes
         .iter()
-        .filter(|volume| volume.shared_writes)
+        .filter(|volume| volume.shared_writes && mounted.contains(volume.resource_id.as_str()))
         .map(|volume| volume.name.as_str())
         .collect();
     let [first, ..] = shared.as_slice() else {
         return Ok(());
     };
+    let named = match shared.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => (*first).to_owned(),
+    };
+    let message = match (shipping, shared.len()) {
+        (Shipping::Working, 1) => {
+            format!(
+                "Shared writes are paused for now, and {named} still has them on; turn them off to deploy"
+            )
+        }
+        (Shipping::Working, _) => {
+            format!(
+                "Shared writes are paused for now, and {named} still have them on; turn them off to deploy"
+            )
+        }
+        (Shipping::Saved, _) => format!(
+            "Shared writes are paused for now, and this older version ships {named} with them on; turn them off, then deploy again"
+        ),
+    };
     let off = FollowUp::VolumeStopSharedWrites {
         volume: (*first).to_owned(),
-        place: Place::of(&environment.summary),
+        place: Place::of(environment),
     };
     Err(error::conflict(
-        format!(
-            "Shared writes are paused for now, and {} still has them on; turn them off to deploy",
-            shared.join(", ")
-        ),
+        message,
         off.within(json!({ "volumes": shared })),
     ))
 }
@@ -451,7 +486,7 @@ fn deploy(
     gate(
         tx,
         who,
-        (&environment, &saved_intent),
+        (&environment, &saved_intent, Shipping::Working),
         (cluster_domain, &namespace),
         trusted,
     )?;
@@ -679,7 +714,7 @@ fn reapply(
     gate(
         tx,
         who,
-        (&environment, &shipping),
+        (&environment, &shipping, Shipping::Saved),
         (cluster_domain, &namespace),
         trusted,
     )?;

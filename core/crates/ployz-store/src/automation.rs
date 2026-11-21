@@ -1034,7 +1034,11 @@ pub(crate) fn auto_admit(
     crate::deployment::admit::gate(
         tx,
         who,
-        (environment, &saved.intent),
+        (
+            environment,
+            &saved.intent,
+            crate::deployment::admit::Shipping::Saved,
+        ),
         (cluster_domain, &namespace),
         trusted,
     )?;

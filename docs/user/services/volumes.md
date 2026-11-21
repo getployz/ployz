@@ -113,7 +113,7 @@ ployz exec web -- df -h /app/uploads
 ## Share a volume
 
 Shared writes are paused for now. One container writes to a volume: a service with a volume runs
-one replica, and no other service can mount it. Ployz refuses to turn on **Allow shared writes**.
+one replica, and no other service can mount it. The **Shared writes** switch only turns off.
 
 A volume that still has it on doesn't deploy, and the deploy names it. Turn it off in the volume's
 **Settings** tab, under **Space**, or from the CLI:
@@ -125,9 +125,13 @@ ployz volume set uploads --shared-writes=false
 It applies at once. While several replicas or services still write to the volume, Ployz refuses:
 set the service to 1 replica and unmount the volume from the other services first.
 
+A redeploy, rollback or Git deploy of a version saved with shared writes on is refused too, even
+after you turn them off: that version can't change. Turn them off, then deploy again.
+
 A server also won't start a container on a managed volume while another container still runs on
-it there. The deploy fails and names the running container. A
-[pre-deploy command](settings.md#pre-deploy-command) runs beside the serving copy as before.
+it there. The deploy fails and names the service still running. Deploy again, or stop that
+service first. A [pre-deploy command](settings.md#pre-deploy-command) runs beside the serving copy
+as before.
 
 ## When its server goes down
 

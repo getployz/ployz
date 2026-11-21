@@ -685,21 +685,16 @@ impl LocalMachine {
         Ok(false)
     }
 
-    /// Refuse a Service Container on a Provisioned Volume root that another Container
-    /// here runs on: running, restarting or paused, each of which can write it again
-    /// without a start. A stopped holder doesn't count, so a stop-first redeploy and
-    /// its rollback, which stop one copy before the other starts, go on as before. A
-    /// pre-deploy hook mounts the root beside the serving copy by design, so it neither
-    /// is checked nor counts, and neither does the Ingress Proxy. `me` is the Container
-    /// being started. Callers hold the switch lock, so no other start through Ployz
-    /// lands between this read and Docker's start.
+    /// Refuse to create a Service Container on a Provisioned Volume root another
+    /// Container here runs on, as [`crate::docker::holder::refuse_beside`] decides.
+    /// Callers hold the switch lock, so no other start through Ployz lands between this
+    /// read and Docker's create.
     ///
     /// # Errors
-    /// Returns [`crate::docker::Error::VolumeHeld`] naming the running Container, or
-    /// the error of a read that failed.
-    pub(super) async fn refuse_second_holder(
+    /// Returns [`crate::docker::Error::VolumeHeld`] naming the running holder, or the
+    /// error of a read that failed.
+    async fn refuse_second_holder(
         &self,
-        me: Option<&ContainerId>,
         kind: ContainerKind,
         spec: &ResolvedServiceSpec,
     ) -> Result<(), Error> {
@@ -707,35 +702,8 @@ impl LocalMachine {
             return Ok(());
         }
         let containers = self.docker()?;
-        let machine_id = self.record().id();
-        for volume in spec.volume_graph().mounted_provisioned_volumes() {
-            let Some(name) = volume.source.docker_volume_name() else {
-                continue;
-            };
-            for holder in containers.volumes().volume_holder_ids(name).await? {
-                if me == Some(&holder) {
-                    continue;
-                }
-                match containers
-                    .observation()
-                    .inspect_managed(&holder, &machine_id)
-                    .await
-                {
-                    Ok(observed)
-                        if observed.kind == ContainerKind::ServiceContainer
-                            && !observed.is_system_ingress()
-                            && is_running(&observed.runtime) =>
-                    {
-                        return Err(crate::docker::Error::VolumeHeld {
-                            name: name.clone(),
-                            container: observed.display_name.clone(),
-                        }
-                        .into());
-                    }
-                    Ok(_) | Err(crate::docker::Error::ContainerNotFound(_)) => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
+        for (name, called) in crate::docker::holder::provisioned(spec) {
+            containers.volumes().refuse_beside(&name, &called).await?;
         }
         Ok(())
     }
@@ -1747,7 +1715,7 @@ impl LocalMachine {
                                 .refuse_managed_external(&machine.id, spec),
                         )
                         .await?;
-                        Box::pin(self.refuse_second_holder(None, kind, spec)).await?;
+                        Box::pin(self.refuse_second_holder(kind, spec)).await?;
                         Ok(())
                     },
                     storage: self.observe_storage(),

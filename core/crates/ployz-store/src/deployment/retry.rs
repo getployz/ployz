@@ -67,6 +67,21 @@ pub(crate) fn retry(
             shipped,
             crate::volume::StorageRule::Replay,
         )?;
+        // It ships what it shipped then, Shared Writes and all, which no edit changes.
+        let shipping = ployz_core::config::SavedEnvironmentIntent {
+            services: saved
+                .services
+                .iter()
+                .filter(|service| stored.nodes.iter().any(|node| node.id() == service.id))
+                .cloned()
+                .collect(),
+            ..saved.clone()
+        };
+        super::admit::refuse_shared_writes(
+            &scope::load_by_id(tx, &stored.summary.environment_id)?.summary,
+            &shipping,
+            super::admit::Shipping::Saved,
+        )?;
     }
     // What a rollback retires is frozen against Applied State now, which a newer
     // running Deployment may yet change. A queued one is superseded, as by a Deploy,

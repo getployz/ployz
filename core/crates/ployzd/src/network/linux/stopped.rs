@@ -56,14 +56,23 @@ impl Stopped {
     }
 
     /// Starts every member written down, a few at a time since each start takes Docker
-    /// a moment. Keeps the ones Docker couldn't start for the next start.
+    /// a moment. Keeps the ones Docker couldn't start for the next start, and drops one
+    /// refused because another Container now runs on its Volume.
     pub(super) async fn start(mut self, docker: &Docker) {
         let ids = std::mem::take(&mut self.ids);
         self.ids = futures_util::stream::iter(ids)
             .map(|id| async move {
-                match docker.start_container(&id, None).await {
+                let started = match docker.inspect_container(&id, None).await {
+                    Ok(member) => crate::docker::holder::start(docker, &member, None).await,
+                    Err(error) => Err(error.into()),
+                };
+                match started {
                     Ok(()) => None,
-                    Err(error) if gone(&error) => None,
+                    Err(crate::docker::Error::Docker(error)) if gone(&error) => None,
+                    Err(error @ crate::docker::Error::VolumeHeld { .. }) => {
+                        eprintln!("container {id} stays stopped: {error}");
+                        None
+                    }
                     Err(error) => {
                         eprintln!(
                             "container {id} stayed stopped after rejoining the {DOCKER_NETWORK_NAME} network: {error}",
@@ -121,7 +130,8 @@ mod tests {
     use super::*;
 
     /// A Docker that starts `ok`, has never heard of `gone`, can't find the network of
-    /// `netless`, and refuses anything else.
+    /// `netless`, and refuses anything else. `held` and `writer` are Service Containers
+    /// on one Volume, and `writer` runs.
     async fn docker(started: Arc<Mutex<Vec<String>>>) -> Docker {
         async fn start(
             State(started): State<Arc<Mutex<Vec<String>>>>,
@@ -135,7 +145,7 @@ mod tests {
             };
             started.lock().unwrap().push(id.to_owned());
             let (status, message) = match id {
-                "ok" => (StatusCode::OK, String::new()),
+                "ok" | "held" => (StatusCode::OK, String::new()),
                 "gone" => (StatusCode::NOT_FOUND, format!("No such container: {id}")),
                 "netless" => (
                     StatusCode::NOT_FOUND,
@@ -148,10 +158,46 @@ mod tests {
                 axum::Json(serde_json::json!({ "message": message })),
             )
         }
+        async fn read(
+            UrlPath(path): UrlPath<String>,
+        ) -> (StatusCode, axum::Json<serde_json::Value>) {
+            let serving = |id: &str, status: &str| {
+                serde_json::json!({
+                    "Id": id,
+                    "Name": format!("/{id}"),
+                    "State": {"Status": status},
+                    "Config": {"Labels": {
+                        "ployz.managed": "true",
+                        "ployz.namespace": "app",
+                        "ployz.service.id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "ployz.service.name": id,
+                    }},
+                    "Mounts": [{"Type": "volume", "Name": "app_data", "Driver": "ployz"}],
+                })
+            };
+            if path.ends_with("containers/json") {
+                return (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!([{"Id": "held"}, {"Id": "writer"}])),
+                );
+            }
+            let id = path.trim_end_matches("/json").rsplit('/').next().unwrap();
+            match id {
+                "gone" => (
+                    StatusCode::NOT_FOUND,
+                    axum::Json(
+                        serde_json::json!({ "message": format!("No such container: {id}") }),
+                    ),
+                ),
+                "held" => (StatusCode::OK, axum::Json(serving(id, "exited"))),
+                "writer" => (StatusCode::OK, axum::Json(serving(id, "running"))),
+                _ => (StatusCode::OK, axum::Json(serde_json::json!({ "Id": id }))),
+            }
+        }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = Router::new()
-            .route("/{*path}", post(start))
+            .route("/{*path}", post(start).get(read))
             .with_state(started);
         tokio::spawn(axum::serve(listener, app).into_future());
         Docker::connect_with_http(
@@ -160,6 +206,20 @@ mod tests {
             bollard::API_DEFAULT_VERSION,
         )
         .unwrap()
+    }
+
+    /// A member another Container now runs beside on its Volume stays stopped, and the
+    /// note forgets it rather than trying again at every start.
+    #[tokio::test]
+    async fn a_member_beside_a_running_holder_stays_stopped_and_is_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stopped = Stopped::load(dir.path());
+        stopped.note("held").unwrap();
+        stopped.note("ok").unwrap();
+        let started = Arc::new(Mutex::new(Vec::new()));
+        stopped.start(&docker(started.clone()).await).await;
+        assert_eq!(*started.lock().unwrap(), ["ok"]);
+        assert!(!dir.path().join(FILE).exists());
     }
 
     #[tokio::test]
@@ -174,9 +234,7 @@ mod tests {
         Stopped::load(dir.path())
             .start(&docker(started.clone()).await)
             .await;
-        let mut started = started.lock().unwrap().clone();
-        started.sort();
-        assert_eq!(started, ["gone", "ok"]);
+        assert_eq!(*started.lock().unwrap(), ["ok"]);
         assert!(!dir.path().join(FILE).exists());
     }
 

@@ -7,6 +7,7 @@ mod error;
 pub(crate) use doors::{Door, DoorEntry};
 #[cfg(test)]
 pub(crate) use doors::{DoorFacts, NetnsId};
+pub(crate) mod holder;
 mod http_health;
 mod images;
 pub use images::Images;
@@ -1399,11 +1400,12 @@ pub enum Error {
     #[error("Volume '{0}' has no writable copy on this Machine")]
     VolumeNotWritable(DockerVolumeName),
     /// Another Container on this Machine runs on a mounted Provisioned Volume's root.
-    #[error("Volume '{name}' is in use by {container}, which still runs on this Machine")]
+    #[error("{holder} still runs on {volume} on this Server; deploy again, or stop {holder} first")]
     VolumeHeld {
-        name: DockerVolumeName,
-        /// The running Container's Docker name.
-        container: String,
+        /// Where the Volume is mounted, when known, else its Docker name.
+        volume: String,
+        /// The running holder's Service, or its Docker name when Ployz didn't make it.
+        holder: String,
     },
     /// The volume plugin did not say which origin a Provisioned Volume carries.
     #[error("could not read which data Volume '{name}' holds")]

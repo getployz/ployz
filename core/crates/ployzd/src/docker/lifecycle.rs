@@ -924,12 +924,11 @@ impl Lifecycle {
         {
             return Err(error);
         }
-        let result = self
-            .docker
-            .client
-            .start_container(container_id.as_str(), None)
-            .await;
-        idempotent_lifecycle_result(container_id, result)
+        let spec = self.specs.get(container_id).await?;
+        match super::holder::start(&self.docker.client, inspected, spec.as_ref()).await {
+            Err(Error::Docker(error)) => idempotent_lifecycle_result(container_id, Err(error)),
+            started => started,
+        }
     }
 
     /// Attach a Container to the network a failed start took from it. The Tunnel

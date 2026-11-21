@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Link, useHydrated } from "@tanstack/react-router";
+import { useHydrated } from "@tanstack/react-router";
 import { MinusIcon, PlusIcon, XIcon } from "lucide-react";
 import type { JsonValue, VolumeListing } from "@ployz/sdk";
 import { InfoHint } from "#/components/info-hint";
@@ -13,7 +13,6 @@ import type { Write } from "#/modules/config-store/store-write";
 import type { SharedRegion } from "#/modules/config-store/deploy-waits";
 import { RegionSelect } from "#/modules/machines/RegionSelect";
 import type { RegionOption } from "#/modules/machines/server-regions";
-import { ENVIRONMENT_RESOURCE_ROUTE_TO } from "../../../-components/environment-route-paths";
 
 /**
  * A Service's replicas as a row per region: how many run where. A bare count is one row in the Environment's region, or
@@ -97,15 +96,11 @@ export function StoreReplicasRows({ options, value, deployed, home, capped, oneR
 
 const allOf = (names: readonly string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
 
-export function CappedHint({ params, volume }: {
-  params: { organizationSlug: string; projectSlug: string; environmentSlug: string };
-  volume: VolumeListing;
-}) {
+export function CappedHint({ volume }: { volume: VolumeListing }) {
   return (
     <>
       Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
-      <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
-      <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
+      <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>
     </>
   );
 }

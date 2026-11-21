@@ -847,6 +847,10 @@ async fn machine_local_volume_lifecycle_preserves_identity_and_labels() {
 
 #[tokio::test]
 #[ignore = "requires Docker and alpine:3.23.3"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test Container Ployz never starts"
+)]
 async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
     let root = TestDir::new("ployzd-docker-observer");
     fs::create_dir_all(root.0.join("bind")).unwrap();
@@ -1073,6 +1077,10 @@ async fn container_creation_uses_bind_named_and_tmpfs_mounts() {
 
 #[tokio::test]
 #[ignore = "requires Docker, alpine:3.23.3, and the pinned Corrosion image"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test Container Ployz never starts"
+)]
 async fn docker_events_and_rescans_publish_redacted_local_observations() {
     let root = TestDir::new("ployzd-docker-observer");
     let mut corrosion = crate::corrosion::CorrosionConfig::new(
