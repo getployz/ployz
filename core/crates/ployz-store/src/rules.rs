@@ -1054,6 +1054,44 @@ pub(crate) mod tests {
         deploy().unwrap();
     }
 
+    /// A Deploy of Services that neither mount nor reference `db` ships beside its
+    /// Volume with shared writes on from before the pause.
+    #[test]
+    fn a_deploy_of_other_services_ships_beside_a_volume_with_shared_writes() {
+        let (store, who) = shop();
+        seed(&store, &who, |working| {
+            working.volumes[0].shared_writes = true
+        });
+        let deploy = |n: u8| {
+            store.write(
+                &who,
+                &crate::Admit::Deploy(crate::Deploy {
+                    id: crate::DeploymentId::parse(uuid(n)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    services: vec![ServiceName::parse("redis").unwrap()],
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                    versions: Vec::new(),
+                }),
+            )
+        };
+        deploy(10).unwrap();
+        // Referencing db, it ships db too.
+        set(
+            &store,
+            &who,
+            &[("redis.env.DB", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
+        )
+        .unwrap();
+        let refused = deploy(11).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert!(refused.message.starts_with("Shared writes are paused"));
+    }
+
     /// A Deployment saved with shared writes on, before the pause, never ships again:
     /// a retry is refused before it queues, though Working State has them off.
     #[test]

@@ -67,19 +67,18 @@ pub(crate) fn retry(
             shipped,
             crate::volume::StorageRule::Replay,
         )?;
-        // It ships what it shipped then, Shared Writes and all, which no edit changes.
-        let shipping = ployz_core::config::SavedEnvironmentIntent {
-            services: saved
-                .services
-                .iter()
-                .filter(|service| stored.nodes.iter().any(|node| node.id() == service.id))
-                .cloned()
-                .collect(),
-            ..saved.clone()
+        // It ships what it shipped then, Shared Writes and all, which no edit changes:
+        // the Services the runner lowers at claim, named or referenced.
+        let full = stored.targeting().is_full();
+        let handed = match full {
+            true => BTreeSet::new(),
+            false => lowered(tx, &stored, &saved)?.shipped,
         };
         super::admit::refuse_shared_writes(
             &scope::load_by_id(tx, &stored.summary.environment_id)?,
-            &shipping,
+            (&saved, |service: &SavedServiceIntent| {
+                full || handed.contains(&service.config.private_dns)
+            }),
             super::admit::Shipping::Saved,
         )?;
     }

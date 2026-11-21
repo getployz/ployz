@@ -349,6 +349,50 @@ fn a_push_that_builds_another_service_still_deletes_the_accepted_data() {
     );
 }
 
+/// A push that builds only `api` deploys beside `web`'s Volume, saved with shared
+/// writes on before the pause: only a Volume a Service it ships mounts can refuse it.
+#[test]
+fn a_push_deploys_beside_a_shared_volume_only_another_service_mounts() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                restored_from: None,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("data").unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    set(&store, &who, "api.watchPaths", json!(["api/**"]));
+    publish(&store, &who);
+    let first = system(&store, &push(None, Some(H1), Some(&["web/main.rs"])));
+    // How a Volume saved and deployed before the pause looks.
+    backend::execute(
+        &url,
+        "UPDATE config_saved SET intent = \
+         replace(intent, '\"name\":\"data\"', '\"name\":\"data\",\"sharedWrites\":true')",
+    );
+    backend::run(&store, &first.admitted[0].deployment.id);
+    let narrow = system(&store, &push(Some(H1), Some(H2), Some(&["api/main.rs"])));
+    let shipped: Vec<Vec<String>> = deployed(&store, &who, &narrow)
+        .into_iter()
+        .map(|(services, _)| services)
+        .collect();
+    assert_eq!(shipped, [["api"]]);
+}
+
 #[test]
 fn a_push_never_deletes_data_no_save_accepted() {
     let (store, who) = shop();
