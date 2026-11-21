@@ -74,10 +74,12 @@ pub(super) fn deploy_command(command: Command) -> Command {
             switch("forget-older", None)
                 .conflicts_with_all(["plan", "skip-deploy", "upload"])
                 .help(
-                    "Have every server refuse the older versions of what this deploy signs. \
-                     Running containers keep running. Automatic deploy rules for these \
-                     services stop, and Ployz Cloud can't move or drain the containers a rule \
-                     built, until you approve the rule again",
+                    "Have every server refuse a new container of an older version of what \
+                     this deploy signs when it opens a secret, mounts a volume, pulls its image \
+                     with a login or reaches its server. Running containers keep running. \
+                     Automatic deploy rules for these services stop, and Ployz Cloud can't \
+                     move or drain the containers a rule built, until you approve the rule \
+                     again",
                 ),
         )
         .arg(crate::cli::reviewed_version())
@@ -206,8 +208,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let skip = matches.get_flag("skip-deploy");
     let no_prune = matches.get_flag("no-prune");
     let store = store(root)?
-        .args(skip.then_some("--skip-deploy"))
-        .args(no_prune.then_some("--no-prune"))
+        .args(switches(matches))
         .args(names.iter().copied())
         .args(upload.into_iter().flat_map(|source| ["--upload", source]))
         .args(
@@ -233,6 +234,18 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         no_prune,
     };
     upload_and_ship(matches, &store, request, events)?.finish()
+}
+
+/// The switches of `deploy` as typed, so a retry the Store suggests repeats them.
+fn switches(matches: &ArgMatches) -> impl Iterator<Item = &'static str> {
+    [
+        ("skip-deploy", "--skip-deploy"),
+        ("no-prune", "--no-prune"),
+        ("forget-older", "--forget-older"),
+    ]
+    .into_iter()
+    .filter(|(id, _)| approve::flag(matches, id))
+    .map(|(_, typed)| typed)
 }
 
 /// `deploy --skip-deploy`: save everything staged for the next deploy.
@@ -1860,6 +1873,55 @@ mod tests {
         status_tone, status_word, undecided, unserved_outcome_lines, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
+
+    /// The retry a Volume-loss confirmation suggests still forgets the older versions, so
+    /// following it raises the floors the first run would have.
+    #[test]
+    fn a_volume_loss_retry_keeps_forget_older() {
+        use crate::cloud_account::StoreCallError;
+        use crate::handlers::store::{Backend, Store};
+        use ployz_core::Hint;
+        use ployz_store::{Actor, ConfigStore, OrganizationId, SealingKey};
+
+        let root = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "deploy",
+                "web",
+                "--forget-older",
+                "--env",
+                "staging",
+            ])
+            .unwrap();
+        let matches = crate::handlers::leaf_matches(&root);
+        let local =
+            ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap();
+        let store = Store::for_test(
+            Backend::Local(
+                std::sync::Arc::new(local),
+                Actor::system(OrganizationId::parse("local").unwrap()),
+            ),
+            matches,
+        )
+        .args(super::switches(matches));
+        let refused = ployz_core::RpcError::confirmation_required(
+            "This Deploy permanently deletes the data of data",
+        )
+        .with_details(serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }));
+
+        let hints = store.accepting(StoreCallError::Refused(refused)).hints();
+
+        let [Hint::Retry(retry)] = &hints[..] else {
+            panic!("no retry: {hints:?}");
+        };
+        let reparsed = crate::cli::command()
+            .try_get_matches_from(shell_words::split(retry).unwrap())
+            .unwrap_or_else(|error| panic!("{retry}: {error}"));
+        assert!(
+            super::approve::flag(crate::handlers::leaf_matches(&reparsed), "forget-older"),
+            "{retry}"
+        );
+    }
 
     #[test]
     fn the_follow_reads_the_first_page_of_the_environment_a_view_names() {

@@ -208,10 +208,12 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
         .map(|change| change.service.as_str())
         .collect();
     format!(
-        "This also forgets every older version of {}: your servers refuse to start one \
-         again. Running containers keep running. An automatic deploy rule for these \
+        "This also forgets every older version of {}: your servers refuse a new container \
+         of one that opens a secret, mounts a volume, pulls its image with a login or reaches \
+         its server. Running containers keep running. An automatic deploy rule for these \
          services stops, and Ployz Cloud can't move or drain the containers it built, until \
-         you approve it again with ployz github rule approve.",
+         you approve it again with ployz github rule approve <service>..., which also \
+         approves the commit now at the head of its branch.",
         services.join(", ")
     )
 }

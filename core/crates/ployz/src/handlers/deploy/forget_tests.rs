@@ -1,30 +1,59 @@
+use std::time::Duration;
+
 use ployz_core::{
     CapabilityName, ContractDescription, MachineList, MachineObservation, MembershipObservation,
-    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RpcRequestBody, RpcResponse,
-    VersionsForgotten, authority::Timestamp,
+    Namespace, OpaquePayload, PROTOCOL_MAJOR, RpcRequestBody, RpcResponse, SealingPublicKey,
+    ServiceMode, ServiceName, VersionsForgotten,
+    authority::{PayloadDigest, Signer, SignerKey, Timestamp},
 };
 use tonic::{Request, Response, Status};
 
 use super::*;
-use crate::global_fixtures::machine;
+use crate::global_fixtures::{machine, requested};
 
 fn id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
-fn forgot(service: &str) -> VersionsForgotten {
-    VersionsForgotten {
-        outcomes: vec![ForgetOutcome::Raised {
-            service: QualifiedService::parse(service).unwrap(),
-            floor: Timestamp::from_millis(1_800_000_000_000).unwrap(),
-        }],
-    }
+/// A version of `app/<service>` this Device signed marked to forget.
+fn version(service: &str) -> Signed<ServiceVersion> {
+    let signer = Signer::from_seed(&[1; 32]);
+    let namespace = Namespace::parse("app").unwrap();
+    Signed::sign(
+        &ServiceVersion {
+            forget_older: true,
+            cluster: SealingPublicKey::from_bytes([9; 32]),
+            digest: PayloadDigest::of(&requested(ServiceMode::Global), &namespace).unwrap(),
+            namespace,
+            service: ServiceName::parse(service).unwrap(),
+            signed_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+            signer: SignerKey::Device(signer.public().into()),
+            proposal: None,
+        },
+        &signer,
+    )
+    .unwrap()
 }
 
-/// Three Members that keep floors, each answering the forget with `answer`; one it gives
-/// `None` is down.
+fn versions(count: usize) -> Vec<Signed<ServiceVersion>> {
+    (0..count).map(|n| version(&format!("s{n}"))).collect()
+}
+
+/// How a Member answers one forget request of so many versions.
+enum Reply {
+    /// Raise every version's floor, as far as one request's budget reaches.
+    Forget,
+    Refuse,
+    Down,
+    /// Hold the call open and never answer.
+    Silent,
+}
+
+/// Three Members that keep floors, each answering a forget request as `answer` says. A
+/// Member that forgets refuses each version past the verifications one request may cost,
+/// as a real one does.
 async fn members(
-    answer: fn(MachineId) -> Option<VersionsForgotten>,
+    answer: fn(MachineId, usize) -> Reply,
 ) -> (
     Client,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
@@ -57,9 +86,34 @@ async fn members(
                 capabilities: [CapabilityName::parse(FORGET_VERSIONS_CAPABILITY).unwrap()].into(),
                 sealing: None,
             }),
-            RpcRequestBody::ForgetVersions(_) => RpcResponse::from(
-                answer(target).ok_or_else(|| Status::unavailable("the server is down"))?,
-            ),
+            RpcRequestBody::ForgetVersions(request) => {
+                let outcomes = match answer(target, request.versions.len()) {
+                    Reply::Forget => request
+                        .versions
+                        .iter()
+                        .enumerate()
+                        .map(|(spent, version)| {
+                            let body = version.open().unwrap();
+                            if spent < MAX_CHECKED {
+                                ForgetOutcome::Raised {
+                                    service: QualifiedService::new(body.namespace, body.service),
+                                    floor: body.signed_at,
+                                }
+                            } else {
+                                ForgetOutcome::Refused {
+                                    reason: "This request needs too many signature checks.".into(),
+                                }
+                            }
+                        })
+                        .collect(),
+                    Reply::Refuse => vec![ForgetOutcome::Refused {
+                        reason: "This forget is stamped ahead of this server's clock.".into(),
+                    }],
+                    Reply::Down => return Err(Status::unavailable("the server is down")),
+                    Reply::Silent => std::future::pending().await,
+                };
+                RpcResponse::from(VersionsForgotten { outcomes })
+            }
             other => panic!("the forget fan-out sent {other:?}"),
         };
         Ok(Response::new(response.encode().unwrap()))
@@ -71,17 +125,16 @@ async fn members(
 /// result is partial; the Members that answered still report what they forgot.
 #[tokio::test(start_paused = true)]
 async fn a_member_that_does_not_answer_the_forget_makes_the_result_partial() {
-    let (mut client, server) =
-        members(|target| (target != id('2')).then(|| forgot("app/web"))).await;
+    let (mut client, server) = members(|target, _| {
+        if target == id('2') {
+            Reply::Down
+        } else {
+            Reply::Forget
+        }
+    })
+    .await;
 
-    let forgot = ask(
-        &mut client,
-        ForgetVersionsRequest {
-            versions: Vec::new(),
-        },
-    )
-    .await
-    .unwrap();
+    let forgot = ask(&mut client, &versions(1)).await.unwrap();
 
     assert!(!forgot.is_complete());
     let json = serde_json::to_value(&forgot).unwrap();
@@ -112,28 +165,114 @@ async fn a_member_that_does_not_answer_the_forget_makes_the_result_partial() {
 /// still admits older versions, so the result is partial.
 #[tokio::test(start_paused = true)]
 async fn a_member_that_refuses_the_forget_makes_the_result_partial() {
-    let (mut client, server) = members(|target| {
-        Some(if target == id('3') {
-            VersionsForgotten {
-                outcomes: vec![ForgetOutcome::Refused {
-                    reason: "This forget is stamped ahead of this server's clock.".into(),
-                }],
-            }
+    let (mut client, server) = members(|target, _| {
+        if target == id('3') {
+            Reply::Refuse
         } else {
-            forgot("app/web")
-        })
+            Reply::Forget
+        }
     })
     .await;
 
-    let forgot = ask(
-        &mut client,
-        ForgetVersionsRequest {
-            versions: Vec::new(),
-        },
-    )
-    .await
-    .unwrap();
+    let forgot = ask(&mut client, &versions(1)).await.unwrap();
 
     assert!(!forgot.is_complete());
+    server.abort();
+}
+
+/// A deploy of more Services than one request may verify is still forgotten whole on every
+/// healthy Member.
+#[tokio::test(start_paused = true)]
+async fn every_service_of_a_deploy_past_one_requests_budget_is_forgotten() {
+    let (mut client, server) = members(|_, _| Reply::Forget).await;
+
+    let forgot = ask(&mut client, &versions(MAX_CHECKED + 1)).await.unwrap();
+
+    assert!(forgot.is_complete());
+    let json = serde_json::to_value(&forgot).unwrap();
+    for answer in json.pointer("/machines").unwrap().as_array().unwrap() {
+        let raised = answer
+            .pointer("/outcomes")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|outcome| outcome.pointer("/outcome") == Some(&serde_json::json!("raised")))
+            .count();
+        assert_eq!(raised, MAX_CHECKED + 1, "{answer}");
+    }
+    server.abort();
+}
+
+/// A Member that holds its call open and never answers is a gap once its deadline passes,
+/// and the other Members, the entry included, are still asked.
+#[tokio::test(start_paused = true)]
+async fn a_member_that_never_answers_is_a_gap_and_the_rest_still_forget() {
+    let (mut client, server) = members(|target, _| {
+        if target == id('2') {
+            Reply::Silent
+        } else {
+            Reply::Forget
+        }
+    })
+    .await;
+
+    let forgot = tokio::time::timeout(Duration::from_secs(120), ask(&mut client, &versions(1)))
+        .await
+        .expect("the forget waited on a Member that never answers")
+        .unwrap();
+
+    assert!(!forgot.is_complete());
+    let json = serde_json::to_value(&forgot).unwrap();
+    assert_eq!(
+        json.pointer("/failures/0/server"),
+        Some(&serde_json::json!("machine-2"))
+    );
+    let answered: Vec<_> = json
+        .pointer("/machines")
+        .and_then(serde_json::Value::as_array)
+        .unwrap()
+        .iter()
+        .filter_map(|answer| answer.pointer("/server")?.as_str())
+        .collect();
+    assert_eq!(answered, ["machine-1", "machine-3"]);
+    server.abort();
+}
+
+/// A Member that forgets the first batch and misses a later one keeps what it forgot,
+/// names the Services it missed, and makes the result partial.
+#[tokio::test(start_paused = true)]
+async fn a_member_that_misses_a_later_batch_names_its_services() {
+    let (mut client, server) = members(|target, sent| {
+        if target == id('3') && sent < MAX_CHECKED {
+            Reply::Down
+        } else {
+            Reply::Forget
+        }
+    })
+    .await;
+
+    let forgot = ask(&mut client, &versions(MAX_CHECKED + 1)).await.unwrap();
+
+    assert!(!forgot.is_complete());
+    let json = serde_json::to_value(&forgot).unwrap();
+    let third = json.pointer("/machines/2").unwrap();
+    assert_eq!(
+        third.pointer("/server"),
+        Some(&serde_json::json!("machine-3"))
+    );
+    assert_eq!(
+        third
+            .pointer("/outcomes")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        MAX_CHECKED
+    );
+    assert_eq!(
+        third.pointer("/missed/services"),
+        Some(&serde_json::json!([format!("app/s{MAX_CHECKED}")]))
+    );
     server.abort();
 }

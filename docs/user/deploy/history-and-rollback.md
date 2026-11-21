@@ -105,18 +105,22 @@ version or an [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-pu
 
 ## Forget older versions
 
-To make sure an older version never runs again, deploy the version you want with
+To retire the approvals of older versions, deploy the version you want with
 `ployz deploy --forget-older` on an approved device. It signs each version it ships marked to
-forget, and every server then refuses any version of those services signed before it. That
-includes the signatures Ployz Cloud kept, so **Redeploy** and **Roll back** to an older
-deployment fail too.
+forget, and every server then refuses a new container of an older version of those services
+that opens a sealed value, mounts a volume, pulls its image with a login or reaches its server.
+That includes the signatures Ployz Cloud kept, so **Redeploy** and **Roll back** to such an
+older version fail too.
 
 ```bash
 ployz deploy api --forget-older
 ```
 
 - **Running containers keep running.** Forget only stops new ones. A stopped container that an
-  older version made won't start again through Ployz.
+  older version made won't start again through Ployz when it needs that version's approval.
+- **An older version that reaches no data can still run.** A server runs a service with no
+  sealed value, no volume, no login for its image and nothing of its server without any
+  signature, so a forget doesn't stop it. A rollback to one still works.
 - **Every server is asked, not only the ones that run the service.** The command prints what
   each server did. A server that doesn't answer, refuses the forget, or runs a ployz too old to
   forget, is named, and the command exits 3. Run the same deploy again once it answers. A server that joins later takes
@@ -125,7 +129,9 @@ ployz deploy api --forget-older
 - **Automatic deploy rules stop.** A forget also retires each
   [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) for those services that
   was approved before it. Pushes stop deploying them, and Ployz Cloud can't move or drain the
-  containers a rule built, until you approve the rule again with `ployz github rule approve`.
+  containers a rule built, until you approve the rule again with
+  `ployz github rule approve <service>...`. Approving it again approves the commit now at the
+  head of the rule's branch, so check that commit first.
 - **Forget goes by each device's clock.** The forget's time is your device's clock when you said
   yes. A version signed on a device whose clock runs behind yours can be forgotten even if it was
   signed after, and one signed on a device whose clock runs ahead can survive. Keep your devices'
