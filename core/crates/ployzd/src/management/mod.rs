@@ -434,7 +434,7 @@ async fn revoked(mut records: watch::Receiver<Arc<LocalMachineRecord>>, remote: 
 
 /// The Machine API as one management connection serves it: each request carries its
 /// connection, and once the connection drains every stream ends but the ones that can
-/// revoke their own caller: `SetManagementClient`, `SetDevice` and `RemoveTrustedKey`.
+/// revoke their own caller: `SetManagementClient`, `SetDevice` and `KeyStep`.
 #[derive(Clone)]
 struct ConnectionApi<S> {
     api: S,

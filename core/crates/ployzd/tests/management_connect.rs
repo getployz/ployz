@@ -25,11 +25,11 @@ use ployz::{
     context::Connection,
 };
 use ployz_core::{
-    AdvertisedEndpoint, ClientKey, ContainerId, DescribeContractRequest, DeviceKey, EnrollAs,
-    EnrollRequest, ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer, MANAGEMENT_ALPN,
-    MachineId, MachineName, MachineRpcClient, ManagementCapability, ManagementClientLabel,
-    ManagementIdentity, OpaquePayload, RemoveTrustedKeyRequest, RpcErrorCode, SetDeviceRequest,
-    SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, TrustedKeyRemoved, op,
+    AdvertisedEndpoint, ClientKey, ContainerId, DescribeContractRequest, DeviceKey, DeviceSet,
+    EnrollAs, EnrollRequest, ExecConfig, ExecOptions, ExecRequestFrame, ForgottenAnswer,
+    MANAGEMENT_ALPN, MachineId, MachineName, MachineRpcClient, ManagementCapability,
+    ManagementClientLabel, ManagementIdentity, OpaquePayload, RpcErrorCode, SetDeviceRequest,
+    SetManagementClientRequest, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, op,
 };
 use ployzd::{
     corrosion::ReplicatedStore,
@@ -806,10 +806,13 @@ async fn a_device_removing_itself_receives_the_outcome() {
     let (_dir, owner, local) = participating().await;
     let device = SecretKey::generate();
     let key = DeviceKey::from_bytes(*device.public().as_bytes());
-    local
-        .set_device(SetDeviceRequest::Approve { key })
-        .await
-        .unwrap();
+    let kept = DeviceKey::from_bytes(*SecretKey::generate().public().as_bytes());
+    for key in [kept, key] {
+        local
+            .set_device(SetDeviceRequest::Approve { key })
+            .await
+            .unwrap();
+    }
     let capability = ManagementCapability::new(
         local.record().management_secret().public_key(),
         device.to_bytes(),
@@ -840,8 +843,8 @@ async fn a_device_removing_itself_receives_the_outcome() {
     let channel = connector.connect(&connection(&capability)).await.unwrap();
 
     let removed = MachineRpcClient::new(channel)
-        .remove_trusted_key(
-            op::RemoveTrustedKey::into_request(RemoveTrustedKeyRequest { code: key.code() })
+        .set_device(
+            op::SetDevice::into_request(SetDeviceRequest::Remove { code: key.code() })
                 .encode()
                 .unwrap(),
         )
@@ -850,16 +853,10 @@ async fn a_device_removing_itself_receives_the_outcome() {
         .into_inner()
         .decode_response()
         .unwrap()
-        .decode::<op::RemoveTrustedKey>()
+        .decode::<op::SetDevice>()
         .unwrap();
 
-    assert_eq!(
-        removed,
-        TrustedKeyRemoved::RemovedDevice {
-            code: key.code(),
-            approved_passkeys: Vec::new(),
-        }
-    );
+    assert_eq!(removed, DeviceSet::Removed { code: key.code() });
     assert!(matches!(
         connector.connect(&connection(&capability)).await,
         Err(ConnectError::ClientCleared)
@@ -868,7 +865,7 @@ async fn a_device_removing_itself_receives_the_outcome() {
     server.await.unwrap();
 }
 
-/// Holds each RemoveTrustedKey answer until the revocation its removal published has
+/// Holds each SetDevice answer until the revocation its removal published has
 /// drained the connection, which an unheld answer would race.
 #[derive(Clone)]
 struct AnswersAfterRevocation(MachineApi);
@@ -883,7 +880,7 @@ impl Service<http::Request<Body>> for AnswersAfterRevocation {
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        let held = request.uri().path() == <op::RemoveTrustedKey as ployz_core::Rpc>::PATH;
+        let held = request.uri().path() == <op::SetDevice as ployz_core::Rpc>::PATH;
         let answer = self.0.call(request);
         Box::pin(async move {
             let answer = answer.await;
@@ -1328,10 +1325,13 @@ async fn tunnel_contract() {
     let (_dir, owner, local) = participating_in("127.0.0.0/16").await;
     let device = SecretKey::generate();
     let key = DeviceKey::from_bytes(*device.public().as_bytes());
-    local
-        .set_device(SetDeviceRequest::Approve { key })
-        .await
-        .unwrap();
+    let kept = DeviceKey::from_bytes(*SecretKey::generate().public().as_bytes());
+    for key in [kept, key] {
+        local
+            .set_device(SetDeviceRequest::Approve { key })
+            .await
+            .unwrap();
+    }
     let capability = ManagementCapability::new(
         local.record().management_secret().public_key(),
         device.to_bytes(),

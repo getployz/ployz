@@ -204,13 +204,13 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
 
     // A Full route to `b`: dialed itself, confirmed first, sent with no target header.
     let _ = client
-        .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target('b')))
+        .call_shared::<op::SetDevice>(removal(), Call::once().to(&target('b')))
         .await;
     assert_eq!(
         pinned.seen(),
         [
             at('b', "describe_contract", None),
-            at('b', "remove_trusted_key", None)
+            at('b', "set_device", None)
         ]
     );
     assert_eq!(pinned.dials(), [machine_id('b')]);
@@ -218,16 +218,16 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
     // Each call dials anew.
     for _ in 0..2 {
         let _ = client
-            .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target('b')))
+            .call_shared::<op::SetDevice>(removal(), Call::once().to(&target('b')))
             .await;
     }
     assert_eq!(
         pinned.seen(),
         [
             at('b', "describe_contract", None),
-            at('b', "remove_trusted_key", None),
+            at('b', "set_device", None),
             at('b', "describe_contract", None),
-            at('b', "remove_trusted_key", None),
+            at('b', "set_device", None),
         ]
     );
     assert_eq!(pinned.dials(), [machine_id('b'), machine_id('b')]);
@@ -246,11 +246,11 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
     // entry's too, naming the target.
     for id in ['a', 'c'] {
         let _ = client
-            .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target(id)))
+            .call_shared::<op::SetDevice>(removal(), Call::once().to(&target(id)))
             .await;
         assert_eq!(
             pinned.seen(),
-            [at('a', "remove_trusted_key", Some(&target(id).to_string()))],
+            [at('a', "set_device", Some(&target(id).to_string()))],
             "{id}"
         );
     }
@@ -260,14 +260,11 @@ async fn a_unary_call_goes_direct_only_on_a_full_route_and_only_to_a_target_a_fu
         .call_shared::<op::Inspect>(InspectRequest::default(), Call::once())
         .await;
     let _ = client
-        .call_shared::<op::RemoveTrustedKey>(removal(), Call::once())
+        .call_shared::<op::SetDevice>(removal(), Call::once())
         .await;
     assert_eq!(
         pinned.seen(),
-        [
-            at('a', "inspect", None),
-            at('a', "remove_trusted_key", None)
-        ]
+        [at('a', "inspect", None), at('a', "set_device", None)]
     );
     assert!(pinned.dials().is_empty());
 }
@@ -278,15 +275,11 @@ async fn a_client_with_no_full_connection_sends_every_route_through_the_entry() 
     let _ = pinned.dials();
     let _ = pinned
         .client
-        .call_shared::<op::RemoveTrustedKey>(removal(), Call::once().to(&target('b')))
+        .call_shared::<op::SetDevice>(removal(), Call::once().to(&target('b')))
         .await;
     assert_eq!(
         pinned.seen(),
-        [at(
-            'a',
-            "remove_trusted_key",
-            Some(&target('b').to_string())
-        )]
+        [at('a', "set_device", Some(&target('b').to_string()))]
     );
     assert!(pinned.dials().is_empty());
 }
@@ -295,20 +288,16 @@ async fn a_client_with_no_full_connection_sends_every_route_through_the_entry() 
 async fn a_raw_call_routes_by_scope_as_a_unary_one_does() {
     let (pinned, _) = pinned(true).await;
     let _ = pinned.dials();
-    let request = op::RemoveTrustedKey::into_request(removal());
+    let request = op::SetDevice::into_request(removal());
     let _ = pinned
         .client
-        .call_raw(
-            &request,
-            op::RemoveTrustedKey::PATH,
-            Call::once().to(&target('b')),
-        )
+        .call_raw(&request, op::SetDevice::PATH, Call::once().to(&target('b')))
         .await;
     assert_eq!(
         pinned.seen(),
         [
             at('b', "describe_contract", None),
-            at('b', "remove_trusted_key", None)
+            at('b', "set_device", None)
         ]
     );
 }
@@ -400,8 +389,8 @@ async fn an_exec_with_no_full_connection_goes_through_the_entry_naming_its_targe
     );
 }
 
-fn removal() -> ployz_core::RemoveTrustedKeyRequest {
-    ployz_core::RemoveTrustedKeyRequest {
+fn removal() -> ployz_core::SetDeviceRequest {
+    ployz_core::SetDeviceRequest::Remove {
         code: ployz_core::DeviceKey::from_bytes([1; 32]).code(),
     }
 }
@@ -413,8 +402,6 @@ const DIRECT: &[&str] = &[
     "WrapSealingKey",
     "RecoverSealingKey",
     "SetDevice",
-    "SetPasskey",
-    "RemoveTrustedKey",
     "SeedVolume",
     "Exec",
     "Build",

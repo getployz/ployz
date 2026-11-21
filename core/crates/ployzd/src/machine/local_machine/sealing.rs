@@ -155,6 +155,8 @@ impl LocalMachine {
         request: ShareSealingKeyRequest,
     ) -> Result<SealingKeyShared, super::Error> {
         self.require_management_access()?;
+        self.refuse_removed(request.machine, Some(request.public_key))
+            .await?;
         let record = self.record();
         let key = SealingKey::load(self.owner.data_dir())
             .map_err(Error::Unreadable)?

@@ -197,7 +197,7 @@ fn steps_sharing_one_signed_bundle_each_pay_for_the_bundle() {
         operation,
         steps: vec![ProposalStep {
             index: 0,
-            kind: StepKind::Deploy,
+            kind: StepKind::Version,
             digest: StepDigest::of(&step.body),
         }],
         issued_at: Timestamp::from_millis(100_000).unwrap(),

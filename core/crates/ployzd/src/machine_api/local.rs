@@ -451,24 +451,12 @@ impl MachineRpc for MachineService {
         finish(local.set_device(expect::<op::SetDevice>(request)?).await)
     }
 
-    async fn set_passkey(
+    async fn key_step(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let local = self.caller(&request);
-        finish(local.set_passkey(expect::<op::SetPasskey>(request)?).await)
-    }
-
-    async fn remove_trusted_key(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let local = self.caller(&request);
-        finish(
-            local
-                .remove_trusted_key(expect::<op::RemoveTrustedKey>(request)?)
-                .await,
-        )
+        finish(local.key_step(expect::<op::KeyStep>(request)?).await)
     }
 
     async fn set_push_target(
@@ -1451,6 +1439,18 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             ployz_core::BUILD_GRANT_RULE_CAPABILITY,
         )),
+        LocalMachineError::KeyRefused(_) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::KEY_STEP_CAPABILITY),
+        )),
+        LocalMachineError::MemberRemoved(_) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::JOIN_APPROVAL_CAPABILITY).next(
+                "ployz server add --reset with a new token; reinstall first if it never finished joining",
+            ),
+        )),
         LocalMachineError::JoinConsumed(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
@@ -1700,6 +1700,7 @@ fn finish(
 fn store_error(error: StoreError) -> RpcError {
     let code = match error {
         StoreError::JoinRefused(_) => RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        StoreError::KeyRemoved(_) | StoreError::LastKey(_) => RpcErrorCode::Conflict,
         StoreError::AlreadyResetting
         | StoreError::AlreadyInitialized
         | StoreError::NotParticipating

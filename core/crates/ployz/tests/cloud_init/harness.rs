@@ -1245,6 +1245,7 @@ pub fn approved_registration() -> Registered {
         issued_at,
         expires_at: issued_at.plus(60_000),
         signer: signer.public().into(),
+        proposal: None,
     };
     registration.assigned_machine.join_approval = Some(Signed::sign(&body, &signer).unwrap());
     registration

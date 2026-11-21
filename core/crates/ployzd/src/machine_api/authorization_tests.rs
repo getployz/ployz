@@ -383,12 +383,9 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::SET_PUSH_TARGET_CAPABILITY, _) => {
             unary::<op::SetPushTarget>(json!({"url": "https://observe.invalid/push"}))
         }
-        (ployz_core::SET_PASSKEY_CAPABILITY, _) => {
-            unary::<op::SetPasskey>(json!({"kind": "approve", "passkey": passkey()}))
+        (ployz_core::KEY_STEP_CAPABILITY, _) => {
+            unary::<op::KeyStep>(json!({"step": stranger_removal(machine)}))
         }
-        (ployz_core::REMOVE_TRUSTED_KEY_CAPABILITY, _) => unary::<op::RemoveTrustedKey>(json!({
-            "code": DeviceKey::from(Signer::from_seed(&[7; 32]).public()).code(),
-        })),
         (ployz_core::SELECT_ENDPOINT_CAPABILITY, _) => unary::<op::SelectEndpoint>(json!({
             "peer": peer, "endpoint": "192.0.2.9:51820",
         })),
@@ -594,20 +591,6 @@ fn recovery_code() -> String {
     "ABCDE-FGHIJ-KLMNO-PQRST-UVWXYZ".into()
 }
 
-fn passkey() -> ployz_core::authority::Passkey {
-    use ployz_core::authority::trusted_key::{PasskeyAlgorithm, RelyingParty};
-    ployz_core::authority::Passkey {
-        credential_id: serde_json::from_value(json!("AQID")).unwrap(),
-        public_key: ployz_core::authority::PasskeyPublicKey::parse(
-            PasskeyAlgorithm::Eddsa,
-            iroh::SecretKey::generate().public().as_bytes(),
-        )
-        .unwrap(),
-        account: ployz_core::authority::PasskeyAccount::parse("ada@example.com").unwrap(),
-        relying_party: RelyingParty::of(&"https://ployz.cloud".parse().unwrap()).unwrap(),
-    }
-}
-
 fn fresh_founder() -> Value {
     json!({
         "kind": "founder", "name": "fresh", "cluster_network": "10.211.0.0/16",
@@ -628,6 +611,26 @@ fn registration(machine: &Enforcing) -> Value {
     })
 }
 
+/// A removal of a Device, signed by a key this Machine does not trust.
+fn stranger_removal(machine: &Enforcing) -> Value {
+    use ployz_core::authority::{KeyChange, KeyRef, KeyStep};
+    let stranger = Signer::from_seed(&[42; 32]);
+    let step = KeyStep {
+        cluster: SealingKey::load(&machine.data_dir)
+            .unwrap()
+            .unwrap()
+            .public_key(),
+        change: KeyChange::Remove {
+            key: KeyRef::Device {
+                key: DeviceKey::from(Signer::from_seed(&[7; 32]).public()),
+            },
+        },
+        signer: DeviceKey::from(stranger.public()).into(),
+        proposal: None,
+    };
+    serde_json::to_value(Signed::sign(&step, &stranger).unwrap()).unwrap()
+}
+
 /// A join approval of the peer, signed by a key this Machine does not trust.
 fn stranger_join(machine: &Enforcing) -> Value {
     use ployz_core::authority::{JoinApproval, Timestamp, join::JoinAllocation};
@@ -644,7 +647,8 @@ fn stranger_join(machine: &Enforcing) -> Value {
         bootstrap: Vec::new(),
         issued_at: Timestamp::now(),
         expires_at: Timestamp::now().plus(60_000),
-        signer: DeviceKey::from(stranger.public()),
+        signer: DeviceKey::from(stranger.public()).into(),
+        proposal: None,
     };
     serde_json::to_value(Signed::sign(&approval, &stranger).unwrap()).unwrap()
 }

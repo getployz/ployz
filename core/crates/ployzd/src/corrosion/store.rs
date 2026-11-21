@@ -113,11 +113,11 @@ impl MachinePublicationGuard<'_> {
     /// forget, and nothing tells the caller which: the returned row isn't read back, so
     /// a kept row is not the one returned.
     ///
-    /// A Register is an explicit add, so it takes back the forget of a row that had no
-    /// Management Identity: its `forgotten-id:` tombstone goes in the same transaction,
-    /// and a rerun of a failed add keeps its Server (#3342). A row a Register wrote names
-    /// no identity, so forgetting it leaves that tombstone. A row a Register kept carries
-    /// the mark, which outside tests only a publish of [`publishable_machine`]
+    /// The Entry refuses a Register of a Server it holds removed, or whose row the store
+    /// shows deleted, before it gets here. A Register still takes back the forget of a row
+    /// that had no Management Identity when this store never held that row: its
+    /// `forgotten-id:` tombstone goes in the same transaction. A row a Register kept
+    /// carries the mark, which outside tests only a publish of [`publishable_machine`]
     /// writes, and that row names a Management Identity. So forgetting a kept row leaves
     /// `forgotten:<identity>`, which the #2927 fence reads. A tombstone keyed by a
     /// Management Identity stays, so a joined Server that was forgotten is still not
@@ -766,6 +766,9 @@ impl ReplicatedStore {
             RowPolicy::FailRead,
             |id, encoded| decode_machine(id.as_str(), encoded),
         )?;
+        if let Some(owner) = &self.authority {
+            self.record_removed(owner, &snapshot.observations).await?;
+        }
         snapshot
             .observations
             .retain(|machine| self.accepts_machine(machine));
@@ -786,6 +789,31 @@ impl ReplicatedStore {
             }
         }
         Ok(snapshot)
+    }
+
+    /// Record as removed each trusted Member whose row this store shows deleted. A Member
+    /// merely missing from `rows`, as on a joiner before catch-up, stays trusted.
+    async fn record_removed(&self, owner: &RecordOwner, rows: &[Machine]) -> Result<(), Error> {
+        let listed = rows.iter().map(|machine| machine.id).collect();
+        let unlisted = owner.record().unlisted_members(&listed);
+        let removed: Vec<_> = self
+            .removed_machines(&unlisted)
+            .await?
+            .into_iter()
+            .map(|id| crate::machine::RemovedMember {
+                id,
+                public_key: None,
+            })
+            .collect();
+        if removed.is_empty() {
+            return Ok(());
+        }
+        owner
+            .mutate(move |store| store.remove_members(&removed))
+            .await
+            .map_err(std::io::Error::other)?
+            .map_err(std::io::Error::other)?;
+        Ok(())
     }
 
     #[cfg(test)]

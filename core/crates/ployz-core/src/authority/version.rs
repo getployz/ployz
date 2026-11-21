@@ -42,7 +42,7 @@ impl Statement for ServiceVersion {
 
 impl StepBody for ServiceVersion {
     fn kind(&self) -> StepKind {
-        StepKind::Deploy
+        StepKind::Version
     }
     fn place(&self) -> Option<ProposalRef> {
         self.proposal
@@ -53,8 +53,8 @@ impl StepBody for ServiceVersion {
     fn cluster(&self) -> SealingPublicKey {
         self.cluster
     }
-    fn namespace(&self) -> &Namespace {
-        &self.namespace
+    fn namespace(&self) -> Option<&Namespace> {
+        Some(&self.namespace)
     }
 }
 

@@ -1415,6 +1415,14 @@ pub(crate) fn corrosion_db() -> rusqlite::Connection {
     assert_ne!(schema, include_str!("schema.sql"));
     let db = rusqlite::Connection::open_in_memory().unwrap();
     db.execute_batch(&schema).unwrap();
+    // cr-sqlite keeps a Machine's key after its row is deleted: the deletion evidence.
+    db.execute_batch(
+        "CREATE TABLE machines__crsql_pks (__crsql_key INTEGER PRIMARY KEY, id UNIQUE);
+         CREATE TRIGGER machines_crsql_pks AFTER INSERT ON machines BEGIN
+             INSERT OR IGNORE INTO machines__crsql_pks (id) VALUES (NEW.id);
+         END;",
+    )
+    .unwrap();
     db
 }
 

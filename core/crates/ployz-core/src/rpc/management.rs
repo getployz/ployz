@@ -28,9 +28,9 @@ pub struct SetManagementClientResponse {
 ///
 /// `Approve` carries the Device's public key, never a secret; the Machine stores it in
 /// the slot the key's [`DeviceCode`] names, and is refused while a trusted passkey holds
-/// that key, so a code names one kind of key. `Remove` clears only the Device slot;
-/// [`RemoveTrustedKeyRequest`] removes whichever kind holds a code. Strict for the same
-/// reason as [`SetManagementClientRequest`].
+/// that key, so a code names one kind of key. `Remove` clears only the Device slot and
+/// removes the Device the code names, or else the passkey, and leaves its key removed for
+/// good. Strict for the same reason as [`SetManagementClientRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SetDeviceRequest {
@@ -38,8 +38,8 @@ pub enum SetDeviceRequest {
     Remove { code: DeviceCode },
 }
 
-/// What a [`SetDeviceRequest`] changed on this Machine. Each outcome is final, so a
-/// rerun reports `AlreadyApproved` or `NotPresent` rather than failing.
+/// What a [`SetDeviceRequest`] or [`KeyStepRequest`] changed on this Machine. Each outcome
+/// is final, so a rerun reports `AlreadyApproved` or `NotPresent` rather than failing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum DeviceSet {
@@ -49,48 +49,12 @@ pub enum DeviceSet {
     NotPresent { code: DeviceCode },
 }
 
-/// Approve a passkey on this Machine at Full scope only. The Machine records who
-/// approved it from its own view of the caller, never from the request.
-/// [`RemoveTrustedKeyRequest`] removes one.
-///
-/// A passkey only approves workflows: it gets no Management Client slot, so it never
-/// connects. Strict for the same reason as [`SetManagementClientRequest`].
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SetPasskeyRequest {
-    Approve {
-        passkey: Box<crate::authority::Passkey>,
-    },
-}
-
-/// Stop trusting the key `code` names on this Machine, at Full scope only, whether a
-/// Device or a passkey holds it. The Machine picks the kind under the same admission as
-/// the approvals, so no approval between a caller's read and this removal survives it.
-/// Strict for the same reason as [`SetManagementClientRequest`].
+/// A person's signed change to the keys this Machine trusts: a trust as a step of a bundle,
+/// a removal alone or in one.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RemoveTrustedKeyRequest {
-    pub code: DeviceCode,
-}
-
-/// What a [`RemoveTrustedKeyRequest`] removed. Each outcome is final, so a rerun reports
-/// `NotPresent` rather than failing.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum TrustedKeyRemoved {
-    RemovedDevice {
-        code: DeviceCode,
-        /// Passkeys the removed Device had approved here, read in the same mutation.
-        /// They stay trusted, and a Device that removed itself can no longer look.
-        #[serde(default)]
-        approved_passkeys: Vec<DeviceCode>,
-    },
-    RemovedPasskey {
-        code: DeviceCode,
-    },
-    NotPresent {
-        code: DeviceCode,
-    },
+pub struct KeyStepRequest {
+    pub step: crate::authority::Signed<crate::authority::KeyStep>,
 }
 
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.

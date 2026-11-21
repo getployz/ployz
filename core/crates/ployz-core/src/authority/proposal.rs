@@ -1,8 +1,9 @@
 //! The bundle a person signs once over an ordered plan of steps, and the check a Machine
 //! runs when one step of that plan reaches it.
 //!
-//! Each step is a [`super::ServiceVersion`] body that nobody signed. What vouches for it
-//! is the bundle in its envelope: a signed list of step digests in order. A Machine checks
+//! Each step is a body nobody signed: a [`super::ServiceVersion`], a
+//! [`super::JoinApproval`] or a [`super::KeyStep`]. What vouches for it is the bundle in
+//! its envelope: a signed list of step digests in order. A Machine checks
 //! that its step sits in the bundle at the index the step names, with the same kind, and
 //! that the body it was handed hashes to that digest. Cloud can carry a step but cannot
 //! add or alter one. A Machine sees only its own step, so the order Cloud runs the steps
@@ -33,11 +34,30 @@ impl StepDigest {
     }
 }
 
-/// What one step of a proposal runs: a deploy is a [`super::ServiceVersion`].
+/// What one step of a proposal runs, and how long the bundle's signature carries it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
-    Deploy,
+    /// A [`super::ServiceVersion`]. It stands after the bundle's window ends. Written
+    /// `deploy`, as 0.4 betas signed it.
+    #[serde(rename = "deploy")]
+    Version,
+    /// A [`super::JoinApproval`]. One-shot: only inside the bundle's window.
+    Join,
+    /// A [`super::KeyStep`]. A trust is one-shot; a removal stands.
+    Key,
+}
+
+impl StepKind {
+    /// Whether Cloud asks a person to sign this step. Every kind does: a Version needs no
+    /// tap only when [`super::needs_signature`] says its spec reaches no data. Advisory,
+    /// since the Machine checks each step itself.
+    #[must_use]
+    pub const fn needs_person(self) -> bool {
+        match self {
+            Self::Version | Self::Join | Self::Key => true,
+        }
+    }
 }
 
 /// One step of a proposal: its place in the order, what it runs, and the digest of the
@@ -87,6 +107,7 @@ fn dense_steps<'de, D: serde::Deserializer<'de>>(
 
 impl Statement for ProposalApproval {
     const PURPOSE: Purpose = Purpose::Workflow;
+    const TAKES_ASSERTION: bool = true;
 }
 
 /// Where a step body says it sits: which proposal, and at which index.
@@ -104,7 +125,8 @@ pub(super) trait StepBody: Statement {
     fn place(&self) -> Option<ProposalRef>;
     fn signer(&self) -> SignerKey;
     fn cluster(&self) -> SealingPublicKey;
-    fn namespace(&self) -> &Namespace;
+    /// `None` for a step that changes the whole Cluster, which no Environment bounds.
+    fn namespace(&self) -> Option<&Namespace>;
 }
 
 /// Open `step`, an unsigned step body, as the step of `bundle` it names, signed by one of
@@ -150,7 +172,11 @@ pub(super) fn open_step<T: StepBody>(
             }),
         ),
         (field::CLUSTER, plan.cluster == body.cluster()),
-        (field::ENVIRONMENT, &plan.environment == body.namespace()),
+        (
+            field::ENVIRONMENT,
+            body.namespace()
+                .is_none_or(|namespace| &plan.environment == namespace),
+        ),
     ])?;
     let by = by.expect("the signer check passed");
     Ok((body, by, cluster))
@@ -166,7 +192,7 @@ pub(super) fn stub_bundle() -> Box<Signed<ProposalApproval>> {
         operation: OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
         steps: vec![ProposalStep {
             index: 0,
-            kind: StepKind::Deploy,
+            kind: StepKind::Version,
             digest: StepDigest::of("a step"),
         }],
         issued_at: at(100_000),

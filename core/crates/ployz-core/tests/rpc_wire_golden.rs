@@ -14,11 +14,10 @@ use ployz_core::{
     PendingJoins, PendingJoinsRequest, PlacementRefusal, PrepareVolumesRequest, PreparedVolumes,
     PrivateAccessProblem, PrivateAccessSet, PruneImagesRequest, PublishCertificateMaterialRequest,
     PullImageRequest, PushTargetSet, ReadClusterNameRequest, ReadRoutedAddressesRequest,
-    RemoveTrustedKeyRequest, RemoveVolumeRequest, RetainedEnvReply, RetainedEnvRequest,
-    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, RuntimeWatchRequest, SetDeviceRequest,
-    SetManagementClientRequest, SetManagementClientResponse, SetPrivateAccessRequest,
-    SetPushTargetRequest, TailLogsRequest, TrustedKeyRemoved, VolumeInventory,
-    VolumeObservationFailure, VolumeRemoved,
+    RemoveVolumeRequest, RetainedEnvReply, RetainedEnvRequest, RoutedAddresses, RoutesRead,
+    RpcError, RpcErrorCode, RuntimeWatchRequest, SetDeviceRequest, SetManagementClientRequest,
+    SetManagementClientResponse, SetPrivateAccessRequest, SetPushTargetRequest, TailLogsRequest,
+    VolumeInventory, VolumeObservationFailure, VolumeRemoved,
 };
 use serde_json::{Value, json};
 
@@ -72,12 +71,6 @@ fn membership_and_machine_dtos_keep_their_wire_text() {
         SetManagementClientResponse => json!({ "capability": null });
         SetDeviceRequest => json!({ "kind": "remove", "code": code });
         DeviceSet => json!({ "outcome": "not_present", "code": code });
-        RemoveTrustedKeyRequest => json!({ "code": code });
-        TrustedKeyRemoved => json!({
-            "outcome": "removed_device",
-            "code": code,
-            "approved_passkeys": [],
-        });
     }
 }
 

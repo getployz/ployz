@@ -344,6 +344,7 @@ pub struct AutoDeployRule {
 
 impl Statement for AutoDeployRule {
     const PURPOSE: Purpose = Purpose::Rule;
+    const TAKES_ASSERTION: bool = true;
 }
 
 impl AutoDeployRule {

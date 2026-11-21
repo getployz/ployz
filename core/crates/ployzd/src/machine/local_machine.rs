@@ -195,6 +195,12 @@ pub enum Error {
     DeviceIsPasskey(DeviceCode),
     #[error("passkey {held} already holds this passkey's credential ID")]
     CredentialHeld { held: DeviceCode },
+    #[error("This Server refused the key change: {0}")]
+    KeyRefused(ployz_core::authority::AuthorityRefusal),
+    /// A join for a Member this Machine saw removed. A removed Member comes back only with a
+    /// new identity.
+    #[error("Server {0} was removed from this Cluster. It can only join again as a new Server.")]
+    MemberRemoved(MachineId),
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -1006,6 +1012,8 @@ impl LocalMachine {
     }
 
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
+        self.refuse_removed(request.machine_id, Some(request.public_key))
+            .await?;
         let replicated = self.replicated()?;
         let declared = replicated
             .cluster_doors()
@@ -1201,12 +1209,16 @@ impl LocalMachine {
         Ok(MachineUpdated { machine })
     }
 
-    /// Forget another Machine: delete its replicated row. A missing row is success.
+    /// Forget another Machine: record it here as removed, then delete its replicated row. The
+    /// local record comes first, so once a Forget answers, this Machine refuses the
+    /// Machine's join and its row even before the delete reaches its store. A missing row
+    /// is success.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
-    /// missing and [`Error::Cluster`] when the replicated delete fails.
+    /// missing, [`Error::RecordOwner`] or [`Error::Store`] when the removal can't be
+    /// recorded, and [`Error::Cluster`] when the replicated delete fails.
     pub async fn forget(&self, request: ForgetRequest) -> Result<Forgotten, Error> {
         self.finish_mutation(move |local| async move {
             let now = local.record().now();
@@ -1219,10 +1231,20 @@ impl LocalMachine {
                     now,
                 });
             }
+            let replicated = local.replicated()?;
+            let public_key = match replicated.machine(request.machine_id.as_str()).await? {
+                Some(row) => Some(row.public_key),
+                None => local.joining_key(request.machine_id)?,
+            };
+            let removed = crate::machine::RemovedMember {
+                id: request.machine_id,
+                public_key,
+            };
             local
-                .replicated()?
-                .forget_machine(&request.machine_id)
-                .await?;
+                .owner
+                .mutate(move |store| store.remove_members(&[removed]))
+                .await??;
+            replicated.forget_machine(&request.machine_id).await?;
             Ok(Forgotten::Forgotten)
         })
         .await

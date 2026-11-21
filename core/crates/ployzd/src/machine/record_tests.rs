@@ -38,6 +38,8 @@ fn golden() -> Value {
             },
             "approved_by": {"by": "server"},
         }],
+        "removed_keys": [{"kind": "device", "key": "0606060606060606060606060606060606060606060606060606060606060606"}],
+        "removed_members": [{"id": "d".repeat(32), "public_key": bytes(4)}],
         "membership_cluster": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
         "enrollment": {"as": {
             "kind": "founder",
@@ -283,6 +285,8 @@ fn resetting_keeps_every_field_but_the_body() {
         filters_peers,
         trusted_machines,
         passkeys,
+        removed_keys,
+        removed_members,
         membership_cluster,
         enrollment,
     } = before.clone();
@@ -300,6 +304,8 @@ fn resetting_keeps_every_field_but_the_body() {
         filters_peers: kept_filter,
         trusted_machines: kept_trusted,
         passkeys: kept_passkeys,
+        removed_keys: kept_removed_keys,
+        removed_members: kept_removed_members,
         membership_cluster: kept_cluster,
         enrollment: kept_enrollment,
     } = before.into_resetting();
@@ -321,6 +327,8 @@ fn resetting_keeps_every_field_but_the_body() {
     assert_eq!(kept_filter, filters_peers);
     assert_eq!(kept_trusted, trusted_machines);
     assert_eq!(kept_passkeys, passkeys);
+    assert_eq!(kept_removed_keys, removed_keys);
+    assert_eq!(kept_removed_members, removed_members);
     assert_eq!(kept_cluster, membership_cluster);
     assert_eq!(kept_enrollment, enrollment);
 }

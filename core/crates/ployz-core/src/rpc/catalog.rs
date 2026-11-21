@@ -107,7 +107,7 @@ pub fn revokes_caller(path: &str) -> bool {
     use super::{Rpc, op};
     matches!(
         path,
-        op::SetManagementClient::PATH | op::SetDevice::PATH | op::RemoveTrustedKey::PATH
+        op::SetManagementClient::PATH | op::SetDevice::PATH | op::KeyStep::PATH
     )
 }
 

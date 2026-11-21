@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ployz_core::authority::trusted_key::PasskeyAlgorithm;
 use ployz_core::{
-    CapabilityName, ContractDescription, DeviceKey, DeviceSet, MachineList, MachineObservation,
-    MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RpcRequestBody, RpcResponse,
-    SET_DEVICE_CAPABILITY, SET_PASSKEY_CAPABILITY,
+    CapabilityName, ContractDescription, DeviceKey, DeviceSet, KEY_STEP_CAPABILITY, MachineList,
+    MachineObservation, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR, RpcRequestBody,
+    RpcResponse, SET_DEVICE_CAPABILITY,
 };
 use tonic::{Request, Response, Status};
 
@@ -74,11 +74,7 @@ async fn cluster(
                 capabilities: match daemon {
                     Some(Daemon::PredatesDevices) => Vec::new(),
                     Some(Daemon::PredatesPasskeys) => vec![SET_DEVICE_CAPABILITY],
-                    _ => vec![
-                        SET_DEVICE_CAPABILITY,
-                        SET_PASSKEY_CAPABILITY,
-                        REMOVE_TRUSTED_KEY_CAPABILITY,
-                    ],
+                    _ => vec![SET_DEVICE_CAPABILITY, KEY_STEP_CAPABILITY],
                 }
                 .into_iter()
                 .map(|capability| CapabilityName::parse(capability).unwrap())
@@ -87,9 +83,6 @@ async fn cluster(
             }),
             RpcRequestBody::SetDevice(_) if daemon == Some(Daemon::Unreachable) => {
                 return Err(Status::unavailable("machine-2 is down"));
-            }
-            RpcRequestBody::Inspect(_) if daemon == Some(Daemon::RemovesItself) => {
-                return Err(Status::unauthenticated("management credential revoked"));
             }
             RpcRequestBody::Inspect(_) => {
                 let target = target.unwrap();
@@ -103,7 +96,16 @@ async fn cluster(
                     store_version: Default::default(),
                     rtts: Vec::new(),
                     management_clients: Vec::new(),
-                    passkeys: Vec::new(),
+                    passkeys: if daemon == Some(Daemon::RemovesItself) {
+                        vec![ployz_core::authority::TrustedPasskey {
+                            passkey: waiting(passkey_key(1)),
+                            approved_by: PasskeyApprover::Device {
+                                code: key(1).code(),
+                            },
+                        }]
+                    } else {
+                        Vec::new()
+                    },
                     storage: None,
                     upgrade: None,
                     telemetry: None,
@@ -112,22 +114,18 @@ async fn cluster(
                     founding: Default::default(),
                 })
             }
-            RpcRequestBody::RemoveTrustedKey(RemoveTrustedKeyRequest { code }) => {
-                let removes_itself = daemon == Some(Daemon::RemovesItself);
-                RpcResponse::from(if code == key(1).code() {
-                    TrustedKeyRemoved::RemovedDevice {
-                        code,
-                        approved_passkeys: if removes_itself {
-                            vec![passkey_key(1).code()]
-                        } else {
-                            Vec::new()
-                        },
-                    }
-                } else if removes_itself && code == passkey_key(1).code() {
-                    TrustedKeyRemoved::RemovedPasskey { code }
-                } else {
-                    TrustedKeyRemoved::NotPresent { code }
-                })
+            RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code })
+                if daemon != Some(Daemon::PredatesPasskeys) =>
+            {
+                RpcResponse::from(
+                    if code == key(1).code()
+                        || (daemon == Some(Daemon::RemovesItself) && code == passkey_key(1).code())
+                    {
+                        DeviceSet::Removed { code }
+                    } else {
+                        DeviceSet::NotPresent { code }
+                    },
+                )
             }
             RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code })
                 if daemon == Some(Daemon::PredatesPasskeys) =>
@@ -540,6 +538,7 @@ async fn automatic_join_approval_refuses_clouds_substituted_recipient() {
         issued_at,
         expires_at: issued_at.plus(900_000),
         signer: signer.public().into(),
+        proposal: None,
     };
     let (mut client, server) =
         crate::connect::test_support::rpc_client(move |request: Request<OpaquePayload>| {
@@ -602,7 +601,8 @@ fn relayed_join(
         admitting_machines: vec![id('b')],
         issued_at,
         expires_at: issued_at.plus(900_000),
-        signer: DeviceKey::from_bytes([0; 32]),
+        signer: DeviceKey::from_bytes([0; 32]).into(),
+        proposal: None,
     };
     (expected, body)
 }
@@ -682,7 +682,7 @@ async fn a_relayed_join_signs_for_this_device_alone_and_no_passkey() {
     };
     let body = approval.open().unwrap();
     assert_eq!(body.devices, [own]);
-    assert_eq!(body.signer, own);
+    assert_eq!(body.signer, own.into());
     assert!(body.passkeys.is_empty());
 }
 
@@ -816,7 +816,8 @@ fn join_summary_names_the_server_subnet_and_endpoints_before_signing() {
         admitting_machines: vec![id('b')],
         issued_at,
         expires_at: issued_at.plus(900_000),
-        signer: key(1),
+        signer: key(1).into(),
+        proposal: None,
     };
     assert_eq!(
         join_summary(&body),
@@ -852,7 +853,7 @@ async fn rm_names_each_passkey_a_device_that_removed_itself_approved_which_stays
             .map(|answer| answer.outcome.clone())
     };
     let device_removed = |approved_passkeys| {
-        Some(Outcome::Removed(TrustedKeyRemoved::RemovedDevice {
+        Some(Outcome::Removed(Removal::RemovedDevice {
             code,
             approved_passkeys,
         }))
@@ -860,7 +861,7 @@ async fn rm_names_each_passkey_a_device_that_removed_itself_approved_which_stays
     assert_eq!(outcome('1'), device_removed(vec![passkey_key(1).code()]));
     assert_eq!(
         outcome('2'),
-        Some(Outcome::Removed(TrustedKeyRemoved::NotPresent { code }))
+        Some(Outcome::Removed(Removal::NotPresent { code }))
     );
     assert_eq!(outcome('3'), device_removed(Vec::new()));
     let _json = crate::ui::test_mode(true);
@@ -905,14 +906,11 @@ async fn rm_on_a_passkey_code_removes_the_passkey() {
         .iter()
         .map(|answer| (answer.machine_id, answer.outcome.clone()))
         .collect();
-    let absent = Outcome::Removed(TrustedKeyRemoved::NotPresent { code });
+    let absent = Outcome::Removed(Removal::NotPresent { code });
     assert_eq!(
         outcomes,
         [
-            (
-                id('1'),
-                Outcome::Removed(TrustedKeyRemoved::RemovedPasskey { code })
-            ),
+            (id('1'), Outcome::Removed(Removal::RemovedPasskey { code })),
             (id('2'), absent.clone()),
             (id('3'), absent),
         ]
@@ -930,8 +928,8 @@ enum Kind {
 }
 
 /// A Server whose Inspect still shows `listed` under the code while it trusts `held`
-/// there, as when an approval lands between a read and `device rm`. Only
-/// RemoveTrustedKey may change what it trusts.
+/// there, as when an approval lands between a read and `device rm`. Only a SetDevice
+/// removal may change what it trusts.
 async fn raced(
     listed: Kind,
     held: Kind,
@@ -962,13 +960,9 @@ async fn raced(
                     machine_id: id('1'),
                     protocol_major: PROTOCOL_MAJOR,
                     daemon_version: "fixture".into(),
-                    capabilities: [
-                        SET_DEVICE_CAPABILITY,
-                        SET_PASSKEY_CAPABILITY,
-                        REMOVE_TRUSTED_KEY_CAPABILITY,
-                    ]
-                    .map(|capability| CapabilityName::parse(capability).unwrap())
-                    .into(),
+                    capabilities: [SET_DEVICE_CAPABILITY, KEY_STEP_CAPABILITY]
+                        .map(|capability| CapabilityName::parse(capability).unwrap())
+                        .into(),
                     sealing: None,
                 }),
                 RpcRequestBody::Inspect(_) => {
@@ -998,14 +992,10 @@ async fn raced(
                         founding: Default::default(),
                     })
                 }
-                RpcRequestBody::RemoveTrustedKey(RemoveTrustedKeyRequest { code }) => {
+                RpcRequestBody::SetDevice(SetDeviceRequest::Remove { code }) => {
                     RpcResponse::from(match trusted.lock().unwrap().take() {
-                        Some(Kind::Device) => TrustedKeyRemoved::RemovedDevice {
-                            code,
-                            approved_passkeys: Vec::new(),
-                        },
-                        Some(Kind::Passkey) => TrustedKeyRemoved::RemovedPasskey { code },
-                        None => TrustedKeyRemoved::NotPresent { code },
+                        Some(_) => DeviceSet::Removed { code },
+                        None => DeviceSet::NotPresent { code },
                     })
                 }
                 other => panic!("device rm sent {other:?}"),
@@ -1017,45 +1007,29 @@ async fn raced(
     (client, trusted, server)
 }
 
+/// The key a code names changed kind between the Server's listing and `device rm`. The
+/// removal still takes whichever key holds the code; only the kind shown is the listing's.
 #[tokio::test]
-async fn rm_removes_a_passkey_approved_after_the_server_last_listed_a_device() {
-    let (mut client, trusted, server) = raced(Kind::Device, Kind::Passkey).await;
-    let code = passkey_key(1).code();
+async fn rm_removes_the_key_a_code_names_even_after_it_changed_kind() {
+    for (listed, held) in [(Kind::Device, Kind::Passkey), (Kind::Passkey, Kind::Device)] {
+        let (mut client, trusted, server) = raced(listed, held).await;
+        let code = passkey_key(1).code();
 
-    let removed = set_everywhere(&mut client, |client, machine_id| {
-        remove_on(client, machine_id, code)
-    })
-    .await
-    .unwrap();
+        let removed = set_everywhere(&mut client, |client, machine_id| {
+            remove_on(client, machine_id, code)
+        })
+        .await
+        .unwrap();
 
-    assert_eq!(*trusted.lock().unwrap(), None);
-    assert_eq!(
-        removed.answers.first().map(|answer| answer.outcome.clone()),
-        Some(Outcome::Removed(TrustedKeyRemoved::RemovedPasskey { code }))
-    );
-    server.abort();
-}
-
-#[tokio::test]
-async fn rm_removes_a_device_that_replaced_the_passkey_the_server_last_listed() {
-    let (mut client, trusted, server) = raced(Kind::Passkey, Kind::Device).await;
-    let code = passkey_key(1).code();
-
-    let removed = set_everywhere(&mut client, |client, machine_id| {
-        remove_on(client, machine_id, code)
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(*trusted.lock().unwrap(), None);
-    assert_eq!(
-        removed.answers.first().map(|answer| answer.outcome.clone()),
-        Some(Outcome::Removed(TrustedKeyRemoved::RemovedDevice {
-            code,
-            approved_passkeys: Vec::new(),
-        }))
-    );
-    server.abort();
+        assert_eq!(*trusted.lock().unwrap(), None, "{held:?}");
+        assert!(matches!(
+            removed.answers.first().map(|answer| answer.outcome.clone()),
+            Some(Outcome::Removed(
+                Removal::RemovedDevice { .. } | Removal::RemovedPasskey { .. }
+            ))
+        ));
+        server.abort();
+    }
 }
 
 #[test]
@@ -1143,7 +1117,7 @@ fn rm_json_keeps_the_removed_outcome_and_adds_the_kind() {
     let device = key(0).code();
     let passkey = key(1).code();
     assert_eq!(
-        serde_json::to_value(answer(TrustedKeyRemoved::RemovedDevice {
+        serde_json::to_value(answer(Removal::RemovedDevice {
             code: device,
             approved_passkeys: vec![passkey],
         }))
@@ -1158,7 +1132,7 @@ fn rm_json_keeps_the_removed_outcome_and_adds_the_kind() {
         })
     );
     assert_eq!(
-        serde_json::to_value(answer(TrustedKeyRemoved::RemovedPasskey { code: passkey })).unwrap(),
+        serde_json::to_value(answer(Removal::RemovedPasskey { code: passkey })).unwrap(),
         json!({
             "machine_id": id('1'),
             "server": "machine-1",
@@ -1168,7 +1142,7 @@ fn rm_json_keeps_the_removed_outcome_and_adds_the_kind() {
         })
     );
     assert_eq!(
-        serde_json::to_value(answer(TrustedKeyRemoved::NotPresent { code: device })).unwrap(),
+        serde_json::to_value(answer(Removal::NotPresent { code: device })).unwrap(),
         json!({
             "machine_id": id('1'),
             "server": "machine-1",

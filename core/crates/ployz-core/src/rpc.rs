@@ -412,7 +412,6 @@ define_responses! {
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
     DeviceSet(DeviceSet) => "device_set";
-    TrustedKeyRemoved(TrustedKeyRemoved) => "trusted_key_removed";
     PendingJoins(PendingJoins) => "pending_joins";
     JoinApproved(JoinApproved) => "join_approved";
     PushTargetSet(PushTargetSet) => "push_target_set";
@@ -735,8 +734,6 @@ mod streaming_routing_tests {
                 "WrapSealingKey",
                 "RecoverSealingKey",
                 "SetDevice",
-                "SetPasskey",
-                "RemoveTrustedKey",
                 "SeedVolume",
                 "Exec"
             ]

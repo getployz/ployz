@@ -48,6 +48,9 @@ impl fmt::Display for Purpose {
 /// Machine cannot read could be a restriction it would fail to enforce.
 pub trait Statement: Serialize + DeserializeOwned {
     const PURPOSE: Purpose;
+    /// Whether a passkey's own answer may sign this statement: a rule, and a bundle, whose
+    /// steps a person reads before the tap.
+    const TAKES_ASSERTION: bool = false;
 }
 
 /// The bytes a signer signs: `ployz-authority/v1`, the purpose, and the canonical body,
@@ -111,6 +114,18 @@ impl fmt::Debug for SigningPublicKey {
 pub enum SignerKey {
     Device(DeviceKey),
     Passkey(OwnPrompt),
+}
+
+impl From<DeviceKey> for SignerKey {
+    fn from(key: DeviceKey) -> Self {
+        Self::Device(key)
+    }
+}
+
+impl From<SigningPublicKey> for SignerKey {
+    fn from(key: SigningPublicKey) -> Self {
+        Self::Device(key.into())
+    }
 }
 
 /// The one value [`SignerKey::Passkey`] takes.
@@ -195,7 +210,7 @@ pub struct Signed<T> {
     #[ts(optional)]
     pub proposal: Option<Box<Signed<ProposalApproval>>>,
     /// Passkeys' own answers to [`Signed::challenge`], each a prompt of its own. Only a
-    /// rule takes one.
+    /// statement whose [`Statement::TAKES_ASSERTION`] holds takes one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PasskeyAssertion>>")]
     pub assertions: Vec<PasskeyAssertion>,
@@ -316,7 +331,7 @@ impl<T: Statement> Signed<T> {
     }
 
     /// Who signed this statement, each checked against `trusted`: a Device it trusts or,
-    /// on a rule only, a trusted passkey's own answer to [`Self::challenge`].
+    /// on a statement that takes one, a trusted passkey's own answer to [`Self::challenge`].
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Unsigned`] when nothing signed,
@@ -347,8 +362,7 @@ impl<T: Statement> Signed<T> {
         if self.assertions.is_empty() {
             return Ok(approvers);
         }
-        // A passkey's own answer stands with no limits beside it, so only a rule takes one.
-        if T::PURPOSE != Purpose::Rule {
+        if !T::TAKES_ASSERTION {
             return Err(AuthorityRefusal::Mismatch { field: "a passkey" });
         }
         let challenge = self.challenge();

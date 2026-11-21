@@ -63,13 +63,15 @@ async fn a_pending_join_lists_the_passkeys_the_admitting_server_trusts() {
     let (entry, _, _, directory, server) = participating().await;
     enforce(&entry, &Signer::from_seed(&[1; 32])).await;
     let passkey = crate::machine::test_support::passkey(5);
+    let trusted = ployz_core::authority::TrustedPasskey {
+        passkey: passkey.clone(),
+        approved_by: ployz_core::authority::PasskeyApprover::Server,
+    };
     entry
-        .clone()
-        .on_local_socket()
-        .set_passkey(ployz_core::SetPasskeyRequest::Approve {
-            passkey: Box::new(passkey.clone()),
-        })
+        .owner()
+        .mutate(move |store| store.approve_passkey(trusted))
         .await
+        .unwrap()
         .unwrap();
     let joiner = request("joiner", WireGuardPublicKey([3; 32]));
     assert!(entry.register(joiner).await.is_err());
@@ -150,6 +152,110 @@ async fn approved_join_uses_only_encrypted_approved_devices_and_cannot_be_redeem
     ));
     server.abort();
     drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// Once a Forget answers, this Machine holds the forgotten Server removed. Every join route
+/// for it is refused after that, a resend carrying the approval it was admitted under
+/// included, and none lists it again.
+#[tokio::test]
+async fn a_forgotten_server_is_refused_on_every_join_route_even_with_its_old_approval() {
+    let (entry, replicated, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let request = request("joiner", WireGuardPublicKey([2; 32]));
+    assert!(entry.register(request.clone()).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    let approval = Signed::sign(&body, &signer).unwrap();
+    entry
+        .approve_join(ApproveJoinRequest {
+            approval: approval.clone(),
+        })
+        .await
+        .unwrap();
+    entry.register(request.clone()).await.unwrap();
+
+    assert!(matches!(
+        entry
+            .forget(ployz_core::ForgetRequest {
+                machine_id: request.machine_id,
+            })
+            .await
+            .unwrap(),
+        ployz_core::Forgotten::Forgotten
+    ));
+    assert!(
+        entry
+            .record()
+            .removes_member(request.machine_id, Some(request.public_key))
+    );
+
+    let gone = request.machine_id;
+    let mut replayed = request.clone();
+    replayed.join_approval = Some(approval.clone());
+    let mut rekeyed = request.clone();
+    rekeyed.public_key = WireGuardPublicKey([4; 32]);
+    for register in [request.clone(), replayed, rekeyed] {
+        assert!(matches!(
+            entry.register(register).await,
+            Err(LocalMachineError::MemberRemoved(id)) if id == gone
+        ));
+    }
+    assert!(matches!(
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: approval.clone(),
+            })
+            .await,
+        Err(LocalMachineError::MemberRemoved(id)) if id == gone
+    ));
+    assert!(matches!(
+        entry
+            .share_sealing_key(ShareSealingKeyRequest {
+                join_approval: Some(approval),
+                machine: gone,
+                public_key: request.public_key,
+            })
+            .await,
+        Err(LocalMachineError::MemberRemoved(id)) if id == gone
+    ));
+    assert!(replicated.machine(gone.as_str()).await.unwrap().is_none());
+    server.abort();
+    drop(entry);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// An expired approval is refused, and the time this Machine saw is kept, so a clock set
+/// back later never reopens the window.
+#[tokio::test]
+async fn an_expired_join_still_raises_the_persisted_clock_floor() {
+    let (entry, _, _, directory, server) = participating().await;
+    let signer = Signer::from_seed(&[1; 32]);
+    enforce(&entry, &signer).await;
+    let request = request("joiner", WireGuardPublicKey([2; 32]));
+    assert!(entry.register(request.clone()).await.is_err());
+    let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
+    body.signer = signer.public().into();
+    body.issued_at = Timestamp::from_millis(1_000).unwrap();
+    body.expires_at = body.issued_at.plus(60_000);
+    let before = Timestamp::now();
+    assert!(matches!(
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: Signed::sign(&body, &signer).unwrap(),
+            })
+            .await,
+        Err(LocalMachineError::JoinRefused(AuthorityRefusal::Expired))
+    ));
+    let log: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.join("restart-approvals.json")).unwrap())
+            .unwrap();
+    let floor: Timestamp =
+        serde_json::from_value(log.get("expiry_time_floor").unwrap().clone()).unwrap();
+    assert!(floor.as_millis() >= before.as_millis());
+    server.abort();
+    drop(entry);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -350,16 +456,15 @@ async fn join_consumption_uses_the_shared_persisted_approval_clock_floor() {
     assert!(entry.register(request.clone()).await.is_err());
     let mut body = entry.pending_joins().unwrap().joins.pop().unwrap();
     body.signer = signer.public().into();
-    entry
-        .approve_join(ApproveJoinRequest {
-            approval: Signed::sign(&body, &signer).unwrap(),
-        })
-        .await
-        .unwrap();
     assert!(matches!(
-        entry.register(request.clone()).await,
+        entry
+            .approve_join(ApproveJoinRequest {
+                approval: Signed::sign(&body, &signer).unwrap(),
+            })
+            .await,
         Err(LocalMachineError::JoinRefused(AuthorityRefusal::Expired))
     ));
+    assert!(entry.register(request.clone()).await.is_err());
     assert!(
         replicated
             .machine(request.machine_id.as_str())

@@ -374,7 +374,7 @@ async fn a_verified_build_stops_once_the_rules_signer_is_removed() {
         .machine
         .owner
         .mutate(move |store| {
-            store.remove_device(device).unwrap();
+            store.remove_by_code(device).unwrap();
         })
         .await
         .unwrap();

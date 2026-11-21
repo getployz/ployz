@@ -11,8 +11,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => status PermissionDenied: This Server refused the key change: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.key-step.v1"}
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => served
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -80,8 +79,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => status PermissionDenied: This Server refused the key change: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.key-step.v1"}
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => served
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -149,8 +147,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => status PermissionDenied: This Server refused the key change: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.key-step.v1"}
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => served
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -218,8 +215,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => served
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => served
-ployz.machine.remove-trusted-key.v1 | from the mesh => served
+ployz.machine.key-step.v1 | no Device signature => status PermissionDenied: This Server refused the key change: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.key-step.v1"}
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => served
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -287,8 +283,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: ployz.machine.set-device.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.set-device.v1","next":"ployz device request"}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: ployz.machine.set-passkey.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.set-passkey.v1","next":"ployz device request"}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: ployz.machine.remove-trusted-key.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.remove-trusted-key.v1","next":"ployz device request"}
+ployz.machine.key-step.v1 | no Device signature => status PermissionDenied: This Server refused the key change: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.key-step.v1"}
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => served
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -356,8 +351,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => error Unavailable: Machine is not participating null
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => error Conflict: machine is not participating null
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -425,8 +419,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => error Unavailable: Machine is not participating null
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => error Conflict: machine is not participating null
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -494,8 +487,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => error Unavailable: Machine is not participating null
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => error Conflict: machine is not participating null
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -563,8 +555,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => error Unavailable: Machine is not participating null
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => error Unavailable: Machine is not participating null
-ployz.machine.remove-trusted-key.v1 | from the mesh => error Unavailable: Machine is not participating null
+ployz.machine.key-step.v1 | no Device signature => error Unavailable: Machine is not participating null
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => error Conflict: machine is not participating null
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -632,8 +623,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => status PermissionDenied: ployz.machine.join.device-approval.v1 needs a Device-signed join approval: device wyada3h2oz is not approved on this Machine {"capability":"ployz.machine.join.device-approval.v1","next":"ployz device approve --join CODE from an approved device"}
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: ployz.machine.set-device.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.set-device.v1","next":"ployz device request"}
 ployz.machine.set-push-target.v1 | any target => served
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: ployz.machine.set-passkey.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.set-passkey.v1","next":"ployz device request"}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: ployz.machine.remove-trusted-key.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.remove-trusted-key.v1","next":"ployz device request"}
+ployz.machine.key-step.v1 | no Device signature => error Unavailable: Machine is not participating null
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => error Conflict: machine is not participating null
 ployz.machine.upgrade.request.v1 | a release channel => error InvalidArgument: system installation requires --data-dir /var/lib/ployz and --socket /run/ployz/ployz.sock; received --data-dir <id> and --socket <id> null
@@ -701,8 +691,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => waits for the turn
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => waits for the turn
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => waits for the turn
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => waits for the turn
 ployz.machine.upgrade.request.v1 | a release channel => error Conflict: a Ployz installation or upgrade is active null
@@ -770,8 +759,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => waits for the turn
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => waits for the turn
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => waits for the turn
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => waits for the turn
 ployz.machine.upgrade.request.v1 | a release channel => error Conflict: a Ployz installation or upgrade is active null
@@ -839,8 +827,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => waits for the turn
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-device.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.machine.set-push-target.v1 | any target => waits for the turn
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.set-passkey.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.machine.remove-trusted-key.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
+ployz.machine.key-step.v1 | no Device signature => waits for the turn
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => waits for the turn
 ployz.machine.upgrade.request.v1 | a release channel => error Conflict: a Ployz installation or upgrade is active null
@@ -908,8 +895,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => waits for the turn
 ployz.machine.set-device.v1 | from the mesh => waits for the turn
 ployz.machine.set-push-target.v1 | any target => waits for the turn
-ployz.machine.set-passkey.v1 | from the mesh => waits for the turn
-ployz.machine.remove-trusted-key.v1 | from the mesh => waits for the turn
+ployz.machine.key-step.v1 | no Device signature => waits for the turn
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => waits for the turn
 ployz.machine.upgrade.request.v1 | a release channel => error Conflict: a Ployz installation or upgrade is active null
@@ -977,8 +963,7 @@ ployz.machine.set-management-client.v1 | from the mesh, or naming a Device slot 
 ployz.machine.join.approve.v1 | no Device signature => waits for the turn
 ployz.machine.set-device.v1 | from the mesh => status PermissionDenied: ployz.machine.set-device.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.set-device.v1","next":"ployz device request"}
 ployz.machine.set-push-target.v1 | any target => waits for the turn
-ployz.machine.set-passkey.v1 | from the mesh => status PermissionDenied: ployz.machine.set-passkey.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.set-passkey.v1","next":"ployz device request"}
-ployz.machine.remove-trusted-key.v1 | from the mesh => status PermissionDenied: ployz.machine.remove-trusted-key.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.machine.remove-trusted-key.v1","next":"ployz device request"}
+ployz.machine.key-step.v1 | no Device signature => waits for the turn
 ployz.network.select-endpoint.v1 | any endpoint => error Unavailable: WireGuard is not running on this Server null
 ployz.machine.update.v1 | any update => waits for the turn
 ployz.machine.upgrade.request.v1 | a release channel => error Conflict: a Ployz installation or upgrade is active null
