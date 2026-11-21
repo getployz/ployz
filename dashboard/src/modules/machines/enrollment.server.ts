@@ -800,13 +800,18 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           const alreadyAdmitted = Schema.is(Schema.Struct({
             details: Schema.Struct({ reason: Schema.Literal("join_already_admitted") }),
           }))(error.cause);
+          const forgotten = Schema.is(Schema.Struct({
+            details: Schema.Struct({ reason: Schema.Literal("member_removed") }),
+          }))(error.cause);
           const cannotKeepDoors = Schema.is(Schema.Struct({
             details: Schema.Struct({ capability: Schema.Literal(DOORS_CAPABILITY) }),
           }))(error.cause);
           const message = alreadyAdmitted
             ? "The Server's join was already admitted. Inspect the Server before retrying enrollment."
             : `This Server needs a Device to approve its join. On an approved Device, run \`ployz device approve --join ${joinCode(assignment.machine.id, assignment.machine.public_key)}\`, then enroll the Server again.`;
-          return Effect.fail(cannotKeepDoors
+          return Effect.fail(forgotten
+            ? new Conflict({ message: "This Server was forgotten, so it can't join again as it is. Add it with `ployz server add --reset`, and reinstall it first if it never finished joining.", userFacing: true })
+            : cannotKeepDoors
             ? new Conflict({ message: CANNOT_KEEP_DOORS, userFacing: true })
             : needsApproval
               ? new JoinApprovalRequired({ message })
