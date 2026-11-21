@@ -9,7 +9,6 @@ use std::{
 };
 
 use bollard::Docker;
-use futures_util::StreamExt as _;
 
 use super::DOCKER_NETWORK_NAME;
 
@@ -55,37 +54,29 @@ impl Stopped {
         Ok(())
     }
 
-    /// Starts every member written down, a few at a time since each start takes Docker
-    /// a moment. Keeps the ones Docker couldn't start for the next start, and drops one
-    /// refused because another Container now runs on its Volume.
+    /// Starts every member written down, one at a time, so each start's check of its
+    /// Volume sees the one before it running. Drops one Docker no longer has, and keeps
+    /// every other it couldn't start for the next start: one refused beside a running
+    /// holder starts there once that holder is gone.
     pub(super) async fn start(mut self, docker: &Docker) {
-        let ids = std::mem::take(&mut self.ids);
-        self.ids = futures_util::stream::iter(ids)
-            .map(|id| async move {
-                let started = match docker.inspect_container(&id, None).await {
-                    Ok(member) => crate::docker::holder::start(docker, &member, None).await,
-                    Err(error) => Err(error.into()),
-                };
-                match started {
-                    Ok(()) => None,
-                    Err(crate::docker::Error::Docker(error)) if gone(&error) => None,
-                    Err(error @ crate::docker::Error::VolumeHeld { .. }) => {
-                        eprintln!("container {id} stays stopped: {error}");
-                        None
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "container {id} stayed stopped after rejoining the {DOCKER_NETWORK_NAME} network: {error}",
-                            error = ployz_core::error_chain::inline(&error),
-                        );
-                        Some(id)
-                    }
+        for id in std::mem::take(&mut self.ids) {
+            let started = match docker.inspect_container(&id, None).await {
+                Ok(member) => crate::docker::holder::start(docker, &member, None).await,
+                Err(error) => Err(error.into()),
+            };
+            match started {
+                Ok(()) => continue,
+                Err(crate::docker::Error::Docker(error)) if gone(&error) => continue,
+                Err(error @ crate::docker::Error::VolumeHeld { .. }) => {
+                    eprintln!("container {id} stays stopped for now: {error}");
                 }
-            })
-            .buffer_unordered(8)
-            .filter_map(std::future::ready)
-            .collect()
-            .await;
+                Err(error) => eprintln!(
+                    "container {id} stayed stopped after rejoining the {DOCKER_NETWORK_NAME} network: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ),
+            }
+            self.ids.insert(id);
+        }
         let written = if self.ids.is_empty() {
             match std::fs::remove_file(&self.path) {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -118,7 +109,11 @@ fn gone(error: &bollard::errors::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use axum::{
         Router,
@@ -129,12 +124,38 @@ mod tests {
 
     use super::*;
 
+    /// What the fake Docker has started, and the Service Containers it holds on one
+    /// Volume by ID, with each one's state.
+    #[derive(Default)]
+    struct Fake {
+        started: Mutex<Vec<String>>,
+        holders: Mutex<BTreeMap<String, &'static str>>,
+    }
+
+    impl Fake {
+        fn holding(holders: &[(&str, &'static str)]) -> Arc<Self> {
+            Arc::new(Self {
+                started: Mutex::default(),
+                holders: Mutex::new(
+                    holders
+                        .iter()
+                        .map(|(id, state)| ((*id).to_owned(), *state))
+                        .collect(),
+                ),
+            })
+        }
+
+        fn started(&self) -> Vec<String> {
+            self.started.lock().unwrap().clone()
+        }
+    }
+
     /// A Docker that starts `ok`, has never heard of `gone`, can't find the network of
-    /// `netless`, and refuses anything else. `held` and `writer` are Service Containers
-    /// on one Volume, and `writer` runs.
-    async fn docker(started: Arc<Mutex<Vec<String>>>) -> Docker {
+    /// `netless`, and refuses anything else but the holders. A holder's start runs it
+    /// only once a second start arrives, or after a while, as a slow Docker would.
+    async fn docker(fake: Arc<Fake>) -> Docker {
         async fn start(
-            State(started): State<Arc<Mutex<Vec<String>>>>,
+            State(fake): State<Arc<Fake>>,
             UrlPath(path): UrlPath<String>,
         ) -> (StatusCode, axum::Json<serde_json::Value>) {
             let Some(id) = path
@@ -143,9 +164,22 @@ mod tests {
             else {
                 return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({})));
             };
-            started.lock().unwrap().push(id.to_owned());
+            fake.started.lock().unwrap().push(id.to_owned());
+            if fake.holders.lock().unwrap().contains_key(id) {
+                let _ = tokio::time::timeout(Duration::from_millis(200), async {
+                    while fake.started.lock().unwrap().len() < 2 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await;
+                fake.holders
+                    .lock()
+                    .unwrap()
+                    .insert(id.to_owned(), "running");
+                return (StatusCode::NO_CONTENT, axum::Json(serde_json::json!({})));
+            }
             let (status, message) = match id {
-                "ok" | "held" => (StatusCode::OK, String::new()),
+                "ok" => (StatusCode::OK, String::new()),
                 "gone" => (StatusCode::NOT_FOUND, format!("No such container: {id}")),
                 "netless" => (
                     StatusCode::NOT_FOUND,
@@ -159,29 +193,35 @@ mod tests {
             )
         }
         async fn read(
+            State(fake): State<Arc<Fake>>,
             UrlPath(path): UrlPath<String>,
         ) -> (StatusCode, axum::Json<serde_json::Value>) {
-            let serving = |id: &str, status: &str| {
-                serde_json::json!({
-                    "Id": id,
-                    "Name": format!("/{id}"),
-                    "State": {"Status": status},
-                    "Config": {"Labels": {
-                        "ployz.managed": "true",
-                        "ployz.namespace": "app",
-                        "ployz.service.id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                        "ployz.service.name": id,
-                    }},
-                    "Mounts": [{"Type": "volume", "Name": "app_data", "Driver": "ployz"}],
-                })
-            };
+            let holders = fake.holders.lock().unwrap().clone();
             if path.ends_with("containers/json") {
-                return (
-                    StatusCode::OK,
-                    axum::Json(serde_json::json!([{"Id": "held"}, {"Id": "writer"}])),
-                );
+                let listed: Vec<_> = holders
+                    .keys()
+                    .map(|id| serde_json::json!({ "Id": id }))
+                    .collect();
+                return (StatusCode::OK, axum::Json(serde_json::json!(listed)));
             }
             let id = path.trim_end_matches("/json").rsplit('/').next().unwrap();
+            if let Some(state) = holders.get(id) {
+                return (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "Id": id,
+                        "Name": format!("/{id}"),
+                        "State": {"Status": state},
+                        "Config": {"Labels": {
+                            "ployz.managed": "true",
+                            "ployz.namespace": "app",
+                            "ployz.service.id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "ployz.service.name": id,
+                        }},
+                        "Mounts": [{"Type": "volume", "Name": "app_data", "Driver": "ployz"}],
+                    })),
+                );
+            }
             match id {
                 "gone" => (
                     StatusCode::NOT_FOUND,
@@ -189,8 +229,6 @@ mod tests {
                         serde_json::json!({ "message": format!("No such container: {id}") }),
                     ),
                 ),
-                "held" => (StatusCode::OK, axum::Json(serving(id, "exited"))),
-                "writer" => (StatusCode::OK, axum::Json(serving(id, "running"))),
                 _ => (StatusCode::OK, axum::Json(serde_json::json!({ "Id": id }))),
             }
         }
@@ -198,7 +236,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let app = Router::new()
             .route("/{*path}", post(start).get(read))
-            .with_state(started);
+            .with_state(fake);
         tokio::spawn(axum::serve(listener, app).into_future());
         Docker::connect_with_http(
             &format!("http://{address}"),
@@ -208,17 +246,39 @@ mod tests {
         .unwrap()
     }
 
-    /// A member another Container now runs beside on its Volume stays stopped, and the
-    /// note forgets it rather than trying again at every start.
+    /// Two stopped holders of one Volume, both written down: one starts, and the other
+    /// waits in the note.
     #[tokio::test]
-    async fn a_member_beside_a_running_holder_stays_stopped_and_is_forgotten() {
+    async fn two_written_down_holders_of_one_volume_start_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stopped = Stopped::load(dir.path());
+        stopped.note("a").unwrap();
+        stopped.note("b").unwrap();
+        let fake = Fake::holding(&[("a", "exited"), ("b", "exited")]);
+        stopped.start(&docker(fake.clone()).await).await;
+        assert_eq!(fake.started(), ["a"]);
+        assert_eq!(Stopped::load(dir.path()).ids, BTreeSet::from(["b".into()]));
+    }
+
+    /// A member refused beside a running holder stays written down, and starts at the
+    /// next start once that holder stopped.
+    #[tokio::test]
+    async fn a_member_beside_a_running_holder_starts_once_it_stops() {
         let dir = tempfile::tempdir().unwrap();
         let mut stopped = Stopped::load(dir.path());
         stopped.note("held").unwrap();
         stopped.note("ok").unwrap();
-        let started = Arc::new(Mutex::new(Vec::new()));
-        stopped.start(&docker(started.clone()).await).await;
-        assert_eq!(*started.lock().unwrap(), ["ok"]);
+        let fake = Fake::holding(&[("held", "exited"), ("writer", "running")]);
+        let docker = docker(fake.clone()).await;
+        stopped.start(&docker).await;
+        assert_eq!(fake.started(), ["ok"]);
+
+        fake.holders
+            .lock()
+            .unwrap()
+            .insert("writer".into(), "exited");
+        Stopped::load(dir.path()).start(&docker).await;
+        assert_eq!(fake.started(), ["ok", "held"]);
         assert!(!dir.path().join(FILE).exists());
     }
 
@@ -230,11 +290,11 @@ mod tests {
         stopped.note("gone").unwrap();
         drop(stopped);
 
-        let started = Arc::new(Mutex::new(Vec::new()));
+        let fake = Arc::new(Fake::default());
         Stopped::load(dir.path())
-            .start(&docker(started.clone()).await)
+            .start(&docker(fake.clone()).await)
             .await;
-        assert_eq!(*started.lock().unwrap(), ["ok"]);
+        assert_eq!(fake.started(), ["ok"]);
         assert!(!dir.path().join(FILE).exists());
     }
 
@@ -244,9 +304,7 @@ mod tests {
         let mut stopped = Stopped::load(dir.path());
         stopped.note("ok").unwrap();
         stopped.note("refused").unwrap();
-        stopped
-            .start(&docker(Arc::new(Mutex::new(Vec::new()))).await)
-            .await;
+        stopped.start(&docker(Arc::default()).await).await;
         assert_eq!(
             Stopped::load(dir.path()).ids,
             BTreeSet::from(["refused".into()])
@@ -266,9 +324,7 @@ mod tests {
         let mut stopped = Stopped::load(dir.path());
         stopped.note("netless").unwrap();
         stopped.note("gone").unwrap();
-        stopped
-            .start(&docker(Arc::new(Mutex::new(Vec::new()))).await)
-            .await;
+        stopped.start(&docker(Arc::default()).await).await;
         assert_eq!(
             Stopped::load(dir.path()).ids,
             BTreeSet::from(["netless".into()])
