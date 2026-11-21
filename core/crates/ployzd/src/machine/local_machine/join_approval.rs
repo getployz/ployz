@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use ployz_core::{
     ApproveJoinRequest, DeviceKey, JoinApproved, Machine, MachineId, PendingJoins,
-    authority::{AuthorityRefusal, JoinApproval, Purpose, Signed, Timestamp, join},
+    WireGuardPublicKey,
+    authority::{AuthorityRefusal, JoinApproval, Purpose, Signed, SignerKey, Timestamp, join},
 };
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +82,9 @@ impl LocalMachine {
     ) -> Result<JoinApproved, Error> {
         self.finish_mutation(move |local| async move {
             let body = request.approval.open().map_err(Error::JoinRefused)?;
+            local
+                .refuse_removed(body.machine.id, Some(body.machine.public_key))
+                .await?;
             local.verify_join(&request.approval, &body.machine, body.network)?;
             let mut joins = local.read_joins()?;
             local.require_unused_join(body.machine.id)?;
@@ -95,6 +99,59 @@ impl LocalMachine {
             Ok(JoinApproved {})
         })
         .await
+    }
+
+    /// Refuse a join for a Member this Machine saw removed: in its own record, or by its
+    /// store showing the Member's row deleted, which it then records. Every join entry runs
+    /// it before [`Self::enter_join`], so neither a fresh join nor a stored answer brings a
+    /// removed Member back. `public_key` comes from the request, so it only refuses: the
+    /// removal is recorded with the key this Machine verified for the Member, if any, so a
+    /// request can't pair a deleted ID with a live Server's key.
+    pub(crate) async fn refuse_removed(
+        &self,
+        machine: MachineId,
+        public_key: Option<WireGuardPublicKey>,
+    ) -> Result<(), Error> {
+        if self.record().removes_member(machine, public_key) {
+            return Err(Error::MemberRemoved(machine));
+        }
+        if self
+            .replicated()?
+            .removed_machines(&[machine])
+            .await?
+            .contains(&machine)
+        {
+            let removed = crate::machine::RemovedMember {
+                id: machine,
+                public_key: self.joining_key(machine)?,
+            };
+            self.owner
+                .mutate(move |store| store.remove_members(&[removed]))
+                .await??;
+            return Err(Error::MemberRemoved(machine));
+        }
+        Ok(())
+    }
+
+    /// The WireGuard key a signed approval gave a joining `machine` here: from its stored
+    /// answer or its approved pending join. `None` when it holds neither.
+    pub(crate) fn joining_key(
+        &self,
+        machine: MachineId,
+    ) -> Result<Option<WireGuardPublicKey>, Error> {
+        if let Some(stored) = self.approvals.join_result(machine)? {
+            return Ok(stored
+                .approval
+                .open()
+                .ok()
+                .map(|body| body.machine.public_key));
+        }
+        Ok(self
+            .read_joins()?
+            .proposals
+            .get(&machine)
+            .filter(|proposal| proposal.approval.is_some())
+            .map(|proposal| proposal.body.machine.public_key))
     }
 
     pub(crate) fn require_unused_join(&self, machine: MachineId) -> Result<(), Error> {
@@ -159,15 +216,10 @@ impl LocalMachine {
             approval,
             cluster,
             record.id(),
-            &record.devices().collect::<Vec<_>>(),
-            &record
-                .passkeys()
-                .iter()
-                .map(|trusted| trusted.passkey.clone())
-                .collect::<Vec<_>>(),
+            &record.trusted_keys(),
             machine,
             network,
-            Timestamp::now(),
+            self.approvals.observed_now(Timestamp::now())?,
         )
         .map_err(Error::JoinRefused)
     }
@@ -242,7 +294,8 @@ impl LocalMachine {
                     issued_at,
                     expires_at: issued_at
                         .plus(ployz_core::authority::validity::MAX_LIFETIME_MILLIS),
-                    signer: DeviceKey::from_bytes([0; 32]),
+                    signer: SignerKey::Device(DeviceKey::from_bytes([0; 32])),
+                    proposal: None,
                 },
                 approval: None,
             },

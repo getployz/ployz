@@ -209,6 +209,22 @@ pub struct LocalMachineRecord {
     membership_cluster: Option<ployz_core::SealingPublicKey>,
     #[serde(default)]
     enrollment: Option<ployz_core::EnrollRequest>,
+    /// Keys this Machine stopped trusting. Never shrinks, so a removed key is never
+    /// trusted here again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removed_keys: Vec<ployz_core::authority::KeyRef>,
+    /// Members this Machine saw removed: by a Forget it ran, or by its store showing their
+    /// row deleted, never by their absence. Never shrinks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removed_members: Vec<RemovedMember>,
+}
+
+/// A Member this Machine no longer admits, by its ID and, when known, its WireGuard key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RemovedMember {
+    pub id: MachineId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<WireGuardPublicKey>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -321,12 +337,55 @@ impl LocalMachineRecord {
         })
     }
 
-    /// Whether this Machine accepts the row as a Cluster member using its own authority.
+    /// Whether this Machine accepts the row as a Cluster member using its own authority. A
+    /// removed Member is refused first, pinned or not.
     pub(crate) fn accepts_machine(&self, machine: &Machine) -> bool {
+        if self.removes_member(machine.id, Some(machine.public_key)) {
+            return false;
+        }
         if !self.filters_peers || self.pins_machine(machine) {
             return true;
         }
-        ployz_core::authority::join::admits_row(machine, self.devices(), self.membership_cluster)
+        ployz_core::authority::join::admits_row(
+            machine,
+            &self.trusted_keys(),
+            self.membership_cluster,
+        )
+    }
+
+    /// The keys this Machine removed for good.
+    #[must_use]
+    pub fn removed_keys(&self) -> &[ployz_core::authority::KeyRef] {
+        &self.removed_keys
+    }
+
+    /// Whether this Machine removed `key` for good.
+    #[must_use]
+    pub fn removes_key(&self, key: &ployz_core::authority::KeyRef) -> bool {
+        self.removed_keys.contains(key)
+    }
+
+    /// Whether this Machine saw the Member with `id`, or with WireGuard key `public_key`,
+    /// removed.
+    #[must_use]
+    pub(crate) fn removes_member(
+        &self,
+        id: MachineId,
+        public_key: Option<WireGuardPublicKey>,
+    ) -> bool {
+        self.removed_members.iter().any(|removed| {
+            removed.id == id || public_key.is_some_and(|key| removed.public_key == Some(key))
+        })
+    }
+
+    /// Trusted Members whose ID `listed` lacks: the only ones whose row the store may show
+    /// deleted. A missing row alone removes nobody.
+    pub(crate) fn unlisted_members(&self, listed: &BTreeSet<MachineId>) -> Vec<MachineId> {
+        self.trusted_machines
+            .iter()
+            .filter(|member| !listed.contains(&member.id))
+            .map(|member| member.id)
+            .collect()
     }
 
     /// Whether an installed WireGuard peer no accepted row names may stay. `answered` holds
@@ -648,6 +707,8 @@ impl LocalMachineRecord {
             passkeys: Vec::new(),
             membership_cluster: None,
             enrollment: None,
+            removed_keys: Vec::new(),
+            removed_members: Vec::new(),
         }
     }
 

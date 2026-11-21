@@ -60,7 +60,7 @@ fn each_gate_arm_writes_its_capability_and_hints_as_before() {
             "join",
             Error::JoinRefused(unsigned()),
             tonic::Code::PermissionDenied,
-            "ployz.machine.join.device-approval.v1 needs a Device-signed join approval: the workflow approval carries no signature",
+            "ployz.machine.join.device-approval.v1 needs a signed join approval: the workflow approval carries no signature",
             json!({
                 "capability": ployz_core::JOIN_APPROVAL_CAPABILITY,
                 "next": "ployz device approve --join CODE from an approved device",

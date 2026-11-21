@@ -265,18 +265,38 @@ impl ConsumptionLog {
         }
     }
 
+    /// Record `result` as the one answer to its join, if its approval and the bundle it
+    /// rides in are both still open on the floored clock. The time is kept even when the
+    /// window has closed, so a clock turned back cannot reopen it.
     pub(crate) fn consume_join(&self, result: JoinResult, now: Timestamp) -> Result<(), Error> {
         self.transact(Error::JoinRecord, |log| {
             let now = log.floored(now);
             let approval = result.approval.open().map_err(Error::JoinRefused)?;
-            ployz_core::authority::validity::verify(approval.issued_at, approval.expires_at, now)
-                .map_err(Error::JoinRefused)?;
             if log.joins.contains_key(&approval.machine.id) {
                 return Err(Error::JoinConsumed(approval.machine.id));
             }
             log.expiry_time_floor = Some(now);
+            if let Err(refusal) = ployz_core::authority::join::windows(&result.approval, now) {
+                return Ok(Edit::Write(Err(Error::JoinRefused(refusal))));
+            }
             log.joins.insert(approval.machine.id, result);
-            Ok(Edit::Write(()))
+            Ok(Edit::Write(Ok(())))
+        })?
+    }
+
+    /// This Machine's clock for a one-shot window: `now`, raised to the highest time this
+    /// log has taken, which it keeps.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn observed_now(&self, now: Timestamp) -> Result<Timestamp, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let floored = log.floored(now);
+            if log.expiry_time_floor == Some(floored) {
+                return Ok(Edit::Keep(floored));
+            }
+            log.expiry_time_floor = Some(floored);
+            Ok(Edit::Write(floored))
         })
     }
 

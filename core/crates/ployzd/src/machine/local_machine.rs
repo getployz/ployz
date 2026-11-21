@@ -195,6 +195,12 @@ pub enum Error {
     DeviceIsPasskey(DeviceCode),
     #[error("passkey {held} already holds this passkey's credential ID")]
     CredentialHeld { held: DeviceCode },
+    #[error("This Server refused the key change: {0}")]
+    KeyRefused(ployz_core::authority::AuthorityRefusal),
+    /// A join for a Member this Machine saw removed. A removed Member comes back only with a
+    /// new identity.
+    #[error("Server {0} was removed from this Cluster. It can only join again as a new Server.")]
+    MemberRemoved(MachineId),
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -248,7 +254,7 @@ pub enum Error {
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]
     PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
-    #[error("ployz.machine.join.device-approval.v1 needs a Device-signed join approval: {0}")]
+    #[error("ployz.machine.join.device-approval.v1 needs a signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("could not keep the record of join approvals")]
     JoinRecord(#[source] std::io::Error),
@@ -764,6 +770,8 @@ impl LocalMachine {
             store_version,
             rtts,
             management_clients: record.management_clients().cloned().collect(),
+            devices: record.devices().collect(),
+            removed_keys: record.removed_keys().to_vec(),
             passkeys: record.passkeys().to_vec(),
             founding: record.founding(),
             telemetry,
@@ -936,9 +944,12 @@ impl LocalMachine {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<Enrolled, Error> {
+        let now = self
+            .approvals
+            .observed_now(ployz_core::authority::Timestamp::now())?;
         let (plan, installation) = self
             .owner
-            .mutate(move |store| store.plan_enrollment(request, recovery))
+            .mutate(move |store| store.plan_enrollment(request, recovery, now))
             .await??;
         let machine = match plan {
             EnrollPlan::Fresh => {
@@ -1005,6 +1016,11 @@ impl LocalMachine {
         .await
     }
 
+    /// Admit a joiner, or publish the row of one already admitted. A Forget here never
+    /// lands between the removal check and the row write, since both take this Machine's
+    /// exclusive mutation admission. A delete gossiped from another Member can, so the
+    /// write itself refuses a row this store deleted, and a write that left no row is
+    /// refused as a removal.
     async fn publish_assignment(&self, request: RegisterRequest) -> Result<Registered, Error> {
         let replicated = self.replicated()?;
         let declared = replicated
@@ -1013,6 +1029,8 @@ impl LocalMachine {
             .map_err(Error::DeclaredDoorsUnread)?;
         admit_joiner(&declared, &request)?;
         let publication = replicated.machine_publication().await;
+        self.refuse_removed(request.machine_id, Some(request.public_key))
+            .await?;
         let snapshot = ployz_core::EnrollmentSnapshot {
             network: published_network(&self.record(), replicated).await?,
             machines: replicated.machines().await?.observations,
@@ -1053,9 +1071,29 @@ impl LocalMachine {
                             },
                         ));
                     }
-                    publication
-                        .register(registration.assigned_machine.clone())
-                        .await?;
+                    // The approval must still hold here: its window on the floored clock,
+                    // its signer and every key it lists. Once it lapses, a resend of a row
+                    // already out changes nothing and still answers.
+                    let machine = &registration.assigned_machine;
+                    let body = stored.approval.open().map_err(Error::JoinRefused)?;
+                    if let Err(refused) =
+                        self.verify_join(&stored.approval, &body.machine, body.network)
+                    {
+                        let published = replicated
+                            .machine(machine.id.as_str())
+                            .await?
+                            .is_some_and(|row| row.public_key == machine.public_key);
+                        return if published {
+                            Ok(*registration)
+                        } else {
+                            Err(refused)
+                        };
+                    }
+                    publication.register(machine.clone()).await?;
+                    if replicated.machine(machine.id.as_str()).await?.is_none() {
+                        self.refuse_removed(machine.id, None).await?;
+                        return Err(Error::MemberRemoved(machine.id));
+                    }
                 }
                 return Ok(*registration);
             }
@@ -1201,12 +1239,16 @@ impl LocalMachine {
         Ok(MachineUpdated { machine })
     }
 
-    /// Forget another Machine: delete its replicated row. A missing row is success.
+    /// Forget another Machine: record it here as removed, then delete its replicated row. The
+    /// local record comes first, so once a Forget answers, this Machine refuses the
+    /// Machine's join and its row even before the delete reaches its store. A missing row
+    /// is success.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ClusterStoreUnavailable`] when the Cluster store is
-    /// missing and [`Error::Cluster`] when the replicated delete fails.
+    /// missing, [`Error::RecordOwner`] or [`Error::Store`] when the removal can't be
+    /// recorded, and [`Error::Cluster`] when the replicated delete fails.
     pub async fn forget(&self, request: ForgetRequest) -> Result<Forgotten, Error> {
         self.finish_mutation(move |local| async move {
             let now = local.record().now();
@@ -1219,10 +1261,20 @@ impl LocalMachine {
                     now,
                 });
             }
+            let replicated = local.replicated()?;
+            let public_key = match replicated.machine(request.machine_id.as_str()).await? {
+                Some(row) => Some(row.public_key),
+                None => local.joining_key(request.machine_id)?,
+            };
+            let removed = crate::machine::RemovedMember {
+                id: request.machine_id,
+                public_key,
+            };
             local
-                .replicated()?
-                .forget_machine(&request.machine_id)
-                .await?;
+                .owner
+                .mutate(move |store| store.remove_members(&[removed]))
+                .await??;
+            replicated.forget_machine(&request.machine_id).await?;
             Ok(Forgotten::Forgotten)
         })
         .await
@@ -1367,8 +1419,11 @@ impl LocalMachine {
     /// what the mirror holds (#3591). Only a Leave destroys mirrors.
     async fn install(&self, installation: Installation) -> Result<(), Error> {
         self.depart_storage(StorageExit::KeepEveryCopy).await?;
+        let now = self
+            .approvals
+            .observed_now(ployz_core::authority::Timestamp::now())?;
         self.owner
-            .mutate(move |store| store.install(installation))
+            .mutate(move |store| store.install(installation, now))
             .await??;
         Ok(())
     }

@@ -467,6 +467,51 @@ async fn replicated_volumes_round_trip_incomplete_additive_and_machine_removal()
     running.cleanup().await.unwrap();
 }
 
+/// cr-sqlite keeps a deleted row's key, and a Register's insert reads it: a Register writes
+/// no row over one this store deleted, while one it never held still goes in.
+#[tokio::test]
+#[ignore = "requires Docker and the pinned Corrosion image"]
+async fn a_register_writes_no_row_over_one_corrosion_deleted() {
+    let root = TestRoot::new();
+    let mut running = CorrosionConfig::new(
+        root.0.join("data"),
+        root.0.join("run"),
+        unused_address(),
+        unused_address(),
+        format!("ployz-corrosion-register-{}", MachineId::random()),
+    )
+    .start()
+    .await
+    .unwrap();
+    let store = running.store().clone();
+    let gone = machine("gone", 1);
+    let fresh = machine("fresh", 2);
+
+    store
+        .machine_publication()
+        .await
+        .register(gone.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.machine(gone.id.as_str()).await.unwrap(),
+        Some(gone.clone())
+    );
+    store.remove_machine(&gone.id).await.unwrap();
+    assert_eq!(
+        store.removed_machines(&[gone.id]).await.unwrap(),
+        std::collections::BTreeSet::from([gone.id])
+    );
+
+    let publication = store.machine_publication().await;
+    publication.register(gone.clone()).await.unwrap();
+    publication.register(fresh.clone()).await.unwrap();
+    drop(publication);
+    assert_eq!(store.machine(gone.id.as_str()).await.unwrap(), None);
+    assert_eq!(store.machine(fresh.id.as_str()).await.unwrap(), Some(fresh));
+    running.cleanup().await.unwrap();
+}
+
 struct TestRoot(PathBuf);
 
 impl TestRoot {

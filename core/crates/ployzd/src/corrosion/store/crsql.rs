@@ -15,6 +15,13 @@ use serde_json::json;
 use super::{ReplicatedStore, actor_id, text};
 use crate::corrosion::{Error, Statement};
 
+/// The SQL condition that holds when this store never held a row for the Machine `id`, an
+/// expression of the statement it joins. A deleted row keeps its cr-sqlite key, so an insert
+/// that asks this writes no row over one the store deleted.
+pub(super) fn never_held_sql(id: &str) -> String {
+    format!("NOT EXISTS (SELECT 1 FROM machines__crsql_pks WHERE id = {id})")
+}
+
 impl ReplicatedStore {
     /// This Machine's own Corrosion actor, which only this Machine's writes advance.
     pub(crate) async fn local_actor(&self) -> Result<String, Error> {

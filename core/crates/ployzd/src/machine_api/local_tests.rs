@@ -5457,6 +5457,10 @@ mod ensure_container {
             store
                 .mutate(move |store| {
                     store.approve_device(device).unwrap();
+                    // A second key, so removing the signer never leaves the Machine keyless.
+                    store
+                        .approve_device(DeviceKey::from(Signer::from_seed(&[8; 32]).public()))
+                        .unwrap();
                     store.trust_members(Vec::new()).unwrap();
                 })
                 .await
@@ -5953,7 +5957,7 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.remove_device(code).unwrap();
+                    store.remove_by_code(code).unwrap();
                 })
                 .await
                 .unwrap();
@@ -5995,7 +5999,7 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.remove_device(code).unwrap();
+                    store.remove_by_code(code).unwrap();
                 })
                 .await
                 .unwrap();
@@ -6021,7 +6025,7 @@ mod ensure_container {
             fixture
                 .store
                 .mutate(move |store| {
-                    store.remove_device(device.code()).unwrap();
+                    store.remove_by_code(device.code()).unwrap();
                 })
                 .await
                 .unwrap();

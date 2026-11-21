@@ -886,12 +886,12 @@ fn deploy_proposal(
     let mut steps = vec![
         ProposalStep {
             index: 0,
-            kind: StepKind::Deploy,
+            kind: StepKind::Version,
             digest: StepDigest::of("an earlier step"),
         },
         ProposalStep {
             index: 1,
-            kind: StepKind::Deploy,
+            kind: StepKind::Version,
             digest: StepDigest::of(&canonical::to_canonical(&step).unwrap()),
         },
     ];

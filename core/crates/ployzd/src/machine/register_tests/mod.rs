@@ -234,50 +234,38 @@ async fn client_assignment_publishes_through_entry_and_a_rekeyed_register_is_ref
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
-/// A plain add of a forgotten Server that still holds its old id reaches Register on
-/// an Entry before the CLI refuses it. The Register must not list that id again (#3613).
+/// A forgotten Server never comes back under its old ID: a rerun of its add while it was
+/// still joining, a plain add once it had joined, and a replayed Register are all refused,
+/// and the Entry keeps the removal across restarts.
 #[tokio::test]
-async fn register_of_a_forgotten_id_does_not_list_it_again() {
-    use crate::corrosion::store_tests::{corrosion_db, identity_store};
+async fn a_register_of_a_forgotten_server_is_refused_whether_it_had_joined_or_not() {
+    let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-forgotten").await;
 
-    let db = corrosion_db();
-    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
-    db.execute_batch(
-        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
-         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
-    )
-    .unwrap();
-    let (replicated, server) = identity_store(db).await;
-    replicated
-        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
-        .await
-        .unwrap();
-    let (data_dir, store, founder) = open_store("ployzd-register-forgotten");
-    replicated.publish_local_machine(&founder).await.unwrap();
-    let local = LocalMachine::new(store).with_cluster(Some((
-        replicated.clone(),
-        AdminClient::new("/no/such/ployz-admin.sock"),
-    )));
+    let joining = request("joining", WireGuardPublicKey([33; 32]));
+    let mut joined = request("joined", WireGuardPublicKey([31; 32]));
+    joined.assigned_subnet = Some("10.210.2.0/24".parse().unwrap());
+    for (rerun, joins) in [(&joining, false), (&joined, true)] {
+        let mut row = register_published(&local, rerun)
+            .await
+            .unwrap()
+            .assigned_machine;
+        if joins {
+            row.runtime.management_identity =
+                Some(crate::management::ManagementSecret::generate().public_key());
+            replicated.publish_local_machine(&row).await.unwrap();
+        }
+        replicated.forget_machine(&row.id).await.unwrap();
 
-    let forgotten = request("gone", WireGuardPublicKey([31; 32]));
-    let mut published = register_published(&local, &forgotten)
-        .await
-        .unwrap()
-        .assigned_machine;
-    published.runtime.management_identity =
-        Some(crate::management::ManagementSecret::generate().public_key());
-    replicated.publish_local_machine(&published).await.unwrap();
-    replicated.forget_machine(&published.id).await.unwrap();
-
-    register_published(&local, &forgotten).await.unwrap();
-    assert_eq!(
-        replicated.machine(published.id.as_str()).await.unwrap(),
-        None
-    );
+        assert!(matches!(
+            register_published(&local, rerun).await,
+            Err(LocalMachineError::MemberRemoved(id)) if id == row.id
+        ));
+        assert_eq!(replicated.machine(row.id.as_str()).await.unwrap(), None);
+        assert!(local.record().removes_member(row.id, None));
+    }
 
     let mut fresh = request("back", WireGuardPublicKey([32; 32]));
-    fresh.assigned_subnet = Some("10.210.2.0/24".parse().unwrap());
+    fresh.assigned_subnet = Some("10.210.3.0/24".parse().unwrap());
     let listed = register_published(&local, &fresh)
         .await
         .unwrap()
@@ -291,52 +279,49 @@ async fn register_of_a_forgotten_id_does_not_list_it_again() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
-/// A failed add rerun on the same host Registers the same id again, even after the
-/// Registered row was forgotten, and finishes that Server (#3342).
+/// A Member is removed here only on evidence that its row was deleted. One merely missing
+/// from the store, as on a joiner before catch-up, stays trusted. Once removed, its row
+/// coming back is neither accepted nor pinned again.
 #[tokio::test]
-async fn register_after_forgetting_a_registered_row_lists_it_again() {
-    use crate::corrosion::store_tests::{corrosion_db, identity_store};
-
-    let db = corrosion_db();
-    // Register answers with the store's version, which cr-sqlite and Corrosion keep here.
-    db.execute_batch(
-        "CREATE TABLE crsql_db_versions (site_id BLOB PRIMARY KEY, db_version INTEGER);
-         CREATE TABLE __corro_bookkeeping_gaps (actor_id BLOB, start INTEGER, end INTEGER);
-         CREATE TABLE __corro_seq_bookkeeping (site_id BLOB, db_version INTEGER);",
-    )
-    .unwrap();
-    let (replicated, server) = identity_store(db).await;
-    replicated
-        .publish_cluster_network("10.210.0.0/16".parse().unwrap())
+async fn a_member_is_removed_by_its_deleted_row_and_never_by_its_absence() {
+    let (local, store, data_dir, server) = sqlite_entry("ployzd-removed-evidence").await;
+    let replicated = local.replicated().unwrap().clone();
+    let founder = local.record().machine().unwrap().clone();
+    let peer = |hex: char, octet: u8| {
+        let mut peer = founder.clone();
+        peer.id = MachineId::parse(hex.to_string().repeat(32)).unwrap();
+        peer.name = ployz_core::MachineName::parse(format!("peer-{hex}")).unwrap();
+        peer.subnet = format!("10.210.{octet}.0/24").parse().unwrap();
+        peer.public_key = WireGuardPublicKey([octet; 32]);
+        peer
+    };
+    let (listed, unarrived) = (peer('b', 2), peer('c', 3));
+    store.publish_local_machine(&listed).await.unwrap();
+    let members = vec![(&founder).into(), (&listed).into(), (&unarrived).into()];
+    local
+        .owner()
+        .mutate(move |record| record.trust_members(members).unwrap())
         .await
         .unwrap();
-    let (data_dir, store, founder) = open_store("ployzd-register-rerun-after-forget");
-    replicated.publish_local_machine(&founder).await.unwrap();
-    let local = LocalMachine::new(store).with_cluster(Some((
-        replicated.clone(),
-        AdminClient::new("/no/such/ployz-admin.sock"),
-    )));
 
-    let rerun = request("rerun", WireGuardPublicKey([33; 32]));
-    let registered = register_published(&local, &rerun)
-        .await
-        .unwrap()
-        .assigned_machine;
-    replicated.forget_machine(&registered.id).await.unwrap();
+    replicated.machines().await.unwrap();
+    assert!(!local.record().removes_member(unarrived.id, None));
+    assert!(local.record().pins_machine(&unarrived));
 
-    register_published(&local, &rerun).await.unwrap();
-    assert_eq!(
-        replicated.machine(registered.id.as_str()).await.unwrap(),
-        Some(registered.clone())
+    store.forget_machine(&listed.id).await.unwrap();
+    replicated.machines().await.unwrap();
+    assert!(
+        local
+            .record()
+            .removes_member(listed.id, Some(listed.public_key))
     );
-    let mut joined = registered;
-    joined.runtime.management_identity =
-        Some(crate::management::ManagementSecret::generate().public_key());
-    replicated.publish_local_machine(&joined).await.unwrap();
-    assert_eq!(
-        replicated.machine(joined.id.as_str()).await.unwrap(),
-        Some(joined)
-    );
+    assert!(!local.record().pins_machine(&listed));
+
+    store.publish_local_machine(&listed).await.unwrap();
+    let observed = replicated.machines().await.unwrap().observations;
+    assert!(observed.iter().all(|machine| machine.id != listed.id));
+    assert!(!local.record().pins_machine(&listed));
+    assert!(!local.record().removes_member(unarrived.id, None));
     server.abort();
     drop(local);
     let _ = std::fs::remove_dir_all(data_dir);
@@ -416,9 +401,9 @@ async fn register_keeps_a_row_its_machine_already_published() {
 /// A daemon without the `self_published` mark wrote rows that don't show who wrote
 /// them: its own publish, and a Register an older Entry stored with the identity the
 /// request named. A Register replaces such a row even under the same key, so the row
-/// names no identity, and forgetting it leaves a tombstone the next Register takes back.
+/// names no identity.
 #[tokio::test]
-async fn register_replaces_a_row_without_the_mark_and_takes_back_its_forget() {
+async fn register_replaces_a_row_without_the_mark() {
     use crate::corrosion::store_tests::store_as_an_older_daemon;
 
     let (local, replicated, data_dir, server) = sqlite_entry("ployzd-register-unmarked").await;
@@ -437,12 +422,6 @@ async fn register_replaces_a_row_without_the_mark_and_takes_back_its_forget() {
         .await
         .unwrap()
         .assigned_machine;
-    assert_eq!(
-        replicated.machine(assigned.id.as_str()).await.unwrap(),
-        Some(assigned.clone())
-    );
-    replicated.forget_machine(&assigned.id).await.unwrap();
-    register_published(&local, &identity).await.unwrap();
     assert_eq!(
         replicated.machine(assigned.id.as_str()).await.unwrap(),
         Some(assigned)

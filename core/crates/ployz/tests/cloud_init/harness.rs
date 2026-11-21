@@ -663,6 +663,8 @@ impl FakeMachine for JoinDaemon {
         let joined = targeted || self.inner.joined.load(Ordering::SeqCst);
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
+            devices: Vec::new(),
+            removed_keys: Vec::new(),
             id: self.id(),
             phase: if joined {
                 LocalMachinePhase::Participating
@@ -1246,6 +1248,7 @@ pub fn approved_registration() -> Registered {
         issued_at,
         expires_at: issued_at.plus(60_000),
         signer: signer.public().into(),
+        proposal: None,
     };
     registration.assigned_machine.join_approval = Some(Signed::sign(&body, &signer).unwrap());
     registration

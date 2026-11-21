@@ -1,10 +1,12 @@
 //! Management Client slots and the client keys they admit, as admitted mutations.
 
 use ployz_core::{
-    ClientKey, DeviceCode, DeviceSet, ManagementCapability, RemoveTrustedKeyRequest,
-    SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse, SetPasskeyRequest,
-    TrustedKeyRemoved,
-    authority::{PasskeyApprover, TrustedPasskey},
+    ClientKey, DeviceCode, DeviceSet, KeyStepRequest, ManagementCapability, SetDeviceRequest,
+    SetManagementClientRequest, SetManagementClientResponse,
+    authority::{
+        Approver, KeyChange, KeyFacts, KeyMember, NewKey, PasskeyApprover, Timestamp,
+        TrustedPasskey, key,
+    },
 };
 
 use super::{Caller, Error, LocalMachine};
@@ -66,7 +68,9 @@ impl LocalMachine {
         .await
     }
 
-    /// Approve one Device on this Machine, or remove one, under mutation admission.
+    /// Approve one Device on this Machine, or remove the key a code names, Device or passkey,
+    /// under mutation admission. A removal goes through [`LocalMachineStore::remove_key`],
+    /// so the key stays removed and the last key stays.
     ///
     /// The scope recheck runs on the Machine the caller dialed: a Device removed there
     /// while its own request waited for admission changes nothing. A routed call reaches
@@ -78,7 +82,9 @@ impl LocalMachine {
     /// [`Error::DeviceIsPasskey`] when a trusted passkey has the Device's key,
     /// [`Error::NotParticipating`] when this Machine is not participating, admission
     /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
-    /// [`Error::Store`] when the record cannot be written.
+    /// [`Error::Store`] for a removed key, the last key, or a record that cannot be written.
+    ///
+    /// [`LocalMachineStore::remove_key`]: crate::machine::LocalMachineStore::remove_key
     pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
         self.finish_mutation(move |local| async move {
             let caller = local.clone();
@@ -87,129 +93,73 @@ impl LocalMachine {
                 .mutate(move |store| {
                     store.record().require_participating()?;
                     let by = caller.full_caller(store.record())?;
-                    Ok(match request {
+                    match request {
                         SetDeviceRequest::Approve { key } => {
-                            let code = key.code();
-                            if store
-                                .record()
-                                .passkeys()
-                                .iter()
-                                .any(|held| held.passkey.code() == code)
-                            {
-                                return Err(Error::DeviceIsPasskey(code));
-                            }
-                            if store.approve_device(key)? {
-                                DeviceSet::Approved { code }
-                            } else {
-                                DeviceSet::AlreadyApproved { code }
-                            }
+                            trust(store, NewKey::Device { key }, by)
                         }
                         SetDeviceRequest::Remove { code } => {
-                            if store.remove_device(code)? {
-                                tracing::info!(
-                                    "trusted key removed kind=device code={code} by={by}"
-                                );
-                                DeviceSet::Removed { code }
-                            } else {
-                                DeviceSet::NotPresent { code }
-                            }
+                            let removed = store.remove_by_code(code)?;
+                            Ok(removal(code, removed, by))
                         }
-                    })
+                        SetDeviceRequest::RemoveKey { key } => {
+                            let removed = store.remove_key(key)?;
+                            Ok(removal(key.code(), removed, by))
+                        }
+                    }
                 })
                 .await?
         })
         .await
     }
 
-    /// Approve one passkey on this Machine under mutation admission, with the same
-    /// Full-scope recheck as [`Self::set_device`]. The approver is this Machine's own view
-    /// of the caller, from [`Self::full_caller`].
+    /// Apply a person's signed change to the keys this Machine trusts, under mutation
+    /// admission: a trust as a step of a bundle whose window holds on this Machine's floored
+    /// clock and that names this Machine, a removal alone or in a bundle. Signature, window
+    /// and removed keys are checked inside the record write, so a removal that lands first
+    /// wins.
     ///
     /// # Errors
-    /// Returns [`Error::NeedsFullScope`] when the caller holds no Device slot,
-    /// [`Error::PasskeyIsDevice`] when an approved Device has the passkey's key,
-    /// [`Error::CredentialHeld`] when another passkey holds its credential ID,
-    /// [`Error::NotParticipating`] when this Machine is not participating, admission
-    /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
-    /// [`Error::Store`] when the record cannot be written.
-    pub async fn set_passkey(&self, request: SetPasskeyRequest) -> Result<DeviceSet, Error> {
+    /// Returns [`Error::KeyRefused`] for a step this Machine does not accept,
+    /// [`Error::PasskeyIsDevice`], [`Error::DeviceIsPasskey`] and [`Error::CredentialHeld`]
+    /// for a key that collides with one held, [`Error::NotParticipating`], admission
+    /// failures, [`Error::ApprovalRecord`] when the clock floor cannot be kept,
+    /// [`Error::RecordOwner`], and [`Error::Store`] for a removed key, the last key, or a
+    /// record that cannot be written.
+    pub async fn key_step(&self, request: KeyStepRequest) -> Result<DeviceSet, Error> {
         self.finish_mutation(move |local| async move {
-            let caller = local.clone();
+            let cluster = crate::sealing_key::SealingKey::load(local.owner.data_dir())
+                .map_err(Error::JoinRecord)?
+                .map(|key| key.public_key());
+            let approvals = local.approvals.clone();
             local
                 .owner
                 .mutate(move |store| {
                     let record = store.record();
                     record.require_participating()?;
-                    let by = caller.full_caller(record)?;
-                    let SetPasskeyRequest::Approve { passkey } = request;
-                    let code = passkey.code();
-                    if record.devices().any(|device| device.code() == code) {
-                        return Err(Error::PasskeyIsDevice(code));
-                    }
-                    if let Some(held) = record.passkeys().iter().find(|held| {
-                        held.passkey.credential_id == passkey.credential_id
-                            && held.passkey.code() != code
-                    }) {
-                        return Err(Error::CredentialHeld {
-                            held: held.passkey.code(),
-                        });
-                    }
-                    Ok(
-                        if store.approve_passkey(TrustedPasskey {
-                            passkey: *passkey,
-                            approved_by: by,
-                        })? {
-                            tracing::info!("trusted key added kind=passkey code={code} by={by}");
-                            DeviceSet::Approved { code }
-                        } else {
-                            DeviceSet::AlreadyApproved { code }
+                    let now = approvals.observed_now(Timestamp::now())?;
+                    let trusted = record.trusted_keys();
+                    let facts = KeyFacts {
+                        trusted: &trusted,
+                        cluster,
+                        member: KeyMember {
+                            id: record.id(),
+                            public_key: record.private_key().public_key(),
                         },
-                    )
-                })
-                .await?
-        })
-        .await
-    }
-
-    /// Stop trusting the key `code` names, Device or passkey, under the same admission
-    /// and Full-scope recheck as [`Self::set_device`]. The kind is read inside the
-    /// mutation, so an approval that landed after the caller last looked is still removed.
-    ///
-    /// # Errors
-    /// Returns [`Error::NeedsFullScope`] when the caller holds no Device slot,
-    /// [`Error::NotParticipating`] when this Machine is not participating, admission
-    /// failures, [`Error::RecordOwner`] when the record owner has stopped, and
-    /// [`Error::Store`] when the record cannot be written.
-    pub async fn remove_trusted_key(
-        &self,
-        RemoveTrustedKeyRequest { code }: RemoveTrustedKeyRequest,
-    ) -> Result<TrustedKeyRemoved, Error> {
-        self.finish_mutation(move |local| async move {
-            let caller = local.clone();
-            local
-                .owner
-                .mutate(move |store| {
-                    store.record().require_participating()?;
-                    let by = caller.full_caller(store.record())?;
-                    if store.remove_device(code)? {
-                        tracing::info!("trusted key removed kind=device code={code} by={by}");
-                        let approver = PasskeyApprover::Device { code };
-                        return Ok(TrustedKeyRemoved::RemovedDevice {
-                            code,
-                            approved_passkeys: store
-                                .record()
-                                .passkeys()
-                                .iter()
-                                .filter(|trusted| trusted.approved_by == approver)
-                                .map(|trusted| trusted.passkey.code())
-                                .collect(),
-                        });
+                        now,
+                    };
+                    let (change, by) =
+                        key::verify(&request.step, &facts).map_err(Error::KeyRefused)?;
+                    let by = match by {
+                        Approver::Device(key) => PasskeyApprover::Device { code: key.code() },
+                        Approver::Passkey(_) => PasskeyApprover::Unknown,
+                    };
+                    match change {
+                        KeyChange::Trust { key, .. } => trust(store, key, by),
+                        KeyChange::Remove { key } => {
+                            let removed = store.remove_key(key)?;
+                            Ok(removal(key.code(), removed, by))
+                        }
                     }
-                    if store.remove_passkey(code)? {
-                        tracing::info!("trusted key removed kind=passkey code={code} by={by}");
-                        return Ok(TrustedKeyRemoved::RemovedPasskey { code });
-                    }
-                    Ok(TrustedKeyRemoved::NotPresent { code })
                 })
                 .await?
         })
@@ -254,11 +204,76 @@ impl LocalMachine {
     }
 }
 
+/// The answer to a removal of the key `code` names, which `by` asked for.
+fn removal(code: DeviceCode, removed: bool, by: PasskeyApprover) -> DeviceSet {
+    if removed {
+        tracing::info!("trusted key removed code={code} by={by}");
+        DeviceSet::Removed { code }
+    } else {
+        DeviceSet::NotPresent { code }
+    }
+}
+
+/// Trust `key` here, approved by `by`, refusing a key that collides with one held by the
+/// other kind or another passkey's credential.
+fn trust(
+    store: &mut crate::machine::LocalMachineStore,
+    key: NewKey,
+    by: PasskeyApprover,
+) -> Result<DeviceSet, Error> {
+    let record = store.record();
+    let code = key.key().code();
+    match key {
+        NewKey::Device { key } => {
+            if record
+                .passkeys()
+                .iter()
+                .any(|held| held.passkey.code() == code)
+            {
+                return Err(Error::DeviceIsPasskey(code));
+            }
+            Ok(if store.approve_device(key)? {
+                tracing::info!("trusted key added kind=device code={code} by={by}");
+                DeviceSet::Approved { code }
+            } else {
+                DeviceSet::AlreadyApproved { code }
+            })
+        }
+        NewKey::Passkey { passkey } => {
+            if record.devices().any(|device| device.code() == code) {
+                return Err(Error::PasskeyIsDevice(code));
+            }
+            if let Some(held) = record.passkeys().iter().find(|held| {
+                held.passkey.credential_id == passkey.credential_id && held.passkey.code() != code
+            }) {
+                return Err(Error::CredentialHeld {
+                    held: held.passkey.code(),
+                });
+            }
+            Ok(
+                if store.approve_passkey(TrustedPasskey {
+                    passkey,
+                    approved_by: by,
+                })? {
+                    tracing::info!("trusted key added kind=passkey code={code} by={by}");
+                    DeviceSet::Approved { code }
+                } else {
+                    DeviceSet::AlreadyApproved { code }
+                },
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::machine::{LocalMachineStore, RecordOwner};
-    use ployz_core::ManagementScope;
+    use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
+    use ployz_core::authority::{
+        KeyRef, KeyStep, ProposalApproval, ProposalRef, ProposalStep, Signed, Signer, StepDigest,
+        StepKind,
+    };
+    use ployz_core::{DeviceKey, ManagementScope};
 
     fn cloud() -> ployz_core::ManagementClientLabel {
         ployz_core::ManagementClientLabel::parse("cloud").unwrap()
@@ -594,10 +609,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let local = participating(dir.path()).await;
         let key = device();
-        local
-            .set_device(SetDeviceRequest::Approve { key })
-            .await
-            .unwrap();
+        for key in [device(), key] {
+            local
+                .set_device(SetDeviceRequest::Approve { key })
+                .await
+                .unwrap();
+        }
         let remove = SetDeviceRequest::Remove { code: key.code() };
         assert_eq!(
             local.set_device(remove.clone()).await.unwrap(),
@@ -608,13 +625,6 @@ mod tests {
             local.set_device(remove).await.unwrap(),
             DeviceSet::NotPresent { code: key.code() }
         );
-        assert_eq!(
-            local
-                .set_device(SetDeviceRequest::Approve { key })
-                .await
-                .unwrap(),
-            DeviceSet::Approved { code: key.code() }
-        );
     }
 
     #[tokio::test]
@@ -623,10 +633,12 @@ mod tests {
         let local = participating(dir.path()).await;
         let first = device();
         let second = device();
-        local
-            .set_device(SetDeviceRequest::Approve { key: first })
-            .await
-            .unwrap();
+        for key in [device(), first] {
+            local
+                .set_device(SetDeviceRequest::Approve { key })
+                .await
+                .unwrap();
+        }
         let caller = local.clone().with_management_client(first.into());
         let lock = local.owner.admission_lock().write_owned().await;
         let remove = local.set_device(SetDeviceRequest::Remove { code: first.code() });
@@ -658,25 +670,115 @@ mod tests {
         }
     }
 
-    fn approve(passkey: ployz_core::authority::Passkey) -> SetPasskeyRequest {
-        SetPasskeyRequest::Approve {
-            passkey: Box::new(passkey),
+    fn signer() -> Signer {
+        Signer::from_seed(&[11; 32])
+    }
+
+    /// `participating`, holding a Sealing Key and trusting [`signer`] as its Device.
+    async fn keyed(dir: &std::path::Path) -> LocalMachine {
+        let local = participating(dir).await;
+        if crate::sealing_key::SealingKey::load(dir).unwrap().is_none() {
+            let key = crate::sealing_key::SealingKey::generate();
+            crate::sealing_key::SealingKey::set(dir, Some(&key)).unwrap();
+        }
+        local
+            .set_device(SetDeviceRequest::Approve {
+                key: signer().public().into(),
+            })
+            .await
+            .unwrap();
+        local
+    }
+
+    fn cluster_of(local: &LocalMachine) -> ployz_core::SealingPublicKey {
+        crate::sealing_key::SealingKey::load(local.owner.data_dir())
+            .unwrap()
+            .unwrap()
+            .public_key()
+    }
+
+    /// A trust of `key` on `local` alone, as the only step of a bundle [`signer`] signed now.
+    fn trust_step(local: &LocalMachine, key: NewKey) -> KeyStepRequest {
+        let record = local.record();
+        let operation = ployz_core::OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap();
+        let step = KeyStep {
+            cluster: cluster_of(local),
+            change: KeyChange::Trust {
+                key,
+                members: vec![KeyMember {
+                    id: record.id(),
+                    public_key: record.private_key().public_key(),
+                }],
+            },
+            signer: signer().public().into(),
+            proposal: Some(ProposalRef {
+                operation,
+                index: 0,
+            }),
+        };
+        let issued_at = Timestamp::now();
+        let plan = ProposalApproval {
+            cluster: step.cluster,
+            environment: ployz_core::Namespace::parse("app").unwrap(),
+            operation,
+            steps: vec![ProposalStep {
+                index: 0,
+                kind: StepKind::Key,
+                digest: StepDigest::of(&Signed::unsigned(&step).unwrap().body),
+            }],
+            issued_at,
+            expires_at: issued_at.plus(10 * 60 * 1000),
+            signer: signer().public().into(),
+        };
+        KeyStepRequest {
+            step: Signed::proposed(&step, Signed::sign(&plan, &signer()).unwrap()).unwrap(),
+        }
+    }
+
+    /// A removal of `key`, signed alone by `by`.
+    fn removal_step(local: &LocalMachine, key: KeyRef, by: &Signer) -> KeyStepRequest {
+        let step = KeyStep {
+            cluster: cluster_of(local),
+            change: KeyChange::Remove { key },
+            signer: by.public().into(),
+            proposal: None,
+        };
+        KeyStepRequest {
+            step: Signed::sign(&step, by).unwrap(),
+        }
+    }
+
+    fn trust_passkey(
+        local: &LocalMachine,
+        passkey: ployz_core::authority::Passkey,
+    ) -> KeyStepRequest {
+        trust_step(local, NewKey::Passkey { passkey })
+    }
+
+    fn passkey_ref(key: [u8; 32]) -> KeyRef {
+        KeyRef::Passkey {
+            key: passkey(key).public_key,
         }
     }
 
     #[tokio::test]
-    async fn a_passkey_approved_on_the_server_is_trusted_but_never_connects_or_signs() {
+    async fn a_device_signed_bundle_trusts_a_passkey_that_never_connects_or_signs() {
         let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let terminal = local.clone().on_local_socket();
+        let local = keyed(dir.path()).await;
         let key = *iroh::SecretKey::generate().public().as_bytes();
         let code = passkey(key).code();
         assert_eq!(
-            terminal.set_passkey(approve(passkey(key))).await.unwrap(),
+            local
+                .key_step(trust_passkey(&local, passkey(key)))
+                .await
+                .unwrap(),
             DeviceSet::Approved { code }
         );
         assert_eq!(
-            terminal.set_passkey(approve(passkey(key))).await.unwrap(),
+            local
+                .key_step(trust_passkey(&local, passkey(key)))
+                .await
+                .unwrap(),
             DeviceSet::AlreadyApproved { code }
         );
         let record = local.record();
@@ -684,238 +786,203 @@ mod tests {
             record.passkeys(),
             [TrustedPasskey {
                 passkey: passkey(key),
-                approved_by: PasskeyApprover::Server,
+                approved_by: PasskeyApprover::Device {
+                    code: DeviceKey::from(signer().public()).code()
+                },
             }]
         );
         assert!(!record.admits_management_client(&ClientKey::from_bytes(key)));
         assert_eq!(record.management_scope(&ClientKey::from_bytes(key)), None);
-        assert_eq!(record.trusted_keys().signing_keys().count(), 0);
-        let reread: crate::machine::LocalMachineRecord =
-            serde_json::from_str(&serde_json::to_string(&*record).unwrap()).unwrap();
-        assert_eq!(reread.passkeys(), record.passkeys());
+        assert_eq!(record.trusted_keys().signing_keys().count(), 1);
     }
 
     #[tokio::test]
-    async fn a_full_call_routed_over_the_mesh_is_not_recorded_as_this_servers_terminal() {
+    async fn an_operator_caller_such_as_cloud_relays_a_signed_step_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let key = *iroh::SecretKey::generate().public().as_bytes();
-        local.set_passkey(approve(passkey(key))).await.unwrap();
-        assert_eq!(
-            local
-                .record()
-                .passkeys()
-                .iter()
-                .map(|trusted| trusted.approved_by)
-                .collect::<Vec<_>>(),
-            [PasskeyApprover::Routed]
-        );
-    }
-
-    #[tokio::test]
-    async fn an_operator_caller_such_as_cloud_approves_or_removes_no_passkey() {
-        let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let key = *iroh::SecretKey::generate().public().as_bytes();
-        for label in ["cloud", "cli-laptop"] {
-            let caller = local
-                .clone()
-                .with_management_client(accepted(&local, label).await);
-            assert!(matches!(
-                caller.set_passkey(approve(passkey(key))).await,
-                Err(Error::NeedsFullScope)
-            ));
-        }
-        assert!(local.record().passkeys().is_empty());
-        local.set_passkey(approve(passkey(key))).await.unwrap();
+        let local = keyed(dir.path()).await;
         let cloud = local
             .clone()
             .with_management_client(accepted(&local, "cloud").await);
+        let key = *iroh::SecretKey::generate().public().as_bytes();
+        let stranger = Signer::from_seed(&[42; 32]);
+        cloud
+            .key_step(trust_passkey(&local, passkey(key)))
+            .await
+            .unwrap();
         assert!(matches!(
-            cloud.remove_trusted_key(remove(passkey(key).code())).await,
-            Err(Error::NeedsFullScope)
+            cloud
+                .key_step(removal_step(&local, passkey_ref(key), &stranger))
+                .await,
+            Err(Error::KeyRefused(_))
         ));
         assert_eq!(local.record().passkeys().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_device_approves_a_passkey_under_its_code_and_removes_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let device = device();
-        local
-            .set_device(SetDeviceRequest::Approve { key: device })
-            .await
-            .unwrap();
-        let caller = local.clone().with_management_client(device.into());
-        let key = *iroh::SecretKey::generate().public().as_bytes();
-        let code = passkey(key).code();
-        caller.set_passkey(approve(passkey(key))).await.unwrap();
         assert_eq!(
-            local
-                .record()
-                .passkeys()
-                .iter()
-                .map(|trusted| trusted.approved_by)
-                .collect::<Vec<_>>(),
-            [PasskeyApprover::Device {
-                code: device.code()
-            }]
-        );
-        assert_eq!(
-            caller.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::RemovedPasskey { code }
-        );
-        assert!(local.record().passkeys().is_empty());
-        assert_eq!(
-            caller.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::NotPresent { code }
-        );
-    }
-
-    #[tokio::test]
-    async fn a_device_removing_itself_learns_the_passkeys_it_approved_which_stay_trusted() {
-        let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let device = device();
-        local
-            .set_device(SetDeviceRequest::Approve { key: device })
-            .await
-            .unwrap();
-        let caller = local.clone().with_management_client(device.into());
-        let mine = [
-            passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "AQID"),
-            passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "BAUG"),
-        ];
-        for passkey in &mine {
-            caller.set_passkey(approve(passkey.clone())).await.unwrap();
-        }
-        let servers =
-            passkey_with_credential(*iroh::SecretKey::generate().public().as_bytes(), "BwgJ");
-        local.set_passkey(approve(servers)).await.unwrap();
-
-        assert_eq!(
-            caller
-                .remove_trusted_key(remove(device.code()))
+            cloud
+                .key_step(removal_step(&local, passkey_ref(key), &signer()))
                 .await
                 .unwrap(),
-            TrustedKeyRemoved::RemovedDevice {
-                code: device.code(),
-                approved_passkeys: mine.iter().map(|passkey| passkey.code()).collect(),
+            DeviceSet::Removed {
+                code: passkey(key).code()
             }
         );
-        assert_eq!(local.record().devices().count(), 0);
-        assert_eq!(local.record().passkeys().len(), 3);
-    }
-
-    fn remove(code: DeviceCode) -> RemoveTrustedKeyRequest {
-        RemoveTrustedKeyRequest { code }
-    }
-
-    fn trusts_any(local: &LocalMachine, code: DeviceCode) -> bool {
-        let record = local.record();
-        record.devices().any(|device| device.code() == code)
-            || record
-                .passkeys()
-                .iter()
-                .any(|held| held.passkey.code() == code)
     }
 
     #[tokio::test]
-    async fn removal_takes_a_passkey_approved_after_the_caller_last_looked() {
+    async fn a_removed_key_is_never_trusted_again_on_any_route_even_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let key = *iroh::SecretKey::generate().public().as_bytes();
-        let code = passkey(key).code();
-        assert!(!trusts_any(&local, code), "the caller's read shows nothing");
-        local.set_passkey(approve(passkey(key))).await.unwrap();
-
-        assert_eq!(
-            local.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::RemovedPasskey { code }
-        );
-        assert!(!trusts_any(&local, code));
-        assert_eq!(
-            local.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::NotPresent { code }
-        );
-    }
-
-    #[tokio::test]
-    async fn removal_takes_a_device_that_replaced_the_passkey_the_caller_saw() {
-        let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let key = *iroh::SecretKey::generate().public().as_bytes();
-        let code = passkey(key).code();
-        local.set_passkey(approve(passkey(key))).await.unwrap();
-        assert_eq!(local.record().passkeys().len(), 1, "the caller's read");
-        local.remove_trusted_key(remove(code)).await.unwrap();
-        let device = ployz_core::DeviceKey::from_bytes(key);
+        let local = keyed(dir.path()).await;
+        let removed = device();
         local
-            .set_device(SetDeviceRequest::Approve { key: device })
+            .set_device(SetDeviceRequest::Approve { key: removed })
             .await
             .unwrap();
-        assert_eq!(device.code(), code);
-
-        assert_eq!(
-            local.remove_trusted_key(remove(code)).await.unwrap(),
-            TrustedKeyRemoved::RemovedDevice {
-                code,
-                approved_passkeys: Vec::new()
-            }
-        );
-        assert!(!trusts_any(&local, code));
-        assert!(
-            !local
-                .record()
-                .accepts_management_client(&ClientKey::from_bytes(key))
-        );
-    }
-
-    #[tokio::test]
-    async fn removing_a_device_leaves_a_passkey_under_the_same_code_trusted() {
-        let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
-        let key = *iroh::SecretKey::generate().public().as_bytes();
-        let code = passkey(key).code();
-        local.set_passkey(approve(passkey(key))).await.unwrap();
+        let code = removed.code();
         assert_eq!(
             local
                 .set_device(SetDeviceRequest::Remove { code })
                 .await
                 .unwrap(),
-            DeviceSet::NotPresent { code }
+            DeviceSet::Removed { code }
         );
-        assert_eq!(local.record().passkeys().len(), 1);
+        let reread: crate::machine::LocalMachineRecord =
+            serde_json::from_str(&serde_json::to_string(&*local.record()).unwrap()).unwrap();
+        assert!(reread.removes_key(&KeyRef::Device { key: removed }));
+        assert!(matches!(
+            local
+                .set_device(SetDeviceRequest::Approve { key: removed })
+                .await,
+            Err(Error::Store(StoreError::KeyRemoved(_)))
+        ));
+        assert!(matches!(
+            local
+                .key_step(trust_step(&local, NewKey::Device { key: removed }))
+                .await,
+            Err(Error::Store(StoreError::KeyRemoved(_)))
+        ));
+        assert_eq!(
+            local.record().devices().collect::<Vec<_>>(),
+            [DeviceKey::from(signer().public())]
+        );
+
+        let never = *iroh::SecretKey::generate().public().as_bytes();
+        assert_eq!(
+            local
+                .key_step(removal_step(&local, passkey_ref(never), &signer()))
+                .await
+                .unwrap(),
+            DeviceSet::NotPresent {
+                code: passkey(never).code()
+            }
+        );
+        assert!(
+            matches!(
+                local.key_step(trust_passkey(&local, passkey(never))).await,
+                Err(Error::Store(StoreError::KeyRemoved(_)))
+            ),
+            "a removal reaches a Server before the trust it outlives"
+        );
+    }
+
+    /// `device rm` hands a Server that never held the key its full key. The Server marks it
+    /// removed, so a grant of that key that reaches it later is refused.
+    #[tokio::test]
+    async fn a_full_key_removal_on_a_server_that_never_held_it_refuses_a_later_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let never = device();
+        assert_eq!(
+            local
+                .set_device(SetDeviceRequest::RemoveKey {
+                    key: KeyRef::Device { key: never }
+                })
+                .await
+                .unwrap(),
+            DeviceSet::NotPresent { code: never.code() }
+        );
+        assert!(matches!(
+            local
+                .key_step(trust_step(&local, NewKey::Device { key: never }))
+                .await,
+            Err(Error::Store(StoreError::KeyRemoved(_)))
+        ));
+        assert!(!local.record().devices().any(|device| device == never));
+    }
+
+    #[tokio::test]
+    async fn the_last_key_a_server_trusts_is_never_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let only = DeviceKey::from(signer().public());
+        assert!(matches!(
+            local
+                .set_device(SetDeviceRequest::Remove { code: only.code() })
+                .await,
+            Err(Error::Store(StoreError::LastKey(_)))
+        ));
+        assert!(matches!(
+            local
+                .key_step(removal_step(
+                    &local,
+                    KeyRef::Device { key: only },
+                    &signer()
+                ))
+                .await,
+            Err(Error::Store(StoreError::LastKey(_)))
+        ));
+        assert_eq!(local.record().devices().collect::<Vec<_>>(), [only]);
+        assert!(!local.record().removes_key(&KeyRef::Device { key: only }));
+    }
+
+    #[tokio::test]
+    async fn set_device_removes_a_passkey_by_its_code_for_good() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = keyed(dir.path()).await;
+        let key = *iroh::SecretKey::generate().public().as_bytes();
+        let code = passkey(key).code();
+        local
+            .key_step(trust_passkey(&local, passkey(key)))
+            .await
+            .unwrap();
+        assert_eq!(
+            local
+                .set_device(SetDeviceRequest::Remove { code })
+                .await
+                .unwrap(),
+            DeviceSet::Removed { code }
+        );
+        assert!(local.record().passkeys().is_empty());
+        assert!(local.record().removes_key(&passkey_ref(key)));
     }
 
     #[tokio::test]
     async fn a_device_with_a_trusted_passkeys_key_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
+        let local = keyed(dir.path()).await;
         let shared = device();
         local
-            .set_passkey(approve(passkey(*shared.as_bytes())))
+            .key_step(trust_passkey(&local, passkey(*shared.as_bytes())))
             .await
             .unwrap();
         assert!(matches!(
             local.set_device(SetDeviceRequest::Approve { key: shared }).await,
             Err(Error::DeviceIsPasskey(code)) if code == shared.code()
         ));
-        assert_eq!(local.record().devices().count(), 0);
+        assert_eq!(local.record().devices().count(), 1);
     }
 
     #[tokio::test]
     async fn a_passkey_with_an_approved_devices_key_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
+        let local = keyed(dir.path()).await;
         let shared = device();
         local
             .set_device(SetDeviceRequest::Approve { key: shared })
             .await
             .unwrap();
         assert!(matches!(
-            local.set_passkey(approve(passkey(*shared.as_bytes()))).await,
+            local
+                .key_step(trust_passkey(&local, passkey(*shared.as_bytes())))
+                .await,
             Err(Error::PasskeyIsDevice(code)) if code == shared.code()
         ));
         assert!(local.record().passkeys().is_empty());
@@ -924,12 +991,15 @@ mod tests {
     #[tokio::test]
     async fn a_credential_id_another_passkey_holds_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
+        let local = keyed(dir.path()).await;
         let first = passkey_with_credential(*device().as_bytes(), "AQID");
         let second = passkey_with_credential(*device().as_bytes(), "AQID");
-        local.set_passkey(approve(first.clone())).await.unwrap();
+        local
+            .key_step(trust_passkey(&local, first.clone()))
+            .await
+            .unwrap();
         assert!(matches!(
-            local.set_passkey(approve(second)).await,
+            local.key_step(trust_passkey(&local, second)).await,
             Err(Error::CredentialHeld { held }) if held == first.code()
         ));
         assert_eq!(local.record().passkeys().len(), 1);
@@ -938,12 +1008,10 @@ mod tests {
     #[tokio::test]
     async fn a_record_with_passkey_fields_from_a_newer_daemon_still_loads() {
         let dir = tempfile::tempdir().unwrap();
-        let local = participating(dir.path()).await;
+        let local = keyed(dir.path()).await;
         let key = *iroh::SecretKey::generate().public().as_bytes();
         local
-            .clone()
-            .on_local_socket()
-            .set_passkey(approve(passkey(key)))
+            .key_step(trust_passkey(&local, passkey(key)))
             .await
             .unwrap();
         let mut record = serde_json::to_value(&*local.record()).unwrap();
@@ -993,7 +1061,12 @@ mod tests {
                 .map(|trusted| (trusted.passkey.code(), trusted.approved_by))
                 .collect::<Vec<_>>(),
             [
-                (passkey(key).code(), PasskeyApprover::Server),
+                (
+                    passkey(key).code(),
+                    PasskeyApprover::Device {
+                        code: DeviceKey::from(signer().public()).code()
+                    }
+                ),
                 (passkey(key).code(), PasskeyApprover::Unknown),
             ]
         );

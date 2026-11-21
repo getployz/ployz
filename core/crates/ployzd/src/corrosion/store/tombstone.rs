@@ -9,15 +9,14 @@ use serde_json::json;
 use crate::corrosion::Statement;
 
 /// A forgotten Machine's tombstone in the `cluster` table. Its value is the forgotten
-/// Machine's id.
+/// Machine's id. A row that named no identity leaves one keyed `forgotten-id:<id>`
+/// instead, outside the `forgotten:` prefix older daemons' guards read; only SQL writes
+/// and reads that one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::corrosion) enum Tombstone {
     /// Keyed by the Management Identity the forgotten Machine's row named, so the
     /// Machine can learn it was forgotten (#2927).
     Identity(ManagementIdentity),
-    /// Keyed by the id, for a row that named no identity. It is outside the
-    /// `forgotten:` prefix older daemons' guards read, so only a Register clears it.
-    Id(MachineId),
 }
 
 const FORGET_INSERT: &str = "INSERT INTO cluster (key, value) SELECT ";
@@ -26,12 +25,10 @@ const IDENTITY_OF_ROW: &str = "json_extract(info, '$.runtime.management_identity
 impl Tombstone {
     const IDENTITY_PREFIX: &'static str = "forgotten:";
     const ID_PREFIX: &'static str = "forgotten-id:";
-    const CLEAR: &'static str = "DELETE FROM cluster WHERE key = ?";
 
     pub(super) fn key(self) -> String {
         match self {
             Self::Identity(identity) => format!("{}{}", Self::IDENTITY_PREFIX, identity.to_hex()),
-            Self::Id(id) => format!("{}{id}", Self::ID_PREFIX),
         }
     }
 
@@ -71,23 +68,12 @@ impl Tombstone {
         ]
     }
 
-    /// Delete this tombstone.
-    pub(super) fn clear(self) -> Statement {
-        Statement::new(Self::CLEAR, [json!(self.key())])
-    }
-
     /// Whether `query` is one of [`Tombstone::forget`]'s inserts.
     #[cfg(test)]
     pub(in crate::corrosion) fn is_forget(query: &str) -> bool {
         [Self::IDENTITY_PREFIX, Self::ID_PREFIX]
             .into_iter()
             .any(|prefix| query.starts_with(&format!("{FORGET_INSERT}'{prefix}'")))
-    }
-
-    /// Whether `query` is [`Tombstone::clear`]'s delete.
-    #[cfg(test)]
-    pub(in crate::corrosion) fn is_clear(query: &str) -> bool {
-        query == Self::CLEAR
     }
 }
 
@@ -98,28 +84,10 @@ mod tests {
     #[test]
     fn the_keys_keep_their_replicated_spelling() {
         let identity = ManagementIdentity::from_bytes([0xab; 32]);
-        let id = MachineId::parse("b".repeat(32)).unwrap();
         assert_eq!(
             Tombstone::Identity(identity).key(),
             format!("forgotten:{}", "ab".repeat(32))
         );
-        assert_eq!(
-            Tombstone::Id(id).key(),
-            format!("forgotten-id:{}", "b".repeat(32))
-        );
-    }
-
-    #[test]
-    fn the_clear_deletes_by_the_rendered_key() {
-        let id = MachineId::parse("b".repeat(32)).unwrap();
-        assert_eq!(
-            serde_json::to_value(Tombstone::Id(id).clear()).unwrap(),
-            json!({
-                "query": "DELETE FROM cluster WHERE key = ?",
-                "params": [format!("forgotten-id:{}", "b".repeat(32))],
-            })
-        );
-        assert!(Tombstone::is_clear("DELETE FROM cluster WHERE key = ?"));
     }
 
     #[test]

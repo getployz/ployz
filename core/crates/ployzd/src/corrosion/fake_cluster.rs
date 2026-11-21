@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     convert::Infallible,
     hash::{BuildHasher, RandomState},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -31,6 +31,9 @@ struct ClusterKv {
     sealing_public_key: tokio::sync::watch::Sender<Option<String>>,
     sealing_awaits_recovery: Option<String>,
     machines: BTreeMap<String, String>,
+    /// Machine IDs whose row was deleted and not written since: the deletion evidence
+    /// `machines__crsql_pks` keeps.
+    deleted_machines: BTreeSet<String>,
     containers: BTreeMap<String, (String, String)>,
     volumes: BTreeMap<(String, String), String>,
     ingress_routes: BTreeMap<(String, String), String>,
@@ -77,6 +80,7 @@ impl ClusterKv {
             sealing_public_key: tokio::sync::watch::Sender::new(None),
             sealing_awaits_recovery: None,
             machines: BTreeMap::new(),
+            deleted_machines: BTreeSet::new(),
             containers: BTreeMap::new(),
             volumes: BTreeMap::new(),
             ingress_routes: BTreeMap::new(),
@@ -529,6 +533,15 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
         }
         "SELECT body FROM certificates WHERE hostname = ?" => events(&["body"], None::<Vec<Value>>),
         super::store::crsql::VERSION_QUERY => events(&["site_id", "db_version"], Vec::new()),
+        query if query.starts_with("SELECT id FROM machines__crsql_pks WHERE id IN (") => events(
+            &["id"],
+            statement
+                .params
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|id| kv.deleted_machines.contains(*id))
+                .map(|id| vec![json!(id)]),
+        ),
         query => panic!("unexpected query {query}"),
     })
 }
@@ -538,6 +551,15 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
     for statement in &statements {
         match statement.query.as_str() {
             query if query.starts_with("INSERT INTO machines (id, info)") => {
+                let id = text_param(&statement.params, 0);
+                // A Register's insert, like the real one, never writes over a deleted row.
+                if query.contains("machines__crsql_pks")
+                    && !kv.machines.contains_key(id)
+                    && kv.deleted_machines.contains(id)
+                {
+                    continue;
+                }
+                kv.deleted_machines.remove(id);
                 kv.machines.insert(
                     text_param(&statement.params, 0).to_owned(),
                     text_param(&statement.params, 1).to_owned(),
@@ -648,8 +670,6 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             {
                 set_leaving(&mut kv, text_param(&statement.params, 0), false);
             }
-            // This fake keeps no tombstones, so a Register has none to take back.
-            query if Tombstone::is_clear(query) => {}
             "DELETE FROM volumes WHERE machine_id = ?" => {
                 let machine_id = text_param(&statement.params, 0);
                 kv.volumes.retain(|(owner, _), _| owner != machine_id);
@@ -661,11 +681,9 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
             }
             "DELETE FROM certificates WHERE hostname = ?" => {}
             "DELETE FROM machines WHERE id = ?" => {
-                if kv
-                    .machines
-                    .remove(text_param(&statement.params, 0))
-                    .is_some()
-                {
+                let id = text_param(&statement.params, 0);
+                if kv.machines.remove(id).is_some() {
+                    kv.deleted_machines.insert(id.to_owned());
                     let _ = kv.machine_changes.send(());
                 }
             }

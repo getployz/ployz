@@ -113,21 +113,17 @@ impl MachinePublicationGuard<'_> {
     /// forget, and nothing tells the caller which: the returned row isn't read back, so
     /// a kept row is not the one returned.
     ///
-    /// A Register is an explicit add, so it takes back the forget of a row that had no
-    /// Management Identity: its `forgotten-id:` tombstone goes in the same transaction,
-    /// and a rerun of a failed add keeps its Server (#3342). A row a Register wrote names
-    /// no identity, so forgetting it leaves that tombstone. A row a Register kept carries
-    /// the mark, which outside tests only a publish of [`publishable_machine`]
-    /// writes, and that row names a Management Identity. So forgetting a kept row leaves
-    /// `forgotten:<identity>`, which the #2927 fence reads. A tombstone keyed by a
-    /// Management Identity stays, so a joined Server that was forgotten is still not
-    /// listed again (#3613).
+    /// The Entry refuses a Register of a Server it holds removed, or whose row the store
+    /// shows deleted, before it gets here. The write checks again, so a delete that reaches
+    /// this store in between still wins: a Register never writes a row this store deleted,
+    /// and never takes back a forget. A row a Register kept carries the mark, which outside
+    /// tests only a publish of [`publishable_machine`] writes, and that row names a
+    /// Management Identity. So forgetting a kept row leaves `forgotten:<identity>`, which
+    /// the #2927 fence reads, and a joined Server that was forgotten is still not listed
+    /// again (#3613).
     pub(crate) async fn register(&self, machine: Machine) -> Result<Machine, Error> {
         let row = RegisterRow::new(machine);
-        self.store
-            .api
-            .execute([Tombstone::Id(row.0.id).clear(), registration_upsert(&row)?])
-            .await?;
+        self.store.api.execute([registration_upsert(&row)?]).await?;
         Ok(row.0)
     }
 
@@ -314,7 +310,9 @@ impl RegisterRow {
 }
 
 /// Write a Register's row unless its id is forgotten and not listed, as
-/// [`machine_upsert`] does. An existing row is kept only when this Entry's copy
+/// [`machine_upsert`] does, or this store held the row and deleted it: cr-sqlite keeps a
+/// deleted row's key, and an insert over it would outlive the delete on every replica. An
+/// existing row is kept only when this Entry's copy
 /// carries the `self_published` mark and names the Register's WireGuard key. Every
 /// other row is replaced: a Register's row, a marked row under another key, and a row
 /// whose whole body a daemon without the mark wrote, including one that names a
@@ -328,12 +326,13 @@ fn registration_upsert(row: &RegisterRow) -> Result<Statement, Error> {
         format!(
             "INSERT INTO machines (id, info) SELECT ?1, ?2 \
              WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-             OR ({}) \
+             OR (({}) AND {}) \
              ON CONFLICT (id) DO UPDATE SET info = excluded.info \
              WHERE json_extract(machines.info, '$.self_published') IS NULL \
                 OR json_extract(machines.info, '$.public_key') \
                    IS NOT json_extract(excluded.info, '$.public_key')",
             Tombstone::not_forgotten_sql("?1"),
+            crsql::never_held_sql("?1"),
         ),
         [json!(machine.id), json!(serde_json::to_string(machine)?)],
     ))
@@ -481,6 +480,13 @@ impl ReplicatedStore {
 
     pub async fn forget_machine(&self, machine_id: &MachineId) -> Result<(), Error> {
         self.machine_publication().await.forget(machine_id).await
+    }
+
+    /// Apply another Member's forget of `machine_id` as gossip does: its writes land with
+    /// no regard for this Machine's publication guard.
+    #[cfg(test)]
+    pub(crate) async fn receive_forget(&self, machine_id: &MachineId) -> Result<(), Error> {
+        self.api.execute(forget_statements(machine_id)).await
     }
 
     /// What this Machine knows about `identity`: Listed when a Machine row carries
@@ -766,6 +772,9 @@ impl ReplicatedStore {
             RowPolicy::FailRead,
             |id, encoded| decode_machine(id.as_str(), encoded),
         )?;
+        if let Some(owner) = &self.authority {
+            self.record_removed(owner, &snapshot.observations).await?;
+        }
         snapshot
             .observations
             .retain(|machine| self.accepts_machine(machine));
@@ -786,6 +795,31 @@ impl ReplicatedStore {
             }
         }
         Ok(snapshot)
+    }
+
+    /// Record as removed each trusted Member whose row this store shows deleted. A Member
+    /// merely missing from `rows`, as on a joiner before catch-up, stays trusted.
+    async fn record_removed(&self, owner: &RecordOwner, rows: &[Machine]) -> Result<(), Error> {
+        let listed = rows.iter().map(|machine| machine.id).collect();
+        let unlisted = owner.record().unlisted_members(&listed);
+        let removed: Vec<_> = self
+            .removed_machines(&unlisted)
+            .await?
+            .into_iter()
+            .map(|id| crate::machine::RemovedMember {
+                id,
+                public_key: None,
+            })
+            .collect();
+        if removed.is_empty() {
+            return Ok(());
+        }
+        owner
+            .mutate(move |store| store.remove_members(&removed))
+            .await
+            .map_err(std::io::Error::other)?
+            .map_err(std::io::Error::other)?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1741,8 +1775,9 @@ mod statement_tests {
             json!({
                 "query": "INSERT INTO machines (id, info) SELECT ?1, ?2 \
                           WHERE EXISTS (SELECT 1 FROM machines WHERE id = ?1) \
-                          OR (NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
+                          OR ((NOT EXISTS (SELECT 1 FROM cluster WHERE key LIKE 'forgotten:%' AND value = ?1) \
                           AND NOT EXISTS (SELECT 1 FROM cluster WHERE key = 'forgotten-id:' || ?1)) \
+                          AND NOT EXISTS (SELECT 1 FROM machines__crsql_pks WHERE id = ?1)) \
                           ON CONFLICT (id) DO UPDATE SET info = excluded.info \
                           WHERE json_extract(machines.info, '$.self_published') IS NULL \
                           OR json_extract(machines.info, '$.public_key') \

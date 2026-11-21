@@ -991,6 +991,7 @@ mod tests {
                 issued_at,
                 expires_at: issued_at.plus(600_000),
                 signer: signer.public().into(),
+                proposal: None,
             };
             Signed::sign(&body, &signer).unwrap()
         }

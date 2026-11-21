@@ -12,14 +12,14 @@ use ployz_core::{
     ClientKey, DeviceCode, DeviceKey, EnrollAs, EnrollRequest, LocalMachinePhase, Machine,
     MachineId, MachineNow, MachineUpdate, MachineUpdateError, ManagementClientLabel,
     PREPARE_DIR_NAME, PinnedAddresses, PublicIpUpdate, RecoverySeed, Registered, SelectedEndpoint,
-    apply_machine_update,
+    apply_machine_update, authority::KeyRef,
 };
 use reqwest::Url;
 use thiserror::Error;
 
 use super::{
     FoundingCluster, LiveSlot, LocalMachineBody, LocalMachineRecord, ManagementClientSlot,
-    ParticipationOrigin,
+    ParticipationOrigin, RemovedMember,
 };
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
@@ -350,19 +350,22 @@ impl LocalMachineStore {
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
     ) -> Result<EnrollPlan, StoreError> {
-        let (plan, installation) = self.plan_enrollment(request, recovery)?;
+        let now = ployz_core::authority::Timestamp::now();
+        let (plan, installation) = self.plan_enrollment(request, recovery, now)?;
         if matches!(plan, EnrollPlan::Fresh) {
-            self.install(installation)?;
+            self.install(installation, now)?;
         }
         Ok(plan)
     }
 
     /// The Installation this request would persist, and whether this Machine
-    /// takes it fresh, already holds it, or holds another enrollment.
+    /// takes it fresh, already holds it, or holds another enrollment. `now` is this
+    /// Machine's floored clock, which a Member's join approval must be open at.
     pub(crate) fn plan_enrollment(
         &self,
         request: EnrollRequest,
         recovery: Option<RecoverySeed>,
+        now: ployz_core::authority::Timestamp,
     ) -> Result<(EnrollPlan, Installation), StoreError> {
         let enrollment = request.clone();
         if self.record.enrollment.as_ref() == Some(&request) {
@@ -425,7 +428,7 @@ impl LocalMachineStore {
             EnrollAs::Member { .. } if recovery.is_some() => {
                 return Err(StoreError::RecoveryWithoutFounding);
             }
-            EnrollAs::Member { registration, pin } => self.member(registration, pin)?,
+            EnrollAs::Member { registration, pin } => self.member(registration, pin, now)?,
         };
         let wanted = body.machine().expect("an enrollment owns its Machine");
         let plan = plan_enroll(
@@ -493,6 +496,7 @@ impl LocalMachineStore {
         &self,
         registration: Registered,
         pin: Option<ployz_core::JoinPin>,
+        now: ployz_core::authority::Timestamp,
     ) -> Result<Enrolled, StoreError> {
         let Registered {
             assigned_machine: mut machine,
@@ -536,7 +540,7 @@ impl LocalMachineStore {
                 pin.as_ref().map(|pin| pin.devices.as_slice()),
                 &machine,
                 sealing_key.as_ref().map(SealingKey::public_key),
-                ployz_core::authority::Timestamp::now(),
+                now,
             )
             .map_err(StoreError::JoinRefused)?;
         visible_peers = body
@@ -571,8 +575,15 @@ impl LocalMachineStore {
             if !held {
                 approved_passkeys.push(ployz_core::authority::TrustedPasskey {
                     passkey: passkey.clone(),
-                    approved_by: ployz_core::authority::PasskeyApprover::Device {
-                        code: body.signer.code(),
+                    approved_by: match body.signer {
+                        ployz_core::authority::SignerKey::Device(signer) => {
+                            ployz_core::authority::PasskeyApprover::Device {
+                                code: signer.code(),
+                            }
+                        }
+                        ployz_core::authority::SignerKey::Passkey(_) => {
+                            ployz_core::authority::PasskeyApprover::Unknown
+                        }
                     },
                 });
             }
@@ -593,8 +604,26 @@ impl LocalMachineStore {
         ))
     }
 
-    pub(crate) fn install(&mut self, installation: Installation) -> Result<(), StoreError> {
+    /// Persist a fresh enrollment. A join's approval, and the bundle it rides in, must
+    /// still be open at `now`, this Machine's floored clock, so work done since the plan
+    /// can't carry an approval past its window.
+    pub(crate) fn install(
+        &mut self,
+        installation: Installation,
+        now: ployz_core::authority::Timestamp,
+    ) -> Result<(), StoreError> {
         self.require_uninitialized()?;
+        if let LocalMachineBody::Joining { machine, .. } = &installation.body {
+            let approval = machine
+                .join_approval
+                .as_ref()
+                .ok_or(StoreError::JoinRefused(
+                    ployz_core::authority::AuthorityRefusal::Unsigned {
+                        purpose: ployz_core::authority::Purpose::Join,
+                    },
+                ))?;
+            ployz_core::authority::join::windows(approval, now).map_err(StoreError::JoinRefused)?;
+        }
         self.set_sealing_key(installation.sealing_key.as_ref())?;
         self.commit(|installed| {
             installed.body = installation.body;
@@ -811,8 +840,12 @@ impl LocalMachineStore {
     /// write. Returns `false`, without a write, when the slot already holds exactly it.
     ///
     /// # Errors
-    /// Returns a storage error if the updated record cannot be saved atomically.
+    /// Returns [`StoreError::KeyRemoved`] for a key this Machine removed, and a storage
+    /// error if the updated record cannot be saved atomically.
     pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
+        if self.record.removes_key(&KeyRef::Device { key }) {
+            return Err(StoreError::KeyRemoved(KeyRef::Device { key }));
+        }
         let label = key.label();
         let slot = ManagementClientSlot::Live(LiveSlot::Active {
             accepted: ClientKey::from(key),
@@ -825,30 +858,82 @@ impl LocalMachineStore {
         Ok(!held)
     }
 
-    /// Clear the Device slot `code` names. Returns `false` when it holds no live key.
+    /// Remove the key `code` names, as [`Self::remove_key`] does: the Device its slot holds,
+    /// or the trusted passkey with that code. Returns whether either held it.
     ///
     /// # Errors
-    /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn remove_device(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
-        let label = code.label();
-        let live = self
+    /// Returns [`StoreError::AmbiguousCode`] when `code` names more than one key here, and
+    /// otherwise as [`Self::remove_key`].
+    pub fn remove_by_code(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+        let device = self
             .record
             .management_clients
-            .get(&label)
-            .is_some_and(|slot| slot.live().is_some());
-        self.clear_management_client(&label)?;
-        Ok(live)
+            .get(&code.label())
+            .and_then(|slot| slot.accepted())
+            .map(|accepted| KeyRef::Device {
+                key: DeviceKey::from_bytes(*accepted.as_bytes()),
+            });
+        let passkeys = self
+            .record
+            .passkeys
+            .iter()
+            .filter(|held| held.passkey.code() == code)
+            .map(|held| KeyRef::Passkey {
+                key: held.passkey.public_key,
+            });
+        let named: Vec<KeyRef> = device.into_iter().chain(passkeys).collect();
+        match named.as_slice() {
+            [] => Ok(false),
+            [key] => self.remove_key(*key),
+            _ => Err(StoreError::AmbiguousCode(code)),
+        }
     }
 
-    /// Stop trusting the passkey `code` names. Returns `false` when none is trusted.
+    /// Stop trusting `key` for good, in one write: drop it from the trusted keys, clearing a
+    /// Device's slot, and add it to the removed keys, so no later approval trusts it here
+    /// again. A key this Machine never trusted is still marked removed. Returns whether it
+    /// was trusted.
     ///
     /// # Errors
-    /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn remove_passkey(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+    /// Returns [`StoreError::LastKey`] when `key` is the only key this Machine trusts, and a
+    /// storage error if the updated record cannot be saved atomically.
+    pub fn remove_key(&mut self, key: KeyRef) -> Result<bool, StoreError> {
+        let trusted = self.record.trusted_keys();
+        let held = match key {
+            KeyRef::Device { key } => trusted.devices.contains(&key),
+            KeyRef::Passkey { key } => trusted
+                .passkeys
+                .iter()
+                .any(|held| held.passkey.public_key == key),
+        };
+        if held && trusted.devices.len() + trusted.passkeys.len() == 1 {
+            return Err(StoreError::LastKey(key.code()));
+        }
         self.commit_if_changed(|record| {
-            let trusted = record.passkeys.len();
-            record.passkeys.retain(|held| held.passkey.code() != code);
-            Ok(record.passkeys.len() != trusted)
+            if !record.removed_keys.contains(&key) {
+                record.removed_keys.push(key);
+            }
+            match key {
+                KeyRef::Device { key } => {
+                    let label = key.label();
+                    if let Some(was) = record
+                        .management_clients
+                        .get(&label)
+                        .and_then(|slot| slot.live())
+                        .filter(|live| live.accepted() == Some(ClientKey::from(key)))
+                    {
+                        record
+                            .management_clients
+                            .insert(label, ManagementClientSlot::Cleared { was });
+                    }
+                }
+                KeyRef::Passkey { key } => {
+                    record
+                        .passkeys
+                        .retain(|held| held.passkey.public_key != key);
+                }
+            }
+            Ok(held)
         })
     }
 
@@ -856,12 +941,19 @@ impl LocalMachineStore {
     /// is already trusted, which keeps its first approval.
     ///
     /// # Errors
-    /// Returns a storage error if the updated record cannot be saved atomically.
+    /// Returns [`StoreError::KeyRemoved`] for a passkey this Machine removed, and a storage
+    /// error if the updated record cannot be saved atomically.
     pub fn approve_passkey(
         &mut self,
         trusted: ployz_core::authority::TrustedPasskey,
     ) -> Result<bool, StoreError> {
         let code = trusted.passkey.code();
+        let removed = KeyRef::Passkey {
+            key: trusted.passkey.public_key,
+        };
+        if self.record.removes_key(&removed) {
+            return Err(StoreError::KeyRemoved(removed));
+        }
         self.commit_if_changed(|record| {
             let held = record
                 .passkeys
@@ -871,6 +963,37 @@ impl LocalMachineStore {
                 record.passkeys.push(trusted);
             }
             Ok(!held)
+        })
+    }
+
+    /// Remember `removed` as Members this Machine no longer admits, and stop trusting them,
+    /// in one write. A Member's WireGuard key is filled in from its trusted entry when the
+    /// caller knows only its ID. Nothing is ever taken back out.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub(crate) fn remove_members(&mut self, removed: &[RemovedMember]) -> Result<(), StoreError> {
+        self.commit_if_changed(|record| {
+            for member in removed {
+                let public_key = member.public_key.or_else(|| {
+                    record
+                        .trusted_machines
+                        .iter()
+                        .find(|trusted| trusted.id == member.id)
+                        .map(|trusted| trusted.public_key)
+                });
+                let member = RemovedMember {
+                    id: member.id,
+                    public_key,
+                };
+                if !record.removed_members.contains(&member) {
+                    record.removed_members.push(member);
+                }
+                record
+                    .trusted_machines
+                    .retain(|trusted| trusted.id != member.id);
+            }
+            Ok(())
         })
     }
 
@@ -1085,10 +1208,29 @@ fn display_data_directory(path: &Path) -> String {
     text
 }
 
+fn removed_key_text(key: &KeyRef) -> String {
+    match key {
+        KeyRef::Device { key } => format!(
+            "Device {} was removed from this Server for good. To trust that computer again, delete its device.key and run: ployz device approve --this-device --connect ssh://root@HOST",
+            key.code()
+        ),
+        KeyRef::Passkey { key } => format!(
+            "Passkey {} was removed from this Server for good. Add a new passkey instead.",
+            key.code()
+        ),
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("join approval refused: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
+    #[error("{}", removed_key_text(.0))]
+    KeyRemoved(KeyRef),
+    #[error("Key {0} is the last key this Server trusts. Approve another key first.")]
+    LastKey(DeviceCode),
+    #[error("Code {0} names more than one key on this Server. Remove it by its full key.")]
+    AmbiguousCode(DeviceCode),
     #[error("local Machine record I/O failed")]
     Io(#[from] io::Error),
     #[error("local Machine record JSON is invalid")]

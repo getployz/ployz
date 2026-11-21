@@ -75,7 +75,8 @@ impl ApprovingCluster {
             bootstrap: vec![(&self.admitting).into()],
             issued_at,
             expires_at: issued_at.plus(60_000),
-            signer: self.device(),
+            signer: self.device().into(),
+            proposal: None,
         }
     }
 

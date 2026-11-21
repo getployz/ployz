@@ -103,19 +103,11 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
-        "SetPasskey",
-        "set_passkey",
-        "ployz.machine.set-passkey.v1",
+        "KeyStep",
+        "key_step",
+        "ployz.machine.key-step.v1",
         "Always",
-        "Full",
-        "Unary",
-    ),
-    (
-        "RemoveTrustedKey",
-        "remove_trusted_key",
-        "ployz.machine.remove-trusted-key.v1",
-        "Always",
-        "Full",
+        "Operator",
         "Unary",
     ),
     (
@@ -615,7 +607,7 @@ fn only_the_routes_that_change_a_slot_a_device_or_a_trusted_key_may_revoke_their
         [
             "ployz.machine.set-management-client.v1",
             "ployz.machine.set-device.v1",
-            "ployz.machine.remove-trusted-key.v1",
+            "ployz.machine.key-step.v1",
         ]
     );
     assert!(!revokes_caller("/other.Service/SetDevice"));

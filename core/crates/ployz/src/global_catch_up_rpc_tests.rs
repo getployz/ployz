@@ -105,6 +105,8 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                                     assert_eq!(inspect.telemetry, InspectTelemetry::BridgeCapacity);
                                 }
                                 RpcResponse::from(MachineDetails {
+                                    devices: Vec::new(),
+                                    removed_keys: Vec::new(),
                                     id: target.id,
                                     phase: LocalMachinePhase::Participating,
                                     public_key: target.public_key,
@@ -239,6 +241,8 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
                                 "capacity"
                             });
                             RpcResponse::from(MachineDetails {
+                                devices: Vec::new(),
+                                removed_keys: Vec::new(),
                                 id: target.id,
                                 phase: LocalMachinePhase::Participating,
                                 public_key: target.public_key,
@@ -451,6 +455,8 @@ async fn top_level_catch_up_uses_fresh_target_eligibility_and_reuses_hidden_full
                             RpcResponse::from(ContainerList { containers })
                         }
                         RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
+                            devices: Vec::new(),
+                            removed_keys: Vec::new(),
                             id: target.id,
                             public_key: target.public_key,
                             machine: Some(target),
@@ -612,6 +618,8 @@ async fn an_ineligible_target_retires_its_own_in_copy() {
                         RpcRequestBody::Inspect(_) => {
                             recorded.lock().unwrap().push("inspect");
                             RpcResponse::from(MachineDetails {
+                                devices: Vec::new(),
+                                removed_keys: Vec::new(),
                                 id: target.id,
                                 public_key: target.public_key,
                                 machine: Some(target),
@@ -885,6 +893,8 @@ async fn catch_up_over_matching_copy(rotation: CopyRotation) -> OverMatching {
                         })
                     }
                     RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
+                        devices: Vec::new(),
+                        removed_keys: Vec::new(),
                         id: target.id,
                         public_key: target.public_key,
                         machine: Some(target),
@@ -1089,6 +1099,8 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
                             RpcResponse::from(RpcError::conflict("storage inspection failed"))
                         }
                         RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
+                            devices: Vec::new(),
+                            removed_keys: Vec::new(),
                             id: target.id,
                             phase: LocalMachinePhase::Participating,
                             public_key: target.public_key,
@@ -1264,6 +1276,8 @@ async fn catch_up_beside_doors(role: bool) -> BesideDoors {
                         },
                     }),
                     RpcRequestBody::Inspect(_) => RpcResponse::from(MachineDetails {
+                        devices: Vec::new(),
+                        removed_keys: Vec::new(),
                         id: target.id,
                         public_key: target.public_key,
                         machine: Some(target.clone()),
