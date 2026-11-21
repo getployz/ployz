@@ -1,0 +1,3 @@
+disallowed-methods = [
+    { path = "bollard::Docker::start_container", reason = "start through crate::docker::holder::start, which refuses a second running holder of a Volume" },
+]

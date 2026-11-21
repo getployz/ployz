@@ -89,6 +89,9 @@ pub struct FloorTurn<'a> {
 }
 
 impl MachineSpecStore {
+    /// The store's file name in the daemon's data directory.
+    pub const FILE: &str = "machine.db";
+
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
         let init_path = path.clone();

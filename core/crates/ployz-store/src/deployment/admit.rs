@@ -3,6 +3,8 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
+use std::collections::BTreeSet;
+
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -324,7 +326,7 @@ fn retry_review<'a>(
 /// The gate every Deploy passes, the user's or the Store's own: a Server to run
 /// it, the Cluster Domain its generated domains expand under, and no hostname
 /// another Namespace publishes. A secret without a value never blocks it: the
-/// Deployment leaves it out and warns.
+/// Deployment leaves it out and warns. Each also passes [`refuse_shared_writes`].
 pub(crate) fn gate(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -335,6 +337,87 @@ pub(crate) fn gate(
     trusted.runnable()?;
     needs_cluster_domain(environment, intent, cluster_domain)?;
     domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
+}
+
+/// Where a Deploy's configuration comes from, which decides how a refusal reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Shipping {
+    /// Working State, saved as a new revision now.
+    Working,
+    /// A revision saved earlier, which no edit changes: a retry, a rollback, a
+    /// redeploy or the Store's own Deploy.
+    Saved,
+}
+
+/// Refuse to ship a Volume with Shared Writes on that a Service of `intent` the
+/// runner gets mounts, as `hands` says: they are paused, and a Server runs one
+/// Container on a Managed volume at a time. Sending nothing beats a Deploy whose
+/// second writer each Server refuses partway. A saved version can't change, so once
+/// Working State has them off the way on is a new Deploy.
+pub(crate) fn refuse_shared_writes(
+    environment: &scope::Environment,
+    (intent, hands): (
+        &SavedEnvironmentIntent,
+        impl Fn(&SavedServiceIntent) -> bool,
+    ),
+    shipping: Shipping,
+) -> Result<(), RpcError> {
+    let mounted: BTreeSet<&str> = intent
+        .services
+        .iter()
+        .filter(|service| hands(service))
+        .flat_map(|service| &service.volume_attachments)
+        .map(|mount| mount.volume_resource_id.as_str())
+        .collect();
+    let shared: Vec<&str> = intent
+        .volumes
+        .iter()
+        .filter(|volume| volume.shared_writes && mounted.contains(volume.resource_id.as_str()))
+        .map(|volume| volume.name.as_str())
+        .collect();
+    let [first, ..] = shared.as_slice() else {
+        return Ok(());
+    };
+    let named = match shared.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => shared.concat(),
+    };
+    let still_on = environment
+        .working
+        .volumes
+        .iter()
+        .find(|volume| volume.shared_writes && shared.contains(&volume.name.as_str()));
+    let (message, next) = match (shipping, still_on) {
+        (Shipping::Working, _) => (
+            format!(
+                "Shared writes are paused for now, and {named} still {} them on; turn them off to deploy",
+                if shared.len() == 1 { "has" } else { "have" }
+            ),
+            None,
+        ),
+        (Shipping::Saved, Some(_)) => (
+            format!(
+                "Shared writes are paused for now, and this older version ships {named} with them on; turn them off, then deploy again"
+            ),
+            None,
+        ),
+        (Shipping::Saved, None) => (
+            format!(
+                "Shared writes are paused for now, and this older version ships {named} with them on; deploy again to ship it with them off"
+            ),
+            Some(FollowUp::Deploy { no_prune: false }),
+        ),
+    };
+    let next = next.unwrap_or_else(|| FollowUp::VolumeStopSharedWrites {
+        volume: still_on
+            .map_or(*first, |volume| volume.name.as_str())
+            .to_owned(),
+        place: Place::of(&environment.summary),
+    });
+    Err(error::conflict(
+        message,
+        next.within(json!({ "volumes": shared })),
+    ))
 }
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain
@@ -425,6 +508,33 @@ fn deploy(
         (cluster_domain, &namespace),
         trusted,
     )?;
+    let landing = deployment::Landing::of(&review.head);
+    // A narrowed one freezes now, so only the Services it hands the runner decide
+    // Shared Writes before anything asks for approval. A full one hands every one.
+    let narrowed = match admit.services.is_empty() {
+        true => None,
+        false => Some(deployment::freeze(
+            id,
+            &who.organization,
+            &saved_intent,
+            &landing,
+            deployment::Scope::Narrow {
+                services: &admit.services,
+                retire: &[],
+                losses: &[],
+                every_saved: false,
+            },
+            namespace.clone(),
+            cluster_domain,
+        )?),
+    };
+    refuse_shared_writes(
+        &environment,
+        (&saved_intent, |service: &SavedServiceIntent| {
+            narrowed.as_ref().is_none_or(|frozen| frozen.hands(service))
+        }),
+        Shipping::Working,
+    )?;
     let losses = review::destructive(
         tx,
         who,
@@ -469,33 +579,25 @@ fn deploy(
         review.saved.as_ref(),
         (admit.message.as_deref(), &losses),
     )?;
-    let landing = deployment::Landing::of(&review.head);
-    let retire = match admit.services.is_empty() {
-        true => deployment::dropped(tx, id, &saved_intent, &landing)?,
-        false => Vec::new(),
+    let mut frozen = match narrowed {
+        Some(frozen) => frozen,
+        None => {
+            let retire = deployment::dropped(tx, id, &saved_intent, &landing)?;
+            deployment::freeze(
+                id,
+                &who.organization,
+                &saved_intent,
+                &landing,
+                deployment::Scope::All {
+                    losses: &losses,
+                    retire: &retire,
+                    prune: prunes,
+                },
+                namespace,
+                cluster_domain,
+            )?
+        }
     };
-    let scope = match admit.services.is_empty() {
-        true => deployment::Scope::All {
-            losses: &losses,
-            retire: &retire,
-            prune: prunes,
-        },
-        false => deployment::Scope::Narrow {
-            services: &admit.services,
-            retire: &[],
-            losses: &[],
-            every_saved: false,
-        },
-    };
-    let mut frozen = deployment::freeze(
-        id,
-        &who.organization,
-        &saved_intent,
-        &landing,
-        scope,
-        namespace,
-        cluster_domain,
-    )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     // Only Cloud's authentication names an uploader, never the caller.
     let upload = admit.upload.clone().map(|upload| UploadedSource {
@@ -653,6 +755,7 @@ fn reapply(
         (cluster_domain, &namespace),
         trusted,
     )?;
+    refuse_shared_writes(&environment, (&shipping, |_: &_| true), Shipping::Saved)?;
     frozen.credentials = registry::freeze(tx, id, &saved, &frozen)?;
     let summary = deployment::admit(
         tx,

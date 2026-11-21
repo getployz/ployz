@@ -999,6 +999,12 @@ impl Frozen {
         self.nodes.iter().any(|node| node.id() == id)
     }
 
+    /// Whether this Deployment hands the runner `service`: every one for a full
+    /// Deployment, else a named one, one of a Saved change it ships, or one they reference.
+    pub(crate) fn hands(&self, service: &SavedServiceIntent) -> bool {
+        self.full || self.shipped.contains(&service.config.private_dns)
+    }
+
     /// Whether this Deployment ships Service `name`, named or referenced.
     pub(crate) fn ships(&self, name: &ServiceName) -> bool {
         self.nodes

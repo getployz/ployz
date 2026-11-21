@@ -272,7 +272,8 @@ impl Daemon {
         let containers = match config.containers {
             ContainerMode::Absent => None,
             ContainerMode::Auto => {
-                let specs = MachineSpecStore::open(config.data_dir.join("machine.db")).await?;
+                let specs =
+                    MachineSpecStore::open(config.data_dir.join(MachineSpecStore::FILE)).await?;
                 match LocalDocker::connect() {
                     Ok(docker) => Some(
                         ContainerRuntime::new(docker, specs)

@@ -1070,6 +1070,13 @@ pub(crate) fn auto_admit(
         namespace,
         cluster_domain,
     )?;
+    crate::deployment::admit::refuse_shared_writes(
+        environment,
+        (&saved.intent, |service: &SavedServiceIntent| {
+            frozen.hands(service)
+        }),
+        crate::deployment::admit::Shipping::Saved,
+    )?;
     frozen.credentials = registry::freeze(tx, id, &saved.intent, &frozen)?;
     let pins: BTreeMap<ServiceName, CommitSha> = pins
         .iter()
