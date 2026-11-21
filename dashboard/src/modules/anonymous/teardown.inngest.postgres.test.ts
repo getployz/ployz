@@ -71,7 +71,7 @@ const seeded = Effect.fn(function* (expiresAt: Date, has: { project?: boolean; s
   if (has.server) {
     yield* enrollStoreServer(ORGANIZATION);
     yield* drizzle.update(organizationPairing).set({ founderMachineId: FOUNDER as MachineId });
-    yield* drizzle.insert(observeIngestCursor).values({ organizationId: ORGANIZATION, machineId: machineId("0"), stream: "requests", seq: 1n });
+    yield* drizzle.insert(observeIngestCursor).values({ organizationId: ORGANIZATION, machineId: machineId("0"), stream: "salts", seq: 1n });
     yield* drizzle.insert(crashEvent).values({
       organizationId: ORGANIZATION, machineId: machineId("0"), eventId: "c0:1", serviceId: SERVICE, serviceName: "web", replica: "0", containerId: "c0", oom: false, occurredAt: new Date(),
     });
@@ -149,7 +149,7 @@ const rowsNaming = Effect.fn(function* (organizationId: string) {
     where c.table_schema not in ('pg_catalog', 'information_schema') and c.column_name = 'organization_id' and t.table_type = 'BASE TABLE'
     order by c.table_schema, c.table_name`, "objects");
   expect(tables.length).toBeGreaterThan(20);
-  expect(tables.map((table) => table.schema)).toContain("analytics");
+  expect(tables.map((table) => table.name)).toContain("analytics_site");
   expect(tables.some((table) => table.name.startsWith("config_"))).toBe(true);
   const counts: Record<string, number> = {};
   for (const { schema, name } of tables) {
@@ -489,14 +489,14 @@ it.live("leftover rows go with the Organization or not at all: a failed delete k
     yield* seeded(new Date(Date.now() - 60_000));
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`create function fail_cleanup() returns trigger language plpgsql as $$ begin raise exception 'cleanup unavailable'; end $$`);
-    yield* drizzle.execute(sql`create trigger fail_cleanup before delete on analytics.site for each row execute function fail_cleanup()`);
+    yield* drizzle.execute(sql`create trigger fail_cleanup before delete on analytics_site for each row execute function fail_cleanup()`);
     const failed = yield* tearDown(services);
     expect(failed.error).toBeDefined();
     expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
     expect(yield* drizzle.select({ id: analyticsSite.organizationId }).from(analyticsSite)).toEqual([{ id: ORGANIZATION }]);
     expect((yield* sweep(services)).result).toEqual({ organizationIds: [ORGANIZATION] });
 
-    yield* drizzle.execute(sql`drop trigger fail_cleanup on analytics.site`);
+    yield* drizzle.execute(sql`drop trigger fail_cleanup on analytics_site`);
     expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "removed_organization" });
     yield* nothingLeft(ORGANIZATION);
   }).pipe(Effect.provide(services));

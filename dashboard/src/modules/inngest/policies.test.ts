@@ -28,7 +28,7 @@ import { createEnsureClusterSealingKey } from "#/modules/machines/sealing-backfi
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
-import { createWebAnalyticsFunctions } from "#/modules/web-analytics/postgres/web-analytics.inngest";
+import { createWebAnalyticsFunctions } from "#/modules/web-analytics/web-analytics.inngest";
 import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/anonymous/teardown.inngest";
 import { createRetireOldFunctions } from "#/modules/config-store/retire-old.inngest";
 

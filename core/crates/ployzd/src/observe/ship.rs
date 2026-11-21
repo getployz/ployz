@@ -1,20 +1,15 @@
 //! What leaves the Machine for Cloud. Crash events queue in an outbox on disk and the
-//! [`CrashSender`] posts them to the Collector, which carries them to Cloud. Requests queue
-//! in an outbox on disk and one [`Shipper`] pushes them, signed, to Cloud.
+//! [`CrashSender`] posts them to the Collector, which carries them to Cloud. The salts fetch
+//! signs its request with the Machine's Management Identity.
 
 mod crash;
 mod push;
-mod requests;
 mod store;
 
 #[cfg(test)]
 pub(super) use crash::CAP;
 pub(super) use crash::{Outbox, Sender as CrashSender};
-pub(super) use push::unix_seconds;
-pub use push::{Shipper, push_target};
-pub(super) use requests::RequestOutbox;
-#[cfg(test)]
-pub(super) use requests::dir_has;
+pub use push::push_target;
 
 #[cfg(test)]
 mod fixtures {

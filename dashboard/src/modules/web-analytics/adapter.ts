@@ -1,20 +1,22 @@
 import { Clock, Effect } from "effect";
 import { Validation } from "#/server/public-error";
 import * as compute from "./compute";
-import { isHourStart, retentionFloor } from "./local-time";
+import { isHourStart, retentionCutoff, retentionFloor } from "./local-time";
 import type { FilterKey, Interval, Query, Range, Site } from "./model";
-import * as routes from "./postgres/routes";
-import * as store from "./postgres/store";
+import * as store from "./requests/figures";
+import * as routes from "./requests/routes";
 
 export * from "./model";
 export type { Bucket, EntryResult, Overview } from "./compute";
-export type { RequestSample, RouteRow, RouteStatus, StatusBucket } from "./postgres/routes";
+export type { RequestSample, RouteRow, RouteStatus, StatusBucket } from "./requests/routes";
 
 /** Every answer names the range it covers; `clamped` says retention cut the asked-for start. */
 export type Answered = { readonly range: Range; readonly clamped: boolean };
 
-const storeQuery = (q: Query, range: Range): store.StoreQuery =>
-  ({ environmentId: q.site.environmentId, timezone: q.site.timezone, range, filters: q.filters });
+const scope = ({ site }: Query) => ({ organizationId: site.organizationId, namespaces: site.namespaces, timezone: site.timezone });
+
+const storeQuery = (q: Query, range: Range): store.FigureQuery =>
+  ({ ...scope(q), range, filters: q.filters, goals: q.goals ?? [] });
 
 const resolve = Effect.fn("WebAnalytics.resolve")(function* (q: Query) {
   const { timezone } = q.site;
@@ -27,13 +29,13 @@ const resolve = Effect.fn("WebAnalytics.resolve")(function* (q: Query) {
   const floor = retentionFloor(timezone, yield* Clock.currentTimeMillis);
   const start = q.range.start < floor ? new Date(Math.min(floor.getTime(), q.range.end.getTime())) : q.range.start;
   const range: Range = { start, end: q.range.end };
-  return { range, clamped: start.getTime() !== q.range.start.getTime(), store: storeQuery(q, range) };
+  return { range, clamped: start.getTime() !== q.range.start.getTime() };
 });
 
 /** Every figure of one range the Web view shows, with a breakdown per dim; one sessionization serves them all. */
 export const figures = Effect.fn("WebAnalytics.figures")(function* <Dim extends FilterKey>(q: Query, interval: Interval, dims: ReadonlyArray<Dim>) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  const rows = yield* store.figures(sq, interval, dims);
+  const { range, clamped } = yield* resolve(q);
+  const rows = yield* store.figures(storeQuery(q, range), interval, dims);
   const values = new Map(dims.map((dim) => [dim, compute.breakdown(rows.values.get(dim) ?? [], q.limit)]));
   return {
     range,
@@ -49,13 +51,25 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* <Dim extends 
 });
 
 export const api = Effect.fn("WebAnalytics.api")(function* (q: Query, service?: string) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  return { range, clamped, ...(yield* routes.api({ ...sq, ...(service !== undefined && { service }) })) };
+  const { range, clamped } = yield* resolve(q);
+  return { range, clamped, ...(yield* routes.api({ ...scope(q), range, ...(service !== undefined && { service }) })) };
 });
 
 export const errors = Effect.fn("WebAnalytics.errors")(function* (q: Query, service?: string) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  return { range, clamped, ...(yield* routes.errors({ ...sq, ...(service !== undefined && { service }) })) };
+  const { range, clamped } = yield* resolve(q);
+  return { range, clamped, ...(yield* routes.errors({ ...scope(q), range, ...(service !== undefined && { service }) })) };
 });
 
-export const request = (site: Site, requestId: string) => routes.request(site.environmentId, requestId);
+export const request = Effect.fn("WebAnalytics.request")(function* (site: Site, requestId: string) {
+  return yield* routes.request({ organizationId: site.organizationId, namespaces: site.namespaces, timezone: site.timezone }, requestId, yield* Clock.currentTimeMillis);
+});
+
+export const seen = Effect.fn("WebAnalytics.seen")(function* (site: Site) {
+  const now = yield* Clock.currentTimeMillis;
+  return yield* store.seenVisitors({
+    organizationId: site.organizationId,
+    namespaces: site.namespaces,
+    timezone: site.timezone,
+    kept: { start: new Date(retentionCutoff(now).getTime()), end: new Date(now + 3_600_000 * 48) },
+  });
+});

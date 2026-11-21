@@ -16,6 +16,7 @@ pub(crate) const CRASH_RECEIVER: &str = "127.0.0.1:4321";
 const CONFIG_MOUNT: &str = "/etc/ployz/config";
 const TOKEN_MOUNT: &str = "/etc/ployz/token";
 const STATE_MOUNT: &str = "/var/lib/otelcol";
+const REQUESTS_MOUNT: &str = super::requests::REQUESTS_MOUNT;
 const LOGS_MOUNT: &str = "/var/lib/docker/containers";
 const DOCKER_SOCKET_MOUNT: &str = "/var/run/docker.sock";
 const HOST_PROC_MOUNT: &str = "/hostfs/proc";
@@ -31,12 +32,18 @@ pub(super) struct Paths {
     pub(super) docker_socket: PathBuf,
     pub(super) proc: PathBuf,
     pub(super) sys: PathBuf,
+    pub(super) requests: PathBuf,
 }
 
 impl Paths {
     pub(super) fn under(machine_root: &Path, data_dir: &Path, docker_root: &Path) -> Self {
-        let run = machine_root.join("run/ployz/collector");
+        let run_dir = machine_root.join("run/ployz");
+        let run = run_dir.join("collector");
+        let access_log = crate::ingress::access_log_path(&run_dir);
         Self {
+            requests: access_log
+                .parent()
+                .map_or_else(|| run_dir.clone(), Path::to_path_buf),
             config: run.join("config"),
             token: run.join("token"),
             state: data_dir.join("collector"),
@@ -61,6 +68,10 @@ impl Paths {
 
     pub(super) fn mask_file(&self) -> PathBuf {
         self.config.join("mask.yaml")
+    }
+
+    pub(super) fn requests_file(&self) -> PathBuf {
+        self.config.join("requests.yaml")
     }
 
     pub(super) fn crash_file(&self) -> PathBuf {
@@ -90,6 +101,7 @@ pub(super) fn body(paths: &Paths, endpoint: &str, docker_gid: u32) -> ContainerC
             format!("--config={CONFIG_MOUNT}/base.yaml"),
             format!("--config={CONFIG_MOUNT}/metrics.yaml"),
             format!("--config={CONFIG_MOUNT}/mask.yaml"),
+            format!("--config={CONFIG_MOUNT}/requests.yaml"),
             format!("--config={CONFIG_MOUNT}/crash.yaml"),
         ]),
         env: Some(vec![
@@ -110,6 +122,7 @@ pub(super) fn body(paths: &Paths, endpoint: &str, docker_gid: u32) -> ContainerC
                 mount(&paths.docker_socket, DOCKER_SOCKET_MOUNT, true),
                 mount(&paths.proc, HOST_PROC_MOUNT, true),
                 mount(&paths.sys, HOST_SYS_MOUNT, true),
+                mount(&paths.requests, REQUESTS_MOUNT, true),
             ]),
             group_add: Some(vec![docker_gid.to_string()]),
             memory: Some(MEMORY_BYTES),

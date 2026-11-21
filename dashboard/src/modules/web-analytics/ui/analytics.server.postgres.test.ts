@@ -5,9 +5,7 @@ import { expect } from "vitest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { setSiteAnalytics } from "#/modules/web-analytics/salts.server";
-import { addDays, localDay } from "#/modules/web-analytics/local-time";
-import { dayOf, ensurePartitions, forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
-import { analyticsGoal, analyticsRequest } from "#/modules/web-analytics/tables";
+import { analyticsGoal } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { holdProduction, hostedPolar } from "#/test/billing";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -20,11 +18,11 @@ const KEPT_GOAL = "00000000-0000-4000-8000-00000000f504";
 const scope = { organizationSlug: "acme", environmentId: PRODUCTION };
 
 /** Acme's production Environment with one goal on `/kept`, on the given plan, with analytics on or off there. A hosted Cloud reads Production from the billing row, so `production` seeds it. */
-const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnabled: boolean }, siteEnabled: boolean, production = false) {
-  forgetPartitions();
+const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnabled: boolean; clickhouse?: boolean }, siteEnabled: boolean, production = false) {
   const services = yield* storeTestCloud({
     ...(plan.polar && { polar: plan.polar }),
-    env: { ANALYTICS_ENABLED: String(plan.analyticsEnabled) },
+    // The gate only asks whether ClickHouse is configured; a view over a site with no Services reads none of it.
+    env: { ANALYTICS_ENABLED: String(plan.analyticsEnabled), ...(plan.clickhouse !== false && { OBSERVE_CLICKHOUSE_URL: "http://127.0.0.1:1" }) },
   });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
@@ -72,48 +70,6 @@ it.live("every hosted Cloud Organization writes goals, with no subscription and 
   expect(yield* goals()).toEqual(["/kept", "/signup*"]);
 }).pipe(Effect.scoped));
 
-const insertPageviews = (rows: ReadonlyArray<{ ts: Date; visitorId: bigint | null }>) => Effect.gen(function* () {
-  yield* ensurePartitions(rows.map((row) => dayOf(row.ts)));
-  const { drizzle } = yield* Database;
-  yield* drizzle.insert(analyticsRequest).values(rows.map((row, index) => ({
-    ...row, environmentId: PRODUCTION, requestId: `r${index}`, service: "web", host: "shop.test", method: "GET", path: "/",
-    status: 200, durationMs: 1, bytesIn: 0, bytesOut: 0, kind: "pageview" as const, source: "direct",
-  })));
-}).pipe(Effect.orDie);
-
-it.live("a site whose every visit was lost says which days, not that it has no visits, and keeps its goals", () => Effect.gen(function* () {
-  const { provide, actor } = yield* setup({ analyticsEnabled: true }, true);
-  const today = localDay("UTC", Date.now());
-  const day = (offset: number) => addDays("UTC", today, offset);
-  yield* provide(insertPageviews([day(-6), day(-6), day(-4)].map((at) => ({ ts: new Date(`${at}T12:00:00Z`), visitorId: null }))));
-  const view = yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }));
-  expect(view).toMatchObject({ gate: "on", empty: true, lostDays: [day(-6), day(-4)], goals: [{ pathPattern: "/kept", visitors: 0 }] });
-}).pipe(Effect.scoped));
-
-it.live("a day with pageviews no salt could count is partial, and so is today", () => Effect.gen(function* () {
-  const { provide, actor } = yield* setup({ analyticsEnabled: true }, true);
-  const today = localDay("UTC", Date.now());
-  const day = (offset: number) => addDays("UTC", today, offset);
-  yield* provide(insertPageviews([
-    { ts: new Date(`${day(-9)}T12:00:00Z`), visitorId: 1n },
-    { ts: new Date(`${day(-5)}T12:00:00Z`), visitorId: 1n },
-    { ts: new Date(`${day(-5)}T13:00:00Z`), visitorId: null },
-  ]));
-  const view = yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }));
-  if (view.gate !== "on" || view.empty) return expect.unreachable("the site has a pageview");
-  expect(view.partialDays).toEqual([{ day: day(-5), reason: "no-salt" }, { day: today, reason: "today" }]);
-}).pipe(Effect.scoped));
-
-type RequestSeed = { ts: Date; service: string; path: string; status: number; durationMs: number; kind: "other" | "bot" };
-
-const insertRequests = (rows: ReadonlyArray<RequestSeed>) => Effect.gen(function* () {
-  yield* ensurePartitions(rows.map((row) => dayOf(row.ts)));
-  const { drizzle } = yield* Database;
-  yield* drizzle.insert(analyticsRequest).values(rows.map((row, index) => ({
-    ...row, environmentId: PRODUCTION, requestId: `q${index}`, host: "shop.test", method: "GET", bytesIn: 0, bytesOut: 0, source: "direct",
-  })));
-}).pipe(Effect.orDie);
-
 for (const { name, plan, siteEnabled } of refusals) {
   it.live(`the API and Errors views read nothing on ${name}`, () => Effect.gen(function* () {
     const { provide, actor } = yield* setup(plan, siteEnabled);
@@ -126,8 +82,6 @@ for (const { name, plan, siteEnabled } of refusals) {
 
 it.live("a hosted Organization without Production reads none of the three views, though its Environment counts", () => Effect.gen(function* () {
   const { provide, actor } = yield* setup({ polar: hostedPolar, analyticsEnabled: false }, true);
-  const today = localDay("UTC", Date.now());
-  yield* provide(insertPageviews([{ ts: new Date(`${today}T01:00:00Z`), visitorId: 1n }]));
   const views = yield* provide(Effect.all([
     readAnalyticsView(actor, { ...scope, range: "30d" }),
     readApiView(actor, { ...scope, window: "24h" }),
@@ -138,8 +92,6 @@ it.live("a hosted Organization without Production reads none of the three views,
 
 it.live("a hosted Organization with Production reads its views, with ANALYTICS_ENABLED unset", () => Effect.gen(function* () {
   const { provide, actor } = yield* setup({ polar: hostedPolar, analyticsEnabled: false }, true, true);
-  const today = localDay("UTC", Date.now());
-  yield* provide(insertPageviews([{ ts: new Date(`${today}T01:00:00Z`), visitorId: 1n }]));
   const web = yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }));
   const [api, errors] = yield* provide(Effect.all([
     readApiView(actor, { ...scope, window: "24h" }),
@@ -153,23 +105,12 @@ it.live("a hosted Organization with Production still sees analytics off in an En
   expect(yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }))).toEqual({ gate: "site-off" });
 }).pipe(Effect.scoped));
 
-it.live("the Errors view draws every hour of the window, quiet ones as zero, and lists the services that served people", () => Effect.gen(function* () {
-  const { provide, actor } = yield* setup({ analyticsEnabled: true }, true);
-  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000);
-  yield* provide(insertRequests([
-    { ts: ago(90), service: "api", path: "/checkout", status: 502, durationMs: 40, kind: "other" },
-    { ts: ago(150), service: "web", path: "/missing", status: 404, durationMs: 3, kind: "other" },
-    { ts: ago(10), service: "web", path: "/", status: 200, durationMs: 5, kind: "other" },
-    { ts: ago(20), service: "crawler", path: "/", status: 200, durationMs: 5, kind: "bot" },
+it.live("a Cloud with no ClickHouse names what to set up on all three views, before offering to turn the Environment on", () => Effect.gen(function* () {
+  const { provide, actor } = yield* setup({ analyticsEnabled: true, clickhouse: false }, false);
+  const views = yield* provide(Effect.all([
+    readAnalyticsView(actor, { ...scope, range: "30d" }),
+    readApiView(actor, { ...scope, window: "24h" }),
+    readErrorsView(actor, { ...scope, window: "24h" }),
   ]));
-  const errors = yield* provide(readErrorsView(actor, { ...scope, window: "6h" }));
-  if (errors.gate !== "on") return expect.unreachable("analytics is on");
-  expect(errors.hourly).toHaveLength(7);
-  expect(errors.hourly.filter((hour) => hour.clientErrors + hour.serverErrors > 0)).toHaveLength(2);
-  expect(errors.services).toEqual(["api", "web"]);
-  expect(errors.byRoute).toEqual([{ route: "/checkout", status: 502, requests: 1 }, { route: "/missing", status: 404, requests: 1 }]);
-  const api = yield* provide(readApiView(actor, { ...scope, window: "6h", service: "api" }));
-  if (api.gate !== "on") return expect.unreachable("analytics is on");
-  expect(api.routes.map((route) => [route.route, route.requests, route.errors])).toEqual([["/checkout", 1, 1]]);
-  expect(api.slowest.map((sample) => sample.requestId)).toEqual(["q0"]);
+  expect(views).toEqual([{ gate: "no-clickhouse" }, { gate: "no-clickhouse" }, { gate: "no-clickhouse" }]);
 }).pipe(Effect.scoped));

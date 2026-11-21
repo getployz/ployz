@@ -12,16 +12,20 @@ Analytics is part of [Production](../account/organizations.md#billing). An Organ
 sees **Analytics is part of Production** on every **Analytics** page, with a link to **Billing**.
 Ployz keeps counting visits for an Environment that has analytics on, and the numbers show once
 Production is added, as far back as Ployz keeps them. A self-hosted Cloud has no billing: it runs
-analytics once its operator sets `ANALYTICS_ENABLED=true` and restarts it.
+analytics once its operator sets `ANALYTICS_ENABLED=true` and runs the
+[`observe` profile](../self-hosting.md#keep-logs-metrics-and-traces-in-cloud-optional), which keeps
+the requests. Without ClickHouse, **Analytics** says it needs ClickHouse and names what to set up.
 
 ## Turn it on
 
 1. Open the Environment and click **Analytics**.
 2. Click **Turn on**. It takes an owner or admin of the Organization.
 
-Ployz counts from that moment, in your browser's time zone. The zone stays the Environment's for
+Counting starts within five minutes of turning it on, in your browser's time zone. The zone stays the Environment's for
 good, so its days never shift under the numbers. Until the first visit lands, the page says so. If
 visits arrived but none could be counted, it says no visits were counted.
+
+Until you turn it on, the page says **Analytics are off for this site**, with **Turn on** beside it.
 
 ## Read the page
 
@@ -75,8 +79,9 @@ A goal counts the visitors who reached a path. Under **Goals**, give it a name a
 - **What leaves your servers.** Each request row carries its time, service, host, method, path,
   status, duration, size, request id, referring host, language, UTM tags, user agent and the
   daily visitor hash. The visitor's IP address never leaves the server.
-- **Bots are left out.** Cloud checks each request's user agent against a list of known crawlers
-  and tools, and keeps only the name it matched. Bot requests count for no visit and show in neither
-  **API** nor **Errors**. Cloud keeps no user agent.
+- **Bots are left out.** Each time you open a page, Cloud checks the user agents in the range
+  against a list of known crawlers and tools. Bot requests count for no visit and show in neither
+  **API** nor **Errors**. Cloud keeps the user agent with each request for 30 days, so a bot the
+  list learns about later drops out of days already counted.
 - **History.** Cloud keeps request rows 30 days. An older range starts at the oldest day kept, and
   the page says so.
