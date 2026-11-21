@@ -328,7 +328,7 @@ impl Client {
             .map_err(call_to_napi)
     }
 
-    /// Point this Machine's crash pushes at `url`, or stop them with `null`.
+    /// Point this Machine's log shipping, crash events and request pushes at `url`, or stop them with `null`.
     ///
     /// # Errors
     /// Returns `invalid_argument` for an unparseable URL or one the Machine will not

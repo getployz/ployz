@@ -5,7 +5,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
-export const OBSERVE_STREAMS = ["crash", "requests"] as const;
+export const OBSERVE_STREAMS = ["requests"] as const;
 export type ObserveStream = (typeof OBSERVE_STREAMS)[number];
 
 export const observeIngestCursor = pgTable(
@@ -24,7 +24,7 @@ export const observeIngestCursor = pgTable(
       foreignColumns: [organizationMachine.organizationId, organizationMachine.machineId],
       name: "observe_ingest_cursor_machine_fk",
     }).onDelete("cascade"),
-    check("observe_ingest_cursor_stream_check", sql`${table.stream} in ('crash', 'requests')`),
+    check("observe_ingest_cursor_stream_check", sql`${table.stream} in ('requests')`),
   ],
 );
 
@@ -34,7 +34,7 @@ export const crashEvent = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     organizationId: uuid("organization_id").notNull(),
     machineId: text("machine_id").notNull().$type<MachineId>(),
-    seq: bigint("seq", { mode: "bigint" }).notNull(),
+    eventId: text("event_id").notNull(),
     serviceId: text("service_id").notNull(),
     serviceName: text("service_name").notNull(),
     replica: text("replica").notNull(),
@@ -47,7 +47,7 @@ export const crashEvent = pgTable(
     mailedAt: timestamptz("mailed_at"),
   },
   (table) => [
-    uniqueIndex("crash_event_machine_seq_idx").on(table.organizationId, table.machineId, table.seq),
+    uniqueIndex("crash_event_machine_event_idx").on(table.organizationId, table.machineId, table.eventId),
     index("crash_event_service_idx").on(table.organizationId, table.serviceId, table.mailedAt),
     index("crash_event_occurred_idx").on(table.occurredAt),
     foreignKey({

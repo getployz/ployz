@@ -53,7 +53,7 @@ export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const unmailed = yield* drizzle.execute<Unmailed>(sql`
-      select id, machine_id as "machineId", service_name as "serviceName", exit_code::int as "exitCode", oom,
+      select id, machine_id as "machineId", service_name as "serviceName", exit_code::float8 as "exitCode", oom,
              (extract(epoch from occurred_at) * 1000)::float8 as "occurredMs"
       from crash_event
       where organization_id = ${organizationId} and service_id = ${serviceId} and mailed_at is null
