@@ -102,6 +102,20 @@ impl KeyRef {
     }
 }
 
+/// Read a list of removed keys, skipping each entry this build can't read, such as a kind
+/// a newer daemon removed. A key this build can't name it can't remove either.
+///
+/// # Errors
+/// Returns the deserializer's error when the value is not a list.
+pub fn readable_keys<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<KeyRef>, D::Error> {
+    Ok(Vec::<serde_json::Value>::deserialize(deserializer)?
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value(entry).ok())
+        .collect())
+}
+
 /// A Member a key trust names: the Machine ID and WireGuard key its join approved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

@@ -771,6 +771,7 @@ impl LocalMachine {
             rtts,
             management_clients: record.management_clients().cloned().collect(),
             devices: record.devices().collect(),
+            removed_keys: record.removed_keys().to_vec(),
             passkeys: record.passkeys().to_vec(),
             founding: record.founding(),
             telemetry,

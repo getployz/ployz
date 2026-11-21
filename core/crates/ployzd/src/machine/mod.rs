@@ -353,6 +353,12 @@ impl LocalMachineRecord {
         )
     }
 
+    /// The keys this Machine removed for good.
+    #[must_use]
+    pub fn removed_keys(&self) -> &[ployz_core::authority::KeyRef] {
+        &self.removed_keys
+    }
+
     /// Whether this Machine removed `key` for good.
     #[must_use]
     pub fn removes_key(&self, key: &ployz_core::authority::KeyRef) -> bool {

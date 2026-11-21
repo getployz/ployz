@@ -724,6 +724,7 @@ impl FakeMachine for DiscoveryService {
         Ok(Response::new(
             RpcResponse::from(MachineDetails {
                 devices: Vec::new(),
+                removed_keys: Vec::new(),
                 id: self.description.machine_id,
                 phase: LocalMachinePhase::Participating,
                 machine: None,

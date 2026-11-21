@@ -270,9 +270,13 @@ connection under omissions. Either way the command exits 3.
 
 A removal is for good: a server that removed a key never trusts it again, even when someone
 approves it later. Every server that answers marks the key removed, including one that never
-trusted it, so an approval of that key still on its way there is refused. A server that is
-still joining when you remove the key that approved its join is refused too; approve the join
-again with another key. A server refuses to remove the last key it trusts; approve another one first.
+trusted it, so an approval of that key still on its way there is refused. If no server can name
+the key in full, for example because every server that trusted or removed it is away, a server that never held
+it shows `not marked removed` and the command exits 3; run it again once those servers answer.
+A server that is still joining when you remove the key that approved its join is refused too. If
+it still waits for approval, approve the join again with another key; if it had already used its
+approval, install it fresh: run `sudo ployz-uninstall` on it and add it again. A server refuses to remove
+the last key it trusts; approve another one first.
 Removing this computer's own device warns first. To manage your servers from it again, delete the
 `device.key` file the warning names, then run
 `ployz device approve --this-device --connect ssh://root@HOST`.

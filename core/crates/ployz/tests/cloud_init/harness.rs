@@ -664,6 +664,7 @@ impl FakeMachine for JoinDaemon {
         let telemetry = inspect_telemetry_fixture::observation(inspect.telemetry);
         rpc_ok(MachineDetails {
             devices: Vec::new(),
+            removed_keys: Vec::new(),
             id: self.id(),
             phase: if joined {
                 LocalMachinePhase::Participating

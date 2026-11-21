@@ -49,6 +49,11 @@ pub struct MachineDetails {
     /// full on a Machine that never held it. A daemon from before key-step.v1 omits it.
     #[serde(default)]
     pub devices: Vec<crate::DeviceKey>,
+    /// The keys this Machine removed for good, by full key, so a removal run again can name
+    /// in full a key no Server trusts any more. A daemon from before key-step.v1 omits it,
+    /// and an entry this build can't read is left out.
+    #[serde(default, deserialize_with = "crate::authority::key::readable_keys")]
+    pub removed_keys: Vec<crate::authority::KeyRef>,
     /// The passkeys this Machine trusts to approve workflows. A daemon from before
     /// passkeys omits it, and an entry this build can't read is left out.
     #[serde(

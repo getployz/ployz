@@ -1438,6 +1438,7 @@ mod tests {
         fallback.runtime.daemon_version = "fixture".into();
         let details = MachineDetails {
             devices: Vec::new(),
+            removed_keys: Vec::new(),
             id: fallback.id,
             phase: LocalMachinePhase::Participating,
             public_key: fallback.public_key,
@@ -1514,6 +1515,7 @@ mod tests {
         let daemon = |path: &std::path::Path, machine: Machine| {
             let details = MachineDetails {
                 devices: Vec::new(),
+                removed_keys: Vec::new(),
                 id: machine.id,
                 phase: LocalMachinePhase::Participating,
                 public_key: machine.public_key,
@@ -1633,6 +1635,7 @@ mod tests {
         machine.runtime.daemon_version = "fixture".into();
         let details = MachineDetails {
             devices: Vec::new(),
+            removed_keys: Vec::new(),
             id: machine.id,
             phase: LocalMachinePhase::Participating,
             public_key: machine.public_key,
@@ -1811,6 +1814,7 @@ mod tests {
             machine.accepts_ingress = false;
             let details = MachineDetails {
                 devices: Vec::new(),
+                removed_keys: Vec::new(),
                 id: machine.id,
                 phase: LocalMachinePhase::Uninitialized,
                 public_key: machine.public_key,
@@ -1966,6 +1970,7 @@ mod tests {
         let registered = crate::global_fixtures::machine('a', "web-3");
         let details = |phase| MachineDetails {
             devices: Vec::new(),
+            removed_keys: Vec::new(),
             id: listed.id,
             phase,
             public_key: listed.public_key,
@@ -2043,6 +2048,7 @@ mod tests {
             let assigned = crate::global_fixtures::machine('a', "my-server");
             let details = MachineDetails {
                 devices: Vec::new(),
+                removed_keys: Vec::new(),
                 id: assigned.id,
                 phase: LocalMachinePhase::Participating,
                 machine: Some(assigned.clone()),
@@ -2136,6 +2142,7 @@ mod tests {
         let other = crate::global_fixtures::machine('b', "web-4");
         let details = |phase, machine: Option<&Machine>| MachineDetails {
             devices: Vec::new(),
+            removed_keys: Vec::new(),
             id: assigned.id,
             phase,
             public_key: assigned.public_key,

@@ -89,6 +89,7 @@ async fn cluster(
                 let listed = machine(target.to_string().chars().next().unwrap(), "fixture");
                 RpcResponse::from(ployz_core::MachineDetails {
                     devices: Vec::new(),
+                    removed_keys: Vec::new(),
                     id: target,
                     public_key: listed.public_key,
                     machine: Some(listed),
@@ -922,20 +923,29 @@ async fn rm_on_a_passkey_code_removes_the_passkey() {
     server.abort();
 }
 
-/// Machine 1 trusts Device 1, machine 2 has key-step.v1 and never held it, and machine 3
-/// predates key-step.v1. `device rm` hands machine 2 the full key, so a grant of that key
-/// still on its way there is refused, and machine 3 the code as 0.3 takes it.
-#[tokio::test]
-async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
+/// What one fixture Server lists under its Devices and its removed keys.
+type Lists = fn(MachineId) -> (Vec<DeviceKey>, Vec<KeyRef>);
+
+/// Three Servers for `device rm`: machines 1 and 2 have key-step.v1, machine 3 predates it.
+/// Each lists what `lists` says, and a SetDevice reports Device 1 removed only where it is
+/// listed as trusted. Returns every SetDevice it was sent.
+async fn removal_fleet(
+    lists: Lists,
+) -> (
+    Client,
+    std::sync::Arc<std::sync::Mutex<Vec<(MachineId, SetDeviceRequest)>>>,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
     let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = sent.clone();
-    let (mut client, server) =
+    let (client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let seen = seen.clone();
             async move {
                 let target = rpc.metadata().get("machine").map_or(id('1'), |value| {
                     MachineId::parse(value.to_str().unwrap()).unwrap()
                 });
+                let (devices, removed_keys) = lists(target);
                 #[expect(
                     clippy::wildcard_enum_match_arm,
                     reason = "the fixture answers only what device rm sends"
@@ -970,11 +980,8 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
                     RpcRequestBody::Inspect(_) => {
                         let listed = machine(target.to_string().chars().next().unwrap(), "fixture");
                         RpcResponse::from(ployz_core::MachineDetails {
-                            devices: if target == id('1') {
-                                vec![key(1)]
-                            } else {
-                                Vec::new()
-                            },
+                            devices,
+                            removed_keys,
                             id: target,
                             public_key: listed.public_key,
                             machine: Some(listed),
@@ -995,7 +1002,7 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
                     RpcRequestBody::SetDevice(request) => {
                         seen.lock().unwrap().push((target, request));
                         let code = key(1).code();
-                        RpcResponse::from(if target == id('1') {
+                        RpcResponse::from(if devices.contains(&key(1)) {
                             DeviceSet::Removed { code }
                         } else {
                             DeviceSet::NotPresent { code }
@@ -1007,17 +1014,45 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
             }
         })
         .await;
-    let code = key(1).code();
+    (client, sent, server)
+}
 
-    let full = full_key(&mut client, code).await.unwrap();
-    set_everywhere(&mut client, |client, machine_id| {
+/// Run `device rm` for Device 1's code on `client`, returning what it settled and each
+/// SetDevice sent, by Machine.
+async fn remove_everywhere(
+    client: &mut Client,
+    sent: &std::sync::Mutex<Vec<(MachineId, SetDeviceRequest)>>,
+) -> (Settled, Vec<(MachineId, SetDeviceRequest)>) {
+    let code = key(1).code();
+    let full = full_key(client, code, None).await.unwrap();
+    let settled = set_everywhere(client, |client, machine_id| {
         remove_on(client, machine_id, code, full)
     })
     .await
     .unwrap();
-
     let mut sent = sent.lock().unwrap().clone();
     sent.sort_by_key(|(machine_id, _)| *machine_id);
+    (settled, sent)
+}
+
+/// Machine 1 trusts Device 1, machine 2 has key-step.v1 and never held it, and machine 3
+/// predates key-step.v1. `device rm` hands machine 2 the full key, so a grant of that key
+/// still on its way there is refused, and machine 3 the code as 0.3 takes it.
+#[tokio::test]
+async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
+    let (mut client, sent, server) = removal_fleet(|target| {
+        let devices = if target == id('1') {
+            vec![key(1)]
+        } else {
+            Vec::new()
+        };
+        (devices, Vec::new())
+    })
+    .await;
+    let code = key(1).code();
+
+    let (_, sent) = remove_everywhere(&mut client, &sent).await;
+
     let removed = KeyRef::Device { key: key(1) };
     assert_eq!(
         sent,
@@ -1027,6 +1062,82 @@ async fn rm_hands_the_full_key_to_a_server_that_never_held_it() {
             (id('3'), SetDeviceRequest::Remove { code }),
         ]
     );
+    server.abort();
+}
+
+/// A first `device rm` removed Device 1 on machine 1 while machine 2, which never held it,
+/// was away. Now no Server trusts it, and the run again still hands machine 2 the full key
+/// from machine 1's removal record, so an approval of it still on its way there is refused.
+#[tokio::test]
+async fn rm_again_after_a_partial_removal_hands_the_full_key_from_a_removal_record() {
+    let (mut client, sent, server) = removal_fleet(|target| {
+        let removed = if target == id('1') {
+            vec![KeyRef::Device { key: key(1) }]
+        } else {
+            Vec::new()
+        };
+        (Vec::new(), removed)
+    })
+    .await;
+
+    let (settled, sent) = remove_everywhere(&mut client, &sent).await;
+
+    let removed = KeyRef::Device { key: key(1) };
+    assert_eq!(
+        sent,
+        [
+            (id('1'), SetDeviceRequest::RemoveKey { key: removed }),
+            (id('2'), SetDeviceRequest::RemoveKey { key: removed }),
+            (
+                id('3'),
+                SetDeviceRequest::Remove {
+                    code: key(1).code()
+                }
+            ),
+        ]
+    );
+    let _json = crate::ui::test_mode(true);
+    let (finished, _) = crate::ui::captured(|| settled.finish());
+    finished.unwrap();
+    server.abort();
+}
+
+/// No Server names Device 1 in full, so a Server with key-step.v1 that doesn't hold it can't
+/// mark it removed. `device rm` says so and exits partial rather than reporting success;
+/// machine 3, which predates key-step.v1, answers as 0.3 did.
+#[tokio::test]
+async fn rm_without_the_full_key_is_partial_where_a_server_could_have_marked_it() {
+    let (mut client, sent, server) = removal_fleet(|_| (Vec::new(), Vec::new())).await;
+    let code = key(1).code();
+
+    let (settled, _) = remove_everywhere(&mut client, &sent).await;
+
+    let mut outcomes: Vec<_> = settled
+        .answers
+        .iter()
+        .map(|answer| (answer.machine_id, answer.outcome.clone()))
+        .collect();
+    outcomes.sort_by_key(|(machine_id, _)| *machine_id);
+    assert_eq!(
+        outcomes,
+        [
+            (id('1'), Outcome::Removed(Removal::NotMarked { code })),
+            (id('2'), Outcome::Removed(Removal::NotMarked { code })),
+            (id('3'), Outcome::Removed(Removal::NotPresent { code })),
+        ]
+    );
+    let _json = crate::ui::test_mode(true);
+    let (finished, printed) = crate::ui::captured(|| settled.finish());
+    assert_eq!(finished.unwrap_err().printed_exit(), Some(3));
+    let printed = printed.unwrap();
+    let not_marked = printed
+        .pointer("/machines")
+        .and_then(serde_json::Value::as_array)
+        .unwrap()
+        .iter()
+        .filter(|answer| answer.get("outcome") == Some(&json!("not_marked")))
+        .count();
+    assert_eq!(not_marked, 2, "{printed}");
     server.abort();
 }
 
@@ -1078,6 +1189,7 @@ async fn raced(
                     let listed_machine = machine('1', "fixture");
                     RpcResponse::from(ployz_core::MachineDetails {
                         devices: Vec::new(),
+                        removed_keys: Vec::new(),
                         id: id('1'),
                         public_key: listed_machine.public_key,
                         machine: Some(listed_machine),

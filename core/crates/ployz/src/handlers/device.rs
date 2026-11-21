@@ -475,10 +475,10 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     }
     runtime()?.block_on(async {
         let mut client = route::connect_full(leaf, context(leaf)).await?;
-        let key = match own.filter(|own| own.code() == code) {
-            Some(own) => Some(KeyRef::Device { key: own }),
-            None => full_key(&mut client, code).await?,
-        };
+        let own = own
+            .filter(|own| own.code() == code)
+            .map(|key| KeyRef::Device { key });
+        let key = full_key(&mut client, code, own).await?;
         let settled = set_everywhere(&mut client, |client, machine_id| {
             remove_on(client, machine_id, code, key)
         })
@@ -650,18 +650,27 @@ async fn set_on<T: Rpc<Response = DeviceSet>>(
         .map(Some)
 }
 
-/// The full key `code` names on the Servers that list one, so a Server that never held it
-/// can still mark it removed. `None` when no Server lists it.
+/// The full key `code` names: `own` when it is this computer's Device, and each key a
+/// Server trusts or already removed under it, so a Server that never held the key can still
+/// mark it removed, even on a run after another Server removed it. `None` when neither names
+/// one.
 ///
 /// # Errors
-/// Refuses a code that names two different keys across the Servers.
-async fn full_key(client: &mut Client, code: DeviceCode) -> Result<Option<KeyRef>, Error> {
+/// Refuses a code that names two different keys.
+async fn full_key(
+    client: &mut Client,
+    code: DeviceCode,
+    own: Option<KeyRef>,
+) -> Result<Option<KeyRef>, Error> {
     let reach = Reach::full(client).await?;
     let (answers, _) = reach
         .fan_out(|machine_id| keys_on(client.clone(), machine_id, code))
         .await;
     let mut keys: Vec<KeyRef> = Vec::new();
-    for key in answers.into_iter().flat_map(|(_, keys)| keys) {
+    for key in own
+        .into_iter()
+        .chain(answers.into_iter().flat_map(|(_, keys)| keys))
+    {
         if !keys.contains(&key) {
             keys.push(key);
         }
@@ -675,7 +684,7 @@ async fn full_key(client: &mut Client, code: DeviceCode) -> Result<Option<KeyRef
     }
 }
 
-/// The keys one Server with key-step.v1 trusts under `code`, by full key.
+/// The keys one Server with key-step.v1 trusts or removed under `code`, by full key.
 async fn keys_on(
     client: Client,
     machine_id: MachineId,
@@ -701,15 +710,20 @@ async fn keys_on(
         .map(|trusted| KeyRef::Passkey {
             key: trusted.passkey.public_key,
         });
-    Ok(Some(devices.chain(passkeys).collect()))
+    let removed = details
+        .removed_keys
+        .into_iter()
+        .filter(|key| key.code() == code);
+    Ok(Some(devices.chain(passkeys).chain(removed).collect()))
 }
 
 /// Remove the key `code` names on one Server, Device or passkey, for good. A Server with
 /// key-step.v1 may hold passkeys: its Inspect says which kind the code names and, for a
 /// Device, the passkeys it approved there, since a Device that removed itself can no
 /// longer ask. It is handed `key` in full when one is known, so it marks the key removed
-/// even if it never held it and a grant still on its way there is refused. Set-device.v1
-/// answers as 0.3 did, so the kind shown is the one Inspect read.
+/// even if it never held it and a grant still on its way there is refused. Without the key
+/// in full, one that doesn't hold it can't mark it, so its answer is [`Removal::NotMarked`].
+/// Set-device.v1 answers as 0.3 did, so the kind shown is the one Inspect read.
 async fn remove_on(
     client: Client,
     machine_id: MachineId,
@@ -723,7 +737,8 @@ async fn remove_on(
     let mut passkey = false;
     let mut approved_passkeys = Vec::new();
     let mut request = SetDeviceRequest::Remove { code };
-    if compat::supports(&client, &target, KEY_STEP_CAPABILITY).await? {
+    let marks = compat::supports(&client, &target, KEY_STEP_CAPABILITY).await?;
+    if marks {
         if let Some(key) = key {
             request = SetDeviceRequest::RemoveKey { key };
         }
@@ -750,6 +765,7 @@ async fn remove_on(
             code,
             approved_passkeys,
         },
+        DeviceSet::NotPresent { code } if marks && key.is_none() => Removal::NotMarked { code },
         DeviceSet::NotPresent { code }
         | DeviceSet::Approved { code }
         | DeviceSet::AlreadyApproved { code } => Removal::NotPresent { code },
@@ -930,6 +946,11 @@ enum Removal {
     NotPresent {
         code: DeviceCode,
     },
+    /// Not trusted there, and not marked removed either: no Server named the key in full,
+    /// so an approval of it still on its way there would be accepted.
+    NotMarked {
+        code: DeviceCode,
+    },
 }
 
 /// `device rm --json` keeps main's `outcome: removed` and adds the kind beside it.
@@ -943,6 +964,9 @@ enum RemovalJson<'a> {
         approved_passkeys: &'a [DeviceCode],
     },
     NotPresent {
+        code: DeviceCode,
+    },
+    NotMarked {
         code: DeviceCode,
     },
 }
@@ -963,6 +987,7 @@ fn removal_json<S: serde::Serializer>(removed: &Removal, serializer: S) -> Resul
             approved_passkeys: &[],
         },
         Removal::NotPresent { code } => RemovalJson::NotPresent { code: *code },
+        Removal::NotMarked { code } => RemovalJson::NotMarked { code: *code },
     };
     json.serialize(serializer)
 }
@@ -987,16 +1012,17 @@ impl Settled {
         }
         let mut table = Table::new(["SERVER", "RESULT"], "No servers answered.");
         for answer in &self.answers {
-            let result = match answer.outcome {
-                Outcome::Set(DeviceSet::Approved { .. }) => "approved",
-                Outcome::Set(DeviceSet::AlreadyApproved { .. }) => "already approved",
+            let (result, tone) = match answer.outcome {
+                Outcome::Set(DeviceSet::Approved { .. }) => ("approved", Tone::Good),
+                Outcome::Set(DeviceSet::AlreadyApproved { .. }) => ("already approved", Tone::Good),
                 Outcome::Set(DeviceSet::Removed { .. })
-                | Outcome::Removed(Removal::RemovedDevice { .. }) => "removed device",
-                Outcome::Removed(Removal::RemovedPasskey { .. }) => "removed passkey",
+                | Outcome::Removed(Removal::RemovedDevice { .. }) => ("removed device", Tone::Good),
+                Outcome::Removed(Removal::RemovedPasskey { .. }) => ("removed passkey", Tone::Good),
                 Outcome::Set(DeviceSet::NotPresent { .. })
-                | Outcome::Removed(Removal::NotPresent { .. }) => "not present",
+                | Outcome::Removed(Removal::NotPresent { .. }) => ("not present", Tone::Good),
+                Outcome::Removed(Removal::NotMarked { .. }) => ("not marked removed", Tone::Bad),
             };
-            table.row([Cell::from(&answer.server), Cell::status(result, Tone::Good)]);
+            table.row([Cell::from(&answer.server), Cell::status(result, tone)]);
         }
         Some(table)
     }
@@ -1023,13 +1049,29 @@ impl Settled {
         }
     }
 
+    /// Finish as a fan-out does, and as a partial result when a Server couldn't mark the
+    /// key removed.
     fn finish(&self) -> Result<(), Error> {
         let table = self.table();
-        ui::finish_fanout("machines", &self.answers, &self.gaps, || {
+        let finished = ui::finish_fanout("machines", &self.answers, &self.gaps, || {
             if let Some(table) = &table {
                 ui::rows(table);
             }
-        })
+        });
+        let unmarked: Vec<&str> = self
+            .answers
+            .iter()
+            .filter(|answer| matches!(answer.outcome, Outcome::Removed(Removal::NotMarked { .. })))
+            .map(|answer| answer.server.as_str())
+            .collect();
+        if unmarked.is_empty() {
+            return finished;
+        }
+        ui::warn(format!(
+            "No server named this key in full, so {} couldn't mark it removed and would still accept an approval of it already on its way. Check the code with ployz device ls, and run the removal again once a server that trusted the key answers.",
+            unmarked.join(", ")
+        ));
+        finished.and(Err(Error::partial()))
     }
 }
 
