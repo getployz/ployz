@@ -275,7 +275,7 @@ the key in full, for example because every server that trusted or removed it is 
 it shows `not marked removed` and the command exits 3; run it again once those servers answer.
 A server that removed the key while it still ran 0.3 doesn't keep the full key. If it was the last
 one that knew the key, a retry keeps showing `not marked removed`. That only matters while an
-approval of that key is still on its way, which is 15 minutes at most.
+approval of that key is still on its way and hasn't expired.
 A server that is still joining when you remove the key that approved its join is refused too. If
 it still waits for approval, approve the join again with another key; if it had already used its
 approval, install it fresh: run `sudo ployz-uninstall` on it and add it again. A server refuses to remove
