@@ -23,7 +23,7 @@ use super::{
 };
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
-use crate::sealing_key::{KeyFile, OpenError, SealingKey};
+use crate::sealing_key::{Floors, KeyFile, OpenError, SealingKey};
 
 pub(crate) const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
@@ -54,22 +54,33 @@ pub(crate) struct PreparedReset {
 pub(crate) struct Installation {
     body: LocalMachineBody,
     sealing_key: Option<SealingKey>,
+    /// The floors sealed beside the Sealing Key, which the joiner takes before the key.
+    floors: Floors,
     keys: ployz_core::authority::TrustedKeys,
     wireguard_mtu: Option<u32>,
     pinned: PinnedAddresses,
     enrollment: EnrollRequest,
 }
 
-/// What an enrollment installs: the body, the Cluster's key and the keys its approval names.
+/// What an enrollment installs: the body, the Cluster's key with the floors sealed beside
+/// it, and the keys its approval names.
 type Enrolled = (
     LocalMachineBody,
     Option<SealingKey>,
+    Floors,
     ployz_core::authority::TrustedKeys,
 );
 
 impl Installation {
     pub(crate) fn machine(&self) -> Option<&Machine> {
         self.body.machine()
+    }
+
+    /// The Cluster whose Sealing Key this installs, and the floors sealed beside it.
+    pub(crate) fn floors(&self) -> Option<(ployz_core::SealingPublicKey, &Floors)> {
+        self.sealing_key
+            .as_ref()
+            .map(|key| (key.public_key(), &self.floors))
     }
 
     pub(crate) fn wireguard_mtu(&self) -> Option<u32> {
@@ -387,6 +398,7 @@ impl LocalMachineStore {
                 Installation {
                     body: self.record.body.clone(),
                     sealing_key: None,
+                    floors: Floors::new(),
                     keys: ployz_core::authority::TrustedKeys::default(),
                     wireguard_mtu: request.wireguard_mtu,
                     pinned: request.pinned,
@@ -399,7 +411,7 @@ impl LocalMachineStore {
             wireguard_mtu,
             pinned,
         } = request;
-        let (body, sealing_key, keys) = match role {
+        let (body, sealing_key, floors, keys) = match role {
             EnrollAs::Founder {
                 name,
                 cluster_network,
@@ -422,6 +434,7 @@ impl LocalMachineStore {
                 (
                     body,
                     sealing_key,
+                    Floors::new(),
                     ployz_core::authority::TrustedKeys::default(),
                 )
             }
@@ -442,6 +455,7 @@ impl LocalMachineStore {
             Installation {
                 body,
                 sealing_key,
+                floors,
                 keys,
                 wireguard_mtu,
                 pinned,
@@ -520,9 +534,9 @@ impl LocalMachineStore {
         let opened = sealing_key
             .map(|sealed| SealingKey::open_join(&sealed, &self.record.wireguard_private_key))
             .transpose()?;
-        let (sealing_key, approval) = match opened {
-            Some((key, approval)) => (Some(key), approval),
-            None => (None, None),
+        let (sealing_key, approval, floors) = match opened {
+            Some((key, approval, floors)) => (Some(key), approval, floors),
+            None => (None, None, Floors::new()),
         };
         let Some(approval) = approval else {
             return Err(StoreError::JoinRefused(
@@ -597,6 +611,7 @@ impl LocalMachineStore {
                 min_store_version: target_versions,
             },
             sealing_key,
+            floors,
             ployz_core::authority::TrustedKeys {
                 devices,
                 passkeys: approved_passkeys,

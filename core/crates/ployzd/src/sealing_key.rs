@@ -14,6 +14,11 @@ use crate::corrosion::ClusterSealing;
 use crate::network::WireGuardPrivateKey;
 
 const FILE_NAME: &str = "sealing.key";
+
+/// Each Service's floor in one Cluster, sealed beside its Sealing Key. Only the key's
+/// holders can seal it, so a joiner installs it unchecked, as it installs the key.
+pub(crate) type Floors =
+    std::collections::BTreeMap<ployz_core::QualifiedService, ployz_core::authority::Timestamp>;
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct SealingKey([u8; 32]);
 
@@ -197,7 +202,7 @@ impl SealingKey {
     }
 
     /// Seal the key to `recipient` so only `sender`'s WireGuard key could
-    /// have produced the blob.
+    /// have produced the blob, with `floors` after it for a recipient that opens them.
     ///
     /// # Errors
     /// Refuses a low-order recipient key, which no HPKE secret can be derived
@@ -206,8 +211,14 @@ impl SealingKey {
         &self,
         sender: &WireGuardPrivateKey,
         recipient: &WireGuardPublicKey,
+        floors: Option<&Floors>,
     ) -> Result<SealedSealingKey, SealError> {
-        self.seal(
+        let mut payload = Zeroizing::new(self.0.to_vec());
+        if let Some(floors) = floors {
+            payload.extend(serde_json::to_vec(floors).expect("floors serialize"));
+        }
+        Self::seal_bytes(
+            &payload,
             SealAs::Auth(sender.as_bytes()),
             separation::SEALING_KEY_SHARE,
             recipient,
@@ -215,7 +226,7 @@ impl SealingKey {
     }
 
     /// Open a blob that [`Self::seal_from`] sealed to `recipient` from the
-    /// Machine whose WireGuard key is `sender`.
+    /// Machine whose WireGuard key is `sender`, with the floors sealed beside the key.
     ///
     /// # Errors
     /// Returns [`OpenError::Malformed`] when the blob is not an encapsulated
@@ -225,13 +236,32 @@ impl SealingKey {
         sealed: &SealedSealingKey,
         recipient: &WireGuardPrivateKey,
         sender: &WireGuardPublicKey,
-    ) -> Result<Self, OpenError> {
-        Self::open_with(
+    ) -> Result<(Self, Floors), OpenError> {
+        let payload = Self::open_bytes(
             OpenAs::Auth(&sender.0),
             separation::SEALING_KEY_SHARE,
             sealed,
             recipient,
-        )
+        )?;
+        let (key, rest) = Self::split(&payload)?;
+        let mut values = serde_json::Deserializer::from_slice(rest).into_iter::<Floors>();
+        let floors = values
+            .next()
+            .transpose()
+            .map_err(|_| OpenError::Malformed)?;
+        if values.next().is_some() {
+            return Err(OpenError::Malformed);
+        }
+        Ok((key, floors.unwrap_or_default()))
+    }
+
+    /// The key at the head of an opened payload, and what follows it.
+    fn split(payload: &[u8]) -> Result<(Self, &[u8]), OpenError> {
+        let (bytes, rest) = payload.split_at_checked(32).ok_or(OpenError::Malformed)?;
+        Ok((
+            Self(bytes.try_into().map_err(|_| OpenError::Malformed)?),
+            rest,
+        ))
     }
 
     /// What a joiner that opened `approval`'s capsule with this key sends back.
@@ -272,13 +302,19 @@ impl SealingKey {
         mac
     }
 
+    /// Seal the key and `approval` to `recipient`, with `floors` after them for a joiner
+    /// that opens them. An older joiner refuses a payload with anything after the approval.
     pub(crate) fn seal_join(
         &self,
         recipient: &WireGuardPublicKey,
         approval: &ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+        floors: Option<&Floors>,
     ) -> Result<SealedSealingKey, SealError> {
         let mut payload = Zeroizing::new(self.0.to_vec());
         payload.extend(serde_json::to_vec(approval).expect("signed join serializes"));
+        if let Some(floors) = floors {
+            payload.extend(serde_json::to_vec(floors).expect("floors serialize"));
+        }
         Self::seal_bytes(&payload, SealAs::Base, separation::SEALING_KEY, recipient)
     }
 
@@ -289,20 +325,30 @@ impl SealingKey {
         (
             Self,
             Option<ployz_core::authority::Signed<ployz_core::authority::JoinApproval>>,
+            Floors,
         ),
         OpenError,
     > {
         let payload = Self::open_bytes(OpenAs::Base, separation::SEALING_KEY, sealed, recipient)?;
-        let (bytes, body) = payload.split_at_checked(32).ok_or(OpenError::Malformed)?;
-        let key = Self(bytes.try_into().map_err(|_| OpenError::Malformed)?);
-        let approval = if body.is_empty() {
-            None
-        } else {
-            Some(serde_json::from_slice(body).map_err(|_| OpenError::Malformed)?)
-        };
-        Ok((key, approval))
+        let (key, body) = Self::split(&payload)?;
+        let mut values =
+            serde_json::Deserializer::from_slice(body).into_iter::<serde_json::Value>();
+        let mut next = || values.next().transpose().map_err(|_| OpenError::Malformed);
+        let approval = next()?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| OpenError::Malformed)?;
+        let floors = next()?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| OpenError::Malformed)?;
+        if next()?.is_some() {
+            return Err(OpenError::Malformed);
+        }
+        Ok((key, approval, floors.unwrap_or_default()))
     }
 
+    #[cfg(test)]
     fn seal(
         &self,
         mode: SealAs<'_>,
@@ -323,6 +369,7 @@ impl SealingKey {
             .map_err(|_| SealError)
     }
 
+    #[cfg(test)]
     fn open_with(
         mode: OpenAs<'_>,
         info: &[u8],
@@ -699,10 +746,14 @@ mod tests {
         let key = SealingKey::generate();
         let holder = WireGuardPrivateKey::generate();
         let recipient = WireGuardPrivateKey::generate();
-        let sealed = key.seal_from(&holder, &recipient.public_key()).unwrap();
+        let sealed = key
+            .seal_from(&holder, &recipient.public_key(), None)
+            .unwrap();
 
         assert_eq!(
-            SealingKey::open_from(&sealed, &recipient, &holder.public_key()).unwrap(),
+            SealingKey::open_from(&sealed, &recipient, &holder.public_key())
+                .unwrap()
+                .0,
             key
         );
         assert!(matches!(
@@ -741,7 +792,9 @@ mod tests {
             SealingKey::open_from(&joined, &recipient, &holder.public_key()),
             Err(OpenError::Unopenable)
         ));
-        let shared = key.seal_from(&holder, &recipient.public_key()).unwrap();
+        let shared = key
+            .seal_from(&holder, &recipient.public_key(), None)
+            .unwrap();
         assert!(matches!(
             SealingKey::open(&shared, &recipient),
             Err(OpenError::Unopenable)
@@ -753,7 +806,7 @@ mod tests {
         let key = SealingKey::generate();
         let holder = WireGuardPrivateKey::generate();
         assert!(
-            key.seal_from(&holder, &WireGuardPublicKey([0; 32]))
+            key.seal_from(&holder, &WireGuardPublicKey([0; 32]), None)
                 .is_err()
         );
     }
@@ -1000,7 +1053,7 @@ mod tests {
         fn a_key_sealed_for_a_join_opens_in_base_mode_under_the_key_info_only() {
             let sealed = sealed(SEALED_TO);
             assert_eq!(SealingKey::open(&sealed, &recipient()).unwrap().0, KEY);
-            let (joined, approval) = SealingKey::open_join(&sealed, &recipient()).unwrap();
+            let (joined, approval, _) = SealingKey::open_join(&sealed, &recipient()).unwrap();
             assert_eq!(joined.0, KEY);
             assert!(approval.is_none());
             let sender = sender().public_key();
@@ -1030,6 +1083,7 @@ mod tests {
             assert_eq!(
                 SealingKey::open_from(&sealed, &recipient(), &sender_public)
                     .unwrap()
+                    .0
                     .0,
                 KEY
             );
@@ -1079,7 +1133,9 @@ mod tests {
                 oracle_open(None, b"ployz-sealing-key-v1", &[], to.as_bytes()).as_deref(),
                 Some(&KEY[..])
             );
-            let from = key.seal_from(&sender(), &recipient().public_key()).unwrap();
+            let from = key
+                .seal_from(&sender(), &recipient().public_key(), None)
+                .unwrap();
             assert_eq!(
                 oracle_open(
                     Some(sender().public_key().0),
@@ -1100,6 +1156,7 @@ mod tests {
             assert_eq!(
                 SealingKey::open_from(&by_oracle, &recipient(), &sender().public_key())
                     .unwrap()
+                    .0
                     .0,
                 KEY
             );
@@ -1109,7 +1166,9 @@ mod tests {
         fn a_join_seal_carries_the_key_then_the_signed_approval_under_the_key_info() {
             let key = SealingKey(KEY);
             let approval = approval();
-            let sealed = key.seal_join(&recipient().public_key(), &approval).unwrap();
+            let sealed = key
+                .seal_join(&recipient().public_key(), &approval, None)
+                .unwrap();
             let opened =
                 oracle_open(None, b"ployz-sealing-key-v1", &[], sealed.as_bytes()).unwrap();
             assert_eq!(opened.get(..32), Some(&KEY[..]));
@@ -1117,13 +1176,43 @@ mod tests {
                 opened.get(32..).unwrap(),
                 serde_json::to_vec(&approval).unwrap()
             );
-            let (joined, opened) = SealingKey::open_join(&sealed, &recipient()).unwrap();
+            let (joined, opened, _) = SealingKey::open_join(&sealed, &recipient()).unwrap();
             assert_eq!(joined.0, KEY);
             assert_eq!(opened.unwrap(), approval);
             assert!(matches!(
                 SealingKey::open(&sealed, &recipient()),
                 Err(OpenError::Malformed)
             ));
+        }
+
+        /// A joiner that keeps floors takes them from either seal, after the key; one
+        /// sealed without them reads as no floors.
+        #[test]
+        fn a_join_or_share_seal_carries_the_floors_sealed_after_the_key() {
+            let key = SealingKey(KEY);
+            let approval = approval();
+            let floors = Floors::from([(
+                ployz_core::QualifiedService::parse("app/api").unwrap(),
+                ployz_core::authority::Timestamp::from_millis(1_800_000_000_000).unwrap(),
+            )]);
+            let joined = key
+                .seal_join(&recipient().public_key(), &approval, Some(&floors))
+                .unwrap();
+            let (_, approved, carried) = SealingKey::open_join(&joined, &recipient()).unwrap();
+            assert_eq!(approved, Some(approval));
+            assert_eq!(carried, floors);
+            let shared = key
+                .seal_from(&sender(), &recipient().public_key(), Some(&floors))
+                .unwrap();
+            let (_, carried) =
+                SealingKey::open_from(&shared, &recipient(), &sender().public_key()).unwrap();
+            assert_eq!(carried, floors);
+            let bare = key
+                .seal_from(&sender(), &recipient().public_key(), None)
+                .unwrap();
+            let (_, carried) =
+                SealingKey::open_from(&bare, &recipient(), &sender().public_key()).unwrap();
+            assert!(carried.is_empty());
         }
 
         #[test]
@@ -1176,8 +1265,8 @@ mod tests {
             let key = SealingKey(KEY);
             let zero = WireGuardPublicKey([0; 32]);
             assert!(key.seal_to(&zero).is_err());
-            assert!(key.seal_from(&sender(), &zero).is_err());
-            assert!(key.seal_join(&zero, &approval()).is_err());
+            assert!(key.seal_from(&sender(), &zero, None).is_err());
+            assert!(key.seal_join(&zero, &approval(), None).is_err());
         }
 
         #[test]

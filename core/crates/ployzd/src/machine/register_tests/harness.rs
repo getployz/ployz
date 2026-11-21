@@ -145,7 +145,7 @@ pub(super) fn join_signer() -> ployz_core::authority::Signer {
 }
 
 /// Approve `signer` at `entry`'s console, unless it already trusts it.
-async fn trust_device(entry: &LocalMachine, signer: &ployz_core::authority::Signer) {
+pub(super) async fn trust_device(entry: &LocalMachine, signer: &ployz_core::authority::Signer) {
     let key = signer.public().into();
     if entry.record().devices().any(|device| device == key) {
         return;

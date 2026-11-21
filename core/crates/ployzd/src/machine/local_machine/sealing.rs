@@ -22,7 +22,7 @@ use thiserror::Error as ThisError;
 use super::LocalMachine;
 use super::join_approval::Entered;
 use crate::corrosion::ClusterSealing;
-use crate::sealing_key::{KeyFile, OpenError, SealingKey};
+use crate::sealing_key::{Floors, KeyFile, OpenError, SealingKey};
 
 #[derive(Debug, ThisError)]
 pub enum Error {
@@ -139,6 +139,21 @@ impl LocalMachine {
         Ok(SealingKeyHeld { public_key })
     }
 
+    /// The floors to seal beside `key` for a recipient whose row says `runtime`. `None` when
+    /// it doesn't claim a ployz that keeps floors, since an older one refuses a payload
+    /// that carries them; it then misses them, as it would miss a forget sent before it
+    /// joined.
+    pub(super) fn floors_for(
+        &self,
+        key: &SealingKey,
+        runtime: &ployz_core::MachineRuntime,
+    ) -> Result<Option<Floors>, super::Error> {
+        if runtime.claim(ployz_core::FORGET_VERSIONS_CAPABILITY) != ployz_core::Claim::Advertises {
+            return Ok(None);
+        }
+        self.approvals.floors_in(key.public_key()).map(Some)
+    }
+
     pub(crate) async fn share_sealing_key(
         &self,
         request: ShareSealingKeyRequest,
@@ -204,7 +219,8 @@ impl LocalMachine {
             &ployz_core::authority::join::JoinAllocation::from(&recipient),
             network,
         )?;
-        let sealed = key.seal_from(record.private_key(), &request.public_key)?;
+        let floors = self.floors_for(&key, &recipient.runtime)?;
+        let sealed = key.seal_from(record.private_key(), &request.public_key, floors.as_ref())?;
         self.consume_join(
             fresh,
             super::consumption::JoinResult {
@@ -261,11 +277,12 @@ impl LocalMachine {
             .machine(&request.from.to_string())
             .await?
             .ok_or(Error::UnknownMachine(request.from))?;
-        let key = SealingKey::open_from(&request.sealed, record.private_key(), &sender.public_key)
-            .map_err(|source| Error::Unopenable {
-                from: request.from,
-                source,
-            })?;
+        let (key, floors) =
+            SealingKey::open_from(&request.sealed, record.private_key(), &sender.public_key)
+                .map_err(|source| Error::Unopenable {
+                    from: request.from,
+                    source,
+                })?;
         let public_key = key.public_key();
         if public_key != request.public_key {
             return Err(Error::SealedAnother {
@@ -274,6 +291,7 @@ impl LocalMachine {
             }
             .into());
         }
+        self.approvals.install_floors(public_key, &floors)?;
         let data_dir = self.owner.data_dir();
         let file = SealingKey::read(data_dir).map_err(Error::Unreadable)?;
         match &file {

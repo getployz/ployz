@@ -89,9 +89,11 @@ impl ApprovingCluster {
     ) -> Registered {
         let recipient = joiner.private_key().public_key();
         let sealed = match approval {
-            Some(body) => self
-                .sealing_key
-                .seal_join(&recipient, &Signed::sign(body, &self.signer).unwrap()),
+            Some(body) => self.sealing_key.seal_join(
+                &recipient,
+                &Signed::sign(body, &self.signer).unwrap(),
+                None,
+            ),
             None => self.sealing_key.seal_to(&recipient),
         };
         Registered {

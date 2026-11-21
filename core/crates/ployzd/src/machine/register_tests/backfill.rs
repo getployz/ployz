@@ -886,3 +886,117 @@ async fn a_keyless_machine_beside_a_holder_of_another_key_awaits_recovery_and_re
     assert_eq!(keyless.key(), None);
     assert_eq!(cluster.store().sealing_public_key().await.unwrap(), None);
 }
+
+/// A Member that takes the Sealing Key over Share takes the holder's floors with it, so it
+/// refuses a version signed before a forget that was never sent to it.
+#[tokio::test]
+async fn a_member_given_the_key_takes_its_floors_and_refuses_a_version_below_them() {
+    use ployz_core::authority::{
+        AuthorityRefusal, PayloadDigest, ServiceVersion, Signed, SignerKey, Timestamp,
+    };
+    let (replicated, server) = fake_cluster::store().await;
+    let holder = Peer::participating("ployzd-floors-holder", &replicated).await;
+    let mut joiner = Peer::needing_access("ployzd-floors-joiner", &replicated).await;
+    joiner
+        .machine
+        .runtime
+        .capabilities
+        .insert(ployz_core::FORGET_VERSIONS_CAPABILITY.to_owned());
+    replicated
+        .publish_local_machine(&joiner.machine)
+        .await
+        .unwrap();
+    let signer = join_signer();
+    let mut want: ployz_core::ContainerWant = serde_json::from_value(serde_json::json!({
+        "state": "running", "rotation": "pending", "container": {"new": {
+            "slot": {"namespace": "app", "service": "api", "kind": "service_container",
+                     "creation_key": "k1"},
+            "resolved_spec": {
+                "service_id": ployz_core::ServiceId::random(),
+                "name": "api",
+                "mode": {"mode": "replicated", "replicas": 1},
+                "container": {"image": format!("nginx@sha256:{}", "a".repeat(64)),
+                              "pull_policy": "missing"},
+            },
+            "gen": 1}}}))
+    .unwrap();
+    let ployz_core::ContainerWant::Running {
+        container: ployz_core::RunTarget::New(new),
+        ..
+    } = &mut want
+    else {
+        unreachable!()
+    };
+    // A Sealed value, so the spec runs only under a signature.
+    new.resolved_spec.container.environment.insert(
+        "TOKEN".into(),
+        ployz_core::EnvValue::Sealed(ployz_core::SealedValue {
+            sealed: ployz_core::Ciphertext::from_bytes(vec![1; 48]),
+            scope: ployz_core::SealedScope::Shared,
+            key: "TOKEN".into(),
+        }),
+    );
+    let new = new.clone();
+    let namespace = ployz_core::Namespace::parse("app").unwrap();
+    let digest = PayloadDigest::of(&new.resolved_spec.to_requested(), &namespace).unwrap();
+    let version = |signed_at: Timestamp, forget_older| {
+        let body = ServiceVersion {
+            forget_older,
+            cluster: holder.held(),
+            namespace: namespace.clone(),
+            service: new.resolved_spec.name.clone(),
+            digest,
+            signed_at,
+            signer: SignerKey::Device(signer.public().into()),
+            proposal: None,
+        };
+        Signed::sign(&body, &signer).unwrap()
+    };
+    let now = Timestamp::now();
+    let older = version(
+        Timestamp::from_millis(now.as_millis() - 60_000).unwrap(),
+        false,
+    );
+    trust_device(&holder.local, &signer).await;
+    holder
+        .local
+        .forget_versions(ployz_core::ForgetVersionsRequest {
+            versions: vec![version(now, true)],
+        })
+        .await
+        .unwrap();
+
+    let sealed = holder.share_to(&joiner).await;
+    joiner
+        .local
+        .install_sealing_key(InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed,
+            public_key: holder.held(),
+        })
+        .await
+        .unwrap();
+    trust_device(&joiner.local, &signer).await;
+    let refused = joiner
+        .local
+        .admit_spec(
+            &want,
+            crate::machine::Presented::Operator {
+                rule: None,
+                versions: &[older],
+            },
+        )
+        .await;
+
+    assert!(
+        matches!(
+            refused,
+            Err(LocalMachineError::DeployRefused(
+                AuthorityRefusal::Forgotten { .. }
+            ))
+        ),
+        "{:?}",
+        refused.err()
+    );
+    server.abort();
+}
