@@ -78,14 +78,21 @@ async fn a_member_that_does_not_answer_the_forget_makes_the_result_partial() {
 
     assert!(!forgot.is_complete());
     let json = serde_json::to_value(&forgot).unwrap();
-    let answered: Vec<_> = json["machines"]
-        .as_array()
+    let answered: Vec<_> = json
+        .pointer("/machines")
+        .and_then(serde_json::Value::as_array)
         .unwrap()
         .iter()
-        .map(|answer| answer["server"].as_str().unwrap().to_owned())
+        .filter_map(|answer| answer.pointer("/server")?.as_str())
         .collect();
     assert_eq!(answered, ["machine-1", "machine-3"]);
-    assert_eq!(json["failures"][0]["machine_id"], id('2').to_string());
-    assert_eq!(json["machines"][0]["outcomes"][0]["outcome"], "raised");
+    assert_eq!(
+        json.pointer("/failures/0/machine_id"),
+        Some(&serde_json::json!(id('2').to_string()))
+    );
+    assert_eq!(
+        json.pointer("/machines/0/outcomes/0/outcome"),
+        Some(&serde_json::json!("raised"))
+    );
     server.abort();
 }
