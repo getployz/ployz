@@ -87,6 +87,16 @@ impl ServiceVolumeGraph {
         Self::parse(volumes, mounts)
     }
 
+    /// Whether every birth among the declarations was minted in `namespace`. A birth from
+    /// another Environment names data that Environment approved, never this one's.
+    #[must_use]
+    pub fn born_in(&self, namespace: &crate::Namespace) -> bool {
+        self.volumes
+            .iter()
+            .filter_map(|volume| volume.source.birth())
+            .all(|birth| &birth.namespace == namespace)
+    }
+
     #[must_use]
     pub fn volumes(&self) -> &[ServiceVolume] {
         &self.volumes
@@ -354,6 +364,32 @@ impl ServiceMountGraph {
             .map(|volume| ServiceVolume {
                 reference: volume.reference.clone(),
                 source: volume.source.with_bound_cleared(),
+            })
+            .collect();
+        Self {
+            volumes: ServiceVolumeGraph {
+                volumes,
+                mounts: self.volumes.mounts.clone(),
+            },
+            configs: self.configs.clone(),
+        }
+    }
+
+    /// These mounts with `birth` asked for each managed Volume that carries none, by the
+    /// name it is declared under. Every alias of one Volume gets the same answer, so
+    /// aliases stay compatible.
+    #[must_use]
+    pub fn with_births(
+        &self,
+        mut birth: impl FnMut(&DockerVolumeName) -> Option<crate::VolumeBirth>,
+    ) -> Self {
+        let volumes = self
+            .volumes
+            .volumes
+            .iter()
+            .map(|volume| ServiceVolume {
+                reference: volume.reference.clone(),
+                source: volume.source.born(&mut birth),
             })
             .collect();
         Self {

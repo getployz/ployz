@@ -34,6 +34,7 @@ pub async fn run(
                 registry_auth: None,
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
+                image_id: None,
             }),
             rotation: RunRotation::Pending,
         },

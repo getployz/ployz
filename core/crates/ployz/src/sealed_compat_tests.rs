@@ -70,6 +70,7 @@ async fn listing(machines: Vec<MachineObservation>) -> Fleet {
                                 of: ContainerLocator::Id(crate::global_fixtures::container_id('c')),
                             },
                             health: None,
+                            verified: None,
                         })
                     }
                     other => panic!("unexpected RPC: {other:?}"),
@@ -116,6 +117,7 @@ fn want(spec: ResolvedServiceSpec) -> ContainerWant {
             registry_auth: None,
             image_prepared: false,
             answer: ployz_core::AnswerWhen::Started,
+            image_id: None,
         }),
         rotation: RunRotation::Pending,
     }

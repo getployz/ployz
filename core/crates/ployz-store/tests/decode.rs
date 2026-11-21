@@ -183,3 +183,36 @@ fn a_setting_of_the_wrong_shape_names_its_reason_never_its_value() {
 fn uuid(label: &str) -> String {
     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, label.as_bytes()).to_string()
 }
+
+/// A CLI from before signed versions posts its Device's deploy approval with a Deploy or a
+/// redeploy, and no signed version. The Store keeps no approval for its runners, so the
+/// command is refused as unsupported with the update to run, never decoded into one that
+/// runs unsigned.
+#[test]
+fn an_old_clis_deploy_approval_is_refused_with_the_update_to_run() {
+    let id = "0b9e7c4e-1f2a-4c3b-9d8e-7f6a5b4c3d2f";
+    for (admit, extra) in [
+        ("deploy", json!({})),
+        ("retry", json!({ "deployment": VOLUME })),
+    ] {
+        let mut command = json!({ "command": "admit", "admit": admit, "id": id });
+        command
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        Command::sent(command.clone()).unwrap();
+
+        command
+            .as_object_mut()
+            .unwrap()
+            .insert("approval".into(), json!({ "body": "{}", "signatures": [] }));
+        let refused = Command::sent(command).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Unsupported, "{admit}");
+        assert_eq!(
+            refused.details.pointer("/follow_up/kind"),
+            Some(&json!("update_client")),
+            "{admit}: {}",
+            refused.details
+        );
+    }
+}

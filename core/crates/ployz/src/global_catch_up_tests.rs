@@ -1363,6 +1363,7 @@ fn provisioned_global_spec() -> RequestedServiceSpec {
                         NonZeroU64::new(100).unwrap(),
                     ),
                     labels: Default::default(),
+                    birth: None,
                 }
                 .admit()
                 .expect("valid volume declaration"),

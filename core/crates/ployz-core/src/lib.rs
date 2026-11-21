@@ -19,6 +19,7 @@ mod host_config;
 pub mod host_preparation;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hpke_suite;
+mod image_name;
 pub mod labels;
 mod log_level;
 mod machine_layout;
@@ -65,6 +66,7 @@ pub use founding::*;
 pub use framing::*;
 pub use hint::*;
 pub use host_config::*;
+pub use image_name::*;
 pub use log_level::*;
 pub use machine_layout::*;
 pub use machine_telemetry::*;

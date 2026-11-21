@@ -33,7 +33,7 @@ pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
     plan_ingress_repairs, plan_namespace_removal, preview_deploy, without_departed,
 };
-pub(crate) use planning::{place_one, region_waits};
+pub(crate) use planning::{destinations, place_one, region_waits};
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
@@ -944,6 +944,17 @@ pub enum PlanError {
         /// The Machine holding the Volume's writer.
         machine: MachineName,
     },
+    /// The Service mounts a born Volume, and every Server it could run on is too old to
+    /// check where a Volume's data began.
+    #[error(
+        "Upgrade {} first. {service} mounts a volume that needs a newer Ployz on every server it runs on.",
+        all_of(names.iter().map(ToString::to_string))
+    )]
+    VolumeOriginsUnchecked {
+        service: ServiceName,
+        /// The Servers left out for it, in snapshot order. Never empty.
+        names: Vec<MachineName>,
+    },
     /// No Server in a region the Service runs in can run it.
     #[error("{}", region_unmatched(regions))]
     RegionUnmatched {
@@ -1209,6 +1220,7 @@ impl PlanError {
             | Self::ServiceModeCannotChange
             | Self::NoWriter { .. }
             | Self::VolumeServerTakesNoServices { .. }
+            | Self::VolumeOriginsUnchecked { .. }
             | Self::RegionUnmatched { .. }
             | Self::VolumeOutsideRegion { .. }
             | Self::VolumesApart { .. }
@@ -1254,6 +1266,12 @@ impl PlanError {
                 error.to_string(),
             )
             .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
+            Self::VolumeOriginsUnchecked { ref names, .. } => {
+                RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                    "reason": "upgrade_required",
+                    "servers": names,
+                }))
+            }
             Self::RegionUnmatched { ref regions } => RpcError::conflict(self.to_string())
                 .with_details(serde_json::json!({
                     "reason": "region_unmatched",

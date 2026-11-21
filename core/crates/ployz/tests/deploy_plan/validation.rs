@@ -190,6 +190,7 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
             name: DockerVolumeName::parse("logs").unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
             labels: Default::default(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),

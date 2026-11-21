@@ -924,6 +924,7 @@ impl Fleet {
                             pull: None,
                             role: Some(SlotRole::Mirror),
                             pull_state: None,
+                            origin: None,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,
@@ -931,6 +932,7 @@ impl Fleet {
                             epoch: WriterEpoch::default(),
                             seed: false,
                             mark: None,
+                            origin: None,
                         },
                     });
                 unary(VolumeCopyView { copy }.into())
@@ -1045,7 +1047,11 @@ impl Fleet {
             .ok_or_else(|| Status::internal("the changed Container vanished"))?;
         let now = ContainerNow::Present(machine.observe(observed)?);
         Ok(match decided {
-            Ok(_) => EnsuredContainer::Ensured { now, health: None },
+            Ok(_) => EnsuredContainer::Ensured {
+                now,
+                health: None,
+                verified: None,
+            },
             Err(refusal) => EnsuredContainer::Refused { now, refusal },
         }
         .into())

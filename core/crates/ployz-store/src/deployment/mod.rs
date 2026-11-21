@@ -28,6 +28,7 @@ mod status;
 mod status_tests;
 mod targeting;
 pub(crate) mod uploads;
+pub(crate) mod versions;
 pub(crate) use claim::*;
 pub(crate) use history::*;
 pub(crate) use landing::*;
@@ -40,6 +41,7 @@ pub(crate) use rows::server_names;
 pub(crate) use status::*;
 pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
+pub use versions::{Pinned, PostedVersion, RanService, TagPin, VersionsQuery, VersionsView};
 
 pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
@@ -646,14 +648,17 @@ pub struct Claimed {
     /// claim's runner may change the Environment, so a Pending copy one of these
     /// left is no run's.
     pub ended_runs: BTreeSet<DeploymentId>,
-    /// The approval a Device signed for this Deployment, which the runner hands to each
-    /// Server; none when a token or automation admitted it.
-    pub approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
     /// The automatic deploy rule a push's Deployment runs under, which the runner hands
     /// each Server with each Service's image token; none for any other Deployment.
     pub rule: Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
     /// The image token each Service's GitHub build under `rule` reported.
     pub image_tokens: BTreeMap<ServiceName, crate::ImageToken>,
+    /// What a Server issued for each Service's image under `rule` once it checked it
+    /// online: sent in place of the image token, which may have expired.
+    pub verified: BTreeMap<ServiceName, crate::VerifiedClaim>,
+    /// What each target Service runs, by runtime name, with the signed versions kept for
+    /// it. A Service without one sends its Saved image and no statement.
+    pub ran: BTreeMap<ServiceName, Pinned>,
 }
 
 /// One node a Deployment targets, as frozen at admission. A row stores a Service the

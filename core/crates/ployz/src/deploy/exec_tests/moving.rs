@@ -6,11 +6,16 @@ use super::*;
 use crate::deploy::cleanup::Copy;
 use crate::deploy::{MoveEnd, MoveError};
 use crate::drain::placement::{
-    LastIn, MachineRef, OldCopyEnd, Relocated, Unconfirmed, relocate, retire_old,
+    LastIn, MachineRef, OldCopyEnd, Relocated, Unconfirmed, confirm_promoted, relocate, retire_old,
 };
 
 const FROM: char = '1';
 const TO: char = '2';
+
+/// The image ID the old copy runs.
+fn source_image() -> ployz_core::ImageDigest {
+    ployz_core::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap()
+}
 
 async fn move_with(client: &Scripted) -> Result<ContainerId, MoveError> {
     move_container(
@@ -19,10 +24,11 @@ async fn move_with(client: &Scripted) -> Result<ContainerId, MoveError> {
         &spec(Some(0), None, None),
         &machine(TO),
         (&machine(FROM), &container('a')),
+        &source_image(),
         &CancellationToken::new(),
     )
     .await
-    .map(|(id, _)| id)
+    .map(|started| started.container_id)
 }
 
 fn moving(steps: Vec<Step>) -> Scripted {
@@ -64,7 +70,7 @@ async fn relocate_with(
     let relocated = relocate(
         client,
         &test_namespace(),
-        &spec(Some(0), None, None),
+        (&spec(Some(0), None, None), &source_image()),
         &machine(TO),
         &old_copy(),
         &name,
@@ -75,6 +81,34 @@ async fn relocate_with(
         Relocated::Listed => retire_old(client, &old_copy(), &name, cancellation).await,
         Relocated::Unlisted(unconfirmed) => Ok(OldCopyEnd::In { unconfirmed }),
     })
+}
+
+/// A tag spec starts on the pinned route, pinned to the image its old copy runs, so the
+/// tag never decides what runs there. A digest spec already names its content and goes on
+/// ensure.v1 with the old copy's spec as it is, its pull policy included.
+#[tokio::test]
+async fn only_a_tag_spec_is_pinned_and_neither_spec_is_rewritten() {
+    let digest = format!("alpine@sha256:{}", "b".repeat(64));
+    for (image, pin) in [
+        ("alpine:3.23.3", Some(source_image())),
+        (digest.as_str(), None),
+    ] {
+        let mut spec = spec(Some(0), None, None);
+        spec.container.image = image.to_owned();
+        let client = moving(served());
+        move_container(
+            &client,
+            &test_namespace(),
+            &spec,
+            &machine(TO),
+            (&machine(FROM), &container('a')),
+            &source_image(),
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(*client.pins.lock().unwrap(), [(pin, spec)], "{image}");
+    }
 }
 
 #[tokio::test]
@@ -95,7 +129,10 @@ async fn a_move_brings_the_new_copy_in_and_retires_the_old_one() {
 #[tokio::test]
 async fn a_refused_in_discards_the_new_copy_and_keeps_the_old_one() {
     let mut steps = served();
-    steps.push(ok(Call::Remove(machine(TO), container('b'))));
+    steps.push(ok(Call::DiscardSlot(
+        machine(TO),
+        ContainerKind::ServiceContainer,
+    )));
     let mut client = moving(steps).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
     client.unhealthy_in.insert(
         container('b'),
@@ -280,37 +317,6 @@ async fn a_run_whose_reply_was_lost_is_resent_to_the_same_slot() {
 }
 
 #[tokio::test]
-async fn a_move_names_its_slot_by_its_old_copy_or_by_a_global_spec() {
-    for (global, key) in [
-        (false, format!("move:{}", container('a'))),
-        (true, crate::cluster::global_creation_key(&global_spec())),
-    ] {
-        let client = moving(served());
-        let spec = if global {
-            global_spec()
-        } else {
-            spec(Some(0), None, None)
-        };
-        move_container(
-            &client,
-            &test_namespace(),
-            &spec,
-            &machine(TO),
-            (&machine(FROM), &container('a')),
-            &CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        let slots = client.slots.lock().unwrap();
-        let [slot] = slots.as_slice() else {
-            panic!("expected one creation, got {slots:?}");
-        };
-        assert_eq!(slot.kind, ContainerKind::ServiceContainer);
-        assert_eq!(slot.creation_key.as_str(), key);
-    }
-}
-
-#[tokio::test]
 async fn a_failed_run_removes_its_slot() {
     let client = moving(vec![
         failed(
@@ -351,17 +357,357 @@ async fn an_unreadable_source_copy_starts_no_replacement() {
     client.assert_done();
 }
 
+/// A start that answered with its Container and then failed, or whose drain was cancelled
+/// after the answer, removes what the move's own slot holds: that Container.
+#[tokio::test]
+async fn a_failed_start_removes_the_container_it_made() {
+    for cancelled in [false, true] {
+        let run = if cancelled {
+            created(
+                Call::Run(machine(TO), ContainerKind::ServiceContainer),
+                &container('b'),
+            )
+        } else {
+            unhealthy_run(machine(TO), &container('b'))
+        };
+        let mut client = moving(vec![run, discarded()]);
+        let cancellation = CancellationToken::new();
+        if cancelled {
+            client.cancel_on = Some((
+                Call::Run(machine(TO), ContainerKind::ServiceContainer),
+                cancellation.clone(),
+            ));
+        }
+        let Err(MoveError {
+            end,
+            replacement_removed,
+        }) = move_container(
+            &client,
+            &test_namespace(),
+            &spec(Some(0), None, None),
+            &machine(TO),
+            (&machine(FROM), &container('a')),
+            &source_image(),
+            &cancellation,
+        )
+        .await
+        else {
+            panic!("nothing served");
+        };
+        assert_eq!(cancelled, end == MoveEnd::Cancelled, "{end:?}");
+        assert!(replacement_removed);
+        assert_eq!(client.rotation(&container('b')), None);
+        client.assert_done();
+    }
+}
+
+fn discarded() -> Step {
+    ok(Call::DiscardSlot(
+        machine(TO),
+        ContainerKind::ServiceContainer,
+    ))
+}
+
+/// The move's own sends of a create, by the slot each named.
+fn run() -> Call {
+    Call::Run(machine(TO), ContainerKind::ServiceContainer)
+}
+
+fn lost() -> RpcError {
+    RpcError::unavailable("connection lost").reply_lost_from(&machine(TO))
+}
+
+/// Y, another caller's Pending copy on the destination in the slot `move:{old}`: a move of
+/// the same copy by an older CLI, or a hand-written ensure.v1.
+fn with_planted(client: Scripted) -> Scripted {
+    client
+        .with_copy(&machine(TO), &container('c'), CopyRotation::Pending)
+        .with_key(&container('c'), &format!("move:{}", container('a')))
+}
+
+/// However a move fails, its cleanup takes only what its own sends made. Another caller's
+/// copy in the slot `move:{old}` survives a refusal before Docker's create that carries no
+/// mark (a full bridge), a cancel while the move waits to resend, a refused redial, a typed
+/// refusal, a failed health check and a lost answer.
+#[tokio::test(start_paused = true)]
+async fn another_callers_copy_under_the_old_copys_key_survives_every_failure() {
+    let full_bridge = || {
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument(
+                "no bridge endpoint is free on this Server",
+            )),
+        )
+    };
+    let cases: Vec<(&str, Vec<Step>, bool)> = vec![
+        ("a full bridge", vec![full_bridge(), discarded()], false),
+        (
+            "a cancel during the resend wait",
+            vec![
+                Step(run(), Reply::Error(RpcError::unavailable("restarting"))),
+                discarded(),
+            ],
+            true,
+        ),
+        (
+            "a refused redial",
+            vec![
+                Step(run(), Reply::Error(crate::connect::closed_session_error())),
+                discarded(),
+            ],
+            false,
+        ),
+        (
+            "a typed refusal",
+            vec![
+                Step(
+                    run(),
+                    Reply::Refused(ContainerRefusalReason::ImagePullFailed, None),
+                ),
+                discarded(),
+            ],
+            false,
+        ),
+        (
+            "a failed health check",
+            vec![unhealthy_run(machine(TO), &container('b')), discarded()],
+            false,
+        ),
+        (
+            "a lost answer",
+            vec![
+                Step(run(), Reply::Error(lost())),
+                full_bridge(),
+                discarded(),
+            ],
+            false,
+        ),
+    ];
+    for (case, steps, cancel_in_wait) in cases {
+        let mut client = with_planted(moving(steps));
+        client.redial = Some(Err(RedialFailure::Refused(RpcError::new(
+            RpcErrorCode::Unauthenticated,
+            "the entry refused this key",
+        ))));
+        let cancellation = CancellationToken::new();
+        if cancel_in_wait {
+            let cancel = cancellation.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(RESTART_POLL / 2).await;
+                cancel.cancel();
+            });
+        }
+        let moved = move_container(
+            &client,
+            &test_namespace(),
+            &spec(Some(0), None, None),
+            &machine(TO),
+            (&machine(FROM), &container('a')),
+            &source_image(),
+            &cancellation,
+        )
+        .await;
+        assert!(moved.is_err(), "{case}");
+        assert_eq!(
+            client.rotation(&container('c')),
+            Some(CopyRotation::Pending),
+            "{case}: another caller's copy was removed"
+        );
+        assert_eq!(client.rotation(&container('b')), None, "{case}");
+        client.assert_done();
+    }
+}
+
+/// A resend carries the slot its lost send made a Container in, so the cleanup after it
+/// takes that Container too. The report still can't say none is left: the lost send's
+/// request may still arrive after the cleanup.
+#[tokio::test(start_paused = true)]
+async fn a_resend_removes_what_its_lost_send_made() {
+    let client = moving(vec![
+        Step(run(), Reply::CreatedLost(container('b'), lost())),
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        discarded(),
+    ]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&client).await
+    else {
+        panic!("nothing served");
+    };
+    assert_eq!(client.rotation(&container('b')), None);
+    assert!(!replacement_removed, "a lost send may still create");
+    client.assert_done();
+}
+
+/// The cleanup's Gone is sent again while the destination restarts, so a restart there
+/// doesn't leave the move's copy behind.
+#[tokio::test(start_paused = true)]
+async fn a_failed_moves_cleanup_waits_out_a_destination_restart() {
+    let client = moving(vec![
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        Step(
+            Call::DiscardSlot(machine(TO), ContainerKind::ServiceContainer),
+            Reply::Error(RpcError::unavailable("restarting")),
+        ),
+        discarded(),
+    ]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&client).await
+    else {
+        panic!("nothing served");
+    };
+    assert!(replacement_removed);
+    client.assert_done();
+}
+
+/// A Gone the Machine answers by reading back a Container, as one a restore brought back
+/// in the slot, did not leave it empty.
+#[tokio::test]
+async fn a_cleanup_that_reads_back_a_container_says_it_may_still_be_there() {
+    let client = moving(vec![
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        Step(
+            Call::DiscardSlot(machine(TO), ContainerKind::ServiceContainer),
+            Reply::Created(container('d')),
+        ),
+    ]);
+    let Err(MoveError {
+        replacement_removed,
+        ..
+    }) = move_with(&client).await
+    else {
+        panic!("nothing served");
+    };
+    assert!(!replacement_removed);
+    client.assert_done();
+}
+
+/// Two drains moving the same copy at once: one fails while the other's new Container
+/// waits on its health. The failed one's cleanup leaves the other's Container alone.
+#[tokio::test(start_paused = true)]
+async fn a_failed_move_leaves_a_concurrent_moves_copy() {
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine(FROM), container('a')), running()),
+        Step(
+            run(),
+            Reply::CreatedAfter(container('b'), || {
+                tokio::time::sleep(std::time::Duration::from_secs(1))
+            }),
+        ),
+        observed(Call::Inspect(machine(FROM), container('a')), running()),
+        Step(
+            run(),
+            Reply::Error(RpcError::invalid_argument("no bridge endpoint is free")),
+        ),
+        discarded(),
+    ]);
+    let (served, failed) = tokio::join!(move_with(&client), move_with(&client));
+    assert_eq!(served.unwrap(), container('b'));
+    assert!(failed.is_err());
+    assert_eq!(
+        client.rotation(&container('b')),
+        Some(CopyRotation::Pending)
+    );
+    client.assert_done();
+}
+
+/// A rerun of a drain whose earlier move brought its copy In, but never retired the old
+/// one, creates nothing: it confirms that copy runs the old copy's image and is listed,
+/// then retires the old copy. A copy of another image, or one failing its health check
+/// though every proxy still lists it, leaves the old copy serving.
+#[tokio::test]
+async fn a_rerun_retires_the_old_copy_behind_the_copy_an_earlier_move_brought_in() {
+    let promoted = Copy {
+        machine_id: machine(TO),
+        service: api(),
+        container_id: container('b'),
+        rotation: CopyRotation::In,
+    };
+    for (image, health, end) in [
+        ("a", healthy(), OldCopyEnd::Stopped),
+        (
+            "a",
+            failing(),
+            OldCopyEnd::In {
+                unconfirmed: Unconfirmed::Failed {
+                    detail: format!(
+                        "Container {} came In for it on {}, but isn't healthy",
+                        container('b'),
+                        name(&machine(TO))
+                    ),
+                },
+            },
+        ),
+        (
+            "c",
+            healthy(),
+            OldCopyEnd::In {
+                unconfirmed: Unconfirmed::Failed {
+                    detail: format!(
+                        "Container {} came In for it on {}, but runs another image",
+                        container('b'),
+                        name(&machine(TO))
+                    ),
+                },
+            },
+        ),
+    ] {
+        let mut steps = vec![
+            observed(Call::Inspect(machine(FROM), container('a')), running()),
+            observed(Call::Inspect(machine(TO), container('b')), health),
+        ];
+        if end == OldCopyEnd::Stopped {
+            steps.push(ok(Call::Remove(machine(FROM), container('a'))));
+        }
+        let mut client = Scripted::new(steps)
+            .with_copy(&machine(FROM), &container('a'), CopyRotation::In)
+            .with_copy(&machine(TO), &container('b'), CopyRotation::In)
+            .with_key(&container('b'), &format!("move:{}", container('a')));
+        client
+            .image_ids
+            .insert(container('a'), source_image().to_string());
+        client
+            .image_ids
+            .insert(container('b'), format!("sha256:{}", image.repeat(64)));
+        let cancellation = CancellationToken::new();
+        let ended =
+            match confirm_promoted(&client, &old_copy(), &promoted, &name, &cancellation).await {
+                Relocated::Listed => retire_old(&client, &old_copy(), &name, &cancellation)
+                    .await
+                    .unwrap(),
+                Relocated::Unlisted(unconfirmed) => OldCopyEnd::In { unconfirmed },
+            };
+        assert_eq!(ended, end);
+        assert_eq!(client.rotation(&container('b')), Some(CopyRotation::In));
+        client.assert_done();
+    }
+}
+
 async fn cancelled_global_move(client: &Scripted) -> bool {
     let mut global = spec(Some(0), None, None);
     global.mode = ployz_core::ServiceMode::Global;
     let cancellation = CancellationToken::new();
     let (namespace, to, from, old) = (test_namespace(), machine(TO), machine(FROM), container('a'));
+    let image = source_image();
     let moving = move_container(
         client,
         &namespace,
         &global,
         &to,
         (&from, &old),
+        &image,
         &cancellation,
     );
     tokio::pin!(moving);
@@ -392,7 +738,10 @@ async fn a_cancelled_global_move_removes_its_replacement() {
             ContainerKind::ServiceContainer,
         )),
     ]);
-    assert!(cancelled_global_move(&client).await);
+    assert!(
+        !cancelled_global_move(&client).await,
+        "a send was cut off while out"
+    );
     client.assert_done();
 }
 

@@ -265,3 +265,50 @@ fn an_ensure_request_carrying_more_than_thirty_two_versions_does_not_parse() {
     assert_eq!(parse(32).unwrap(), 32);
     assert!(parse(33).is_err());
 }
+
+/// A Volume born in another Environment is that Environment's data, so a version signed
+/// here never opens it, whatever the signature covers.
+#[test]
+fn a_version_naming_a_volume_born_in_another_environment_is_refused() {
+    let device = signer(1);
+    let born_in = |namespace: &str| -> RequestedServiceSpec {
+        serde_json::from_value(json!({
+            "name": "web",
+            "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": IMAGE, "pull_policy": "missing"},
+            "volumes": [{"reference": "data", "source": {"kind": "provisioned", "name": "data",
+                "maximum_bytes": 1_073_741_824_u64,
+                "birth": {"namespace": namespace, "name": "data", "made_at": 1_762_178_640_000_u64,
+                    "nonce": "00112233445566778899aabbccddeeff"}}}],
+            "mounts": [{"volume": "data", "target": "/data"}],
+        }))
+        .unwrap()
+    };
+    let scoped = |spec: &RequestedServiceSpec| {
+        let mut spec = spec.clone();
+        spec.mount_graph = spec.mount_graph.scope_to_namespace(&namespace()).unwrap();
+        resolved(&spec)
+    };
+    let trusted = trusting(&[&device]);
+
+    let here = born_in("app");
+    assert!(
+        check(
+            &[signed(&device, &body(&device, &here))],
+            &trusted,
+            &scoped(&here)
+        )
+        .is_ok()
+    );
+    let elsewhere = born_in("other");
+    assert_eq!(
+        check(
+            &[signed(&device, &body(&device, &elsewhere))],
+            &trusted,
+            &scoped(&elsewhere)
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a Volume's Environment"
+        }),
+    );
+}

@@ -161,7 +161,7 @@ fn admit(
         message: None,
         prune: false,
         no_prune: false,
-        approval: None,
+        versions: Vec::new(),
     };
     choose(&mut deploy);
     store.write(who, &Admit::Deploy(deploy))
@@ -267,7 +267,7 @@ fn redeploy(store: &ConfigStore, who: &Actor, n: u8, source: &DeploymentId) {
                 rolls_back: None,
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approval: None,
+                versions: Vec::new(),
             }),
         )
         .unwrap();

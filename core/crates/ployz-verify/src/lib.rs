@@ -17,6 +17,8 @@ mod build_handoff;
 #[cfg(test)]
 mod caddy_load;
 #[cfg(test)]
+mod drain_copy;
+#[cfg(test)]
 mod harness;
 #[cfg(test)]
 mod mcp_login;

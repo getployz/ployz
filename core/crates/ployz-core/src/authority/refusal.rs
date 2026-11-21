@@ -55,5 +55,4 @@ pub(super) fn first_mismatch<const N: usize>(
 pub(super) mod field {
     pub const CLUSTER: &str = "a Cluster";
     pub const ENVIRONMENT: &str = "an Environment";
-    pub const WINDOW: &str = "a window";
 }
