@@ -913,14 +913,10 @@ pub struct VolumeToCreate {
     pub first_copy: Option<FirstCopy>,
 }
 
-/// A Managed Volume's first copy, as the Store records where it goes.
+/// A Managed Volume's first copy. The Store records the Server it goes on, and a
+/// Server it recorded stands until the Volume or the Cluster goes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct FirstCopy {
-    /// The Server an earlier Deployment chose for it, which has since left the Cluster.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub replaces: Option<MachineId>,
-}
+pub struct FirstCopy {}
 
 /// A Namespace-owned Docker Volume this Deploy keeps because it is omitted
 /// from this Deploy's target.

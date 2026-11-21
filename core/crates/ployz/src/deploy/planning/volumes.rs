@@ -16,7 +16,7 @@ use ployz_core::{
 
 use crate::deploy::{
     BesideVolume, DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError,
-    PlanOptions, SharedHome,
+    PlanOptions, SharedHome, Unfit,
 };
 
 use super::placement::PlacementReservations;
@@ -387,8 +387,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
     }
 
     /// Whether creating `volume` as `id` makes its first copy: a Managed Volume no Global
-    /// Service mounts, with no copy seen on any Server. Names the Server an earlier
-    /// Deployment chose for it when this plan set that aside, because it left the Cluster.
+    /// Service mounts, with no copy seen on any Server.
     fn first_copy(&self, id: &DockerVolumeId, volume: &ServiceVolume) -> Option<FirstCopy> {
         let provisioned = matches!(
             volume.source.kind(),
@@ -398,19 +397,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
             .observed_locations()
             .any(|located| *located.name == id.name)
             || !self.copies_without_writer(&id.name).is_empty();
-        (provisioned && !seen && !self.global.contains(&id.name)).then(|| FirstCopy {
-            replaces: self
-                .first_copies
-                .get(&id.name)
-                .filter(|machine| self.snapshot.machine(**machine).is_none())
-                .copied(),
-        })
-    }
-
-    /// The Server an earlier Deployment chose for `name`'s first copy, while it is a member.
-    fn first_copy_on(&self, name: &DockerVolumeName) -> Option<&'snapshot MachineObservation> {
-        let machine = self.first_copies.get(name)?;
-        self.snapshot.machine(*machine)
+        (provisioned && !seen && !self.global.contains(&id.name)).then_some(FirstCopy {})
     }
 
     /// Derive creation rows and complete budgets from the same assigned Volumes.
@@ -1310,9 +1297,16 @@ fn volume_constraints<'spec>(
                         machines.clear();
                         unread.retain(|machine| held(machine.machine.id));
                         first_located.get_or_insert(volume);
-                    } else if let Some(pinned) = plan.first_copy_on(name) {
-                        // An earlier Deploy may still make the first copy there.
-                        let id = pinned.machine.id;
+                    } else if let Some(&id) = plan.first_copies.get(name) {
+                        // An earlier Deploy may still make the first copy there. A Server
+                        // this view doesn't list may only be one it hasn't heard of yet.
+                        let Some(pinned) = snapshot.machine(id) else {
+                            return Err(PlanError::FirstCopyUnfit {
+                                volume: plan.authored(name).to_owned(),
+                                machine: id.to_string(),
+                                unfit: Unfit::Unlisted,
+                            });
+                        };
                         if skipped.iter().any(|(skipped, ..)| *skipped == id) {
                             return Err(plan.holder_unknown(volume, pinned.machine.name.clone()));
                         }
@@ -1324,8 +1318,12 @@ fn volume_constraints<'spec>(
                         {
                             return Err(PlanError::FirstCopyUnfit {
                                 volume: plan.authored(name).to_owned(),
-                                machine: pinned.machine.name.clone(),
-                                full: !excluded,
+                                machine: pinned.machine.name.to_string(),
+                                unfit: if excluded {
+                                    Unfit::Excluded
+                                } else {
+                                    Unfit::Full
+                                },
                             });
                         }
                         machines.retain(|machine| machine.machine.id == id);

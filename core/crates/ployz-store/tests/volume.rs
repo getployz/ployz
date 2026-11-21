@@ -2571,13 +2571,11 @@ fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
 }
 
 /// Claim Deployment `n` and record a Deploy Preview that makes the Volume's first copy on
-/// `on`, setting aside the earlier choice of `replaces`. Returns the Deployment and the
-/// first copies its Intent was lowered with.
+/// `on`. Returns the Deployment and the first copies its Intent was lowered with.
 fn place_first_copy(
     store: &ConfigStore,
     n: u8,
     on: char,
-    replaces: Option<char>,
 ) -> (ployz_store::DeploymentSummary, Value) {
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&id(n), &runner).unwrap();
@@ -2586,7 +2584,7 @@ fn place_first_copy(
         "would_remove": [], "preserved_volumes": [],
         "volumes_to_create": [{
             "machine_id": machine(on), "name": DOCKER_VOLUME, "maximum_bytes": 1_073_741_824,
-            "first_copy": { "replaces": replaces.map(machine) },
+            "first_copy": {},
         }],
     }))
     .unwrap();
@@ -2599,14 +2597,13 @@ fn place_first_copy(
 
 /// The Server the first Deployment chose for a Volume's first copy stands for every later
 /// one, whatever became of the first: a later Deployment that would start the Volume on
-/// another Server ends before it sends anything. Only a plan that found that Server gone
-/// from the Cluster moves it.
+/// another Server ends before it sends anything.
 #[test]
 fn the_first_deploy_to_place_a_volume_decides_where_it_starts() {
     let (store, who) = shop();
     let runner = RunnerId::parse("runner").unwrap();
     admit(&store, &who, 1, &[], None).unwrap();
-    let (first, lowered) = place_first_copy(&store, 1, 'a', None);
+    let (first, lowered) = place_first_copy(&store, 1, 'a');
     assert_eq!(first.status, DeploymentStatus::Running);
     assert_eq!(lowered, Value::Null);
     store
@@ -2614,7 +2611,7 @@ fn the_first_deploy_to_place_a_volume_decides_where_it_starts() {
         .unwrap();
 
     admit(&store, &who, 2, &[], None).unwrap();
-    let (elsewhere, lowered) = place_first_copy(&store, 2, 'b', None);
+    let (elsewhere, lowered) = place_first_copy(&store, 2, 'b');
     assert_eq!(lowered, json!({ DOCKER_VOLUME: machine('a') }));
     assert_eq!(elsewhere.status, DeploymentStatus::Failed);
     assert_eq!(
@@ -2629,19 +2626,7 @@ fn the_first_deploy_to_place_a_volume_decides_where_it_starts() {
     );
 
     admit(&store, &who, 3, &[], None).unwrap();
-    let (again, _) = place_first_copy(&store, 3, 'a', None);
+    let (again, lowered) = place_first_copy(&store, 3, 'a');
+    assert_eq!(lowered, json!({ DOCKER_VOLUME: machine('a') }));
     assert_eq!(again.status, DeploymentStatus::Running);
-    store
-        .record(&id(3), &runner, RunEvidence::NotExecuted("Lost".into()))
-        .unwrap();
-
-    admit(&store, &who, 4, &[], None).unwrap();
-    let (moved, _) = place_first_copy(&store, 4, 'b', Some('a'));
-    assert_eq!(moved.status, DeploymentStatus::Running);
-    store
-        .record(&id(4), &runner, RunEvidence::NotExecuted("Lost".into()))
-        .unwrap();
-    admit(&store, &who, 5, &[], None).unwrap();
-    let (_, lowered) = place_first_copy(&store, 5, 'b', None);
-    assert_eq!(lowered, json!({ DOCKER_VOLUME: machine('b') }));
 }

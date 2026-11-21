@@ -947,16 +947,17 @@ pub enum PlanError {
     /// A Managed Volume no Server holds yet was placed on a Server that can't take it now.
     #[error(
         "Volume {volume} was placed on {machine}, which {}. {} or remove {volume} and add it again. It holds no data yet.",
-        if *.full { "has no room for it" } else { "can't run this service" },
-        if *.full { format!("Free space on {machine},") } else { format!("Let {machine} run it,") }
+        unfit.why(),
+        unfit.remedy(machine)
     )]
     FirstCopyUnfit {
         /// The Volume, as its owner named it.
         volume: String,
-        /// The Server an earlier Deployment chose for its first copy.
-        machine: MachineName,
-        /// It is out of room, rather than unable to run the Service.
-        full: bool,
+        /// The Server an earlier Deployment chose for its first copy, by name, or by ID
+        /// when this Server's view of the Cluster doesn't list it.
+        machine: String,
+        /// Why that Server can't take it now.
+        unfit: Unfit,
     },
     /// The Service mounts a born Volume, and every Server it could run on is too old to
     /// check where a Volume's data began.
@@ -1163,6 +1164,35 @@ struct MachineNames<'names>(&'names [MachineName]);
 impl fmt::Display for MachineNames<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_machine_names(f, self.0)
+    }
+}
+
+/// Why the Server a Volume's first copy was placed on can't take it now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unfit {
+    /// The Cluster as this plan sees it doesn't list the Server.
+    Unlisted,
+    /// It can't run the Service.
+    Excluded,
+    /// It has no room for the Volume.
+    Full,
+}
+
+impl Unfit {
+    fn why(self) -> &'static str {
+        match self {
+            Self::Unlisted => "the server running this deploy doesn't list",
+            Self::Excluded => "can't run this service",
+            Self::Full => "has no room for it",
+        }
+    }
+
+    fn remedy(self, machine: &str) -> String {
+        match self {
+            Self::Unlisted => format!("Bring {machine} back,"),
+            Self::Excluded => format!("Let {machine} run it,"),
+            Self::Full => format!("Free space on {machine},"),
+        }
     }
 }
 

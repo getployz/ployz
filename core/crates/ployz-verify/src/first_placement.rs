@@ -34,9 +34,11 @@
 //! pin is what lets them go on, so its mutation breaks "a Deploy that read the pin starts the
 //! Volume only there", and "never two Writers" only with the record's refusal gone too.
 //!
-//! Out of scope: a Server away or forgotten (a plan then refuses the Volume while any
-//! Server doesn't answer, and a pin whose Server left is replaced: bet 6's accepted
-//! window), a mirror rm and the forgotten-origin checks after it (`volume_runs`), Global
+//! A plan may also run on a view of the Cluster that doesn't list the pinned Server, as an
+//! Entry Machine that hasn't heard of it yet does; the plan then waits for that Server.
+//!
+//! Out of scope: a Server away or forgotten (a plan refuses the Volume while any Server
+//! doesn't answer; a forgotten Cluster drops its pins), a mirror rm and the forgotten-origin checks after it (`volume_runs`), Global
 //! Services, Shared Writes, a Deploy that applies (its Volume then counts as deployed), and
 //! a resize.
 
@@ -85,6 +87,9 @@ pub(crate) struct Broken {
     retire_on_end: bool,
     /// The record keeps the first pin but lets a Preview that starts the Volume elsewhere go on.
     accept_mismatch: bool,
+    /// A plan whose view of the Cluster doesn't list the pinned Server sets the pin aside,
+    /// and the record lets it name another.
+    replace_unlisted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -115,14 +120,16 @@ enum Step {
     Over,
 }
 
-/// What a plan sends, and the first copy its Preview makes with the Server it replaces.
+/// What a plan sends, and the Server its Preview makes the first copy on.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Plan {
     prepare: Option<u8>,
     create: Option<u8>,
-    first: Option<(u8, Option<u8>)>,
+    first: Option<u8>,
     /// It waits for the pinned Server, which can't take the Volume now.
     unfit: bool,
+    /// It set aside a pin on a Server its view didn't list (`replace_unlisted`).
+    replaced: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -169,6 +176,9 @@ pub(crate) struct State {
 pub(crate) enum Action {
     Claim,
     Step(u8),
+    /// Lane `k` plans on a view of the Cluster that doesn't list the Server it read as
+    /// pinned, as an Entry Machine that hasn't yet heard of a Server may.
+    PlanUnlisted(u8),
     Resend(u8),
     End(u8),
     Land(usize),
@@ -308,10 +318,13 @@ fn data_row(server: u8) -> DockerVolume {
     }
 }
 
-/// The Servers as a Deploy observes them now.
-fn snapshot(state: &State) -> DeploySnapshot {
-    let machines = IDS
-        .into_iter()
+/// The Servers as a Deploy observes them now, leaving out `unlisted`.
+fn snapshot(state: &State, unlisted: Option<u8>) -> DeploySnapshot {
+    let listed = move || {
+        IDS.into_iter()
+            .filter(move |server| Some(*server) != unlisted)
+    };
+    let machines = listed()
         .map(|server| {
             let mut observation = MachineObservation::new(
                 Machine {
@@ -340,8 +353,7 @@ fn snapshot(state: &State) -> DeploySnapshot {
             observation
         })
         .collect();
-    let storage_capacity = IDS
-        .into_iter()
+    let storage_capacity = listed()
         .map(|server| {
             let role = match host(state, server).held {
                 Held::Nothing => None,
@@ -384,7 +396,7 @@ fn snapshot(state: &State) -> DeploySnapshot {
         machines,
         storage_capacity,
         volume_snapshot: VolumeSnapshot::try_from_observations(
-            IDS.into_iter()
+            listed()
                 .filter(|server| {
                     let host = host(state, *server);
                     host.held == Held::Root && host.registered
@@ -402,10 +414,13 @@ impl FirstPlacement {
         Self { broken }
     }
 
-    /// What a Deploy that claimed with `pin` plans on `state`, as the runner plans it.
-    fn plan(&self, state: &State, pin: Option<u8>) -> Plan {
+    /// What a Deploy that claimed with `pin` plans on `state`, as the runner plans it,
+    /// with a view that leaves the pinned Server out when `unlisted`.
+    fn plan(&self, state: &State, pin: Option<u8>, unlisted: bool) -> Plan {
+        let unlisted = pin.filter(|_| unlisted);
+        let replaced = unlisted.is_some() && self.broken.replace_unlisted;
         let pins = pin
-            .filter(|_| !self.broken.ignore_pin)
+            .filter(|_| !self.broken.ignore_pin && !replaced)
             .map(|server| (data_name(), machine_id(server)))
             .into_iter()
             .collect();
@@ -418,7 +433,7 @@ impl FirstPlacement {
             },
         )
         .with_first_copies(pins);
-        let preview = match preview_deploy(&intent, &snapshot(state)) {
+        let preview = match preview_deploy(&intent, &snapshot(state, unlisted)) {
             Ok(preview) => preview,
             // A root on the Server out of room fails the Deploy before it sends anything.
             Err(error) if error.to_string().contains("cannot admit this Deploy") => {
@@ -427,6 +442,7 @@ impl FirstPlacement {
                     create: None,
                     first: None,
                     unfit: false,
+                    replaced: false,
                 };
             }
             Err(error) => panic!("the runner plans every state: {error}"),
@@ -450,12 +466,10 @@ impl FirstPlacement {
                 blocked.error.details.get("reason") == Some(&serde_json::json!("first_copy_unfit"))
             }),
             first: preview.volumes_to_create.iter().find_map(|create| {
-                let first = create.first_copy.as_ref()?;
-                Some((
-                    server_of(&create.machine_id),
-                    first.replaces.as_ref().map(server_of),
-                ))
+                create.first_copy.as_ref()?;
+                Some(server_of(&create.machine_id))
             }),
+            replaced,
         }
     }
 
@@ -491,11 +505,11 @@ impl FirstPlacement {
 
     /// The Store's record of the lane's Preview: whether the Deployment goes on.
     fn record(&self, state: &mut State, plan: Plan) -> bool {
-        let Some((on, replaces)) = plan.first else {
+        let Some(on) = plan.first else {
             return true;
         };
         match state.pin {
-            Some(pin) if pin != on && Some(pin) != replaces => {
+            Some(pin) if pin != on && !plan.replaced => {
                 if self.broken.accept_mismatch {
                     return true;
                 }
@@ -516,11 +530,11 @@ impl FirstPlacement {
         lane_mut(state, k).last = Some(request);
     }
 
-    fn step(&self, state: &mut State, k: u8) {
+    fn step(&self, state: &mut State, k: u8, unlisted: bool) {
         let lane = *state.lanes.get(usize::from(k)).expect("a lane");
         match lane.step {
             Step::Plan => {
-                let plan = self.plan(state, lane.pin);
+                let plan = self.plan(state, lane.pin, unlisted);
                 let lane = lane_mut(state, k);
                 lane.plan = Some(plan);
                 lane.step = self.after(Step::Plan, plan);
@@ -611,6 +625,9 @@ impl Model for FirstPlacement {
         }
         for (k, lane) in state.lanes.iter().enumerate() {
             let k = u8::try_from(k).expect("few lanes");
+            if lane.step == Step::Plan && lane.pin.is_some() {
+                actions.push(Action::PlanUnlisted(k));
+            }
             if lane.step != Step::Over {
                 actions.push(Action::Step(k));
                 actions.push(Action::End(k));
@@ -651,7 +668,8 @@ impl Model for FirstPlacement {
                 last: None,
                 resent: false,
             }),
-            Action::Step(k) => self.step(&mut state, k),
+            Action::Step(k) => self.step(&mut state, k, false),
+            Action::PlanUnlisted(k) => self.step(&mut state, k, true),
             Action::Resend(k) => {
                 let lane = lane_mut(&mut state, k);
                 lane.resent = true;
@@ -696,7 +714,7 @@ impl Model for FirstPlacement {
                 state.lanes.iter().all(|lane| {
                     let first = lane.plan.and_then(|plan| plan.first);
                     match (lane.pin, first) {
-                        (Some(pin), Some((on, replaces))) => on == pin || replaces == Some(pin),
+                        (Some(pin), Some(on)) => on == pin,
                         _ => true,
                     }
                 })
@@ -768,7 +786,7 @@ impl crate::harness::Narrated for FirstPlacement {
         for (state, action) in path {
             let Some(action) = action else { continue };
             let next = self.next_state(state, *action).expect("a next state");
-            let step = if let Action::Step(k) = action {
+            let step = if let Action::Step(k) | Action::PlanUnlisted(k) = action {
                 let lane = next.lanes.get(usize::from(*k)).expect("a lane");
                 format!(
                     "D{k} {:?} (read pin {}, plans {:?})",
@@ -865,6 +883,19 @@ mod tests {
                 ..Broken::default()
             }),
             &[TWO_WRITERS],
+        );
+    }
+
+    /// #4470 review: a retry whose Entry Machine hasn't yet heard of the pinned Server
+    /// must wait for it, not start the Volume beside a late step there.
+    #[test]
+    fn a_pin_set_aside_for_an_unlisted_server_starts_two() {
+        holds(
+            FirstPlacement::broken(Broken {
+                replace_unlisted: true,
+                ..Broken::default()
+            }),
+            &[TWO_WRITERS, FOLLOWS],
         );
     }
 
