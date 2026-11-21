@@ -693,7 +693,7 @@ fn a_new_volume_on_a_second_replica_is_refused_in_a_whole_sentence() {
     assert_eq!(refusal.code, RpcErrorCode::Conflict);
     assert_eq!(
         refusal.message,
-        "data would be attached to web; set replicas to 1, or add it with shared writes on"
+        "data would be attached to web; set replicas to 1"
     );
     assert!(refusal.next.is_empty(), "{refusal:?}");
 }

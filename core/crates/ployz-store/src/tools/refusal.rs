@@ -403,19 +403,17 @@ fn told(follow_up: FollowUp) -> Told {
                 "service": "setup",
             }),
         )),
-        FollowUp::VolumeAllowSharedWrites { volume, place: at } => Told::Call(Call::to(
+        FollowUp::VolumeStopSharedWrites { volume, place: at } => Told::Call(Call::to(
             ToolId::VolumeUpdate,
             json!({
                 "project": at.project,
                 "environment": at.environment,
                 "volume": volume,
-                "shared_writes": true,
+                "shared_writes": false,
             }),
         )),
         // A removal is never proposed to a call that did not ask for one.
         FollowUp::DomainRemove { .. } | FollowUp::Remove { .. } => Told::Nothing,
-        // volume_add takes no shared writes.
-        FollowUp::VolumeAdd { .. } => Told::Nothing,
         FollowUp::SyncThenSetSecret { .. }
         | FollowUp::StopKeepingBranch { .. }
         | FollowUp::UpdateClient { .. } => Told::Nothing,

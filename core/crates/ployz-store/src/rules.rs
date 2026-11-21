@@ -1,6 +1,7 @@
 //! The rules an Environment's authored configuration keeps as a whole, which no
-//! single Setting can check alone: a Volume without Shared Writes has one writer
-//! and no Service that updates start-first mounts it, a Service that mounts a
+//! single Setting can check alone: no Volume turns Shared Writes on, since they are
+//! paused, a Volume without them has one writer and no Service that updates
+//! start-first mounts it, a Service that mounts a
 //! Volume counts its replicas in one region, variables never reference each other
 //! in a cycle, and a Setup Command runs in a Service there is. A Config takes no
 //! part in cycles: nothing references a Config.
@@ -17,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     BUILT_IN_VARIABLES, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVolumeIntent, ServiceUpdateOrder, ValuePart, ValuePartOwner, VolumeKind,
+    ServiceUpdateOrder, ValuePart, ValuePartOwner,
 };
 use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ use ts_rs::TS;
 
 use crate::SetupCommand;
 use crate::error;
-use crate::followup::{FollowUp, Place, SetupLeft, Storage};
+use crate::followup::{FollowUp, Place, SetupLeft};
 use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 
@@ -198,7 +199,7 @@ pub(crate) struct Facts<'a> {
 ///
 /// # Errors
 /// The first problem the write adds, naming what breaks the rule and how to fix
-/// it: `conflict` for a second writer of a Volume, replicas in two regions on one, or
+/// it: `unsupported` for a Volume that turns Shared Writes on, `conflict` for a second writer of a Volume, replicas in two regions on one, or
 /// a Setup Command's Service the write removed; `invalid_argument` for a reference cycle; `not_found` for a Setup
 /// Command naming no Service.
 pub(crate) fn check_write(
@@ -224,6 +225,7 @@ pub(crate) fn check_write(
         after,
     };
     Err(match first {
+        Problem::Shared(volume) => refusing.shared(volume),
         Problem::Writers { volume, replicas } => refusing.writers(volume, *replicas),
         Problem::StartFirst { service, volume } => refusing.start_first(service, volume),
         Problem::Regions { service, volume } => refusing.regions(service, volume),
@@ -235,6 +237,8 @@ pub(crate) fn check_write(
 /// One way an Environment breaks a rule, by lineage so a Branch copy has the same.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum Problem {
+    /// A Volume, by lineage, with Shared Writes on: they are paused.
+    Shared(String),
     /// A Volume without Shared Writes, by lineage, and how many replicas write it.
     Writers { volume: String, replicas: u32 },
     /// A Service that updates start-first mounts a Volume without Shared Writes, both
@@ -293,7 +297,12 @@ impl Problem {
 /// Every rule `facts` breaks.
 fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
     let Facts { working, setup, .. } = facts;
-    let mut found = BTreeSet::new();
+    let mut found: BTreeSet<Problem> = working
+        .volumes
+        .iter()
+        .filter(|volume| volume.shared_writes)
+        .map(|volume| Problem::Shared(volume.resource_lineage_id.clone()))
+        .collect();
     for volume in working
         .volumes
         .iter()
@@ -546,13 +555,13 @@ impl<'a> Refusing<'a> {
             .unwrap_or_else(|| "a removed Service".to_owned())
     }
 
-    /// The name of the Volume (lineage) a Service mounts.
+    /// The name of Volume `lineage` in Working State.
     fn volume(&self, lineage: &str) -> String {
         let mut volumes = self.after.working.volumes.iter();
         volumes
             .find(|candidate| candidate.resource_lineage_id == lineage)
             .map(|volume| volume.name.clone())
-            .expect("a Volume a Service mounts is in Working State")
+            .expect("a Volume a rule names is in Working State")
     }
 
     /// A second writer of Volume `volume` (lineage): turning Shared Writes off over
@@ -570,90 +579,47 @@ impl<'a> Refusing<'a> {
             .map(|was| writers(self.before.working, &was.resource_id))
             .unwrap_or_default();
         let name = &node.name;
-        let allow = format!("ployz volume set {name} --shared-writes");
-        let allow_here = FollowUp::VolumeAllowSharedWrites {
-            volume: name.clone(),
-            place: self.place(),
+        let (is, mounted) = match was {
+            Some(_) => ("is", "is already mounted"),
+            None => ("would be", "would be mounted"),
         };
-        let (message, next) = match writing.as_slice() {
-            _ if turned_off => (
-                format!(
-                    "{name} is written by {}; leave one Service with 1 replica before turning shared writes off",
-                    slugs(&writing)
-                ),
-                FollowUp::VolumeInspect {
-                    volume: name.clone(),
-                    place: self.place(),
-                },
+        let message = match writing.as_slice() {
+            _ if turned_off => format!(
+                "{name} is written by {}; leave one Service with 1 replica before turning shared writes off",
+                slugs(&writing)
             ),
-            [service] if was.is_none() => (
-                format!(
-                    "{name} would be attached to {}; set replicas to 1, or add it with shared writes on",
-                    service.slug
-                ),
-                self.add(node),
+            [service] => format!(
+                "{name} {is} attached to {}; set replicas to 1",
+                service.slug
             ),
-            [service] => (
-                format!(
-                    "{name} is attached to {}; set replicas to 1, or allow shared writes: {allow}",
-                    service.slug
-                ),
-                allow_here,
+            // Name the Services that mounted it first, else all of them.
+            _ => format!(
+                "{name} {mounted} by {}; mount it in one Service",
+                slugs(if old.is_empty() { &writing } else { &old })
             ),
-            _ if was.is_none() => (
-                format!(
-                    "{name} would be mounted by {}; add it with shared writes on",
-                    slugs(&writing)
-                ),
-                self.add(node),
-            ),
-            // Name the Services that mounted it first, else its first.
-            [first, ..] => (
-                format!(
-                    "{name} is already mounted by {}; allow shared writes first: {allow}",
-                    if old.is_empty() {
-                        first.slug.clone()
-                    } else {
-                        slugs(&old)
-                    }
-                ),
-                allow_here,
-            ),
-            [] => unreachable!("more than one writer means a Service writes it"),
         };
+        let details = json!({ "volume": name, "writers": replicas });
+        // A Volume this write adds isn't there to inspect.
         error::conflict(
             message,
-            next.within(json!({ "volume": name, "writers": replicas })),
+            match was {
+                Some(_) => FollowUp::VolumeInspect {
+                    volume: name.clone(),
+                    place: self.place(),
+                }
+                .within(details),
+                None => details,
+            },
         )
     }
 
-    /// Add Volume `node`, new to this write, with shared writes on.
-    fn add(&self, node: &SavedVolumeIntent) -> FollowUp {
-        let mounts = self
-            .after
-            .working
-            .services
-            .iter()
-            .flat_map(|service| {
-                service
-                    .volume_attachments
-                    .iter()
-                    .filter(|mount| mount.volume_resource_id == node.resource_id)
-                    .map(|mount| format!("{}:{}", service.slug, mount.mount_path))
-            })
-            .collect();
-        let storage = match node.storage {
-            VolumeKind::Docker {} => Storage::Docker,
-            VolumeKind::Provisioned { maximum_bytes } => {
-                Storage::Size(maximum_bytes.to_string().replace(' ', ""))
-            }
-        };
-        FollowUp::VolumeAdd {
-            volume: node.name.clone(),
-            mounts,
-            storage,
-            place: self.place(),
-        }
+    /// Volume `volume` (lineage) turns Shared Writes on.
+    fn shared(&self, volume: &str) -> RpcError {
+        let volume = self.volume(volume);
+        RpcError::unsupported(format!(
+            "Shared writes are paused for now, so {volume} can't turn them on"
+        ))
+        .with_details(json!({ "volume": volume }))
     }
 
     /// Service `service` updates start-first and mounts Volume `volume` (lineages),
@@ -661,10 +627,9 @@ impl<'a> Refusing<'a> {
     fn start_first(&self, service: &str, volume: &str) -> RpcError {
         let service = self.name(service);
         let volume = self.volume(volume);
-        let allow = format!("ployz volume set {volume} --shared-writes");
         error::conflict(
             format!(
-                "{service} mounts {volume}, and start-first runs two copies on it; set {service}.updateOrder=stop-first, or allow shared writes: {allow}"
+                "{service} mounts {volume}, and start-first runs two copies on it; set {service}.updateOrder=stop-first"
             ),
             FollowUp::SetStopFirst {
                 service: service.clone(),
@@ -1012,6 +977,57 @@ pub(crate) mod tests {
         branch(&store, &who, &["db"]).unwrap();
         let refused = set(&store, &who, &[("db.replicas", json!(3))]).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
+    }
+
+    /// A Volume saved with shared writes on, from before the pause, keeps editing, but
+    /// no Deploy ships it until they are off.
+    #[test]
+    fn a_volume_with_shared_writes_from_before_the_pause_never_deploys() {
+        let (store, who) = shop();
+        seed(&store, &who, |working| {
+            working.volumes[0].shared_writes = true
+        });
+        unrelated(&store, &who).unwrap();
+        let deploy = || {
+            store.write(
+                &who,
+                &crate::Admit::Deploy(crate::Deploy {
+                    id: crate::DeploymentId::parse(uuid(10)).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    upload: None,
+                    accept_volume_loss: Vec::new(),
+                    message: None,
+                    prune: false,
+                    no_prune: false,
+                    versions: Vec::new(),
+                }),
+            )
+        };
+
+        let refused = deploy().unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            refused.message,
+            "Shared writes are paused for now, and data still has them on; turn them off to deploy"
+        );
+        assert_eq!(
+            refused.details["next"],
+            "ployz volume set data --shared-writes=false --env production --project shop"
+        );
+
+        store
+            .write(
+                &who,
+                &crate::SetVolumeSharedWrites {
+                    environment: EnvironmentRef::default(),
+                    volume: VolumeName::parse("data").unwrap(),
+                    shared_writes: false,
+                },
+            )
+            .unwrap();
+        deploy().unwrap();
     }
 
     #[test]

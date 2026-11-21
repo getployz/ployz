@@ -322,8 +322,8 @@ fn retry_review<'a>(
 }
 
 /// The gate every Deploy passes, the user's or the Store's own: a Server to run
-/// it, the Cluster Domain its generated domains expand under, and no hostname
-/// another Namespace publishes. A secret without a value never blocks it: the
+/// it, no Volume with Shared Writes on, the Cluster Domain its generated domains
+/// expand under, and no hostname another Namespace publishes. A secret without a value never blocks it: the
 /// Deployment leaves it out and warns.
 pub(crate) fn gate(
     tx: &mut dyn Tx,
@@ -333,8 +333,38 @@ pub(crate) fn gate(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     trusted.runnable()?;
+    refuse_shared_writes(environment, intent)?;
     needs_cluster_domain(environment, intent, cluster_domain)?;
     domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
+}
+
+/// Refuse to deploy a Volume with Shared Writes on: they are paused, and a Server
+/// runs one Container on a Managed volume at a time. Sending nothing beats a Deploy
+/// whose second writer each Server refuses partway.
+fn refuse_shared_writes(
+    environment: &scope::Environment,
+    intent: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    let shared: Vec<&str> = intent
+        .volumes
+        .iter()
+        .filter(|volume| volume.shared_writes)
+        .map(|volume| volume.name.as_str())
+        .collect();
+    let [first, ..] = shared.as_slice() else {
+        return Ok(());
+    };
+    let off = FollowUp::VolumeStopSharedWrites {
+        volume: (*first).to_owned(),
+        place: Place::of(&environment.summary),
+    };
+    Err(error::conflict(
+        format!(
+            "Shared writes are paused for now, and {} still has them on; turn them off to deploy",
+            shared.join(", ")
+        ),
+        off.within(json!({ "volumes": shared })),
+    ))
 }
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain

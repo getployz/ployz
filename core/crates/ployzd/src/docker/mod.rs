@@ -1398,6 +1398,13 @@ pub enum Error {
     /// slot holds a copy of it.
     #[error("Volume '{0}' has no writable copy on this Machine")]
     VolumeNotWritable(DockerVolumeName),
+    /// Another Container on this Machine runs on a mounted Provisioned Volume's root.
+    #[error("Volume '{name}' is in use by {container}, which still runs on this Machine")]
+    VolumeHeld {
+        name: DockerVolumeName,
+        /// The running Container's Docker name.
+        container: String,
+    },
     /// The volume plugin did not say which origin a Provisioned Volume carries.
     #[error("could not read which data Volume '{name}' holds")]
     VolumeOriginUnread {
@@ -1553,6 +1560,7 @@ impl Error {
             | Self::VolumeShapeMismatch { .. }
             | Self::ForeignVolume { .. }
             | Self::VolumeNotWritable(_)
+            | Self::VolumeHeld { .. }
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
             | Self::RetentionNameTaken(_)

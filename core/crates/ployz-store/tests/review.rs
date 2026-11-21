@@ -432,8 +432,7 @@ fn discard_keeps_mounts_it_does_not_name() {
         .write(
             &who,
             &CreateVolume {
-                // Three replicas of web write it below.
-                shared_writes: true,
+                shared_writes: false,
                 storage_locked: false,
                 restored_from: None,
                 id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
@@ -459,8 +458,8 @@ fn discard_keeps_mounts_it_does_not_name() {
         mount.row.unwrap().to_string(),
         "00000000-0000-4000-8000-000000000003:mounts.00000000-0000-4000-8000-000000000005"
     );
-    set(&store, &who, "web.replicas", json!(3));
-    discard(&store, &who, Some("web.replicas"), None).unwrap();
+    set(&store, &who, "web.env.MODE", json!("fast"));
+    discard(&store, &who, Some("web.env.MODE"), None).unwrap();
     assert_eq!(value(&store, &who, "web.mounts.data"), Some(json!("/data")));
     // web was introduced before it mounted data: discarding the mount takes it out.
     discard(&store, &who, Some("web.mounts.data"), None).unwrap();
@@ -2943,7 +2942,7 @@ fn saved_discard_cannot_downgrade_a_sealed_variable() {
 }
 
 #[test]
-fn history_undo_volume_mount_named_name_and_shared_writes() {
+fn history_undo_volume_mount_named_name() {
     let (store, who) = shop();
     store
         .write(
@@ -2965,16 +2964,6 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
         .unwrap();
     publish(&store, &who, None).unwrap();
     set(&store, &who, "web.mounts.name", json!("/new"));
-    store
-        .write(
-            &who,
-            &ployz_store::SetVolumeSharedWrites {
-                environment: EnvironmentRef::default(),
-                volume: VolumeName::parse("name").unwrap(),
-                shared_writes: true,
-            },
-        )
-        .unwrap();
     publish(&store, &who, None).unwrap();
     let preview = store
         .read(
@@ -2996,16 +2985,6 @@ fn history_undo_volume_mount_named_name_and_shared_writes() {
     );
     stage_history(&store, &who, 2, ployz_store::HistoryAction::Undo);
     assert_eq!(value(&store, &who, "web.mounts.name"), Some(json!("/old")));
-    assert!(
-        !store
-            .read(&who, &ployz_store::VolumesQuery::default())
-            .unwrap()
-            .volumes
-            .first()
-            .unwrap()
-            .volume
-            .shared_writes
-    );
 }
 
 #[test]

@@ -541,10 +541,10 @@ fn a_narrowed_deploy_records_a_changed_volume_a_service_it_references_mounts() {
     store
         .write(
             &who,
-            &crate::SetVolumeSharedWrites {
+            &crate::RenameVolume {
                 environment: EnvironmentRef::default(),
                 volume: VolumeName::parse("data").unwrap(),
-                shared_writes: true,
+                name: VolumeName::parse("store").unwrap(),
             },
         )
         .unwrap();
@@ -563,7 +563,7 @@ fn a_narrowed_deploy_records_a_changed_volume_a_service_it_references_mounts() {
         [
             ("client".to_owned(), NodeStatus::Deployed),
             ("web".to_owned(), NodeStatus::Deployed),
-            ("data".to_owned(), NodeStatus::Deployed),
+            ("store".to_owned(), NodeStatus::Deployed),
         ]
     );
     assert_eq!(staged(&store, &who), 0, "the Volume change is applied");

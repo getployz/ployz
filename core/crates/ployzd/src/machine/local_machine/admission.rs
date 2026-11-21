@@ -361,11 +361,13 @@ impl LocalMachine {
 
     /// Start `id`. An Operator's start is refused when the admission kept with the
     /// Container no longer stands here, as [`Standing::admits`] decides, and when this
-    /// Machine kept no admission for it.
+    /// Machine kept no admission for it. Any start is refused beside another running
+    /// holder of its Provisioned Volume, as [`LocalMachine::refuse_second_holder`] decides.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] for a refused start, [`Error::ApprovalRecord`]
-    /// when the rule marks cannot be read, and the Docker error of a start that fails.
+    /// when the rule marks cannot be read, [`crate::docker::Error::VolumeHeld`] beside a
+    /// running holder, and the Docker error of a start that fails.
     pub(super) async fn start_checked(
         &self,
         containers: &ContainerRuntime,
@@ -383,6 +385,12 @@ impl LocalMachine {
                 return Err(Error::DeployRefused(refusal));
             }
         }
+        let observed = containers
+            .observation()
+            .inspect_managed(id, &self.record().id())
+            .await?;
+        self.refuse_second_holder(Some(id), observed.kind, &observed.resolved_spec)
+            .await?;
         containers.lifecycle().start(id).await?;
         Ok(())
     }
