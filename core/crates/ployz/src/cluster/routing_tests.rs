@@ -449,7 +449,7 @@ fn timed_out(error: &dyn std::fmt::Debug) {
     assert!(error.contains("target Machine RPC timed out"), "{error}");
 }
 
-/// Six reads of the Machine list have no deadline of their own: a daemon that answers late
+/// Five reads of the Machine list have no deadline of their own: a daemon that answers late
 /// answers them, as the retries alone bound them. Each read is named in the failure.
 #[tokio::test(start_paused = true)]
 async fn the_reads_that_list_machines_without_a_deadline_wait_for_a_slow_daemon() {
@@ -501,23 +501,6 @@ async fn the_reads_that_list_machines_without_a_deadline_wait_for_a_slow_daemon(
             .await
             .err()
             .map(|e| format!("{e:?}")),
-    );
-    note(
-        "metric_history",
-        crate::sdk::metric_history(
-            &client,
-            crate::sdk::MetricSubject::Service {
-                service: ployz_core::QualifiedService::parse("prod/web").unwrap(),
-            },
-            ployz_core::metrics::MetricRange {
-                since_nanos: 0,
-                until_nanos: 60_000_000_000,
-            },
-            None,
-        )
-        .await
-        .err()
-        .map(|e| format!("{e:?}")),
     );
     assert!(gave_up.is_empty(), "{gave_up:#?}");
     server.abort();

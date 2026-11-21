@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { carriedInto } from "#/modules/approvals/approvals.server";
 import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, OwnedNamespace, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
-import { Data, Effect } from "effect";
+import { Clock, Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners, sealedNames, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
@@ -11,6 +11,7 @@ import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { clusterExpectation, countOrganizationMachines, loadOrganizationConnections, logForeignServers } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import { answerMetrics } from "#/modules/metrics/agent-metrics.server";
 import { admittedAt, type Admission } from "#/modules/operations/keyed.server";
 import { dashedAttempt, operationsOn, serverNames, settledDrain } from "#/modules/operations/operation-history.server";
 import {
@@ -161,6 +162,29 @@ const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (
   return yield* runtimeAsk(caller.organization.id, query, readable, sealed);
 });
 
+/**
+ * Metrics come from Cloud's own ClickHouse, not from a Server. The permission and Environment checks are `runtimeRead`'s:
+ * a read of one Service lands in its Namespace's Environment, and a token held to Environments hears of crash events
+ * only in theirs.
+ */
+const metricsRead = Effect.fn("CallCloud.metricsRead")(function* (caller: Caller, query: Extract<CloudQuery, { query: "metrics" }>) {
+  const lacking = unpermitted(caller, "metrics:read");
+  if (lacking !== null) return lacking;
+  let readable: string[] | null = null;
+  if (callerEnvironments(caller) !== undefined) {
+    const owned = yield* owners(caller.organization.id);
+    if (query.subject.kind === "service") {
+      const { namespace } = query.subject;
+      const refused = unheld(caller, "metrics:read", owned.find((row) => row.namespace === namespace)?.environment ?? null);
+      if (refused !== null) return refused;
+    }
+    readable = owned.filter((row) => unheld(caller, "metrics:read", row.environment) === null).map((row) => row.namespace);
+  }
+  const read = yield* answerMetrics(caller.organization.id, query, yield* Clock.currentTimeMillis, readable);
+  if (read.type === "not_configured") return refusal("conflict", "Metrics aren’t enabled on this Cloud.");
+  return answer(read.answer);
+});
+
 const SEALED_REREADS = 2;
 
 /**
@@ -215,7 +239,7 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
     case "containers":
       return yield* runtimeRead(caller, query, "servers:read", query.namespace);
     case "metrics":
-      return yield* runtimeRead(caller, query, "metrics:read", query.subject.kind === "service" ? query.subject.namespace : null);
+      return yield* metricsRead(caller, query);
     case "copies":
       return yield* copies(caller, query.namespace, query.volume);
     case "operations": {

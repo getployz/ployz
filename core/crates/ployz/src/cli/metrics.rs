@@ -1,115 +1,81 @@
-//! How `ployz metrics` prints a metric history: one row per metric with its
-//! newest value and the range's average and peak. A metric with no reading
-//! prints as not measured, never as zero.
+//! How `ployz metrics` prints live numbers: one row per metric, summed over every
+//! container that answered. A metric no container reported prints as not measured,
+//! never as zero.
 
-use std::collections::BTreeMap;
+use ployz_core::metrics::LiveContainer;
 
-use ployz_core::metrics::{MetricMarker, MetricPoints};
-use ployz_store::tools::cloud::MetricRow;
+use crate::{sdk::LiveMetrics, ui::Table};
 
-use crate::{
-    sdk::{
-        MetricHistory,
-        metrics_rows::{gap_notes, marker_note, rows},
-    },
-    ui::Table,
-};
+pub(crate) const HISTORY_NOTE: &str = "History is in Ployz Cloud.";
+pub(crate) const NOT_ENABLED_NOTE: &str = "Metrics history isn’t enabled on this Cloud.";
 
-/// What the human output says about one history.
-#[derive(Debug)]
-pub(crate) struct Report {
-    pub(crate) heading: String,
-    pub(crate) table: Table,
-    /// Side text: markers and spans with no readings.
-    pub(crate) notes: Vec<String>,
-}
-
-/// The range the history covers, as the user asked for it.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Window<'arg> {
-    pub(crate) since: &'arg str,
-    pub(crate) until_nanos: i64,
-}
-
-impl Window<'_> {
-    fn is_duration(&self) -> bool {
-        crate::operator::input::go_duration(self.since).is_some()
-    }
-
-    fn label(&self) -> String {
-        if self.is_duration() {
-            format!("last {}", self.since)
-        } else {
-            format!("since {}", self.since)
-        }
-    }
-}
-
-/// Lay out `history` for `subject`, the name the user selected it by.
-pub(crate) fn report(history: &MetricHistory, subject: &str, window: Window<'_>) -> Report {
-    let heading = format!("{subject} · {}", window.label());
-    let mut table = Table::new(
-        ["METRIC", "NOW", "AVG", "PEAK"],
-        if window.is_duration() {
-            format!("No readings for {subject} in the {}.", window.label())
-        } else {
-            format!("No readings for {subject} {}.", window.label())
-        },
-    );
-    let rows = rows(history, window.until_nanos);
-    let mut notes = Vec::new();
-    if rows.is_empty() {
-        return Report {
-            heading,
-            table,
-            notes,
-        };
-    }
-    for MetricRow {
-        metric,
-        now,
-        avg,
-        peak,
-    } in rows
-    {
-        let now = match avg {
-            None => "not measured".into(),
-            Some(_) => now.unwrap_or_default(),
-        };
-        table.row([
-            metric,
-            now,
-            avg.unwrap_or_default(),
-            peak.unwrap_or_default(),
-        ]);
-    }
-    let markers = history
+pub(crate) fn report(live: &LiveMetrics, subject: &str) -> Table {
+    let containers: Vec<&LiveContainer> = live
         .machines
         .iter()
-        .flat_map(|machine| &machine.value.markers);
-    match &history.points {
-        MetricPoints::Service(_) => notes.extend(marker_note(markers, None)),
-        MetricPoints::Machine(_) => {
-            notes.extend(gap_notes(history));
-            let mut by_service: BTreeMap<String, Vec<&MetricMarker>> = BTreeMap::new();
-            for marker in markers {
-                by_service
-                    .entry(marker.service.to_string())
-                    .or_default()
-                    .push(marker);
-            }
-            for (service, markers) in by_service {
-                notes.extend(marker_note(markers, Some(&service)));
-            }
-        }
+        .flat_map(|machine| &machine.value.containers)
+        .collect();
+    let mut table = Table::new(
+        ["METRIC", "NOW"],
+        format!("{subject} has no running containers."),
+    );
+    if containers.is_empty() {
+        return table;
     }
-    Report {
-        heading,
-        table,
-        notes,
+    let sum = |read: fn(&LiveContainer) -> Option<u64>| {
+        containers
+            .iter()
+            .filter_map(|container| read(container))
+            .reduce(u64::saturating_add)
+    };
+    let cpu = containers
+        .iter()
+        .filter_map(|container| container.cpu)
+        .reduce(|total, cpu| total + cpu);
+    let shown = |value: Option<String>| value.unwrap_or_else(|| "not measured".to_owned());
+    let limit = containers
+        .iter()
+        .map(|container| container.mem_limit)
+        .sum::<Option<u64>>();
+    let memory = sum(|container| container.mem_bytes).map(|used| match limit {
+        Some(limit) => format!("{} / {}", bytes(used), bytes(limit)),
+        None => bytes(used),
+    });
+    table.row(["Containers".to_owned(), containers.len().to_string()]);
+    table.row([
+        "CPU".to_owned(),
+        shown(cpu.map(|cpu| format!("{cpu:.2} vCPU"))),
+    ]);
+    table.row(["Memory".to_owned(), shown(memory)]);
+    for (metric, read) in [
+        (
+            "Net in",
+            (|container| container.rx) as fn(&LiveContainer) -> Option<u64>,
+        ),
+        ("Net out", |container| container.tx),
+        ("Disk read", |container| container.io_r),
+        ("Disk write", |container| container.io_w),
+    ] {
+        table.row([format!("{metric} (total)"), shown(sum(read).map(bytes))]);
     }
+    table
 }
 
-#[cfg(test)]
-#[path = "metrics_tests.rs"]
-mod tests;
+/// Decimal units, as storage limits are written.
+fn bytes(value: u64) -> String {
+    #[expect(clippy::cast_precision_loss, reason = "display rounding only")]
+    let mut value = value as f64;
+    let mut units = ["B", "KB", "MB", "GB", "TB"].into_iter();
+    let mut unit = units.next().unwrap_or_default();
+    while value >= 1000.0
+        && let Some(next) = units.next()
+    {
+        value /= 1000.0;
+        unit = next;
+    }
+    if unit == "B" || value >= 10.0 {
+        format!("{value:.0} {unit}")
+    } else {
+        format!("{value:.1} {unit}")
+    }
+}

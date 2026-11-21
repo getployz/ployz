@@ -1,21 +1,17 @@
-import { Suspense, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Meter } from "@base-ui/react/meter";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { meterIndicatorClass, meterValue } from "#/components/metric-meter";
+import { MetricsNotEnabled, MetricsNotReporting } from "#/components/observe/MetricsOffState";
 import { MetricChart, useMetricCursor, type MetricSeries } from "#/components/metrics/metric-chart";
-import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { bytesText, onGrid, rateText } from "#/modules/metrics/metric-chart-data";
 import { serverMetrics, type DiskSample, type ServerMetrics } from "#/modules/metrics/metrics-model";
 import { serverMetricsQueryOptions } from "#/modules/metrics/metrics.queries";
-import { metricsOnBeta, releaseLine } from "#/modules/server-upgrade/server-upgrade";
-import { useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
-import { useChannelRelease } from "#/modules/server-upgrade/server-upgrade.queries";
 import { chartWindow, steps, type TimeWindow } from "#/modules/uptime/uptime";
 import { resolveRange } from "#/modules/uptime/uptime-range";
-import { ServerUpgradesDialog } from "./server-upgrades-dialog";
 import { DISK_SAMPLE_MS, freshLast, NOW_RANGE, serverNow, usageFraction, type Usage } from "./server-now";
 import { diskSegments, type DiskSegment } from "./server-usage";
 
@@ -35,20 +31,19 @@ const SEGMENT_COLORS = {
 } satisfies Record<DiskSegment["key"], string>;
 
 /**
- * A Server's CPU, memory, network and disk, read live from the Server: charts over the chosen range, and the values
+ * A Server's CPU, memory, network and disk, kept in Cloud: charts over the chosen range, and the values
  * that say what it uses now from a separate short read, so they stay current whatever the range.
  */
 export function ServerResources({ organizationSlug, server }: { organizationSlug: string; server: { id: string; name: string; version: string } }) {
   const [range, setRange] = useState<Range>("1h");
-  const names = new Map([[server.id, server.name]]);
   const query = useQuery({
     ...serverMetricsQueryOptions({ organizationSlug, machineId: server.id, from: range, to: "now" }),
     placeholderData: keepPreviousData,
   });
   const nowRead = useQuery(serverMetricsQueryOptions({ organizationSlug, machineId: server.id, ...NOW_RANGE }));
-  const metrics = query.data ? serverMetrics(query.data, names) : null;
-  const now = nowRead.data && !nowRead.isError ? serverMetrics(nowRead.data, names) : null;
-  const availability = query.isError ? "unanswered" : metrics?.availability.type;
+  const metrics = query.data ? serverMetrics(query.data) : null;
+  const now = nowRead.data && !nowRead.isError ? serverMetrics(nowRead.data) : null;
+  const availability = metrics?.availability.type;
 
   return (
     <section aria-labelledby="resources-heading" className="flex flex-col gap-3">
@@ -59,42 +54,17 @@ export function ServerResources({ organizationSlug, server }: { organizationSlug
           {RANGES.map((option) => <ToggleGroupItem key={option} value={option}>{option}</ToggleGroupItem>)}
         </ToggleGroup>
       </div>
-      {availability === "needs_upgrade" ? (
-        <Suspense fallback={<Unavailable>Upgrade {server.name} to see its metrics</Unavailable>}>
-          <MetricsUpgrade organizationSlug={organizationSlug} server={server} />
-        </Suspense>
-      )
-        : availability === "unanswered" || availability === "offline" ? <Unavailable>{server.name} didn’t answer</Unavailable>
+      {availability === "not_configured" ? <MetricsNotEnabled subject="Server" />
+        : availability === "not_reporting" ? <MetricsNotReporting server={server.name} />
+        : query.isError ? <Unavailable>Couldn’t load metrics</Unavailable>
         : metrics === null || nowRead.isPending ? <ResourcesSkeleton />
-        : <Resources metrics={metrics} now={now} nowAge={Date.now() - nowRead.dataUpdatedAt} answeredAt={query.dataUpdatedAt} range={range} dimmed={query.isPlaceholderData} />}
+        : (
+          <>
+            {metrics.silentSince === null ? null : <MetricsNotReporting server={server.name} />}
+            <Resources metrics={metrics} now={now} nowAge={Date.now() - nowRead.dataUpdatedAt} answeredAt={query.dataUpdatedAt} range={range} dimmed={query.isPlaceholderData} />
+          </>
+        )}
     </section>
-  );
-}
-
-/** Where a Server that refuses metrics gets them: its own Releases, or Beta when Stable has nothing newer. */
-function MetricsUpgrade({ organizationSlug, server }: { organizationSlug: string; server: { name: string; version: string } }) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const { channel } = useServerUpgradeSettings(organizationSlug);
-  const line = releaseLine(server.version);
-  const release = useChannelRelease(line === null ? null : { channel, line });
-  const beta = useChannelRelease(line === null || channel === "beta" ? null : { channel: "beta", line });
-  const onBeta = metricsOnBeta({ version: server.version, channel, release: release.data ?? null, beta: beta.data ?? null });
-  return (
-    <>
-      <MetricsNeedUpgrade name={server.name} beta={onBeta} onSettings={() => setSettingsOpen(true)} />
-      <ServerUpgradesDialog organizationSlug={organizationSlug} open={settingsOpen} onOpenChange={setSettingsOpen} />
-    </>
-  );
-}
-
-export function MetricsNeedUpgrade({ name, beta, onSettings }: { name: string; beta: boolean; onSettings: () => void }) {
-  if (!beta) return <Unavailable>Upgrade {name} to see its metrics</Unavailable>;
-  return (
-    <Card size="sm" className="items-center gap-2 px-3 py-10 text-center">
-      <h3 className="text-sm font-medium">Metrics need a Beta release</h3>
-      <p className="text-sm text-muted-foreground">Stable has none yet.</p>
-      <Button variant="outline" size="sm" onClick={onSettings}>Upgrade settings</Button>
-    </Card>
   );
 }
 

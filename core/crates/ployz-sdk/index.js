@@ -20,7 +20,6 @@ class Client {
     this.runtime = {
       watch: (options = {}) => iterateWatch(() => inner.watch(), options && options.signal),
       logs: (options = {}) => runtimeLogs.logs(logTransport, options),
-      metricHistory: (input) => withRpcError(inner.metricHistory(input)),
     };
   }
 
@@ -57,7 +56,7 @@ class Client {
   }
 }
 
-forward(Client, native.Client, ["containerLogs", "metricHistory", "watch"]);
+forward(Client, native.Client, ["containerLogs", "watch"]);
 
 function wrapProgress(start, signal, wrap = value => value) {
   signal?.throwIfAborted();

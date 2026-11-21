@@ -33,7 +33,7 @@ describe("diskSegments", () => {
 
 describe("serviceUsageOn", () => {
   const metrics = (byServer: ServiceMetrics["byServer"]): ServiceMetrics => ({
-    availability: { type: "normal" }, window, stepMs: 60_000, all: series({}), allGaps: [], byServer, markers: [],
+    availability: { type: "normal" }, window, stepMs: 60_000, all: series({}), allGaps: [], byServer, markers: [], silentSince: null,
   });
   const fra1 = { id: "a".repeat(32), name: "fra-1" };
   const fra2 = { id: "b".repeat(32), name: "fra-2" };

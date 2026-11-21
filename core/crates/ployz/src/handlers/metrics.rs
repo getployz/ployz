@@ -1,25 +1,26 @@
-//! `ployz metrics`: a Service's or a Server's metric history.
+//! `ployz metrics`: what a Service or a Server uses now, or its history through Cloud.
 
 use chrono::Utc;
 use clap::{ArgGroup, ArgMatches, Command};
-use ployz_core::{MachineTarget, QualifiedService, ServiceSelector, metrics::MetricRange};
+use ployz_core::{MachineTarget, QualifiedService, ServiceSelector};
 
 use super::{
     Error,
-    cloud_read::{self, MetricsAsked},
+    cloud_read::{self, CloudMetrics, MetricsAsked},
     leaf_matches,
     operator::{in_scope, scope},
+    route,
     store::scoped,
     with_reader,
 };
 use crate::{
     cli::{
         base,
-        metrics::{Window, report},
+        metrics::{HISTORY_NOTE, NOT_ENABLED_NOTE, report},
         positional, value,
     },
     operator::input::TIME_FORMATS,
-    sdk::{MetricSubject, metric_history, metrics_rows::behind_notes},
+    sdk::{MetricSubject, metrics_live},
     ui::{self, Gaps},
 };
 
@@ -34,11 +35,9 @@ pub(super) fn command(command: Command) -> Command {
             .value_name("NAME")
             .help("A Server's own totals instead of a Service"),
     )
-    .arg(
-        value("since", None)
-            .default_value("1h")
-            .help(format!("Range start: {TIME_FORMATS}")),
-    )
+    .arg(value("since", None).default_value("1h").help(format!(
+        "Range start, for history in Ployz Cloud: {TIME_FORMATS}"
+    )))
     .group(
         ArgGroup::new("subject")
             .args(["service", "server"])
@@ -46,7 +45,9 @@ pub(super) fn command(command: Command) -> Command {
     )
 }
 
-/// Print the subject's newest values and the range's average and peak.
+/// Print the subject's history from Cloud: its newest values and the range's average and
+/// peak. Without a Cloud connection, or on a Cloud that keeps no metrics, print what it
+/// uses now, read from the Servers.
 pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let since = leaf
@@ -56,12 +57,7 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
     let now = Utc::now();
     let since_seconds = crate::operator::input::parse_log_time("since", &since, now.timestamp())?
         .ok_or_else(|| Error::usage("--since needs a time, such as 1h"))?;
-    let until_nanos = now.timestamp_nanos_opt().unwrap_or(i64::MAX);
-    let range = MetricRange {
-        since_nanos: since_seconds.saturating_mul(1_000_000_000),
-        until_nanos,
-    };
-    if range.since_nanos >= range.until_nanos {
+    if since_seconds >= now.timestamp() {
         return Err(Error::usage(
             "--since is in the future; use 1h or an earlier time",
         ));
@@ -89,6 +85,17 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
             )
         }
     };
+    let unread = match route::cloud_runs(&super::runtime()?, leaf)? {
+        Some(credential) => match cloud_read::metrics(&credential, fallback, since_seconds)? {
+            CloudMetrics::Shown => return Ok(()),
+            CloudMetrics::NotEnabled(refusal) => Unread::NotEnabled(refusal),
+        },
+        None => Unread::Ask(fallback),
+    };
+    let note = match unread {
+        Unread::Ask(_) => HISTORY_NOTE,
+        Unread::NotEnabled(_) => NOT_ENABLED_NOTE,
+    };
     let credential = with_reader(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
@@ -109,50 +116,44 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                     )
                 }
             };
-            let history = metric_history(client, subject, range, None).await?;
+            let live = metrics_live(client, subject, &machines).await;
             let mut gaps = Gaps::default().named(
                 machines
                     .iter()
                     .map(|observed| (observed.machine.id, &observed.machine.name)),
             );
-            gaps.extend(&history.unanswered, &[]);
-            let mut shown = report(
-                &history,
-                &name,
-                Window {
-                    since: &since,
-                    until_nanos,
-                },
-            );
-            shown
-                .notes
-                .extend(behind_notes(&history, until_nanos, |machine_id| {
-                    machines
-                        .iter()
-                        .find(|observed| observed.machine.id == machine_id)
-                        .map_or_else(
-                            || machine_id.to_string(),
-                            |observed| observed.machine.name.to_string(),
-                        )
-                }));
+            gaps.extend(&live.unanswered, &[]);
+            let table = report(&live, &name);
             if let Some(refusal) = unknown
-                && shown.table.is_empty()
+                && table.is_empty()
                 && gaps.outcome().is_ok()
             {
                 return Err(refusal);
             }
-            ui::finish_fanout("metrics", &history, &gaps, || {
-                ui::stream(&shown.heading);
-                ui::rows(&shown.table);
-                for note in &shown.notes {
-                    ui::note(note);
-                }
+            ui::finish_fanout("metrics", &live, &gaps, || {
+                ui::stream(&name);
+                ui::rows(&table);
+                ui::note(note);
             })
         })
     })?;
-    credential.map_or(Ok(()), |credential| {
-        cloud_read::metrics(&credential, fallback, since_seconds)
-    })
+    let Some(credential) = credential else {
+        return Ok(());
+    };
+    match unread {
+        Unread::Ask(asked) => match cloud_read::metrics(&credential, asked, since_seconds)? {
+            CloudMetrics::Shown => Ok(()),
+            CloudMetrics::NotEnabled(refusal) => Err(refusal),
+        },
+        Unread::NotEnabled(refusal) => Err(refusal),
+    }
+}
+
+/// Why the history was not shown before the Servers were read.
+enum Unread {
+    /// Cloud was not asked yet.
+    Ask(MetricsAsked),
+    NotEnabled(Error),
 }
 
 /// What the user selected, by name.

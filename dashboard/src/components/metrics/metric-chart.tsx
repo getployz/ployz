@@ -21,7 +21,7 @@ export type MetricSeries = {
 };
 export type TimeSpan = { readonly from: number; readonly to: number };
 export type TimeBand = TimeSpan & { readonly id: string };
-export type ChartMarker = { readonly at: number; readonly kind: "oom" | "exit" | "restart"; readonly label: string };
+export type ChartMarker = { readonly at: number; readonly kind: "oom" | "exit"; readonly label: string };
 export type ChartLimit = { readonly value: number; readonly label: string };
 export type MetricCursor = ChartCursorController<Date, number>;
 type Row = { readonly at: Date; readonly values: readonly (number | null)[] };
@@ -62,7 +62,6 @@ const inSpan = (at: number, spans: readonly TimeSpan[]) => spans.some((span) => 
 const MARKER_GLYPHS = {
   oom: "size-0 border-x-4 border-b-[7px] border-x-transparent border-b-destructive",
   exit: "size-1.5 bg-destructive",
-  restart: "size-2 rounded-full border border-current bg-background",
 } as const satisfies Record<ChartMarker["kind"], string>;
 
 /** A time tick nearer an edge than this share of the plot runs into the y labels or past the card. */

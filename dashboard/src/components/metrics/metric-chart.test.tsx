@@ -17,7 +17,7 @@ function Chart() {
     <MetricChart id="cpu" title="CPU" value="" format={String} cursor={cursor} from={from} to={to}
       times={[from, to]} series={[{ label: "CPU", color: "red", values: [1, 1] }]}
       gaps={[{ from: deployAt - 10 * 60_000, to: deployAt + 10 * 60_000 }]} deploys={[deployAt]}
-      markers={[{ at: deployAt, kind: "restart", label: "Restarted" }, { at: deployAt, kind: "oom", label: "Out of memory" }]} />
+      markers={[{ at: deployAt, kind: "exit", label: "Exit 1" }, { at: deployAt, kind: "oom", label: "Out of memory" }]} />
   );
 }
 
@@ -36,10 +36,10 @@ it("draws a deploy over the hatch of a gap it falls in", async () => {
   expect((hatch?.compareDocumentPosition(deploy as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-it("raises an OOM above a restart at the same moment", async () => {
+it("raises an OOM above an exit at the same moment", async () => {
   await open();
   const top = (label: string) => parseFloat(screen.getByRole("img", { name: label }).style.top);
-  expect(top("Out of memory")).toBeLessThan(top("Restarted"));
+  expect(top("Out of memory")).toBeLessThan(top("Exit 1"));
 });
 
 it("stamps moments on the 24-hour clock the rest of the dashboard uses", () => {

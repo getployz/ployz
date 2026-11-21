@@ -25,8 +25,6 @@ import type {
   MachineUpdate,
   MachineUpgradeAttempt,
   MachineUpgradeAttemptId,
-  MetricHistory,
-  MetricHistoryInput,
   ObservedDataLoss,
   PublishCertificateMaterialRequest,
   RuntimeWatchView,
@@ -88,7 +86,6 @@ export type PloyzSdkError =
 
 export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
-  readonly metricHistory: (input: MetricHistoryInput) => Effect.Effect<MetricHistory, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
   readonly inspectMachine: (machine: string) => Effect.Effect<MachineDetails, PloyzSdkError>;
   /** What the connect confirmed about the entry's Cluster: null when it expected none. */
@@ -359,7 +356,6 @@ function wrapClient(client: Client): PloyzSession {
     });
   return {
     logs: (options) => Effect.try({ try: () => client.runtime.logs(options), catch: (cause) => asSdkFailure("logs", cause) }),
-    metricHistory: (input) => sdkPromise("metric history", () => client.runtime.metricHistory(input)),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
     inspectMachine: (machine) => sdkPromise("inspect machine", () => client.inspectMachine(machine)),
     cluster: () => client.cluster(),

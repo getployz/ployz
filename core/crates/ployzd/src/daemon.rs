@@ -212,7 +212,6 @@ impl Daemon {
         build_policy: ployz_build::HostPolicy,
         run_dir: PathBuf,
     ) -> Result<Self, Error> {
-        let observe_socket = MachineLayout::observe_socket_in(&run_dir);
         let store = match LocalMachineStore::open_with_admission(&config.data_dir, &run_dir)? {
             Opened::Ready(store) => store,
             Opened::Resetting(interrupted) => {
@@ -346,7 +345,6 @@ impl Daemon {
             .with_build_grants(Arc::clone(&grants))
             .with_builds(builds)
             .with_local(serving_local.clone())
-            .with_observe_socket(observe_socket)
             .with_image_ingest(Arc::clone(&ingest))
             .with_published_routes(published_routes.clone())
             .build();

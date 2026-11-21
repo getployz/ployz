@@ -7,6 +7,7 @@ use url::Url;
 pub(super) const NAME: &str = "ployz-collector";
 pub(super) const HEALTH_ADDRESS: &str = "127.0.0.1:13133";
 pub(super) const BASE: &str = include_str!("base.yaml");
+pub(super) const METRICS: &str = include_str!("metrics.yaml");
 pub(super) const CRASH: &str = include_str!("crash.yaml");
 /// Where the Collector's crash receiver listens on the Machine's loopback, and where the
 /// daemon posts crash events.
@@ -17,6 +18,9 @@ const TOKEN_MOUNT: &str = "/etc/ployz/token";
 const STATE_MOUNT: &str = "/var/lib/otelcol";
 const REQUESTS_MOUNT: &str = super::requests::REQUESTS_MOUNT;
 const LOGS_MOUNT: &str = "/var/lib/docker/containers";
+const DOCKER_SOCKET_MOUNT: &str = "/var/run/docker.sock";
+const HOST_PROC_MOUNT: &str = "/hostfs/proc";
+const HOST_SYS_MOUNT: &str = "/hostfs/sys";
 const MEMORY_BYTES: i64 = 256 << 20;
 pub(super) const STOP_GRACE_SECONDS: i32 = 15;
 
@@ -25,6 +29,9 @@ pub(super) struct Paths {
     pub(super) token: PathBuf,
     pub(super) state: PathBuf,
     pub(super) logs: PathBuf,
+    pub(super) docker_socket: PathBuf,
+    pub(super) proc: PathBuf,
+    pub(super) sys: PathBuf,
     pub(super) requests: PathBuf,
 }
 
@@ -41,6 +48,9 @@ impl Paths {
             token: run.join("token"),
             state: data_dir.join("collector"),
             logs: docker_root.join("containers"),
+            docker_socket: machine_root.join("var/run/docker.sock"),
+            proc: machine_root.join("proc"),
+            sys: machine_root.join("sys"),
         }
     }
 
@@ -50,6 +60,10 @@ impl Paths {
 
     pub(super) fn base_file(&self) -> PathBuf {
         self.config.join("base.yaml")
+    }
+
+    pub(super) fn metrics_file(&self) -> PathBuf {
+        self.config.join("metrics.yaml")
     }
 
     pub(super) fn mask_file(&self) -> PathBuf {
@@ -72,7 +86,9 @@ pub(super) fn endpoint(push_target: &Url) -> String {
     )
 }
 
-pub(super) fn body(paths: &Paths, endpoint: &str) -> ContainerCreateBody {
+/// `docker_gid` owns the Docker socket. The read-only mount does not limit the Docker API: the
+/// Collector reads container stats through the socket, and anyone who controls it controls Docker.
+pub(super) fn body(paths: &Paths, endpoint: &str, docker_gid: u32) -> ContainerCreateBody {
     let mount = |source: &Path, target: &str, read_only: bool| Mount {
         typ: Some(MountType::BIND),
         source: Some(source.to_string_lossy().into_owned()),
@@ -83,6 +99,7 @@ pub(super) fn body(paths: &Paths, endpoint: &str) -> ContainerCreateBody {
     ContainerCreateBody {
         cmd: Some(vec![
             format!("--config={CONFIG_MOUNT}/base.yaml"),
+            format!("--config={CONFIG_MOUNT}/metrics.yaml"),
             format!("--config={CONFIG_MOUNT}/mask.yaml"),
             format!("--config={CONFIG_MOUNT}/requests.yaml"),
             format!("--config={CONFIG_MOUNT}/crash.yaml"),
@@ -102,8 +119,12 @@ pub(super) fn body(paths: &Paths, endpoint: &str) -> ContainerCreateBody {
                 mount(&paths.token, TOKEN_MOUNT, true),
                 mount(&paths.state, STATE_MOUNT, false),
                 mount(&paths.logs, LOGS_MOUNT, true),
+                mount(&paths.docker_socket, DOCKER_SOCKET_MOUNT, true),
+                mount(&paths.proc, HOST_PROC_MOUNT, true),
+                mount(&paths.sys, HOST_SYS_MOUNT, true),
                 mount(&paths.requests, REQUESTS_MOUNT, true),
             ]),
+            group_add: Some(vec![docker_gid.to_string()]),
             memory: Some(MEMORY_BYTES),
             memory_swap: Some(MEMORY_BYTES),
             readonly_rootfs: Some(true),
@@ -112,5 +133,58 @@ pub(super) fn body(paths: &Paths, endpoint: &str) -> ContainerCreateBody {
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::scrub::SealedValues;
+    use serde_norway::{Mapping, Value};
+
+    use super::{BASE, METRICS};
+
+    /// The Collector merges its `--config` files key by key, as here.
+    fn merge(into: &mut Value, from: Value) {
+        match (into, from) {
+            (Value::Mapping(into), Value::Mapping(from)) => {
+                for (key, value) in from {
+                    match into.get_mut(&key) {
+                        Some(existing) => merge(existing, value),
+                        None => {
+                            into.insert(key, value);
+                        }
+                    }
+                }
+            }
+            (into, from) => *into = from,
+        }
+    }
+
+    #[test]
+    fn every_pipeline_names_components_the_config_files_define() {
+        let mut config = Value::Mapping(Mapping::new());
+        let mask = super::super::mask::fragment(&SealedValues::none());
+        for file in [BASE, METRICS, mask.as_str()] {
+            merge(&mut config, serde_norway::from_str(file).unwrap());
+        }
+        let pipelines = config
+            .get("service")
+            .and_then(|service| service.get("pipelines"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        assert!(pipelines.contains_key("metrics") && pipelines.contains_key("logs"));
+        for (name, pipeline) in pipelines {
+            for kind in ["receivers", "processors", "exporters"] {
+                for component in pipeline.get(kind).and_then(Value::as_sequence).unwrap() {
+                    assert!(
+                        config
+                            .get(kind)
+                            .and_then(|defined| defined.get(component))
+                            .is_some(),
+                        "pipeline {name:?} names {component:?}, which no file defines under {kind}"
+                    );
+                }
+            }
+        }
     }
 }

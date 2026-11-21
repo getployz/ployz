@@ -1,54 +1,91 @@
 import "@tanstack/react-start/server-only";
-import type { MetricHistoryInput, MetricSubject } from "@ployz/sdk";
 import { Clock, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { findService } from "#/modules/config-store/store-lookup.server";
+import { findService, serviceVolumes } from "#/modules/config-store/store-lookup.server";
+import { observeConfigured } from "#/modules/observe-store/clickhouse.server";
 import { requireAccess } from "#/modules/organization/access.server";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { resolveRange } from "#/modules/uptime/uptime-range";
-import type { MetricRead, MetricWindow, ReadRuntimeServiceMetricsInput, ReadServerMetricsInput, ReadServiceMetricsInput } from "./metrics";
+import { hostHistory, markersOnlyHistory, serviceHistory, type CrashEvent, type DiskRow, type MetricRow } from "./metrics-history";
+import { silentSince, stepFor } from "./metrics-series";
+import { latestReading, readCrashEvents, readDiskRows, readHostRows, readServiceRows, readVolumeRows, type StoreRange } from "./metrics-store.server";
+import type { HostHistory, MetricRead, MetricWindow, ReadRuntimeServiceMetricsInput, ReadServerMetricsInput, ReadServiceMetricsInput, ServiceHistory } from "./metrics";
 
-const nanos = (ms: number) => (BigInt(ms) * 1_000_000n).toString();
+/** Runs `reading` against this Cloud's ClickHouse, or answers that metrics aren't enabled. */
+const readStore = Effect.fn("Metrics.readStore")(function* <History, E, R>(
+  window: MetricWindow, at: number, reading: (range: StoreRange) => Effect.Effect<MetricRead<History>, E, R>,
+) {
+  if (!(yield* observeConfigured)) return { type: "not_configured", window, at } satisfies MetricRead<History>;
+  return yield* reading({ window, stepMs: stepFor(window) });
+});
 
-const readHistory = Effect.fn("Metrics.readHistory")(function* (organizationId: string, subject: MetricSubject, window: MetricWindow, at: number, wholeRange = false) {
-  const input: MetricHistoryInput = {
-    subject, since_nanos: nanos(window.from), until_nanos: nanos(window.to),
-    ...(wholeRange && { step_nanos: nanos(Math.max(1, window.to - window.from)) }),
+/** The Service's rows and crash events as one read. Every Machine's rows sit in its own entry. */
+const readService = Effect.fn("Metrics.readService")(function* (organizationId: string, namespace: string, service: string, window: MetricWindow, at: number, markersOnly: boolean) {
+  const asRead = (range: StoreRange, rows: readonly MetricRow[], crashes: readonly CrashEvent[], latest: number | null): MetricRead<ServiceHistory> => {
+    const silent = latest === null ? undefined : silentSince(latest, window, at);
+    return {
+      type: "history", window, at, history: markersOnly ? markersOnlyHistory(crashes, { ...range, at }) : serviceHistory(rows, crashes, { ...range, at }),
+      ...(silent !== undefined && { silentSince: silent }),
+    };
   };
-  // The verify dashboard has no Servers to ask; production builds drop this branch and the fixture with it.
+  // The verify dashboard has no ClickHouse; production builds drop this branch and the fixture with it.
   if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
-    const { verifyMetricHistory } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
-    return { type: "history", window, at, history: verifyMetricHistory(input) } satisfies MetricRead;
+    const { verifyServiceData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
+    const range = { window, stepMs: stepFor(window) };
+    const { rows, crashes } = verifyServiceData(service, range);
+    return asRead(range, rows, crashes, rows.length > 0 ? at : null);
   }
-  return yield* Effect.scoped(Effect.gen(function* () {
-    const session = yield* (yield* OrganizationRuntime).open(organizationId);
-    if (session.status !== "connected") return { type: "offline", window, at } satisfies MetricRead;
-    const history = yield* session.connected.metricHistory(input);
-    return { type: "history", window, at, history } satisfies MetricRead;
+  return yield* readStore(window, at, (range) => Effect.gen(function* () {
+    const crashes = yield* readCrashEvents(organizationId, range, { namespace, service });
+    if (markersOnly) return asRead(range, [], crashes, null);
+    const [rows, volumes, latest] = yield* Effect.all([
+      readServiceRows(organizationId, range, namespace, service),
+      serviceVolumes(organizationId, namespace, service).pipe(Effect.flatMap((names) => readVolumeRows(organizationId, range, names))),
+      latestReading(organizationId, { namespace, service }, window.from),
+    ]);
+    return asRead(range, [...rows, ...volumes], crashes, latest);
   }));
 });
 
-/** A Service's metrics summed over every Server it runs on, with each Server's own reply. */
-export const readServiceMetrics = Effect.fn("Metrics.readService")(function* (actor: Actor, input: ReadServiceMetricsInput) {
+/** A Service's metrics summed over every Server it runs on, with each Server's own. */
+export const readServiceMetrics = Effect.fn("Metrics.readServiceMetrics")(function* (actor: Actor, input: ReadServiceMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const at = yield* Clock.currentTimeMillis;
   const window = resolveRange(input, at);
   const found = yield* findService(organization.id, input.environmentId, input.service);
   // An undeployed Service has nothing on any Server yet. Its own name is no stand-in, since after a rename it can be another Service's runtime name.
-  if (found === null) return { type: "history", window, at, history: { points: { service: [] }, machines: [], unanswered: [] } } satisfies MetricRead;
-  return yield* readHistory(organization.id, { kind: "service", service: `${found.namespace}/${found.runtime}` }, window, at, input.markersOnly === true);
+  if (found === null) return { type: "history", window, at, history: { stepMs: stepFor(window), points: [], servers: [] } } satisfies MetricRead<ServiceHistory>;
+  return yield* readService(organization.id, found.namespace, found.runtime, window, at, input.markersOnly === true);
 });
 
 export const readRuntimeServiceMetrics = Effect.fn("Metrics.readRuntimeService")(function* (actor: Actor, input: ReadRuntimeServiceMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const at = yield* Clock.currentTimeMillis;
-  const window = resolveRange(input, at);
-  return yield* readHistory(organization.id, { kind: "service", service: `${input.namespace}/${input.name}` }, window, at);
+  return yield* readService(organization.id, input.namespace, input.name, resolveRange(input, at), at, false);
 });
 
 export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const at = yield* Clock.currentTimeMillis;
   const window = resolveRange(input, at);
-  return yield* readHistory(organization.id, { kind: "machine", machine_id: input.machineId }, window, at);
+  // A Server with rows in view has a history, gaps included, which says when it went silent. One with none is not
+  // reporting only if it is silent now too.
+  const asRead = (range: StoreRange, rows: readonly MetricRow[], disk: readonly DiskRow[], latest: number | null): MetricRead<HostHistory> => {
+    const silent = latest === null ? undefined : silentSince(latest, window, at);
+    if (rows.length === 0 && disk.length === 0 && (latest === null || silent !== undefined)) return { type: "not_reporting", window, at };
+    return { type: "history", window, at, history: hostHistory(rows, disk, { ...range, at }), ...(silent !== undefined && { silentSince: silent }) };
+  };
+  if (import.meta.env.DEV && process.env["PLOYZ_VERIFY_METRICS"] === "1") {
+    const { verifyServerData } = yield* Effect.promise(() => import("./metrics.verify-fixture"));
+    const range = { window, stepMs: stepFor(window) };
+    const { rows, disk, reporting } = verifyServerData(input.machineId, range);
+    return asRead(range, rows, disk, reporting ? at : null);
+  }
+  return yield* readStore(window, at, (range) => Effect.gen(function* () {
+    const [rows, disk, latest] = yield* Effect.all([
+      readHostRows(organization.id, range, input.machineId),
+      readDiskRows(organization.id, range, input.machineId),
+      latestReading(organization.id, { machine: input.machineId }, Math.min(window.from, at - 60_000)),
+    ]);
+    return asRead(range, rows, disk, latest);
+  }));
 });
