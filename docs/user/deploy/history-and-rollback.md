@@ -116,7 +116,7 @@ ployz deploy api --forget-older
 ```
 
 - **Running containers keep running.** Forget only stops new ones. A stopped container that an
-  older version made won't start again.
+  older version made won't start again through Ployz.
 - **Every server is asked, not only the ones that run the service.** The command prints what
   each server did. A server that doesn't answer, or runs a ployz too old to forget, is named, and
   the command exits 3. Run the same deploy again once it answers. A server that joins later takes
