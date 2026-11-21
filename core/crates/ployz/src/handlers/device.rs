@@ -837,7 +837,8 @@ mod compat {
     }
 }
 
-struct Reach {
+/// The Servers a fan-out asks, the ones it can't, and how warnings name each.
+pub(super) struct Reach {
     asked: Vec<MachineId>,
     silent: Vec<MachineId>,
     entry: Option<MachineId>,
@@ -864,7 +865,7 @@ impl Reach {
         Ok(reach)
     }
 
-    async fn of(client: &mut Client) -> Result<Self, Error> {
+    pub(super) async fn of(client: &mut Client) -> Result<Self, Error> {
         let machines = client.machines().await?;
         let (asked, silent) = machines
             .iter()
@@ -880,7 +881,7 @@ impl Reach {
         })
     }
 
-    async fn fan_out<T, F, Fut>(&self, call: F) -> (Vec<(MachineId, T)>, Gaps)
+    pub(super) async fn fan_out<T, F, Fut>(&self, call: F) -> (Vec<(MachineId, T)>, Gaps)
     where
         F: Fn(MachineId) -> Fut,
         Fut: Future<Output = Result<Option<T>, RpcError>>,
@@ -899,13 +900,13 @@ impl Reach {
         (answers, gaps)
     }
 
-    fn name(&self, machine_id: &MachineId) -> String {
+    pub(super) fn name(&self, machine_id: &MachineId) -> String {
         self.names
             .get(machine_id)
             .map_or_else(|| machine_id.to_string(), ToString::to_string)
     }
 
-    fn named(&self, gaps: Gaps) -> Gaps {
+    pub(super) fn named(&self, gaps: Gaps) -> Gaps {
         gaps.named(self.names.iter().map(|(id, name)| (*id, name)))
     }
 }

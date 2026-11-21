@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ployz_core::authority::{ApprovedChange, PayloadDigest};
+use ployz_core::authority::{ApprovedChange, PayloadDigest, Timestamp};
 use ployz_core::{Hint, Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
@@ -411,4 +411,23 @@ fn declining_signs_nothing_and_fails() {
         ))
     );
     assert!(error.is_interrupted(), "a no exits 130, not 0");
+}
+
+/// The versions carry the time the person said yes, not the time the prompt opened, so a
+/// forget reaches every version signed before that yes.
+#[test]
+fn the_signing_time_is_taken_when_the_person_says_yes() {
+    let approved = [approved(&spec(PINNED))];
+    let mut answered = None;
+    let signed_at = consent(
+        (&Namespace::parse("app").unwrap(), &approved),
+        false,
+        |_, _, _| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            answered = Some(Timestamp::now());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(signed_at >= answered.unwrap());
 }

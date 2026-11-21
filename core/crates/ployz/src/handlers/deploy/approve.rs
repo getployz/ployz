@@ -116,14 +116,11 @@ pub(in crate::handlers) fn sign(
     let mut target = signable(plan.target)?;
     let pins = pin_tags(matches, &target)?;
     let namespace = plan.namespace;
-    let signed_at = Timestamp::now();
+    let now = Timestamp::now();
     let seed = birth::seed();
-    let minted = birth::mint(
-        &mut target,
-        (&namespace, &plan.volumes),
-        signed_at,
-        |name| birth::nonce(&seed, name),
-    )
+    let minted = birth::mint(&mut target, (&namespace, &plan.volumes), now, |name| {
+        birth::nonce(&seed, name)
+    })
     .map_err(|error| {
         Error::caused(
             RpcErrorCode::InvalidArgument,
@@ -135,22 +132,20 @@ pub(in crate::handlers) fn sign(
         namespace: &namespace,
         volumes: &plan.volumes,
         minted: &minted,
-        now: signed_at,
+        now,
     };
     let approved =
         ApprovedChange::of(&target, &namespace, &pins, &mounts).map_err(Error::command)?;
     for line in approved.iter().flat_map(ApprovedChange::lines) {
         crate::ui::note(format_args!("{line}"));
     }
-    let yes = matches
-        .try_get_one::<bool>("yes")
-        .ok()
-        .flatten()
-        .copied()
-        .unwrap_or(false);
-    consent(
+    let forget_older = flag(matches, "forget-older");
+    if forget_older {
+        crate::ui::note(forgetting(&approved));
+    }
+    let signed_at = consent(
         (&namespace, &approved),
-        yes,
+        flag(matches, "yes"),
         |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
     )?;
     let signer = SignerKey::Device(signing.device_key());
@@ -158,7 +153,7 @@ pub(in crate::handlers) fn sign(
         .iter()
         .map(|change| {
             let statement = signing.sign(&ServiceVersion {
-                forget_older: false,
+                forget_older,
                 cluster: enforcing.cluster,
                 namespace: namespace.clone(),
                 service: change.service.clone(),
@@ -189,18 +184,44 @@ pub(in crate::handlers) fn sign(
     }))
 }
 
+/// Whether `name`, a switch some commands that sign lack, was given.
+fn flag(matches: &ArgMatches, name: &str) -> bool {
+    matches
+        .try_get_one::<bool>(name)
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or(false)
+}
+
+/// What `--forget-older` does to the Services of `approved`, said before the person signs.
+fn forgetting(approved: &[ApprovedChange]) -> String {
+    let services: Vec<&str> = approved
+        .iter()
+        .map(|change| change.service.as_str())
+        .collect();
+    format!(
+        "This also forgets every older version of {}: your servers refuse to start one \
+         again. Running containers keep running. An automatic deploy rule for these \
+         services stops until you approve it again with ployz github rule approve.",
+        services.join(", ")
+    )
+}
+
 /// What a person says to signing `approved` in `namespace`, asked after its lines show:
 /// Cloud relays the plan, so a setting it planted, or another Environment's Namespace, must
 /// be refusable before this Device signs it. `--yes`
 /// answers for a run nobody watches; without it, a run that can't ask refuses before
-/// signing, and a person who says no deploys nothing.
+/// signing, and a person who says no deploys nothing. A yes answers with the time it was
+/// given, which every version signed for it carries, so a forget reaches each version
+/// signed before the yes, not only those signed before the prompt.
 fn consent(
     (namespace, approved): (&Namespace, &[ApprovedChange]),
     yes: bool,
     confirm: impl FnOnce(&str, Error, &'static str) -> Result<(), Error>,
-) -> Result<(), Error> {
+) -> Result<Timestamp, Error> {
     if yes {
-        return Ok(());
+        return Ok(Timestamp::now());
     }
     let services: Vec<&str> = approved
         .iter()
@@ -218,7 +239,8 @@ fn consent(
         &format!("Approve {} in namespace {namespace}?", services.join(", ")),
         refusal,
         "Cancelled. Nothing signed or deployed.",
-    )
+    )?;
+    Ok(Timestamp::now())
 }
 
 /// The plan's target when a Device can sign every spec it ships, once its tags are pinned.
