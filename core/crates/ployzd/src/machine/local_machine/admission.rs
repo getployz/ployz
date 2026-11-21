@@ -361,11 +361,13 @@ impl LocalMachine {
 
     /// Start `id`. An Operator's start is refused when the admission kept with the
     /// Container no longer stands here, as [`Standing::admits`] decides, and when this
-    /// Machine kept no admission for it.
+    /// Machine kept no admission for it. Docker's start refuses it beside another running
+    /// holder of its Provisioned Volume, as [`crate::docker::holder::start`] decides.
     ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] for a refused start, [`Error::ApprovalRecord`]
-    /// when the rule marks cannot be read, and the Docker error of a start that fails.
+    /// when the rule marks cannot be read, [`crate::docker::Error::VolumeHeld`] beside a
+    /// running holder, and the Docker error of a start that fails.
     pub(super) async fn start_checked(
         &self,
         containers: &ContainerRuntime,

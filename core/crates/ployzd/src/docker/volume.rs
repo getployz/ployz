@@ -460,6 +460,15 @@ impl Volumes {
         }
     }
 
+    /// Refuse a new Service Container on Docker Volume `name`, which the user calls
+    /// `called`, while another Container runs on it. See [`super::holder::refuse_beside`].
+    ///
+    /// # Errors
+    /// [`Error::VolumeHeld`] naming the running holder, or the error of a read that failed.
+    pub(crate) async fn refuse_beside(&self, name: &str, called: &str) -> Result<(), Error> {
+        super::holder::refuse_beside(&self.docker.client, None, name, called).await
+    }
+
     /// Every Container, running or not, that mounts the Docker Volume `name`.
     pub(crate) async fn volume_holder_ids(
         &self,

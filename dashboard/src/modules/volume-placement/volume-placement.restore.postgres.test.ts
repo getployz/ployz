@@ -385,15 +385,15 @@ it.live("keeps a restore whose Store write hasn't committed when a Deploy advanc
   expect(during).toMatchObject([{ deploymentId: null, staged: { seed: { sourceVolumeId: SOURCE } } }]);
 }));
 
-it.live("restores onto the source's storage, locked, with the source's shared writes", () => Effect.gen(function* () {
+it.live("restores onto the source's storage, locked, with the source's mounts", () => Effect.gen(function* () {
   const managed = { kind: "provisioned", maximumBytes: 5_000_000_000 } as const;
-  const mounts: Mount[] = [{ service: "web", path: "/data" }, { service: "worker", path: "/data" }];
-  const { services, store } = yield* deployedShop({ storage: managed, shared_writes: true, mounts }, ["worker"]);
+  const mounts: Mount[] = [{ service: "web", path: "/data" }];
+  const { services, store } = yield* deployedShop({ storage: managed, mounts });
   const staged = yield* stageRestore(ORGANIZATION, null, { volumeId: SOURCE, environment: shop, ...point }, () => Effect.succeed([member("web-1", "writer")]))
     .pipe(Effect.provide(services));
   if (!staged.ok) throw new Error(staged.refusal.message);
   const name = `data-${lossTime(new Date(at * 1000)).replace(":", "")}`;
-  expect(yield* listed(store, name)).toMatchObject({ storage: managed, storage_locked: true, shared_writes: true, mounts, change: "create" });
+  expect(yield* listed(store, name)).toMatchObject({ storage: managed, storage_locked: true, shared_writes: false, mounts, change: "create" });
 
   const resized = yield* storeTry(() => store.write(ORGANIZATION, {
     command: "set_volume_storage", environment: shop, volume: name, storage: { kind: "provisioned", maximumBytes: 10_000_000_000 },

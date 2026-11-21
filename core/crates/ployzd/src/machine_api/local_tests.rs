@@ -3559,6 +3559,90 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A Create that reaches a Server late, while the Writer still runs there, makes no
+    /// second Container on the root, and a kept holder doesn't start beside it either.
+    /// Once the Writer stops, the kept holder starts.
+    #[tokio::test]
+    async fn no_holder_is_created_or_started_beside_a_running_one() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-one-holder").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, writer_root(1, None));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let kept = kept_holder(&service, &fake).await;
+        let writer = running_holder(&service, &fake).await;
+        // A stopped helper Ployz didn't make, left on the root, never matters.
+        helper_on_root(&fake, "exited");
+        let held = |error: crate::machine::LocalMachineError| {
+            let crate::machine::LocalMachineError::Docker(
+                held @ crate::docker::Error::VolumeHeld { .. },
+            ) = error
+            else {
+                panic!("expected the running holder named, got {error:?}");
+            };
+            assert_eq!(
+                held.to_string(),
+                "api still runs on the Volume at /data/0 on this Server; deploy again, or stop api first"
+            );
+        };
+
+        held(
+            service
+                .local
+                .create_container(
+                    ContainerKind::ServiceContainer,
+                    &Namespace::parse("app").unwrap(),
+                    &serde_json::from_value(spec()).unwrap(),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(
+            holder_status(&fake).len(),
+            3,
+            "Docker made nothing beside the two holders and the helper"
+        );
+        held(service.local.start_container(kept, None).await.unwrap_err());
+        assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
+
+        set_exited(&fake, &writer);
+        service.local.start_container(kept, None).await.unwrap();
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Container Ployz didn't make, in `status`, that mounts the Volume.
+    fn helper_on_root(fake: &crate::docker::test_support::FakeDocker, status: &str) {
+        let id = format!("{}{}", MachineId::random(), MachineId::random());
+        fake.named_containers.as_ref().unwrap().lock().unwrap().insert(
+            "helper".into(),
+            json!({"Id": id, "Name": "/helper", "Config": {"Labels": {}}, "State": {"Status": status}}),
+        );
+        fake.volume_users
+            .lock()
+            .unwrap()
+            .entry(VOLUME.into())
+            .or_default()
+            .push(json!({"Id": id}));
+    }
+
+    fn set_exited(fake: &crate::docker::test_support::FakeDocker, id: &ContainerId) {
+        for container in fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter(|container| container["Id"] == id.to_string().as_str())
+        {
+            container["State"] = json!({"Status":"exited", "Running":false, "ExitCode":0});
+        }
+    }
+
     fn holder_status(fake: &crate::docker::test_support::FakeDocker) -> Vec<Value> {
         fake.named_containers
             .as_ref()
@@ -3671,6 +3755,8 @@ mod set_volume_copy {
         });
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
+        // Made first: no Container is made beside a running holder, so Docker starts it.
+        let second = kept_holder(&service, &fake).await;
         let first = running_holder(&service, &fake).await;
         let draining = |drain: u32| {
             json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
@@ -3679,9 +3765,9 @@ mod set_volume_copy {
 
         // The fake holder never reads idle, so the drain lasts its whole cap, and the
         // second holder must start inside it. A loaded runner took over 300 ms to start one.
-        let (refused, _) = tokio::join!(set_copy(&service, draining(3_000)), async {
+        let (refused, ()) = tokio::join!(set_copy(&service, draining(3_000)), async {
             drain_started(&service, &first).await;
-            running_holder(&service, &fake).await
+            start_holder(&fake, &second);
         });
         let error = refusal(&refused);
         assert_eq!(error.details["reason"], json!("busy"), "{error:?}");
@@ -4294,8 +4380,9 @@ mod set_volume_copy {
         let plugin = cutting_plugin();
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        let older = running_holder(&service, &fake).await;
+        // Made first: no Container is made beside a running holder.
         let deployed = kept_holder(&service, &fake).await;
+        let older = running_holder(&service, &fake).await;
 
         let (refused, _) = tokio::join!(set_copy(&service, at_gen(draining_cut(300), 1)), async {
             drain_started(&service, &older).await;

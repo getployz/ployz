@@ -1,5 +1,5 @@
 use super::*;
-use crate::followup::{SetupLeft, Storage};
+use crate::followup::SetupLeft;
 use crate::{EnvironmentName, ProjectName};
 
 fn store_error(code: RpcErrorCode, message: &str, details: Value) -> RpcError {
@@ -229,39 +229,15 @@ fn every_store_follow_up_reads_as_main_wrote_it() {
             call("environment_show", scope.clone()),
         ),
         (
-            FollowUp::VolumeAllowSharedWrites {
+            FollowUp::VolumeStopSharedWrites {
                 volume: "data".into(),
                 place: staging(),
             },
-            json!("ployz volume set data --shared-writes --env staging --project shop"),
+            json!("ployz volume set data --shared-writes=false --env staging --project shop"),
             call(
                 "volume_update",
-                json!({ "volume": "data", "shared_writes": true, "environment": "staging", "project": "shop" }),
+                json!({ "volume": "data", "shared_writes": false, "environment": "staging", "project": "shop" }),
             ),
-        ),
-        (
-            FollowUp::VolumeAdd {
-                volume: "data".into(),
-                mounts: vec!["web:/data".into()],
-                storage: Storage::Docker,
-                place: staging(),
-            },
-            json!(
-                "ployz volume add data --mount web:/data --docker --shared-writes --env staging --project shop"
-            ),
-            nothing.clone(),
-        ),
-        (
-            FollowUp::VolumeAdd {
-                volume: "data".into(),
-                mounts: vec!["web:/data".into(), "worker:/my data".into()],
-                storage: Storage::Size("10GiB".into()),
-                place: staging(),
-            },
-            json!(
-                "ployz volume add data --mount web:/data --mount 'worker:/my data' --size 10GiB --shared-writes --env staging --project shop"
-            ),
-            nothing.clone(),
         ),
         (
             FollowUp::UpdateClient { beta: false },
