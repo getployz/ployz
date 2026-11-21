@@ -1123,8 +1123,9 @@ pub(crate) mod tests {
         assert_eq!(refused.code, RpcErrorCode::Conflict);
         assert_eq!(
             refused.message,
-            "Shared writes are paused for now, and this older version ships data with them on; turn them off, then deploy again"
+            "Shared writes are paused for now, and this older version ships data with them on; deploy again to ship it with them off"
         );
+        assert_eq!(refused.details["next"], "ployz deploy");
     }
 
     #[test]

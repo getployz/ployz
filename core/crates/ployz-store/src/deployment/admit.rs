@@ -20,7 +20,7 @@ use crate::followup::{FollowUp, Place};
 use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, VolumeName};
 use crate::registry;
 use crate::review;
-use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
+use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
 use crate::trusted::Evidence;
 use crate::{Actor, Approval, Trusted};
@@ -335,7 +335,7 @@ pub(crate) fn gate(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     trusted.runnable()?;
-    refuse_shared_writes(&environment.summary, intent, shipping)?;
+    refuse_shared_writes(environment, intent, shipping)?;
     needs_cluster_domain(environment, intent, cluster_domain)?;
     domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
 }
@@ -353,8 +353,10 @@ pub(crate) enum Shipping {
 /// Refuse to ship a Volume with Shared Writes on that a Service of `intent` mounts:
 /// they are paused, and a Server runs one Container on a Managed volume at a time.
 /// Sending nothing beats a Deploy whose second writer each Server refuses partway.
+/// A saved version can't change, so once Working State has them off the way on is a
+/// new Deploy.
 pub(crate) fn refuse_shared_writes(
-    environment: &EnvironmentSummary,
+    environment: &scope::Environment,
     intent: &SavedEnvironmentIntent,
     shipping: Shipping,
 ) -> Result<(), RpcError> {
@@ -375,30 +377,43 @@ pub(crate) fn refuse_shared_writes(
     };
     let named = match shared.split_last() {
         Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
-        _ => (*first).to_owned(),
+        _ => shared.concat(),
     };
-    let message = match (shipping, shared.len()) {
-        (Shipping::Working, 1) => {
+    let still_on = environment
+        .working
+        .volumes
+        .iter()
+        .find(|volume| volume.shared_writes && shared.contains(&volume.name.as_str()));
+    let (message, next) = match (shipping, still_on) {
+        (Shipping::Working, _) => (
             format!(
-                "Shared writes are paused for now, and {named} still has them on; turn them off to deploy"
-            )
-        }
-        (Shipping::Working, _) => {
+                "Shared writes are paused for now, and {named} still {} them on; turn them off to deploy",
+                if shared.len() == 1 { "has" } else { "have" }
+            ),
+            None,
+        ),
+        (Shipping::Saved, Some(_)) => (
             format!(
-                "Shared writes are paused for now, and {named} still have them on; turn them off to deploy"
-            )
-        }
-        (Shipping::Saved, _) => format!(
-            "Shared writes are paused for now, and this older version ships {named} with them on; turn them off, then deploy again"
+                "Shared writes are paused for now, and this older version ships {named} with them on; turn them off, then deploy again"
+            ),
+            None,
+        ),
+        (Shipping::Saved, None) => (
+            format!(
+                "Shared writes are paused for now, and this older version ships {named} with them on; deploy again to ship it with them off"
+            ),
+            Some(FollowUp::Deploy { no_prune: false }),
         ),
     };
-    let off = FollowUp::VolumeStopSharedWrites {
-        volume: (*first).to_owned(),
-        place: Place::of(environment),
-    };
+    let next = next.unwrap_or_else(|| FollowUp::VolumeStopSharedWrites {
+        volume: still_on
+            .map_or(*first, |volume| volume.name.as_str())
+            .to_owned(),
+        place: Place::of(&environment.summary),
+    });
     Err(error::conflict(
         message,
-        off.within(json!({ "volumes": shared })),
+        next.within(json!({ "volumes": shared })),
     ))
 }
 

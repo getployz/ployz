@@ -78,7 +78,7 @@ pub(crate) fn retry(
             ..saved.clone()
         };
         super::admit::refuse_shared_writes(
-            &scope::load_by_id(tx, &stored.summary.environment_id)?.summary,
+            &scope::load_by_id(tx, &stored.summary.environment_id)?,
             &shipping,
             super::admit::Shipping::Saved,
         )?;
