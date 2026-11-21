@@ -50,7 +50,7 @@ const attachChangeLog = Effect.gen(function* () {
     `, "objects");
     if (analyticsTrigger?.exists !== true) yield* drizzle.execute(sql`
       create trigger analytics_forget_environments after delete on config_environment
-      referencing old table as old_rows for each statement execute function analytics.forget_environments()
+      referencing old table as old_rows for each statement execute function analytics_forget_environments()
     `);
   }));
 });

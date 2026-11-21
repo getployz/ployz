@@ -12,6 +12,7 @@ processors:
   - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.147.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.147.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.147.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/redactionprocessor v0.147.0
 exporters:
   - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.147.0
 extensions:
