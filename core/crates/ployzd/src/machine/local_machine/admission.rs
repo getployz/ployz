@@ -363,10 +363,8 @@ impl LocalMachine {
         let mut budget = Budget::default();
         let mut unapproved = None;
         // Docker makes the spec's own Service, so its floor is the one a later start reads.
-        let service = QualifiedService::new(
-            new.slot.namespace.clone(),
-            new.resolved_spec.name.clone(),
-        );
+        let service =
+            QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         if !versions.is_empty() {
             match self.approved_versions(new, &service, versions, &mut budget)? {
                 Ok(keys) => return admitted(AdmittedBy::Keys { service, keys }, None),
@@ -436,15 +434,14 @@ impl LocalMachine {
                 forget: approved.forget_older,
             })
             .collect();
-        let keys = match self.approvals.admit_versions(
-            cluster,
-            service,
-            &signatures,
-            Timestamp::now(),
-        )? {
-            Ok(keys) => keys,
-            Err(refused) => return Ok(Err(floor_refusal(refused))),
-        };
+        let keys =
+            match self
+                .approvals
+                .admit_versions(cluster, service, &signatures, Timestamp::now())?
+            {
+                Ok(keys) => keys,
+                Err(refused) => return Ok(Err(floor_refusal(refused))),
+            };
         tracing::info!(
             kind = %new.slot.kind,
             "{} admitted by signed version from {:?} digest={}",

@@ -16,8 +16,7 @@ use ployz_core::{
     QualifiedService, SealingPublicKey, ServiceName,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed,
-        Timestamp,
-        version::Forget,
+        Timestamp, version::Forget,
     },
 };
 use ployz_decide::service_floor::{self, Raise, Refused, Signature};

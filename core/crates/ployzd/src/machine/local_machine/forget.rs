@@ -69,10 +69,11 @@ fn refused(refusal: &AuthorityRefusal) -> ForgetOutcome {
 
 /// What a refused forget says to the person who asked for it.
 pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
-    match refusal {
-        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
-            "This server doesn't trust the device that signed this forget.".to_owned()
-        }
-        refusal => admission::refusal_text(refusal),
+    if matches!(
+        refusal,
+        AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey
+    ) {
+        return "This server doesn't trust the device that signed this forget.".to_owned();
     }
+    admission::refusal_text(refusal)
 }

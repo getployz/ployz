@@ -1199,5 +1199,9 @@ fn a_signed_version_is_opened_in_one_fixed_order() {
 }
 
 fn approvers(admitted: &crate::authority::VersionAdmitted) -> Vec<Approver> {
-    admitted.by.iter().map(|approved| approved.by.clone()).collect()
+    admitted
+        .by
+        .iter()
+        .map(|approved| approved.by.clone())
+        .collect()
 }

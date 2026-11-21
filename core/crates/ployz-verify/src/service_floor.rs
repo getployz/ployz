@@ -219,9 +219,7 @@ impl ServiceFloor {
         let floor = self.floor_for(state, approval);
         let now = time(state.clock);
         let after = match approval {
-            _ if approval.verified_rule() && self.has(Mutation::RuleFloorOnlyOnline) => {
-                Some(floor)
-            }
+            _ if approval.verified_rule() && self.has(Mutation::RuleFloorOnlyOnline) => Some(floor),
             Approval::R1 | Approval::R2 => service_floor::admits(time(approval.at()), floor, now)
                 .ok()
                 .map(|()| floor),
