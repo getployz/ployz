@@ -110,7 +110,30 @@ fn a_version_admits_its_spec_on_any_machine_that_trusts_its_signer() {
 }
 
 #[test]
-fn a_forget_its_machine_refuses_refuses_the_creation_another_version_admits() {
+fn a_trusted_forget_its_machine_refuses_refuses_the_creation_another_version_admits() {
+    let trusted = signer(1);
+    let other = signer(2);
+    let spec = requested("a");
+    let forget = ServiceVersion {
+        forget_older: true,
+        cluster: SealingPublicKey::from_bytes([8; 32]),
+        ..body(&other, &spec)
+    };
+
+    let refused = check(
+        &[
+            signed(&trusted, &body(&trusted, &spec)),
+            signed(&other, &forget),
+        ],
+        &trusting(&[&trusted, &other]),
+        &resolved(&spec),
+    );
+
+    assert!(refused.is_err(), "{refused:?}");
+}
+
+#[test]
+fn a_removed_devices_old_forget_does_not_block_a_fresh_approval() {
     let trusted = signer(1);
     let removed = signer(2);
     let spec = requested("a");
@@ -119,16 +142,16 @@ fn a_forget_its_machine_refuses_refuses_the_creation_another_version_admits() {
         ..body(&removed, &spec)
     };
 
-    let refused = check(
+    let admitted = check(
         &[
-            signed(&trusted, &body(&trusted, &spec)),
             signed(&removed, &forget),
+            signed(&trusted, &body(&trusted, &spec)),
         ],
         &trusting(&[&trusted]),
         &resolved(&spec),
     );
 
-    assert!(refused.is_err(), "{refused:?}");
+    assert!(admitted.is_ok(), "{admitted:?}");
 }
 
 #[test]

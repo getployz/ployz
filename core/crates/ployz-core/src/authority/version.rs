@@ -150,9 +150,11 @@ pub struct Approved {
 /// # Errors
 /// Returns the first statement's refusal when none admits,
 /// [`AuthorityRefusal::Overspent`] when the budget ran out before any was opened, and
-/// [`AuthorityRefusal::Unsigned`] when there are none. A statement marked to forget must
-/// admit itself: its refusal, or [`AuthorityRefusal::Overspent`] when it was left
-/// unopened, refuses the creation even when another statement admits it.
+/// [`AuthorityRefusal::Unsigned`] when there are none. A statement marked to forget that a
+/// key trusted here signed must admit itself: its refusal, or
+/// [`AuthorityRefusal::Overspent`] when it was left unopened, refuses the creation even
+/// when another statement admits it. One no trusted key signed is ignored, so a removed
+/// Device's old forget never blocks a fresh approval.
 pub fn verify(
     versions: &[Signed<ServiceVersion>],
     facts: &VersionFacts<'_>,
@@ -172,14 +174,18 @@ pub fn verify(
         match admits(version, facts, digest) {
             Ok(approved) => by.push(approved),
             Err(refusal) => {
-                if claims_forget(version) {
+                if claims_forget(version, facts.trusted) {
                     forget_refused.get_or_insert_with(|| refusal.clone());
                 }
                 first.get_or_insert(refusal);
             }
         }
     }
-    if versions.iter().skip(opened).any(claims_forget) {
+    if versions
+        .iter()
+        .skip(opened)
+        .any(|version| claims_forget(version, facts.trusted))
+    {
         forget_refused.get_or_insert(AuthorityRefusal::Overspent);
     }
     if let Some(refusal) = forget_refused {
@@ -193,8 +199,9 @@ pub fn verify(
     Ok(VersionAdmitted { by, digest })
 }
 
-fn claims_forget(version: &Signed<ServiceVersion>) -> bool {
-    version.open().is_ok_and(|body| body.forget_older)
+/// Whether `version` reads as a forget and a key trusted here signed it.
+fn claims_forget(version: &Signed<ServiceVersion>, trusted: &TrustedKeys) -> bool {
+    verifications(version, trusted) > 0 && version.open().is_ok_and(|body| body.forget_older)
 }
 
 fn admits(
