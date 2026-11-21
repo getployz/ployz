@@ -1,13 +1,12 @@
 // @vitest-environment jsdom
-import type { MetricMarker } from "@ployz/sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { MetricRead } from "#/modules/metrics/metrics";
+import type { CrashMarker, MetricRead, ServiceHistory } from "#/modules/metrics/metrics";
 import * as functions from "#/modules/metrics/metrics.functions";
 import { serviceMarkersQueryOptions } from "#/modules/metrics/metrics.queries";
-import { containerId, machineId, serviceId } from "#/test/ids";
+import { machineId } from "#/test/ids";
 import { useContainerTrouble } from "./use-container-trouble";
 
 afterEach(() => {
@@ -19,22 +18,19 @@ const MINUTE = 60_000;
 const scope = { organizationSlug: "acme", environmentId: "env" };
 const machine = machineId("a");
 
-const markerAt = (kind: MetricMarker["kind"], atMs: number): MetricMarker => {
-  const base = { machine_id: machine, container_id: containerId("c"), service_id: serviceId("s"), service: "ns/web", replica: "web-1", ts: atMs * 1e6 };
-  return kind === "exit" ? { ...base, kind, oom: false, stopped: false } : { ...base, kind };
+const oomAt = (at: number): CrashMarker => ({ kind: "oom", at, machine, replica: "web-1" });
+const exitAt = (at: number): CrashMarker => ({ kind: "exit", at, machine, replica: "web-1", exitCode: 1 });
+const readWith = (first: CrashMarker, ...rest: CrashMarker[]): MetricRead<ServiceHistory> => {
+  const last = rest.at(-1) ?? first;
+  return {
+    type: "history",
+    window: { from: first.at - MINUTE, to: last.at + MINUTE },
+    at: last.at,
+    history: { stepMs: 60 * MINUTE, points: [], servers: [{ machine, points: [], gaps: [], markers: [first, ...rest] }] },
+  };
 };
-const oomAt = (atMs: number) => markerAt("oom", atMs);
-const readWith = (first: MetricMarker, ...rest: MetricMarker[]): MetricRead => ({
-  type: "history",
-  window: { from: first.ts / 1e6 - MINUTE, to: (rest.at(-1) ?? first).ts / 1e6 + MINUTE },
-  at: (rest.at(-1) ?? first).ts / 1e6,
-  history: {
-    step_nanos: 60 * MINUTE * 1e6, points: { service: [] }, unanswered: [],
-    machines: [{ machine_id: machine, value: { points: { service: [] }, step_nanos: 60 * MINUTE * 1e6, gaps: [], markers: [first, ...rest] } }],
-  },
-});
 
-function render(read: MetricRead, updatedAt: number) {
+function render(read: MetricRead<ServiceHistory>, updatedAt: number) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(serviceMarkersQueryOptions(scope, "web").queryKey, read, { updatedAt });
   const failed = vi.spyOn(functions, "readServiceMetricsServerFn").mockRejectedValue(new Error("unavailable"));
@@ -60,11 +56,10 @@ it("shows a fresh OOM, then drops it an hour after it happened without another r
   expect(result.current).toBeNull();
 });
 
-it("drops Restarting ten minutes after a crash loop's latest restart without another read", () => {
+it("shows Restarting for a replica that crashed twice, then drops it ten minutes after its latest crash without another read", () => {
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
   const now = Date.now();
-  const crashed = (ago: number) => [{ ...markerAt("exit", now - ago * MINUTE), exit_code: 1 }, markerAt("restart", now - ago * MINUTE + 1_000)];
-  const { result } = render(readWith(markerAt("restart", now - 20 * MINUTE), ...crashed(8), ...crashed(6)), now);
+  const { result } = render(readWith(exitAt(now - 8 * MINUTE), exitAt(now - 6 * MINUTE)), now);
   expect(result.current).toBe("Restarting");
   const minutes = (count: number) => {
     for (let minute = 0; minute < count; minute++) act(() => vi.advanceTimersByTime(MINUTE));

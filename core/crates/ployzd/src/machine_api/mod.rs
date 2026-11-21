@@ -5,7 +5,7 @@ mod local;
 mod provenance;
 mod routing;
 
-use std::{convert::Infallible, path::PathBuf, sync::Arc, task::Context};
+use std::{convert::Infallible, sync::Arc, task::Context};
 
 use ployz_core::{
     MachineId, MachineRpcServer, ManagementScope, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Rpc, op,
@@ -92,12 +92,6 @@ impl MachineApiBuilder {
     #[must_use]
     pub(crate) fn with_local(mut self, local: LocalMachine) -> Self {
         self.service = self.service.with_local(local);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_observe_socket(mut self, socket: PathBuf) -> Self {
-        self.service = self.service.with_observe_socket(socket);
         self
     }
 

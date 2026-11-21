@@ -1,6 +1,6 @@
 import type { ServerMetrics } from "#/modules/metrics/metrics-model";
 
-/** The read that answers what a Server uses now: short enough to stay on the daemon's raw 10 second samples. */
+/** The read that answers what a Server uses now: short enough that each bucket is one 10 second Collector sample. */
 export const NOW_RANGE = { from: "5m", to: "now" } as const;
 
 export type Usage = { readonly used: number; readonly total: number };
@@ -13,13 +13,13 @@ export type ServerNow =
     readonly memory: Usage | null;
     readonly disk: Usage | null;
   }
-  | { readonly type: "needs_upgrade" }
-  | { readonly type: "unanswered" }
+  | { readonly type: "not_configured" }
+  | { readonly type: "not_reporting" }
   | { readonly type: "no_readings" };
 
 export const usageFraction = (usage: Usage) => usage.used / usage.total;
 
-// The daemon samples CPU and memory every 10 seconds and disk every 60; `ployz metrics` calls three samples fresh.
+// The Collector samples CPU and memory every 10 seconds and disk every 60; three samples count as fresh.
 const FRESH_SAMPLES = 3;
 const HOST_SAMPLE_MS = 10_000;
 export const DISK_SAMPLE_MS = 60_000;
@@ -43,16 +43,15 @@ const usage = (used: number, total: number): Usage | null => total > 0 ? { used,
 
 /** What a Server uses now, from a read that landed `age` ms ago, leaving out any reading too old to call current. */
 export function serverNow(metrics: ServerMetrics, age: number): ServerNow {
+  if (metrics.silentSince !== null) return { type: "not_reporting" };
   switch (metrics.availability.type) {
-    case "needs_upgrade":
-      return { type: "needs_upgrade" };
-    case "unanswered":
-    case "offline":
-      return { type: "unanswered" };
+    case "not_configured":
+      return { type: "not_configured" };
+    case "not_reporting":
+      return { type: "not_reporting" };
     case "no_readings":
       return { type: "no_readings" };
-    case "normal":
-    case "mixed": {
+    case "normal": {
       const cpu = freshLast(metrics.cpu, metrics, age);
       const used = freshLast(metrics.memoryUsed, metrics, age);
       const total = freshLast(metrics.memoryTotal, metrics, age);

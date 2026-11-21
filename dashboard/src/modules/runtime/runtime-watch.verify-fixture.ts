@@ -41,10 +41,10 @@ export const verifyRuntimeFrame = (): RuntimeWatchView => {
   ];
   return runtimeWatchFrameFixture({
     machines: [
-      machine(NORMAL, "fra-1", "up", "0.3.0", [requirements.metrics.capability], "fra"),
-      machine(ONES, "fra-2", "down", "0.3.0", [requirements.metrics.capability], "fra"),
+      machine(NORMAL, "fra-1", "up", "0.3.0", [requirements.liveLogs.capability], "fra"),
+      machine(ONES, "fra-2", "down", "0.3.0", [requirements.liveLogs.capability], "fra"),
       machine(TWOS, "syd-1", "up", "0.2.4", [requirements.liveLogs.capability], "syd"),
-      machine(FOURS, "ams-1", "up", "0.3.0", [requirements.metrics.capability]),
+      machine(FOURS, "ams-1", "up", "0.3.0", [requirements.liveLogs.capability]),
     ],
     services,
     containers: services.flatMap((entry) => entry.containers),

@@ -300,7 +300,6 @@ async fn tail_logs_reads_each_target_from_its_live_source_without_the_observer()
     }
 
     let (data_dir, _store, service, fake) = fake_docker_service("ployzd-tail-logs").await;
-    let service = service.with_observe_socket(data_dir.join("no-observer.sock"));
     let error = service
         .tail_logs(tail(LiveLogTarget::Container(missing)))
         .await

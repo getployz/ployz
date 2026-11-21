@@ -112,6 +112,7 @@ const rawFields = {
   mailFrom: optional(Config.nonEmptyString("MAIL_FROM")),
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   observeCollectorUrl: optional(Config.url("OBSERVE_COLLECTOR_URL")),
+  // Compose sets this empty unless the observe profile's ClickHouse is on, so empty reads as unset.
   observeClickhouseUrl: Config.string("OBSERVE_CLICKHOUSE_URL").pipe(Config.withDefault("")),
   observeClickhouseUser: Config.nonEmptyString("CLICKHOUSE_USER").pipe(Config.withDefault("default")),
   observeClickhousePassword: Config.schema(Schema.Redacted(Schema.String), "CLICKHOUSE_PASSWORD").pipe(Config.withDefault(Redacted.make(""))),
@@ -358,7 +359,7 @@ const makeAppConfig = Effect.gen(function* () {
     marketingOrigin: raw.marketingOrigin,
     // Unset: Cloud keeps no logs, metrics or traces from Machines, and their OTLP posts get a 503.
     observeCollectorUrl: raw.observeCollectorUrl,
-    // Unset: Cloud keeps no log history to read, and the log viewer says so.
+    // Unset: Cloud keeps no log or metric history to read, and the log viewer and Metrics page say so.
     observeClickhouse,
     // Unset (Self-hosted Cloud): no uptime checker runs, so the dashboard shows no uptime.
     uptimeEnabled: raw.uptimeEnabled,

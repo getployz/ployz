@@ -2,7 +2,7 @@
 //! and everything else.
 //!
 //! `zfs list` can hang on a sick Pool and the Observe Store walk touches
-//! every file, so both run every 60 s on their own task. The 10 s sampler
+//! every file, so both run every 60 s on their own task. The 10 s emitter
 //! takes the last reading and its own `statvfs`, and never waits on either.
 
 use std::{
@@ -12,16 +12,12 @@ use std::{
     time::Duration,
 };
 
-use ployz_core::metrics::DiskBreakdown;
 use tokio::{
     sync::watch,
     time::{MissedTickBehavior, interval},
 };
 
-use super::{
-    host::FsBytes,
-    zfs_usage::{ZfsUsage, ZfsUsageReader},
-};
+use super::zfs_usage::{ZfsUsage, ZfsUsageReader};
 use crate::{
     dataset_layout::{Place, pool_of_root_parent},
     observe::layout::StoreRoot,
@@ -29,6 +25,34 @@ use crate::{
 
 const INTERVAL: Duration = Duration::from_secs(60);
 const BLOCK_BYTES: u64 = 512;
+
+/// Where the Machine's disk bytes went. A part is absent when it was not
+/// measured, such as Volumes on a Machine without ZFS.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct DiskBreakdown {
+    pub(super) total: u64,
+    pub(super) free: u64,
+    pub(super) volumes: Option<u64>,
+    pub(super) mirror_slots: Option<u64>,
+    pub(super) observe_store: Option<u64>,
+    pub(super) other: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FsBytes {
+    pub(super) total: u64,
+    /// What an unprivileged writer can still use; excludes reserved blocks.
+    pub(super) available: u64,
+}
+
+pub(super) fn filesystem(path: &Path) -> Option<FsBytes> {
+    let stat = nix::sys::statvfs::statvfs(path).ok()?;
+    let fragment = stat.fragment_size();
+    Some(FsBytes {
+        total: stat.blocks().checked_mul(fragment)?,
+        available: stat.blocks_available().checked_mul(fragment)?,
+    })
+}
 
 /// The Machine Pool's bytes, as far as they sit on the filesystem holding the
 /// Observe Store.
@@ -218,27 +242,19 @@ pub(super) fn breakdown(filesystem: FsBytes, slow: SlowReading) -> DiskBreakdown
 mod tests {
     use std::{collections::BTreeMap, fs};
 
-    use ployz_core::metrics::DiskBreakdown;
-
     use super::{
-        Placement, PoolBytes, SlowReading, breakdown, locate_pool, pool_bytes, store_bytes,
+        DiskBreakdown, FsBytes, Placement, PoolBytes, SlowReading, breakdown, locate_pool,
+        pool_bytes, store_bytes,
     };
     use crate::{
-        observe::metrics::{
-            host::FsBytes,
-            zfs_usage::{DatasetUsage, ZfsUsage, ZfsUsageGap},
-        },
+        observe::metrics::zfs_usage::{DatasetUsage, ZfsUsage, ZfsUsageGap},
         test_dir::TestDir,
     };
 
     const GIB: u64 = 1 << 30;
 
     fn filesystem(total: u64, available: u64) -> FsBytes {
-        FsBytes {
-            total,
-            used: total - available,
-            available,
-        }
+        FsBytes { total, available }
     }
 
     fn parts_sum(disk: &DiskBreakdown) -> u64 {

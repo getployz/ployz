@@ -12,8 +12,6 @@ import type {
   PruneTarget,
   MachineId,
   MachineTarget,
-  MetricHistory,
-  MetricHistoryInput,
   ObservedDataLoss,
   DataLossConfirmation,
   Namespace,
@@ -249,7 +247,7 @@ export declare function setVolumeCopyRefusal(error: unknown): import("./generate
 export type AgentState = { readonly __brand: "AgentState" };
 export type AgentTurn = { step: import("./generated/payloads").Step; state: AgentState };
 type WrappedClientMethods =
-  | "containerLogs" | "metricHistory" | "watch"
+  | "containerLogs" | "watch"
   | "prepare" | "build" | "preview" | "previewNamespaceRemoval" | "volumeSwitch"
   | "dataLossIfNamespaceDestroyed" | "destroyNamespace";
 
@@ -263,7 +261,6 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options: LogOptions): AsyncIterable<LogEvent>;
     /** Sums a Service across the Machines that answered; names each Machine that did not. */
-    metricHistory(input: MetricHistoryInput): Promise<MetricHistory>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
   previewNamespaceRemoval(namespace: Namespace, destroy_volumes: boolean): Promise<PreparedDeploy>;

@@ -5,7 +5,6 @@
 //! container, and no Deploy waits on it.
 
 pub mod cleanup;
-mod client;
 mod clock;
 pub(crate) mod collector;
 mod exit_ledger;
@@ -16,40 +15,35 @@ pub mod layout;
 mod meta;
 pub(crate) mod metrics;
 mod salts;
-mod serve;
 mod settled;
 mod ship;
 mod signal;
 pub(crate) mod unit;
-mod wire;
 
 use std::{
     fs,
     fs::File,
     io,
-    os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use bollard::Docker;
-pub use client::ObserveClient;
 use fs2::FileExt;
 use layout::StoreRoot;
-use tokio::net::UnixListener;
 
 const LEGACY_LOG_STORE: &str = "ployz-observe";
 const LOCK_FILE: &str = "harvester.lock";
 
-/// Runs the metric sampler, the shippers and the Docker events loop until
+/// Runs the metric emitter, the shippers and the Docker events loop until
 /// SIGTERM. `data_dir` holds the observe store and the
-/// Machine record the sampler stamps rows with.
+/// Machine record the harvester stamps markers with.
 ///
 /// # Errors
 ///
 /// Returns an error when Docker cannot be reached, another observe process holds
-/// the store, or the store or socket cannot be created.
-pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
+/// the store, or or the store cannot be created.
+pub async fn run(data_dir: &Path) -> io::Result<()> {
     crate::faults::check()?;
     crate::faults::leak_memory();
     let docker = Docker::connect_with_defaults().map_err(io::Error::other)?;
@@ -64,19 +58,8 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     let _lock = lock_store(&store)?;
     store.prepare()?;
     remove_legacy_log_store(&docker_root);
-    let listener = bind_socket(&ployz_core::MachineLayout::observe_socket_in(run_dir))?;
     tracing::info!(store = %store.path().display(), "observing this Machine");
-    tokio::spawn(serve::serve(listener, store.clone()));
-    // Cleanup deletes raw hours older than a day, so a long downtime's hours
-    // are folded into rollups before it runs.
-    if let Err(error) = metrics::rollup::fold_pending(&store, std::time::SystemTime::now()) {
-        tracing::warn!(%error, "cannot fold metric hours");
-    }
-    tokio::spawn(metrics::sampler::run(
-        docker.clone(),
-        store.clone(),
-        data_dir.to_path_buf(),
-    ));
+    tokio::spawn(metrics::emit::run(store.clone()));
     let crashes = ship::Outbox::open(&store)?;
     spawn_crash_sender(crashes.clone(), data_dir)?;
     harvest::Harvester::run(docker, store, data_dir.to_path_buf(), crashes).await
@@ -116,21 +99,4 @@ fn lock_store(store: &StoreRoot) -> io::Result<File> {
         )
     })?;
     Ok(lock)
-}
-
-fn bind_socket(path: &Path) -> io::Result<UnixListener> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path)?,
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!("{} exists and is not a socket", path.display()),
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = UnixListener::bind(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
 }

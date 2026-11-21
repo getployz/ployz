@@ -14,6 +14,7 @@ const empty: ServerMetrics = {
   interfaces: [],
   disk: [],
   gaps: [],
+  silentSince: null,
 };
 
 const recent = TO - 10_000;
@@ -43,9 +44,13 @@ describe("serverNow", () => {
       memoryTotal: [{ at: TO - 40_000, value: 64 }],
       // Disk is sampled once a minute, so a two-minute-old reading is still its latest.
       disk: [{ at: TO - 120_000, total: 100, free: 77 }],
-      gaps: [{ from: TO - 270_000, to: TO, reason: "not_sampled" }],
+      gaps: [{ from: TO - 270_000, to: TO }],
     }, 0);
     expect(now).toEqual({ type: "meters", cpu: null, memory: null, disk: { used: 23, total: 100 } });
+  });
+
+  it("says a Server that has sent nothing for a minute isn't reporting, though its last readings are still recent", () => {
+    expect(serverNow({ ...empty, cpu: [{ at: recent, value: 0.5 }], silentSince: recent }, 0)).toEqual({ type: "not_reporting" });
   });
 
   it("says there are no readings when every reading is old", () => {
@@ -66,10 +71,8 @@ describe("serverNow", () => {
   });
 
   it("names why a Server has no meters", () => {
-    const ref = { id: "2".repeat(32), name: "syd-1" };
-    expect(serverNow({ ...empty, availability: { type: "needs_upgrade", servers: [ref] } }, 0)).toEqual({ type: "needs_upgrade" });
-    expect(serverNow({ ...empty, availability: { type: "unanswered", servers: [ref], needsUpgrade: [] } }, 0)).toEqual({ type: "unanswered" });
-    expect(serverNow({ ...empty, availability: { type: "offline" } }, 0)).toEqual({ type: "unanswered" });
+    expect(serverNow({ ...empty, availability: { type: "not_configured" } }, 0)).toEqual({ type: "not_configured" });
+    expect(serverNow({ ...empty, availability: { type: "not_reporting" } }, 0)).toEqual({ type: "not_reporting" });
     expect(serverNow({ ...empty, availability: { type: "no_readings" } }, 0)).toEqual({ type: "no_readings" });
   });
 });

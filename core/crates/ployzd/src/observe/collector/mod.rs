@@ -1,7 +1,8 @@
 //! The Collector: an OpenTelemetry Collector the daemon runs on a Machine connected to
 //! Cloud, reading every Ployz container's `json-file` log, masking Sealed values and
-//! shipping the lines to Cloud's OTLP route. Its crash receiver takes the crash events the
-//! daemon posts on loopback and sends them to the same route.
+//! shipping the lines to Cloud's OTLP route, with the Machine's and its containers'
+//! metrics beside them. Its crash receiver takes the crash events the daemon posts on
+//! loopback and sends them to the same route.
 //!
 //! The daemon owns it like any helper container. Its config, the mask of Sealed values
 //! and its token live under `/run`, so a Machine that reboots, or one Cloud no longer
@@ -15,6 +16,7 @@ mod token;
 use std::{
     collections::HashMap,
     fs, io,
+    os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -284,14 +286,17 @@ impl Inner {
         let requests = requests::fragment(&self.salts.sites());
         fs::create_dir_all(&paths.requests)?;
         write_if_changed(&paths.base_file(), config::BASE.as_bytes())?;
+        write_if_changed(&paths.metrics_file(), config::METRICS.as_bytes())?;
         write_if_changed(&paths.mask_file(), mask.as_bytes())?;
         write_if_changed(&paths.requests_file(), requests.as_bytes())?;
         write_if_changed(&paths.crash_file(), config::CRASH.as_bytes())?;
+        let docker_gid = fs::metadata(&paths.docker_socket)?.gid();
         let desired = DesiredContainer::new(
             crate::images::COLLECTOR,
-            config::body(&paths, &config::endpoint(target)),
+            config::body(&paths, &config::endpoint(target), docker_gid),
             &[
                 config::BASE.as_bytes(),
+                config::METRICS.as_bytes(),
                 mask.as_bytes(),
                 config::CRASH.as_bytes(),
             ],
