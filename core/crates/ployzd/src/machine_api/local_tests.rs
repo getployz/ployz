@@ -5886,6 +5886,33 @@ mod ensure_container {
             std::fs::remove_dir_all(&fixture.data_dir).unwrap();
         }
 
+        /// A removed Device's old forget, still in the Config Store, never blocks a Full
+        /// creation.
+        #[tokio::test]
+        async fn a_full_creation_beside_a_forget_no_trusted_key_signed_creates() {
+            let fixture = enforced("ployzd-full-stranger-forget").await;
+            let approved = reaching(PINNED);
+            let stranger = Signer::from_seed(&[42; 32]);
+            let mut body = fixture
+                .version_at(&approved, Timestamp::now(), true)
+                .open()
+                .unwrap();
+            body.signer = ployz_core::authority::SignerKey::Device(stranger.public().into());
+            let forget = Signed::sign(&body, &stranger).unwrap();
+            let seen = requests(&fixture.fake).len();
+
+            deploy_versions(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                &[forget],
+                false,
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
         #[tokio::test]
         async fn a_version_signed_ahead_never_hides_one_the_same_key_signed_on_time() {
             let fixture = enforced("ployzd-ahead-beside-honest").await;

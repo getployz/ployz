@@ -199,8 +199,10 @@ pub fn verify(
     Ok(VersionAdmitted { by, digest })
 }
 
-/// Whether `version` reads as a forget and a key trusted here signed it.
-fn claims_forget(version: &Signed<ServiceVersion>, trusted: &TrustedKeys) -> bool {
+/// Whether `version` reads as a forget and a key trusted here signed it. Only such a
+/// forget binds: one no trusted key signed is ignored everywhere.
+#[must_use]
+pub fn claims_forget(version: &Signed<ServiceVersion>, trusted: &TrustedKeys) -> bool {
     verifications(version, trusted) > 0 && version.open().is_ok_and(|body| body.forget_older)
 }
 

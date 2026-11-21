@@ -369,7 +369,9 @@ impl LocalMachine {
             match self.approved_versions(new, &service, versions, &mut budget)? {
                 Ok(keys) => return admitted(AdmittedBy::Keys { service, keys }, None),
                 // A creation at Full access would hide that the forget failed.
-                Err(refusal) if asks_to_forget(versions) => return Err(refused(refusal)),
+                Err(refusal) if asks_to_forget(versions, &self.record().trusted_keys()) => {
+                    return Err(refused(refusal));
+                }
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
@@ -607,11 +609,11 @@ impl LocalMachine {
     }
 }
 
-/// Whether any of `versions` says it is marked to forget, signed or not.
-fn asks_to_forget(versions: &[Signed<ServiceVersion>]) -> bool {
+/// Whether any of `versions` is a forget a key trusted here signed.
+fn asks_to_forget(versions: &[Signed<ServiceVersion>], trusted: &TrustedKeys) -> bool {
     versions
         .iter()
-        .any(|version| version.open().is_ok_and(|body| body.forget_older))
+        .any(|version| version::claims_forget(version, trusted))
 }
 
 fn creation(new: &NewContainer) -> Creation<'_> {
