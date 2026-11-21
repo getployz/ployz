@@ -820,6 +820,20 @@ impl Observation {
         Ok(ended.then(|| container_run(&inspected)).flatten())
     }
 
+    /// When the Container's last run exited, on this host's clock, or `None` while Docker
+    /// reports no usable time: it runs, never ran, or stamped something unreadable.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn exited_at(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, Error> {
+        let inspected = self.docker.inspect(container_id).await?;
+        Ok(finished_at(inspected.state.as_ref()).filter(|finished| finished.timestamp() > 0))
+    }
+
     /// The host pid of the Container's process, or `None` when Docker reports none.
     ///
     /// # Errors
