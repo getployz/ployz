@@ -1,8 +1,8 @@
-import { projectContainerLog, projectLogExit, projectLogGap } from "#/modules/runtime/container-log.collection";
 import { createFileRoute } from "@tanstack/react-router";
 import { Option, Schema } from "effect";
-import { logHistorySchema, logSearchSchema, openContainerLogs } from "#/modules/runtime/container-logs.server";
+import { logSearchSchema, openContainerLogs } from "#/modules/runtime/container-logs.server";
 import { containerLogResponse, hiddenLogResponse, offlineLogResponse, whileLogsShown } from "#/modules/runtime/container-log-events.server";
+import { logHistorySchema, readHistoryPage } from "#/modules/runtime/log-history-page.server";
 import { runAppEffect } from "#/server/run.server";
 import { publicErrorResponse, Validation, methodNotAllowed } from "#/server/public-error";
 
@@ -15,22 +15,17 @@ export const Route = createFileRoute("/api/runtime/logs")({
         const result = await runAppEffect(openContainerLogs(request, search.value), { signal: request.signal });
         if (result.type === "offline") return offlineLogResponse(request);
         if (result.type === "hidden") return hiddenLogResponse(request);
-        if (result.type === "stream") {
-          const { logsShown } = result;
-          const events = logsShown ? whileLogsShown(result.events, () => runAppEffect(logsShown, { signal: request.signal })) : result.events;
-          return containerLogResponse(request, events, () => runAppEffect(result.close));
-        }
-        throw new Error("A followed log read answered with a page.");
+        const { logsShown } = result;
+        const events = logsShown ? whileLogsShown(result.events, () => runAppEffect(logsShown, { signal: request.signal })) : result.events;
+        return containerLogResponse(request, events, () => runAppEffect(result.close));
       } catch (cause) { return publicErrorResponse(cause); }
     },
     POST: async ({ request }) => {
       try {
         const search = Schema.decodeUnknownOption(logHistorySchema)(await request.json().catch(() => null));
         if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "Invalid log selection." }));
-        const result = await runAppEffect(openContainerLogs(request, search.value, { cursor: search.value.cursor }), { signal: request.signal });
-        if (result.type !== "history") throw new Error("A history read answered with a stream.");
-        const { records, gaps, exits, failures, cursor } = result.page;
-        return Response.json({ rows: [...records.map(projectContainerLog), ...gaps.map(projectLogGap), ...exits.map(projectLogExit)], failures, cursor }, { headers: { "Cache-Control": "private, no-store" } });
+        const page = await runAppEffect(readHistoryPage(request, search.value), { signal: request.signal });
+        return Response.json(page, { headers: { "Cache-Control": "private, no-store" } });
       } catch (cause) { return publicErrorResponse(cause); }
     },
     ANY: (): Response => methodNotAllowed(Route),

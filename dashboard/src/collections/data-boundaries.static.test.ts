@@ -96,6 +96,8 @@ const NETWORK_FILES = {
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
+  logHistoryStatusQueryOptions: "the Logs view reads it once mounted and polls it, and a log line never waits on it",
+  logHistoryServicesQueryOptions: "the Logs view reads it once the Environment's history is on, and the picker shows the loaded Services until it lands",
   waitingServerDetailQueryOptions: "opening a Waiting row fetches its full report and probe",
   enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",
@@ -132,6 +134,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/passkeys-section.tsx": "adding a passkey waits on the browser's authenticator and on the server, which assigns its code",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule is signed by its own passkey prompt before it can be saved, so nothing shows before it is; the dialog stays open to show a refusal, such as a newer rule another tab approved",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentHistory.tsx": "the Store derives a sealed History inverse and exact overwrite review before staging; it cannot be guessed optimistically",
+  "components/container-logs.tsx": "a refused redeploy leaves the card where it is, and the Deployment page opens only once the Store has taken the deploy",
   "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/stageable/use-commit-hold.ts": "a committed control keeps showing the value it last wrote until that write settles; the save only releases that hold, and nothing waits on it",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",

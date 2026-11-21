@@ -9,7 +9,12 @@ const deployed = (changes: Map<string, ServiceSettingChange>, name: string, curr
   return change ? settingText(change.before) : current;
 };
 
-export function useServiceRuntime({ service, rows, changes }: StoreService, namespace: string | null) {
+/** The Engine's `namespace/name` for what runs now, or null before the Environment's namespace is known. */
+export function deployedServiceIdentity({ service, rows, changes }: StoreService, namespace: string | null) {
   const privateDns = deployed(changes, "privateDns", settingText(rows.get("privateDns")?.value) || service.private_dns);
-  return useRuntimeService(namespace ? `${namespace}/${privateDns}` : "").runtime;
+  return namespace ? `${namespace}/${privateDns}` : null;
+}
+
+export function useServiceRuntime(state: StoreService, namespace: string | null) {
+  return useRuntimeService(deployedServiceIdentity(state, namespace) ?? "").runtime;
 }

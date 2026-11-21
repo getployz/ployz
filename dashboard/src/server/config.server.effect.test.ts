@@ -231,6 +231,19 @@ describe("AppConfig", () => {
     }),
   );
 
+  it.effect("reads log history from ClickHouse only where it is set, and treats an empty URL as unset", () =>
+    Effect.gen(function* () {
+      assert.strictEqual((yield* load(requiredEnvironment)).observeClickhouse, undefined);
+      assert.strictEqual((yield* load({ ...requiredEnvironment, OBSERVE_CLICKHOUSE_URL: "" })).observeClickhouse, undefined);
+      const set = yield* load({
+        ...requiredEnvironment, OBSERVE_CLICKHOUSE_URL: "http://clickhouse:8123", CLICKHOUSE_USER: "otel", CLICKHOUSE_PASSWORD: "pw",
+      });
+      assert.strictEqual(set.observeClickhouse?.url.href, "http://clickhouse:8123/");
+      assert.strictEqual(set.observeClickhouse?.user, "otel");
+      assert.strictEqual(String(set.observeClickhouse?.password), "<redacted>");
+    }),
+  );
+
   it.effect("loads PostHog from its key, on US Cloud unless a host is set", () =>
     Effect.gen(function* () {
       const cloud = yield* load({ ...requiredEnvironment, POSTHOG_KEY: "phc_test" });
