@@ -158,6 +158,41 @@ pub(super) async fn trust_device(entry: &LocalMachine, signer: &ployz_core::auth
         .unwrap();
 }
 
+/// Forget `app/api` at `entry` as of now, signed by [`join_signer`], which `entry` then
+/// trusts, so `entry` keeps a floor for it.
+pub(super) async fn forget_api(entry: &LocalMachine) -> ployz_core::QualifiedService {
+    use ployz_core::authority::{PayloadDigest, ServiceVersion, Signed, SignerKey, Timestamp};
+    let signer = join_signer();
+    trust_device(entry, &signer).await;
+    let body = ServiceVersion {
+        forget_older: true,
+        cluster: crate::sealing_key::SealingKey::load(entry.owner().data_dir())
+            .unwrap()
+            .expect("the entry holds the Sealing Key")
+            .public_key(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        service: ployz_core::ServiceName::parse("api").unwrap(),
+        digest: PayloadDigest::from_bytes([1; 32]),
+        signed_at: Timestamp::now(),
+        signer: SignerKey::Device(signer.public().into()),
+        proposal: None,
+    };
+    let forgot = entry
+        .forget_versions(ployz_core::ForgetVersionsRequest {
+            versions: vec![Signed::sign(&body, &signer).unwrap()],
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            forgot.outcomes[..],
+            [ployz_core::ForgetOutcome::Raised { .. }]
+        ),
+        "{forgot:?}"
+    );
+    ployz_core::QualifiedService::parse("app/api").unwrap()
+}
+
 /// Register `request` at `entry` as a person's driver does: ask, sign the join the entry
 /// proposes with [`join_signer`], which the entry then trusts, and ask again under that
 /// approval. A request the entry already answered is answered from what it kept.

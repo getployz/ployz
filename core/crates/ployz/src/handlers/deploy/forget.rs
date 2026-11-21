@@ -17,35 +17,111 @@ use crate::cluster::Call;
 use crate::connect::Client;
 use crate::ui::{self, Gaps};
 
-/// What each Member did with the forgets. A Member that didn't answer, or runs a ployz
-/// that keeps no floors, is a gap, and makes the deploy's result partial.
-#[derive(Debug, Serialize)]
-pub(in crate::handlers) struct Forgot {
-    machines: Vec<Answer>,
-    #[serde(flatten)]
-    gaps: Gaps,
-    /// Why no Member could be asked at all.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    unreached: Option<RpcError>,
+/// What each Member did with the forgets. A Member that didn't answer, refused, or runs a
+/// ployz that keeps no floors still admits older versions, so it makes the deploy's result
+/// partial.
+#[derive(Debug)]
+pub(in crate::handlers) enum Forgot {
+    Asked {
+        machines: Vec<Answer>,
+        gaps: Gaps,
+    },
+    /// No Member could be asked at all.
+    Unreached(RpcError),
 }
 
 #[derive(Debug, Serialize)]
-struct Answer {
+pub(in crate::handlers) struct Answer {
     machine_id: MachineId,
     server: String,
     outcomes: Vec<ForgetOutcome>,
 }
 
+/// The JSON of [`Forgot`]: each gap carries its Server's name beside its id.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum View<'a> {
+    Asked {
+        machines: &'a [Answer],
+        failures: Vec<Failed<'a>>,
+        omitted: Vec<Named<'a>>,
+    },
+    Unreached {
+        unreached: &'a RpcError,
+    },
+}
+
+#[derive(Serialize)]
+struct Failed<'a> {
+    machine_id: MachineId,
+    server: String,
+    error: &'a RpcError,
+}
+
+#[derive(Serialize)]
+struct Named<'a> {
+    machine_id: &'a MachineId,
+    server: String,
+}
+
+impl Serialize for Forgot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Asked { machines, gaps } => View::Asked {
+                machines,
+                failures: gaps
+                    .failures
+                    .iter()
+                    .map(|failure| Failed {
+                        machine_id: failure.machine_id,
+                        server: gaps.name(&failure.machine_id),
+                        error: &failure.error,
+                    })
+                    .collect(),
+                omitted: gaps
+                    .omitted
+                    .iter()
+                    .map(|machine_id| Named {
+                        machine_id,
+                        server: gaps.name(machine_id),
+                    })
+                    .collect(),
+            },
+            Self::Unreached(unreached) => View::Unreached { unreached },
+        }
+        .serialize(serializer)
+    }
+}
+
 impl Forgot {
-    /// Whether every Member answered.
+    /// Whether every Member forgot.
     pub(in crate::handlers) fn is_complete(&self) -> bool {
-        self.unreached.is_none() && self.gaps.is_complete()
+        match self {
+            Self::Asked { machines, gaps } => {
+                gaps.is_complete()
+                    && machines
+                        .iter()
+                        .flat_map(|answer| &answer.outcomes)
+                        .all(|outcome| !matches!(outcome, ForgetOutcome::Refused { .. }))
+            }
+            Self::Unreached(_) => false,
+        }
     }
 
-    /// One line per Service each Member forgot, a warning for each it refused, and one
-    /// per Member that didn't answer.
+    /// One line per Service each Member forgot, and a warning for each it refused and
+    /// each Member that didn't answer.
     fn say(&self) {
-        for answer in &self.machines {
+        let (machines, gaps) = match self {
+            Self::Asked { machines, gaps } => (machines, gaps),
+            Self::Unreached(unreached) => {
+                ui::warn(format!(
+                    "Couldn't reach your servers, so none forgot the older versions: {}",
+                    unreached.message
+                ));
+                return;
+            }
+        };
+        for answer in machines {
             for outcome in &answer.outcomes {
                 match outcome {
                     ForgetOutcome::Raised { service, .. } | ForgetOutcome::Held { service, .. } => {
@@ -55,19 +131,13 @@ impl Forgot {
                         ));
                     }
                     ForgetOutcome::Refused { reason } => ui::warn(format!(
-                        "{} refused to forget older versions: {}",
+                        "{} refused to forget the older versions, so it can still start them: {}",
                         answer.server, reason
                     )),
                 }
             }
         }
-        self.gaps.warn();
-        if let Some(unreached) = &self.unreached {
-            ui::warn(format!(
-                "Couldn't reach your servers, so none forgot the older versions: {}",
-                unreached.message
-            ));
-        }
+        gaps.warn_that("it can still start the older versions");
     }
 }
 
@@ -82,11 +152,7 @@ pub(in crate::handlers) fn everywhere(
         let mut client = route::connect(matches, context).await?;
         ask(&mut client, ForgetVersionsRequest { versions }).await
     });
-    let forgot = forgot.unwrap_or_else(|error| Forgot {
-        machines: Vec::new(),
-        gaps: Gaps::default(),
-        unreached: Some(error.report()),
-    });
+    let forgot = forgot.unwrap_or_else(|error| Forgot::Unreached(error.report()));
     forgot.say();
     Ok(forgot)
 }
@@ -99,7 +165,7 @@ pub(super) async fn ask(
     let (answers, gaps) = reach
         .fan_out(|machine_id| on(client.clone(), machine_id, request.clone()))
         .await;
-    Ok(Forgot {
+    Ok(Forgot::Asked {
         machines: answers
             .into_iter()
             .map(|(machine_id, outcomes)| Answer {
@@ -109,13 +175,12 @@ pub(super) async fn ask(
             })
             .collect(),
         gaps: reach.named(gaps),
-        unreached: None,
     })
 }
 
 /// What one Member did with `request`; `None` when its ployz keeps no floors.
 async fn on(
-    client: Client,
+    mut client: Client,
     machine_id: MachineId,
     request: ForgetVersionsRequest,
 ) -> Result<Option<Vec<ForgetOutcome>>, RpcError> {
@@ -128,7 +193,8 @@ async fn on(
         return Ok(None);
     }
     client
-        .call_shared::<op::ForgetVersions>(request, Call::once().to(&target))
+        // A forget only raises floors, so a resend after a lost reply is harmless.
+        .call::<op::ForgetVersions>(request, Call::keyed().to(&target))
         .await
         .map_err(crate::connect::rpc_error)
         .map(|forgot| Some(forgot.outcomes))

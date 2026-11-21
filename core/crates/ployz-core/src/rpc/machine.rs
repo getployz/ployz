@@ -175,8 +175,9 @@ pub struct RegisterRequest {
     #[serde(default)]
     pub runtime: MachineRuntime,
     /// The capabilities the client that runs this joiner's catch-up honors, such as
-    /// [`SET_CLUSTER_DOORS_CAPABILITY`] when it follows the Cluster's declared Doors.
-    /// Empty claims nothing. Not part of the retry identity.
+    /// [`SET_CLUSTER_DOORS_CAPABILITY`] when it follows the Cluster's declared Doors, and
+    /// [`crate::FORGET_VERSIONS_CAPABILITY`] when the joiner opens the floors sealed beside
+    /// the Sealing Key. Empty claims nothing. Not part of the retry identity.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub capabilities: Vec<String>,

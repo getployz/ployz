@@ -269,7 +269,7 @@ impl EnrollIdentity {
             disk_available_bytes: token.disk_available_bytes,
             recovery_support: recovery_supported.then_some(RECOVERY_SUPPORT),
             join_confirmation: None,
-            capabilities: vec![ployz_core::SET_CLUSTER_DOORS_CAPABILITY],
+            capabilities: crate::enrollment::claims(&token.runtime),
         }
     }
 

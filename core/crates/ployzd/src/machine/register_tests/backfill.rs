@@ -1000,3 +1000,29 @@ async fn a_member_given_the_key_takes_its_floors_and_refuses_a_version_below_the
     );
     server.abort();
 }
+
+/// A recipient whose row doesn't claim the floors may run an older ployzd, which takes only
+/// the 32-byte key over Share, so it gets the key alone.
+#[tokio::test]
+async fn a_member_that_does_not_claim_the_floors_is_shared_a_key_an_older_ployzd_opens() {
+    let (replicated, server) = fake_cluster::store().await;
+    let holder = Peer::participating("ployzd-older-holder", &replicated).await;
+    let mut recipient = Peer::needing_access("ployzd-older-recipient", &replicated).await;
+    recipient
+        .machine
+        .runtime
+        .capabilities
+        .remove(ployz_core::FORGET_VERSIONS_CAPABILITY);
+    replicated
+        .publish_local_machine(&recipient.machine)
+        .await
+        .unwrap();
+    forget_api(&holder.local).await;
+
+    let sealed = holder.share_to(&recipient).await;
+    let private = recipient.local.record().wireguard_private_key.clone();
+    let opened =
+        SealingKey::open_from_before_floors(&sealed, &private, &holder.machine.public_key).unwrap();
+    assert!(Some(opened) == holder.key());
+    server.abort();
+}

@@ -139,16 +139,15 @@ impl LocalMachine {
         Ok(SealingKeyHeld { public_key })
     }
 
-    /// The floors to seal beside `key` for a recipient whose row says `runtime`. `None` when
-    /// it doesn't claim a ployz that keeps floors, since an older one refuses a payload
-    /// that carries them; it then misses them, as it would miss a forget sent before it
-    /// joined.
+    /// The floors to seal beside `key` for a recipient that `opens_floors`. `None` for one
+    /// that doesn't, since an older ployzd refuses a payload that carries them; it then
+    /// misses them, as it would miss a forget sent before it joined.
     pub(super) fn floors_for(
         &self,
         key: &SealingKey,
-        runtime: &ployz_core::MachineRuntime,
+        opens_floors: bool,
     ) -> Result<Option<Floors>, super::Error> {
-        if runtime.claim(ployz_core::FORGET_VERSIONS_CAPABILITY) != ployz_core::Claim::Advertises {
+        if !opens_floors {
             return Ok(None);
         }
         self.approvals.floors_in(key.public_key()).map(Some)
@@ -219,7 +218,12 @@ impl LocalMachine {
             &ployz_core::authority::join::JoinAllocation::from(&recipient),
             network,
         )?;
-        let floors = self.floors_for(&key, &recipient.runtime)?;
+        // The recipient's own row says what its daemon opens: it publishes that row itself.
+        let opens_floors = recipient
+            .runtime
+            .claim(ployz_core::FORGET_VERSIONS_CAPABILITY)
+            == ployz_core::Claim::Advertises;
+        let floors = self.floors_for(&key, opens_floors)?;
         let sealed = key.seal_from(record.private_key(), &request.public_key, floors.as_ref())?;
         self.consume_join(
             fresh,

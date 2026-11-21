@@ -75,8 +75,9 @@ pub(super) fn deploy_command(command: Command) -> Command {
                 .conflicts_with_all(["plan", "skip-deploy", "upload"])
                 .help(
                     "Have every server refuse the older versions of what this deploy signs. \
-                     Running containers keep running, and automatic deploy rules for these \
-                     Services stop until you approve them again",
+                     Running containers keep running. Automatic deploy rules for these \
+                     services stop, and Ployz Cloud can't move or drain the containers a rule \
+                     built, until you approve the rule again",
                 ),
         )
         .arg(crate::cli::reviewed_version())
@@ -315,17 +316,20 @@ pub(super) fn upload_and_ship(
         Some(_) => None,
         None => approve::sign(matches, store, (&environment, &services))?,
     };
-    let forgets: Vec<_> = device
-        .iter()
-        .flat_map(|device| &device.versions)
-        .map(|posted| posted.statement.clone())
-        .filter(|statement| statement.open().is_ok_and(|body| body.forget_older))
-        .collect();
-    if matches.try_get_one::<bool>("forget-older").ok().flatten() == Some(&true)
-        && forgets.is_empty()
-    {
-        return Err(unforgettable());
-    }
+    // Under `--forget-older` every version this Device signed is marked to forget.
+    let forgets: Vec<_> = if approve::flag(matches, "forget-older") {
+        let forgets: Vec<_> = device
+            .iter()
+            .flat_map(|device| &device.versions)
+            .map(|posted| posted.statement.clone())
+            .collect();
+        if forgets.is_empty() {
+            return Err(unforgettable());
+        }
+        forgets
+    } else {
+        Vec::new()
+    };
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
         store.upload(&id, dir, listing)?;
@@ -468,11 +472,14 @@ impl Shipped {
             next.say();
         }
         // A Member the forget missed keeps admitting older versions: part of the result.
-        let forgot = self.forgot.as_ref().is_none_or(forget::Forgot::is_complete);
-        self.ran.and(if forgot {
-            Ok(())
-        } else {
+        let missed = self
+            .forgot
+            .as_ref()
+            .is_some_and(|forgot| !forgot.is_complete());
+        self.ran.and(if missed {
             Err(Error::partial())
+        } else {
+            Ok(())
         })
     }
 }

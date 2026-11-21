@@ -12,12 +12,24 @@ fn id(hex: char) -> MachineId {
     MachineId::parse(hex.to_string().repeat(32)).unwrap()
 }
 
-/// Three Members that keep floors. Machine 2 doesn't answer the forget.
-async fn members() -> (
+fn forgot(service: &str) -> VersionsForgotten {
+    VersionsForgotten {
+        outcomes: vec![ForgetOutcome::Raised {
+            service: QualifiedService::parse(service).unwrap(),
+            floor: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        }],
+    }
+}
+
+/// Three Members that keep floors, each answering the forget with `answer`; one it gives
+/// `None` is down.
+async fn members(
+    answer: fn(MachineId) -> Option<VersionsForgotten>,
+) -> (
     Client,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
-    crate::connect::test_support::rpc_client(|rpc: Request<OpaquePayload>| async move {
+    crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| async move {
         let target = rpc.metadata().get("machine").map_or(id('1'), |value| {
             MachineId::parse(value.to_str().unwrap()).unwrap()
         });
@@ -45,15 +57,9 @@ async fn members() -> (
                 capabilities: [CapabilityName::parse(FORGET_VERSIONS_CAPABILITY).unwrap()].into(),
                 sealing: None,
             }),
-            RpcRequestBody::ForgetVersions(_) if target == id('2') => {
-                return Err(Status::unavailable("machine-2 is down"));
-            }
-            RpcRequestBody::ForgetVersions(_) => RpcResponse::from(VersionsForgotten {
-                outcomes: vec![ForgetOutcome::Raised {
-                    service: QualifiedService::parse("app/web").unwrap(),
-                    floor: Timestamp::now(),
-                }],
-            }),
+            RpcRequestBody::ForgetVersions(_) => RpcResponse::from(
+                answer(target).ok_or_else(|| Status::unavailable("the server is down"))?,
+            ),
             other => panic!("the forget fan-out sent {other:?}"),
         };
         Ok(Response::new(response.encode().unwrap()))
@@ -63,9 +69,10 @@ async fn members() -> (
 
 /// A Member that misses the forget keeps admitting older versions, so it is named and the
 /// result is partial; the Members that answered still report what they forgot.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_member_that_does_not_answer_the_forget_makes_the_result_partial() {
-    let (mut client, server) = members().await;
+    let (mut client, server) =
+        members(|target| (target != id('2')).then(|| forgot("app/web"))).await;
 
     let forgot = ask(
         &mut client,
@@ -91,8 +98,42 @@ async fn a_member_that_does_not_answer_the_forget_makes_the_result_partial() {
         Some(&serde_json::json!(id('2').to_string()))
     );
     assert_eq!(
+        json.pointer("/failures/0/server"),
+        Some(&serde_json::json!("machine-2"))
+    );
+    assert_eq!(
         json.pointer("/machines/0/outcomes/0/outcome"),
         Some(&serde_json::json!("raised"))
     );
+    server.abort();
+}
+
+/// A Member that answers but refuses the forget, as one whose clock runs behind does,
+/// still admits older versions, so the result is partial.
+#[tokio::test(start_paused = true)]
+async fn a_member_that_refuses_the_forget_makes_the_result_partial() {
+    let (mut client, server) = members(|target| {
+        Some(if target == id('3') {
+            VersionsForgotten {
+                outcomes: vec![ForgetOutcome::Refused {
+                    reason: "This forget is stamped ahead of this server's clock.".into(),
+                }],
+            }
+        } else {
+            forgot("app/web")
+        })
+    })
+    .await;
+
+    let forgot = ask(
+        &mut client,
+        ForgetVersionsRequest {
+            versions: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(!forgot.is_complete());
     server.abort();
 }

@@ -118,8 +118,8 @@ ployz deploy api --forget-older
 - **Running containers keep running.** Forget only stops new ones. A stopped container that an
   older version made won't start again through Ployz.
 - **Every server is asked, not only the ones that run the service.** The command prints what
-  each server did. A server that doesn't answer, or runs a ployz too old to forget, is named, and
-  the command exits 3. Run the same deploy again once it answers. A server that joins later takes
+  each server did. A server that doesn't answer, refuses the forget, or runs a ployz too old to
+  forget, is named, and the command exits 3. Run the same deploy again once it answers. A server that joins later takes
   what the server that admits it has forgotten, so a forget sent while it joins misses it until
   you send it again.
 - **Automatic deploy rules stop.** A forget also retires each
@@ -130,7 +130,7 @@ ployz deploy api --forget-older
   yes. A version signed on a device whose clock runs behind yours can be forgotten even if it was
   signed after, and one signed on a device whose clock runs ahead can survive. Keep your devices'
   clocks set automatically. A server refuses a forget stamped more than 10 minutes past its own
-  clock. If that happens, check the server's clock as well as yours.
+  clock, and the command exits 3. If that happens, check the server's clock as well as yours.
 
 `--forget-older` needs a deploy your device signs, so it works only when your servers
 [enforce device approval](deployments.md#deploy-from-an-approved-device).

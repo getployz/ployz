@@ -348,7 +348,8 @@ impl Gaps {
         self.failures.is_empty() && self.omitted.is_empty()
     }
 
-    fn name(&self, machine_id: &MachineId) -> String {
+    /// How a warning names `machine_id`.
+    pub(crate) fn name(&self, machine_id: &MachineId) -> String {
         self.names
             .get(machine_id)
             .map_or_else(|| machine_id.to_string(), ToString::to_string)
@@ -357,8 +358,14 @@ impl Gaps {
     /// One warning per Machine that didn't answer or refused, by name, with its cause or
     /// next step.
     pub(crate) fn warn(&self) {
+        self.warn_that(ROWS_MISSING);
+    }
+
+    /// [`Gaps::warn`], saying `missing` of each Machine that didn't answer, such as
+    /// "its rows are missing".
+    pub(crate) fn warn_that(&self, missing: &str) {
         for failure in &self.failures {
-            let (warning, under) = self.warning(failure);
+            let (warning, under) = self.warning(failure, missing);
             flag(&warning);
             match under {
                 Some(Under::Cause(cause)) => {
@@ -371,7 +378,7 @@ impl Gaps {
             }
         }
         for machine_id in &self.omitted {
-            flag(&missing_rows(&self.name(machine_id)));
+            flag(&unanswered_that(&self.name(machine_id), missing));
         }
     }
 
@@ -380,13 +387,17 @@ impl Gaps {
     pub(crate) fn failure_warnings(&self) -> Vec<String> {
         self.failures
             .iter()
-            .map(|failure| self.warning(failure).0)
+            .map(|failure| self.warning(failure, ROWS_MISSING).0)
             .collect()
     }
 
     /// The warning for `failure`, naming its Machine, and the line under it: the cause when
     /// the warning doesn't say what happened by itself, or a refusal's next step.
-    fn warning(&self, failure: &MachineFailure<RpcError>) -> (String, Option<Under>) {
+    fn warning(
+        &self,
+        failure: &MachineFailure<RpcError>,
+        missing: &str,
+    ) -> (String, Option<Under>) {
         let name = self.name(&failure.machine_id);
         if let Some(refusal) = failure.error.refusal() {
             return (refusal.naming(name).to_string(), None);
@@ -423,12 +434,12 @@ impl Gaps {
         // call, as `ployz server rm` does. Its id would only repeat the name.
         if failure.error.server_unlisted(&failure.machine_id) {
             return (
-                format!("{name} was removed while this ran; its rows are missing."),
+                format!("{name} was removed while this ran; {missing}."),
                 None,
             );
         }
         (
-            missing_rows(&name),
+            unanswered_that(&name, missing),
             ployz_core::error_chain::causes(&failure.error)
                 .last()
                 .cloned()
@@ -453,12 +464,14 @@ enum Under {
     Next(String),
 }
 
-fn missing_rows(server: &str) -> String {
-    format!("{server} did not answer; its rows are missing.")
+const ROWS_MISSING: &str = "its rows are missing";
+
+fn unanswered_that(server: &str, missing: &str) -> String {
+    format!("{server} did not answer; {missing}.")
 }
 
 fn did_not_answer(server: &str) {
-    flag(&missing_rows(server));
+    flag(&unanswered_that(server, ROWS_MISSING));
 }
 
 /// The end of a read Cloud fanned out for us: one warning per Server it names
@@ -601,7 +614,8 @@ mod tests {
         ))
         .with_causes(vec!["deadline has elapsed".into()]);
         let gaps = Gaps::default().named([(machine_id, &name)]);
-        let warning = |error: RpcError| gaps.warning(&MachineFailure { machine_id, error });
+        let warning =
+            |error: RpcError| gaps.warning(&MachineFailure { machine_id, error }, ROWS_MISSING);
 
         assert_eq!(
             warning(unlisted),
@@ -631,7 +645,7 @@ mod tests {
         let gaps = Gaps::default().named([(machine_id, &name)]);
 
         assert_eq!(
-            gaps.warning(&MachineFailure { machine_id, error }),
+            gaps.warning(&MachineFailure { machine_id, error }, ROWS_MISSING),
             (
                 "machine-4 refused: Key cm475crwnw is the last key this Server trusts. Approve another key first.".to_owned(),
                 None
@@ -653,7 +667,7 @@ mod tests {
         let gaps = Gaps::default().named([(machine_id, &name)]);
 
         assert_eq!(
-            gaps.warning(&MachineFailure { machine_id, error }),
+            gaps.warning(&MachineFailure { machine_id, error }, ROWS_MISSING),
             (
                 "Tailscale refused the auth key on machine-4. It may be revoked or expired."
                     .to_owned(),
@@ -679,7 +693,7 @@ mod tests {
         let gaps = Gaps::default().named([(machine_id, &name)]);
 
         assert_eq!(
-            gaps.warning(&MachineFailure { machine_id, error }),
+            gaps.warning(&MachineFailure { machine_id, error }, ROWS_MISSING),
             (
                 "machine-4 refused: set_device needs Full access.".to_owned(),
                 Some(Under::Next("ployz device request".to_owned()))
@@ -693,7 +707,7 @@ mod tests {
         );
         let error = crate::connect::TransportError::from(status).to_rpc_error();
         assert_eq!(
-            gaps.warning(&MachineFailure { machine_id, error }),
+            gaps.warning(&MachineFailure { machine_id, error }, ROWS_MISSING),
             (
                 "machine-4 refused: Only Cloud manages management slots.".to_owned(),
                 None

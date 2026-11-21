@@ -348,6 +348,42 @@ impl SealingKey {
         Ok((key, approval, floors.unwrap_or_default()))
     }
 
+    /// Open a join seal as a ployzd from before floors: the key, then one approval and
+    /// nothing after it.
+    #[cfg(test)]
+    pub(crate) fn open_join_before_floors(
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+    ) -> Result<
+        (
+            Self,
+            ployz_core::authority::Signed<ployz_core::authority::JoinApproval>,
+        ),
+        OpenError,
+    > {
+        let payload = Self::open_bytes(OpenAs::Base, separation::SEALING_KEY, sealed, recipient)?;
+        let (key, body) = Self::split(&payload)?;
+        Ok((
+            key,
+            serde_json::from_slice(body).map_err(|_| OpenError::Malformed)?,
+        ))
+    }
+
+    /// Open a Share as a ployzd from before floors: the key and nothing after it.
+    #[cfg(test)]
+    pub(crate) fn open_from_before_floors(
+        sealed: &SealedSealingKey,
+        recipient: &WireGuardPrivateKey,
+        sender: &WireGuardPublicKey,
+    ) -> Result<Self, OpenError> {
+        Self::open_with(
+            OpenAs::Auth(&sender.0),
+            separation::SEALING_KEY_SHARE,
+            sealed,
+            recipient,
+        )
+    }
+
     #[cfg(test)]
     fn seal(
         &self,

@@ -90,6 +90,13 @@ pub(in crate::handlers) fn sign(
     });
     let enforcing = match probe {
         Probe::Off => return Ok(None),
+        Probe::Unknown if flag(matches, "forget-older") => {
+            return Err(Error::coded(
+                RpcErrorCode::Unavailable,
+                "Couldn't ask your servers whether they enforce device approval, so \
+                 --forget-older can't sign the deploy. Nothing deployed.",
+            ));
+        }
         Probe::Unknown => {
             crate::ui::warn(
                 "Couldn't ask your servers whether they enforce device approval, so this \
@@ -185,7 +192,7 @@ pub(in crate::handlers) fn sign(
 }
 
 /// Whether `name`, a switch some commands that sign lack, was given.
-fn flag(matches: &ArgMatches, name: &str) -> bool {
+pub(super) fn flag(matches: &ArgMatches, name: &str) -> bool {
     matches
         .try_get_one::<bool>(name)
         .ok()
@@ -203,7 +210,8 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
     format!(
         "This also forgets every older version of {}: your servers refuse to start one \
          again. Running containers keep running. An automatic deploy rule for these \
-         services stops until you approve it again with ployz github rule approve.",
+         services stops, and Ployz Cloud can't move or drain the containers it built, until \
+         you approve it again with ployz github rule approve.",
         services.join(", ")
     )
 }

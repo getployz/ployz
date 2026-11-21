@@ -1122,7 +1122,12 @@ impl LocalMachine {
             .map_err(Error::JoinRecord)?
         {
             Some(key) => {
-                let floors = self.floors_for(&key, &assignment.machine.runtime)?;
+                // The joiner's claim, not the row: Cloud's Register carries no runtime.
+                let opens_floors = request
+                    .capabilities
+                    .iter()
+                    .any(|claimed| claimed == ployz_core::FORGET_VERSIONS_CAPABILITY);
+                let floors = self.floors_for(&key, opens_floors)?;
                 Some(key.seal_join(&assignment.machine.public_key, &approval, floors.as_ref())?)
             }
             None => None,
