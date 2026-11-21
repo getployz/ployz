@@ -31,14 +31,14 @@ processors:
     log_statements:
       - context: log
         statements:
-          - set(attributes["ployz.namespace"], attributes["attrs"]["ployz.namespace"])
-          - set(attributes["ployz.service.name"], attributes["attrs"]["ployz.service.name"])
-          - set(attributes["ployz.service.id"], attributes["attrs"]["ployz.service.id"])
-          - set(attributes["ployz.service.hook"], attributes["attrs"]["ployz.service.hook"]) where attributes["attrs"]["ployz.service.hook"] != nil
-          - delete_key(attributes, "attrs")
-          - set(attributes["container.id"], ExtractPatterns(attributes["log.file.name"], "^(?P<id>[0-9a-f]{64})-json[.]log(?:[.][0-9]+)?$")["id"])
-          - delete_key(attributes, "log.file.name")
-          - delete_key(attributes, "log.file.path")
+          - set(log.attributes["ployz.namespace"], log.attributes["attrs"]["ployz.namespace"])
+          - set(log.attributes["ployz.service.name"], log.attributes["attrs"]["ployz.service.name"])
+          - set(log.attributes["ployz.service.id"], log.attributes["attrs"]["ployz.service.id"])
+          - set(log.attributes["ployz.service.hook"], log.attributes["attrs"]["ployz.service.hook"]) where log.attributes["attrs"]["ployz.service.hook"] != nil
+          - delete_key(log.attributes, "attrs")
+          - set(log.attributes["container.id"], ExtractPatterns(log.attributes["log.file.name"], "^(?P<id>[0-9a-f]{64})-json[.]log(?:[.][0-9]+)?$")["id"])
+          - delete_key(log.attributes, "log.file.name")
+          - delete_key(log.attributes, "log.file.path")
   batch:
     timeout: 200ms
 exporters:

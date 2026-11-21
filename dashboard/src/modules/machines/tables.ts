@@ -376,6 +376,8 @@ export const organizationMachine = pgTable(
     /** The Server's name as it enrolled or the Cluster last reported it; null until Cloud has seen either. */
     machineName: text("machine_name").$type<MachineName>(),
     isDialEntry: boolean("is_dial_entry").default(false).notNull(),
+    /** When Cloud last accepted an OTLP batch from this Machine, kept to within 30 seconds; null until it first reported. */
+    observeSeenAt: timestamp("observe_seen_at", { mode: "date", withTimezone: true }),
     createdAt,
     updatedAt,
   },

@@ -1,32 +1,32 @@
 //! A Device's approval of one Deploy: when a Server of the Cluster enforces Device
-//! approval, `ployz deploy` lowers the plan as Cloud's runner will, signs the digest of
-//! each Service's spec with this Device's key, and admits the Deploy with it. Each
-//! Server then creates only the specs this Device approved.
+//! approval, `ployz deploy` lowers the plan as Cloud's runner will, signs a version of
+//! each Service with the digest of its spec, and admits the Deploy with them. Each
+//! Server then creates only the specs a trusted Device signed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::authority::{
-    ApprovedChange, DeployApproval, DeployTerms, ServiceVersion, Signed, deploy::content_addressed,
+    ApprovedChange, Mounts, ServiceVersion, SignerKey, Timestamp, birth, deploy::content_addressed,
 };
 use ployz_core::{
-    Hint, MachineObservation, OperationId, RequestedServiceSpec, RpcErrorCode, SealingPublicKey,
-    ServiceName, cluster_sealing_key,
+    Claim, Hint, MachineId, MachineObservation, MachineTarget, Namespace, RequestedServiceSpec,
+    RpcErrorCode, SIGNED_VERSION_CAPABILITY, SealingPublicKey, ServiceName, cluster_sealing_key,
 };
-use ployz_store::{DeploymentId, EnvironmentRef, PlanQuery};
+use ployz_store::{EnvironmentRef, PlanQuery, PostedVersion, TagPin};
 use serde_json::json;
 
 use super::super::device::DeviceSigning;
 use super::super::store::Store;
 use super::super::{Error, route};
+use crate::connect::Client;
 use crate::image::{PinError, pin_public};
 
-/// A signed approval, a signed version of each Service, the plan version it approves,
-/// and what it approved.
+/// A signed version of each Service with the image it pinned, the plan version it
+/// approves, and what it approved.
 pub(in crate::handlers) struct DeviceApproval {
-    pub(in crate::handlers) signed: Signed<DeployApproval>,
-    pub(in crate::handlers) versions: Vec<Signed<ServiceVersion>>,
+    pub(in crate::handlers) versions: Vec<PostedVersion>,
     pub(in crate::handlers) version: String,
     pub(in crate::handlers) approved: Vec<ApprovedChange>,
 }
@@ -36,15 +36,29 @@ pub(in crate::handlers) struct DeviceApproval {
 #[derive(Debug, PartialEq)]
 pub(in crate::handlers) struct Enforcing {
     pub(in crate::handlers) cluster: SealingPublicKey,
+    /// Every Server, which an automatic deploy rule's approval names.
     pub(in crate::handlers) machines: Vec<ployz_core::MachineId>,
     /// The name each Server reports, which a person reads its signed lines by.
     pub(in crate::handlers) names: BTreeMap<ployz_core::MachineId, String>,
+    /// Each Server that enforces and can't be shown to check a signed version. It would
+    /// refuse every Service this Device signs.
+    pub(in crate::handlers) behind: Behind,
+}
+
+/// Servers that enforce Device approval and that this Device can't sign for yet, by name.
+#[derive(Debug, Default, PartialEq)]
+pub(in crate::handlers) struct Behind {
+    /// Each runs a ployz too old to check a signed version.
+    pub(in crate::handlers) outdated: Vec<String>,
+    /// Each was seen with no capabilities, as through a relay, and didn't answer when
+    /// asked itself.
+    pub(in crate::handlers) unverified: Vec<String>,
 }
 
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Sign Deployment `id`'s approval with this CLI's Device key, when it holds one and a
+/// Sign the versions a Deploy ships with this CLI's Device key, when it holds one and a
 /// Server of the Cluster enforces Device approval. None otherwise: the Deploy runs as
 /// before, and a Server that enforces refuses what nobody approved. The Servers are
 /// asked while the Store plans, so a Cluster that doesn't enforce waits for neither.
@@ -58,7 +72,6 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 pub(in crate::handlers) fn sign(
     matches: &ArgMatches,
     store: &Store,
-    id: &DeploymentId,
     (environment, services): (&EnvironmentRef, &[ServiceName]),
 ) -> Result<Option<DeviceApproval>, Error> {
     let key = super::super::device::key::path(&super::super::config_path(matches)?);
@@ -93,22 +106,39 @@ pub(in crate::handlers) fn sign(
         }
         Probe::Enforcing(enforcing) => enforcing,
     };
+    if !enforcing.behind.outdated.is_empty() {
+        return Err(outdated(matches, &enforcing.behind.outdated));
+    }
+    if !enforcing.behind.unverified.is_empty() {
+        return Err(unverified(matches, &enforcing.behind.unverified));
+    }
     let plan = plan?;
-    let target = signable(plan.target)?;
+    let mut target = signable(plan.target)?;
     let pins = pin_tags(matches, &target)?;
-    let window = signing.window();
-    let namespace = plan.namespace.clone();
-    let terms = DeployTerms {
-        cluster: enforcing.cluster,
-        operation: OperationId::from_uuid(id.as_str()).map_err(Error::command)?,
-        machines: enforcing.machines,
-        issued_at: window.issued_at,
-        expires_at: window.expires_at,
-        signer: window.signer,
-        proposal: None,
+    let namespace = plan.namespace;
+    let signed_at = Timestamp::now();
+    let seed = birth::seed();
+    let minted = birth::mint(
+        &mut target,
+        (&namespace, &plan.volumes),
+        signed_at,
+        |name| birth::nonce(&seed, name),
+    )
+    .map_err(|error| {
+        Error::caused(
+            RpcErrorCode::InvalidArgument,
+            "Can't sign this deploy",
+            error,
+        )
+    })?;
+    let mounts = Mounts {
+        namespace: &namespace,
+        volumes: &plan.volumes,
+        minted: &minted,
+        now: signed_at,
     };
-    let (body, approved) =
-        DeployApproval::draft(terms, plan.namespace, &target, &pins).map_err(Error::command)?;
+    let approved =
+        ApprovedChange::of(&target, &namespace, &pins, &mounts).map_err(Error::command)?;
     for line in approved.iter().flat_map(ApprovedChange::lines) {
         crate::ui::note(format_args!("{line}"));
     }
@@ -118,38 +148,53 @@ pub(in crate::handlers) fn sign(
         .flatten()
         .copied()
         .unwrap_or(false);
-    consent(&approved, yes, |question, refusal, declined| {
-        crate::ui::confirm(question, || refusal, declined)
-    })?;
-    let signed = signing.sign(&body)?;
+    consent(
+        (&namespace, &approved),
+        yes,
+        |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
+    )?;
+    let signer = SignerKey::Device(signing.device_key());
     let versions = approved
         .iter()
         .map(|change| {
-            signing.sign(&ServiceVersion {
+            let statement = signing.sign(&ServiceVersion {
                 cluster: enforcing.cluster,
                 namespace: namespace.clone(),
                 service: change.service.clone(),
                 digest: change.digest,
-                signed_at: window.issued_at,
-                signer: window.signer,
+                signed_at,
+                signer,
                 proposal: None,
+            })?;
+            let births = target
+                .iter()
+                .find(|spec| spec.name == change.service)
+                .map(|spec| birth::carried(spec, &minted))
+                .unwrap_or_default();
+            Ok(PostedVersion {
+                statement,
+                pin: change.tag.clone().map(|tag| TagPin {
+                    tag,
+                    image: change.image.clone(),
+                }),
+                births,
             })
         })
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<_, Error>>()?;
     Ok(Some(DeviceApproval {
-        signed,
         versions,
         version: plan.version,
         approved,
     }))
 }
 
-/// What a person says to signing `approved`, asked after its lines show: Cloud relays the
-/// plan, so a setting it planted must be refusable before this Device signs it. `--yes`
+/// What a person says to signing `approved` in `namespace`, asked after its lines show:
+/// Cloud relays the plan, so a setting it planted, or another Environment's Namespace, must
+/// be refusable before this Device signs it. `--yes`
 /// answers for a run nobody watches; without it, a run that can't ask refuses before
 /// signing, and a person who says no deploys nothing.
 fn consent(
-    approved: &[ApprovedChange],
+    (namespace, approved): (&Namespace, &[ApprovedChange]),
     yes: bool,
     confirm: impl FnOnce(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<(), Error> {
@@ -169,7 +214,7 @@ fn consent(
     )
     .hint(Hint::Retry(super::super::typed_with(&["--yes"])));
     confirm(
-        &format!("Approve {}?", services.join(", ")),
+        &format!("Approve {} in namespace {namespace}?", services.join(", ")),
         refusal,
         "Cancelled. Nothing signed or deployed.",
     )
@@ -245,18 +290,56 @@ pub(in crate::handlers) fn probe(matches: &ArgMatches) -> Probe {
         return Probe::Unknown;
     };
     let observed = runtime.block_on(async {
-        tokio::time::timeout(PROBE_TIMEOUT, async {
+        let (client, observed) = tokio::time::timeout(PROBE_TIMEOUT, async {
             let mut client = route::connect(matches, context).await.ok()?;
-            client.machines().await.ok()
+            let observed = client.machines().await.ok()?;
+            Some((client, observed))
         })
         .await
         .ok()
-        .flatten()
+        .flatten()?;
+        let answered = asked(&client, &unclaimed(&observed)).await;
+        Some((observed, answered))
     });
-    observed.map_or(Probe::Unknown, |observed| enforced(&observed))
+    observed.map_or(Probe::Unknown, |(observed, answered)| {
+        enforced(&observed, &answered)
+    })
 }
 
-fn enforced(observed: &[MachineObservation]) -> Probe {
+/// Each Server that enforces and was seen with no capabilities. An empty list claims
+/// nothing: an older entry relays a newer peer's record without one.
+fn unclaimed(observed: &[MachineObservation]) -> BTreeSet<MachineId> {
+    observed
+        .iter()
+        .map(|observed| &observed.machine)
+        .filter(|machine| {
+            machine.runtime.device_enforcement == Some(true)
+                && machine.runtime.claim(SIGNED_VERSION_CAPABILITY) == Claim::Unclaimed
+        })
+        .map(|machine| machine.id)
+        .collect()
+}
+
+/// Whether each of `machines`, asked itself, checks a signed version. One that doesn't
+/// answer in time is left out.
+async fn asked(client: &Client, machines: &BTreeSet<MachineId>) -> BTreeMap<MachineId, bool> {
+    let asks = machines.iter().map(|machine| async move {
+        let target = MachineTarget::from(machine);
+        let ask = client.supports(Some(&target), SIGNED_VERSION_CAPABILITY);
+        let answer = tokio::time::timeout(PROBE_TIMEOUT, ask).await.ok()?.ok()?;
+        Some((*machine, answer))
+    });
+    futures_util::future::join_all(asks)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// What `observed` says about Device approval, with `answered` saying, for each Server
+/// seen with no capabilities that was asked and answered, whether it checks a signed
+/// version.
+fn enforced(observed: &[MachineObservation], answered: &BTreeMap<MachineId, bool>) -> Probe {
     if !observed
         .iter()
         .any(|observed| observed.machine.runtime.device_enforcement == Some(true))
@@ -277,11 +360,86 @@ fn enforced(observed: &[MachineObservation]) -> Probe {
         .iter()
         .map(|observed| (observed.machine.id, observed.machine.name.to_string()))
         .collect();
+    let mut behind = Behind::default();
+    for machine in observed.iter().map(|observed| &observed.machine) {
+        if machine.runtime.device_enforcement != Some(true) {
+            continue;
+        }
+        let checks = match machine.runtime.claim(SIGNED_VERSION_CAPABILITY) {
+            Claim::Advertises => Some(true),
+            Claim::Lacks => Some(false),
+            Claim::Unclaimed => answered.get(&machine.id).copied(),
+        };
+        match checks {
+            Some(true) => {}
+            Some(false) => behind.outdated.push(machine.name.to_string()),
+            None => behind.unverified.push(machine.name.to_string()),
+        }
+    }
+    for names in [&mut behind.outdated, &mut behind.unverified] {
+        names.sort_unstable();
+        names.dedup();
+    }
     Probe::Enforcing(Enforcing {
         cluster,
         machines,
         names,
+        behind,
     })
+}
+
+/// `servers` joined for a sentence: `a`, `a and b`, `a, b and c`.
+fn listed(servers: &[String]) -> String {
+    match servers {
+        [rest @ .., last] if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => servers.join(""),
+    }
+}
+
+/// The refusal for Servers that enforce and can't check a signed version, before
+/// anything is signed or admitted.
+fn outdated(matches: &ArgMatches, servers: &[String]) -> Error {
+    let named = listed(servers);
+    // This CLI's own channel, which carries a ployz that checks what it signs.
+    let channel = match ployz_core::MachineVersion::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(version) if !version.is_prerelease() => "stable",
+        _ => "beta",
+    };
+    let mut upgrade = vec!["server", "upgrade", channel];
+    upgrade.extend(servers.iter().map(String::as_str));
+    Error::detailed(
+        RpcErrorCode::Unsupported,
+        format!(
+            "Upgrade {named} first: {each} enforces device approval with an older ployz that \
+             can't check this device's signature, so {each} would refuse this deploy. Nothing \
+             signed or deployed.",
+            each = if servers.len() == 1 { "it" } else { "each" },
+        ),
+        json!({
+            "servers": servers,
+            "capability": SIGNED_VERSION_CAPABILITY,
+        }),
+    )
+    .hint(Hint::Next(super::super::rerun(matches, &upgrade)))
+}
+
+/// The refusal for Servers that enforce and didn't say whether they can check a signed
+/// version, before anything is signed or admitted.
+fn unverified(matches: &ArgMatches, servers: &[String]) -> Error {
+    Error::detailed(
+        RpcErrorCode::Unavailable,
+        format!(
+            "Couldn't confirm {} can check this device's signature: {} enforces device \
+             approval and didn't answer. Nothing signed or deployed.",
+            listed(servers),
+            if servers.len() == 1 { "it" } else { "each" },
+        ),
+        json!({
+            "servers": servers,
+            "capability": SIGNED_VERSION_CAPABILITY,
+        }),
+    )
+    .hint(Hint::Inspect(super::super::rerun(matches, &["status"])))
 }
 
 /// Whether `spec` runs the image a build or upload will make, which no Device can
@@ -299,7 +457,7 @@ fn unpinnable(matches: &ArgMatches, spec: &RequestedServiceSpec, error: PinError
             &format!(
                 "{}.image={}@sha256:…",
                 spec.name,
-                repository(&spec.container.image)
+                ployz_core::image_repository(&spec.container.image)
             ),
         ],
     );
@@ -332,15 +490,6 @@ fn unpinnable(matches: &ArgMatches, spec: &RequestedServiceSpec, error: PinError
         }
     };
     failure.hint(Hint::Next(next))
-}
-
-/// `image` without its tag or digest: `ghcr.io/acme/web` of `ghcr.io/acme/web:1.4`.
-fn repository(image: &str) -> &str {
-    let image = image.split_once('@').map_or(image, |(name, _)| name);
-    match image.rsplit_once(':') {
-        Some((name, tag)) if !tag.contains('/') => name,
-        _ => image,
-    }
 }
 
 #[cfg(test)]

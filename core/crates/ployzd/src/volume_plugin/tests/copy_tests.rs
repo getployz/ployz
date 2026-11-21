@@ -745,12 +745,15 @@ async fn the_writer_route_reopens_a_read_only_root_of_its_own_epoch() {
 }
 
 /// A writer Machine's send port, answering the bound and a stream text per request:
-/// the first answer whose key the request URI contains, else the default one. A held
+/// the first answer whose key the request URI contains, else the default one. An `OK`
+/// answer's text follows a BEGIN record, as a real stream's does. A held
 /// answer sends its headers at once and its stream only after `release`; a silent one
 /// never answers.
 pub(super) struct Source {
     requests: Arc<StdMutex<Vec<String>>>,
     answers: Arc<StdMutex<Vec<Answer>>>,
+    /// The origin every stream answer carries, as a born writer's does.
+    origin: Arc<StdMutex<Option<String>>>,
     gate: Arc<Semaphore>,
     pub(super) port: u16,
 }
@@ -759,7 +762,7 @@ pub(super) struct Source {
 struct Answer {
     key: String,
     status: StatusCode,
-    stream: String,
+    stream: Vec<u8>,
     mode: Mode,
 }
 
@@ -776,17 +779,19 @@ impl Source {
         let answers = Arc::new(StdMutex::new(vec![Answer {
             key: String::new(),
             status: StatusCode::OK,
-            stream: stream.to_owned(),
+            stream: begun(0, stream),
             mode: Mode::Now,
         }]));
         let gate = Arc::new(Semaphore::new(0));
+        let origin = Arc::new(StdMutex::new(None::<String>));
         let state = (
             Arc::clone(&requests),
             Arc::clone(&answers),
             Arc::clone(&gate),
+            Arc::clone(&origin),
         );
         let router = Router::new().fallback(move |request: Request| {
-            let (requests, answers, gate) = state.clone();
+            let (requests, answers, gate, origin) = state.clone();
             async move {
                 let uri = request.uri().to_string();
                 requests.lock().unwrap().push(uri.clone());
@@ -804,16 +809,24 @@ impl Source {
                     .find(|answer| uri.contains(answer.key.as_str()))
                     .cloned()
                     .unwrap();
-                match answer.mode {
-                    Mode::Now => return (answer.status, answer.stream).into_response(),
-                    Mode::Silent => std::future::pending::<()>().await,
-                    Mode::Held => {}
+                let born = origin.lock().unwrap().clone();
+                let mut response = match answer.mode {
+                    Mode::Now => (answer.status, answer.stream).into_response(),
+                    Mode::Silent => std::future::pending().await,
+                    Mode::Held => {
+                        let body = futures_util::stream::once(async move {
+                            let _permit = gate.acquire().await;
+                            Ok::<_, std::convert::Infallible>(answer.stream)
+                        });
+                        (answer.status, Body::from_stream(body)).into_response()
+                    }
+                };
+                if let Some(born) = born.filter(|_| answer.status == StatusCode::OK) {
+                    response
+                        .headers_mut()
+                        .insert(ployz_core::ORIGIN_HEADER, born.parse().unwrap());
                 }
-                let body = futures_util::stream::once(async move {
-                    let _permit = gate.acquire().await;
-                    Ok::<_, std::convert::Infallible>(answer.stream)
-                });
-                (answer.status, Body::from_stream(body)).into_response()
+                response
             }
         });
         let listener = TcpListener::bind("[::1]:0").await.unwrap();
@@ -822,9 +835,15 @@ impl Source {
         Self {
             requests,
             answers,
+            origin,
             gate,
             port,
         }
+    }
+
+    /// Sends `origin` with every stream from now on.
+    fn born(&self, origin: &str) {
+        *self.origin.lock().unwrap() = Some(origin.to_owned());
     }
 
     /// Answer requests whose URI contains `key` with `status` and `stream` from now on.
@@ -847,10 +866,15 @@ impl Source {
     }
 
     fn push(&self, key: &str, status: StatusCode, stream: &str, mode: Mode) {
+        let stream = if status == StatusCode::OK {
+            begun(0, stream)
+        } else {
+            stream.as_bytes().to_vec()
+        };
         self.answers.lock().unwrap().push(Answer {
             key: key.to_owned(),
             status,
-            stream: stream.to_owned(),
+            stream,
             mode,
         });
     }
@@ -2049,7 +2073,7 @@ async fn a_receive_that_stalls_answers_only_once_its_child_is_gone() {
                 .receive(
                     ployz_core::ManagementAddress("::1".parse().unwrap()),
                     &stream,
-                    SLOT_FS,
+                    ("tank/ployz-mirror/data", SLOT_FS),
                     BOUND,
                     "test",
                     ployz_core::VolumeGen::default(),
@@ -2806,6 +2830,7 @@ async fn pair(a_markers: &[&str], b_markers: &[&str]) -> (Machine, Machine) {
         tokio::spawn(ployzd::volume_send::serve(
             listener,
             (zfs, zpool),
+            socket.clone(),
             SendsToAll,
             CancellationToken::new(),
         ));
@@ -4061,4 +4086,174 @@ impl ployzd::volume_send::Recipients for SendsToAll {
             ployz_core::MachineId::random(),
         ))
     }
+}
+
+/// A born Volume's origin, as a writer's send names it.
+pub(super) const BORN: &str = "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c0d3cb8e7d6fb5ed8bb0d1e07";
+
+/// A writer whose data began as another Volume never replaces a Mirror's copy, even one
+/// it could resume: the slot keeps its bytes, its origin and its resume token.
+#[tokio::test]
+async fn a_pull_of_another_origin_keeps_the_slots_copy_origin_and_token() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.born(BORN);
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let failure = failed(&socket).await;
+    assert!(failure.contains("holds origin Legacy"), "{failure}");
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
+    assert_eq!(
+        property(&test, SLOT_FS, "receive_resume_token").as_deref(),
+        Some("token-1")
+    );
+    assert_eq!(property(&test, SLOT, "ployz:pull-origin"), None);
+    assert_eq!(property(&test, SLOT_FS, "ployz:origin"), None);
+    let log = commands(&test);
+    assert!(
+        !log.contains("zfs receive"),
+        "no byte was piped and no -A ran: {log}"
+    );
+    assert!(!log.contains("zfs destroy"), "{log}");
+    server.abort();
+}
+
+/// A born pull stamps its origin on the copy it lands and retires the record, so the copy
+/// reads as that Volume after the plugin restarts.
+#[tokio::test]
+async fn a_born_pull_lands_a_copy_stamped_with_its_origin() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.born(BORN);
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root"], source.port);
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+    assert_eq!(copy.pointer("/Ok/origin"), Some(&json!(BORN)), "{copy}");
+    eventually("the record retired", || {
+        property(&test, SLOT, "ployz:pull-origin").is_none()
+    })
+    .await;
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:origin").as_deref(),
+        Some(BORN)
+    );
+    server.abort();
+}
+
+/// A slot still marked mid-pull may hold another stream's bytes under the target's name,
+/// so its point is never sent until the landed retry clears the mark. A parked writer's
+/// slot carries no such mark and sends with its own origin.
+#[tokio::test]
+async fn send_point_refuses_a_slot_still_marked_mid_pull() {
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "mirror", "mirror-fs"]);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12)]);
+    let point = json!({"name": "data", "target": "w-1-2"});
+    for mark in ["ployz:pull", "ployz:pull-origin"] {
+        let value = if mark == "ployz:pull" { "w-1-2" } else { BORN };
+        set_property(&test, SLOT, mark, value);
+        let reply = post(&socket, "/Volume.SendPoint", point.clone()).await;
+        assert_eq!(
+            reply.pointer("/Err/code"),
+            Some(&json!("conflict")),
+            "{mark}: {reply}"
+        );
+        fs::remove_file(test.0.join("props").join(SLOT).join(mark)).unwrap();
+    }
+    set_property(&test, SLOT_FS, "ployz:origin", BORN);
+    let reply = post(&socket, "/Volume.SendPoint", point).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"dataset": SLOT_FS, "guid": "12", "origin": BORN}})
+    );
+    server.abort();
+}
+
+/// A listing ZFS cut short never reads as an empty slot: the occupied Legacy Mirror keeps
+/// its bytes and origin, and no record names the born stream.
+#[tokio::test]
+async fn a_cut_listing_never_lets_a_born_pull_stamp_an_occupied_mirror() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.born(BORN);
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    fs::write(test.0.join("props/list-cut"), "").unwrap();
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let failure = failed(&socket).await;
+    assert!(failure.contains("cannot iterate"), "{failure}");
+    assert_eq!(property(&test, SLOT, "ployz:pull-origin"), None);
+    assert_eq!(property(&test, SLOT_FS, "ployz:origin"), None);
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
+    server.abort();
+}
+
+/// A snapshot listing ZFS cut short never names a newest point: Inspect and a pull both
+/// fail, and the born Mirror keeps its bytes, its origin and its resume token.
+#[tokio::test]
+async fn a_cut_snapshot_listing_names_no_newest_point() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.born(BORN);
+    let test = TestDir::new();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:origin", BORN);
+    set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
+    let cut = test.0.join("props").join(SLOT_FS).join("snapshots-cut");
+    fs::write(&cut, "").unwrap();
+
+    for (route, request) in [
+        ("/Volume.Copy.Inspect", json!({"name": "data"})),
+        ("/Volume.Copy.Pull", pull("w-1-2")),
+    ] {
+        let reply = post(&socket, route, request).await;
+        assert!(
+            reply.get("Err").is_some() && reply.to_string().contains("cannot iterate"),
+            "{route}: {reply}"
+        );
+    }
+    fs::remove_file(&cut).unwrap();
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:origin").as_deref(),
+        Some(BORN)
+    );
+    assert_eq!(
+        property(&test, SLOT_FS, "receive_resume_token").as_deref(),
+        Some("token-1")
+    );
+    assert_eq!(property(&test, SLOT, "ployz:pull-origin"), None);
+    assert!(!commands(&test).contains("zfs receive"));
+    server.abort();
+}
+
+/// What SendPoint answers 404 for is an absence a finished listing showed, and a parent
+/// still marked mid-pull holds back whatever sits beside it, a root included.
+#[tokio::test]
+async fn send_point_answers_a_cut_listing_or_a_marked_parent_as_no_absence() {
+    let point = json!({"name": "data", "target": "w-1-2"});
+    let test = TestDir::new();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mirror"]);
+    set_snapshots(&test, ROOT, &[("w-1-2", 12)]);
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+    let reply = post(&socket, "/Volume.SendPoint", point.clone()).await;
+    assert_eq!(
+        reply.pointer("/Err/code"),
+        Some(&json!("conflict")),
+        "{reply}"
+    );
+    fs::remove_file(test.0.join("props").join(SLOT).join("ployz:pull")).unwrap();
+    fs::write(test.0.join("props/datasets-cut"), "").unwrap();
+    let reply = post(&socket, "/Volume.SendPoint", point).await;
+    let code = reply.pointer("/Err/code");
+    assert!(
+        code.is_some() && code != Some(&json!("not_found")),
+        "{reply}"
+    );
+    server.abort();
 }

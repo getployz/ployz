@@ -5,7 +5,8 @@
 //! waits for a person instead of failing on every Machine.
 
 use ployz_core::authority::{
-    AutoDeployRule, BuildPolicy, RuleBasis, Signed, rule::template, rule_draft::RuleSourceView,
+    AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, Signed, rule::template,
+    rule_draft::RuleSourceView,
 };
 use ployz_core::config::{SavedEnvironmentIntent, ServiceSource};
 use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
@@ -26,6 +27,12 @@ pub struct ApproveRule {
     pub environment: EnvironmentRef,
     #[ts(as = "Signed<AutoDeployRule>")]
     pub rule: Box<Signed<AutoDeployRule>>,
+    /// The births the approval minted for Volumes its Services mount first, by the name
+    /// their specs declare each under. The Store records them, so every push's specs
+    /// carry them.
+    #[serde(default, skip_serializing_if = "Births::is_empty")]
+    #[ts(optional, as = "Option<Births>")]
+    pub births: Births,
 }
 
 /// An Environment's rule, and what a Device needs to sign its next generation.
@@ -50,6 +57,9 @@ pub struct RuleView {
     pub target: Vec<RequestedServiceSpec>,
     /// Services the rule covers whose Saved settings it no longer approves.
     pub changed: Vec<ServiceName>,
+    /// The latest Saved revision's Volumes, by the name `target` declares each under.
+    #[serde(default)]
+    pub volumes: PlannedVolumes,
 }
 
 impl RuleView {
@@ -61,6 +71,8 @@ impl RuleView {
             rule: self.rule.clone(),
             sources: self.sources.clone(),
             target: self.target.clone(),
+            volumes: self.volumes.clone(),
+            minted: Births::new(),
         }
     }
 }
@@ -96,6 +108,15 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
             "The rule is for another environment's namespace",
             json!({ "namespace": namespace }),
         ));
+    }
+    if !c.births.is_empty() {
+        let saved = crate::review::latest_saved(tx, &id)?.ok_or_else(|| {
+            error::invalid(
+                "This environment has no saved settings for the rule's new volumes. Save, then approve again.",
+                json!({}),
+            )
+        })?;
+        crate::volume::birth::record(tx, (&id, &namespace), &saved.intent, &c.births)?;
     }
     if let Some(kept) = stored(tx, &id)?.and_then(|kept| kept.open().ok())
         && kept.rule == rule.rule
@@ -176,6 +197,10 @@ fn view_of(
         }
         _ => Vec::new(),
     };
+    let volumes = match &saved {
+        Some(saved) => crate::volume::birth::planned(tx, id, &saved.intent)?,
+        None => PlannedVolumes::new(),
+    };
     Ok(RuleView {
         environment: environment.summary.clone(),
         namespace,
@@ -183,6 +208,7 @@ fn view_of(
         sources,
         target,
         changed,
+        volumes,
     })
 }
 

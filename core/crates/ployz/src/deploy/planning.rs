@@ -652,7 +652,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
             .volumes
             .creates
             .into_iter()
-            .filter_map(|(machine_id, volume)| {
+            .filter_map(|(machine_id, volume, first_copy)| {
                 let (name, maximum_bytes) = match volume.source.kind() {
                     ployz_core::RawVolumeSource::Ordinary { name, .. } => (name.clone(), None),
                     ployz_core::RawVolumeSource::Provisioned {
@@ -671,6 +671,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
                         .map(|machine| machine.machine.name.clone()),
                     name,
                     maximum_bytes,
+                    first_copy,
                 })
             })
             .collect(),
@@ -1075,15 +1076,7 @@ fn assemble_plan(
     for spec in &requested {
         placement::validate_host_ports(spec)?;
     }
-    let mut volume_plan = VolumePlan::new(
-        snapshot,
-        &intent.namespace,
-        &intent.volume_names,
-        &intent.deployed_volumes,
-        &target,
-        &requested,
-        intent.options.mode().operator(),
-    )?;
+    let mut volume_plan = VolumePlan::new(snapshot, intent, &target, &requested)?;
     let name_errors_with_service = requested.len() > 1;
     let blocks_unmountable = intent.options.mode().blocks_unmountable();
     let mut reservations = PlacementReservations::new(snapshot);
@@ -1162,6 +1155,7 @@ fn assemble_plan(
                 | PlanError::CopiesUnknown { .. }
                 | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }
+                | PlanError::FirstCopyUnfit { .. }
                 | PlanError::RegionUnmatched { .. }
                 | PlanError::VolumeInSeveralRegions { .. }
                 | PlanError::VolumeOutsideRegion { .. }
@@ -1877,19 +1871,14 @@ fn eligible_machines<'snapshot>(
     Ok(machines)
 }
 
-/// The Machine for one more Container of a running replicated Service: eligible, with a
-/// free bridge endpoint and its host ports, holding the fewest of this Service's Containers.
+/// The Machine for one more Container of a running replicated Service: one of
+/// [`destinations`], holding the fewest of this Service's Containers.
 pub(crate) fn place_one(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &DeploySnapshot,
 ) -> Result<MachineId, PlanError> {
-    let machines = eligible_machines(requested, namespace, snapshot, &PlanOptions::default())?;
-    let fitting = machines
-        .iter()
-        .filter(|machine| placement::fits_one_more(snapshot, machine.machine.id, requested))
-        .collect::<Vec<_>>();
-    let occupancy = |machine: &MachineObservation| {
+    let occupancy = |machine: &&MachineObservation| {
         snapshot
             .containers
             .iter()
@@ -1901,8 +1890,28 @@ pub(crate) fn place_one(
             })
             .count()
     };
-    if let Some(machine) = fitting.into_iter().min_by_key(|machine| occupancy(machine)) {
-        return Ok(machine.machine.id);
+    let machine = destinations(requested, namespace, snapshot)?
+        .into_iter()
+        .min_by_key(occupancy)
+        .expect("destinations names at least one Machine");
+    Ok(machine.machine.id)
+}
+
+/// The Machines that could take one more Container of a running replicated Service:
+/// eligible, with a free bridge endpoint and its host ports. Never empty.
+pub(crate) fn destinations<'snapshot>(
+    requested: &RequestedServiceSpec,
+    namespace: &Namespace,
+    snapshot: &'snapshot DeploySnapshot,
+) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
+    let machines = eligible_machines(requested, namespace, snapshot, &PlanOptions::default())?;
+    let fitting = machines
+        .iter()
+        .copied()
+        .filter(|machine| placement::fits_one_more(snapshot, machine.machine.id, requested))
+        .collect::<Vec<_>>();
+    if !fitting.is_empty() {
+        return Ok(fitting);
     }
     let budget = capacity::CapacityBudget::from_snapshot(snapshot);
     let ids = machines.iter().map(|machine| &machine.machine.id);
@@ -2027,6 +2036,13 @@ fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> 
             .map(|machine| machine.machine.name.clone())
             .collect::<Vec<_>>()
     };
+    let unchecked = names(Exclusion::ChecksNoOrigins);
+    if !unchecked.is_empty() {
+        return PlanError::VolumeOriginsUnchecked {
+            service: spec.name.clone(),
+            names: unchecked,
+        };
+    }
     let mut constraints = Vec::new();
     let down = names(Exclusion::Down);
     if !down.is_empty() {

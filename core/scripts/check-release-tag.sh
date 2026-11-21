@@ -26,3 +26,23 @@ if [ "$workspace" != "$version" ]; then
     echo "tag '$tag' does not match workspace version '$workspace'" >&2
     exit 1
 fi
+
+# A Server that marks origins must also check them, or it would run born data under a
+# Legacy label. The catalog row is how a Server says it checks them, and its pulls name
+# that capability so peers send it born data. Both are read as written, so any other
+# spelling holds the tag until this check learns it.
+if grep -q '^impl VolumeOrigin' "$root/crates/ployz-core/src/domain/volume.rs"; then
+    if ! grep -Eq '^[[:space:]]*VOLUME_ORIGIN_CAPABILITY: \("ployz\.volume\.origin\.v1",' "$root/crates/ployz-core/src/rpc_catalog.rs"; then
+        echo "tag '$tag' carries Volume origins, but the catalog does not declare ployz.volume.origin.v1" >&2
+        exit 1
+    fi
+    if ! awk '
+        /^[[:space:]]*\.header\($/ { header = NR }
+        header && NR == header + 1 && /^[[:space:]]*ployz_core::CAPABILITIES_HEADER,$/ { named = NR }
+        named && NR == named + 1 && /^[[:space:]]*ployz_core::VOLUME_ORIGIN_CAPABILITY,$/ { claimed = 1 }
+        END { exit !claimed }
+    ' "$root/crates/ployzd/src/volume_plugin/transfer.rs"; then
+        echo "tag '$tag' carries Volume origins, but its pulls do not claim ployz.volume.origin.v1" >&2
+        exit 1
+    fi
+fi

@@ -57,6 +57,27 @@ pub(crate) fn record(
             }
             running(&stored)?;
             let saved = held_revision(tx, &stored)?;
+            if let Some(volume) = crate::volume::first_copy::place(
+                tx,
+                &stored.summary.environment_id,
+                &saved,
+                &preview,
+            )? {
+                // Nothing was sent: the next plan starts the Volume where the other chose.
+                return finish(
+                    tx,
+                    stored,
+                    Outcome::NotExecuted {
+                        reason: format!(
+                            "Another deploy placed volume {volume} on a different server first. Deploy again."
+                        ),
+                        cause: Vec::new(),
+                        needs_upload: Vec::new(),
+                        same_again: false,
+                    },
+                    End::Failed,
+                );
+            }
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             // What the preview already settles shows while it runs; the rest reads
             // as Pending until what executing it did replaces these.

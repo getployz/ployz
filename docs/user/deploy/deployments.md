@@ -156,7 +156,7 @@ Approved web: nginx:1.29-alpine → @sha256:3f1c2a9b8e7d…
 Approved worker: ghcr.io/acme/worker@sha256:9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b (adds NET_ADMIN, host port 9000)
   cap_add ["NET_ADMIN"]
   ...
-Approve web, worker? [y/N]
+Approve web, worker in namespace shop-production? [y/N]
 ```
 
 The first line of each service names the image and anything the service asks of the server:
@@ -171,6 +171,28 @@ and `-_./:@+` shows in double quotes. A sealed value shows by the name it was se
 its value, and a value built from text and sealed parts shows its text, quoted. Since the
 approval shows a sealed value's name and not its contents, Ployz Cloud could replace a sealed
 value before a deploy you approve.
+The question names the namespace the signature is for. A deploy for a
+[branch](../environments/environments.md) names the branch's own namespace, so if it names
+another environment's, answer no.
+
+A volume Ployz manages shows as one line for each place a service mounts it, saying whether it's a
+managed or a Docker volume and whose data it holds, with its subpath, labels and the rest of what
+the mount signs:
+
+```text
+  mounts managed volume uploads at /app/uploads, read-write: a new, empty volume
+  mounts managed volume previews at /srv/previews, read-write: data made as previews, 3 Nov 14:02 UTC, 16 days ago (Ployz Cloud calls it thumbs)
+  mounts Docker volume shop-production_vol-db at /var/lib/postgresql/data, subpath pgdata, read-write: data from before this version of Ployz recorded where data began (Ployz Cloud calls it db)
+```
+
+The deploy that first mounts a volume makes it new and empty, and every later deploy names that
+data: the name it had then and when it began, with its name now in brackets when it changed. A
+volume from before this version is named as your servers name it, with Ployz Cloud's name in
+brackets.
+Renaming a service or a volume keeps the data. If a volume you expect to be new reads "data made
+…", Ployz Cloud is offering data you already have. Answer no and nothing starts. A
+[branch](../environments/environments.md) makes each of its volumes new on its first deploy.
+
 The signature doesn't cover where a service runs, how many replicas it runs, its
 [count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a
 deploy replaces them in, its pull policy, its CPU and memory limits or the largest size of a
@@ -198,14 +220,43 @@ Use `--yes` only where you trust the plan Ployz Cloud sends.
 
 Each server checks every container it creates against what you signed: the image, command,
 variables and sealed values, mounts, config files, ports, privileges, restart policy and hook. Ployz Cloud
-carries the approval but can't change what it covers. A server logs each one, such as
-`deploy 0f8fad5b… approved by device 3KQ7-M2XD for web digest=cb8d3c6ef656`.
+carries the signature but can't change what it covers. A server logs each one, such as
+`web admitted by signed version from [Device(3x4sgmns4e)] digest=cb8d3c6ef656`.
 
-A server remembers the last 32 versions of each service it ran under a signature.
-Restarting one, running more or fewer copies of it, or rolling back to it on that server
-needs no new signature, from the dashboard or the CLI. A version stops counting when you
-remove every device that signed it. One deployed from the server's own terminal keeps
-counting.
+A server keeps no list of the versions it ran. Each new container it creates, on any server,
+needs the signature with it, which Ployz Cloud sends as described below. A version stops
+counting when you remove every device that signed it.
+
+Ployz Cloud keeps every version you sign, and each deployment records the image each signed
+service ran. **Roll back** or **Redeploy** runs the images that deployment ran and sends their
+signatures, so every server runs them, even one that never ran that version, and even after
+the tag moved. A service that deployment ran unsigned runs the image its settings named
+then: a digest as written, or a tag as it points now. A deploy that changes only how many
+copies run, where they run or their CPU and memory limits runs the image the service last
+ran, with its signature, as long as your settings still name the same tag. Change anything else, such as a variable, and it runs the image your
+settings name now. Ployz Cloud can replay a version you signed, but it can't sign one.
+
+A deployment made before Ployz Cloud kept signed versions has no signature of its own. Which
+images a rollback or redeploy of it runs depends on how it was deployed:
+
+- **Signed on a device with an older `ployz`.** Ployz Cloud kept the image that deploy pinned
+  each service to, so a rollback runs those images even after the tag moved. This holds for
+  every deployment an older `ployz` signed, however recent.
+- **Not signed by a device.** Nothing recorded the images it ran. Each service runs the image
+  your settings named then: an image written by digest runs that digest, and a tag runs the
+  image it points to now.
+
+Either way, Ployz Cloud sends a signature for a service only when a device has since signed
+that exact version: the same image and settings, in the same environment. A server refuses the
+rest of its services that reach data. Run `ployz deploy` on an approved device to sign them.
+
+A `ployz` from before signed versions sends a kind of signature Ployz Cloud no longer keeps.
+Ployz Cloud refuses its deploy before anything is queued and names the update to run:
+
+```text
+This ployz signs deploys in an older form this Config Store no longer takes, so nothing was deployed. Update ployz, then deploy again.
+next: curl -fsSL https://ployz.sh | sh -s -- beta
+```
 
 A server also keeps which devices approved each container it made, and checks they're still
 approved before it creates the container and each time the dashboard starts it again. Once
@@ -238,20 +289,52 @@ servers refuse the build with `This server runs only builds an approved device s
 If `ployz deploy` can't reach your servers before it signs, it warns and deploys
 without signing, and the servers refuse it.
 
+### Upgrade servers before you sign
+
+A server on 0.4.0-beta.2 or earlier that enforces device approval reads only the older kind
+of signature, so it refuses every version a newer `ployz` signs, and every rollback or
+redeploy Ployz Cloud sends it. Upgrade each such server first, then update `ployz` on your
+devices. Before it signs, `ployz deploy` asks every server whether it checks signed versions,
+which a server advertises as `ployz.container.signed-version.v1`. When one that enforces
+doesn't, the deploy signs nothing and names the server to upgrade:
+
+```text
+error: Upgrade web-1 first: it enforces device approval with an older ployz that can't check this device's signature, so it would refuse this deploy. Nothing signed or deployed.
+next: ployz server upgrade beta web-1
+```
+
+When a server that enforces doesn't say whether it checks signed versions, and doesn't answer
+when asked, the deploy signs nothing:
+
+```text
+error: Couldn't confirm web-2 can check this device's signature: it enforces device approval and didn't answer. Nothing signed or deployed.
+inspect: ployz status
+```
+
+### After a server upgrade, deploy each service once
+
+A server that enforces device approval starts a container only from a deploy an approved device
+signed. A container made before the server upgraded has no record of one, so the server won't
+start it again. If a service stops, or a deploy that stops the old copy first fails, the old copy
+stays stopped. The line reads `Could not restore the old Container.`, and a start from the
+dashboard is refused too: `This container was made before this server's upgrade ...`. Deploy
+the service again with a current `ployz`, which signs it, and the new copy runs.
+Deploy each service once after you upgrade its server, so a restart never needs it.
+
 ### Deploy from the dashboard
 
-**Deploy** at the bottom of an environment sends no signature in this version of Ployz. A
-server runs it for two kinds of service:
+**Deploy** at the bottom of an environment signs nothing. A server runs it for three kinds of
+service:
 
 - One that reaches no data: no sealed value, no volume, no login for its image, and nothing of
   its server beyond a plain container. The server pulls the image itself with no login, so the
   registry has to be public.
-- A version the server already ran under a signature, as above. The dashboard sends the image
-  as your settings name it, and a signed deploy of a tag runs its digest, so a service whose
-  settings name a tag never matches. Write the digest with
-  `ployz set 'web.image=nginx@sha256:…'`, then deploy once from an approved device. Writing
-  the digest isn't enough by itself: the server has to have run that version signed.
-  Restarting needs neither.
+- A version a device signed, which Ployz Cloud sends with its signature: a rollback or
+  redeploy of a signed deployment, or a change of only replicas, placement or limits while
+  your settings name the tag your last signed deploy ran.
+
+A deploy that changes the tag, or any setting the signature covers, has no signature to send,
+even when nothing else changed. Run `ployz deploy` on an approved device to sign it.
 
 A server refuses any other container the deployment would start there, and says what the
 service reaches:
@@ -264,11 +347,9 @@ The deployment page shows why, and what already runs keeps running. Run `ployz d
 approved device, or push under an
 [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push).
 
-The same goes for every deploy nobody signed: **Create and deploy** on a new branch,
-**Redeploy** and **Roll back** on a deployment's page, an organization token, `ployz up`, a
-restore, and a redeploy or rollback by [the agent](../account/agent-sidebar.md). A server that
-never ran a version has no record of its signature, so a service that reaches data doesn't
-start there until you run `ployz deploy` again. Running
+The same goes for every deploy of a version nobody signed: **Create and deploy** on a new
+branch, an organization token, `ployz up`, a restore, and a redeploy or rollback of a
+deployment nobody signed, from its page or by [the agent](../account/agent-sidebar.md). Running
 `ployz deploy` with a device key in a script approves whatever is saved in Ployz Cloud at that
 moment, without anyone looking.
 

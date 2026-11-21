@@ -158,7 +158,7 @@ fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Res
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -396,7 +396,7 @@ fn redeploy(store: &ConfigStore, who: &Actor, source: u8, n: u8) -> Result<(), R
                 rolls_back: Some(rolls_back),
                 version: None,
                 accept_volume_loss: Vec::new(),
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )

@@ -431,7 +431,7 @@ pub(crate) fn applied_volumes(
 /// Forget what `who`'s Organization's Servers held once its Cluster is gone (see
 /// [`crate::SystemEvent::ClusterForgotten`]): cancel every Deployment that might still
 /// run, and let go of Applied State, each Environment's Namespace and its Volumes'
-/// fixed storage. Returns the cancelled Deployments.
+/// fixed storage and births. Returns the cancelled Deployments.
 pub(crate) fn forget_cluster(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<DeploymentId>, RpcError> {
     let organization = who.organization.as_str();
     let environments = tx
@@ -451,10 +451,18 @@ pub(crate) fn forget_cluster(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Deploym
             &[organization.into()],
         )?;
     }
-    tx.execute(
-        "DELETE FROM config_volume_storage WHERE environment_id IN \
-         (SELECT id FROM config_environment WHERE organization_id = ?1)",
-        &[organization.into()],
-    )?;
+    for table in [
+        "config_volume_storage",
+        "config_volume_birth",
+        "config_volume_first_copy",
+    ] {
+        tx.execute(
+            &format!(
+                "DELETE FROM {table} WHERE environment_id IN \
+                 (SELECT id FROM config_environment WHERE organization_id = ?1)"
+            ),
+            &[organization.into()],
+        )?;
+    }
     Ok(cancelled)
 }

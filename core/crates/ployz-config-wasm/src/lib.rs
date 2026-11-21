@@ -36,19 +36,20 @@ struct RuleInput {
 }
 
 /// The automatic deploy rule a person approves for the Store's rule `view` under `terms`,
-/// as [`AutoDeployRule::draft`] builds it: its canonical body and what it shows. The
+/// as [`AutoDeployRule::draft`] builds it: its canonical body, what it shows and the births it mints. The
 /// browser takes each Service's digest with the code the CLI and the Servers run.
 ///
 /// # Errors
 /// Rejects malformed input and whatever `draft` refuses.
 #[wasm_bindgen]
 pub fn auto_deploy_rule_body(input: &str) -> Result<String, JsError> {
-    let input: RuleInput =
+    let mut input: RuleInput =
         serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
     let services = input
         .services
+        .take()
         .unwrap_or_else(|| input.view.branch_services());
-    let draft = AutoDeployRule::draft(&input.view, &services, input.terms)
+    let draft = AutoDeployRule::draft(&mut input.view, &services, input.terms)
         .map_err(|error| JsError::new(&error.to_string()))?
         .drafted(&input.view)
         .map_err(|error| JsError::new(&error.to_string()))?;

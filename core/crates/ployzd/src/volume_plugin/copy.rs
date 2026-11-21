@@ -20,6 +20,7 @@ use ployzd::{
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
+    holders::{Unheld, copy_held_for_other_data, copy_unlisted},
     inspect::{answering, internal},
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
@@ -304,7 +305,7 @@ impl VolumeStorage {
         if mounted {
             self.z(&["unmount", &root_name]).await?;
         }
-        self.park_root_in_slot(&scope.pool, &scope.datasets, name, root)
+        self.park_root_in_slot(&scope.held, &scope.pool, &scope.datasets, name, root)
             .await
             .map_err(internal)?;
         self.copy_now(&scope).await
@@ -456,6 +457,38 @@ impl VolumeStorage {
         let marks = self.marks(&fs_name);
         if marks.is_set(Mark::ResumeToken).await.map_err(internal)? {
             self.z(&["receive", "-A", &fs_name]).await?;
+        }
+        let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
+        // No copy leaves its slot while the slot still holds a record its bytes lack.
+        self.complete(&parent, &fs_name).await.map_err(internal)?;
+        let newest = self.newest_snapshot(&fs_name).await.map_err(internal)?;
+        let carried = self
+            .origin_of(
+                Some(&parent),
+                Some((&fs_name, newest.as_ref().map(|newest| &newest.name))),
+            )
+            .await
+            .map_err(internal)?;
+        match self.admit_holders(&request.name, carried).await {
+            Ok(()) => {}
+            Err(Unheld::Foreign) => {
+                return Err(self
+                    .refuse_found(
+                        &scope,
+                        CopyRefusal::Foreign,
+                        copy_held_for_other_data(&request.name),
+                    )
+                    .await);
+            }
+            Err(Unheld::Unlisted(cause)) => {
+                return Err(self
+                    .refuse_found(
+                        &scope,
+                        CopyRefusal::DockerUnavailable,
+                        copy_unlisted(&request.name, &cause),
+                    )
+                    .await);
+            }
         }
         marks.promote_slot(request.epoch).await.map_err(internal)?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
@@ -628,6 +661,7 @@ impl VolumeStorage {
             let snapshots = self.snapshots(&fs).await.map_err(internal)?;
             self.destroy_snapshots(&fs, snapshots.get(1..).unwrap_or_default())
                 .await?;
+            self.complete(&parent, &fs).await.map_err(internal)?;
             if pulling.is_some() {
                 self.marks(&parent).clear_pull().await.map_err(internal)?;
             }
@@ -686,10 +720,16 @@ impl VolumeStorage {
             .receives
             .spawn(&scope.held, name, &request.target, |stop| async move {
                 let result = match storage
-                    .pull_stream(from, stream, &fs, bound, r#gen, &stop)
+                    .pull_stream(from, stream, (&parent, &fs), bound, r#gen, &stop)
                     .await
                 {
-                    Ok(()) => storage.mark_pulled(&fs).await,
+                    Ok(()) => match storage.mark_pulled(&fs).await {
+                        Ok(()) => storage
+                            .complete(&parent, &fs)
+                            .await
+                            .map_err(|error| error.to_string()),
+                        Err(error) => Err(error),
+                    },
                     Err(error) => Err(error),
                 };
                 if let Err(error) = &result {
@@ -711,34 +751,29 @@ impl VolumeStorage {
         &self,
         from: ployz_core::ManagementAddress,
         stream: SendStream,
-        fs: &str,
+        (parent, fs): (&str, &str),
         bound: u64,
         r#gen: VolumeGen,
         stop: &Stop,
     ) -> Result<(), String> {
         let fault = "SetVolumeCopy.MirrorToMirror";
         match self
-            .receive(from, &stream, fs, bound, fault, r#gen, stop)
+            .receive(from, &stream, (parent, fs), bound, fault, r#gen, stop)
             .await
         {
             Ok(()) => return Ok(()),
             Err(ReceiveFailure::Failed(error)) => return Err(error),
             Err(ReceiveFailure::NoStream(_)) => {}
         }
-        let target = match &stream.source {
+        let (target, resumed) = match &stream.source {
             SendSource::Full { .. } => {
                 return Err(format!(
                     "{} has no snapshot {} to send",
                     from.0, stream.name
                 ));
             }
-            SendSource::Resume { target, .. } => {
-                self.zfs(&["receive", "-A", fs])
-                    .await
-                    .map_err(|error| error.to_string())?;
-                target.clone()
-            }
-            SendSource::Incremental { target, .. } => target.clone(),
+            SendSource::Resume { target, .. } => (target.clone(), true),
+            SendSource::Incremental { target, .. } => (target.clone(), false),
         };
         let full = SendStream {
             name: stream.name,
@@ -748,6 +783,15 @@ impl VolumeStorage {
             .open_stream(from, &full, stop)
             .await
             .map_err(|failure| failure.to_string())?;
+        // The full stream replaces this slot's copy only once its origin matches it.
+        self.admit_origin(parent, fs, &opened)
+            .await
+            .map_err(|failure| failure.to_string())?;
+        if resumed {
+            self.zfs(&["receive", "-A", fs])
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         // Aborting an interrupted first receive destroys the copy it began.
         if self.exists(fs).await.map_err(|error| error.to_string())? {
             self.zfs(&["destroy", "-r", fs])

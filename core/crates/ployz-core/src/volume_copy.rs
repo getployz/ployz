@@ -229,6 +229,15 @@ pub enum CopyRefusal {
     NoSource,
     /// The request's `gen` is below the floor: a newer lane owns the Volume.
     Stale,
+    /// A Container that mounts the Volume expects data of another origin than the copy
+    /// carries.
+    Foreign,
+    /// Docker could not say which Containers mount the Volume, so no copy went under its
+    /// name.
+    DockerUnavailable,
+    /// A reason introduced after this build. This daemon never sends it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 /// `RpcError.details` of a refused `SetVolumeCopy`: the reason and the copy it left.
@@ -257,14 +266,16 @@ impl Evidence for SetVolumeCopyRefused {
 impl CodedRefusal for SetVolumeCopyRefused {
     fn code(&self) -> RpcErrorCode {
         match self.reason {
-            CopyRefusal::NoCapacity => RpcErrorCode::Unavailable,
+            CopyRefusal::NoCapacity | CopyRefusal::DockerUnavailable => RpcErrorCode::Unavailable,
             CopyRefusal::Mismatch
             | CopyRefusal::NoTransition
             | CopyRefusal::Busy
             | CopyRefusal::Behind
             | CopyRefusal::Written
             | CopyRefusal::NoSource
-            | CopyRefusal::Stale => RpcErrorCode::Conflict,
+            | CopyRefusal::Stale
+            | CopyRefusal::Foreign => RpcErrorCode::Conflict,
+            CopyRefusal::Unrecognized => RpcErrorCode::Internal,
         }
     }
 }
@@ -486,6 +497,7 @@ mod tests {
             epoch: WriterEpoch::new(epoch),
             seed: false,
             mark: None,
+            origin: None,
         }
     }
 
@@ -496,6 +508,7 @@ mod tests {
             epoch: WriterEpoch::default(),
             seed: true,
             mark: None,
+            origin: None,
         }
     }
 
@@ -508,6 +521,7 @@ mod tests {
             pull,
             role: Some(SlotRole::Mirror),
             pull_state: None,
+            origin: None,
         }
     }
 
@@ -520,6 +534,7 @@ mod tests {
             pull: None,
             role: Some(SlotRole::OldCopy),
             pull_state: None,
+            origin: None,
         }
     }
 

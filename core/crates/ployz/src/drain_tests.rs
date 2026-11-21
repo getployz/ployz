@@ -95,6 +95,7 @@ fn an_outcome_is_flat_on_result() {
                 old: OldCopyEnd::Stopped,
             }],
             failure: MoveFailure::Refused {
+                from: None,
                 reason: StayReason::MidRollout,
             },
         },
@@ -528,6 +529,7 @@ async fn another_server_s_failed_move_fails_this_drain_when_something_was_left()
                 to,
                 detail: "never became healthy".into(),
                 replacement_removed: false,
+                needs_upgrade: false,
             },
             nothing_left(),
         ),
@@ -1011,6 +1013,7 @@ async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
                         })
                         .collect(),
                     failure: MoveFailure::Refused {
+                        from: None,
                         reason: StayReason::LastIn,
                     },
                 }
@@ -1044,6 +1047,7 @@ async fn a_service_s_rows_follow_from_its_convergence_its_leftovers_and_a_refuse
             .collect::<Vec<_>>()
     };
     let last_in = || MoveFailure::Refused {
+        from: None,
         reason: StayReason::LastIn,
     };
     let failed = |moves, failure| DrainOutcome::Failed { moves, failure };
@@ -1304,6 +1308,7 @@ fn an_outcome_says_whether_it_left_an_old_copy_or_failed() {
         unconfirmed: Unconfirmed::Cancelled,
     };
     let failure = || MoveFailure::Refused {
+        from: None,
         reason: StayReason::LastIn,
     };
     let table = [

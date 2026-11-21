@@ -13,9 +13,9 @@ use bollard::{
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
-    MachineStorageObservation, Namespace, ResolvedServiceSpec, ServiceName, ServiceNetwork,
-    ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
-    SlotKey,
+    MachineStorageObservation, Namespace, PullPolicy, ResolvedServiceSpec, ServiceName,
+    ServiceNetwork, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    ServicePlacementUnknownReason, SlotKey,
 };
 
 #[cfg(test)]
@@ -97,6 +97,8 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     pub(crate) admission: Admission,
     /// Fresh local storage observation deferred to final container admission.
     pub(crate) storage: Storage,
+    /// The volume plugin, which says what origin each Provisioned Volume carries.
+    pub(crate) plugin: &'spec crate::storage::Plugin,
 }
 
 /// A request once admission has consumed its futures: what the rest of creation reads.
@@ -110,6 +112,7 @@ struct Creating<'a> {
     namespace: &'a Namespace,
     spec: &'a ResolvedServiceSpec,
     admitted: AdmittedSpec,
+    plugin: &'a crate::storage::Plugin,
 }
 
 /// Creating, starting, stopping and removing the managed Containers, and the marks and
@@ -150,6 +153,71 @@ impl Lifecycle {
 
     pub async fn clear_floors(&self) -> Result<(), Error> {
         Ok(self.specs.clear_floors().await?)
+    }
+
+    /// Record that this Machine is forgetting its copy of `name`, which carries `origin`.
+    pub async fn forgot(
+        &self,
+        name: &ployz_core::DockerVolumeName,
+        origin: &ployz_core::VolumeOrigin,
+    ) -> Result<(), Error> {
+        Ok(self.specs.forgot(name, origin.to_string()).await?)
+    }
+
+    /// Whether the copy of `volume` this Machine last forgot carried the origin `volume`
+    /// expects: its data lives on another Server now.
+    ///
+    /// # Errors
+    /// Returns the read's error, or an origin `volume` can't name.
+    pub(crate) async fn forgot_here(
+        &self,
+        volume: &ployz_core::ServiceVolume,
+    ) -> Result<bool, Error> {
+        let Some(name) = volume.source.docker_volume_name() else {
+            return Ok(false);
+        };
+        let Some(forgotten) = self.specs.forgotten(name).await? else {
+            return Ok(false);
+        };
+        let expected = ployz_core::VolumeOrigin::expected(volume.source.birth(), name)
+            .map_err(|error| Error::InvalidContainerConfig(format!("mount origins: {error}")))?;
+        Ok(forgotten == expected.to_string())
+    }
+
+    /// Refuse a mounted Provisioned Volume this Machine forgot its copy of and holds no
+    /// copy of now. Its data lives on another Server, so a fresh root here would be a
+    /// second Writer. A Volume added again after `ployz volume rm` has a new birth, so
+    /// another origin, and starts empty as before.
+    ///
+    /// # Errors
+    /// Returns [`Error::VolumeNotWritable`] for such a Volume, or the read's error.
+    pub(crate) async fn refuse_forgotten<'a>(
+        &self,
+        volumes: impl IntoIterator<Item = &'a ployz_core::ServiceVolume>,
+        plugin: &crate::storage::Plugin,
+    ) -> Result<(), Error> {
+        for volume in volumes {
+            let Some(name) = volume.source.docker_volume_name() else {
+                continue;
+            };
+            if !self.forgot_here(volume).await? {
+                continue;
+            }
+            let copy = plugin
+                .call::<Option<ployz_core::VolumeCopy>>(
+                    crate::volume_copy::INSPECT_ROUTE,
+                    &crate::volume_copy::CopyRequest { name: name.clone() },
+                )
+                .await
+                .map_err(|source| Error::VolumeOriginUnread {
+                    name: name.clone(),
+                    source: Box::new(source),
+                })?;
+            if copy.is_none() {
+                return Err(Error::VolumeNotWritable(name.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Take the lock `remove` takes and read a copy's rotation under it, so no other
@@ -282,6 +350,7 @@ impl Lifecycle {
                 admitted: AdmittedSpec::test_signed(namespace, spec),
                 admission: std::future::ready(Ok::<_, Error>(())),
                 storage: std::future::ready(None),
+                plugin: &super::test_support::NO_PLUGIN,
             },
         )
         .await
@@ -313,6 +382,7 @@ impl Lifecycle {
             admitted,
             admission,
             storage,
+            plugin,
         } = request;
         {
             // Wait for an in-flight create to persist its spec before comparing a retry.
@@ -335,7 +405,7 @@ impl Lifecycle {
             "create container"
         );
         require_eligible(
-            self.admit_and_ensure_volumes(machine, namespace, spec, storage)
+            self.admit_and_ensure_volumes(machine, namespace, spec, storage, plugin)
                 .await
                 .map_err(E::from)?,
         )
@@ -352,6 +422,7 @@ impl Lifecycle {
             namespace,
             spec,
             admitted,
+            plugin,
         }))
         .await
         .map_err(E::from)
@@ -369,11 +440,35 @@ impl Lifecycle {
             ..
         } = creating;
         let mut body = self.build_body(&creating).await?;
+        if let ImagePull::Pinned(id) = creating.image {
+            body.image = Some(id.to_string());
+        }
         if !creating.admitted.signed() {
             // The caller's word that the image is here, and its login, count for nothing.
-            self.images
-                .pull_free(&spec.container.image, spec.container.pull_policy)
-                .await?;
+            match creating.image {
+                ImagePull::Pinned(id) => {
+                    // A digest pull can't change what it names, so `always` asks nothing more.
+                    let policy = match spec.container.pull_policy {
+                        PullPolicy::Always => PullPolicy::Missing,
+                        policy @ (PullPolicy::Missing | PullPolicy::Never) => policy,
+                    };
+                    self.images
+                        .pull_free(
+                            &crate::docker_image::pinned_reference(&spec.container.image, id),
+                            policy,
+                        )
+                        .await?;
+                }
+                ImagePull::Policy(_) | ImagePull::Prepared => {
+                    // By ID: the spec's tag here may name what a caller with Full access
+                    // put under it, which this creation must not run.
+                    let id = self
+                        .images
+                        .pull_free(&spec.container.image, spec.container.pull_policy)
+                        .await?;
+                    body.image = Some(id);
+                }
+            }
         } else if let ImagePull::Policy(registry_auth) = creating.image
             && let Err(error) = prepare_image(
                 &self.docker.client,
@@ -406,11 +501,19 @@ impl Lifecycle {
             .admitted
             .still_holds(Error::AdmissionUnread)?
             .map_err(Error::Unadmitted)?;
+        // Read last, under this lock and the caller's switch guard, so no promote or seed
+        // lands other data under a mounted name before Docker makes the Container.
+        self.volumes
+            .require_origins(&machine.id, spec, creating.plugin)
+            .await?;
         let mounts = body
             .host_config
             .get_or_insert_default()
             .mounts
             .get_or_insert_default();
+        self.volumes
+            .pin_external_drivers(&machine.id, spec, mounts)
+            .await?;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let result = self
             .create_and_record(&creating, &mut config_operation, body)
@@ -554,10 +657,15 @@ impl Lifecycle {
         })
     }
 
-    /// Whether the Container just made runs an image [`Images::pull_free`] placed. Its
-    /// image was resolved by name when Docker made it, after the pull, so a name another
-    /// caller moved in between is caught here, before the Container starts.
-    async fn runs_free_image(&self, container_id: &ContainerId) -> Result<bool, Error> {
+    /// The image ID `container_id` runs, as Docker resolved it when it made the Container.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub(crate) async fn image_of(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<String>, Error> {
         let made = self
             .docker
             .client
@@ -567,7 +675,17 @@ impl Lifecycle {
             )
             .await
             .map_err(Error::Docker)?;
-        Ok(made.image.is_some_and(|image| self.images.is_free(&image)))
+        Ok(made.image)
+    }
+
+    /// Whether the Container just made runs an image [`Images::pull_free`] placed. Its
+    /// image was resolved by name when Docker made it, after the pull, so a name another
+    /// caller moved in between is caught here, before the Container starts.
+    async fn runs_free_image(&self, container_id: &ContainerId) -> Result<bool, Error> {
+        Ok(self
+            .image_of(container_id)
+            .await?
+            .is_some_and(|image| self.images.is_free(&image)))
     }
 
     /// The Container an earlier create under `key` left behind, so a resend adopts it
@@ -763,6 +881,7 @@ impl Lifecycle {
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         storage: impl Future<Output = Option<MachineStorageObservation>>,
+        plugin: &crate::storage::Plugin,
     ) -> Result<ServicePlacementEligibility, Error> {
         let storage = if spec.volume_graph().has_mounted_provisioned_volume() {
             storage.await
@@ -772,6 +891,8 @@ impl Lifecycle {
         let eligibility =
             spec.placement_eligibility_in_namespace(namespace, machine, storage.as_ref());
         if matches!(eligibility, ServicePlacementEligibility::Eligible) {
+            self.refuse_forgotten(spec.volume_graph().mounted_provisioned_volumes(), plugin)
+                .await?;
             self.volumes
                 .ensure_mounted_volumes(&machine.id, spec)
                 .await?;

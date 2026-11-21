@@ -277,7 +277,11 @@ impl BootHost for FakeHost {
             of: container.clone(),
         };
         self.wants.lock().unwrap().push(want);
-        Ok(EnsuredContainer::Ensured { now, health: None })
+        Ok(EnsuredContainer::Ensured {
+            now,
+            health: None,
+            verified: None,
+        })
     }
 }
 
