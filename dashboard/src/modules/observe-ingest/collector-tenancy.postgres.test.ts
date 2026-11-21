@@ -97,11 +97,12 @@ const forged = (body: string) => JSON.stringify({
       { key: "service.name", value: { stringValue: "web" } },
       ...repeated("ployz.org", "victim-org"),
       ...repeated("ployz.retention_days", "9999"),
+      ...repeated("ployz.machine", "victim-machine"),
     ] },
     scopeLogs: [{ logRecords: [{
       timeUnixNano: `${Date.now()}000000`,
       body: { stringValue: body },
-      attributes: repeated("ployz.org", "victim-org"),
+      attributes: [...repeated("ployz.org", "victim-org"), ...repeated("ployz.machine", "victim-machine")],
     }] }],
   }],
 });
@@ -113,17 +114,18 @@ async function post(body: string, headers: Record<string, string>) {
 
 it("files a record under the org Cloud stamped, never the one the sender claimed", async () => {
   await post(forged("unstamped"), {});
-  await post(forged("stamped"), { "x-ployz-org": "real-org", "x-ployz-retention-days": "9999" });
+  await post(forged("stamped"), { "x-ployz-org": "real-org", "x-ployz-retention-days": "9999", "x-ployz-machine": "real-machine" });
   const rows = await until(async () => {
-    const found = await query("SELECT Body, OrgId, RetentionDays FROM otel.otel_logs ORDER BY Body");
+    const found = await query("SELECT Body, OrgId, RetentionDays, ResourceAttributes['ployz.machine'] AS Machine FROM otel.otel_logs ORDER BY Body");
     return found.length === 2 ? found : undefined;
   });
   expect(rows).toEqual([
-    { Body: "stamped", OrgId: "real-org", RetentionDays: 400 },
-    { Body: "unstamped", OrgId: "", RetentionDays: 30 },
+    { Body: "stamped", OrgId: "real-org", RetentionDays: 400, Machine: "real-machine" },
+    { Body: "unstamped", OrgId: "", RetentionDays: 30, Machine: "" },
   ]);
   expect(await query("SELECT count() AS n FROM otel.otel_logs WHERE OrgId = 'victim-org'")).toEqual([{ n: 0 }]);
   expect(await query("SELECT count() AS n FROM otel.otel_logs WHERE has(mapValues(ResourceAttributes), 'victim-org') OR has(mapValues(LogAttributes), 'victim-org')")).toEqual([{ n: 0 }]);
+  expect(await query("SELECT count() AS n FROM otel.otel_logs WHERE has(mapValues(ResourceAttributes), 'victim-machine') OR has(mapValues(LogAttributes), 'victim-machine')")).toEqual([{ n: 0 }]);
 }, 120_000);
 
 it("keeps a batch it answered 200 through a ClickHouse outage and a Collector crash", async () => {

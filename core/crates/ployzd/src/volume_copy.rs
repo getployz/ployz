@@ -7,9 +7,20 @@
 //! InspectVolumeCopy reports.
 
 use ployz_core::{
-    DockerVolumeName, ManagementAddress, SnapshotGuid, SnapshotName, VolumeGen, WriterEpoch,
+    DockerVolumeName, ManagementAddress, SnapshotGuid, SnapshotName, VolumeGen, VolumeOrigin,
+    WriterEpoch,
 };
 use serde::{Deserialize, Serialize};
+
+/// The plugin's words, after a Volume's name, for a root it refused because a Container
+/// that mounts the name expects other data. The daemon reads them back out of Docker's
+/// refusal of a create.
+pub const HELD_FOR_OTHER_DATA: &str = "is mounted by a Container approved for other data";
+
+/// The plugin's words for a root it held back because Docker did not list the Containers
+/// that mount the name in time. The daemon reads them back out of Docker's refusal of a
+/// create.
+pub const DOCKER_NOT_ANSWERING: &str = "Docker is not answering on this Machine";
 
 /// The Pool's capacity and commitments, with no effect.
 pub const STORAGE_INSPECT_ROUTE: &str = "Storage.Inspect";
@@ -39,6 +50,25 @@ pub const WRITER_ROUTE: &str = "Volume.Copy.Writer";
 pub const PULL_ROUTE: &str = "Volume.Copy.Pull";
 /// The slot destroyed with its copy.
 pub const DESTROY_ROUTE: &str = "Volume.Copy.Destroy";
+/// The dataset a send of `target` reads, with the snapshot's GUID and origin, observed in
+/// one answer under the plugin's mutation, so no receive replaces the copy between them.
+pub const SEND_POINT_ROUTE: &str = "Volume.SendPoint";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SendPointRequest {
+    pub name: DockerVolumeName,
+    pub target: SnapshotName,
+}
+
+/// What a send of one snapshot reads: the root or the slot's `fs`, the snapshot's GUID,
+/// which the stream's BEGIN record must name, and its origin, `None` for Legacy.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SendPoint {
+    pub dataset: String,
+    pub guid: SnapshotGuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<VolumeOrigin>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CopyRequest {

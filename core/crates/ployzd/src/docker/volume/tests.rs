@@ -16,6 +16,7 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
             name: name.clone(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),
@@ -23,6 +24,7 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
             name: name.clone(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),
@@ -272,6 +274,7 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
         )
         .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");
@@ -306,6 +309,7 @@ async fn normalized_local_driver_uses_no_options() {
         name: DockerVolumeName::parse("default-driver").unwrap(),
         driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: BTreeMap::new(),
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");
@@ -532,6 +536,7 @@ async fn a_later_volume_failure_does_not_roll_back_an_earlier_create() {
             name: DockerVolumeName::parse("a-created").unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),
@@ -563,6 +568,7 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
             name: DockerVolumeName::parse("created-before-container-failure").unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),

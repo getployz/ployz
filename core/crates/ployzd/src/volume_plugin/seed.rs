@@ -7,15 +7,22 @@ use std::process::Stdio;
 
 use axum::{Json, extract::State};
 use ployz_core::{
-    RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError, VolumeCopyView,
+    DockerVolumeName, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
+    VolumeCopyView,
 };
-use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
-use tokio::process::Command;
+use ployzd::{
+    dataset_layout::DatasetLayout,
+    machine_pool::MachinePool,
+    volume_send::begin::{self, READ_BOUND},
+};
+use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{
-    Dataset, VolumeName, VolumeStorage,
+    Dataset, PluginError, VolumeName, VolumeStorage,
+    holders::{Unheld, copy_held_for_other_data, copy_unlisted},
     inspect::{answering, internal},
     marks::{Mark, Marks},
+    origin::Origin,
     slot,
     storage::HeldMutation,
     transfer::{Busy, Stop, ZfsChild, exited},
@@ -68,8 +75,19 @@ impl Renamed {
     /// The landing after the rename, repeatable. The received snapshot goes last, so a root
     /// still holding it has not finished landing. Its name belongs to the source's runs,
     /// and the new Volume's own runs name theirs from one.
+    ///
+    /// A parent still holding a record lost its copy before completion stamped it, so the
+    /// root may not carry the origin the record names. That root stays read-only and the
+    /// parent stays with its record.
     async fn finish_landing(self, storage: &VolumeStorage) -> Result<(), RpcError> {
         let root = &self.root;
+        if let Some(parent) = &self.parent
+            && storage.record(parent).await.map_err(internal)?.is_some()
+        {
+            return Err(SwitchError::Precondition.rpc_error(format!(
+                "{root} left slot {parent} before its origin was stamped; forget it and seed again"
+            )));
+        }
         storage
             .zfs(&["inherit", "mountpoint", root])
             .await
@@ -99,9 +117,30 @@ struct Copied {
 
 impl Copied {
     /// Makes the complete copy the root of `into`, marked with its point and unregistered
-    /// until Docker's Create adopts it.
-    async fn land(self, storage: &VolumeStorage, guid: SnapshotGuid) -> Result<(), RpcError> {
+    /// until Docker's Create adopts it. Every Container that already mounts `into` must
+    /// expect the origin the copy carries.
+    async fn land(
+        self,
+        storage: &VolumeStorage,
+        into: &DockerVolumeName,
+        guid: SnapshotGuid,
+    ) -> Result<(), RpcError> {
         let fs = &self.fs;
+        storage.complete(&self.parent, fs).await.map_err(internal)?;
+        let carried = storage
+            .point(fs, &self.snapshot)
+            .await
+            .map_err(internal)?
+            .origin;
+        storage
+            .admit_holders(into, carried)
+            .await
+            .map_err(|unheld| match unheld {
+                Unheld::Foreign => SwitchError::Foreign.rpc_error(copy_held_for_other_data(into)),
+                Unheld::Unlisted(cause) => {
+                    SwitchError::DockerUnavailable.rpc_error(copy_unlisted(into, &cause))
+                }
+            })?;
         // The slot may be a mirror that pulled this point; landed, it is no received copy.
         storage
             .marks(fs)
@@ -150,10 +189,12 @@ impl Stale {
     }
 }
 
-/// The source's restore point the Seed copies, and the bound the copy takes from it.
+/// The source's restore point the Seed copies, the origin it carries, and the bound the
+/// copy takes from it.
 struct Source {
     root: String,
     point: Snapshot,
+    origin: Origin,
     bound: u64,
 }
 
@@ -185,7 +226,7 @@ impl VolumeStorage {
                 })
             }
             SeedProgress::Copied(copied) => {
-                copied.land(self, guid).await?;
+                copied.land(self, &request.into, guid).await?;
                 self.seeded(&pool, &into).await
             }
             SeedProgress::Stale(stale) => {
@@ -279,8 +320,10 @@ impl VolumeStorage {
         })
     }
 
-    /// The source's snapshot of `guid`, refused when `name` has no writer here, no longer
-    /// holds the point, or has no bound for the copy to take.
+    /// The source's snapshot of `guid` and its origin, refused when `name` has no writer
+    /// here, no longer holds the point, carries an origin this Machine did not stamp, or
+    /// has no bound for the copy to take. It reads nothing it changes, so a refusal leaves
+    /// any slot of `into` as it was.
     async fn seed_source(
         &self,
         pool: &MachinePool,
@@ -313,7 +356,27 @@ impl VolumeStorage {
             return Err(SwitchError::Precondition
                 .rpc_error(format!("Volume {name} has no bound to seed {into} with")));
         }
-        Ok(Source { root, point, bound })
+        let read = self
+            .point(&root, point.name.as_str())
+            .await
+            .map_err(|error| {
+                if let PluginError::Unstamped(message) = error {
+                    SwitchError::Precondition.rpc_error(message)
+                } else {
+                    internal(error)
+                }
+            })?;
+        if read.guid != guid {
+            return Err(SwitchError::RestorePointGone.rpc_error(format!(
+                "restore point {guid} is no longer on Volume {name}"
+            )));
+        }
+        Ok(Source {
+            root,
+            point,
+            origin: read.origin,
+            bound,
+        })
     }
 
     /// A new slot of `into` marked with the point it pulls, and the copy started into it.
@@ -326,19 +389,27 @@ impl VolumeStorage {
     ) -> Result<VolumeCopyView, RpcError> {
         let parent = DatasetLayout::of(pool).slot_parent(into);
         let fs = DatasetLayout::of(pool).slot_fs(into);
-        let Source { root, point, bound } = source;
+        let Source {
+            root,
+            point,
+            origin,
+            bound,
+        } = source;
         self.create_slot(&parent, bound).await.map_err(internal)?;
         self.marks(&parent)
             .set_pull(point.name.as_str())
             .await
             .map_err(internal)?;
+        self.write_record(&parent, origin).await.map_err(internal)?;
         let storage = self.clone();
         let snapshot = format!("{root}@{}", point.name);
         // A receive still alive refuses the spawn, and the copy as it stands answers then too.
         let _ = self
             .receives
             .spawn(held, into, &point.name, |stop| async move {
-                storage.copy_snapshot(&snapshot, &fs, bound, &stop).await
+                storage
+                    .copy_snapshot(&snapshot, point.guid, &fs, bound, &stop)
+                    .await
             });
         self.seeded(pool, into).await
     }
@@ -354,12 +425,14 @@ impl VolumeStorage {
     }
 
     /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`,
-    /// checked read-only at its bound once the receive has it all. It sets no `pulled`
-    /// mark, so a departure keeps a seed that has not landed. Once `stop` fires, both are
-    /// killed and reaped before this returns.
+    /// checked read-only at its bound once the receive has it all. The send's BEGIN record
+    /// must build `guid` before the receive starts. It sets no `pulled` mark, so a
+    /// departure keeps a seed that has not landed. Once `stop` fires, both are killed and
+    /// reaped before this returns.
     async fn copy_snapshot(
         &self,
         snapshot: &str,
+        guid: SnapshotGuid,
         fs: &str,
         bound: u64,
         stop: &Stop,
@@ -373,27 +446,50 @@ impl VolumeStorage {
             stop,
         )
         .map_err(|error| format!("could not run zfs send: {error}"))?;
-        let stream = send
+        let mut stream = send
             .child()
             .stdout
             .take()
-            .expect("zfs send stdout is piped")
-            .into_owned_fd()
-            .map_err(|error| format!("could not hand the send stream over: {error}"))?;
+            .expect("zfs send stdout is piped");
+        let record = tokio::select! {
+            biased;
+            () = stop.cancelled() => None,
+            record = begin::read(&mut stream, guid.get(), READ_BOUND) => Some(record),
+        };
+        let record = match record {
+            Some(Ok(record)) => record,
+            Some(Err(error)) => {
+                send.reap().await;
+                return Err(format!("send of {snapshot} refused: {error}"));
+            }
+            None => {
+                send.reap().await;
+                return Err(format!("the seed of {fs} was stopped"));
+            }
+        };
         let mut receive = self
-            .spawn_receive(fs, bound, Stdio::from(stream), stop)
+            .spawn_receive(fs, bound, Stdio::piped(), stop)
             .map_err(|error| format!("could not run zfs receive: {error}"))?;
+        let mut stdin = receive
+            .child()
+            .stdin
+            .take()
+            .expect("zfs receive stdin is piped");
         let exits = {
-            let both = async { tokio::join!(exited(send.child()), exited(receive.child())) };
+            let pipe = async move {
+                stdin.write_all(&record).await?;
+                tokio::io::copy(&mut stream, &mut stdin).await.map(drop)
+            };
+            let all = async { tokio::join!(pipe, exited(send.child()), exited(receive.child())) };
             tokio::select! {
                 biased;
                 () = stop.cancelled() => None,
-                exits = both => Some(exits),
+                exits = all => Some(exits),
             }
         };
         send.reap().await;
         receive.reap().await;
-        let Some((sent, received)) = exits else {
+        let Some((piped, sent, received)) = exits else {
             return Err(format!("the seed of {fs} was stopped"));
         };
         let (received, stderr) =
@@ -408,6 +504,7 @@ impl VolumeStorage {
         if !sent.success() {
             return Err(format!("zfs send of {snapshot} failed: {}", stderr.trim()));
         }
+        piped.map_err(|error| format!("the seed of {fs} broke: {error}"))?;
         self.finish_copy(fs, bound).await
     }
 }

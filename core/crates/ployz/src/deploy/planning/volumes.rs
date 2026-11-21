@@ -8,15 +8,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     BlockedService, CopyRole, DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation,
-    KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
+    FirstCopy, KnownCopy, MachineId, MachineObservation, Namespace, Operator, PlacementConstraint,
     PreservedVolume, Region, RequestedServiceSpec, ServiceMode, ServiceName, ServiceObservation,
     ServicePlacementEligibility, ServicePlacementIneligibleReason, ServiceStorageSpec,
     ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
 };
 
 use crate::deploy::{
-    BesideVolume, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError, PlanOptions,
-    SharedHome,
+    BesideVolume, DeployIntent, DeployOperation, DeploySnapshot, EliminatingConstraint, PlanError,
+    PlanOptions, SharedHome, Unfit,
 };
 
 use super::placement::PlacementReservations;
@@ -38,6 +38,10 @@ pub(super) struct VolumePlan<'snapshot> {
     /// Deployed Volumes the applied Services mount. A lost one an unselected Service
     /// mounts leaves this Deploy alone.
     deployed_volumes: BTreeSet<DockerVolumeName>,
+    /// The Server an earlier Deployment chose for each Managed Volume's first copy.
+    first_copies: &'snapshot BTreeMap<DockerVolumeName, MachineId>,
+    /// Volumes a Global Service mounts: each Server makes its own, so none has a first copy.
+    global: BTreeSet<DockerVolumeName>,
     /// Every Service of the target that mounts each Volume, by name. A Deploy of some
     /// Services leaves the rest where they are, so they still decide where a Volume they
     /// mount can be.
@@ -48,8 +52,9 @@ pub(super) struct VolumePlan<'snapshot> {
 
 /// Informational projections derived from one completed assignment ledger.
 pub(super) struct PlannedVolumes {
-    /// Managed Volumes absent from the observed inventory and used by pending operations.
-    pub(super) creates: Vec<(MachineId, ServiceVolume)>,
+    /// Managed Volumes absent from the observed inventory and used by pending operations,
+    /// each with whether it makes the Volume's first copy.
+    pub(super) creates: Vec<(MachineId, ServiceVolume, Option<FirstCopy>)>,
     /// Complete commitments on Machines preparing Provisioned Volumes.
     pub(super) budgets: Vec<ployz_core::MachineStorageBudget>,
 }
@@ -81,21 +86,24 @@ impl<'snapshot> VolumePlan<'snapshot> {
     /// unresolved locality.
     pub(super) fn new(
         snapshot: &'snapshot DeploySnapshot,
-        namespace: &Namespace,
-        volume_names: &'snapshot BTreeMap<DockerVolumeName, String>,
-        deployed_volumes: &BTreeSet<DockerVolumeName>,
+        intent: &'snapshot DeployIntent,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
-        operator: Operator,
     ) -> Result<Self, PlanError> {
         reject_mixed_volume_modes(&managed_volume_uses(requested))?;
         let plan = Self {
             snapshot,
-            namespace: namespace.clone(),
-            volume_names,
+            namespace: intent.namespace.clone(),
+            volume_names: &intent.volume_names,
             deployed_volumes: managed_volume_uses(requested)
                 .into_keys()
-                .filter(|name| deployed_volumes.contains(name))
+                .filter(|name| intent.deployed_volumes.contains(name))
+                .collect(),
+            first_copies: &intent.first_copies,
+            global: managed_volume_uses(target)
+                .into_iter()
+                .filter(|(_, uses)| uses.iter().any(|volume_use| volume_use.global))
+                .map(|(name, _)| name)
                 .collect(),
             mounted_by: managed_volume_uses(target)
                 .into_iter()
@@ -111,7 +119,7 @@ impl<'snapshot> VolumePlan<'snapshot> {
                     (name, services)
                 })
                 .collect(),
-            operator,
+            operator: intent.options.mode().operator(),
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target, requested)?;
@@ -378,6 +386,20 @@ impl<'snapshot> VolumePlan<'snapshot> {
             )
     }
 
+    /// Whether creating `volume` as `id` makes its first copy: a Managed Volume no Global
+    /// Service mounts, with no copy seen on any Server.
+    fn first_copy(&self, id: &DockerVolumeId, volume: &ServiceVolume) -> Option<FirstCopy> {
+        let provisioned = matches!(
+            volume.source.kind(),
+            ployz_core::RawVolumeSource::Provisioned { .. }
+        );
+        let seen = self
+            .observed_locations()
+            .any(|located| *located.name == id.name)
+            || !self.copies_without_writer(&id.name).is_empty();
+        (provisioned && !seen && !self.global.contains(&id.name)).then_some(FirstCopy {})
+    }
+
     /// Derive creation rows and complete budgets from the same assigned Volumes.
     ///
     /// # Errors
@@ -436,7 +458,10 @@ impl<'snapshot> VolumePlan<'snapshot> {
                         observed.id == *id && volume.source.matches_managed_volume(observed)
                     })
             })
-            .map(|(id, volume)| (id.machine_id, volume.clone()))
+            .map(|(id, volume)| {
+                let first = self.first_copy(&id, volume);
+                (id.machine_id, volume.clone(), first)
+            })
             .collect();
         let mut budgets = Vec::new();
         let mut preparations = Vec::new();
@@ -542,6 +567,7 @@ impl VolumePlan<'_> {
                     | PlanError::CopiesUnknown { .. }
                     | PlanError::VolumeHolderUnknown { .. }
                     | PlanError::VolumeServerTakesNoServices { .. }
+                    | PlanError::FirstCopyUnfit { .. }
                     | PlanError::RegionUnmatched { .. }
                     | PlanError::VolumeOutsideRegion { .. }
                     | PlanError::VolumesApart { .. }
@@ -913,6 +939,7 @@ fn unmountable(
         PlanError::NoWriter { .. }
             | PlanError::CopiesUnknown { .. }
             | PlanError::VolumeHolderUnknown { .. }
+            | PlanError::FirstCopyUnfit { .. }
             | PlanError::RegionUnmatched { .. }
             | PlanError::VolumeOutsideRegion { .. }
             | PlanError::VolumesApart { .. }
@@ -1270,6 +1297,38 @@ fn volume_constraints<'spec>(
                         machines.clear();
                         unread.retain(|machine| held(machine.machine.id));
                         first_located.get_or_insert(volume);
+                    } else if let Some(&id) = plan.first_copies.get(name) {
+                        // An earlier Deploy may still make the first copy there. A Server
+                        // this view doesn't list may only be one it hasn't heard of yet.
+                        let Some(pinned) = snapshot.machine(id) else {
+                            return Err(PlanError::FirstCopyUnfit {
+                                volume: plan.authored(name).to_owned(),
+                                machine: id.to_string(),
+                                unfit: Unfit::Unlisted,
+                            });
+                        };
+                        if skipped.iter().any(|(skipped, ..)| *skipped == id) {
+                            return Err(plan.holder_unknown(volume, pinned.machine.name.clone()));
+                        }
+                        let excluded = !machines.iter().any(|machine| machine.machine.id == id);
+                        if excluded
+                            || plan
+                                .storage_budget(pinned, mounted_volumes.iter().copied())
+                                .is_err()
+                        {
+                            return Err(PlanError::FirstCopyUnfit {
+                                volume: plan.authored(name).to_owned(),
+                                machine: pinned.machine.name.to_string(),
+                                unfit: if excluded {
+                                    Unfit::Excluded
+                                } else {
+                                    Unfit::Full
+                                },
+                            });
+                        }
+                        machines.retain(|machine| machine.machine.id == id);
+                        unread.clear();
+                        missing_volumes.push(volume);
                     } else {
                         missing_volumes.push(volume);
                     }

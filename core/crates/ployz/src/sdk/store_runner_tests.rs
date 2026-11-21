@@ -64,7 +64,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -78,7 +78,6 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             runner,
             over: Latch::new(),
             reader: None,
-            versions: Vec::new(),
         },
         actor,
     )
@@ -102,7 +101,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -154,7 +153,6 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         runner: RunnerId::parse("other").unwrap(),
         over: Latch::new(),
         reader: None,
-        versions: Vec::new(),
     };
 
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -853,12 +851,7 @@ async fn mock_machine() -> (
     use crate::sdk::test_support as support;
     let one = support::machine('a', "one");
     let mut service = support::DeployService::new(one.clone());
-    service.uninspectable.insert(container_id('d'));
     service.uninspectable.insert(container_id('e'));
-    service.retained_envs.as_mut().unwrap().insert(
-        container_id('e'),
-        BTreeMap::from([("PLAIN".to_owned(), "from-docker".to_owned())]),
-    );
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
         vec![Connection::tcp(address)],
@@ -889,6 +882,133 @@ async fn a_runner_names_its_entry_after_a_plain_transport_failure() {
     server.abort();
 }
 
+/// A creation of `kind` for the Service `spec` names, in slot `key`.
+fn creation(
+    spec: &ployz_core::ResolvedServiceSpec,
+    kind: ployz_core::ContainerKind,
+    key: &str,
+) -> ployz_core::ContainerWant {
+    ployz_core::ContainerWant::Running {
+        container: ployz_core::RunTarget::New(ployz_core::NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
+            slot: ployz_core::SlotKey {
+                namespace: ployz_core::Namespace::parse("app").unwrap(),
+                service: spec.name.clone(),
+                kind,
+                creation_key: key.to_owned().try_into().unwrap(),
+            },
+            resolved_spec: spec.clone(),
+            deployment_id: None,
+            registry_auth: None,
+            image_prepared: false,
+            image_id: None,
+            answer: ployz_core::AnswerWhen::Started,
+        }),
+        rotation: ployz_core::RunRotation::Pending,
+    }
+}
+
+/// The proof a rule's build carries before any Server checked it: the image token.
+fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
+    use ployz_core::authority::rule::{Builder, RuleEvent, Runner};
+    use ployz_core::authority::{
+        AttestKey, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha, ImageDigest,
+        PolicyDigest, RuleEvidence, RuleId, RuleProof, RuleSource, Signed, Signer, SignerKey,
+        Timestamp,
+    };
+    let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let signer = Signer::from_seed(&[1; 32]);
+    let rule = AutoDeployRule {
+        cluster,
+        rule: RuleId::from_bytes([9; 16]),
+        generation: 1,
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
+        machines: Vec::new(),
+        source: RuleSource {
+            repository_id: 11,
+            owner_id: 1,
+            repository: "acme/web".into(),
+            branch: "main".into(),
+            workflow: ".github/workflows/ployz-build.yml".into(),
+            events: vec![RuleEvent::Push],
+            builder: Builder::pinned(),
+            runner: Runner::GithubHosted,
+        },
+        services: Vec::new(),
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended: false,
+        signer: SignerKey::Device(signer.public().into()),
+    };
+    RuleProof {
+        rule: Signed::sign(&rule, &signer).unwrap(),
+        evidence: RuleEvidence::Online(ployz_core::GithubToken::new("image-token".to_owned())),
+        claim: BuildClaim {
+            cluster,
+            rule: rule.rule,
+            generation: 1,
+            service: service.clone(),
+            policy: PolicyDigest::from_bytes([0; 32]),
+            commit: CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+            authority: CommitAuthority::Head,
+            stage: BuildStage::Built {
+                image: ImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+                attest: AttestKey::from_bytes([0x55; 32]),
+            },
+        },
+        reader: None,
+    }
+}
+
+// A pre-deploy hook can outlast the image token. The Server that admits the hook answers
+// a verified build, and the Service the same Deploy creates next must carry it, since the
+// token has expired by then. The run keeps the same verified build for later Deployments.
+#[tokio::test]
+async fn a_service_created_after_its_hook_carries_the_verified_build_the_hook_got() {
+    use crate::sdk::test_support as support;
+    use ployz_core::ContainerKind;
+    let one = support::machine('a', "one");
+    let issued = ployz_core::authority::VerifiedBuild::from_bytes([0x5a; 32]);
+    let service = support::DeployService::new(one.clone()).checking_rules(issued);
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let spec = crate::global_fixtures::requested(ployz_core::ServiceMode::Global)
+        .to_resolved(
+            crate::global_fixtures::service_id('a'),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let proofs = crate::cluster::RuleProofs {
+        rules: BTreeMap::from([(spec.name.clone(), online_proof(&spec.name))]),
+        ..Default::default()
+    };
+    let client = session.client().unwrap().with_rule_proofs(proofs.clone());
+
+    for (kind, key) in [
+        (ContainerKind::PreDeployHook, "hook:test"),
+        (ContainerKind::ServiceContainer, "global:test"),
+    ] {
+        let created = client
+            .ensure_unsettled(&one.machine.id, creation(&spec, kind, key), None)
+            .await;
+        assert!(
+            matches!(created, Ok(ployz_core::EnsuredContainer::Ensured { .. })),
+            "the {kind} is created: {created:?}"
+        );
+    }
+    assert_eq!(
+        proofs.issued().get(&spec.name).map(|kept| kept.verified),
+        Some(issued)
+    );
+
+    session.close().await;
+    server.abort();
+}
+
 fn lines(log: &LogText) -> Vec<String> {
     match log {
         LogText::Shown(excerpt) => excerpt.lines().to_vec(),
@@ -909,14 +1029,10 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
     };
 
     let older = run
-        .failed_log(&client, &scrub, machine, container_id('c'))
-        .await
-        .0;
-    let unreadable = run
         .failed_log(&client, &scrub, machine, container_id('d'))
         .await
         .0;
-    let removed = run
+    let unreadable = run
         .failed_log(&client, &scrub, machine, container_id('e'))
         .await
         .0;
@@ -926,10 +1042,6 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
     assert!(
         lines(&older).contains(&"plain [secret PLAIN]".to_owned()),
         "{older:?}"
-    );
-    assert!(
-        lines(&removed).contains(&"plain [secret PLAIN]".to_owned()),
-        "{removed:?}"
     );
     assert!(
         matches!(
@@ -958,7 +1070,7 @@ async fn a_name_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
     seal(&run, &actor, "PLAIN");
 
     let log = run
-        .failed_log(&client, &scrub, machine, container_id('c'))
+        .failed_log(&client, &scrub, machine, container_id('d'))
         .await
         .0;
     session.close().await;
@@ -992,11 +1104,11 @@ async fn an_image_supplied_value_sealed_after_the_claim_is_scrubbed_from_a_faile
     seal(&run, &actor, "PLAIN");
 
     let log = run
-        .failed_log(&client, &scrub, machine, container_id('c'))
+        .failed_log(&client, &scrub, machine, container_id('d'))
         .await
         .0;
     let unreadable = run
-        .failed_log(&client, &scrub, machine, container_id('d'))
+        .failed_log(&client, &scrub, machine, container_id('e'))
         .await
         .0;
     session.close().await;
@@ -1081,7 +1193,7 @@ fn separately_uploaded() -> Claimed {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &ployz_store::Trusted::default(),
             )
@@ -1128,7 +1240,6 @@ fn a_build_with_no_server_in_its_walk_fails_with_the_reason_github_gave() {
             checkouts: BTreeMap::new(),
             upload: Some(PathBuf::from("/extracted")),
             reader: None,
-            versions: Vec::new(),
         },
     ) else {
         panic!("a build no Server takes fails");
@@ -1150,7 +1261,6 @@ fn a_full_deploy_builds_each_uploaded_service_from_its_own_upload() {
             checkouts: BTreeMap::new(),
             upload: Some(extracted.clone()),
             reader: None,
-            versions: Vec::new(),
         },
     ) {
         Ok(targets) => targets,
@@ -1241,6 +1351,15 @@ impl CopyLifecycle for Recording {
     ) -> Result<(ployz_core::ContainerNow, Option<ployz_core::HealthVerdict>), RpcError> {
         self.wants.lock().unwrap().push(want.clone());
         CopyLifecycle::ensure_container(&self.client, machine_id, want).await
+    }
+
+    async fn ensure_new(
+        &self,
+        machine_id: &MachineId,
+        want: ployz_core::ContainerWant,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError> {
+        self.wants.lock().unwrap().push(want.clone());
+        CopyLifecycle::ensure_new(&self.client, machine_id, want).await
     }
 
     async fn ensure_unsettled(
@@ -1622,68 +1741,4 @@ fn a_storage_refusal_says_this_deploy_s_deletions_free_space_only_after_it() {
             assert_eq!(unchanged.reason, plain);
         }
     }
-}
-
-fn service(name: &str, image: &str) -> RequestedServiceSpec {
-    serde_json::from_value(serde_json::json!({
-        "name": name,
-        "mode": {"mode": "replicated", "replicas": 1},
-        "container": {"image": image, "pull_policy": "missing"},
-    }))
-    .unwrap()
-}
-
-#[test]
-fn the_runner_writes_each_approved_image_into_its_spec_before_planning() {
-    use ployz_core::authority::{
-        ApprovedService, DeployApproval, PayloadDigest, Signed, Signer, SignerKey, Timestamp,
-    };
-    const PINNED: &str =
-        "nginx:1.29-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000001";
-    const BY_HAND: &str =
-        "api@sha256:0000000000000000000000000000000000000000000000000000000000000002";
-    let namespace = ployz_core::Namespace::parse("app").unwrap();
-    let signer = Signer::from_seed(&[1; 32]);
-    let digest = PayloadDigest::of(&service("web", PINNED), &namespace).unwrap();
-    let issued_at = Timestamp::now();
-    let body = DeployApproval {
-        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
-        operation: ployz_core::OperationId::random(),
-        namespace,
-        machines: vec![ployz_core::MachineId::parse("1".repeat(32)).unwrap()],
-        services: vec![
-            ApprovedService {
-                name: ServiceName::parse("api").unwrap(),
-                digest,
-                image: None,
-            },
-            ApprovedService {
-                name: ServiceName::parse("web").unwrap(),
-                digest,
-                image: Some(PINNED.to_owned()),
-            },
-        ],
-        issued_at,
-        expires_at: issued_at.plus(60_000),
-        signer: SignerKey::Device(signer.public().into()),
-        proposal: None,
-    };
-    let approval = Signed::sign(&body, &signer).unwrap();
-    let mut target = vec![
-        service("api", BY_HAND),
-        service("web", "nginx:1.29-alpine"),
-        service("worker", "busybox:1"),
-    ];
-    pin_approved(&mut target, Some(&approval));
-    let images: Vec<_> = target
-        .iter()
-        .map(|spec| spec.container.image.as_str())
-        .collect();
-    assert_eq!(images, [BY_HAND, PINNED, "busybox:1"]);
-    let mut unsigned = vec![service("web", "nginx:1.29-alpine")];
-    pin_approved(&mut unsigned, None);
-    assert_eq!(
-        unsigned.first().unwrap().container.image,
-        "nginx:1.29-alpine"
-    );
 }

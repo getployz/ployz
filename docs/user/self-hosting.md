@@ -232,12 +232,10 @@ and traces a server sends to it over the address it already uses. Neither is pub
 Servers don't send them yet, so turning the profile on prepares Cloud and collects nothing until
 they do.
 
-1. Set `CLICKHOUSE_PASSWORD` in `.env` to a generated secret, and `OBSERVE_CLICKHOUSE_URL` to
-   `http://clickhouse:8123` so [Analytics](observe/analytics.md) can read from it:
+1. Set `CLICKHOUSE_PASSWORD` in `.env` to a generated secret:
 
    ```sh
    echo "CLICKHOUSE_PASSWORD=$(openssl rand -hex 32)"
-   echo "OBSERVE_CLICKHOUSE_URL=http://clickhouse:8123"
    ```
 
 2. Start with the profile. The tables are created on every start, so there is no separate step:
@@ -249,6 +247,9 @@ they do.
    Add `--profile observe` to the other `docker compose` commands on this page too, such as
    `ps` and `logs`, so they include the new services. Without the profile, a server that sends
    to your Cloud gets a `503` and keeps what it has.
+
+With the profile on, the Logs page reads older lines and search from ClickHouse. Without it, the
+page says **Log history isn’t set up** and live output still works.
 
 Ployz Cloud keeps each record for 30 days from the time the server stamped on it, and files it
 under the organization that owns the server that sent it. A server can't claim another

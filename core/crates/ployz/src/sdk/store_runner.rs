@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    ContainerId, DeployOperation, DeployOutcome, DeployWarning, ExecutionError, FailedOperation,
-    HealthFailure, LastRun, MachineId, MachineName, MachineObservation, Operator, QualifiedService,
-    RemoveContainerPurpose, RequestedServiceSpec, RpcError, RpcErrorCode, RunnerOptions,
-    ServiceName,
+    ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome, DeployWarning,
+    ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
+    MachineObservation, Operator, QualifiedService, RemoveContainerPurpose, RpcError, RpcErrorCode,
+    RunnerOptions, ServiceName,
 };
 use ployz_decide::standing::{Latch, Over, Read, Standing, standing};
 use ployz_store::tools::{LogText, SealedValues, Withheld};
@@ -64,9 +64,6 @@ pub struct Sources {
     /// builds, which each Server reads before it creates under the rule. None reads a
     /// public repository.
     pub reader: Option<ployz_core::GithubToken>,
-    /// Signed versions of the Deployment's Services that this runner's own Device made,
-    /// handed to every Server with a new Container of their Service.
-    pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// Why a Deployment's builds didn't all succeed.
@@ -190,10 +187,6 @@ pub async fn run_deployment_expecting(
             .as_ref()
             .ok()
             .and_then(|sources| sources.reader.clone()),
-        versions: checkouts
-            .as_ref()
-            .map(|sources| sources.versions.clone())
-            .unwrap_or_default(),
     };
     let claimed = run.claim(operator).await?;
     let (targets, built) = match checkouts
@@ -574,7 +567,6 @@ struct Run {
     over: Latch,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
-    versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
 }
 
 /// What `read`, the store's answer to one of this run's records, says about the Deployment.
@@ -612,6 +604,23 @@ fn ingress_failure_message<'a>(
 }
 
 impl Run {
+    /// Keep the verified builds the Servers issued during the run, so a later Deployment
+    /// or drain of the same image needs no token. Failing to keep them costs only that.
+    async fn keep_verified(&self, proofs: &crate::cluster::RuleProofs) {
+        let kept = proofs.issued();
+        if kept.is_empty() {
+            return;
+        }
+        let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
+        let stored = super::store_call(&self.store, move |store| {
+            store.keep_verified(&deployment, &runner, &kept)
+        })
+        .await;
+        if let Err(error) = stored {
+            tracing::warn!(%error, "could not keep the verified builds the Servers issued");
+        }
+    }
+
     /// Claim the Deployment, with the Intent's options this runner plans it with,
     /// driving it as `operator`.
     async fn claim(&self, operator: Operator) -> Result<Claimed, RpcError> {
@@ -641,8 +650,17 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
-        let approval = claimed.approval.clone();
-        pin_approved(&mut claimed.intent.target, approval.as_ref());
+        let pins = pins(&claimed.ran);
+        for spec in &mut claimed.intent.target {
+            if let Some(image) = pins.get(&spec.name) {
+                spec.container.image.clone_from(image);
+            }
+        }
+        let versions = claimed
+            .ran
+            .values()
+            .flat_map(|pinned| pinned.versions.iter().cloned())
+            .collect();
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let mut rules = crate::cluster::RuleProofs::default();
@@ -656,7 +674,8 @@ impl Run {
                 Ok(mut receipts) => {
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self.reader.as_ref()).await;
-                    self.prepare(session, claimed, targets, receipts).await
+                    self.prepare(session, claimed, targets, (receipts, pins))
+                        .await
                 }
                 Err(unbuilt) => return self.unbuilt(unbuilt).await,
             }
@@ -678,13 +697,8 @@ impl Run {
             Standing::Over(_) | Standing::Unread => return recorded,
         }
         let log_id = self.deployment.as_str().parse().ok();
-        let running = match prepared.confirm_approved(
-            log_id,
-            ImageCleanup::Auto,
-            approval,
-            rules,
-            self.versions.clone(),
-        ) {
+        let issued = rules.clone();
+        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, rules, versions) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
@@ -693,6 +707,7 @@ impl Run {
                 running.abort()
             })
             .await;
+        self.keep_verified(&issued).await;
         match outcome {
             Ok((outcome, progress, mut warnings)) => {
                 match self.standing().await {
@@ -942,7 +957,10 @@ impl Run {
         session: &Session,
         claimed: Claimed,
         targets: Vec<Target>,
-        receipts: BTreeMap<ServiceName, BuildReceipt>,
+        (receipts, pins): (
+            BTreeMap<ServiceName, BuildReceipt>,
+            BTreeMap<ServiceName, String>,
+        ),
     ) -> Result<PreparedDeploy, Unprepared> {
         let mut input = PreparationInput {
             deployment: claimed.input,
@@ -950,6 +968,7 @@ impl Run {
                 .into_iter()
                 .map(|(service, receipt)| (service, vec![receipt]))
                 .collect(),
+            pins,
             ..PreparationInput::default()
         };
         for target in &targets {
@@ -1228,7 +1247,7 @@ impl Run {
         self.record(RunEvidence::NotExecuted(failure)).await
     }
 
-    /// Gives a Container's stop its last run from the Log Store, read once per Container
+    /// Gives a Container's stop its last run from Docker, read once per Container
     /// into `stopped` with its row's log, so the row and the outcome say the same.
     async fn fill_last_run(
         &self,
@@ -1253,10 +1272,17 @@ impl Run {
                 unread.insert(self.failed_log(client, scrub, machine, *container_id).await)
             }
         };
-        *last_run = Some(run.clone());
+        let seen = last_run.as_ref().and_then(|seen| seen.exit_code);
+        *last_run = Some(LastRun {
+            exit_code: seen.or(run.exit_code),
+            last_line: run.last_line.clone(),
+        });
     }
 
-    /// The failed Container's scrubbed tail, and the run its newest stored exit ended.
+    /// The failed Container's scrubbed tail, and the run Docker says it ended: its exit code
+    /// from inspect, read before the Container is removed. The code the Machine saw when it
+    /// judged a restarting Container, which Docker stops showing once it runs again, wins in
+    /// `fill_last_run`.
     async fn failed_log(
         &self,
         client: &Client,
@@ -1265,7 +1291,20 @@ impl Run {
         container: ContainerId,
     ) -> (LogText, LastRun) {
         let withheld = |why| (LogText::Withheld { why }, LastRun::default());
-        let Some(env) = super::container_env(client, machine, container).await else {
+        let Some(details) = super::inspect_container(client, machine, container).await else {
+            return withheld(Withheld::NoSecretContext);
+        };
+        let exit_code = match details.container.runtime {
+            ContainerRuntimeObservation::Exited { code } => Some(code),
+            ContainerRuntimeObservation::Restarting
+            | ContainerRuntimeObservation::Running { .. } => details.last_exit_code,
+            ContainerRuntimeObservation::Created
+            | ContainerRuntimeObservation::Paused
+            | ContainerRuntimeObservation::Removing
+            | ContainerRuntimeObservation::Dead
+            | ContainerRuntimeObservation::Unknown { .. } => None,
+        };
+        let Some(env) = details.environment else {
             return withheld(Withheld::NoSecretContext);
         };
         let Ok(mut names) = self.sealed_names(&scrub.environment).await else {
@@ -1273,16 +1312,33 @@ impl Run {
         };
         names.extend(scrub.sealed_at_claim.iter().cloned());
         let Some(tail) = super::tail_frames(client, machine, container).await else {
-            return withheld(Withheld::Unanswered);
+            return (
+                LogText::Withheld {
+                    why: Withheld::Unanswered,
+                },
+                LastRun {
+                    exit_code,
+                    last_line: None,
+                },
+            );
         };
         match self.settled_sealed_names(&scrub.environment, names).await {
-            Some(names) => tail.scrubbed(&scrub.values(&names, env)),
+            Some(names) => {
+                let (text, last_line) = tail.scrubbed(&scrub.values(&names, env));
+                (
+                    text,
+                    LastRun {
+                        exit_code,
+                        last_line,
+                    },
+                )
+            }
             None => (
                 LogText::Withheld {
                     why: Withheld::NoSecretContext,
                 },
                 LastRun {
-                    exit_code: tail.exit_code(),
+                    exit_code,
                     last_line: None,
                 },
             ),
@@ -1497,10 +1553,11 @@ fn targets(
 }
 
 /// The proof each Service built under `claimed`'s automatic deploy rule creates with:
-/// the rule, its image token, and the claim the token's audience names, rebuilt from
+/// the rule, and the verified build a Server issued for the image it runs, with the claim
+/// that build covers; else the image token and the claim its audience names, rebuilt from
 /// the rule, the pinned commit, the image the Machine received, the Cluster's keys, and
-/// the generation and authority the token was built under. A Service without all of
-/// them gets none, and a Server refuses it.
+/// the generation and authority the token was built under. A Service without either
+/// gets none, and a Server refuses it.
 async fn rule_proofs(
     session: &Session,
     claimed: &Claimed,
@@ -1508,12 +1565,31 @@ async fn rule_proofs(
     reader: Option<&ployz_core::GithubToken>,
 ) -> crate::cluster::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleProof,
+        BuildClaim, BuildStage, CommitSha, ImageDigest, PolicyDigest, RuleEvidence, RuleProof,
     };
     let mut proofs = crate::cluster::RuleProofs::default();
-    let (Some(signed), false) = (&claimed.rule, claimed.image_tokens.is_empty()) else {
+    let Some(signed) = &claimed.rule else {
         return proofs;
     };
+    for (service, kept) in &claimed.verified {
+        let runs = receipts
+            .get(service)
+            .and_then(|receipt| ImageDigest::parse(&receipt.image.reference).ok());
+        if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
+            proofs.rules.insert(
+                service.clone(),
+                RuleProof {
+                    rule: signed.clone(),
+                    evidence: RuleEvidence::Verified(kept.verified),
+                    claim: kept.claim.clone(),
+                    reader: None,
+                },
+            );
+        }
+    }
+    if claimed.image_tokens.is_empty() {
+        return proofs;
+    }
     let Ok(rule) = signed.open() else {
         return proofs;
     };
@@ -1530,6 +1606,9 @@ async fn rule_proofs(
         return proofs;
     };
     for (service, token) in &claimed.image_tokens {
+        if proofs.rules.contains_key(service) {
+            continue;
+        }
         let approved = rule.service(service);
         let receipt = receipts.get(service);
         let commit = claimed
@@ -1564,7 +1643,7 @@ async fn rule_proofs(
             service.clone(),
             RuleProof {
                 rule: signed.clone(),
-                token,
+                evidence: RuleEvidence::Online(token),
                 claim,
                 reader: reader.cloned(),
             },
@@ -1573,19 +1652,15 @@ async fn rule_proofs(
     proofs
 }
 
-/// Write the image each Service's approval pinned into its spec, so the Servers are asked
-/// to create the spec the approval's digest covers. The Saved State keeps the tag. A
-/// Server refuses a spec the approval doesn't match, so a runner can't choose the image.
-fn pin_approved(
-    target: &mut [RequestedServiceSpec],
-    approval: Option<&ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-) {
-    let Some(approved) = approval.and_then(|approval| approval.open().ok()) else {
-        return;
-    };
-    for spec in target {
-        approved.pin(spec);
-    }
+/// The image each Service's tag runs as, which the runner writes into its spec so the
+/// Servers are asked to create the spec a person signed. The Saved State keeps the tag.
+fn pins(ran: &BTreeMap<ServiceName, ployz_store::Pinned>) -> BTreeMap<ServiceName, String> {
+    ran.iter()
+        .filter_map(|(service, pinned)| {
+            let pin = pinned.ran.pin.as_ref()?;
+            Some((service.clone(), pin.image.clone()))
+        })
+        .collect()
 }
 
 /// The uploaded Services among `targets` that build from an earlier upload than

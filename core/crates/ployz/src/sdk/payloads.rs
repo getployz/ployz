@@ -91,9 +91,7 @@ fn typescript_declarations() -> String {
     declarations.add::<MachineId>();
     declarations.add::<ployz_core::MachineDetails>();
     declarations.add::<ployz_core::authority::ProposalApproval>();
-    declarations.add::<ployz_core::authority::DeployApproval>();
     declarations.add::<ployz_core::authority::ApprovedChange>();
-    declarations.add::<ployz_core::authority::DeployTerms>();
     declarations.add::<ployz_core::authority::AutoDeployRule>();
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();
@@ -120,7 +118,6 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_core::StorageCapacityError>();
     declarations.add::<RuntimeWatchView>();
     declarations.add::<super::LiveLogRecord>();
-    declarations.add::<super::LogHistoryRecord>();
     declarations.add::<VolumeRemoval>();
     declarations.add::<ployz_core::config::ServiceConfig>();
     declarations.add::<ployz_core::config::SavedEnvironmentIntent>();

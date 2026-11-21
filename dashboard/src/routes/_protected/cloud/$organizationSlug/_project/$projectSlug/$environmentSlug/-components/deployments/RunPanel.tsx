@@ -113,7 +113,7 @@ function OutcomeDetail({ deployment, node }: { deployment: DeploymentView; node:
         <div className="flex min-h-0 flex-1 flex-col p-4 @max-5xl:h-96 @max-5xl:flex-none">
           {waiting ? <LogEmpty title="Waiting">{waiting.reason}</LogEmpty>
             : missing ? <LogEmpty title={missing} />
-            : <ContainerLogs selection={{ organizationSlug, deploymentId: deployment.id, serviceId: node.id }} />}
+            : <ContainerLogs selection={{ organizationSlug, deploymentId: deployment.id, serviceId: node.id, serviceIdentity: `${deployment.namespace}/${deployment.runtime_names[node.name] ?? node.name}` }} />}
         </div>
       ) : null}
     </>

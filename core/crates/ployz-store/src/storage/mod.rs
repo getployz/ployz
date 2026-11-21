@@ -310,6 +310,32 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0048_region_name",
         Step::Sql(include_str!("migrations/0048_region_name.sql")),
     ),
+    (
+        // Each signed version a client posted, and what each Deployment ran.
+        "0049_service_version",
+        Step::Sql(include_str!("migrations/0049_service_version.sql")),
+    ),
+    (
+        // For each Deployment a Device approved, the pins its approval named, as what it
+        // ran.
+        "0050_approved_pins",
+        Step::Rust(|tx, _| crate::deployment::versions::record_approved(tx).map(|()| None)),
+    ),
+    (
+        // Where each Volume's data began, as the approval that first mounted it minted it.
+        "0051_volume_birth",
+        Step::Sql(include_str!("migrations/0051_volume_birth.sql")),
+    ),
+    (
+        // What a Server issued once its online check of a rule build passed.
+        "0052_verified_build",
+        Step::Sql(include_str!("migrations/0052_verified_build.sql")),
+    ),
+    (
+        // The Server each Managed Volume's first copy goes to.
+        "0053_volume_first_copy",
+        Step::Sql(include_str!("migrations/0053_volume_first_copy.sql")),
+    ),
 ];
 
 enum Step {

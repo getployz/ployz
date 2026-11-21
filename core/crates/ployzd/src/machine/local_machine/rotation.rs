@@ -142,6 +142,7 @@ impl LocalMachine {
             Checked::Met => Ok(EnsuredContainer::Ensured {
                 now: redacted(now),
                 health: None,
+                verified: None,
             }),
             Checked::Refused(refusal) => Ok(refused(now, refusal)),
             Checked::Allowed(_) => self.write(copy, want, expect, None).await,
@@ -210,6 +211,7 @@ impl LocalMachine {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health,
+            ..
         } = &started
         else {
             return Ok(started);
@@ -239,6 +241,7 @@ impl LocalMachine {
             return Ok(EnsuredContainer::Ensured {
                 now: redacted(self.container_now(&id).await?),
                 health: Some(health),
+                verified: None,
             });
         }
         // `started` went through wire redaction, so keep the full spec read before it.
@@ -346,6 +349,7 @@ impl LocalMachine {
             Written::Done => EnsuredContainer::Ensured {
                 now: redacted(now),
                 health,
+                verified: None,
             },
             Written::NotRunning(observation) => EnsuredContainer::Ensured {
                 now: redacted(now),
@@ -353,8 +357,10 @@ impl LocalMachine {
                     observation,
                     last_check: None,
                     oom_killed: false,
+                    last_exit_code: None,
                     departing: None,
                 }),
+                verified: None,
             },
             Written::Refused(refusal) => refused(now, refusal),
         })

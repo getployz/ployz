@@ -93,10 +93,12 @@ version or an [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-pu
 - **A service that runs from an image:** run `ployz deploy` on an approved device with the
   image you want back, as in
   [Deploy from an approved device](deployments.md#deploy-from-an-approved-device).
-- **A service a rule built from GitHub:** a rule deploys only its branch's head, and this
-  version of Ployz can't run an older commit under it. Revert the commit on the branch and push;
-  the push deploys like any other.
+- **A service a rule built from GitHub:** use **Redeploy** or **Roll back** on the deployment
+  that ran the build you want back. A server runs it under the rule while the rule's approval
+  stands, even after the branch moved on. After you approve the rule again, it runs only builds
+  pushed since, so revert the commit on the branch and push instead.
 - **Redeploy** and **Roll back** in the dashboard, `ployz deployment redeploy` and a redeploy by
-  [the agent](../account/agent-sidebar.md) send no signature. A server runs them for a service
-  that reaches no data, and for a version it already ran under a signature. It refuses any
-  other container, and the deployment fails without changing what runs.
+  [the agent](../account/agent-sidebar.md) sign nothing. They send the signature Ployz Cloud
+  kept for each version that deployment ran, so a server runs a version a device signed, and
+  any service that reaches no data. It refuses any other container, and the deployment fails
+  without changing what runs.

@@ -118,12 +118,8 @@ _Avoid_: Container name, replica identity
 The unresolved Container ID, display name, or ID prefix used to select one Container.
 _Avoid_: Container name as identity, replica identity
 
-**Log Store**:
-The Machine-local copy of the output of every container Ployz runs, kept after the container is removed, capped by size and age. It holds only the output of containers that ran on its own Machine.
-_Avoid_: log database, log cache
-
 **Observe Store**:
-The disposable Machine-local state `ployz-observe` keeps: the Log Store, Metric Samples, and Rollups. It holds only what its own Machine observed and needs no migrations. A Machine may also send what it observes to Cloud, which keeps its own copy; that copy is not the Observe Store.
+The disposable Machine-local state `ployz-observe` keeps: Metric Samples and Rollups. It keeps no logs; Docker holds a Container's output while the Container exists, and Cloud keeps the history. It holds only what its own Machine observed and needs no migrations. A Machine may also send what it observes to Cloud, which keeps its own copy; that copy is not the Observe Store.
 _Avoid_: telemetry store, metrics database, TSDB
 
 **Metric Sample**:
@@ -187,6 +183,10 @@ _Avoid_: Build as an execution identity, Deploy Attempt
 **Build Grant**:
 A Machine-minted permission to push one Build's image into that Machine and nothing else. Its one push is recorded when that image's digest-named tag lands, or when the Machine confirms it already holds exactly that tag at that digest. It ends when that Build finishes or is cancelled, and it grants no Machine RPC access.
 _Avoid_: CI credential, push token, Management Capability
+
+**Verified build**:
+A MAC a Machine issues over one rule build's claim and the exact rule approval it ran under, only after it checked that build with GitHub. Every Machine holding the Sealing Key checks it with its own key, so the build deploys again after its GitHub token expired or its branch moved on, while the rule's signer is trusted and no newer approval of the rule reached that Machine.
+_Avoid_: Build Receipt, accepted build
 
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow; its record is a Deployment.

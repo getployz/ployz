@@ -506,6 +506,7 @@ mod tests {
             mounts: Vec::new(),
             deployed: storage_locked,
             storage_locked,
+            born: false,
             recorded_storage,
             change: None,
         };

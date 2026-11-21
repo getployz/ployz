@@ -239,4 +239,7 @@ queries! {
         => crate::pull_request::view(tx, who, q);
     /// What a PR Environment's pull request lands when it merges.
     OnMerge(crate::OnMergeQuery) -> crate::OnMerge => crate::pull_request::on_merge(tx, who, q);
+    /// The signed versions kept for one spec of a Service.
+    Versions(crate::VersionsQuery) -> crate::VersionsView
+        => crate::deployment::versions::versions(tx, who.organization.as_str(), q);
 }

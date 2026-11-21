@@ -522,8 +522,12 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
 
     let captured = Arc::new(Mutex::new(Vec::<PullImageRequest>::new()));
     let requests = captured.clone();
-    let (mut client, server) =
-        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+    // Only a Server the client enters over SSH is asked to pull with a login.
+    let (mut client, server) = crate::connect::test_support::rpc_client_over(
+        crate::context::Connection::ssh(
+            crate::context::SshDestination::parse("root@203.0.113.7").unwrap(),
+        ),
+        move |rpc: Request<OpaquePayload>| {
             let requests = requests.clone();
             async move {
                 let RpcRequestBody::PullImage(request) =
@@ -538,8 +542,10 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
                         .unwrap(),
                 ))
             }
-        })
-        .await;
+        },
+    )
+    .await;
+    client.enter_at(machine('1'));
     let mut private = spec(None, None, None);
     private.container.pull_policy = ployz_core::PullPolicy::Always;
     let mut public = private.clone();
@@ -585,16 +591,19 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                             image_id: None,
                             last_check: None,
                             run: None,
+                            last_exit_code: None,
                             leaving: false,
                         })
                     }
-                    RpcRequestBody::EnsureContainer(request) => {
+                    RpcRequestBody::EnsureContainer(request)
+                    | RpcRequestBody::EnsurePinnedContainer(request) => {
                         requests.lock().unwrap().push(request);
                         ployz_core::RpcResponse::from(EnsuredContainer::Ensured {
                             health: None,
                             now: ContainerNow::Absent {
                                 of: ContainerLocator::Id(container('a')),
                             },
+                            verified: None,
                         })
                     }
                     other @ (RpcRequestBody::DescribeContract(_)
@@ -635,6 +644,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::PruneImages(_)
                     | RpcRequestBody::EnsureImageIngest(_)
                     | RpcRequestBody::PullImage(_)
+                    | RpcRequestBody::PullFreeImage(_)
                     | RpcRequestBody::PullImageFromMachine(_)
                     | RpcRequestBody::MintBuildGrant(_)
                     | RpcRequestBody::InspectBuildGrant(_)
@@ -647,8 +657,6 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::SetClusterName(_)
                     | RpcRequestBody::SetClusterDoors(_)
                     | RpcRequestBody::MetricHistory(_)
-                    | RpcRequestBody::RetainedEnv(_)
-                    | RpcRequestBody::LogHistory(_)
                     | RpcRequestBody::TailLogs(_)
                     | RpcRequestBody::RuntimeWatch(_)) => {
                         panic!("only inspect and ensure are expected: {other:?}")
@@ -916,6 +924,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                 .unwrap()
                                 .clone(),
                             environment: None,
+                            last_exit_code: None,
                             leaving: false,
                         })
                     }
@@ -930,7 +939,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         complete: true,
                         ..RoutesRead::default()
                     }),
-                    RpcRequestBody::PullImage(_) => {
+                    RpcRequestBody::PullImage(_) | RpcRequestBody::PullFreeImage(_) => {
                         RpcResponse::from(ployz_core::ImagePulled::default())
                     }
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
@@ -950,6 +959,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             RpcResponse::from(EnsuredContainer::Ensured {
                                 health: None,
                                 now: ContainerNow::Present(stopped.clone()),
+                                verified: None,
                             })
                         }
                         // Restoring v1 fails too, so the retry replans the candidate as a run.
@@ -978,6 +988,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                 RpcResponse::from(EnsuredContainer::Ensured {
                                     health: None,
                                     now: ContainerNow::Present(existing.clone()),
+                                    verified: None,
                                 })
                             } else {
                                 let mut candidate = observation(
@@ -1063,6 +1074,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 registry_auth: None,
                 image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
+                image_id: None,
             }),
             rotation: RunRotation::Pending,
         },

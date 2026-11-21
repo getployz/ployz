@@ -230,7 +230,9 @@ export function stayWords(reason: StayReason, drained: string): string {
     case "global":
       return "Runs on every server";
     case "no_destination":
-      return "No other server can run it";
+      return reason.upgrade?.length
+        ? `Upgrade ${listNames(reason.upgrade.map((server) => server.name))} to move it`
+        : "No other server can run it";
     case "last_in":
       return "It's the last copy serving. Deploy it to another server first.";
     default:
@@ -251,12 +253,15 @@ export function failureWords(failure: MoveFailure, drained: string): string {
     case "copy_image":
       return `Couldn't copy its image to ${failure.to.name}. ${stillOn(failure.from)}`;
     case "not_serving":
-      return `Its new container on ${failure.to.name} didn't become healthy${failure.replacement_removed ? "" : ", and may still be there"}. ${stillOn(failure.from)}`;
+      return failure.needs_upgrade
+        ? `Upgrade ${failure.to.name} to move it there. ${stillOn(failure.from)} Its new container on ${failure.to.name} may still be there.`
+        : `Its new container on ${failure.to.name} didn't become healthy${failure.replacement_removed ? "" : ", and may still be there"}. ${stillOn(failure.from)}`;
     case "cancelled":
       return `The drain stopped mid-move. ${stillOn(failure.from)}${failure.replacement_removed ? "" : ` Its new container on ${failure.to.name} may still be there.`}`;
     case "refused": {
       const why = stayWords(failure.reason, drained);
-      return `Stopped moving it. ${why.endsWith(".") ? why : `${why}.`}`;
+      const still = failure.from ? ` ${stillOn(failure.from)}` : "";
+      return `Stopped moving it. ${why.endsWith(".") ? why : `${why}.`}${still}`;
     }
     default:
       return "It still runs here.";

@@ -447,6 +447,7 @@ async fn a_failed_verdict_fails_the_start_naming_the_container_without_polling_i
                     observation: unhealthy(),
                     last_check: Some(last_check.clone()),
                     oom_killed: false,
+                    last_exit_code: None,
                     departing: None,
                 },
             ),
@@ -729,6 +730,7 @@ async fn restored_oom_limit(replacement_mib: i64) {
         observation: unhealthy(),
         last_check: None,
         oom_killed: true,
+        last_exit_code: None,
         departing: None,
     };
     let client = Scripted {

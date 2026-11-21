@@ -9,7 +9,7 @@ use super::error::{RpcError, RpcErrorCode};
 use super::evidence::{Departure, Evidence};
 use crate::{
     ContainerId, ContainerKind, ContainerLimits, ContainerObservation, Namespace,
-    ResolvedServiceSpec, authority::DeployApproval, authority::Signed,
+    ResolvedServiceSpec, authority::Signed,
 };
 
 /// Whether listed Container observations carry real environment values.
@@ -38,19 +38,6 @@ pub struct InspectContainerRequest {
     pub container_id: ContainerId,
 }
 
-/// The env the Log Store kept for a Container, read when Docker no longer answers for it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RetainedEnvRequest {
-    pub container_id: ContainerId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RetainedEnvReply {
-    /// `None` when the store holds no env for the Container; never copied into
-    /// replicated observations.
-    pub environment: Option<BTreeMap<String, String>>,
-}
-
 /// The place one Container creation lands on a Machine. The same slot names the
 /// same Container across resends; a different spec in it is an occupied slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -73,15 +60,9 @@ pub enum ContainerLocator {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnsureContainerRequest {
     pub want: ContainerWant,
-    /// The approval of the Deploy this want is part of. A Machine under Device
-    /// enforcement requires it from an Operator caller for a new creation, and takes
-    /// it for a step on a Container in its Namespace; an older daemon ignores it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub deploy: Option<Signed<DeployApproval>>,
     /// The automatic deploy rule this want is part of, with the pinned builder's image
     /// token for its Service. A Machine under Device enforcement takes it in place of a
-    /// deploy approval from an Operator caller. Sent only to a daemon advertising
+    /// signed version from an Operator caller. Sent only to a daemon advertising
     /// [`crate::DEPLOY_RULE_CAPABILITY`]; an older daemon ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -204,6 +185,12 @@ pub struct NewContainer {
     pub image_prepared: bool,
     #[serde(default, skip_serializing_if = "AnswerWhen::is_started")]
     pub answer: AnswerWhen,
+    /// The image the Container must run, by its content. Only the pinned route takes
+    /// one, for a spec whose image is a tag; the Machine runs exactly this image or
+    /// refuses with [`ContainerRefusalReason::ImageDiffers`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub image_id: Option<crate::ImageDigest>,
 }
 
 /// When the Machine answers a new creation: once it starts, or once its health settles.
@@ -242,6 +229,10 @@ pub struct ContainerDetails {
     /// Which run of the Container this is; `None` from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::ContainerRun>,
+    /// Docker's `ExitCode` for a Container that is restarting: the code of the run that
+    /// just ended, which `Restarting` does not carry. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit_code: Option<i64>,
     /// The owner is deciding right now whether to take this copy out of rotation, so a
     /// sibling's last-copy check must not count it. `false` from older daemons.
     #[serde(default)]
@@ -259,6 +250,12 @@ pub enum EnsuredContainer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         health: Option<HealthVerdict>,
+        /// What this Machine issued for the rule build it checked online to admit this
+        /// creation, which the caller keeps so a later creation of that build needs no
+        /// GitHub token. `None` for any other change, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        verified: Option<crate::authority::VerifiedBuild>,
     },
     Refused {
         now: ContainerNow,
@@ -292,6 +289,12 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         oom_killed: bool,
+        /// The code of the run that just ended, read in the inspect that saw the Container
+        /// restarting: Docker shows it only for the wait before the next run, and the
+        /// Container is removed soon after. `None` otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_exit_code: Option<i64>,
         /// The Leave that was removing the Server as it answered, so what the copy did
         /// since was the Leave's doing. `None` from older daemons.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -336,6 +339,15 @@ impl HealthVerdict {
         }
     }
 
+    /// The code of the run a restarting Container just ended, when the Machine saw it.
+    #[must_use]
+    pub const fn last_exit_code(&self) -> Option<i64> {
+        match self {
+            Self::Failed { last_exit_code, .. } => *last_exit_code,
+            Self::Healthy | Self::TimedOut { .. } => None,
+        }
+    }
+
     /// Why the Container is not serving, or `None` when it is.
     #[must_use]
     pub fn into_failure(self) -> Option<crate::HealthFailure> {
@@ -370,7 +382,7 @@ impl EnsuredContainer {
     /// The observed Container with its health verdict, or the refusal as an error.
     pub fn into_settled(self) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         match self {
-            Self::Ensured { now, health } => Ok((now, health)),
+            Self::Ensured { now, health, .. } => Ok((now, health)),
             Self::Refused { refusal, .. } => Err(refusal.into_error()),
         }
     }
@@ -414,7 +426,9 @@ impl ContainerRefusal {
             | ContainerRefusalReason::OlderThanIn
             | ContainerRefusalReason::HeldByOtherRun
             | ContainerRefusalReason::RotationMismatch
-            | ContainerRefusalReason::InRotation => RpcErrorCode::Conflict,
+            | ContainerRefusalReason::InRotation
+            | ContainerRefusalReason::ImageDiffers
+            | ContainerRefusalReason::ForeignVolume => RpcErrorCode::Conflict,
             ContainerRefusalReason::ImagePullFailed | ContainerRefusalReason::Unrecognized => {
                 RpcErrorCode::Internal
             }
@@ -451,6 +465,10 @@ pub enum ContainerRefusalReason {
     SealingKeyMissing,
     /// A Sealed value is bound elsewhere or does not open with this Cluster's key.
     SealedValueUnopenable,
+    /// The Container in the slot runs another image than the one the request pinned.
+    ImageDiffers,
+    /// A Volume on this Machine carries data of another origin than the spec expects.
+    ForeignVolume,
     #[serde(other)]
     Unrecognized,
 }

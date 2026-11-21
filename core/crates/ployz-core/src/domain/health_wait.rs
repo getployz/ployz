@@ -479,6 +479,7 @@ mod tests {
             image_id: None,
             last_check,
             run: None,
+            last_exit_code: None,
             leaving: false,
         }
     }

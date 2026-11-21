@@ -55,7 +55,6 @@ function NoClickhouse() {
   return (
     <ObserveOffState title="Analytics needs ClickHouse">
       Run the <code className="font-mono">observe</code> profile and set{" "}
-      <code className="font-mono">OBSERVE_CLICKHOUSE_URL</code> and{" "}
       <code className="font-mono">CLICKHOUSE_PASSWORD</code> on this Cloud, then restart it to read visits.{" "}
       <a className="underline" href={OBSERVE_SETUP_DOCS} target="_blank" rel="noreferrer">See self-hosting</a>.
     </ObserveOffState>
