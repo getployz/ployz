@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { DrainReport, DrainScope, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
-import { Clock, Data, Effect, Option, Schedule, Schema } from "effect";
+import { Clock, Data, Effect, Option, Schedule } from "effect";
 import type { MachineId } from "#/db/tables";
 import { listNames } from "#/lib/plural";
 import { gateOperation, operationDigest } from "#/modules/approvals/approvals.server";
@@ -25,8 +25,9 @@ import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
 import { requireAccess } from "#/modules/organization/access.server";
+import { deployDialOf } from "#/modules/config-store/config-store.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { clusterRead, OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import type { PloyzSdkError } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
@@ -283,7 +284,7 @@ export const bindDrainRun = Effect.fn("ServerDrain.bind")(function* (request: Dr
   return { kind: "settled", state: row.state } as const;
 });
 
-/** The Cluster as the Drain finds it when its turn comes: the session it drains through, and the frame it plans from. */
+/** The Cluster as the Drain finds it when its turn comes: the frame it plans from. */
 const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   // No Cluster paired is nothing to wait for.
@@ -295,16 +296,13 @@ const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizati
     clusterRead,
     Effect.mapError((cause) => new ServerDrainUnreachable({ operation: "read the cluster", cause })),
   );
-  return { session: session.connected, frame };
+  return { frame };
 });
 
-const decodeMessage = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }));
-
 /** What the Engine said when it refused, within the row's limit. */
-function refusalMessage(error: PloyzSdkError) {
-  const rpc = decodeMessage("cause" in error ? error.cause : undefined);
-  const message = Option.isSome(rpc) ? rpc.value.message : error.message;
-  const text = message.trim().length > 0 ? message.trim() : "The drain was refused.";
+function refusalMessage(cause: Error) {
+  const message = cause.message.trim();
+  const text = message.length > 0 ? message : "The drain was refused.";
   return text.length > MESSAGE_LIMIT ? `${text.slice(0, MESSAGE_LIMIT - 1)}…` : text;
 }
 
@@ -333,8 +331,8 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
 /**
  * Ask the Engine once. The row is claimed (`running`) right before the call and ended with the Engine's answer right
  * after, in one step: a retry that finds the row running knows the Engine may have been asked, closes it lost
- * and never asks again; one that finds it ended returns what's there. An error from the Engine means nothing moved
- * (its preflight refused), so the row ends refused. An answer replaces an unknown end (a cancellation that couldn't
+ * and never asks again; one that finds it ended returns what's there. The Engine's own error means nothing moved (its
+ * preflight refused), so the row ends refused; any other rejection may follow a move, so the row ends lost. An answer replaces an unknown end (a cancellation that couldn't
  * know what moved) but never another answer, and a Drain with no answer in a day ends lost here.
  *
  * A Cluster that doesn't answer before the claim leaves the row pending and marks it silent, for the run to try again
@@ -380,7 +378,7 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
     yield* drizzle.update(serverDrainAttempt).set({ serversSilent: true }).where(and(owned, eq(serverDrainAttempt.state, "pending")));
     return current;
   }
-  const { session, frame } = reached.value;
+  const { frame } = reached.value;
   yield* drizzle.update(serverDrainAttempt).set({ serversSilent: false })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"), eq(serverDrainAttempt.serversSilent, true)));
   const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
@@ -403,12 +401,19 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   const scope: DrainScope = targets === null
     ? { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) }
     : { scope: "services", services: targets };
+  // The Store sends each copy it moves with the signed versions it keeps for that copy's spec. Both are read while the
+  // row is pending, so a failure here is retried rather than ending a drain the Engine was never asked for.
+  const store = yield* cloudStore;
+  const { connections, expect } = yield* deployDialOf(request.organizationId);
   const [claimed] = yield* drizzle.update(serverDrainAttempt).set({ state: "running", startedAt: new Date() })
     .where(and(owned, eq(serverDrainAttempt.state, "pending"))).returning({ id: serverDrainAttempt.id });
   if (claimed === undefined) return yield* stateOf(request.attemptId);
-  const end = yield* session.drainMachine(request.machineId, scope).pipe(
+  const end = yield* storeTry(() => store.drainMachine(request.organizationId, request.machineId, scope, connections, expect)).pipe(
     Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), endCode: null, refusalMessage: null }) as const),
-    Effect.catch((error) => Effect.succeed(refused(refusalMessage(error)))),
+    // The Engine's own error comes from its input checks, the dial or its preflight, before anything moved. Anything
+    // else may come after copies moved, so what the drain did is unknown.
+    Effect.catch((refusal) => Effect.succeed(refused(refusalMessage(refusal)))),
+    Effect.catchDefect(() => Effect.succeed(ended("lost"))),
     Effect.timeoutOrElse({ duration: DRAIN_RUNNING_LIMIT_MS, orElse: () => Effect.succeed(ended("lost")) }),
   );
   // The answer is in hand: the write is retried here rather than by asking the Engine again.

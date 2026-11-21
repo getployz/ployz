@@ -127,22 +127,6 @@ export type LogSourceGone = { type: "source_gone"; machineId: string; containerI
 export type LogEvent = { type: "record"; record: LogRecord } | LogSourceError | LogSourceGone;
 /** `sealed` names the values every line is scrubbed of; one per request, fed from the Store. */
 export type LogOptions = WatchOptions & { sealed: native.SealedNames; filter?: LogFilter; tail?: number; follow?: boolean };
-/** A stretch of one container's output its Server's Log Store doesn't have, or that couldn't be checked for Sealed values. */
-export type LogGap = {
-  machineId: string; machineName: string; containerId: string; serviceName: string;
-  fromNanos: string; toNanos: string; reason: "not_captured" | "corrupt" | "hidden";
-};
-/** A container stopping; `exitCode` is null when Docker didn't say. */
-export type LogExit = {
-  machineId: string; machineName: string; containerId: string; serviceName: string;
-  timestampNanos: string; exitCode: number | null; oomKilled: boolean;
-};
-/** A Server whose Log Store didn't answer, and why. */
-export type LogMachineFailure = { machineId: string; machineName: string; message: string; code?: RpcErrorCode; capability?: string };
-/** Without `cursor`, the first page starts at each Server's newest row, or before `before` (Unix nanoseconds). */
-export type LogHistoryOptions = WatchOptions & { sealed: native.SealedNames; filter: LogFilter; cursor?: string; before?: string; limit?: number };
-/** Newest first across every Server; `cursor` is null once none has anything older. */
-export type LogHistoryPage = { records: LogRecord[]; gaps: LogGap[]; exits: LogExit[]; failures: LogMachineFailure[]; cursor: string | null };
 
 export type ConfirmOptions = WatchOptions & {
   deploymentId?: string;
@@ -263,7 +247,7 @@ export declare function setVolumeCopyRefusal(error: unknown): import("./generate
 export type AgentState = { readonly __brand: "AgentState" };
 export type AgentTurn = { step: import("./generated/payloads").Step; state: AgentState };
 type WrappedClientMethods =
-  | "containerLogs" | "logHistory" | "watch"
+  | "containerLogs" | "watch"
   | "prepare" | "build" | "preview" | "previewNamespaceRemoval" | "volumeSwitch"
   | "dataLossIfNamespaceDestroyed" | "destroyNamespace";
 
@@ -276,7 +260,6 @@ export interface Client extends Omit<native.Client, WrappedClientMethods> {
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options: LogOptions): AsyncIterable<LogEvent>;
-    logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
     /** Sums a Service across the Machines that answered; names each Machine that did not. */
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;

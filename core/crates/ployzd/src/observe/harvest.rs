@@ -1,14 +1,11 @@
-//! The loop that joins Docker's events and inspects to what the Log Store
-//! keeps: [`LogHolder`] holds each container's log files, and the
-//! [`ExitLedger`] settles each exit once.
+//! The loop that joins Docker's events and inspects to what ployz-observe
+//! records: the [`ExitLedger`] settles each exit once.
 
-use ployz_core::labels;
 use std::{
-    collections::HashMap,
-    ffi::OsStr,
+    collections::{HashMap, HashSet},
     fs,
     io::{self},
-    path::{Path, PathBuf},
+    path::PathBuf,
     pin::Pin,
     sync::Arc,
     time::{Duration, SystemTime},
@@ -18,23 +15,21 @@ use bollard::{
     Docker,
     errors::Error as DockerError,
     models::{ContainerConfig, ContainerInspectResponse, EventMessage},
-    query_parameters::EventsOptionsBuilder,
+    query_parameters::{EventsOptionsBuilder, ListContainersOptionsBuilder},
 };
 use futures_util::{Stream, StreamExt};
-use inotify::{EventMask, Inotify, WatchDescriptor, Watches};
 use ployz_core::{
-    ContainerId, MachineId,
+    ContainerId, MachineId, labels,
     metrics::{MarkerKind, MetricMarker},
 };
 use tokio::sync::mpsc;
 
 use super::{
-    cleanup::{self, Disk, Limits},
-    clock::{now_nanos, rfc3339_nanos},
+    cleanup::{self, Disk, Limits, Report},
+    clock::now_nanos,
     exit_ledger::{ExitLedger, Late},
-    hold::{Admitted, LogHolder, Noticed, Removed, Seen, foreign_log_driver, max_files},
-    layout::{ContainerKind, ENV_FILE, NANOS_PER_SEC, RetainedEnv, StoreRoot},
-    meta::{container_meta, write_meta},
+    layout::{ContainerKind, NANOS_PER_SEC, StoreRoot},
+    meta::container_meta,
     metrics,
     ship::Outbox,
     signal::stop_signal,
@@ -62,10 +57,12 @@ enum Inspected {
 pub(super) struct Harvester {
     docker: Docker,
     store: StoreRoot,
-    holder: LogHolder,
     /// Inspects in flight; `true` asks for another once this one answers.
     inspecting: HashMap<ContainerId, bool>,
     inspected: mpsc::UnboundedSender<(ContainerId, Inspected)>,
+    /// The managed containers the last listing found, so a rescan inspects
+    /// only the ones it has not met.
+    listed: HashSet<ContainerId>,
     /// Holds the Machine record that stamps metric markers.
     data_dir: PathBuf,
     /// The newest Docker event seen. A reconnect resumes from it, so events
@@ -78,7 +75,7 @@ pub(super) struct Harvester {
     resume_from: Option<i64>,
     /// The newest time of each container's events, by action. Removing a
     /// container does not forget it, so a resumed stream does not replay its
-    /// events; the rescan that finds Docker's dir gone does.
+    /// events; the rescan that finds it gone from Docker does.
     delivered: HashMap<(ContainerId, String), i64>,
     ledger: ExitLedger,
 }
@@ -86,28 +83,15 @@ pub(super) struct Harvester {
 impl Harvester {
     pub(super) async fn run(
         docker: Docker,
-        docker_root: &Path,
         store: StoreRoot,
         data_dir: PathBuf,
         crashes: Arc<Outbox>,
     ) -> io::Result<()> {
-        let inotify = Inotify::init()?;
-        let watches = inotify.watches();
-        let mut inotify_events = inotify.into_event_stream([0_u8; 64 * 1024])?;
         let (inspected, mut inspections) = mpsc::unbounded_channel();
-        let mut harvester = Self::new(
-            docker,
-            docker_root,
-            store,
-            watches,
-            inspected,
-            data_dir,
-            crashes,
-        );
+        let mut harvester = Self::new(docker, store, inspected, data_dir, crashes);
         let mut docker_events = Some(harvester.docker_events());
         let mut reconnect_at = None;
-        harvester.rescan();
-        harvester.holder.settle_removed_while_down();
+        harvester.rescan().await;
         harvester.finish_settlements();
         harvester.clean();
 
@@ -118,11 +102,6 @@ impl Harvester {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         loop {
             tokio::select! {
-                event = inotify_events.next() => match event {
-                    Some(Ok(event)) => harvester.on_inotify(event.wd, event.mask, event.name.as_deref()),
-                    Some(Err(error)) => return Err(error),
-                    None => return Err(io::Error::other("inotify stream ended")),
-                },
                 Some((id, inspected)) = inspections.recv() => harvester.on_inspected(id, inspected),
                 event = next_docker_event(&mut docker_events) => match event {
                     Some(Ok(message)) => harvester.on_docker_event(message),
@@ -139,10 +118,9 @@ impl Harvester {
                 () = tokio::time::sleep_until(reconnect_at.unwrap_or_else(tokio::time::Instant::now)), if reconnect_at.is_some() => {
                     reconnect_at = None;
                     docker_events = Some(harvester.docker_events());
-                    harvester.rescan();
-                    harvester.refresh_all_meta();
+                    harvester.rescan().await;
                 }
-                _ = maintenance.tick() => harvester.maintain(&mut docker_events),
+                _ = maintenance.tick() => harvester.maintain(&mut docker_events).await,
                 _ = terminate.recv() => return Ok(()),
                 result = tokio::signal::ctrl_c() => return result,
             }
@@ -151,9 +129,7 @@ impl Harvester {
 
     fn new(
         docker: Docker,
-        docker_root: &Path,
         store: StoreRoot,
-        watches: Watches,
         inspected: mpsc::UnboundedSender<(ContainerId, Inspected)>,
         data_dir: PathBuf,
         crashes: Arc<Outbox>,
@@ -161,11 +137,11 @@ impl Harvester {
         let resume_from = read_resume_from(&store);
         Self {
             docker,
-            holder: LogHolder::new(docker_root, store.clone(), watches),
             ledger: ExitLedger::new(&store, crashes),
             store,
             inspecting: HashMap::new(),
             inspected,
+            listed: HashSet::new(),
             data_dir,
             last_event_nanos: resume_from,
             stream_since: resume_from,
@@ -174,9 +150,12 @@ impl Harvester {
         }
     }
 
-    fn maintain(&mut self, docker_events: &mut Option<DockerEvents>) {
-        self.rescan();
-        self.holder.settle_unsettled();
+    async fn maintain(&mut self, docker_events: &mut Option<DockerEvents>) {
+        self.rescan().await;
+        self.upkeep(docker_events);
+    }
+
+    fn upkeep(&mut self, docker_events: &mut Option<DockerEvents>) {
         self.finish_settlements();
         if docker_events.is_some() && self.stream_pins_too_many_settlements() {
             *docker_events = Some(self.docker_events());
@@ -215,41 +194,23 @@ impl Harvester {
         Box::pin(self.docker.events(Some(options.build())))
     }
 
-    fn rescan(&mut self) {
-        let Some(present) = self.holder.present() else {
+    /// Inspects the containers met for the first time: an inspect is where a
+    /// container's stop signal is read.
+    async fn rescan(&mut self) {
+        let Some(present) = list_managed(&self.docker).await else {
             return;
         };
-        for id in self.holder.gone(&present) {
-            self.on_gone(&id);
-        }
-        self.holder.prune(&present);
-        self.delivered.retain(|(id, _), _| present.contains(id));
-        self.ledger.keep_present(&present);
-        for id in present {
-            if let Some(admitted) = self.holder.discovered(id) {
-                self.on_admitted(id, admitted);
-            }
-        }
-    }
-
-    fn on_inotify(&mut self, wd: WatchDescriptor, mask: EventMask, name: Option<&OsStr>) {
-        match self.holder.on_inotify(wd, mask, name) {
-            Noticed::Nothing => {}
-            Noticed::Overflow => {
-                tracing::warn!("inotify queue overflowed; rescanning");
-                self.rescan();
-            }
-            Noticed::Admitted(id, admitted) => self.on_admitted(id, admitted),
-        }
-    }
-
-    /// Asks for the inspect before the files sync, so Docker answers while
-    /// they do.
-    fn on_admitted(&mut self, id: ContainerId, admitted: Admitted) {
-        if admitted.inspect {
+        for id in self.meet(present) {
             self.request_inspect(id);
         }
-        self.holder.hold_files(&id);
+    }
+
+    fn meet(&mut self, present: HashSet<ContainerId>) -> Vec<ContainerId> {
+        self.delivered.retain(|(id, _), _| present.contains(id));
+        self.ledger.keep_present(&present);
+        let met = present.difference(&self.listed).copied().collect();
+        self.listed = present;
+        met
     }
 
     /// A Docker event only asks for an inspect: Docker can send a run's events
@@ -266,18 +227,11 @@ impl Harvester {
         if self.first_delivery(id, &message) {
             self.mark(id, &message);
         }
-        let held = self.holder.holds(&id);
-        if held || self.ledger.waits_on(&id) {
+        let starting = message.action.as_deref() == Some("start");
+        let service = container_meta(&labelled_by_event(&message))
+            .is_some_and(|meta| meta.kind == ContainerKind::Service);
+        if service && (starting || self.ledger.waits_on(&id)) {
             self.request_inspect(id);
-        }
-        if self.holder.is_ignored(&id) {
-            return;
-        }
-        if let Some(meta) = container_meta(&labelled_by_event(&message)) {
-            self.holder.note_owner(id, meta);
-        }
-        if held {
-            self.holder.sync(&id);
         }
     }
 
@@ -372,12 +326,6 @@ impl Harvester {
         Some(self.resume_from.map_or(before, |resume| before.min(resume)))
     }
 
-    fn refresh_all_meta(&mut self) {
-        for id in self.holder.held() {
-            self.request_inspect(id);
-        }
-    }
-
     fn request_inspect(&mut self, id: ContainerId) {
         if let Some(again) = self.inspecting.get_mut(&id) {
             *again = true;
@@ -412,70 +360,9 @@ impl Harvester {
                 found.and_then(stop_signal),
             );
         }
-        let Some(seen) = self.holder.seen(&id) else {
-            return;
-        };
-        let inspected = match (inspected, seen) {
-            (Inspected::Found(inspected), Seen::Pending | Seen::Managed { .. }) => inspected,
-            (Inspected::Gone, Seen::Pending | Seen::Managed { .. }) => {
-                return self.on_gone(&id);
-            }
-            (Inspected::Found(_) | Inspected::Gone | Inspected::Unanswered, _) => return,
-        };
-        let store_dir = self.store.container(&id);
-        let Seen::Pending = seen else {
-            keep_env(&id, &store_dir, &inspected);
-            if let Some(meta) = container_meta(&inspected) {
-                if let Err(error) = write_meta(&store_dir, &meta) {
-                    tracing::warn!(container = %id, %error, "cannot update container metadata");
-                }
-                if meta.finished_at.is_some() {
-                    self.holder.finish_damage_scan(&id);
-                }
-            }
-            return;
-        };
-        let Some(meta) = container_meta(&inspected) else {
-            return self.discard(&id);
-        };
-        if let Some(driver) = foreign_log_driver(&inspected) {
-            tracing::info!(container = %id, driver, "not holding logs Docker writes with another driver");
-            return self.discard(&id);
+        if matches!(inspected, Inspected::Gone) {
+            self.ledger.forget(&id);
         }
-        if let Err(error) = write_meta(&store_dir, &meta) {
-            tracing::error!(container = %id, %error, "cannot write container metadata");
-            return;
-        }
-        keep_env(&id, &store_dir, &inspected);
-        let created_nanos = inspected
-            .created
-            .as_ref()
-            .and_then(|at| rfc3339_nanos(&at.to_string()));
-        if !self.holder.hold(&id, max_files(&inspected), created_nanos) {
-            return;
-        }
-        if meta.finished_at.is_some() {
-            self.holder.finish_damage_scan(&id);
-        }
-    }
-
-    /// Docker removed the container: the holder settles its files, and the
-    /// ledger drops what it kept of its runs.
-    fn on_gone(&mut self, id: &ContainerId) {
-        match self.holder.on_removed(id) {
-            Removed::Unowned => self.discard(id),
-            Removed::Settled => self.forget(id),
-        }
-    }
-
-    fn forget(&mut self, id: &ContainerId) {
-        self.holder.forget(id);
-        self.ledger.forget(id);
-    }
-
-    fn discard(&mut self, id: &ContainerId) {
-        self.holder.discard(id);
-        self.ledger.forget(id);
     }
 
     fn clean(&self) {
@@ -487,32 +374,44 @@ impl Harvester {
         let disk = match Disk::measure(&self.store) {
             Ok(disk) => disk,
             Err(error) => {
-                tracing::warn!(%error, "cannot measure the Log Store's filesystem");
+                tracing::warn!(%error, "cannot measure the observe store's filesystem");
                 return;
             }
         };
         let limits = Limits::for_filesystem(disk.total_bytes);
-        let exists = |id: &ContainerId| !self.holder.docker_dir_gone(id);
-        match cleanup::run(&self.store, &limits, disk, SystemTime::now(), exists) {
-            Ok(report)
-                if report.files_deleted > 0
-                    || report.symlinks_removed > 0
-                    || report.containers_removed > 0
-                    || report.segments_deleted > 0
-                    || report.rollups_deleted > 0 =>
-            {
-                tracing::info!(
-                    files = report.files_deleted,
-                    bytes = report.bytes_freed,
-                    symlinks = report.symlinks_removed,
-                    containers = report.containers_removed,
-                    segments = report.segments_deleted,
-                    rollups = report.rollups_deleted,
-                    "cleaned the Log Store"
-                )
-            }
-            Ok(_) => {}
-            Err(error) => tracing::warn!(%error, "cannot clean the Log Store"),
+        let report = cleanup::run(&self.store, &limits, disk, SystemTime::now());
+        if report != Report::default() {
+            tracing::info!(
+                bytes = report.bytes_freed,
+                segments = report.segments_deleted,
+                rollups = report.rollups_deleted,
+                "cleaned the observe store"
+            );
+        }
+    }
+}
+
+async fn list_managed(docker: &Docker) -> Option<HashSet<ContainerId>> {
+    let filters = HashMap::from([("label", vec![labels::MANAGED])]);
+    let options = ListContainersOptionsBuilder::default()
+        .all(true)
+        .filters(&filters)
+        .build();
+    match tokio::time::timeout(INSPECT_TIMEOUT, docker.list_containers(Some(options))).await {
+        Ok(Ok(listed)) => Some(
+            listed
+                .into_iter()
+                .filter_map(|container| container.id)
+                .filter_map(|id| ContainerId::parse(id).ok())
+                .collect(),
+        ),
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "cannot list Docker's containers");
+            None
+        }
+        Err(_) => {
+            tracing::warn!("Docker did not list its containers in time");
+            None
         }
     }
 }
@@ -555,30 +454,6 @@ fn read_resume_from(store: &StoreRoot) -> Option<i64> {
             None
         }
     }
-}
-
-// Docker never changes a Container's env, so the first write stands.
-fn keep_env(id: &ContainerId, dir: &Path, inspected: &ContainerInspectResponse) {
-    if dir.join(ENV_FILE).exists() {
-        return;
-    }
-    if let Some(env) = retained_env(inspected)
-        && let Err(error) = env.write(dir)
-    {
-        tracing::warn!(container = %id, %error, "cannot keep the container's env for scrubbing its lines");
-    }
-}
-
-fn retained_env(inspected: &ContainerInspectResponse) -> Option<RetainedEnv> {
-    let config = inspected.config.as_ref()?;
-    let label = config
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(labels::SEALED_ENV));
-    RetainedEnv::from_inspected(
-        config.env.as_deref().unwrap_or_default(),
-        label.map(String::as_str),
-    )
 }
 
 /// A Docker event's labels and name, shaped like an inspect that has no
@@ -643,34 +518,25 @@ fn docker_time(nanos: i64) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, HashMap},
+        collections::{HashMap, HashSet},
         fs,
-        io::{self, Write},
-        os::unix::fs::MetadataExt,
-        path::{Path, PathBuf},
-        sync::{Arc, Mutex},
+        path::Path,
     };
 
     use bollard::{
         Docker,
-        models::{ContainerState, EventActor, EventMessage, HostConfig, HostConfigLogConfig},
+        models::{ContainerState, EventActor, EventMessage},
     };
-    use inotify::Inotify;
     use ployz_core::{ContainerId, MachineId, metrics::MarkerKind};
     use tokio::sync::mpsc;
-    use tracing_subscriber::fmt::MakeWriter;
 
     use super::{Harvester, Inspected, SETTLED_LIMIT, UNFINISHED_FOR_NANOS, read_resume_from};
-    use crate::observe::hold::{SYNC_STALL, SYNC_STALLED_UNTIL};
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
         network::WireGuardPrivateKey,
         observe::{
-            fixtures::{T0, labelled, lines, torn},
-            layout::{
-                ContainerMeta, ENV_FILE, GAP_WRITES_FAIL_AFTER, Gap, GapReason, LogFileName,
-                RetainedEnv, StoreRoot, read_meta,
-            },
+            fixtures::{T0, labelled},
+            layout::StoreRoot,
             metrics::segment::Row,
             ship::{self, Outbox},
         },
@@ -684,7 +550,6 @@ mod tests {
 
     struct Running {
         harvester: Harvester,
-        _inotify: Inotify,
         _inspections: mpsc::UnboundedReceiver<(ContainerId, Inspected)>,
     }
 
@@ -703,30 +568,9 @@ mod tests {
             ContainerId::parse(ID).unwrap()
         }
 
-        fn local_logs(&self) -> PathBuf {
-            self.root.0.join("containers").join(ID).join("local-logs")
-        }
-
-        fn container(&self, files: &[Vec<u8>]) -> ContainerId {
-            fs::create_dir_all(self.local_logs()).unwrap();
-            for (age, bytes) in files.iter().enumerate() {
-                let name = match age {
-                    0 => "container.log".to_owned(),
-                    age => format!("container.log.{age}"),
-                };
-                fs::write(self.local_logs().join(name), bytes).unwrap();
-            }
-            self.id()
-        }
-
-        fn remove_from_docker(&self) {
-            fs::remove_dir_all(self.root.0.join("containers").join(ID)).unwrap();
-        }
-
         /// A harvester whose Docker never answers, so a test hands it each
         /// inspect and event.
         fn harvester(&self) -> Running {
-            let inotify = Inotify::init().unwrap();
             let socket = self.root.0.join("no-docker.sock");
             fs::write(&socket, b"").unwrap();
             let docker = Docker::connect_with_socket(
@@ -738,48 +582,15 @@ mod tests {
             let (inspected, inspections) = mpsc::unbounded_channel();
             let harvester = Harvester::new(
                 docker,
-                &self.root.0,
                 self.store.clone(),
-                inotify.watches(),
                 inspected,
                 self.root.0.clone(),
                 Outbox::open(&self.store).unwrap(),
             );
             Running {
                 harvester,
-                _inotify: inotify,
                 _inspections: inspections,
             }
-        }
-
-        fn dir(&self) -> PathBuf {
-            self.store.container(&self.id())
-        }
-
-        fn held(&self) -> usize {
-            fs::read_dir(self.dir())
-                .unwrap()
-                .filter(|entry| {
-                    LogFileName::parse(entry.as_ref().unwrap().file_name().as_encoded_bytes())
-                        .is_some()
-                })
-                .count()
-        }
-
-        fn gaps(&self) -> Vec<Gap> {
-            fs::read_to_string(self.dir().join("gaps.jsonl"))
-                .unwrap_or_default()
-                .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect()
-        }
-
-        fn meta(&self) -> ContainerMeta {
-            read_meta(&self.dir()).unwrap().unwrap()
-        }
-
-        fn env(&self) -> Option<RetainedEnv> {
-            RetainedEnv::read(&self.dir()).unwrap()
         }
     }
 
@@ -790,28 +601,11 @@ mod tests {
         ("ployz.deployment.id", "d1"),
     ];
 
-    fn managed(max_files: usize) -> Inspected {
-        managed_with_env(max_files, &[])
-    }
-
-    fn managed_with_env(max_files: usize, env: &[&str]) -> Inspected {
+    fn managed() -> Inspected {
         let mut inspected = labelled(&WEB);
-        inspected.config.as_mut().unwrap().env =
-            Some(env.iter().map(|entry| (*entry).to_owned()).collect());
-        inspected.created = Some("2025-10-09T08:53:20Z".parse().unwrap());
         inspected.state = Some(ContainerState {
             running: Some(true),
             ..ContainerState::default()
-        });
-        inspected.host_config = Some(HostConfig {
-            log_config: Some(HostConfigLogConfig {
-                typ: Some("local".to_owned()),
-                config: Some(HashMap::from([(
-                    "max-file".to_owned(),
-                    max_files.to_string(),
-                )])),
-            }),
-            ..HostConfig::default()
         });
         Inspected::Found(Box::new(inspected))
     }
@@ -832,116 +626,6 @@ mod tests {
             time_nano: Some(at),
             ..EventMessage::default()
         }
-    }
-
-    fn exists(path: &Path) -> bool {
-        path.try_exists().unwrap()
-    }
-
-    #[tokio::test]
-    async fn a_restart_keeps_the_history_of_a_container_docker_removes_before_its_inspect() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut before = host.harvester();
-        before.harvester.rescan();
-        before.harvester.on_inspected(id, managed(3));
-        drop(before);
-
-        let mut after = host.harvester();
-        after.harvester.rescan();
-        host.remove_from_docker();
-        after.harvester.on_inspected(id, Inspected::Gone);
-
-        assert_eq!(host.held(), 1);
-        assert_eq!(host.meta().service.as_deref(), Some("web"));
-        let gaps: Vec<_> = host
-            .gaps()
-            .iter()
-            .map(|gap| (gap.from, gap.reason))
-            .collect();
-        assert_eq!(gaps, [(T0 + 3, GapReason::NotCaptured)]);
-    }
-
-    // Catches a Log Store that keeps a removed Container's lines but not the env that
-    // scrubs them, and one that drops the env with the Container.
-    #[tokio::test]
-    async fn a_removed_containers_env_stays_with_its_lines() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        assert_eq!(host.env(), None);
-
-        running.harvester.on_inspected(
-            id,
-            managed_with_env(3, &["TOKEN=live-only-sentinel", "PLAIN=from-docker"]),
-        );
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        assert_eq!(host.held(), 1);
-        assert_eq!(
-            fs::metadata(host.dir().join(ENV_FILE)).unwrap().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
-            host.env().map(RetainedEnv::into_values),
-            Some(BTreeMap::from([
-                ("TOKEN".to_owned(), "live-only-sentinel".to_owned()),
-                ("PLAIN".to_owned(), "from-docker".to_owned()),
-            ]))
-        );
-    }
-
-    // Catches a removed Container that Docker started with no env keeping none, which
-    // withholds its lines instead of showing them.
-    #[tokio::test]
-    async fn a_removed_container_started_without_an_env_keeps_an_empty_one() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        let Inspected::Found(mut inspected) = managed(3) else {
-            unreachable!("managed is found");
-        };
-        inspected.config.as_mut().unwrap().env = None;
-
-        running
-            .harvester
-            .on_inspected(id, Inspected::Found(inspected));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        assert_eq!(
-            host.env().map(RetainedEnv::into_values),
-            Some(BTreeMap::new())
-        );
-    }
-
-    // Catches a Container whose env.json went missing, as when its first write failed,
-    // never getting it back while Docker still has the Container.
-    #[tokio::test]
-    async fn a_containers_missing_env_is_kept_again_on_its_next_inspect() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_inspected(id, managed_with_env(3, &["TOKEN=live-only-sentinel"]));
-        fs::remove_file(host.dir().join(ENV_FILE)).unwrap();
-
-        running
-            .harvester
-            .on_inspected(id, managed_with_env(3, &["TOKEN=live-only-sentinel"]));
-
-        assert_eq!(
-            host.env().map(RetainedEnv::into_values),
-            Some(BTreeMap::from([(
-                "TOKEN".to_owned(),
-                "live-only-sentinel".to_owned()
-            )]))
-        );
     }
 
     fn at(nanos: i64) -> String {
@@ -991,550 +675,11 @@ mod tests {
     }
 
     fn inspected(state: &ContainerState) -> Inspected {
-        let Inspected::Found(mut found) = managed(3) else {
+        let Inspected::Found(mut found) = managed() else {
             unreachable!("managed() describes a found container")
         };
         found.state = Some(state.clone());
         Inspected::Found(found)
-    }
-
-    #[derive(Clone)]
-    enum Step {
-        Event(&'static str, i64, Option<&'static str>),
-        Inspect(ContainerState),
-    }
-
-    /// What the store keeps of a container Docker removes after `steps`.
-    fn removed_after(steps: &[Step]) -> (Host, ContainerMeta) {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        for step in steps {
-            match step {
-                Step::Event(action, at, code) => {
-                    let code = code.map(|code| ("exitCode", code));
-                    let event = event(action, T0 + at, code.as_slice());
-                    running.harvester.on_docker_event(event);
-                }
-                Step::Inspect(state) => running.harvester.on_inspected(id, inspected(state)),
-            }
-        }
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-        let meta = host.meta();
-        (host, meta)
-    }
-
-    fn saved_run(meta: &ContainerMeta) -> (Option<&str>, Option<&str>, Option<i64>, bool) {
-        (
-            meta.started_at.as_deref(),
-            meta.finished_at.as_deref(),
-            meta.exit_code,
-            meta.oom_killed,
-        )
-    }
-
-    #[tokio::test]
-    async fn a_removed_container_keeps_the_exit_its_inspect_saw() {
-        let (_, meta) = removed_after(&[
-            Step::Inspect(running(1)),
-            Step::Event("die", 5, Some("3")),
-            Step::Inspect(restarting(1, 5, 3, false)),
-        ]);
-        assert_eq!(
-            saved_run(&meta),
-            (Some(&*at(1)), Some(&*at(5)), Some(3), false)
-        );
-    }
-
-    #[tokio::test]
-    async fn an_oom_kill_is_kept_whatever_order_docker_sends_its_events_in() {
-        let die = Step::Event("die", 5, Some("137"));
-        let oom = Step::Event("oom", 6, None);
-        let killed = Step::Inspect(exited(1, 5, 137, true));
-        for events in [
-            vec![oom.clone(), die.clone(), killed.clone()],
-            vec![die.clone(), oom.clone(), killed.clone()],
-            vec![die.clone(), killed.clone(), oom],
-            vec![die, killed],
-        ] {
-            let steps = [vec![Step::Inspect(running(1))], events].concat();
-            let (_, meta) = removed_after(&steps);
-            assert_eq!(
-                saved_run(&meta),
-                (Some(&*at(1)), Some(&*at(5)), Some(137), true)
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn history_shows_every_oom_kill_of_a_container_docker_keeps_restarting() {
-        let host = host().with_machine();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        let service = ("ployz.service.id", SERVICE_ID);
-        for (started, previous) in [(1, None), (4, Some(3))] {
-            let before = previous.map_or_else(
-                || self::running(started),
-                |finished| running_after(started, finished),
-            );
-            let harvester = &mut running.harvester;
-            harvester.on_inspected(id, inspected(&before));
-            harvester.on_docker_event(event("oom", T0 + started + 1, &[service]));
-            harvester.on_docker_event(event(
-                "die",
-                T0 + started + 2,
-                &[service, ("exitCode", "137")],
-            ));
-            running.settle_exits(|| inspected(&restarting(started, started + 2, 137, true)));
-            running
-                .harvester
-                .on_docker_event(event("start", T0 + started + 3, &[service]));
-        }
-        running
-            .harvester
-            .on_inspected(id, inspected(&running_after(7, 6)));
-
-        assert_eq!(
-            history_exits(&host),
-            [(T0 + 3, Some(137), true), (T0 + 6, Some(137), true)]
-        );
-    }
-
-    #[tokio::test]
-    async fn history_shows_an_exit_settled_again_once_with_the_oom_kill_it_learned() {
-        let host = host().with_machine();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let service = ("ployz.service.id", SERVICE_ID);
-        let die = event("die", T0 + 5, &[service, ("exitCode", "137")]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_inspected(id, inspected(&self::running(1)));
-        running.harvester.on_docker_event(die.clone());
-        running.settle_exits(|| Inspected::Unanswered);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_docker_event(die);
-        running.settle_exits(|| inspected(&exited(1, 5, 137, true)));
-
-        assert_eq!(history_exits(&host), [(T0 + 5, Some(137), true)]);
-    }
-
-    /// Each exit row a page of the Log Store's history holds.
-    fn history_exits(host: &Host) -> Vec<(i64, Option<i64>, bool)> {
-        let query = super::super::query::Query::new(ployz_core::LogHistoryRequest {
-            namespace: Some("default".into()),
-            limit: 100,
-            ..ployz_core::LogHistoryRequest::default()
-        })
-        .unwrap();
-        let page = super::super::query::page(
-            &host.store,
-            &query,
-            &super::super::query::Bounds::default(),
-            &std::sync::atomic::AtomicBool::new(false),
-        )
-        .unwrap();
-        page.rows
-            .iter()
-            .filter_map(|row| {
-                let ployz_core::HistoryRow::Exit {
-                    ts,
-                    exit_code,
-                    oom_killed,
-                    ..
-                } = row
-                else {
-                    return None;
-                };
-                Some((*ts, *exit_code, *oom_killed))
-            })
-            .collect()
-    }
-
-    #[tokio::test]
-    async fn a_crash_loop_keeps_the_exit_of_its_last_run() {
-        let (_, meta) = removed_after(&[
-            Step::Inspect(running(1)),
-            Step::Event("die", 2, Some("1")),
-            Step::Inspect(restarting(1, 2, 1, false)),
-            Step::Event("start", 3, None),
-            Step::Inspect(running_after(3, 2)),
-            Step::Event("die", 4, Some("0")),
-            Step::Inspect(exited(3, 4, 0, false)),
-        ]);
-        assert_eq!(
-            saved_run(&meta),
-            (Some(&*at(3)), Some(&*at(4)), Some(0), false)
-        );
-    }
-
-    #[tokio::test]
-    async fn a_run_still_running_at_its_last_inspect_has_an_unknown_exit() {
-        let (_, meta) = removed_after(&[
-            Step::Inspect(running(1)),
-            Step::Event("die", 2, Some("1")),
-            Step::Inspect(restarting(1, 2, 1, false)),
-            Step::Event("start", 3, None),
-            Step::Inspect(running_after(3, 2)),
-            Step::Event("die", 4, Some("0")),
-        ]);
-        assert_eq!(saved_run(&meta), (Some(&*at(3)), None, None, false));
-    }
-
-    #[tokio::test]
-    async fn a_container_has_one_inspect_in_flight_and_events_queue_one_more() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        let harvester = &mut running.harvester;
-        harvester.rescan();
-        assert_eq!(harvester.inspecting.get(&id), Some(&false));
-        harvester.on_docker_event(event("die", T0 + 5, &[("exitCode", "1")]));
-        harvester.on_docker_event(event("start", T0 + 6, &[]));
-        harvester.on_docker_event(event("die", T0 + 7, &[("exitCode", "2")]));
-        assert_eq!(harvester.inspecting.get(&id), Some(&true));
-        assert_eq!(harvester.inspecting.len(), 1);
-        harvester.on_inspected(id, inspected(&running_after(6, 5)));
-        assert_eq!(harvester.inspecting.get(&id), Some(&false));
-        harvester.on_inspected(id, inspected(&exited(6, 7, 2, false)));
-        assert_eq!(harvester.inspecting.get(&id), None);
-        assert_eq!(
-            saved_run(&host.meta()),
-            (Some(&*at(6)), Some(&*at(7)), Some(2), false)
-        );
-    }
-
-    #[tokio::test]
-    async fn a_container_removed_before_any_inspect_keeps_its_files_with_an_unknown_exit() {
-        let (host, meta) = removed_after(&[
-            Step::Event("start", 0, None),
-            Step::Event("die", 5, Some("3")),
-        ]);
-        assert_eq!(host.held(), 1);
-        assert_eq!(
-            (meta.replica.as_str(), meta.deployment.as_deref()),
-            ("web-1", Some("d1"))
-        );
-        assert_eq!(saved_run(&meta), (None, None, None, false));
-    }
-
-    #[tokio::test]
-    async fn a_container_nothing_shows_ployz_owns_is_dropped_when_docker_removes_it() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-        assert!(!exists(&host.dir()));
-    }
-
-    #[tokio::test]
-    async fn a_rescan_settles_removed_containers_without_a_die_event() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 5)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        fs::write(
-            host.local_logs().join("container.log"),
-            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
-        )
-        .unwrap();
-        host.remove_from_docker();
-        running.harvester.rescan();
-
-        assert_eq!(host.held(), 1);
-        let gaps = host.gaps();
-        let [damage, unexited] = gaps.as_slice() else {
-            panic!("expected damage and missing-exit gaps, got {gaps:?}");
-        };
-        assert_eq!(*damage, DAMAGE_GAP);
-        assert_eq!(
-            (unexited.from, unexited.reason),
-            (T0 + 10, GapReason::NotCaptured)
-        );
-        assert!(unexited.to > unexited.from);
-        running.harvester.on_inspected(id, Inspected::Gone);
-        running.harvester.rescan();
-        assert_eq!(host.gaps(), gaps);
-    }
-
-    #[tokio::test]
-    async fn a_rescan_keeps_event_owned_containers_before_their_first_inspect() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_docker_event(event("start", T0, &[]));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 5, &[("exitCode", "3")]));
-        host.remove_from_docker();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        assert_eq!(host.held(), 1);
-        let meta = host.meta();
-        assert_eq!(
-            (meta.service.as_deref(), meta.deployment.as_deref()),
-            (Some("web"), Some("d1"))
-        );
-        assert_eq!((meta.finished_at.as_deref(), meta.exit_code), (None, None));
-        let gaps = host.gaps();
-        let [unexited] = gaps.as_slice() else {
-            panic!("expected one missing-exit gap, got {gaps:?}");
-        };
-        assert_eq!(
-            (unexited.from, unexited.reason),
-            (T0 + 3, GapReason::NotCaptured)
-        );
-        assert!(unexited.to > unexited.from);
-    }
-
-    #[tokio::test]
-    async fn a_rescan_discards_removed_containers_without_ownership_evidence() {
-        let host = host();
-        host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        host.remove_from_docker();
-        running.harvester.rescan();
-        assert!(!exists(&host.dir()));
-    }
-
-    #[tokio::test]
-    async fn a_first_set_gap_that_cannot_be_written_is_recorded_at_the_next_inspect() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 7, 1), lines(T0 + 6, 1)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        GAP_WRITES_FAIL_AFTER.set(Some(9));
-        running.harvester.on_inspected(id, managed(2));
-        assert_eq!(host.gaps(), []);
-
-        GAP_WRITES_FAIL_AFTER.set(None);
-        running.harvester.on_inspected(id, managed(2));
-        assert_eq!(host.gaps(), [FIRST_SET_GAP]);
-        running.harvester.on_inspected(id, managed(2));
-        assert_eq!(host.gaps(), [FIRST_SET_GAP]);
-    }
-
-    const FIRST_SET_GAP: Gap = Gap {
-        from: T0,
-        to: T0 + 6,
-        reason: GapReason::NotCaptured,
-    };
-
-    #[tokio::test]
-    async fn a_first_set_gap_that_cannot_be_written_is_recorded_after_a_restart() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 7, 1), lines(T0 + 6, 1)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        GAP_WRITES_FAIL_AFTER.set(Some(9));
-        running.harvester.on_inspected(id, managed(2));
-        drop(running);
-
-        GAP_WRITES_FAIL_AFTER.set(None);
-        let mut restarted = host.harvester();
-        restarted.harvester.rescan();
-        restarted.harvester.on_inspected(id, managed(2));
-        assert_eq!(host.gaps(), [FIRST_SET_GAP]);
-    }
-
-    const DAMAGE_GAP: Gap = Gap {
-        from: T0 + 5,
-        to: T0 + 6,
-        reason: GapReason::Corrupt,
-    };
-
-    /// A managed container that wrote a torn frame, removed by Docker after it
-    /// exited while gap appends were failing.
-    fn removed_while_gap_writes_fail(host: &Host) -> Running {
-        let id = host.container(&[lines(T0 + 1, 5)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        fs::write(
-            host.local_logs().join("container.log"),
-            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
-        )
-        .unwrap();
-        GAP_WRITES_FAIL_AFTER.set(Some(9));
-        running
-            .harvester
-            .on_inspected(id, inspected(&exited(1, 11, 0, false)));
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-        assert_eq!(host.gaps(), []);
-        GAP_WRITES_FAIL_AFTER.set(None);
-        running
-    }
-
-    #[tokio::test]
-    async fn a_damage_gap_that_cannot_be_written_before_removal_is_recorded_at_the_next_tick() {
-        let host = host();
-        let mut running = removed_while_gap_writes_fail(&host);
-        running.harvester.rescan();
-        running.harvester.holder.settle_unsettled();
-        assert_eq!(host.gaps(), [DAMAGE_GAP]);
-        running.harvester.holder.settle_unsettled();
-        assert_eq!(host.gaps(), [DAMAGE_GAP]);
-    }
-
-    #[tokio::test]
-    async fn a_damage_gap_that_cannot_be_written_before_removal_is_recorded_after_a_restart() {
-        let host = host();
-        drop(removed_while_gap_writes_fail(&host));
-        let mut restarted = host.harvester();
-        restarted.harvester.rescan();
-        restarted.harvester.holder.settle_removed_while_down();
-        assert_eq!(host.gaps(), [DAMAGE_GAP]);
-    }
-
-    #[tokio::test]
-    async fn damage_docker_wrote_while_the_harvester_was_down_is_recorded_once_it_is_removed() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 5)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 11, &[("exitCode", "0")]));
-        running.harvester.on_inspected(id, managed(3));
-        drop(running);
-
-        fs::write(
-            host.local_logs().join("container.log"),
-            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
-        )
-        .unwrap();
-        host.remove_from_docker();
-        let mut restarted = host.harvester();
-        restarted.harvester.rescan();
-        restarted.harvester.holder.settle_removed_while_down();
-        let damage: Vec<Gap> = host
-            .gaps()
-            .into_iter()
-            .filter(|gap| gap.reason == GapReason::Corrupt)
-            .collect();
-        assert_eq!(damage, [DAMAGE_GAP]);
-
-        let mut again = host.harvester();
-        again.harvester.holder.settle_removed_while_down();
-        assert_eq!(
-            host.gaps()
-                .iter()
-                .filter(|gap| gap.reason == GapReason::Corrupt)
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn a_stopped_container_reports_the_torn_frame_its_growing_scan_left_waiting() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 5)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        fs::write(
-            host.local_logs().join("container.log"),
-            [lines(T0 + 1, 5), torn(T0 + 99), lines(T0 + 6, 5)].concat(),
-        )
-        .unwrap();
-        running
-            .harvester
-            .on_docker_event(event("die", T0 + 11, &[("exitCode", "0")]));
-        assert_eq!(host.gaps(), []);
-
-        let Inspected::Found(mut stopped) = managed(3) else {
-            unreachable!("managed() describes a found container")
-        };
-        stopped.state = Some(ContainerState {
-            running: Some(false),
-            finished_at: Some("2025-10-09T08:53:20.000000011Z".to_owned()),
-            exit_code: Some(0),
-            ..ContainerState::default()
-        });
-        running
-            .harvester
-            .on_inspected(id, Inspected::Found(stopped));
-        assert_eq!(host.gaps(), [DAMAGE_GAP]);
-    }
-
-    #[tokio::test]
-    async fn a_removed_container_with_unreadable_metadata_is_settled_once() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        fs::write(host.dir().join("meta.json"), b"{not json").unwrap();
-        host.remove_from_docker();
-        running.harvester.on_inspected(id, Inspected::Gone);
-
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, || {
-            running.harvester.holder.settle_unsettled();
-            running.harvester.holder.settle_unsettled();
-        });
-        let journal = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
-        assert_eq!(journal, "");
-        assert_eq!(host.held(), 1);
-    }
-
-    #[derive(Clone, Default)]
-    struct Capture(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for Capture {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for Capture {
-        type Writer = Self;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    #[tokio::test]
-    async fn cleaning_reports_the_symlinks_it_removed() {
-        let host = host();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_inspected(id, managed(3));
-        std::os::unix::fs::symlink(host.local_logs(), host.dir().join("9-9.log")).unwrap();
-
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(capture.clone())
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, || running.harvester.clean());
-        let journal = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
-        assert!(journal.contains("symlinks=1"), "{journal}");
-        assert!(exists(&host.local_logs()));
     }
 
     const SERVICE_ID: &str = "cccccccccccccccccccccccccccccccc";
@@ -2061,7 +1206,6 @@ mod tests {
     async fn a_crash_delivered_again_after_a_rescan_forgets_its_container_is_recorded_once() {
         let host = host().with_machine();
         let mut running = host.harvester();
-        host.container(&[]);
         let die = event(
             "die",
             T0 + 1,
@@ -2069,8 +1213,7 @@ mod tests {
         );
         running.harvester.on_docker_event(die.clone());
         running.settle_exits(|| Inspected::Gone);
-        host.remove_from_docker();
-        running.harvester.rescan();
+        running.harvester.meet(HashSet::new());
         assert!(running.harvester.delivered.is_empty());
         running.harvester.on_docker_event(die);
         running.settle_exits(|| Inspected::Gone);
@@ -2082,7 +1225,6 @@ mod tests {
     async fn a_stops_exit_delivered_again_after_a_rescan_forgets_its_container_queues_no_crash() {
         let host = host().with_machine();
         let mut running = host.harvester();
-        host.container(&[]);
         let service = ("ployz.service.id", SERVICE_ID);
         let die = event("die", T0 + 2, &[service, ("exitCode", "1")]);
         running
@@ -2093,8 +1235,7 @@ mod tests {
             .harvester
             .on_docker_event(event("stop", T0 + 3, &[service]));
         running.settle_exits(|| Inspected::Gone);
-        host.remove_from_docker();
-        running.harvester.rescan();
+        running.harvester.meet(HashSet::new());
         running.harvester.on_docker_event(die);
         running.settle_exits(|| Inspected::Gone);
         assert_eq!(crashes(&host), []);
@@ -2120,11 +1261,9 @@ mod tests {
     async fn an_oom_kill_delivered_again_after_a_rescan_forgets_its_container_is_recorded_once() {
         let host = host().with_machine();
         let mut running = host.harvester();
-        host.container(&[]);
         let oom = event("oom", T0 + 1, &[("ployz.service.id", SERVICE_ID)]);
         running.harvester.on_docker_event(oom.clone());
-        host.remove_from_docker();
-        running.harvester.rescan();
+        running.harvester.meet(HashSet::new());
         running.harvester.on_docker_event(oom);
         assert_eq!(host.markers(), [(T0 + 1, MarkerKind::Oom)]);
     }
@@ -2154,7 +1293,6 @@ mod tests {
     async fn a_crash_delivered_again_after_cleanup_drops_its_container_is_recorded_once() {
         let host = host().with_machine();
         let mut running = host.harvester();
-        host.container(&[]);
         let die = event(
             "die",
             T0 + 1,
@@ -2162,10 +1300,8 @@ mod tests {
         );
         running.harvester.on_docker_event(die.clone());
         running.settle_exits(|| Inspected::Gone);
-        host.remove_from_docker();
-        running.harvester.rescan();
+        running.harvester.meet(HashSet::new());
         running.harvester.clean();
-        assert!(!exists(&host.dir()));
         running.harvester.on_docker_event(die);
         running.settle_exits(|| Inspected::Gone);
         assert_eq!(crashes(&host).len(), 1);
@@ -2175,7 +1311,6 @@ mod tests {
     async fn a_stops_exit_delivered_again_after_cleanup_drops_its_container_queues_no_crash() {
         let host = host().with_machine();
         let mut running = host.harvester();
-        host.container(&[]);
         let service = ("ployz.service.id", SERVICE_ID);
         let mut other = event("start", T0, &[service]);
         other.actor.as_mut().unwrap().id = Some("cd".repeat(32));
@@ -2190,8 +1325,7 @@ mod tests {
             .harvester
             .on_docker_event(event("stop", T0 + 3, &[service]));
         running.settle_exits(|| Inspected::Gone);
-        host.remove_from_docker();
-        running.harvester.rescan();
+        running.harvester.meet(HashSet::new());
         running.harvester.clean();
         running.harvester.on_docker_event(die);
         running.settle_exits(|| Inspected::Gone);
@@ -2205,7 +1339,6 @@ mod tests {
         let die = |at| event("die", at, &[service, ("exitCode", "1")]);
         let outbox = host.store.crash_outbox();
         let mut running = host.harvester();
-        host.container(&[]);
         fs::remove_dir_all(&outbox).unwrap();
         fs::write(&outbox, b"").unwrap();
         running.harvester.on_docker_event(die(T0 + 1));
@@ -2217,8 +1350,7 @@ mod tests {
             .on_docker_event(event("start", T0 + 2, &[service]));
         running.harvester.on_docker_event(die(T0 + 3));
         running.settle_exits(|| Inspected::Unanswered);
-        host.remove_from_docker();
-        running.harvester.rescan();
+        running.harvester.meet(HashSet::new());
         running.harvester.on_docker_event(die(T0 + 1));
         running.settle_exits(|| Inspected::Gone);
         let mut queued: Vec<i64> = Outbox::open(&host.store)
@@ -2276,7 +1408,6 @@ mod tests {
     async fn a_crash_the_open_stream_can_repeat_is_recorded_once_after_newer_events() {
         let host = host().with_machine();
         let mut running = host.harvester();
-        host.container(&[]);
         let service = ("ployz.service.id", SERVICE_ID);
         let mut other = event("start", T0 + 1, &[service]);
         other.actor.as_mut().unwrap().id = Some("cd".repeat(32));
@@ -2287,8 +1418,7 @@ mod tests {
         running.settle_exits(|| Inspected::Gone);
         other.time_nano = Some(T0 + 3);
         running.harvester.on_docker_event(other);
-        host.remove_from_docker();
-        running.harvester.rescan();
+        running.harvester.meet(HashSet::new());
         running.harvester.clean();
         running.harvester.on_docker_event(die);
         running.settle_exits(|| Inspected::Gone);
@@ -2396,7 +1526,7 @@ mod tests {
                 .on_docker_event(event("start", at + 1, &[service]));
             running.settle_exits(|| Inspected::Unanswered);
         }
-        running.harvester.maintain(&mut stream);
+        running.harvester.upkeep(&mut stream);
         let settled = fs::read_dir(host.store.settled()).unwrap().count();
         assert!(settled < SETTLED_LIMIT, "{settled} settlements are kept");
         assert_eq!(crashes(&host).len(), 100);
@@ -3228,58 +2358,6 @@ mod tests {
         }
     }
 
-    // The exit is kept in `exits.jsonl` each time it is settled, though a
-    // settled exit is not recorded again.
-    #[tokio::test]
-    async fn an_exit_settled_again_adds_a_line_to_exits_jsonl_and_no_marker() {
-        let host = host().with_machine();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let service = ("ployz.service.id", SERVICE_ID);
-        let die = event("die", T0 + 5, &[service, ("exitCode", "137")]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_inspected(id, inspected(&self::running(1)));
-        running.harvester.on_docker_event(die.clone());
-        running.settle_exits(|| Inspected::Unanswered);
-        assert_eq!(
-            fs::read_to_string(host.dir().join("exits.jsonl")).unwrap(),
-            "{\"ts\":1760000000000000005,\"exit_code\":137,\"oom_killed\":false}\n"
-        );
-
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running.harvester.on_docker_event(die);
-        running.settle_exits(|| inspected(&exited(1, 5, 137, true)));
-        assert_eq!(
-            fs::read_to_string(host.dir().join("exits.jsonl")).unwrap(),
-            "{\"ts\":1760000000000000005,\"exit_code\":137,\"oom_killed\":false}\n\
-             {\"ts\":1760000000000000005,\"exit_code\":137,\"oom_killed\":true}\n"
-        );
-        assert_eq!(marker_rows(&host), 1);
-    }
-
-    // An oom kill and a restart are recorded but never kept as an exit.
-    #[tokio::test]
-    async fn an_oom_or_a_restart_adds_no_line_to_exits_jsonl() {
-        let host = host().with_machine();
-        let id = host.container(&[lines(T0 + 1, 3)]);
-        let mut running = host.harvester();
-        running.harvester.rescan();
-        running
-            .harvester
-            .on_inspected(id, inspected(&self::running(1)));
-        let service = ("ployz.service.id", SERVICE_ID);
-        running
-            .harvester
-            .on_docker_event(event("oom", T0 + 2, &[service]));
-        running
-            .harvester
-            .on_docker_event(event("start", T0 + 3, &[service]));
-        assert!(!exists(&host.dir().join("exits.jsonl")));
-    }
-
     #[test]
     fn docker_resumes_events_from_a_fractional_second() {
         assert_eq!(
@@ -3288,68 +2366,23 @@ mod tests {
         );
     }
 
-    /// Runs `discover` with a Docker that accepts connections and a sync that
-    /// stalls, and says whether the harvester's inspect reached Docker before
-    /// the stalled sync returned. Docker answers an inspect on another worker,
-    /// so the inspect has to be asked for before the sync starts.
-    fn inspect_reaches_docker_during_sync(discover: impl FnOnce(&mut Running, &Host)) -> bool {
-        use std::{
-            os::unix::net::UnixListener,
-            time::{Duration, Instant},
-        };
-
-        let host = host();
+    #[tokio::test]
+    async fn a_container_has_one_inspect_in_flight_and_events_queue_one_more() {
+        let host = host().with_machine();
+        let id = host.id();
         let mut running = host.harvester();
-        let socket = host.root.0.join("no-docker.sock");
-        fs::remove_file(&socket).unwrap();
-        let docker = UnixListener::bind(socket).unwrap();
-        docker.set_nonblocking(true).unwrap();
-        let listener = std::thread::spawn(move || {
-            let give_up = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < give_up {
-                if docker.accept().is_ok() {
-                    return Some(Instant::now());
-                }
-                // real-wait: polls a non-blocking OS socket accept from a plain thread; nothing in-process signals the connection.
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            None
-        });
-        SYNC_STALL.set(Some(Duration::from_millis(300)));
-        SYNC_STALLED_UNTIL.set(None);
-        discover(&mut running, &host);
-        SYNC_STALL.set(None);
-        let sync_returned = SYNC_STALLED_UNTIL.get().expect("the stalled sync ran");
-        listener
-            .join()
-            .unwrap()
-            .is_some_and(|asked| asked < sync_returned)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_rescan_asks_for_the_inspect_before_it_syncs() {
-        assert!(inspect_reaches_docker_during_sync(|running, host| {
-            host.container(&[lines(T0 + 1, 3)]);
-            running.harvester.rescan();
-        }));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_inotify_discovery_asks_for_the_inspect_before_it_syncs() {
-        assert!(inspect_reaches_docker_during_sync(|running, host| {
-            fs::create_dir_all(host.root.0.join("containers")).unwrap();
-            running.harvester.rescan();
-            host.container(&[lines(T0 + 1, 3)]);
-            let mut buffer = [0; 1024];
-            let events: Vec<_> = running
-                ._inotify
-                .read_events(&mut buffer)
-                .unwrap()
-                .map(|event| (event.wd, event.mask, event.name.map(ToOwned::to_owned)))
-                .collect();
-            for (wd, mask, name) in events {
-                running.harvester.on_inotify(wd, mask, name.as_deref());
-            }
-        }));
+        let harvester = &mut running.harvester;
+        harvester.on_docker_event(event("start", T0 + 4, &[]));
+        assert_eq!(harvester.inspecting.get(&id), Some(&false));
+        harvester.on_docker_event(event("die", T0 + 5, &[("exitCode", "1")]));
+        harvester.on_docker_event(event("start", T0 + 6, &[]));
+        harvester.on_docker_event(event("die", T0 + 7, &[("exitCode", "2")]));
+        assert_eq!(harvester.inspecting.get(&id), Some(&true));
+        assert_eq!(harvester.inspecting.len(), 1);
+        harvester.on_inspected(id, inspected(&running_after(6, 5)));
+        assert_eq!(harvester.inspecting.get(&id), Some(&false));
+        harvester.on_inspected(id, inspected(&exited(6, 7, 2, false)));
+        assert_eq!(harvester.inspecting.get(&id), None);
+        assert!(!harvester.ledger.waits_on(&id));
     }
 }

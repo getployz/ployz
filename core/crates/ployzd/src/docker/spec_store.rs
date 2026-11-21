@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS volume_floors (
     name  TEXT NOT NULL PRIMARY KEY,
     floor INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS volume_forgotten (
+    name   TEXT NOT NULL PRIMARY KEY,
+    origin TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS rotations (
     id       TEXT NOT NULL PRIMARY KEY,
     rotation TEXT NOT NULL CHECK (json_valid(rotation))
@@ -318,6 +322,35 @@ impl MachineSpecStore {
         self.run(move |connection| {
             connection.execute("DELETE FROM volume_floors", [])?;
             Ok(())
+        })
+        .await
+    }
+
+    /// Record that this Machine forgot its copy of `name`, which carried `origin`.
+    pub async fn forgot(&self, name: &DockerVolumeName, origin: String) -> Result<(), Error> {
+        let name = name.to_string();
+        self.run(move |connection| {
+            connection.execute(
+                "INSERT INTO volume_forgotten (name, origin) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET origin = excluded.origin",
+                params![name, origin],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The origin of the copy of `name` this Machine last forgot, if it forgot one.
+    pub async fn forgotten(&self, name: &DockerVolumeName) -> Result<Option<String>, Error> {
+        let name = name.to_string();
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT origin FROM volume_forgotten WHERE name = ?1",
+                    [name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(Error::from)
         })
         .await
     }

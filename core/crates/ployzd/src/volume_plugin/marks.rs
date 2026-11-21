@@ -59,6 +59,11 @@ pub(super) enum Mark {
     /// Set by ZFS on a dataset whose `receive -s` was interrupted; `-` otherwise. ZFS's own
     /// property, only read here.
     ResumeToken,
+    /// On a root or a slot's `fs`: the born origin its data carries ([`super::origin`]).
+    Origin,
+    /// On a slot parent: the origin the pull's stream proved, until completion stamps it on
+    /// `fs` ([`super::origin`]).
+    PullOrigin,
 }
 
 impl Mark {
@@ -72,6 +77,8 @@ impl Mark {
             Self::Pull => "ployz:pull",
             Self::Role => "ployz:role",
             Self::ResumeToken => "receive_resume_token",
+            Self::Origin => "ployz:origin",
+            Self::PullOrigin => "ployz:pull-origin",
         }
     }
 }

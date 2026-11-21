@@ -5,9 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures_util::future::join_all;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    EnvironmentValues, HealthObservation, HealthVerdict, LiveServices, LogHistoryRequest,
-    MachineId, MachineObservation, MachineStorageObservation, Namespace, Region, RpcError,
-    ServiceName, StopOptions,
+    EnvironmentValues, HealthObservation, HealthVerdict, LiveServices, MachineId,
+    MachineObservation, MachineStorageObservation, Namespace, Region, RpcError, ServiceName,
+    StopOptions,
 };
 use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{
@@ -259,15 +259,44 @@ async fn logs(
     session
         .until_closed(async {
             let machines = client.machines().await.map_err(RpcError::from)?;
-            let selector = LogHistoryRequest {
-                namespace: Some(query.namespace.to_string()),
-                service: Some(query.service.to_string()),
-                deployment: query.deployment.map(|id| id.as_str().to_owned()),
-                since_nanos: since_nanos(query.since),
-                ..LogHistoryRequest::default()
-            };
+            let live = client
+                .live_services_from(&machines, EnvironmentValues::Redacted)
+                .await
+                .map_err(RpcError::from)?;
+            let held: BTreeMap<MachineId, Vec<ContainerId>> = live
+                .containers
+                .successes
+                .iter()
+                .map(|success| {
+                    let containers = success
+                        .value
+                        .iter()
+                        .filter(|container| {
+                            container.kind == ContainerKind::ServiceContainer
+                                && container.namespace == query.namespace
+                                && container.service_name() == &query.service
+                                && query.deployment.as_ref().is_none_or(|id| {
+                                    container.deployment_label() == Some(id.as_str())
+                                })
+                        })
+                        .map(|container| container.container_id)
+                        .collect();
+                    (success.machine_id, containers)
+                })
+                .collect();
+            let service = query.service.to_string();
+            let since = since_nanos(query.since);
             Ok(tail_each(machines, query.server.as_ref(), |machine| {
-                super::service_tail(&client, machine, selector.clone(), query.lines, sealed)
+                let containers = held.get(&machine).map_or(&[][..], Vec::as_slice);
+                super::service_tail(
+                    &client,
+                    machine,
+                    &service,
+                    containers,
+                    since,
+                    query.lines,
+                    sealed,
+                )
             })
             .await)
         })

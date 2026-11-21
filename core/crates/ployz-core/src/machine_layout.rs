@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 pub const PREPARE_DIR_NAME: &str = "prepare";
 
 const SOCKET_NAME: &str = "ployz.sock";
-const OBSERVE_SOCKET_NAME: &str = "observe.sock";
 const FAULT_FILE_NAME: &str = "fault";
 const MACHINE_POOL_FILE_NAME: &str = "ployz-machine-pool";
 const DEVICE_POOL_MARKER_NAME: &str = "ployz-machine-pool.device";
@@ -89,18 +88,6 @@ impl MachineLayout {
     #[must_use]
     pub fn socket_in(run_dir: &Path) -> PathBuf {
         run_dir.join(SOCKET_NAME)
-    }
-
-    /// The Observe Store's socket.
-    #[must_use]
-    pub fn observe_socket(&self) -> PathBuf {
-        Self::observe_socket_in(&self.run_dir)
-    }
-
-    /// The Observe Store's socket inside a run directory a caller was handed.
-    #[must_use]
-    pub fn observe_socket_in(run_dir: &Path) -> PathBuf {
-        run_dir.join(OBSERVE_SOCKET_NAME)
     }
 
     /// The file a fault-injecting daemon reads its armed fault from.

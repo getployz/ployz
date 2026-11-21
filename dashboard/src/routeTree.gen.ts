@@ -45,9 +45,12 @@ import { Route as ApiEnrollReportRouteImport } from './routes/api/enroll/report'
 import { Route as ApiGithubCallbackRouteImport } from './routes/api/github/callback'
 import { Route as ApiGithubConnectRouteImport } from './routes/api/github/connect'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
+import { Route as ApiLogsReadRouteImport } from './routes/api/logs/read'
 import { Route as ApiMailUnsubscribeRouteImport } from './routes/api/mail/unsubscribe'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
 import { Route as ApiRuntimeEventsRouteImport } from './routes/api/runtime/events'
+import { Route as ApiRuntimeLogHistoryServicesRouteImport } from './routes/api/runtime/log-history-services'
+import { Route as ApiRuntimeLogHistoryStatusRouteImport } from './routes/api/runtime/log-history-status'
 import { Route as ApiRuntimeLogsRouteImport } from './routes/api/runtime/logs'
 import { Route as DotwellKnownOauthAuthorizationServerApiAuthRouteImport } from './routes/[.]well-known/oauth-authorization-server/api/auth'
 import { Route as ProtectedCloudOrganizationSlugIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/index'
@@ -282,6 +285,11 @@ const ApiGithubWebhookRoute = ApiGithubWebhookRouteImport.update({
   path: '/api/github/webhook',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiLogsReadRoute = ApiLogsReadRouteImport.update({
+  id: '/api/logs/read',
+  path: '/api/logs/read',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiMailUnsubscribeRoute = ApiMailUnsubscribeRouteImport.update({
   id: '/api/mail/unsubscribe',
   path: '/api/mail/unsubscribe',
@@ -297,6 +305,18 @@ const ApiRuntimeEventsRoute = ApiRuntimeEventsRouteImport.update({
   path: '/api/runtime/events',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiRuntimeLogHistoryServicesRoute =
+  ApiRuntimeLogHistoryServicesRouteImport.update({
+    id: '/api/runtime/log-history-services',
+    path: '/api/runtime/log-history-services',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiRuntimeLogHistoryStatusRoute =
+  ApiRuntimeLogHistoryStatusRouteImport.update({
+    id: '/api/runtime/log-history-status',
+    path: '/api/runtime/log-history-status',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiRuntimeLogsRoute = ApiRuntimeLogsRouteImport.update({
   id: '/api/runtime/logs',
   path: '/api/runtime/logs',
@@ -659,9 +679,12 @@ export interface FileRoutesByFullPath {
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/logs/read': typeof ApiLogsReadRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/log-history-services': typeof ApiRuntimeLogHistoryServicesRoute
+  '/api/runtime/log-history-status': typeof ApiRuntimeLogHistoryStatusRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/.well-known/oauth-protected-resource/': typeof DotwellKnownOauthProtectedResourceIndexRoute
@@ -743,9 +766,12 @@ export interface FileRoutesByTo {
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/logs/read': typeof ApiLogsReadRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/log-history-services': typeof ApiRuntimeLogHistoryServicesRoute
+  '/api/runtime/log-history-status': typeof ApiRuntimeLogHistoryStatusRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/.well-known/oauth-protected-resource': typeof DotwellKnownOauthProtectedResourceIndexRoute
@@ -829,9 +855,12 @@ export interface FileRoutesById {
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
+  '/api/logs/read': typeof ApiLogsReadRoute
   '/api/mail/unsubscribe': typeof ApiMailUnsubscribeRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
   '/api/runtime/events': typeof ApiRuntimeEventsRoute
+  '/api/runtime/log-history-services': typeof ApiRuntimeLogHistoryServicesRoute
+  '/api/runtime/log-history-status': typeof ApiRuntimeLogHistoryStatusRoute
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/.well-known/oauth-protected-resource/': typeof DotwellKnownOauthProtectedResourceIndexRoute
@@ -920,9 +949,12 @@ export interface FileRouteTypes {
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
+    | '/api/logs/read'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
+    | '/api/runtime/log-history-services'
+    | '/api/runtime/log-history-status'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
     | '/.well-known/oauth-protected-resource/'
@@ -1004,9 +1036,12 @@ export interface FileRouteTypes {
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
+    | '/api/logs/read'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
+    | '/api/runtime/log-history-services'
+    | '/api/runtime/log-history-status'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server'
     | '/.well-known/oauth-protected-resource'
@@ -1089,9 +1124,12 @@ export interface FileRouteTypes {
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
+    | '/api/logs/read'
     | '/api/mail/unsubscribe'
     | '/api/org/changes'
     | '/api/runtime/events'
+    | '/api/runtime/log-history-services'
+    | '/api/runtime/log-history-status'
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
     | '/.well-known/oauth-protected-resource/'
@@ -1177,9 +1215,12 @@ export interface RootRouteChildren {
   ApiGithubCallbackRoute: typeof ApiGithubCallbackRoute
   ApiGithubConnectRoute: typeof ApiGithubConnectRoute
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
+  ApiLogsReadRoute: typeof ApiLogsReadRoute
   ApiMailUnsubscribeRoute: typeof ApiMailUnsubscribeRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
+  ApiRuntimeLogHistoryServicesRoute: typeof ApiRuntimeLogHistoryServicesRoute
+  ApiRuntimeLogHistoryStatusRoute: typeof ApiRuntimeLogHistoryStatusRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
   DotwellKnownOauthAuthorizationServerIndexRoute: typeof DotwellKnownOauthAuthorizationServerIndexRoute
   DotwellKnownOauthProtectedResourceIndexRoute: typeof DotwellKnownOauthProtectedResourceIndexRoute
@@ -1459,6 +1500,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiGithubWebhookRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/logs/read': {
+      id: '/api/logs/read'
+      path: '/api/logs/read'
+      fullPath: '/api/logs/read'
+      preLoaderRoute: typeof ApiLogsReadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/mail/unsubscribe': {
       id: '/api/mail/unsubscribe'
       path: '/api/mail/unsubscribe'
@@ -1478,6 +1526,20 @@ declare module '@tanstack/react-router' {
       path: '/api/runtime/events'
       fullPath: '/api/runtime/events'
       preLoaderRoute: typeof ApiRuntimeEventsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/runtime/log-history-services': {
+      id: '/api/runtime/log-history-services'
+      path: '/api/runtime/log-history-services'
+      fullPath: '/api/runtime/log-history-services'
+      preLoaderRoute: typeof ApiRuntimeLogHistoryServicesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/runtime/log-history-status': {
+      id: '/api/runtime/log-history-status'
+      path: '/api/runtime/log-history-status'
+      fullPath: '/api/runtime/log-history-status'
+      preLoaderRoute: typeof ApiRuntimeLogHistoryStatusRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/runtime/logs': {
@@ -2078,9 +2140,12 @@ const rootRouteChildren: RootRouteChildren = {
   ApiGithubCallbackRoute: ApiGithubCallbackRoute,
   ApiGithubConnectRoute: ApiGithubConnectRoute,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
+  ApiLogsReadRoute: ApiLogsReadRoute,
   ApiMailUnsubscribeRoute: ApiMailUnsubscribeRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,
   ApiRuntimeEventsRoute: ApiRuntimeEventsRoute,
+  ApiRuntimeLogHistoryServicesRoute: ApiRuntimeLogHistoryServicesRoute,
+  ApiRuntimeLogHistoryStatusRoute: ApiRuntimeLogHistoryStatusRoute,
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
   DotwellKnownOauthAuthorizationServerIndexRoute:
     DotwellKnownOauthAuthorizationServerIndexRoute,

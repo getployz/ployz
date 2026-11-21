@@ -6,15 +6,10 @@ use super::*;
 #[test]
 fn production_layout_keeps_the_paths_installed_machines_use() {
     let layout = MachineLayout::production();
-    let table: [(&str, PathBuf, &str); 14] = [
+    let table: [(&str, PathBuf, &str); 13] = [
         ("run directory", layout.run_dir().into(), "/run/ployz"),
         ("data directory", layout.data_dir().into(), "/var/lib/ployz"),
         ("socket", layout.socket(), "/run/ployz/ployz.sock"),
-        (
-            "observe socket",
-            layout.observe_socket(),
-            "/run/ployz/observe.sock",
-        ),
         ("fault file", layout.fault_file(), "/run/ployz/fault"),
         (
             "machine pool file",

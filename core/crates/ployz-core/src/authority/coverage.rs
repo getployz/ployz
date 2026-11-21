@@ -9,29 +9,28 @@
 use serde::Serialize;
 
 use crate::{
-    APPROVE_JOIN_CAPABILITY, BUILD_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY,
-    DEPLOY_APPROVAL_CAPABILITY, DEPLOY_PROPOSAL_CAPABILITY, DEPLOY_RULE_CAPABILITY,
+    APPROVE_JOIN_CAPABILITY, BUILD_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY, DEPLOY_RULE_CAPABILITY,
     DESCRIBE_CONTRACT_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY, ENROLL_MACHINE_CAPABILITY,
-    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY, EXEC_CONTAINER_CAPABILITY,
-    FORGET_MACHINE_CAPABILITY, GENERATE_SEALING_KEY_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY,
-    INSPECT_CONTAINER_CAPABILITY, INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY,
-    INSPECT_VOLUME_COPY_CAPABILITY, INSTALL_SEALING_KEY_CAPABILITY, JOIN_APPROVAL_CAPABILITY,
-    LEAVE_MACHINE_CAPABILITY, LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY,
-    LIST_MACHINES_CAPABILITY, LIST_VOLUMES_CAPABILITY, LOG_HISTORY_CAPABILITY,
-    METRICS_LIVE_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY, PENDING_JOINS_CAPABILITY,
-    PREPARE_VOLUMES_CAPABILITY, PRIVATE_ACCESS_APPROVAL_CAPABILITY, PRUNE_IMAGES_CAPABILITY,
-    PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_IMAGE_CAPABILITY,
-    PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
+    ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY,
+    ENSURE_PINNED_CONTAINER_CAPABILITY, EXEC_CONTAINER_CAPABILITY, FORGET_MACHINE_CAPABILITY,
+    GENERATE_SEALING_KEY_CAPABILITY, INSPECT_BUILD_GRANT_CAPABILITY, INSPECT_CONTAINER_CAPABILITY,
+    INSPECT_MACHINE_CAPABILITY, INSPECT_STORAGE_CAPABILITY, INSPECT_VOLUME_COPY_CAPABILITY,
+    INSTALL_SEALING_KEY_CAPABILITY, JOIN_APPROVAL_CAPABILITY, LEAVE_MACHINE_CAPABILITY,
+    LIST_CONTAINERS_CAPABILITY, LIST_IMAGES_CAPABILITY, LIST_MACHINES_CAPABILITY,
+    LIST_VOLUMES_CAPABILITY, METRICS_LIVE_CAPABILITY, MINT_BUILD_GRANT_CAPABILITY,
+    PENDING_JOINS_CAPABILITY, PREPARE_VOLUMES_CAPABILITY, PRIVATE_ACCESS_APPROVAL_CAPABILITY,
+    PRUNE_IMAGES_CAPABILITY, PUBLISH_CERTIFICATE_MATERIAL_CAPABILITY, PULL_FREE_IMAGE_CAPABILITY,
+    PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY, READ_CLUSTER_NAME_CAPABILITY,
     READ_ROUTED_ADDRESSES_CAPABILITY, READ_ROUTES_CAPABILITY, RECOVER_SEALING_KEY_CAPABILITY,
     REGISTER_MACHINE_CAPABILITY, REMOVE_TRUSTED_KEY_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
-    REQUEST_MACHINE_UPGRADE_CAPABILITY, RETAINED_ENV_CAPABILITY, RUNTIME_WATCH_CAPABILITY,
-    SEED_VOLUME_CAPABILITY, SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_DOORS_CAPABILITY,
-    SET_CLUSTER_NAME_CAPABILITY, SET_DEVICE_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY,
-    SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY,
-    SHARE_SEALING_KEY_CAPABILITY, TAIL_LOGS_CAPABILITY, UPDATE_CONTAINER_LIMITS_CAPABILITY,
-    UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY,
-    WRAP_SEALING_KEY_CAPABILITY,
+    REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, SEED_VOLUME_CAPABILITY,
+    SELECT_ENDPOINT_CAPABILITY, SET_CLUSTER_DOORS_CAPABILITY, SET_CLUSTER_NAME_CAPABILITY,
+    SET_DEVICE_CAPABILITY, SET_INGRESS_DOORS_CAPABILITY, SET_MANAGEMENT_CLIENT_CAPABILITY,
+    SET_PASSKEY_CAPABILITY, SET_PRIVATE_ACCESS_CAPABILITY, SET_PUSH_TARGET_CAPABILITY,
+    SET_VOLUME_COPY_CAPABILITY, SET_VOLUME_SIZE_CAPABILITY, SHARE_SEALING_KEY_CAPABILITY,
+    SIGNED_VERSION_CAPABILITY, SIGNED_VERSION_PROPOSAL_CAPABILITY, TAIL_LOGS_CAPABILITY,
+    UPDATE_CONTAINER_LIMITS_CAPABILITY, UPDATE_CONTAINER_PLACEMENT_CAPABILITY,
+    UPDATE_MACHINE_CAPABILITY, UPGRADE_EXACT_CAPABILITY, WRAP_SEALING_KEY_CAPABILITY,
 };
 
 /// A statement a trusted key signs that admits an Operator's call.
@@ -52,8 +51,8 @@ impl Statement {
     pub const fn capabilities(self) -> &'static [&'static str] {
         match self {
             Self::Join => &[JOIN_APPROVAL_CAPABILITY],
-            Self::Deploy => &[DEPLOY_APPROVAL_CAPABILITY],
-            Self::Proposal => &[DEPLOY_PROPOSAL_CAPABILITY],
+            Self::Deploy => &[SIGNED_VERSION_CAPABILITY],
+            Self::Proposal => &[SIGNED_VERSION_PROPOSAL_CAPABILITY],
             Self::Rule => &[DEPLOY_RULE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY],
             Self::PrivateAccess => &[PRIVATE_ACCESS_APPROVAL_CAPABILITY],
         }
@@ -81,6 +80,7 @@ use Authorization::{Bound, Full, Read, Signed};
 use Statement::{Deploy, Join, PrivateAccess, Proposal, Rule};
 
 const IMAGE_BOUND: &str = "a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
+const PULL_BOUND: &str = "writes no name but a retention name its content certifies, so a Full creation's tag keeps naming what it named; a signed creation names its image by digest, and an unsigned one pulls its own with no login; checked at creation by C";
 
 /// Every catalog route's class, in catalog order.
 pub const AUTHORIZATION: &[(&str, Authorization)] = &[
@@ -143,6 +143,10 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         Signed(&[Deploy, Proposal, Rule]),
     ),
     (
+        ENSURE_PINNED_CONTAINER_CAPABILITY,
+        Signed(&[Deploy, Proposal, Rule]),
+    ),
+    (
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
         Bound("residual: a limit can slow or stop a Service, a drop"),
     ),
@@ -175,8 +179,14 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         Bound("residual: the next deploy pulls again"),
     ),
     (ENSURE_IMAGE_INGEST_CAPABILITY, Bound(IMAGE_BOUND)),
-    (PULL_IMAGE_CAPABILITY, Bound(IMAGE_BOUND)),
-    (PULL_IMAGE_FROM_MACHINE_CAPABILITY, Bound(IMAGE_BOUND)),
+    (PULL_IMAGE_CAPABILITY, Bound(PULL_BOUND)),
+    (
+        PULL_FREE_IMAGE_CAPABILITY,
+        Bound(
+            "for an Operator, writes no name and records an image ID only an unsigned creation reads; for a Full caller, pulls the tag like pull.v1",
+        ),
+    ),
+    (PULL_IMAGE_FROM_MACHINE_CAPABILITY, Bound(PULL_BOUND)),
     (MINT_BUILD_GRANT_CAPABILITY, Signed(&[Rule])),
     (INSPECT_BUILD_GRANT_CAPABILITY, Read),
     (
@@ -199,8 +209,6 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         Bound("residual: steers later joins only to Doors SetIngressDoors already opens"),
     ),
     (METRICS_LIVE_CAPABILITY, Read),
-    (RETAINED_ENV_CAPABILITY, Read),
-    (LOG_HISTORY_CAPABILITY, Read),
     (TAIL_LOGS_CAPABILITY, Read),
     (RUNTIME_WATCH_CAPABILITY, Read),
     (EXEC_CONTAINER_CAPABILITY, Full),
@@ -272,6 +280,7 @@ const MOUNTS_NOTHING: &str =
 const PULLS_AGAIN: &str =
     "a following unsigned EnsureContainer create that uses it pulls the image again itself";
 const PULLS_ITS_OWN: &str = "the Machine pulls the image itself";
+const WRITES_NO_NAME: &str = "the Machine pulls the image by digest and writes no name";
 const PINNED_DOORS: &str = "only pinned images run";
 
 /// Every case an enforcing Machine is held to, in catalog order.
@@ -436,7 +445,7 @@ pub const CASES: &[Case] = &[
         ENSURE_CONTAINER_CAPABILITY,
         "create, reaches data",
         "an EnsureContainer creating a Container from a new spec that mounts a Volume",
-        Expected::Refused(&[DEPLOY_APPROVAL_CAPABILITY]),
+        Expected::Refused(&[SIGNED_VERSION_CAPABILITY]),
     ),
     case(
         ENSURE_CONTAINER_CAPABILITY,
@@ -475,6 +484,30 @@ pub const CASES: &[Case] = &[
         Expected::Served,
     ),
     case(
+        ENSURE_PINNED_CONTAINER_CAPABILITY,
+        "create, reaches data",
+        "an EnsurePinnedContainer creating a Container from a new tag spec that mounts a Volume",
+        Expected::Refused(&[SIGNED_VERSION_CAPABILITY]),
+    ),
+    case(
+        ENSURE_PINNED_CONTAINER_CAPABILITY,
+        "create, reaches no data",
+        "an EnsurePinnedContainer creating a Container from a new tag spec that opens no secret, mounts no Volume and reaches no host, pinned to an image ID",
+        Expected::Bounded(PULLS_ITS_OWN),
+    ),
+    case(
+        ENSURE_PINNED_CONTAINER_CAPABILITY,
+        "digest spec",
+        "an EnsurePinnedContainer pinning a spec whose image already names a digest",
+        Expected::Refused(&[ENSURE_PINNED_CONTAINER_CAPABILITY]),
+    ),
+    case(
+        ENSURE_PINNED_CONTAINER_CAPABILITY,
+        "no pin",
+        "an EnsurePinnedContainer creating a Container with no image ID",
+        Expected::Refused(&[ENSURE_PINNED_CONTAINER_CAPABILITY]),
+    ),
+    case(
         UPDATE_CONTAINER_LIMITS_CAPABILITY,
         "any limit",
         "an UpdateContainerLimits lowering a Container's memory",
@@ -508,7 +541,7 @@ pub const CASES: &[Case] = &[
         SET_VOLUME_COPY_CAPABILITY,
         "a Writer want with a start",
         "a SetVolumeCopy making this copy Writer and creating its Container",
-        Expected::Refused(&[DEPLOY_APPROVAL_CAPABILITY]),
+        Expected::Refused(&[SIGNED_VERSION_CAPABILITY]),
     ),
     case(
         SET_VOLUME_COPY_CAPABILITY,
@@ -566,14 +599,32 @@ pub const CASES: &[Case] = &[
     ),
     case(
         PULL_IMAGE_CAPABILITY,
-        "any image",
-        "a PullImage of a public image",
+        "tag",
+        "a PullImage of a public image by tag",
+        Expected::Refused(&[PULL_IMAGE_CAPABILITY]),
+    ),
+    case(
+        PULL_IMAGE_CAPABILITY,
+        "digest",
+        "a PullImage of a public image by digest",
         Expected::Bounded(PULLS_AGAIN),
     ),
     case(
-        PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+        PULL_FREE_IMAGE_CAPABILITY,
         "any image",
-        "a PullImageFromMachine of another Machine's image",
+        "a PullFreeImage of a public image by tag",
+        Expected::Bounded(WRITES_NO_NAME),
+    ),
+    case(
+        PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+        "tag",
+        "a PullImageFromMachine of another Machine's image by tag",
+        Expected::Refused(&[PULL_IMAGE_FROM_MACHINE_CAPABILITY]),
+    ),
+    case(
+        PULL_IMAGE_FROM_MACHINE_CAPABILITY,
+        "digest",
+        "a PullImageFromMachine of another Machine's image by digest",
         Expected::Bounded(PULLS_AGAIN),
     ),
     case(

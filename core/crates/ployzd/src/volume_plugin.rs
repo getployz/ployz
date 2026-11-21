@@ -26,11 +26,14 @@ mod capacity;
 mod copy;
 mod departure;
 mod error;
+mod holders;
 mod inspect;
 mod marks;
+mod origin;
 mod pool;
 mod removal;
 mod seed;
+mod send_point;
 mod size;
 mod slot;
 mod storage;
@@ -40,14 +43,14 @@ use error::PluginError;
 use ployzd::{
     dataset_layout::VolumeName,
     volume_copy::{
-        CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SNAPSHOT_ROUTE,
-        STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE, STORAGE_SEAL_ROUTE,
-        VOLUME_INSPECT_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
+        CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SEND_POINT_ROUTE,
+        SNAPSHOT_ROUTE, STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE,
+        STORAGE_SEAL_ROUTE, VOLUME_INSPECT_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE,
+        WRITER_ROUTE,
     },
 };
 use storage::{
-    CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output, parse_size,
-    run_command,
+    CapacityAdmission, Dataset, VolumeStorage, checked_command, checked_output, run_command,
 };
 
 type Result<T> = std::result::Result<T, PluginError>;
@@ -172,6 +175,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route(&at(WRITER_ROUTE), post(copy::writer))
         .route(&at(PULL_ROUTE), post(copy::pull))
         .route(&at(DESTROY_ROUTE), post(copy::destroy))
+        .route(&at(SEND_POINT_ROUTE), post(send_point::send_point))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -375,12 +379,14 @@ mod tests {
 
     #[path = "copy_tests.rs"]
     mod copy_tests;
+    #[path = "holders_tests.rs"]
+    mod holders_tests;
     mod marks_model_tests;
     mod marks_tests;
     mod seed_tests;
     mod size_tests;
 
-    use fake_zfs::{USABLE_POOL, fake_zfs, fake_zfs_seeding};
+    use fake_zfs::{USABLE_POOL, begun, fake_zfs, fake_zfs_seeding};
 
     #[tokio::test]
     async fn docker_can_create_and_mount_a_bounded_volume() {

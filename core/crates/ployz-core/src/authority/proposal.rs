@@ -1,7 +1,7 @@
 //! The bundle a person signs once over an ordered plan of steps, and the check a Machine
 //! runs when one step of that plan reaches it.
 //!
-//! Each step is a [`super::DeployApproval`] body that nobody signed. What vouches for it
+//! Each step is a [`super::ServiceVersion`] body that nobody signed. What vouches for it
 //! is the bundle in its envelope: a signed list of step digests in order. A Machine checks
 //! that its step sits in the bundle at the index the step names, with the same kind, and
 //! that the body it was handed hashes to that digest. Cloud can carry a step but cannot
@@ -33,7 +33,7 @@ impl StepDigest {
     }
 }
 
-/// What one step of a proposal runs: a deploy is a [`super::DeployApproval`].
+/// What one step of a proposal runs: a deploy is a [`super::ServiceVersion`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
@@ -51,7 +51,7 @@ pub struct ProposalStep {
 }
 
 /// A person approves an ordered plan of steps in one Cluster and Environment, under one
-/// operation with a bounded lifetime. Every step shares this window.
+/// operation with a bounded lifetime.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalApproval {
@@ -105,19 +105,17 @@ pub(super) trait StepBody: Statement {
     fn signer(&self) -> SignerKey;
     fn cluster(&self) -> SealingPublicKey;
     fn namespace(&self) -> &Namespace;
-    /// The window the bundle must share, `None` for a body that has none.
-    fn window(&self) -> Option<(Timestamp, Timestamp)>;
 }
 
 /// Open `step`, an unsigned step body, as the step of `bundle` it names, signed by one of
 /// this Machine's Devices. Returns the body, its approver, and this Machine's Cluster
-/// key. The caller checks the body against its request and the window.
+/// key. The caller checks the body against its request.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a step that carries its own signatures,
 /// a bundle nested in a bundle, a signature problem on the bundle, a
 /// malformed body, or a step outside the bundle, of another kind, differing from its
-/// digest, or naming another Cluster, Environment or window than the bundle.
+/// digest, or naming another Cluster or Environment than the bundle.
 pub(super) fn open_step<T: StepBody>(
     bundle: &Signed<ProposalApproval>,
     step: &Signed<T>,
@@ -153,11 +151,6 @@ pub(super) fn open_step<T: StepBody>(
         ),
         (field::CLUSTER, plan.cluster == body.cluster()),
         (field::ENVIRONMENT, &plan.environment == body.namespace()),
-        (
-            field::WINDOW,
-            body.window()
-                .is_none_or(|window| window == (plan.issued_at, plan.expires_at)),
-        ),
     ])?;
     let by = by.expect("the signer check passed");
     Ok((body, by, cluster))

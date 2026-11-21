@@ -179,6 +179,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         name,
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
         labels,
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");
@@ -971,7 +972,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -1026,7 +1027,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         message: None,
         prune: false,
         no_prune: false,
-        approval: None,
+        versions: Vec::new(),
     };
     store
         .write_trusted(
@@ -1304,7 +1305,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1358,12 +1359,9 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
         .collect::<Vec<_>>();
     assert_eq!(
         logs,
-        [Ok((3..=10)
-            .map(|n| format!("line {n}"))
-            .chain([
-                "plain from-docker".to_owned(),
-                "token=[redacted]".to_owned()
-            ])
+        [Ok((1..=5)
+            .map(|n| format!("line {}", n * 2))
+            .chain(["token=[redacted]".to_owned()])
             .collect::<Vec<_>>())]
     );
 }
@@ -1437,7 +1435,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -1514,34 +1512,13 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
 }
 
 /// A Container Docker keeps restarting fails the Deployment with the exit code and
-/// last line its Server's Log Store holds, scrubbed like the row's log, so the
+/// last line Docker holds, scrubbed like the row's log, so the
 /// headline Cloud joins from them reads as the crash and not `restarting`.
 #[tokio::test]
 async fn failed_deploy_whose_container_keeps_restarting_names_its_exit_and_last_line() {
     restarting_deploy_names_its_exit_and_last_line(
         DeployService::new(machine('a', "one")).restart_containers(),
         Some("token=[redacted]"),
-    )
-    .await;
-}
-
-/// The last line is the one the exited run printed, not the next run's first.
-#[tokio::test]
-async fn failed_deploy_whose_container_restarted_names_the_exited_runs_last_line() {
-    restarting_deploy_names_its_exit_and_last_line(
-        DeployService::new(machine('a', "one")).reboot_containers(),
-        Some("token=[redacted]"),
-    )
-    .await;
-}
-
-/// A run that exited printing nothing has no last line, so no earlier run's line
-/// stands in for it.
-#[tokio::test]
-async fn failed_deploy_whose_last_run_printed_nothing_names_no_line() {
-    restarting_deploy_names_its_exit_and_last_line(
-        DeployService::new(machine('a', "one")).reboot_containers_through_a_silent_run(),
-        None,
     )
     .await;
 }
@@ -1598,7 +1575,7 @@ async fn restarting_deploy_names_its_exit_and_last_line(
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1732,7 +1709,7 @@ async fn cloud_runner_applies_an_environment_removal() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1858,7 +1835,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &trusted,
             )
@@ -2032,7 +2009,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -2144,7 +2121,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
                         message: None,
                         prune: false,
                         no_prune: false,
-                        approval: None,
+                        versions: Vec::new(),
                     }),
                     &ployz_store::Trusted::default(),
                 )

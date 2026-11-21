@@ -10,6 +10,8 @@ import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { ContainerLogs, sourceTag } from "./container-logs";
 
+const withHistoryOff = (history: (url: string, init: RequestInit) => Promise<Response>) => (url: string, init: RequestInit) =>
+  url.includes("log-history-status") ? Promise.resolve(Response.json({ history: false, machines: [] })) : history(url, init);
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };
 const cursorOf = (init: RequestInit | undefined) => bodyOf(init).cursor;
 const line = { kind: "line", id: "m/c/100/0", timestamp: "100", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: "hello" } as const;
@@ -30,7 +32,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
       ? Response.json({ rows: [{ ...line, id: "store/m/c/50/0", timestamp: "50" }], failures: [], cursor: "older" })
       : Response.json({ rows: [{ ...line, id: "store/m/c/150/0", timestamp: "150" }], failures: [], cursor: "second" });
   });
-  vi.stubGlobal("fetch", fetchHistory);
+  vi.stubGlobal("fetch", withHistoryOff(fetchHistory));
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
@@ -53,7 +55,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await waitFor(() => expect(stream.collection.size).toBe(3));
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
-    // A short tail reads the Log Store's newest page at once, then on past the tail that page sat inside.
+    // A short tail reads Cloud's newest page of history at once, then on past the tail that page sat inside.
     await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(2));
     expect(cursorOf(fetchHistory.mock.calls[0]?.[1])).toBeUndefined();
     expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("second");
@@ -201,7 +203,7 @@ it("settles on hidden when the Organization hides its container logs from Ployz 
   }
   vi.stubGlobal("EventSource", FakeEventSource);
   const fetchHistory = vi.fn(async () => Response.json({ rows: [], failures: [], cursor: null }));
-  vi.stubGlobal("fetch", fetchHistory);
+  vi.stubGlobal("fetch", withHistoryOff(fetchHistory));
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
@@ -282,7 +284,7 @@ it("tags a line with its container only when a service has more than one, as a D
   expect([old, worker].map(sourceTag([old, worker], {}))).toEqual(["api", "worker"]);
 });
 
-it("shows an old Deployment's stored lines with their gaps and missing servers, pages on scroll up, and filters by level", async () => {
+it("shows an old Deployment's stored lines with their hidden stretches and missing servers, pages on scroll up, and filters by level", async () => {
   // jsdom lays nothing out; give the log a height so its virtual rows render.
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 2_000, width: 800, height: 2_000, toJSON: () => ({}) });
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(2_000);
@@ -297,11 +299,11 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     kind: "line", id: `store/hel-1/c/${timestamp}/0`, timestamp, machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", channel: "stderr", level, message,
   });
   const fetchHistory = vi.fn(async (_url: string, init: RequestInit) => Response.json(cursorOf(init) !== undefined ? { rows: [line("10", "error", "boom")], failures: [], cursor: null } : {
-    rows: [line("50", "info", "listening"), line("60", "warn", "slow query"), { kind: "gap", id: "hel-1/c/gap/40", timestamp: "40", until: "45", machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", reason: "not_captured" }],
+    rows: [line("50", "info", "listening"), line("60", "warn", "slow query"), { kind: "gap", id: "hel-1/c/gap/40", timestamp: "40", until: "45", machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", reason: "hidden" }],
     failures: [{ machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." }],
     cursor: "page-2",
   }));
-  vi.stubGlobal("fetch", fetchHistory);
+  vi.stubGlobal("fetch", withHistoryOff(fetchHistory));
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
@@ -316,10 +318,10 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     </RouterContextProvider></DbProvider></QueryClientProvider>);
     const source = sources.at(-1);
     if (!source) throw new Error("Viewer did not open its log stream");
-    // Its containers are gone, so the live tail is empty and the Log Store answers.
+    // Its containers are gone, so the live tail is empty and Cloud's history answers.
     await act(async () => source.dispatchEvent(new Event("live")));
     await waitFor(() => expect(screen.getByText("slow query")).toBeTruthy());
-    expect(screen.getByText("Logs from this stretch weren’t captured.")).toBeTruthy();
+    expect(screen.getByText("Hidden: couldn’t check these lines for Sealed values.")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toContain("fsn-1: Its log service isn’t running.");
     expect(screen.queryByText("boom")).toBeNull();
     fireEvent.wheel(screen.getByLabelText("Container logs"), { deltaY: -100 });
@@ -331,7 +333,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     expect(screen.getByText("boom")).toBeTruthy();
     expect(screen.queryByText("listening")).toBeNull();
     expect(screen.queryByText("slow query")).toBeNull();
-    expect(screen.queryByText("Logs from this stretch weren’t captured.")).toBeNull();
+    expect(screen.queryByText("Hidden: couldn’t check these lines for Sealed values.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "warn" }));
     expect(screen.getByText("slow query")).toBeTruthy();
   } finally {
@@ -344,7 +346,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
 const lackNotice = () => screen.queryByText(/ to see (its|their) logs$| to show (its|their) logs\.$/)?.textContent ?? null;
 const lineFrom = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "record", record: { ...line, machineId, machineName: machineId } }) });
 const transportError = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "source_error", machineId, containerId: "c", message: "transport error" }) });
-const historyRefusal = { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" };
+const historyRefusal = { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" };
 
 const runtimeMachine = (id: string, daemonVersion: string): RuntimeMachineRecord => ({
   id, name: id, subnet: null, joinedAt: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
@@ -392,7 +394,7 @@ it("says to upgrade a Server that lacks the logs capability inside the viewer, l
   const harness = await lackHarness("mixed", [
     { machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." },
     { machineId: "old", machineName: "old", message: "Its stored logs are unreadable." },
-    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" },
   ]);
   try {
     const opened = harness.sources.at(-1);
@@ -413,8 +415,8 @@ it("says to upgrade a Server that lacks the logs capability inside the viewer, l
 
 it("says to upgrade two lacking Servers inside the viewer with a link to Servers, and no missing-logs alert", async () => {
   const harness = await lackHarness("both-old", [
-    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
-    { machineId: "older", machineName: "older", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" },
+    { machineId: "older", machineName: "older", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" },
   ]);
   try {
     const opened = harness.sources.at(-1);
@@ -475,3 +477,55 @@ it("names a lacking Server with no lines by its Server name, and links its page"
     await harness.teardown();
   }
 });
+
+it("searches stored history for the typed text in place of the live tail, and follows live again once it is cleared", async () => {
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    closed = false;
+    constructor() { super(); sources.push(this); }
+    close() { this.closed = true; }
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 2_000, width: 800, height: 2_000, toJSON: () => ({}) });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(2_000);
+  const reads: { contains?: string }[] = [];
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    if (url.includes("log-history-status")) return Response.json({ history: true, machines: [] });
+    const read = bodyOf(init) as { contains?: string };
+    reads.push(read);
+    if (read.contains === undefined) return Response.json({ rows: [], failures: [], cursor: null });
+    return Response.json({ rows: [{ ...line, id: "m/c/70/hdeadbeef", timestamp: "70", message: "disk almost full" }], failures: [], cursor: null });
+  });
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const selection = { organizationSlug: "acme", environmentSlug: "production" };
+  const stream = getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" });
+  render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+    <ContainerLogs selection={selection} />
+  </RouterContextProvider></DbProvider></QueryClientProvider>);
+  try {
+    const live = sources.at(-1) ?? assert();
+    await act(async () => live.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(screen.getByLabelText("Search logs")).toBeTruthy());
+    reads.length = 0;
+    fireEvent.change(screen.getByLabelText("Search logs"), { target: { value: "almost full" } });
+    await waitFor(() => expect(screen.getByText("disk almost full")).toBeTruthy());
+    expect(reads.at(-1)?.contains).toBe("almost full");
+    expect(live.closed).toBe(true);
+    expect(screen.getByText(/Showing stored logs that match/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Search logs"), { target: { value: "" } });
+    await waitFor(() => expect(sources.filter(source => !source.closed)).toHaveLength(1));
+    expect(screen.queryByText(/Showing stored logs that match/)).toBeNull();
+    expect(stream.getSnapshot().searching).toBe("");
+  } finally {
+    cleanup();
+    await stream.collection.cleanup();
+    await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+  }
+});
+
+function assert(): never { throw new Error("Viewer did not open its log stream"); }

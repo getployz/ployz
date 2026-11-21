@@ -297,6 +297,7 @@ fn hook_observation(
 /// The `app` Namespace, with each Service's name now and its runtime name.
 fn scoped(services: &[(&str, &str)]) -> crate::handlers::operator::Scoped {
     crate::handlers::operator::Scoped {
+        project: ployz_store::ProjectName::parse("shop").unwrap(),
         environment: ployz_store::EnvironmentName::parse("production").unwrap(),
         namespace: ployz_core::Namespace::parse("app").unwrap(),
         services: services

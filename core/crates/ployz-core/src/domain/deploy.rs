@@ -243,6 +243,12 @@ pub struct DeployIntent {
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     #[ts(as = "Option<BTreeSet<DockerVolumeName>>", optional)]
     pub deployed_volumes: BTreeSet<DockerVolumeName>,
+    /// The Server an earlier Deployment chose for each Managed Volume's first copy. While
+    /// no Server holds a copy, the Volume starts only there, so two Deploys never make
+    /// two first copies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(as = "Option<BTreeMap<DockerVolumeName, MachineId>>", optional)]
+    pub first_copies: BTreeMap<DockerVolumeName, MachineId>,
     /// The Cluster Domain generated domains live under. Ployz Cloud publishes DNS for
     /// every hostname one label under it, so messages never ask for a record there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,6 +292,7 @@ impl DeployIntent {
             registry_auth: BTreeMap::new(),
             volume_names: BTreeMap::new(),
             deployed_volumes: BTreeSet::new(),
+            first_copies: BTreeMap::new(),
             cluster_domain: None,
         }
     }
@@ -334,6 +341,16 @@ impl DeployIntent {
     #[must_use]
     pub fn with_deployed_volumes(mut self, volumes: BTreeSet<DockerVolumeName>) -> Self {
         self.deployed_volumes = volumes;
+        self
+    }
+
+    /// The Server each Managed Volume's first copy was placed on.
+    #[must_use]
+    pub fn with_first_copies(
+        mut self,
+        first_copies: BTreeMap<DockerVolumeName, MachineId>,
+    ) -> Self {
+        self.first_copies = first_copies;
         self
     }
 
@@ -605,7 +622,9 @@ impl<E> RestoreAttempt<E> {
             Self::NewerServing => {
                 "A newer deploy is already serving; the old Container will not serve again."
             }
-            Self::Failed { .. } => "Could not restore the old Container.",
+            Self::Failed { .. } => {
+                "Could not restore the old Container. It stays stopped until you deploy the Service again."
+            }
         }
     }
 }
@@ -888,7 +907,16 @@ pub struct VolumeToCreate {
     /// Positive Provisioned Volume bound; absent for an ordinary named Volume.
     #[serde(default)]
     pub maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
+    /// Set when no Server holds a copy of this Managed Volume, so this makes its first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_copy: Option<FirstCopy>,
 }
+
+/// A Managed Volume's first copy. The Store records the Server it goes on, and a
+/// Server it recorded stands until the Volume or the Cluster goes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct FirstCopy {}
 
 /// A Namespace-owned Docker Volume this Deploy keeps because it is omitted
 /// from this Deploy's target.
@@ -1337,7 +1365,7 @@ pub struct OutOfMemory {
     pub memory_bytes: Option<ByteQuantity>,
 }
 
-/// A stopped Container's last run, as its Server's Log Store holds it.
+/// A stopped Container's last run, as Docker still holds it when the runner reads it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct LastRun {
     /// The code its newest exit had; `None` when Docker didn't say, or none is stored yet.
@@ -1420,7 +1448,7 @@ pub enum ExecutionError {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         out_of_memory: Option<OutOfMemory>,
-        /// What its Server's Log Store held of the run that ended, which the runner
+        /// What Docker held of the run that ended, which the runner
         /// reads once the Container stops: Machines don't send it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]

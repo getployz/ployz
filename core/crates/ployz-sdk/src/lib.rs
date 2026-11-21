@@ -471,29 +471,6 @@ impl Client {
         })
     }
 
-    /// Read one page of one Machine's Log Store, scrubbed of the Sealed values `sealed` names.
-    /// # Errors
-    /// Returns malformed input and Machine transport failures.
-    #[napi(ts_return_type = "Promise<LogHistoryStream>")]
-    pub fn log_history(
-        &self,
-        env: Env,
-        #[napi(ts_arg_type = "unknown")] input: serde_json::Value,
-        sealed: &SealedNames,
-    ) -> Result<napi::JsObject> {
-        let session = self.inner.clone();
-        let names = sealed.inner.clone();
-        env.spawn_future(async move {
-            let input = from_js(input).map_err(invalid_argument)?;
-            Ok(LogHistoryStream {
-                inner: session
-                    .scrubbed_history(input, &names)
-                    .await
-                    .map_err(rpc_to_napi)?,
-            })
-        })
-    }
-
     /// Open a Runtime Watch stream of complete frames.
     ///
     /// # Errors
@@ -1263,32 +1240,6 @@ impl ContainerLogStream {
             .transpose()
     }
     /// Stop this reader without closing its session.
-    #[napi]
-    pub fn cancel(&self) {
-        self.inner.cancel();
-    }
-}
-
-/// Cancellable reader of one Log Store page.
-#[napi]
-pub struct LogHistoryStream {
-    inner: sdk::ScrubbedHistoryStream,
-}
-#[napi]
-impl LogHistoryStream {
-    /// Next row of the page, or null after its `end`.
-    /// # Errors
-    /// Returns the store's error and Machine transport failures.
-    #[napi(ts_return_type = "Promise<LogHistoryRecord | null>")]
-    pub async fn next(&self) -> Result<Option<serde_json::Value>> {
-        self.inner
-            .next()
-            .await
-            .map_err(rpc_to_napi)?
-            .map(|row| to_json(&row))
-            .transpose()
-    }
-    /// Stop this read without closing its session.
     #[napi]
     pub fn cancel(&self) {
         self.inner.cancel();

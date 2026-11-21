@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::authority::{ServiceVersion, Signed};
 use ployz_core::{Hint, Region, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, CiVerdict, ConfigStore, Deploy, DeployedNode, DeploymentId, DeploymentStatus,
@@ -304,7 +303,7 @@ pub(super) fn upload_and_ship(
     // An upload builds an image no Device can name before it exists.
     let device = match &listing {
         Some(_) => None,
-        None => approve::sign(matches, store, &id, (&environment, &services))?,
+        None => approve::sign(matches, store, (&environment, &services))?,
     };
     let version = version.or_else(|| device.as_ref().map(|device| device.version.clone()));
     if let Some((dir, listing)) = &listing {
@@ -321,22 +320,14 @@ pub(super) fn upload_and_ship(
             message,
             prune: false,
             no_prune,
-            approval: device
+            versions: device
                 .as_ref()
-                .map(|device| Box::new(device.signed.clone())),
+                .map(|device| device.versions.clone())
+                .unwrap_or_default(),
         }))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
-    let (approved, versions) = device
-        .map(|device| (device.approved, device.versions))
-        .unwrap_or_default();
-    let mut shipped = execute_signed(
-        matches,
-        store,
-        &admitted,
-        (source.as_deref(), versions),
-        events,
-    )?;
-    shipped.approved = approved;
+    let mut shipped = execute(matches, store, &admitted, source.as_deref(), events)?;
+    shipped.approved = device.map(|device| device.approved).unwrap_or_default();
     Ok(shipped)
 }
 
@@ -447,18 +438,6 @@ pub(super) fn execute(
     source: Option<&Path>,
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
-    execute_signed(matches, store, admitted, (source, Vec::new()), events)
-}
-
-/// [`execute`], handing a run in this process the versions this Device signed. A Store
-/// run elsewhere never sees them.
-fn execute_signed(
-    matches: &ArgMatches,
-    store: &Store,
-    admitted: &DeploymentSummary,
-    (source, versions): (Option<&Path>, Vec<Signed<ServiceVersion>>),
-    events: Option<std::io::BufWriter<std::fs::File>>,
-) -> Result<Shipped, Error> {
     let hint = hint_for(matches, admitted);
     let (signal, _sigterm) = crate::cancellation::interrupted_or_terminated()?;
     let mut runner = match store.local() {
@@ -468,13 +447,7 @@ fn execute_signed(
             Some(OwnedRunner {
                 store,
                 id: admitted.id.clone(),
-                handle: Some(run_here(
-                    matches,
-                    local,
-                    admitted,
-                    (source, versions),
-                    ended.clone(),
-                )?),
+                handle: Some(run_here(matches, local, admitted, source, ended.clone())?),
                 ended,
             })
         }
@@ -644,7 +617,7 @@ fn run_here(
     matches: &ArgMatches,
     local: &std::sync::Arc<ConfigStore>,
     admitted: &DeploymentSummary,
-    (source, versions): (Option<&Path>, Vec<Signed<ServiceVersion>>),
+    source: Option<&Path>,
     ended: tokio_util::sync::CancellationToken,
 ) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
     let direct = matches.get_one::<String>("connect").map(String::as_str);
@@ -665,7 +638,6 @@ fn run_here(
         checkouts: BTreeMap::new(),
         upload: source.map(Path::to_path_buf),
         reader: None,
-        versions,
     };
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
     let runtime = runtime()?;
@@ -1539,7 +1511,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             rolls_back,
             version: matches.get_one::<String>("expect-version").cloned(),
             accept_volume_loss: accept,
-            approval: None,
+            versions: Vec::new(),
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)

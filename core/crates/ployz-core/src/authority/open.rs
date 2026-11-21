@@ -1,5 +1,5 @@
 //! The opening steps the approval verifiers share: finding which approver signed as the
-//! body says, and opening a deploy approval alone or as a step of a proposal.
+//! body says, and opening a signed version alone or as a step of a proposal.
 
 use super::{
     keys::{Approver, Signed, SignerKey},
@@ -27,7 +27,7 @@ pub(super) fn the_signer(
 
 /// Open `approval` as the body it carries, its approver and this Machine's Cluster key:
 /// a single approval signed by a Device, or a step of the proposal bundle it carries. The
-/// caller checks the body against its request and the window.
+/// caller checks the body against its request.
 ///
 /// # Errors
 /// Returns the first [`AuthorityRefusal`] found: a signature problem, a malformed

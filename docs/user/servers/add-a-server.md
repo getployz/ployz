@@ -603,7 +603,7 @@ images from ghcr.io.
   forgotten, the retry is refused and says how to add it with `--reset` and a new token. Once the server has joined, a retry must match it; to add the host again
   with other options, run `ployz-uninstall` on it, remove the old server, and add it again.
 - **Client IPs stay out of Ployz's web server logs, not your app's.** Caddy passes the client IP to
-  your app in `X-Forwarded-For`, over IPv4 and IPv6. If your app logs requests, its logs, and the Log Store's copy of
+  your app in `X-Forwarded-For`, over IPv4 and IPv6. If your app logs requests, its logs, and Cloud's copy of
   them, can hold client IPs and user agents. Those logs are yours to manage.
 
 Next: [manage your servers](manage-servers.md).

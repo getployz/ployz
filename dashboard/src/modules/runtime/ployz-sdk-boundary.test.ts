@@ -16,6 +16,7 @@ const VALUE_IMPORT_ALLOWLIST = new Set([
   "modules/config-store/running-evidence.server.ts",
   "modules/config-store/store-sdk.server.ts",
   "modules/config-store/volume-evidence.server.ts",
+  "modules/machines/server-drain.inngest.postgres.test.ts",
   "modules/machines/enrollment.server.ts",
   "modules/volume-placement/volume-placement.postgres.test.ts",
   "modules/volume-placement/volume-placement.restore.postgres.test.ts",

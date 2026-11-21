@@ -428,6 +428,7 @@ fn serve(
             )
         }
         (Some(_), "/api/cli/agent/ask") => (200, servers_read(&body)),
+        (Some(_), "/api/logs/read") => (200, json!({ "lines": [], "cursor": null })),
         (Some(_), route) if let Some(route) = route.strip_prefix("/api/cli/") => {
             approvals.run(&method, route, &body, approval.as_deref())
         }
@@ -4832,6 +4833,7 @@ fn reading_through_cloud_refuses_a_name_nothing_answered_for() {
         )
     );
     // Withheld lines say why in words; the JSON keeps the code.
+    ok(&linus, &["service", "add", "cache", "--image", "nginx:1"]);
     let home = tempfile::tempdir().unwrap();
     let output = linus
         .command(home.path())
@@ -6087,7 +6089,7 @@ fn applied(store: &Target, environment: &str) {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             });
             local
                 .write_trusted(&who, &deploy, &Trusted::default())

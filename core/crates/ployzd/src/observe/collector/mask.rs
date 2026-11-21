@@ -53,7 +53,7 @@ fn json_escaped(text: &str) -> String {
 
 fn statement(rule: &Rule) -> String {
     format!(
-        "replace_pattern(body, {}, {})",
+        "replace_pattern(log.body, {}, {})",
         quoted(&rule.pattern),
         quoted(&rule.marker.replace('$', "$$$$")),
     )
@@ -144,8 +144,8 @@ mod tests {
         let statements = statements(&fragment(&values()));
         assert_eq!(statements.len(), rules.len());
         for (statement, rule) in statements.iter().zip(&rules) {
-            assert!(statement.starts_with("replace_pattern(body, \""));
-            let literal = &statement["replace_pattern(body, ".len()..];
+            assert!(statement.starts_with("replace_pattern(log.body, \""));
+            let literal = &statement["replace_pattern(log.body, ".len()..];
             let end = literal.find("\", \"").unwrap() + 1;
             assert_eq!(
                 serde_json::from_str::<String>(&literal[..end]).unwrap(),
@@ -158,7 +158,7 @@ mod tests {
     fn no_values_masks_nothing() {
         assert_eq!(
             statements(&fragment(&SealedValues::none())),
-            [r#"replace_pattern(body, "[^\\s\\S]", "")"#]
+            [r#"replace_pattern(log.body, "[^\\s\\S]", "")"#]
         );
     }
 
@@ -170,7 +170,7 @@ mod tests {
         };
         assert_eq!(
             statement(&rule),
-            r#"replace_pattern(body, "x", "[secret A$$$$1]")"#
+            r#"replace_pattern(log.body, "x", "[secret A$$$$1]")"#
         );
     }
 }

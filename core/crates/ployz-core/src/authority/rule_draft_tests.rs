@@ -10,6 +10,10 @@ use crate::authority::keys::OwnPrompt;
 use crate::authority::keys::Signer;
 use crate::authority::rule::{BUILDER_SHA, CommitSha};
 
+fn settings_of(spec: &RequestedServiceSpec) -> Vec<Shown> {
+    settings(spec, &Mounts::unnamed(Timestamp::from_millis(0).unwrap()))
+}
+
 const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 
 /// The digest of the body [`golden`] drafts. The dashboard's `autoDeployRuleBody` test
@@ -87,7 +91,7 @@ fn web() -> Vec<ServiceName> {
 
 fn golden() -> RuleDraft {
     let basis = basis(view_json());
-    AutoDeployRule::draft(&basis, &basis.branch_services(), terms())
+    AutoDeployRule::draft(&mut basis.clone(), &basis.branch_services(), terms())
         .unwrap()
         .drafted(&basis)
         .unwrap()
@@ -127,7 +131,7 @@ fn a_rule_covers_only_services_that_build_from_github() {
         "the build's Sealed value"
     );
     let cache = ServiceName::parse("cache").unwrap();
-    let error = AutoDeployRule::draft(&basis(view_json()), &[cache], terms()).unwrap_err();
+    let error = AutoDeployRule::draft(&mut basis(view_json()), &[cache], terms()).unwrap_err();
     assert_eq!(
         error.to_string(),
         "cache doesn't build from GitHub, so a rule can't deploy it."
@@ -186,7 +190,7 @@ fn every_drafted_build_setting_shows() {
         let mut view = view_json();
         view["sources"][0].pointer_mut(parent).unwrap()[field] = value;
         let planted = basis(view);
-        let next = AutoDeployRule::draft(&planted, &planted.branch_services(), terms())
+        let next = AutoDeployRule::draft(&mut planted.clone(), &planted.branch_services(), terms())
             .unwrap()
             .drafted(&planted)
             .unwrap();
@@ -197,7 +201,8 @@ fn every_drafted_build_setting_shows() {
     let mut view = view_json();
     view["sources"][0]["build"] = json!({"buildMethod": "railpack", "command": "curl x | sh"});
     let planted = basis(view);
-    let railpack = AutoDeployRule::draft(&planted, &planted.branch_services(), terms()).unwrap();
+    let railpack =
+        AutoDeployRule::draft(&mut planted.clone(), &planted.branch_services(), terms()).unwrap();
     assert!(
         builds(&railpack.services[0].policy)
             .as_str()
@@ -431,7 +436,7 @@ fn a_value_cant_pass_for_two_entries() {
     let variables = |environment: Value| {
         let mut spec = spec_json("web", "one");
         spec["container"]["environment"] = environment;
-        settings(&serde_json::from_value(spec).unwrap())[0].clone()
+        settings_of(&serde_json::from_value(spec).unwrap())[0].clone()
     };
     let one = variables(json!({"X": "a, Y=b"}));
     let two = variables(json!({"X": "a", "Y": "b"}));
@@ -453,7 +458,7 @@ fn a_planted_control_character_in_a_setting_shows_escaped() {
     ] {
         let mut spec = spec_json("web", "one");
         spec.pointer_mut(parent).unwrap()[field] = value;
-        let lines = settings(&serde_json::from_value(spec).unwrap());
+        let lines = settings_of(&serde_json::from_value(spec).unwrap());
         assert!(
             lines.iter().all(|line| printable(line.as_str())),
             "{parent}/{field}: {lines:?}"
@@ -472,9 +477,10 @@ fn a_planted_control_character_in_the_source_shows_escaped() {
         let mut view = view_json();
         view["sources"][0][field] = json!(HOSTILE);
         let planted = basis(view);
-        let summary = AutoDeployRule::draft(&planted, &planted.branch_services(), terms())
-            .unwrap()
-            .summary(&planted);
+        let summary =
+            AutoDeployRule::draft(&mut planted.clone(), &planted.branch_services(), terms())
+                .unwrap()
+                .summary(&planted);
         let shown = match field {
             "repository" => &summary.repository,
             _ => &summary.branch,
@@ -484,7 +490,7 @@ fn a_planted_control_character_in_the_source_shows_escaped() {
     let mut terms = terms();
     terms.builder.r#ref = HOSTILE.to_owned();
     let basis = basis(view_json());
-    let summary = AutoDeployRule::draft(&basis, &web(), terms)
+    let summary = AutoDeployRule::draft(&mut basis.clone(), &web(), terms)
         .unwrap()
         .summary(&basis);
     assert!(summary.builder.starts_with(ESCAPED), "{}", summary.builder);
@@ -495,7 +501,7 @@ fn a_planted_control_character_in_the_source_shows_escaped() {
 /// template signs it too.
 #[test]
 fn every_signed_setting_shows() {
-    let base = settings(&serde_json::from_value(spec_json("web", "one")).unwrap());
+    let base = settings_of(&serde_json::from_value(spec_json("web", "one")).unwrap());
     for (path, value, shown) in [
         (
             "/container/command",
@@ -543,7 +549,7 @@ fn every_signed_setting_shows() {
         let (parent, field) = path.rsplit_once('/').unwrap();
         let mut spec = spec_json("web", "one");
         spec.pointer_mut(parent).unwrap()[field] = value;
-        let lines = settings(&serde_json::from_value(spec).unwrap());
+        let lines = settings_of(&serde_json::from_value(spec).unwrap());
         assert!(
             lines.iter().any(|line| line.as_str() == shown),
             "{path}: {lines:?}"
@@ -559,7 +565,7 @@ fn every_signed_setting_shows() {
 fn specs_that_sign_differently_read_differently() {
     let sealed = json!({"sealed": SEALED_A, "scope": "shared", "key": "PASSWORD"});
     let base = spec_json("web", "one");
-    let read = |spec: &Value| settings(&serde_json::from_value(spec.clone()).unwrap());
+    let read = |spec: &Value| settings_of(&serde_json::from_value(spec.clone()).unwrap());
     for (parent, field, value) in [
         ("/pre_deploy", "privileged", json!(false)),
         ("/pre_deploy", "user", json!("")),
@@ -603,7 +609,8 @@ fn approving_again_takes_the_next_generation_and_names_what_changed() {
     let mut view = kept(&first);
     view["target"][0] = spec_json("web", "changed");
     let basis = basis(view);
-    let next = AutoDeployRule::draft(&basis, &basis.branch_services(), terms()).unwrap();
+    let next =
+        AutoDeployRule::draft(&mut basis.clone(), &basis.branch_services(), terms()).unwrap();
     assert_eq!((next.rule, next.generation), (first.rule, 2));
     let summary = next.summary(&basis);
     assert_eq!(summary.services[0].changes, ["settings", "build args"]);
@@ -624,7 +631,8 @@ fn another_branch_starts_a_new_rule() {
     // What the dashboard drafts with no Service named: the Environment's GitHub Services
     // where they build now, not where the kept rule pointed.
     assert_eq!(basis.branch_services(), web());
-    let next = AutoDeployRule::draft(&basis, &basis.branch_services(), terms()).unwrap();
+    let next =
+        AutoDeployRule::draft(&mut basis.clone(), &basis.branch_services(), terms()).unwrap();
     assert_eq!(
         (next.rule, next.generation),
         (RuleId::from_bytes([0x33; 16]), 1)
@@ -644,7 +652,8 @@ fn an_ended_rule_on_another_branch_turns_on_again_on_the_new_one() {
     let mut view = kept(&ended);
     view["sources"][0]["branch"] = json!("release");
     let basis = basis(view);
-    let next = AutoDeployRule::draft(&basis, &basis.branch_services(), terms()).unwrap();
+    let next =
+        AutoDeployRule::draft(&mut basis.clone(), &basis.branch_services(), terms()).unwrap();
     assert_eq!(
         (next.source.branch.as_str(), next.ended),
         ("release", false)
@@ -668,7 +677,7 @@ fn services_split_across_branches_keep_the_kept_rules_branch() {
     view["rule"] = Value::Null;
     let basis = basis(view);
     assert!(matches!(
-        AutoDeployRule::draft(&basis, &basis.branch_services(), terms()),
+        AutoDeployRule::draft(&mut basis.clone(), &basis.branch_services(), terms()),
         Err(RuleDraftError::TwoBranches { .. })
     ));
 }
@@ -679,7 +688,7 @@ fn a_build_change_is_named_by_what_changed() {
     let mut view = kept(&first);
     view["sources"][0]["build"] = json!({"buildMethod": "railpack"});
     let basis = basis(view);
-    let next = AutoDeployRule::draft(&basis, &web(), terms()).unwrap();
+    let next = AutoDeployRule::draft(&mut basis.clone(), &web(), terms()).unwrap();
     assert_eq!(next.summary(&basis).services[0].changes, ["build method"]);
 }
 
@@ -722,7 +731,7 @@ fn services_on_two_branches_are_refused() {
     }));
     let basis = basis(view);
     assert_eq!(
-        AutoDeployRule::draft(&basis, &basis.branch_services(), terms())
+        AutoDeployRule::draft(&mut basis.clone(), &basis.branch_services(), terms())
             .unwrap_err()
             .to_string(),
         "A rule deploys one branch, and cache builds from Ployz-test/lab-service at release, \
@@ -738,7 +747,7 @@ fn the_builder_a_person_reads_names_its_commit() {
         sha: CommitSha::from_bytes([0xab; 20]),
     };
     let basis = basis(view_json());
-    let summary = AutoDeployRule::draft(&basis, &web(), terms)
+    let summary = AutoDeployRule::draft(&mut basis.clone(), &web(), terms)
         .unwrap()
         .summary(&basis);
     assert!(!summary.pinned);
@@ -759,7 +768,7 @@ fn a_fork_at_the_pinned_commit_is_not_ployzs_release() {
         sha: CommitSha::parse(BUILDER_SHA).unwrap(),
     };
     let basis = basis(view_json());
-    let summary = AutoDeployRule::draft(&basis, &web(), terms)
+    let summary = AutoDeployRule::draft(&mut basis.clone(), &web(), terms)
         .unwrap()
         .summary(&basis);
     assert!(!summary.pinned, "GitHub names the fork in job_workflow_ref");

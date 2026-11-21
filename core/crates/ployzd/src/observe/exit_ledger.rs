@@ -4,8 +4,8 @@
 //! A run's `kill`, `stop` and `oom` events can come before or after the `die`
 //! of the run they belong to, so the ledger keeps each run's evidence until
 //! the inspect that follows its exit settles it. An exit then lands in
-//! `exits.jsonl`, the metric segment, the crash `Outbox` and the
-//! [`Settlements`] record through [`Settler::settle`].
+//! the metric segment, the crash `Outbox` and the [`Settlements`] record
+//! through [`Settler::settle`].
 
 use std::{
     collections::{HashMap, HashSet},
@@ -23,7 +23,7 @@ use ployz_core::{
 
 use super::{
     clock::rfc3339_nanos,
-    layout::{EXITS_FILE, RunExit, StoreRoot, append_line},
+    layout::StoreRoot,
     metrics::segment::{self, Prefilter, Row},
     settled::{Key, Settlement, Settlements, Unfinished},
     ship::Outbox,
@@ -143,7 +143,6 @@ impl Exit {
 }
 
 pub(super) struct ExitLedger {
-    store: StoreRoot,
     /// What the events said of each container's current run.
     runs: HashMap<ContainerId, Run>,
     /// Exits that wait on the inspect that follows them: Docker can send
@@ -158,7 +157,6 @@ pub(super) struct ExitLedger {
 impl ExitLedger {
     pub(super) fn new(store: &StoreRoot, crashes: Arc<Outbox>) -> Self {
         Self {
-            store: store.clone(),
             runs: HashMap::new(),
             exits: HashMap::new(),
             stop_signals: HashMap::new(),
@@ -240,29 +238,7 @@ impl ExitLedger {
         };
         for exit in exits {
             let marker = exit.settle(state, stop_signal);
-            self.keep_exit(&marker);
             self.settler.settle(marker);
-        }
-    }
-
-    /// Keeps the exit beside the container's logs, which hold every run.
-    /// A container the store does not hold has no directory to keep it in.
-    /// It stays outside [`Settler::settle`], which a settled exit makes a
-    /// no-op: an exit settled again once the OOM kill is learned rewrites it.
-    fn keep_exit(&self, marker: &MetricMarker) {
-        let MarkerKind::Exit { exit_code, oom, .. } = marker.kind else {
-            return;
-        };
-        let id = marker.container_id;
-        let exit = RunExit {
-            ts: marker.ts,
-            exit_code,
-            oom_killed: oom,
-        };
-        if let Err(error) = append_line(&self.store.container(&id).join(EXITS_FILE), &exit)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::warn!(container = %id, %error, "cannot keep a run's exit for history");
         }
     }
 }

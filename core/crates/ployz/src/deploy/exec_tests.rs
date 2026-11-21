@@ -105,6 +105,8 @@ enum Reply {
     CreatedAfter(ContainerId, fn() -> tokio::time::Sleep),
     /// Absent once the test's own delay ends.
     OkAfter(fn() -> tokio::time::Sleep),
+    /// The Machine made this Container, but its answer was lost on the way back.
+    CreatedLost(ContainerId, RpcError),
     Observed(
         ContainerRuntimeObservation,
         Option<ployz_core::HealthcheckSpec>,
@@ -114,6 +116,8 @@ enum Reply {
     ObservedDoor(QualifiedService, ContainerRuntimeObservation),
     Pending,
     Error(RpcError),
+    /// A typed refusal, naming the Container in the slot when there is one.
+    Refused(ContainerRefusalReason, Option<ContainerId>),
 }
 
 struct Step(Call, Reply);
@@ -230,7 +234,11 @@ struct Scripted {
     steps: Mutex<VecDeque<Step>>,
     observations: Option<Vec<ContainerObservation>>,
     observed_specs: BTreeMap<ContainerId, ResolvedServiceSpec>,
+    /// The image ID an inspect reports for each copy; none when absent.
+    image_ids: BTreeMap<ContainerId, String>,
     slots: Mutex<Vec<SlotKey>>,
+    /// The image ID each new creation was pinned to, and the spec it sent.
+    pins: Mutex<Vec<(Option<ployz_core::ImageDigest>, ResolvedServiceSpec)>>,
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
     /// The run each In ask carried, by copy.
@@ -316,7 +324,9 @@ impl Scripted {
             steps: Mutex::new(steps.into()),
             observations: None,
             observed_specs: BTreeMap::new(),
+            image_ids: BTreeMap::new(),
             slots: Mutex::new(Vec::new()),
+            pins: Mutex::new(Vec::new()),
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
             in_runs: Mutex::new(Vec::new()),
@@ -884,6 +894,7 @@ impl Scripted {
                 return Ok(EnsuredContainer::Ensured {
                     now: self.now(machine_id, &container_id),
                     health: None,
+                    verified: None,
                 });
             }
             Decision::Refused(refusal) => {
@@ -922,9 +933,11 @@ impl Scripted {
                     Reply::Pending => std::future::pending().await,
                     Reply::Listed(_)
                     | Reply::CreatedAfter(..)
+                    | Reply::CreatedLost(..)
                     | Reply::OkAfter(_)
                     | Reply::Observed(..)
-                    | Reply::ObservedDoor(..) => {
+                    | Reply::ObservedDoor(..)
+                    | Reply::Refused(..) => {
                         panic!("scripted restart requires Ok, Settled or Error")
                     }
                 }
@@ -936,6 +949,7 @@ impl Scripted {
                 return Ok(EnsuredContainer::Ensured {
                     now: self.now(machine_id, &container_id),
                     health: Some(verdict),
+                    verified: None,
                 });
             }
         }
@@ -963,6 +977,7 @@ impl Scripted {
         Ok(EnsuredContainer::Ensured {
             now: self.now(machine_id, &container_id),
             health: routing.then_some(HealthVerdict::Healthy),
+            verified: None,
         })
     }
 
@@ -1074,16 +1089,24 @@ impl Scripted {
             cancel.cancel();
         }
         let healthy = settled.then_some(HealthVerdict::Healthy);
+        let discarded = match (&call, &of) {
+            (Call::DiscardSlot(..), ContainerLocator::Key(slot)) => Some(slot.clone()),
+            _ => None,
+        };
         let reply = self.next(call.clone());
         let container_id = match &reply {
-            Reply::Created(id) | Reply::Settled(id, _) | Reply::CreatedAfter(id, _) => Some(*id),
+            Reply::Created(id)
+            | Reply::Settled(id, _)
+            | Reply::CreatedAfter(id, _)
+            | Reply::CreatedLost(id, _) => Some(*id),
             Reply::Ok
             | Reply::OkAfter(_)
             | Reply::Listed(_)
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
             | Reply::Pending
-            | Reply::Error(_) => None,
+            | Reply::Error(_)
+            | Reply::Refused(..) => None,
         };
         if let (Some((service, kind, r#gen, deploy, key)), Some(id)) = (created, container_id) {
             self.copies.lock().unwrap().insert(
@@ -1102,7 +1125,13 @@ impl Scripted {
                 },
             );
         }
-        let ensured = |now, health| Ok(EnsuredContainer::Ensured { now, health });
+        let ensured = |now, health| {
+            Ok(EnsuredContainer::Ensured {
+                now,
+                health,
+                verified: None,
+            })
+        };
         let present = |container_id: &ContainerId| self.now(machine_id, container_id);
         let answer = match reply {
             Reply::Created(container_id) => ensured(present(&container_id), healthy),
@@ -1119,7 +1148,11 @@ impl Scripted {
                 delay().await;
                 ensured(ContainerNow::Absent { of }, None)
             }
-            Reply::Error(error) => Err(error),
+            Reply::Error(error) | Reply::CreatedLost(_, error) => Err(error),
+            Reply::Refused(reason, occupant) => Ok(EnsuredContainer::Refused {
+                now: occupant.map_or(ContainerNow::Absent { of }, |id| present(&id)),
+                refusal: refusal(reason, "refused"),
+            }),
             Reply::Pending => std::future::pending().await,
             Reply::Listed(_) | Reply::Observed(..) | Reply::ObservedDoor(..) => {
                 panic!("scripted ensure requires Created, Ok or Error")
@@ -1135,11 +1168,22 @@ impl Scripted {
                     self.record(id, |copy| copy.present = false);
                     self.applied(Move::Gone(id));
                 }
+                // A Gone by key removes only what was made under that key.
+                Call::DiscardSlot(..) => {
+                    let slot = discarded.expect("a discard names its slot");
+                    for copy in self.copies.lock().unwrap().values_mut() {
+                        if copy.machine_id == machine
+                            && copy.kind == slot.kind
+                            && copy.key.as_ref() == Some(&slot.creation_key)
+                        {
+                            copy.present = false;
+                        }
+                    }
+                }
                 Call::Prepare(_)
                 | Call::List(_)
                 | Call::Run(..)
                 | Call::Inspect(..)
-                | Call::DiscardSlot(..)
                 | Call::RemoveVolume(_)
                 | Call::UpdateLimits(..)
                 | Call::UpdatePlacement(..) => {}
@@ -1212,10 +1256,12 @@ impl CopyLifecycle for Scripted {
             | Reply::Created(_)
             | Reply::Settled(..)
             | Reply::CreatedAfter(..)
+            | Reply::CreatedLost(..)
             | Reply::OkAfter(_)
             | Reply::Observed(..)
             | Reply::ObservedDoor(..)
-            | Reply::Pending => {
+            | Reply::Pending
+            | Reply::Refused(..) => {
                 panic!("scripted list requires Listed or Error")
             }
         }
@@ -1269,6 +1315,24 @@ impl CopyLifecycle for Scripted {
         want: ContainerWant,
     ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
         self.converge(machine_id, want).await?.into_settled()
+    }
+
+    async fn ensure_new(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+    ) -> Result<EnsuredContainer, RpcError> {
+        if let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = &want
+        {
+            self.pins
+                .lock()
+                .unwrap()
+                .push((new.image_id.clone(), new.resolved_spec.clone()));
+        }
+        self.converge(machine_id, want).await
     }
 
     async fn ensure_unsettled(
@@ -1348,9 +1412,10 @@ impl CopyLifecycle for Scripted {
                 Ok(ContainerDetails {
                     container: self.recorded(container),
                     environment: None,
-                    image_id: None,
+                    image_id: self.image_ids.get(container_id).cloned(),
                     last_check,
                     run: None,
+                    last_exit_code: None,
                     leaving: false,
                 })
             }
@@ -1368,6 +1433,7 @@ impl CopyLifecycle for Scripted {
                     image_id: None,
                     last_check: None,
                     run: None,
+                    last_exit_code: None,
                     leaving: false,
                 })
             }
@@ -1378,7 +1444,9 @@ impl CopyLifecycle for Scripted {
             | Reply::Created(_)
             | Reply::Settled(..)
             | Reply::CreatedAfter(..)
-            | Reply::OkAfter(_) => {
+            | Reply::CreatedLost(..)
+            | Reply::OkAfter(_)
+            | Reply::Refused(..) => {
                 panic!("scripted inspect requires Observed or Error")
             }
         }
@@ -1505,10 +1573,12 @@ fn unit(reply: Reply) -> Result<(), RpcError> {
         | Reply::Created(_)
         | Reply::Settled(..)
         | Reply::CreatedAfter(..)
+        | Reply::CreatedLost(..)
         | Reply::OkAfter(_)
         | Reply::Observed(..)
         | Reply::ObservedDoor(..)
-        | Reply::Pending => {
+        | Reply::Pending
+        | Reply::Refused(..) => {
             panic!("scripted mutation requires Ok or Error")
         }
     }
@@ -1844,6 +1914,7 @@ fn unhealthy_run(machine: MachineId, container_id: &ContainerId) -> Step {
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                last_exit_code: None,
                 departing: None,
             },
         ),
@@ -1886,6 +1957,7 @@ fn exited_leaving() -> HealthVerdict {
         observation: exited(0),
         last_check: None,
         oom_killed: false,
+        last_exit_code: None,
         departing: Some(departure()),
     }
 }
@@ -1973,6 +2045,7 @@ fn provisioned_spec() -> ResolvedServiceSpec {
             std::num::NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
         ),
         labels: Default::default(),
+        birth: None,
     }
     .admit()
     .unwrap();

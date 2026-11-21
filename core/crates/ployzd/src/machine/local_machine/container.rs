@@ -15,9 +15,9 @@ use ployz_core::{
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
     ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
-    PruneImagesRequest, PullImageFromMachineRequest, PullImageRequest, QualifiedService,
-    ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal, RotationTarget, RunRotation,
-    RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
+    PruneImagesRequest, PullFreeImageRequest, PullImageFromMachineRequest, PullImageRequest,
+    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationEdge, RotationRefusal,
+    RotationTarget, RunRotation, RunTarget, Start, StopOptions, VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
@@ -102,12 +102,21 @@ impl LocalMachine {
     }
 
     /// Recheck the complete local placement and secure all provisioned Volumes before applications start.
+    ///
+    /// Holds the switch lock, as a Forget does, from before the admission turn through
+    /// provisioning, so no Forget lands between the read of the forgotten record and
+    /// the read of the copy.
     pub(crate) async fn prepare_volumes(
         &self,
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::RawVolumeSource;
+        let switch = match &self.switch {
+            Some(lock) => Some(Arc::clone(lock).lock_owned().await),
+            None => None,
+        };
         self.finish_mutation(move |local| async move {
+            let _switch = switch;
             let containers = local.docker()?;
             let record = local.record();
             if !record.has_cluster_identity() {
@@ -116,6 +125,7 @@ impl LocalMachine {
             let machine = record.machine().ok_or(Error::NotParticipating)?;
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();
+            let mut mounted = std::collections::BTreeMap::new();
             for spec in &specs {
                 crate::docker::require_eligible(
                     spec.placement_eligibility(machine, storage.as_ref()),
@@ -129,6 +139,7 @@ impl LocalMachine {
                     else {
                         unreachable!("provisioned iterator")
                     };
+                    mounted.entry(name.clone()).or_insert(volume);
                     if let Some(existing) = requested.insert(name.clone(), *maximum_bytes)
                         && existing != *maximum_bytes
                     {
@@ -144,8 +155,9 @@ impl LocalMachine {
                 .volumes()
                 .validate_provisioned_volumes(&machine.id, &specs)
                 .await?;
-            for name in requested.keys() {
-                local.admit_plain_mount(&machine.id, name).await?;
+            for (name, volume) in &mounted {
+                let forgot = containers.lifecycle().forgot_here(volume).await?;
+                local.admit_plain_mount(&machine.id, name, forgot).await?;
             }
             let names: Vec<ployz_core::DockerVolumeName> = local
                 .plugin()
@@ -161,11 +173,13 @@ impl LocalMachine {
     }
 
     /// A plain Deploy mounts `name` only on its writer: this Machine's writable root, or
-    /// nothing at all while no other Machine holds a copy.
+    /// nothing at all while no other Machine holds a copy. `forgot` says this Machine
+    /// forgot a copy of the data, which then lives elsewhere however late the view.
     async fn admit_plain_mount(
         &self,
         me: &ployz_core::MachineId,
         name: &DockerVolumeName,
+        forgot: bool,
     ) -> Result<(), Error> {
         use ployz_core::{CopyRole, DockerVolumeStorageObservation, KnownCopy, SwitchError};
         let held: ployz_core::VolumeCopyView = self
@@ -199,7 +213,12 @@ impl LocalMachine {
                 })
             })
             .collect();
-        match ployz_core::admit_plain_mount(held.copy.as_ref(), &elsewhere) {
+        let admitted = if forgot && held.copy.is_none() {
+            Err(SwitchError::NoWriter)
+        } else {
+            ployz_core::admit_plain_mount(held.copy.as_ref(), &elsewhere)
+        };
+        match admitted {
             Ok(()) => Ok(()),
             Err(SwitchError::NoWriter) => {
                 // This Server's own slot is a copy Restore can name, beside any elsewhere.
@@ -761,6 +780,29 @@ impl LocalMachine {
         .await
     }
 
+    /// Pull one image as an unsigned creation does, under shared admission like
+    /// [`Self::pull_image`].
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the pull is refused or
+    /// fails.
+    pub(crate) async fn pull_free_image(
+        &self,
+        request: PullFreeImageRequest,
+    ) -> Result<ImagePulled, Error> {
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, move |local| async move {
+            let exposed_ports = local
+                .docker()?
+                .images()
+                .pull_free_image(&request.image, request.policy)
+                .await?;
+            Ok(ImagePulled { exposed_ports })
+        })
+        .await
+    }
+
     /// Pull one image from peer ingest under shared admission: transfers run side by
     /// side, and exclusive work, such as Reset or image removal, waits for them.
     ///
@@ -933,6 +975,7 @@ impl LocalMachine {
             Ok(EnsuredContainer::Ensured {
                 now,
                 health: Some(mut health),
+                ..
             }) if health != HealthVerdict::Healthy => {
                 if let HealthVerdict::Failed { departing, .. }
                 | HealthVerdict::TimedOut { departing, .. } = &mut health
@@ -942,6 +985,7 @@ impl LocalMachine {
                 Ok(EnsuredContainer::Ensured {
                     now,
                     health: Some(health),
+                    verified: None,
                 })
             }
             other => other,
@@ -998,6 +1042,7 @@ impl LocalMachine {
             (Some(proxy), None) => Ok(EnsuredContainer::Ensured {
                 now: ContainerNow::Present(proxy.now),
                 health: None,
+                verified: None,
             }),
             (_, failure) => {
                 let message = failure.map_or_else(
@@ -1094,6 +1139,7 @@ impl LocalMachine {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health: None,
+            ..
         } = ensured
         else {
             return Ok(ensured);
@@ -1104,6 +1150,7 @@ impl LocalMachine {
         Ok(EnsuredContainer::Ensured {
             now: ContainerNow::Present(observed),
             health: Some(health),
+            verified: None,
         })
     }
 
@@ -1179,6 +1226,7 @@ impl LocalMachine {
                         observation,
                         last_check,
                         oom_killed: inspected.oom_killed,
+                        last_exit_code: inspected.details.last_exit_code,
                         departing: None,
                     });
                 }
@@ -1289,6 +1337,7 @@ impl LocalMachine {
     ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
+        let pin = pinned(&want);
         let replan = self
             .switch
             .as_ref()
@@ -1306,11 +1355,26 @@ impl LocalMachine {
             }
             Some(_) | None => None,
         };
+        // The Container this request created, adopted or started, which the reply reads back.
+        let mut acted = None;
         let refusal = match step {
             ContainerStep::Done => {
-                return Ok(EnsuredContainer::Ensured {
-                    now: redacted(now),
-                    health: None,
+                let differs = match (&pin, now.present()) {
+                    (Some(pin), Some(observed)) => {
+                        self.image_differs(&observed.container_id, pin).await?
+                    }
+                    _ => None,
+                };
+                return Ok(match differs {
+                    None => EnsuredContainer::Ensured {
+                        now: redacted(now),
+                        health: None,
+                        verified: None,
+                    },
+                    Some(refusal) => EnsuredContainer::Refused {
+                        now: redacted(now),
+                        refusal,
+                    },
                 });
             }
             ContainerStep::Refuse(refusal) => {
@@ -1319,17 +1383,31 @@ impl LocalMachine {
                     refusal,
                 });
             }
-            ContainerStep::CreateAndStart(new) => {
-                self.create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
-                    .await?
-            }
-            ContainerStep::Start(id) => match fence {
-                Some((run, expect)) => self.start_routed(id, run, expect, switch).await?,
-                None => {
-                    self.start_container(id, switch).await?;
-                    None
+            ContainerStep::CreateAndStart(new) => match self
+                .create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
+                .await?
+            {
+                Made::Refused(refusal) => Some(refusal),
+                Made::Acted(id, refusal) => {
+                    acted = Some(id);
+                    refusal
                 }
             },
+            ContainerStep::Start(id) => {
+                acted = Some(id);
+                match pin {
+                    Some(pin) if let Some(refusal) = self.image_differs(&id, &pin).await? => {
+                        Some(refusal)
+                    }
+                    Some(_) | None => match fence {
+                        Some((run, expect)) => self.start_routed(id, run, expect, switch).await?,
+                        None => {
+                            self.start_container(id, switch).await?;
+                            None
+                        }
+                    },
+                }
+            }
             ContainerStep::Stop { id, drain, stop } => {
                 self.finish_installed(move |local, installation| async move {
                     Ok(local
@@ -1408,11 +1486,36 @@ impl LocalMachine {
                 .await?
             }
         };
-        let now = redacted(self.container_now(&locator).await?);
+        // Read back the Container acted on, never whatever holds the slot by now: another
+        // request may have replaced it there since.
+        let read = acted.map_or(locator, ContainerLocator::Id);
+        let now = redacted(self.container_now(&read).await?);
         Ok(match refusal {
-            None => EnsuredContainer::Ensured { now, health: None },
+            None => EnsuredContainer::Ensured {
+                now,
+                health: None,
+                verified: None,
+            },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
+    }
+
+    /// Why `id` may not serve a request pinned to `pin`: it runs another image.
+    async fn image_differs(
+        &self,
+        id: &ContainerId,
+        pin: &ployz_core::ImageDigest,
+    ) -> Result<Option<ContainerRefusal>, Error> {
+        let runs = self.docker()?.lifecycle().image_of(id).await?;
+        Ok((runs.as_deref() != Some(pin.as_str())).then(|| {
+            refuse(
+                ContainerRefusalReason::ImageDiffers,
+                format!(
+                    "Container {id} runs image {}, not the pinned {pin}",
+                    runs.as_deref().unwrap_or("unknown")
+                ),
+            )
+        }))
     }
 
     async fn wait_for_admitted_work(&self) {
@@ -1458,10 +1561,11 @@ impl LocalMachine {
         fence: Option<StartFence>,
         admitted: AdmittedSpec,
         switch: Option<SwitchGuard>,
-    ) -> Result<Option<ContainerRefusal>, Error> {
+    ) -> Result<Made, Error> {
         let outcome = self
             .finish_mutation(move |local| async move {
                 let _switch = switch;
+                let pin = new.image_id.clone();
                 let created = local
                     .create_container_admitted(CreationFacts {
                         kind: new.slot.kind,
@@ -1470,18 +1574,27 @@ impl LocalMachine {
                         creation_key: new.slot.creation_key.as_str().to_owned(),
                         deployment_id: new.deployment_id,
                         r#gen: new.r#gen,
-                        image: if new.image_prepared {
-                            ImagePull::Prepared
-                        } else {
-                            ImagePull::Policy(new.registry_auth.as_ref())
+                        image: match (&pin, new.image_prepared) {
+                            (Some(pin), _) => ImagePull::Pinned(pin),
+                            (None, true) => ImagePull::Prepared,
+                            (None, false) => ImagePull::Policy(new.registry_auth.as_ref()),
                         },
                         admitted,
                     })
                     .await;
                 let created = match created {
                     Ok(created) => created,
-                    Err(error) => return create_refusal(error).map(Some),
+                    // Nothing was made, so the reply reads the slot.
+                    Err(error) => return create_refusal(error).map(Made::Refused),
                 };
+                let acted = |refusal| Made::Acted(created.container_id, refusal);
+                // A create may adopt a Container another request made from the same spec,
+                // which may run another image: it never starts for a pinned request.
+                if let Some(pin) = &pin
+                    && let Some(refusal) = local.image_differs(&created.container_id, pin).await?
+                {
+                    return Ok(acted(Some(refusal)));
+                }
                 let containers = local.docker()?;
                 // A racing create adopted a hook another request already started: never run it twice.
                 if new.slot.kind == ContainerKind::PreDeployHook {
@@ -1490,28 +1603,29 @@ impl LocalMachine {
                         .inspect_managed(&created.container_id, &local.record().id())
                         .await?;
                     if !never_started(&adopted) {
-                        return Ok(None);
+                        return Ok(acted(None));
                     }
                     local
                         .approvals
                         .mark_hook_made(new.slot.creation_key.as_str())?;
                 }
                 if let Some((run, expect)) = fence {
-                    return rotation::start_fenced(
+                    let refusal = rotation::start_fenced(
                         &local,
                         containers,
                         &created.container_id,
                         run,
                         expect.as_ref(),
                     )
-                    .await;
+                    .await?;
+                    return Ok(acted(refusal));
                 }
                 // A create may adopt a Container another request made, so its start is
                 // checked as any other.
                 local
                     .start_checked(containers, &created.container_id)
                     .await?;
-                Ok(None)
+                Ok(acted(None))
             })
             .await?;
         Ok(outcome)
@@ -1582,6 +1696,7 @@ impl LocalMachine {
                         Ok(())
                     },
                     storage: self.observe_storage(),
+                    plugin: &self.plugin,
                 },
             )
             .await
@@ -1596,6 +1711,14 @@ impl LocalMachine {
                 Error::DeployRefused(refusal)
             })
     }
+}
+
+/// What a creation did with the slot.
+enum Made {
+    /// It made nothing, so the reply reads the slot.
+    Refused(ContainerRefusal),
+    /// It made or adopted this Container, and refused to go on with it when it says why.
+    Acted(ContainerId, Option<ContainerRefusal>),
 }
 
 /// What a stop checks around its drain and its exclusive turn.
@@ -1987,6 +2110,21 @@ fn refuse(reason: ContainerRefusalReason, message: impl Into<String>) -> Contain
     }
 }
 
+/// The image a new creation is pinned to, which every Container it names must run.
+fn pinned(want: &ContainerWant) -> Option<ployz_core::ImageDigest> {
+    match want {
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } => new.image_id.clone(),
+        ContainerWant::Running { .. }
+        | ContainerWant::Stopped { .. }
+        | ContainerWant::Gone { .. }
+        | ContainerWant::Out { .. }
+        | ContainerWant::Held { .. } => None,
+    }
+}
+
 fn want_locator(want: &ContainerWant) -> ContainerLocator {
     match want {
         ContainerWant::Running {
@@ -2048,9 +2186,12 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(
             Docker::ImagePull(_) | Docker::UnsignedImage(_) | Docker::DiskFull { .. },
         ) => ContainerRefusalReason::ImagePullFailed,
-        Error::Docker(Docker::ExternalVolumeNotFound(_) | Docker::VolumeShapeMismatch { .. }) => {
-            ContainerRefusalReason::VolumesNotPrepared
-        }
+        Error::Docker(
+            Docker::ExternalVolumeNotFound(_)
+            | Docker::VolumeShapeMismatch { .. }
+            | Docker::VolumeNotWritable(_),
+        ) => ContainerRefusalReason::VolumesNotPrepared,
+        Error::Docker(Docker::ForeignVolume { .. }) => ContainerRefusalReason::ForeignVolume,
         Error::Docker(Docker::Sealed(open)) => match open {
             OpenError::KeyMissing => ContainerRefusalReason::SealingKeyMissing,
             OpenError::KeyUnreadable(_) => return Err(error),

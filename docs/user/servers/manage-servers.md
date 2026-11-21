@@ -326,9 +326,10 @@ A server checks these itself, whoever asks. Ployz Cloud carries a signature but 
   [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push).
   `ployz deploy` from an approved device signs what it deploys; see
   [Deploy from an approved device](../deploy/deployments.md#deploy-from-an-approved-device).
-  The dashboard's **Deploy** sends no signature in this version of Ployz. A server runs it for
-  a service that reaches none of those, and for a version it already ran under a signature.
-  It refuses any other container with `ployz.container.deploy-approval.v1` and names
+  The dashboard's **Deploy** signs nothing. It sends the signature of a version a device
+  signed, for a rollback or a change of only replicas, placement or limits. A server runs any
+  other only for a service that reaches none of those.
+  It refuses any other container with `ployz.container.signed-version.v1` and names
   `ployz deploy from an approved device`.
 - **Builds.** A server refuses a build Ployz Cloud starts with
   `This server runs only builds an approved device starts.`, before the build opens any
@@ -385,11 +386,26 @@ the server. What already runs there stays until you drain it, or until your next
 to your other servers. If no other server runs services, deploys fail until you turn the switch
 back on or add a server.
 
-In this version of Ployz a drain carries no signature. It moves a service that
-[reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). It reports any other
-service as failed and leaves it where it runs, even one the other server already runs. Turn
-off **Run services here**, then run `ployz deploy` from an approved device to move those off.
-A volume stays on its server; see [Move a volume](../services/move-a-volume.md).
+A drain sends each copy it moves with the signatures Ployz Cloud keeps for that copy's version,
+so the other server runs it even if it never ran that version. A copy an
+[automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push) built moves with
+what a server answered when it first checked that build with GitHub, while the rule's approval
+stands. A copy of a version nobody signed
+moves only if it [reaches no data](../deploy/deployments.md#deploy-from-the-dashboard). The drain
+reports any other as failed and leaves it where it runs. Turn off **Run services here**, then
+run `ployz deploy` from an approved device to move those off. A volume stays on its server; see
+[Move a volume](../services/move-a-volume.md).
+
+`ployz server drain` sends the same signatures, read from Ployz Cloud, even with `--connect`.
+Signed out, it changes nothing when any copy could move to a server that enforces device
+approval: such a server starts a moved copy only from a signed version, since the move brings its
+image along instead of pulling it. A drain whose copies can only go to servers that don't enforce
+it, that stay because nothing can take them, or that only removes old copies, goes ahead:
+
+```text
+error: Nothing drained from web-1: shop-production/api needs a device's signature to start on another server, and a signed-out ployz can't read it.
+next: ployz login
+```
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
@@ -399,6 +415,16 @@ Draining turns services off for the server and stops its global services there. 
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
 old container is taken out of routing and removed.
+
+The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
+another image on the other server by then. A service whose image is named by a tag therefore moves
+only to a server on this release of Ployz or later; one named by digest (`app@sha256:…`) can move
+to any server. The image is kept on the other server under a name like `app:ployz-sha256-…`, which
+image cleanup leaves alone while a container uses it. A drain from the CLI over SSH or on the
+server itself also gives the image its tag on the server you connected to, when the old server's
+own tag names that same image and the server you connected to has no image under that tag yet. A
+later deploy with `pull: never` runs whatever image the
+server holds under the tag.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
 the dialog is the approval. If a global service's last other copy stopped while the dialog was open,
 the drain doesn't start; open it again to see what stops now. Drains in one organization run one
@@ -428,15 +454,28 @@ A service stays running where it is, and is reported with the reason, when:
   doesn't count;
 - a server it involves can't be checked right now;
 - no other server can take it;
+- its image is named by a tag and only servers on an older Ployz could take it: upgrade them with
+  `ployz server upgrade` (the dashboard says **Upgrade web-3 to move it**), then drain again;
 - you stopped it with `ployz service stop`: start or remove it first;
 - its container here is the last one serving: deploy it to another server first.
 
 When the drain ends, the **Drain** row counts what moved, stopped, stayed and failed, and how many
 services no project owns it left alone. It lists each service with where it went or why it stayed.
 A drain that stops early marks the service it was moving **Interrupted** and the ones it never
-reached **Not attempted**; those still run on the server. If a server's proxy doesn't confirm the
-switch in time, the moved service's old container keeps running on the drained server and the row says
-so; the next drain removes it, along with any old container an earlier drain left there. While an old
+reached **Not attempted**; those still run on the server. Each move names its new container with a
+key no one else uses, and keeps that key when it has to ask the other server again. When a move
+fails, the drain removes the container under that key and nothing else, so a container another
+tool or an older CLI left on the other server stays where it is. When a request to the other server
+got no answer, or the drain stopped while one was out, the dashboard's row says the new container
+**may still be there**: that server can still make it after the drain ends. With `--json`, a failed
+move's `replacement_removed` is `true` only when the other server confirmed the new container is gone
+and no request can still make one. When a drain stopped after the new container came into service but
+before the old one was retired, drain again: it finds that container, starts no second one, and
+retires the old one. If that container runs another image or is failing its health check, the old one
+keeps serving and the row says why. If that container has already left service, the drain moves the
+old one again from the start.
+If a server's proxy doesn't confirm the switch in time, the moved service's old container keeps
+running on the drained server and the row says so; the next drain removes it, along with any old container an earlier drain left there. While an old
 container is out of routing but still running, `ployz ps` marks it **draining**. `ployz status`
 names a draining container only when the service has too few others serving.
 If anything stayed or failed, the drain stopped early, or it couldn't check what's left on the server, the button
@@ -581,6 +620,10 @@ SSH](#servers-on-02-or-030-beta6-and-earlier), upgrade every server back to back
 route traffic to apps on a server still on `0.3.0-beta.6` until it upgrades too
 ([#2892](https://github.com/getployz/ployz/issues/2892)). As each server restarts, its domains can
 answer `503` briefly, for about 6 seconds when the app runs on another server.
+
+A server that enforces device approval starts a container made before its upgrade only from a
+signed deploy. After you upgrade one, deploy each of its services once with a current `ployz`.
+See [After a server upgrade, deploy each service once](../deploy/deployments.md#after-a-server-upgrade-deploy-each-service-once).
 
 ### Turn on automatic upgrades
 
@@ -757,7 +800,7 @@ send its own, and exits with code 3:
 
 ```text
 $ ployz logs api
-! Server web-2 needs a newer Ployz. It cannot serve ployz.logs.history.v2.
+! Server web-2 needs a newer Ployz. It cannot serve ployz.logs.tail.v1.
 ```
 
 With `--follow`, the command stops at the first server that can't stream its logs and exits with

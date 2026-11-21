@@ -6,10 +6,10 @@ export type Requirement = { readonly capability: CapabilityName; readonly featur
 
 export const requirements = {
   liveLogs: { capability: "ployz.logs.tail.v1", feature: "Logs", plural: true },
-  olderLogs: { capability: "ployz.logs.history.v2", feature: "Older logs", plural: true },
   volumeMove: { capability: "ployz.volume.copy.set.v1", feature: "Volume move" },
   volumeFloor: { capability: "ployz.volume.copy.floor.v1", feature: "Volume move" },
   volumeSize: { capability: "ployz.volume.size.set.v1", feature: "Volume resize" },
+  volumeOrigin: { capability: "ployz.volume.origin.v1", feature: "Volume move" },
   volumeShrink: { capability: "ployz.volume.size.shrink.v1", feature: "Volume shrink" },
   pruneImages: { capability: "ployz.image.prune.v1", feature: "Image cleanup" },
   buildGrantInspect: { capability: "ployz.build.grant.inspect.v1", feature: "GitHub builds", plural: true },

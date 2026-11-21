@@ -973,6 +973,21 @@ impl Observation {
             };
         }
         let runtime = withdrawn(runtime, self.standing.is_withdrawn(container_id));
+        // A container that crashes and restarts is seen between runs as Running, whose
+        // ExitCode is still its last run's.
+        let last_exit_code = matches!(
+            runtime,
+            ContainerRuntimeObservation::Restarting | ContainerRuntimeObservation::Running { .. }
+        )
+        .then(|| {
+            inspected
+                .state
+                .as_ref()
+                .and_then(|state| state.get("ExitCode"))
+                .and_then(serde_json::Value::as_i64)
+        })
+        .flatten()
+        .filter(|code| *code != 0 || matches!(runtime, ContainerRuntimeObservation::Restarting));
         let stopped = if matches!(runtime, ContainerRuntimeObservation::Exited { .. })
             && let Some(run) = &run
         {
@@ -1019,6 +1034,7 @@ impl Observation {
                 image_id: inspected.image,
                 last_check,
                 run,
+                last_exit_code,
                 leaving,
             },
             oom_killed,
@@ -1445,6 +1461,30 @@ pub enum Error {
         name: DockerVolumeName,
         reason: String,
     },
+    /// A mounted Volume holds data of another origin than the spec expects.
+    #[error("Volume '{name}' {found}")]
+    ForeignVolume {
+        name: DockerVolumeName,
+        /// What is wrong with the Volume, as a clause after its name.
+        found: String,
+    },
+    /// The volume plugin made no root for a new Provisioned Volume because Docker did not
+    /// list the Containers that mount its name in time.
+    #[error(
+        "Docker is not answering on this Machine, so no new data is made under Volume '{0}' until it does"
+    )]
+    VolumeHoldersUnlisted(DockerVolumeName),
+    /// A mounted Provisioned Volume has no root on this Machine: it is absent, or only a
+    /// slot holds a copy of it.
+    #[error("Volume '{0}' has no writable copy on this Machine")]
+    VolumeNotWritable(DockerVolumeName),
+    /// The volume plugin did not say which origin a Provisioned Volume carries.
+    #[error("could not read which data Volume '{name}' holds")]
+    VolumeOriginUnread {
+        name: DockerVolumeName,
+        #[source]
+        source: Box<ployz_core::RpcError>,
+    },
     /// Docker refused to remove a Volume that containers still mount.
     #[error("{message}")]
     VolumeInUse {
@@ -1552,6 +1592,10 @@ pub enum Error {
     Clock(String),
     #[error("peer image pull failed: {0}")]
     PeerPull(String),
+    /// A retention name already names another image, or doesn't match the content it
+    /// would keep. Only a pin's own content goes under its retention name.
+    #[error("the retention name {0} names other content")]
+    RetentionNameTaken(String),
     /// The disposable image-ingest helper did not become reachable in time.
     #[error("Unregistry did not accept TCP at {address} within {} seconds", .timeout.as_secs_f64())]
     UnregistryNotReady {
@@ -1587,8 +1631,11 @@ impl Error {
                 ..
             })
             | Self::VolumeShapeMismatch { .. }
+            | Self::ForeignVolume { .. }
+            | Self::VolumeNotWritable(_)
             | Self::VolumeInUse { .. }
             | Self::SlotNameOccupied(_)
+            | Self::RetentionNameTaken(_)
             | Self::ServicePlacementMismatch
             | Self::LimitsRefused { .. }
             | Self::PlacementRefused { .. }
@@ -1597,6 +1644,8 @@ impl Error {
             Self::VolumeCreatedButUnverified { .. }
             | Self::StorageUnobservable
             | Self::VolumePluginListFailed(_)
+            | Self::VolumeHoldersUnlisted(_)
+            | Self::VolumeOriginUnread { .. }
             | Self::EventStreamClosed
             // A peer pull is idempotent, so a rerun is safe whatever docker printed.
             | Self::PeerPull(_)

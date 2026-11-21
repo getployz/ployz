@@ -163,6 +163,7 @@ fn every_other_outcome_keeps_its_line() {
         to: MachineRef::from(&web1),
         detail: "deploy cancelled".into(),
         replacement_removed: true,
+        needs_upgrade: false,
     };
     assert_eq!(
         [
@@ -364,6 +365,7 @@ fn an_old_copy_refused_out_as_the_last_in_is_a_conflict() {
             DrainOutcome::Failed {
                 moves: Vec::new(),
                 failure: MoveFailure::Refused {
+                    from: None,
                     reason: StayReason::LastIn,
                 },
             },

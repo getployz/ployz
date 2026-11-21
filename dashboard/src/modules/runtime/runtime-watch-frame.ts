@@ -20,6 +20,8 @@ const runtimeWatchContainerSchema = Schema.Struct({
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
   /** Present only on a Global Service's containers. */
   global: Schema.optionalKey(Schema.Literal(true)),
+  /** Docker's log driver for the container; absent from a daemon that doesn't report it. */
+  log_driver: Schema.optionalKey(Schema.String),
 });
 
 const runtimeWatchMachineSchema = Schema.Struct({
@@ -312,7 +314,8 @@ function runtimeContainerRecordFromWatch(
     kind: container.kind,
   };
   const observed = container.runtime ? { ...record, runtime: container.runtime } : record;
-  return container.global ? { ...observed, global: container.global } : observed;
+  const driven = container.log_driver === undefined ? observed : { ...observed, logDriver: container.log_driver };
+  return container.global ? { ...driven, global: container.global } : driven;
 }
 
 function runtimeWatchContainerForTransport(container: RuntimeWatchView["containers"][number]) {
@@ -330,5 +333,6 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
       ? { state: container.runtime.state, code: container.runtime.code }
       : { state: container.runtime.state },
   };
-  return container.resolved_spec.mode.mode === "global" ? { ...transport, global: true as const } : transport;
+  const driven = container.log_driver == null ? transport : { ...transport, log_driver: container.log_driver };
+  return container.resolved_spec.mode.mode === "global" ? { ...driven, global: true as const } : driven;
 }

@@ -65,7 +65,6 @@ macro_rules! fake_machine {
         impl<T: FakeMachine> MachineRpc for Fake<T> {
             type ExecStream = FakeStream;
             type BuildStream = FakeStream;
-            type LogHistoryStream = FakeStream;
             type TailLogsStream = FakeStream;
             type RuntimeWatchStream = FakeStream;
 

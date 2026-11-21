@@ -4,11 +4,8 @@
  */
 export type {
   ApprovedChange,
-  ApprovedService,
   AutoDeployRule,
   BuildPolicy,
-  DeployApproval,
-  DeployTerms,
   PayloadDigest,
   PrivateAccessApproval,
   PrivateAccessTerms,

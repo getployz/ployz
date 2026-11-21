@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { refusedPublicly } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
-import { deleteCopy, placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { deleteCopy, placementRefusal, stageOffServer, unlessOriginRefused, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { discardPlacement, listPlacements, stagePlacement } from "#/modules/volume-placement/volume-placement.server";
 import { SEED_OFF } from "#/modules/volume-run/plan";
 import { DeleteCopyInput, StageRestoreInput, VolumeInput } from "#/modules/volume-placement/volume-placement";
@@ -33,7 +33,7 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
     // Clearing a staged placement starts no run, so it stays open while the gate is closed.
     Effect.flatMap(({ organization }) => data.staged === null
       ? stagePlacement(organization.id, data)
-      : unlessPlacementRefused(organization.id, stagePlacement(organization.id, data))),
+      : unlessPlacementRefused(organization.id, unlessOriginRefused(organization.id, { ...data, placement: data.staged }, stagePlacement(organization.id, data)))),
     refusedPublicly,
   )));
 

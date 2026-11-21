@@ -448,7 +448,6 @@ define_responses! {
     Left(Left) => "left";
     Forgotten(Forgotten) => "forgotten";
     MetricsLiveReply(MetricsLiveReply) => "metrics_live";
-    RetainedEnvReply(RetainedEnvReply) => "retained_env";
     Error(RpcError) => "error";
 }
 

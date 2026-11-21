@@ -13,6 +13,16 @@ pub(crate) enum ImagePull<'auth> {
     Policy(Option<&'auth RegistryAuth>),
     /// A deploy's pull phase already placed the image; creation uses it as is.
     Prepared,
+    /// A drain copied this image, by its content, here; creation runs exactly it, whatever
+    /// the spec's tag names now. Unsigned, it runs only once this Machine pulled it from
+    /// the spec's repository by digest, with no login.
+    Pinned(&'auth ployz_core::ImageDigest),
+}
+
+/// `image`'s repository, registry and port kept, pinned to `id`: `repo:tag` becomes
+/// `repo@sha256:…`.
+pub(crate) fn pinned_reference(image: &str, id: &ployz_core::ImageDigest) -> String {
+    format!("{}@{id}", ployz_core::image_repository(image))
 }
 
 /// Make `image` present as `policy` asks, pulling with `auth` for a private image.
@@ -37,24 +47,22 @@ pub(crate) async fn prepare_image(
     Ok(())
 }
 
-/// Pull `image` from its registry and answer the manifest digest Docker reports for it,
-/// when it reports one.
+/// Pull `image` from its registry. A reference that names a digest is pulled by the digest
+/// alone, `repo:tag@sha256:…` as `repo@sha256:…`, so the pull writes no tag.
 async fn pull_image(
     docker: &Docker,
     image: &str,
     auth: Option<&RegistryAuth>,
-) -> Result<Option<String>, Error> {
-    // Docker pulls every tag when the reference has no tag or digest.
-    let image = if !image.contains('@') && !last_part(image).contains(':') {
-        std::borrow::Cow::Owned(format!("{image}:latest"))
-    } else {
-        std::borrow::Cow::Borrowed(image)
+) -> Result<(), Error> {
+    let image = match image.split_once('@') {
+        Some((name, digest)) => format!("{}@{digest}", ployz_core::image_repository(name)),
+        None => tagged(image),
     };
     docker
         .create_image(
             Some(
                 CreateImageOptionsBuilder::default()
-                    .from_image(image.as_ref())
+                    .from_image(&image)
                     .build(),
             ),
             None,
@@ -64,15 +72,18 @@ async fn pull_image(
                 ..Default::default()
             }),
         )
-        .try_fold(None, |digest, progress| async move {
-            let reported = progress
-                .status
-                .as_deref()
-                .and_then(|status| status.strip_prefix("Digest: "))
-                .map(str::to_owned);
-            Ok(reported.or(digest))
-        })
+        .try_for_each(|_| async { Ok(()) })
         .await
+}
+
+/// `image`, a reference with no digest, naming `latest` when it names no tag: Docker pulls
+/// every tag of a bare repository.
+fn tagged(image: &str) -> String {
+    if last_part(image).contains(':') {
+        image.to_owned()
+    } else {
+        format!("{image}:latest")
+    }
 }
 
 fn last_part(image: &str) -> &str {
@@ -97,21 +108,29 @@ pub enum UnsignedImage {
 }
 
 /// Pull `image` from a public registry with no login, whatever is here under its name,
-/// and answer the ID of the image that pull placed. The ID is read by the digest the
-/// pull reported, so a tag another caller moves meanwhile changes nothing.
+/// and answer the ID of the image that pull placed. A tag is resolved to its digest first,
+/// with no login, and only the digest is pulled: the pull writes no name, so a tag here
+/// keeps naming what a caller with Full access put under it.
 pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, UnsignedImage> {
     require_public_registry(image).await?;
-    let pulled = pull_image(docker, image, None)
-        .await
-        .map_err(UnsignedImage::Pull)?
-        .ok_or(UnsignedImage::NoDigest)?;
-    let name = image.split_once('@').map_or(image, |(name, _)| name);
-    let repository = match last_part(name).rsplit_once(':') {
-        Some((_, tag)) => &name[..name.len() - tag.len() - 1],
-        None => name,
+    let pinned = match image.split_once('@') {
+        Some((name, digest)) => format!("{}@{digest}", ployz_core::image_repository(name)),
+        None => {
+            let digest = docker
+                .inspect_registry_image(&tagged(image), None)
+                .await
+                .map_err(UnsignedImage::Pull)?
+                .descriptor
+                .digest
+                .ok_or(UnsignedImage::NoDigest)?;
+            format!("{}@{digest}", ployz_core::image_repository(image))
+        }
     };
+    pull_image(docker, &pinned, None)
+        .await
+        .map_err(UnsignedImage::Pull)?;
     docker
-        .inspect_image(&format!("{repository}@{pulled}"))
+        .inspect_image(&pinned)
         .await
         .map_err(UnsignedImage::Pull)?
         .id
@@ -305,7 +324,6 @@ mod tests {
             ("localhost:5000/app:v1", "localhost:5000/app:v1"),
             ("[::1]:5000/app", "[::1]:5000/app:latest"),
             ("app@sha256:abcd", "app@sha256:abcd"),
-            ("app:v1@sha256:abcd", "app:v1@sha256:abcd"),
         ] {
             prepare_image(&docker, image, PullPolicy::Always, None)
                 .await

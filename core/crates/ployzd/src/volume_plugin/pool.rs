@@ -12,7 +12,8 @@ use ployzd::machine_pool::{self, DeviceMarker, DevicePoolFiles, MachinePool};
 
 use super::{
     CapacityAdmission, PluginError, Result, VolumeName, VolumeStorage, checked_command,
-    checked_output, parse_size, run_command,
+    checked_output, run_command,
+    storage::{CreateOptions, parse_create},
 };
 
 /// Filename of the root-backed Machine Pool vdev.
@@ -98,13 +99,16 @@ impl VolumeStorage {
         name: &VolumeName,
         options: &BTreeMap<String, String>,
     ) -> Result<()> {
-        let requested = parse_size(options)?;
+        let CreateOptions {
+            size: requested,
+            origin,
+        } = parse_create(options)?;
         let _guard = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
         let existing = self.pool.admit(UnlabeledBacking::Remove).await?;
         if let Some(pool) = existing {
             return self
-                .create_volume(&pool, name, requested, CapacityAdmission::Required)
+                .create_volume(&pool, name, requested, CapacityAdmission::Required, origin)
                 .await;
         }
 
@@ -115,6 +119,7 @@ impl VolumeStorage {
                 name,
                 requested,
                 CapacityAdmission::Ensured,
+                origin,
             )
             .await
         {

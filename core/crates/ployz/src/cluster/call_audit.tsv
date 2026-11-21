@@ -112,6 +112,7 @@ src/handlers/server/upgrade.rs::request_upgrade	op::RequestMachineUpgrade	call_r
 src/handlers/status_servers.rs::observe	op::ReadRoutedAddresses	invoke	single	target(ROUTED_READ_TIMEOUT)	-	once
 src/handlers/volume/restore.rs::copies	op::InspectVolumeCopy	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
 src/handlers/volume/restore.rs::set	op::SetVolumeCopy	invoke	single	target(TARGET_RPC_TIMEOUT)	-	once
+src/image.rs::pull_cluster_image	op::PullFreeImage	call	unary	-	redial	keyed
 src/image.rs::pull_cluster_image	op::PullImage	call	unary	-	redial	keyed
 src/image/built.rs::open	op::ListImages	call	unary	-	redial	read
 src/image/peer.rs::open	op::EnsureImageIngest	call	unary	-	redial	keyed
@@ -137,8 +138,7 @@ src/sdk.rs::set_push_target	op::SetPushTarget	unary	unary	-	redial	keyed
 src/sdk.rs::update_machine	op::UpdateMachine	invoke	single	target(crate::connect::TARGET_RPC_TIMEOUT)	-	once
 src/sdk.rs::volume_switch	-	invoke_raw	single	target(crate::connect::TARGET_RPC_TIMEOUT)	-	once
 src/sdk/direct_apply_tests.rs::set_web_traffic_on	ployz_core::op::Inspect	invoke_answered	single	-	-	once
-src/sdk/logs/stream.rs::container_env	op::InspectContainer	invoke	single	target(TAIL_READ)	-	once
-src/sdk/logs/stream.rs::container_env	op::RetainedEnv	invoke	single	target(TAIL_READ)	-	once
+src/sdk/logs/stream.rs::inspect_container	op::InspectContainer	invoke	single	target(TAIL_READ)	-	once
 src/sdk/metrics.rs::metrics_live	op::MetricsLive	read	unary	budget(target_read_timeout)	redial	read
 src/sdk/prepare.rs::select_build_machine	op::DescribeContract	invoke	single	target(Duration::from_secs(5))	-	once
 src/sealing_backfill.rs::generate	op::GenerateSealingKey	read	unary	budget(target_read_timeout)	redial	keyed

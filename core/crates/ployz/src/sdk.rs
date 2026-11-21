@@ -111,18 +111,14 @@ fn unprepared(
         error: preparation_error(error, cancellation_requested),
     }
 }
-pub(crate) use logs::{AgentTail, container_env, process_tail, service_tail, tail_frames};
-pub use logs::{
-    ContainerLogInput, ContainerLogStream, LogHistoryInput, LogHistoryRecord, LogHistoryStream,
-};
+pub(crate) use logs::{AgentTail, inspect_container, process_tail, service_tail, tail_frames};
+pub use logs::{ContainerLogInput, ContainerLogStream};
 pub use metrics::{LiveMetrics, MetricSubject, metrics_live};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,
 };
-pub use sealed::{
-    LiveLogRecord, LogLine, PendingNames, ScrubbedHistoryStream, ScrubbedLogStream, SealedNames,
-};
+pub use sealed::{LiveLogRecord, LogLine, PendingNames, ScrubbedLogStream, SealedNames};
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
 /// from it: the Services of its Containers, each Machine's build
@@ -402,6 +398,38 @@ pub async fn connect_expecting(
         return Err(RpcError::invalid_argument("connections must not be empty").into());
     }
     Ok(dial(connections, connector, expect).await?)
+}
+
+/// Drain `machine` within `scope` on one of `connections`, as
+/// [`Session::drain_machine`], handing each Server, with each copy it moves there, the
+/// signed versions `store` keeps in `organization` for that copy's own spec. With
+/// `expect`, only a Server whose Cluster holds that Sealing public key answers.
+///
+/// # Errors
+/// Returns `invalid_argument` for no `connections`, the connection's error when no
+/// Server can be reached, or what [`Session::drain_machine`] returns.
+pub async fn drain_machine_kept(
+    connections: Vec<Connection>,
+    expect: Option<crate::connect::ClusterExpectation>,
+    (store, organization): (Arc<ployz_store::ConfigStore>, ployz_store::OrganizationId),
+    (machine, scope): (&str, &crate::drain::DrainScope),
+) -> Result<crate::drain::DrainReport, RpcError> {
+    let session = connect_expecting(
+        connections,
+        Arc::new(crate::connect::SystemConnector::default()),
+        expect,
+    )
+    .await?;
+    let kept = crate::cluster::KeptVersions::new(store, organization);
+    let client = session
+        .client()
+        .map(|client| client.with_kept_versions(kept));
+    let report = match client {
+        Ok(client) => session.drain_with(machine, scope, client).await,
+        Err(error) => Err(error),
+    };
+    session.close().await;
+    report
 }
 
 /// [`connect_connections`] to nonempty `connections`, keeping the connection error.
@@ -1125,8 +1153,16 @@ impl Session {
         machine: &str,
         scope: &crate::drain::DrainScope,
     ) -> Result<crate::drain::DrainReport, RpcError> {
+        self.drain_with(machine, scope, self.client()?).await
+    }
+
+    async fn drain_with(
+        &self,
+        machine: &str,
+        scope: &crate::drain::DrainScope,
+        mut client: Client,
+    ) -> Result<crate::drain::DrainReport, RpcError> {
         let target = resolve_target(machine)?;
-        let mut client = self.client()?;
         client
             .drain(&target, scope, &self.inner.cancel, &mut |_| {})
             .await
@@ -1366,8 +1402,10 @@ impl Session {
     }
 
     /// Copy the image Container `container` runs on `source` to `dest`, by its local image
-    /// ID and tagged as its spec names it. Never asks a registry, and does nothing when
-    /// `dest` already holds that image.
+    /// ID. A spec that names a digest keeps it; a tag spec's image is kept under its
+    /// retention name, and at Full access also under the spec's tag when `dest` holds none
+    /// and `source`'s own tag names that image. Never asks a registry, and does nothing
+    /// when `dest` already holds that image under those names.
     ///
     /// # Errors
     ///
@@ -1408,7 +1446,8 @@ impl Session {
                 ))
             })?;
             let image = &details.container.resolved_spec.container.image;
-            crate::image::copy_running_image(&client, &source, &dest, image, &image_id)
+            let naming = client.image_naming(&dest.id);
+            crate::image::copy_running_image(&client, &source, &dest, image, &image_id, naming)
                 .await
                 .map_err(crate::failure::push_rpc_error)
         })
@@ -1767,6 +1806,8 @@ fn plan_refusal_code(error: &crate::deploy::PlanError) -> RpcErrorCode {
         PlanError::Storage { .. }
         | PlanError::NoWriter { .. }
         | PlanError::VolumeServerTakesNoServices { .. }
+        | PlanError::FirstCopyUnfit { .. }
+        | PlanError::VolumeOriginsUnchecked { .. }
         | PlanError::CopiesUnknown { .. }
         | PlanError::VolumeHolderUnknown { .. } => RpcErrorCode::Internal,
     }

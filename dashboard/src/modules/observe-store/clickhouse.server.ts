@@ -5,20 +5,18 @@ import { Unavailable } from "#/server/public-error";
 
 export type ClickhouseEndpoint = { readonly url: URL; readonly user: string; readonly password: Redacted.Redacted<string> };
 
-/** What a read says when this Cloud has no ClickHouse. The UI maps the status route's `history: false` to an off state. */
 export const OBSERVE_NOT_CONFIGURED = "This Cloud keeps no observe data.";
 
 const QUERY_SECONDS = 20;
-/** Every statement filters the caller's Organization first, as `OrgId = {org:String}`. */
+/** ClickHouse reads a `param_` value as escaped text, so a backslash, tab or newline in a value must be written escaped to arrive as itself. */
+const escapeParam = (value: string) => value.replace(/[\\\t\n\r]/g, (char) => ({ "\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r" })[char] ?? char);
 const ORG_FILTER = /\bWHERE\s+OrgId\s*=\s*\{org:String\}/;
 
-/** ClickHouse as this Cloud is configured to reach it, or undefined where it keeps no observe data. */
 export const clickhouseEndpoint = Effect.gen(function* () {
   const { observeClickhouse } = yield* AppConfig;
   return observeClickhouse;
 });
 
-/** Whether this Cloud keeps observe data, for a read that shows an off state instead of failing. */
 export const observeConfigured = Effect.map(clickhouseEndpoint, (endpoint) => endpoint !== undefined);
 
 /**
@@ -37,7 +35,7 @@ const queryClickhouse = Effect.fn("ObserveStore.query")(function* <Row>(
   target.searchParams.set("default_format", "JSONEachRow");
   target.searchParams.set("readonly", "2");
   target.searchParams.set("max_execution_time", String(QUERY_SECONDS));
-  for (const [name, value] of params) target.searchParams.set(`param_${name}`, value);
+  for (const [name, value] of params) target.searchParams.set(`param_${name}`, escapeParam(value));
   const text = yield* Effect.tryPromise({
     try: async (signal) => {
       const response = await fetch(target, {
