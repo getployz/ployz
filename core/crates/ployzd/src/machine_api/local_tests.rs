@@ -2935,6 +2935,19 @@ mod set_volume_copy {
         created
     }
 
+    /// The holders of the Volume in the order Docker lists them, which is the order the cut
+    /// visits them in.
+    async fn listed_holders(service: &MachineService) -> Vec<ContainerId> {
+        service
+            .local()
+            .containers()
+            .unwrap()
+            .volumes()
+            .volume_holder_ids(&VOLUME.parse().unwrap())
+            .await
+            .unwrap()
+    }
+
     /// The cut withdraws a holder from ingress, then drains it. Awaiting that withdrawal
     /// rather than a fixed time keeps a slow test host from fencing the cut before its drain.
     async fn drain_started(service: &MachineService, holder: &ContainerId) {
@@ -3754,16 +3767,20 @@ mod set_volume_copy {
         });
         let (socket, server) = plugin.serve(&data_dir);
         let service = service.with_volume_plugin(socket);
-        // Made first: no Container is made beside a running holder, so Docker starts it.
-        let second = kept_holder(&service, &fake).await;
-        let first = running_holder(&service, &fake).await;
+        // Both are made stopped: no Container is made beside a running holder. The cut
+        // visits holders in Docker's list order and passes a stopped one by, so only a
+        // holder listed before the one it drains is started too late to be drained itself.
+        kept_holder(&service, &fake).await;
+        kept_holder(&service, &fake).await;
+        let [second, first] = listed_holders(&service).await.try_into().unwrap();
+        start_holder(&fake, &first);
         let draining = |drain: u32| {
             json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
                 "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":drain}})
         };
 
         // The fake holder never reads idle, so the drain lasts its whole cap, and the
-        // second holder must start inside it. A loaded runner took over 300 ms to start one.
+        // second holder starts once it has begun.
         let (refused, ()) = tokio::join!(set_copy(&service, draining(3_000)), async {
             drain_started(&service, &first).await;
             start_holder(&fake, &second);
