@@ -122,6 +122,7 @@ It prints what you approve, then signs it with your device key:
 
 ```text
 Approving automatic deploys for production:
+  namespace   shop-production
   repository  acme/web on main
   workflow    .github/workflows/ployz-build.yml, on push and on rebuilds you approve
   builder     getployz/build/.github/workflows/build.yml@39e1f488e492c0641e520777e481e8f5b266985b
@@ -132,6 +133,8 @@ Approving automatic deploys for production:
     command ["node server.js"]
 Approved. Every push to main now deploys web, worker with these settings.
 ```
+
+A volume a service mounts shows as its own line, the way [`ployz deploy`](deployments.md#deploy-from-an-approved-device) shows it, such as `mounts managed volume uploads at /app/uploads, read-write: a new, empty volume`. A volume only services outside the rule mount stays as it was.
 
 It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
 
@@ -183,16 +186,21 @@ deploy of another environment from it builds on your servers.
   changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`
   names what changed, as `changed     web since the last approval`. A push that changes only
   the code deploys as before, and so does a new replica count.
-- **A new server waits too.** The rule names the servers it was approved for. Approve it again
-  after you [add a server](../servers/add-a-server.md).
+- **A new server waits for a service that keeps data there.** The rule names the servers it was
+  approved for. A service with a volume, a folder from its server or other host access runs only
+  on those, so approve the rule again after you [add a server](../servers/add-a-server.md). A
+  service that keeps nothing on its server runs on any server.
 - **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
   longer deploy on those servers.
 - **An older approval stops starting containers.** Once a server has seen a newer approval of
   the rule, or the rule turned off, it won't start a stopped container an older approval made,
   from the dashboard or the CLI. One that's running keeps running, and the next push deploys a
   new one.
-- **A rule deploys only the branch's head.** This version of Ployz can't redeploy or roll back
-  a service a rule built to an older commit. Push a revert to the branch instead; see
+- **A build stays deployable after GitHub's token expires.** The first server that deploys a
+  push checks it with GitHub, and Ployz Cloud keeps what that server answers. Any server of the
+  cluster checks that answer with its own key, so a rollback to the build or a drain of a server
+  running it works after the branch moved on. It stops working once you approve the rule again,
+  turn it off, or remove the device or passkey that approved it; see
   [Roll back a service a rule built](history-and-rollback.md#roll-back-a-service-a-rule-built).
 - **Someone who can push to the branch can deploy.** Ployz Cloud can't swap the commit, the
   image or the settings, but its GitHub App can push a commit to the branch itself. Add a branch

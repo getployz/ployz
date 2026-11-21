@@ -52,6 +52,28 @@ where
     connected_client(unary_service(rpc), false).await
 }
 
+/// [`rpc_client`] whose entry is reached by `connection`, as a client that dialled it.
+pub(crate) async fn rpc_client_over<F, Fut>(
+    connection: Connection,
+    rpc: F,
+) -> (
+    Client,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+)
+where
+    F: Fn(Request<OpaquePayload>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<OpaquePayload>, Status>> + Send + 'static,
+{
+    let (channel, server) = memory_channel(unary_service(rpc), false).await;
+    let client = Client::new(
+        channel.clone(),
+        connection,
+        ConnectionSource::Direct,
+        Arc::new(Connected(channel)),
+    );
+    (client, server)
+}
+
 /// A channel to [`rpc_client`]'s daemon that takes one call at a time and connects only
 /// once `connect` is notified. A call sent first holds its one place, so the next call
 /// waits to be ready until then.

@@ -22,9 +22,17 @@ async fn finished(socket: &Path, target: &str) -> Value {
 /// Every `zfs` call that reads or writes a mark, and the steps whose position among them
 /// matters, in the order the plugin ran them.
 fn trace(log: &str) -> Vec<String> {
+    // Origin reads change nothing a crash could leave half done, so no order pins them.
+    let origin_read = |line: &str| {
+        line.starts_with("zfs get ")
+            && ["ployz:origin ", "ployz:pull-origin "]
+                .iter()
+                .any(|mark| line.contains(mark))
+    };
     log.lines()
         .filter(|line| {
             line.starts_with("zfs ")
+                && !origin_read(line)
                 && ["ployz:", "receive_resume_token", "receive -A", "rename "]
                     .iter()
                     .any(|needle| line.contains(needle))

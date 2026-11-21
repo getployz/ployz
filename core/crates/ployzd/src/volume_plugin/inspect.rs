@@ -3,7 +3,7 @@
 use axum::{Json, extract::State};
 use ployz_core::{
     InspectVolumeCopyRequest, Pull, PullState, RootMark, RpcError, SlotId, Snapshot, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeCopyView, WriterEpoch,
+    SnapshotName, VolumeCopy, VolumeCopyView, VolumeOrigin, WriterEpoch,
 };
 use ployzd::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 
@@ -65,7 +65,12 @@ impl RootCopy {
     }
 
     /// The root as `Volume.Inspect` and every `SetVolumeCopy` reply carry it.
-    pub(super) fn view(self, newest: Option<Snapshot>, epoch: WriterEpoch) -> VolumeCopy {
+    pub(super) fn view(
+        self,
+        newest: Option<Snapshot>,
+        epoch: WriterEpoch,
+        origin: Option<VolumeOrigin>,
+    ) -> VolumeCopy {
         let (readonly, seed, mark) = match self {
             Self::Writable { seed } => (false, seed, None),
             Self::Cut { seed } => (true, seed, Some(RootMark::Cut)),
@@ -78,6 +83,7 @@ impl RootCopy {
             epoch,
             seed,
             mark,
+            origin,
         }
     }
 }
@@ -105,6 +111,24 @@ pub(super) fn internal(error: PluginError) -> RpcError {
         Ok(error) => error.into_rpc_error(),
         Err(error) => RpcError::internal(error.to_string()),
     }
+}
+
+/// Every snapshot of `dataset` as `name<TAB>guid<TAB>creation`, newest first by
+/// transaction group (creation time ties within a second).
+fn snapshot_listing(dataset: &str) -> [&str; 11] {
+    [
+        "list",
+        "-Hp",
+        "-t",
+        "snapshot",
+        "-o",
+        "name,guid,creation",
+        "-S",
+        "createtxg",
+        "-d",
+        "1",
+        dataset,
+    ]
 }
 
 impl VolumeStorage {
@@ -141,23 +165,10 @@ impl VolumeStorage {
         Ok(RootMarks { cut, promote })
     }
 
-    /// Every snapshot of a dataset as `name<TAB>guid<TAB>creation`, newest first by
-    /// transaction group (creation time ties within a second).
+    /// Every snapshot of `dataset` from a listing ZFS finished. Whatever reads it judges a
+    /// snapshot missing from it absent, or the first one newest.
     async fn list_snapshots(&self, dataset: &str) -> Result<String> {
-        self.zfs(&[
-            "list",
-            "-Hp",
-            "-t",
-            "snapshot",
-            "-o",
-            "name,guid,creation",
-            "-S",
-            "createtxg",
-            "-d",
-            "1",
-            dataset,
-        ])
-        .await
+        self.zfs_listing(&snapshot_listing(dataset)).await
     }
 
     /// The full `<dataset>@<name>` of every snapshot, whatever its name.
@@ -199,7 +210,7 @@ impl VolumeStorage {
         Ok(snapshots)
     }
 
-    async fn newest_snapshot(&self, dataset: &str) -> Result<Option<Snapshot>> {
+    pub(super) async fn newest_snapshot(&self, dataset: &str) -> Result<Option<Snapshot>> {
         Ok(self.snapshots(dataset).await?.into_iter().next())
     }
 
@@ -253,9 +264,17 @@ impl VolumeStorage {
         if let Some(root) = Self::dataset(datasets, pool, name)? {
             root.require_provisioned(name)?;
             let copy = RootCopy::parse(root, self.root_marks(root).await?);
+            let newest = self.newest_snapshot(&root.name).await?;
+            let origin = self
+                .origin_of(
+                    None,
+                    Some((&root.name, newest.as_ref().map(|newest| &newest.name))),
+                )
+                .await?;
             return Ok(Some(copy.view(
-                self.newest_snapshot(&root.name).await?,
+                newest,
                 self.marks(&root.name).epoch().await?,
+                origin,
             )));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
@@ -274,6 +293,12 @@ impl VolumeStorage {
             .pull(slot, name, newest.as_ref(), resume_token.is_some())
             .await?
             .unzip();
+        let origin = self
+            .origin_of(
+                Some(&slot.name),
+                fs.map(|fs| (fs.name.as_str(), newest.as_ref().map(|newest| &newest.name))),
+            )
+            .await?;
         Ok(Some(VolumeCopy::Slot {
             slot: self.slot_id(&slot.name).await?,
             readonly,
@@ -282,6 +307,7 @@ impl VolumeStorage {
             pull,
             role: Some(self.marks(&slot.name).role().await?),
             pull_state,
+            origin,
         }))
     }
 

@@ -1514,3 +1514,237 @@ async fn remove_machine_does_not_refuse_the_machine_the_daemon_no_longer_describ
         Some(&["list_machines", "describe_contract"][..])
     );
 }
+
+/// What a drain's image copy names on its destination. Over SSH only the entry takes a
+/// call at Full access, so only there may `app:v1` be written, and only when the
+/// destination has no `app:v1` of its own. Every other copy writes only the retention name.
+#[tokio::test]
+async fn a_copy_names_the_user_tag_only_on_an_entry_that_lacks_it() {
+    use ployz_core::{
+        ImageIngestDestination, ImageIngestOpened, ImagePulled, ImageSummary, MachineImages,
+        PeerImagePull, RpcRequestBody, RpcResponse,
+    };
+
+    let image_id = format!("sha256:{}", "7".repeat(64));
+    let retention = format!("app:ployz-sha256-{}", "7".repeat(64));
+    let summary = |(id, tag): (&str, &str)| ImageSummary {
+        id: id.to_owned(),
+        repo_tags: vec![tag.to_owned()],
+        created: 0,
+        size: 1,
+        containers: 1,
+        platforms: vec!["linux/amd64".into()],
+        last_tagged: None,
+    };
+    let observed = |hex| {
+        let mut machine = machine(hex).machine;
+        machine.runtime.architecture = "x86_64".into();
+        machine
+    };
+    let (entry, other) = (observed('a'), observed('b'));
+    let elsewhere = format!("sha256:{}", "c".repeat(64));
+    let foreign_retention = format!("team/{retention}");
+    // The source's tag on the image, what the destination holds, and the names written.
+    for (source, dest, source_tag, dest_holds, names) in [
+        (&entry, &other, "app:v1", None, vec![retention.clone()]),
+        (
+            &other,
+            &entry,
+            "app:v1",
+            None,
+            vec![retention.clone(), "app:v1".to_owned()],
+        ),
+        (
+            &other,
+            &entry,
+            "app:v1",
+            Some((elsewhere.as_str(), "app:v1")),
+            vec![retention.clone()],
+        ),
+        // Another repository's `app:v1` is no binding of `app:v1`.
+        (&other, &entry, "team/app:v1", None, vec![retention.clone()]),
+        // Nor does another repository's retention name keep this one.
+        (
+            &entry,
+            &other,
+            "app:v1",
+            Some((image_id.as_str(), foreign_retention.as_str())),
+            vec![retention.clone()],
+        ),
+    ] {
+        let pulls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (seen, source_id, held) = (pulls.clone(), source.id, summary((&image_id, source_tag)));
+        let dest_held = dest_holds.map(summary);
+        let address = entry.management_address();
+        let (mut client, server) = crate::connect::test_support::rpc_client_over(
+            crate::context::Connection::ssh(
+                crate::context::SshDestination::parse("root@203.0.113.7").unwrap(),
+            ),
+            move |rpc: tonic::Request<OpaquePayload>| {
+                let (seen, held, dest_held) = (seen.clone(), held.clone(), dest_held.clone());
+                async move {
+                    let on_source = rpc
+                        .metadata()
+                        .get(ployz_core::ONE_TARGET_HEADER)
+                        .is_some_and(|target| target == source_id.as_str());
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "fixture answers only an image copy"
+                    )]
+                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                        RpcRequestBody::ListImages(_) => RpcResponse::from(MachineImages {
+                            containerd_store: true,
+                            images: if on_source {
+                                vec![held]
+                            } else {
+                                dest_held.into_iter().collect()
+                            },
+                            docker_root: None,
+                        }),
+                        RpcRequestBody::EnsureImageIngest(_) => {
+                            RpcResponse::from(ImageIngestOpened {
+                                destination: ImageIngestDestination {
+                                    management_address: address,
+                                    port: 5000,
+                                },
+                            })
+                        }
+                        RpcRequestBody::PullImageFromMachine(request) => {
+                            seen.lock().unwrap().push(request.pull);
+                            RpcResponse::from(ImagePulled {
+                                exposed_ports: Vec::new(),
+                            })
+                        }
+                        other => panic!("unexpected image copy RPC: {other:?}"),
+                    };
+                    Ok(tonic::Response::new(response.encode().unwrap()))
+                }
+            },
+        )
+        .await;
+        client.session.entry = Some(entry.id);
+
+        let naming = client.image_naming(&dest.id);
+        crate::image::copy_running_image(&client, source, dest, "app:v1", &image_id, naming)
+            .await
+            .unwrap();
+
+        let published = pulls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|pull| match pull {
+                PeerImagePull::Publish { tag, .. } => tag.clone(),
+                PeerImagePull::Reference { image } => panic!("a tag copy pulled {image}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(published, names, "{} to {}", source.name, dest.name);
+        server.abort();
+    }
+}
+
+/// A tag a peer holds reaches a Server other than the entry only through that Server's
+/// own pull, the one its creation makes: a call forwarded there arrives as an Operator's,
+/// and an Operator writes no name a Full creation runs. The entry, reached over SSH,
+/// still takes the peer's copy and pulls by name.
+#[tokio::test]
+async fn a_tag_is_copied_and_pulled_by_name_only_on_the_entry() {
+    use ployz_core::{
+        ImageIngestDestination, ImageIngestOpened, ImagePulled, ImageSummary, MachineImages,
+        RpcRequestBody, RpcResponse,
+    };
+
+    let observed = |hex| {
+        let mut machine = machine(hex);
+        machine.machine.runtime.architecture = "x86_64".into();
+        machine
+    };
+    let (entry, other, holder) = (observed('a'), observed('b'), observed('c'));
+    let machines = vec![entry.clone(), other.clone(), holder.clone()];
+    let (holder_id, address) = (holder.machine.id, holder.machine.management_address());
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = sent.clone();
+    let (mut client, server) = crate::connect::test_support::rpc_client_over(
+        crate::context::Connection::ssh(
+            crate::context::SshDestination::parse("root@203.0.113.7").unwrap(),
+        ),
+        move |rpc: tonic::Request<OpaquePayload>| {
+            let (seen, machines) = (seen.clone(), machines.clone());
+            async move {
+                let target = rpc
+                    .metadata()
+                    .get(ployz_core::ONE_TARGET_HEADER)
+                    .and_then(|target| target.to_str().ok())
+                    .map(str::to_owned);
+                let body = rpc.into_inner().decode_request().unwrap().body;
+                seen.lock().unwrap().push((target.clone(), body.command()));
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture answers only an image delivery"
+                )]
+                let response = match body {
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(ployz_core::MachineList {
+                        enrollment: None,
+                        machines,
+                    }),
+                    RpcRequestBody::ListImages(_) => RpcResponse::from(MachineImages {
+                        containerd_store: true,
+                        images: (target.as_deref() == Some(holder_id.as_str()))
+                            .then(|| ImageSummary {
+                                id: format!("sha256:{}", "7".repeat(64)),
+                                repo_tags: vec!["nginx:1.27".into()],
+                                created: 0,
+                                size: 1,
+                                containers: 0,
+                                platforms: vec!["linux/amd64".into()],
+                                last_tagged: None,
+                            })
+                            .into_iter()
+                            .collect(),
+                        docker_root: None,
+                    }),
+                    RpcRequestBody::EnsureImageIngest(_) => RpcResponse::from(ImageIngestOpened {
+                        destination: ImageIngestDestination {
+                            management_address: address,
+                            port: 5000,
+                        },
+                    }),
+                    RpcRequestBody::PullImageFromMachine(_)
+                    | RpcRequestBody::PullImage(_)
+                    | RpcRequestBody::PullFreeImage(_) => RpcResponse::from(ImagePulled::default()),
+                    other => panic!("unexpected image delivery RPC: {other:?}"),
+                };
+                Ok(tonic::Response::new(response.encode().unwrap()))
+            }
+        },
+    )
+    .await;
+    client.enter_at(entry.machine.id);
+
+    for (dest, expected) in [
+        (&entry, &["pull_image_from_machine", "pull_image"][..]),
+        (&other, &["pull_free_image"][..]),
+    ] {
+        sent.lock().unwrap().clear();
+        crate::image::pull_cluster_image(
+            &client,
+            &dest.machine.id,
+            "nginx:1.27",
+            ployz_core::PullPolicy::Missing,
+            None,
+        )
+        .await
+        .unwrap();
+        let to_dest = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(target, command)| {
+                target.as_deref() == Some(dest.machine.id.as_str()) && *command != "list_images"
+            })
+            .map(|(_, command)| *command)
+            .collect::<Vec<_>>();
+        assert_eq!(to_dest, expected, "{}", dest.machine.name);
+    }
+    server.abort();
+}

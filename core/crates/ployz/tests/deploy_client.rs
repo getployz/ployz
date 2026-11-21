@@ -179,6 +179,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         name,
         maximum_bytes: ProvisionedVolumeMaximumBytes::new(NonZeroU64::new(157_286_400).unwrap()),
         labels,
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");
@@ -971,7 +972,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
         )
@@ -1026,7 +1027,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         message: None,
         prune: false,
         no_prune: false,
-        approval: None,
+        versions: Vec::new(),
     };
     store
         .write_trusted(
@@ -1304,7 +1305,7 @@ async fn failed_deploy_whose_container_is_removed_still_reports_its_output_lines
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1437,7 +1438,7 @@ async fn failed_deploy_whose_container_ran_out_of_memory_says_so() {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -1598,7 +1599,7 @@ async fn restarting_deploy_names_its_exit_and_last_line(
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1732,7 +1733,7 @@ async fn cloud_runner_applies_an_environment_removal() {
                 message: None,
                 prune: false,
                 no_prune: false,
-                approval: None,
+                versions: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -1858,7 +1859,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &trusted,
             )
@@ -2032,7 +2033,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )
@@ -2144,7 +2145,7 @@ async fn a_runner_that_cannot_reach_its_server_names_it() {
                         message: None,
                         prune: false,
                         no_prune: false,
-                        approval: None,
+                        versions: Vec::new(),
                     }),
                     &ployz_store::Trusted::default(),
                 )

@@ -288,6 +288,7 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
                 name: DockerVolumeName::parse("data").unwrap(),
                 driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
                 labels: BTreeMap::from([(reserved.into(), owner.into())]),
+                birth: None,
             };
             assert!(VolumeSource::try_from(raw.clone()).is_err());
             assert!(
@@ -299,6 +300,7 @@ fn managed_volume_admission_rejects_reserved_labels_and_import_preserves_scope()
         name: DockerVolumeName::parse("data").unwrap(),
         driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
         labels: BTreeMap::from([("user".into(), "kept".into())]),
+        birth: None,
     }
     .try_into()
     .unwrap();
@@ -1647,7 +1649,6 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         "creation_key": "deploy/slot-1"
     });
     let running = EnsureContainerRequest {
-        deploy: None,
         rule: None,
         versions: Vec::new(),
         want: ContainerWant::Running {
@@ -1659,6 +1660,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 registry_auth: None,
                 image_prepared: false,
                 answer: AnswerWhen::Started,
+                image_id: None,
             }),
             rotation: RunRotation::Pending,
         },

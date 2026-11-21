@@ -4,7 +4,9 @@ use ployz_core::authority::{ApprovedChange, PayloadDigest};
 use ployz_core::{Hint, Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
-use super::{Enforcing, Probe, consent, enforced, pin_tags, signable, unpinnable};
+use super::{
+    Behind, Enforcing, Probe, consent, enforced, outdated, pin_tags, signable, unpinnable,
+};
 use crate::image::PinError;
 
 const PINNED: &str =
@@ -40,6 +42,12 @@ fn change(spec: &RequestedServiceSpec, pins: &BTreeMap<ServiceName, String>) -> 
         std::slice::from_ref(spec),
         &Namespace::parse("app").unwrap(),
         pins,
+        &ployz_core::authority::Mounts {
+            namespace: &Namespace::parse("app").unwrap(),
+            volumes: &BTreeMap::new(),
+            minted: &BTreeMap::new(),
+            now: ployz_core::authority::Timestamp::now(),
+        },
     )
     .unwrap()
     .try_into()
@@ -171,16 +179,6 @@ fn an_image_written_by_digest_is_not_looked_up() {
 }
 
 #[test]
-fn a_registry_port_is_not_a_tag() {
-    assert_eq!(super::repository("registry:5000/web"), "registry:5000/web");
-    assert_eq!(
-        super::repository("registry:5000/web:2"),
-        "registry:5000/web"
-    );
-    assert_eq!(super::repository(PINNED), "nginx");
-}
-
-#[test]
 fn a_built_service_is_refused_plainly_with_no_pin_hint() {
     let error = signable(Some(vec![spec("ployz-build/web:pending")])).unwrap_err();
     let rpc = error.report();
@@ -241,7 +239,10 @@ fn base64(bytes: &[u8]) -> String {
 #[test]
 fn servers_that_do_not_enforce_leave_the_deploy_unsigned() {
     assert_eq!(
-        enforced(&[server(1, None, Some(9)), server(2, Some(false), Some(9))]),
+        enforced(
+            &[server(1, None, Some(9)), server(2, Some(false), Some(9))],
+            &BTreeMap::new()
+        ),
         Probe::Off
     );
 }
@@ -249,7 +250,7 @@ fn servers_that_do_not_enforce_leave_the_deploy_unsigned() {
 #[test]
 fn an_enforcing_cluster_with_no_reported_key_is_named() {
     assert_eq!(
-        enforced(&[server(1, Some(true), None)]),
+        enforced(&[server(1, Some(true), None)], &BTreeMap::new()),
         Probe::NoClusterKey
     );
 }
@@ -258,7 +259,10 @@ fn an_enforcing_cluster_with_no_reported_key_is_named() {
 fn an_enforcing_cluster_signs_for_every_server_listed() {
     let Probe::Enforcing(Enforcing {
         cluster, machines, ..
-    }) = enforced(&[server(2, Some(true), None), server(1, Some(false), Some(9))])
+    }) = enforced(
+        &[server(2, Some(true), None), server(1, Some(false), Some(9))],
+        &BTreeMap::new(),
+    )
     else {
         panic!("expected enforcing");
     };
@@ -267,13 +271,91 @@ fn an_enforcing_cluster_signs_for_every_server_listed() {
     assert!(machines.is_sorted());
 }
 
+/// `observation` reporting `capabilities`.
+fn serving(
+    mut observation: ployz_core::MachineObservation,
+    capabilities: &[&str],
+) -> ployz_core::MachineObservation {
+    observation.machine.runtime.capabilities =
+        capabilities.iter().map(|name| (*name).to_owned()).collect();
+    observation
+}
+
+/// A Server that enforces and serves a list without signed versions refuses every signed
+/// Service, so the deploy names it to upgrade before anything is signed. One seen with an
+/// empty list, as through a relay, is asked itself: its answer counts, and no answer leaves
+/// it unverified, which refuses too. A Server that doesn't enforce takes any creation.
+#[test]
+fn an_enforcing_server_without_signed_versions_is_named_to_upgrade() {
+    let old = ["ployz.container.deploy-approval.v1"];
+    let answered = BTreeMap::from([
+        (server(5, None, None).machine.id, true),
+        (server(6, None, None).machine.id, false),
+    ]);
+    let Probe::Enforcing(enforcing) = enforced(
+        &[
+            serving(server(1, Some(true), Some(9)), &old),
+            serving(
+                server(2, Some(true), Some(9)),
+                &[ployz_core::SIGNED_VERSION_CAPABILITY],
+            ),
+            server(3, Some(true), Some(9)),
+            serving(server(4, Some(false), Some(9)), &old),
+            server(5, Some(true), Some(9)),
+            server(6, Some(true), Some(9)),
+        ],
+        &answered,
+    ) else {
+        panic!("expected enforcing");
+    };
+    assert_eq!(
+        enforcing.behind,
+        Behind {
+            outdated: vec!["machine-1".into(), "machine-6".into()],
+            unverified: vec!["machine-3".into()],
+        }
+    );
+}
+
+/// The upgrade it names reaches the Cluster this deploy went to.
+#[test]
+fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
+    let typed = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "--connect",
+            "ssh://root@entry",
+            "deploy",
+            "-c",
+            "prod",
+        ])
+        .unwrap();
+    let refused = outdated(
+        crate::handlers::leaf_matches(&typed),
+        &["machine-1".to_owned()],
+    );
+    assert_eq!(refused.report().code, ployz_core::RpcErrorCode::Unsupported);
+    let channel = match ployz_core::MachineVersion::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(version) if !version.is_prerelease() => "stable",
+        _ => "beta",
+    };
+    assert_eq!(
+        next_hints(&refused),
+        [format!(
+            "ployz --connect ssh://root@entry server upgrade {channel} machine-1 --context prod"
+        )]
+    );
+}
+
 /// `--yes` signs without asking, for a run nobody watches.
 #[test]
 fn yes_signs_without_asking() {
     let approved = [approved(&spec(PINNED))];
-    consent(&approved, true, |question, _, _| {
-        panic!("--yes asked {question:?}")
-    })
+    consent(
+        (&Namespace::parse("app").unwrap(), &approved),
+        true,
+        |question, _, _| panic!("--yes asked {question:?}"),
+    )
     .unwrap();
 }
 
@@ -282,9 +364,11 @@ fn yes_signs_without_asking() {
 #[test]
 fn no_terminal_refuses_before_signing_and_names_yes() {
     let approved = [approved(&spec(PINNED))];
-    let error = consent(&approved, false, |question, refusal, declined| {
-        crate::ui::confirm(question, || refusal, declined)
-    })
+    let error = consent(
+        (&Namespace::parse("app").unwrap(), &approved),
+        false,
+        |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
+    )
     .unwrap_err();
     let rpc = error.report();
     assert_eq!(rpc.code, ployz_core::RpcErrorCode::ConfirmationRequired);
@@ -304,20 +388,25 @@ fn no_terminal_refuses_before_signing_and_names_yes() {
     );
 }
 
-/// A person asked names each Service, and their no fails the deploy before it signs.
+/// A person asked names each Service and the Namespace they sign for, and their no fails
+/// the deploy before it signs.
 #[test]
 fn declining_signs_nothing_and_fails() {
     let approved = [approved(&spec(PINNED))];
     let mut asked = None;
-    let error = consent(&approved, false, |question, _, declined| {
-        asked = Some((question.to_owned(), declined));
-        Err(crate::handlers::Error::cancelled())
-    })
+    let error = consent(
+        (&Namespace::parse("app").unwrap(), &approved),
+        false,
+        |question, _, declined| {
+            asked = Some((question.to_owned(), declined));
+            Err(crate::handlers::Error::cancelled())
+        },
+    )
     .unwrap_err();
     assert_eq!(
         asked,
         Some((
-            "Approve web?".to_owned(),
+            "Approve web in namespace app?".to_owned(),
             "Cancelled. Nothing signed or deployed."
         ))
     );

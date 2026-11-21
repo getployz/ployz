@@ -59,7 +59,7 @@ impl VolumeStorage {
         now_unix_seconds: i64,
         mirrors: Mirrors,
     ) -> super::Result<StorageDeparture> {
-        let _guard = self.admit_mutation().await?;
+        let (held, _installation) = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
         let Some(pool) = self.pool.one_usable().await? else {
             return Ok(StorageDeparture::default());
@@ -90,7 +90,7 @@ impl VolumeStorage {
         for name in names {
             let departed = departed_name(&name.to_string())?;
             match self
-                .demote_copy(&pool, &name, now_unix_seconds, mirrors)
+                .demote_copy(&held, &pool, &name, now_unix_seconds, mirrors)
                 .await
             {
                 Ok(true) => departure.demoted.push(departed),
@@ -139,6 +139,7 @@ impl VolumeStorage {
     /// afresh, as an earlier Volume's demote may have made the mirror root.
     async fn demote_copy(
         &self,
+        held: &super::storage::HeldMutation,
         pool: &MachinePool,
         name: &VolumeName,
         now_unix_seconds: i64,
@@ -148,7 +149,8 @@ impl VolumeStorage {
         let demoted = match self.departure(pool, &datasets, name).await? {
             Departure::Root(root) | Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
-                self.park_root_in_slot(pool, &datasets, name, root).await?;
+                self.park_root_in_slot(held, pool, &datasets, name, root)
+                    .await?;
                 self.seal_fs(&DatasetLayout::of(pool).slot_fs(name)).await?;
                 true
             }

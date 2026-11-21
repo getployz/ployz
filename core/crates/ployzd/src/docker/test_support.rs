@@ -58,6 +58,9 @@ pub(crate) struct FakeDocker {
     /// The next Container list is answered, then its reply waits here twice.
     pub(crate) listed_hold: Arc<Mutex<Option<Arc<tokio::sync::Barrier>>>>,
     pub(crate) reject_list: Arc<AtomicBool>,
+    /// Every Volume create answers a Docker 500 with this message, as Docker relays a
+    /// volume plugin's refusal.
+    pub(crate) refuse_volume_create: Arc<Mutex<Option<String>>>,
     /// Named mode: every stop fails and leaves the Container as it was.
     pub(crate) refuse_stop: Arc<AtomicBool>,
     /// Named mode: a stop lands and the next inspect sees it, then a restart policy
@@ -99,6 +102,32 @@ pub(crate) struct FakeDocker {
     pub(crate) logs: Arc<Mutex<Vec<u8>>>,
     /// What a network inspect answers in place of an empty Ployz bridge.
     pub(crate) network: Arc<Mutex<Option<serde_json::Value>>>,
+    /// The images this Docker holds by reference: `Some(id)` is the image a tag names,
+    /// `None` one it does not hold. A reference listed nowhere answers an ID of its own:
+    /// the digest or image ID it names, or one made from its name. A digest never
+    /// follows a tag.
+    pub(crate) images: Arc<Mutex<BTreeMap<String, Option<String>>>>,
+    /// What the registry serves for each tag, by ID. A tag listed nowhere serves the ID
+    /// made from its name. A pull of a tag writes it into [`Self::images`].
+    pub(crate) registry: Arc<Mutex<BTreeMap<String, String>>>,
+}
+
+impl FakeDocker {
+    fn image(&self, reference: &str) -> Option<String> {
+        match self.images.lock().unwrap().get(reference) {
+            Some(held) => held.clone(),
+            None => Some(image_id(reference)),
+        }
+    }
+
+    fn served(&self, tag: &str) -> String {
+        self.registry
+            .lock()
+            .unwrap()
+            .get(tag)
+            .cloned()
+            .unwrap_or_else(|| image_id(tag))
+    }
 }
 
 async fn fake_docker(
@@ -238,7 +267,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             let image = config
                 .get("Image")
                 .and_then(serde_json::Value::as_str)
-                .map(image_id);
+                .and_then(|image| fake.image(image));
             containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Image": image, "Config": config, "HostConfig": host_config, "State":{"Status":"created"}}));
             return (
                 StatusCode::CREATED,
@@ -522,9 +551,26 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     .replace("%40", "@")
             })
             .unwrap_or_default();
+        let id = if pulled.contains('@') {
+            image_id(&pulled)
+        } else {
+            let id = fake.served(&pulled);
+            fake.images.lock().unwrap().insert(pulled, Some(id.clone()));
+            id
+        };
         (
             StatusCode::OK,
-            serde_json::json!({"status": format!("Digest: {}", image_id(&pulled))}),
+            serde_json::json!({"status": format!("Digest: {id}")}),
+        )
+    } else if method == Method::GET && path.contains("/distribution/") {
+        let tag = path
+            .split("/distribution/")
+            .nth(1)
+            .unwrap_or_default()
+            .trim_end_matches("/json");
+        (
+            StatusCode::OK,
+            serde_json::json!({"Descriptor": {"digest": fake.served(tag)}, "Platforms": []}),
         )
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {
@@ -536,7 +582,13 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             .nth(1)
             .unwrap_or_default()
             .trim_end_matches("/json");
-        (StatusCode::OK, serde_json::json!({"Id": image_id(image)}))
+        match fake.image(image) {
+            Some(id) => (StatusCode::OK, serde_json::json!({"Id": id})),
+            None => (
+                StatusCode::NOT_FOUND,
+                serde_json::json!({"message": format!("No such image: {image}")}),
+            ),
+        }
     } else if method == Method::GET
         && path.ends_with("/volumes")
         && fake.reject_list.load(Ordering::Relaxed)
@@ -613,6 +665,14 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({"message":"create rejected"}),
+        )
+    } else if method == Method::POST
+        && path.ends_with("/volumes/create")
+        && let Some(message) = fake.refuse_volume_create.lock().unwrap().clone()
+    {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({ "message": message }),
         )
     } else if method == Method::POST && path.ends_with("/volumes/create") {
         let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -873,9 +933,18 @@ fn image_id(image: &str) -> String {
 
     match image.split_once('@') {
         Some((_, digest)) => digest.to_owned(),
+        // Docker takes a bare image ID as itself.
+        None if image.starts_with("sha256:") => image.to_owned(),
         None => format!("sha256:{}", hex::encode(sha2::Sha256::digest(image))),
     }
 }
+
+/// A volume plugin no test serves: a create that reads a Provisioned Volume's origin
+/// through it is refused, as when the plugin is down.
+pub(crate) static NO_PLUGIN: std::sync::LazyLock<crate::storage::Plugin> =
+    std::sync::LazyLock::new(|| {
+        crate::storage::Plugin::at("/nonexistent/ployz-test-plugin.sock".into())
+    });
 
 pub(super) fn container_request<'spec, Storage>(
     kind: ContainerKind,
@@ -894,6 +963,7 @@ pub(super) fn container_request<'spec, Storage>(
         admitted: crate::machine::AdmittedSpec::test_signed(namespace, spec),
         admission: std::future::ready(Ok(())),
         storage,
+        plugin: &NO_PLUGIN,
     }
 }
 
@@ -904,6 +974,7 @@ pub(crate) fn provisioned_source(name: &str, maximum_bytes: u64) -> VolumeSource
             std::num::NonZeroU64::new(maximum_bytes).unwrap(),
         ),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");
@@ -920,6 +991,7 @@ pub(crate) fn ordinary_source(name: &str) -> VolumeSource {
         )
         .unwrap(),
         labels: BTreeMap::from([("backup".into(), "daily".into())]),
+        birth: None,
     }
     .admit()
     .expect("valid volume declaration");

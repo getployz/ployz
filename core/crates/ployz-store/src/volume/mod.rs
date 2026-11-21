@@ -3,6 +3,8 @@
 //! data; only removing a deployed Volume deletes data, and a Deploy of that removal
 //! needs its destructive review (see `crate::removal`).
 
+pub(crate) mod birth;
+pub(crate) mod first_copy;
 pub(crate) mod query;
 pub(crate) mod size;
 
@@ -752,7 +754,7 @@ mod tests {
                     message: None,
                     prune: false,
                     no_prune: false,
-                    approval: None,
+                    versions: Vec::new(),
                 }),
                 &Trusted::default(),
             )

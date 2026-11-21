@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ployz_core::{
@@ -58,6 +59,61 @@ impl<'a, C: Session> RestartTolerant<'a, C> {
     }
 }
 
+impl<C: Session> RestartTolerant<'_, C> {
+    /// `op`'s answer, sent again while the Machine restarts.
+    async fn waited<T, Fut>(&self, op: impl FnMut() -> Fut) -> Result<T, RpcError>
+    where
+        Fut: Future<Output = Result<T, RpcError>>,
+    {
+        let seen = &AtomicU64::new(self.session().await);
+        wait_out_restart(self.cancellation, op, move || async move {
+            let answer = self.redial_since(seen.load(Ordering::Relaxed)).await;
+            seen.store(self.session().await, Ordering::Relaxed);
+            answer
+        })
+        .await
+    }
+}
+
+/// Whether a creation's sends may still make a Container on their Machine: one went out
+/// and lost its answer, or was cut off while out. Once set it stays set, since a later
+/// answer speaks only for its own send.
+#[derive(Default)]
+pub(crate) struct Outstanding {
+    out: AtomicBool,
+    lost: AtomicBool,
+}
+
+impl Outstanding {
+    pub(crate) fn any(&self) -> bool {
+        self.out.load(Ordering::Relaxed) || self.lost.load(Ordering::Relaxed)
+    }
+}
+
+impl<C: CopyLifecycle + Session> RestartTolerant<'_, C> {
+    /// [`CopyLifecycle::ensure_new`], sent again while the Machine restarts, noting in
+    /// `outstanding` every send that may still act.
+    pub(crate) async fn ensure_new_noting(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        outstanding: &Outstanding,
+    ) -> Result<EnsuredContainer, RpcError> {
+        self.waited(|| async {
+            outstanding.out.store(true, Ordering::Relaxed);
+            let answer = self.inner.ensure_new(machine_id, want.clone()).await;
+            outstanding.out.store(false, Ordering::Relaxed);
+            if let Err(error) = &answer
+                && (error.reply_lost() || error.target_unanswered())
+            {
+                outstanding.lost.store(true, Ordering::Relaxed);
+            }
+            answer
+        })
+        .await
+    }
+}
+
 impl<C> Session for RestartTolerant<'_, C> {}
 
 // Each method names its restart policy. `wait` resends while the Machine is
@@ -76,17 +132,7 @@ macro_rules! restart_policy {
         )*
     };
     (@send wait $self:ident $name:ident $($arg:ident)*) => {{
-        let seen = &std::sync::atomic::AtomicU64::new($self.session().await);
-        wait_out_restart(
-            $self.cancellation,
-            || $self.inner.$name($(Clone::clone(&$arg)),*),
-            move || async move {
-                let answer = $self.redial_since(seen.load(std::sync::atomic::Ordering::Relaxed)).await;
-                seen.store($self.session().await, std::sync::atomic::Ordering::Relaxed);
-                answer
-            },
-        )
-        .await
+        $self.waited(|| $self.inner.$name($(Clone::clone(&$arg)),*)).await
     }};
     (@send once($reason:literal) $self:ident $name:ident $($arg:ident)*) => {
         $self.inner.$name($($arg),*).await
@@ -101,6 +147,7 @@ restart_policy! {
         once("a failed read leaves the gen to the live answers") fn replicated_containers(&self) -> Result<Vec<ContainerObservation>, RpcError>;
         wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
         wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
+        wait fn ensure_new(&self, machine_id: &MachineId, want: ContainerWant) -> Result<EnsuredContainer, RpcError>;
         wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
         wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
         wait fn read_entry_routes(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;

@@ -476,6 +476,7 @@ async fn concurrent_and_retried_first_creates_converge_on_one_pool() {
         send_port: first.send_port,
         receive_stall: first.receive_stall,
         stop_deadline: first.stop_deadline,
+        holders: first.holders.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -546,6 +547,7 @@ async fn a_second_process_cannot_use_a_pool_before_its_owner_finishes() {
         send_port: first.send_port,
         receive_stall: first.receive_stall,
         stop_deadline: first.stop_deadline,
+        holders: first.holders.clone(),
     };
     let first_socket = test.0.join("first-plugin.sock");
     let second_socket = test.0.join("second-plugin.sock");
@@ -957,6 +959,7 @@ case "$name" in
         ;;
       'set org.debian:periodic-trim=disable ployz') touch '{trim_disabled}' ;;
       'get -H -o value ployz:promote '*) echo '-' ;;
+      'get -Hp -o value,source ployz:origin '*|'get -Hp -o value,source ployz:pull-origin '*) printf -- '-\t-\n' ;;
       'destroy -r ployz/ployz/other') rm '{other}' '{other_bound}' ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on ployz/ployz-mirror') touch '{mirror_root}' ;;
       'create -o canmount=off -o readonly=on -o refquota='*' ployz/ployz-mirror/data')
@@ -1055,5 +1058,6 @@ esac
         send_port: ployz_core::VOLUME_SEND_PORT,
         receive_stall: super::super::transfer::RECEIVE_STALL,
         stop_deadline: super::super::transfer::STOP_DEADLINE,
+        holders: super::super::holders::Holders::none(),
     }
 }

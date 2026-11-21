@@ -14,6 +14,8 @@ use tokio::process::Command;
 use super::{
     Dataset, VolumeName, VolumeStorage,
     inspect::internal,
+    marks::{Mark, Write},
+    storage::HeldMutation,
     transfer::{Stop, ZfsChild},
 };
 
@@ -92,8 +94,13 @@ impl VolumeStorage {
     /// Renames the unmounted writer root `root` into `name`'s slot, in the order a crash
     /// can be read back from: the mirror root, the slot parent (bounded like the root,
     /// unless `datasets` already hold one), the parent's `OldCopy` role, then the rename.
+    ///
+    /// A parent that already exists may hold another pull's target and record, which
+    /// would read as the root's own once it lands there. Under admission, with no receive
+    /// running and no copy in the slot, both go before the rename.
     pub(super) async fn park_root_in_slot(
         &self,
+        _held: &HeldMutation,
         pool: &MachinePool,
         datasets: &[Dataset],
         name: &VolumeName,
@@ -104,6 +111,16 @@ impl VolumeStorage {
         let parent = layout.slot_parent(name);
         if Self::slot(datasets, pool, name).is_none() {
             self.create_slot(&parent, root.refquota).await?;
+        } else {
+            if self.receives.status(name).busy() {
+                return Err(format!("Volume {name} is still receiving into its slot").into());
+            }
+            if Self::slot_fs(datasets, pool, name).is_some() {
+                return Err(format!("Volume {name}'s slot already holds a copy").into());
+            }
+            self.marks(&parent)
+                .apply(&[Write::Inherit(Mark::Pull), Write::Inherit(Mark::PullOrigin)])
+                .await?;
         }
         self.marks(&parent).set_role(SlotRole::OldCopy).await?;
         self.zfs(&["rename", &root.name, &layout.slot_fs(name)])

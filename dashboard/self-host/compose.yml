@@ -16,6 +16,10 @@ x-app: &app
     PLOYZ_HOSTED_DNS_URL: ${PLOYZ_HOSTED_DNS_URL:-https://dns.ployz.app/}
     # Reached only with the observe profile; without it Machines' OTLP posts get a 503.
     OBSERVE_COLLECTOR_URL: http://observe-collector:4318
+    # Log history is read from the observe profile's ClickHouse, which starts only with CLICKHOUSE_PASSWORD set.
+    OBSERVE_CLICKHOUSE_URL: ${CLICKHOUSE_PASSWORD:+http://clickhouse:8123}
+    CLICKHOUSE_USER: otel
+    CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-}
   depends_on:
     postgres:
       condition: service_healthy
@@ -163,8 +167,8 @@ services:
 configs:
   inngest-database:
     content: CREATE DATABASE inngest;
-  # Cloud stamps tenancy: the web service sets x-ployz-org from the verified Machine token and
-  # x-ployz-retention-days itself. transform/strip removes every ployz.org and ployz.retention_days
+  # Cloud stamps tenancy: the web service sets x-ployz-org and x-ployz-machine from the verified Machine token and
+  # x-ployz-retention-days itself. transform/strip removes every ployz.org, ployz.machine and ployz.retention_days
   # the sender put on a record's resource, scope and own attributes (OTLP allows repeated keys, and a
   # single delete removes only one), then the stamp processors set them from the request headers.
   # Span event, link and exemplar attributes keep the sender's values; only OrgId is tenancy. ClickHouse derives OrgId from
@@ -186,32 +190,34 @@ configs:
         transform/strip:
           log_statements:
             - context: resource
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
             - context: scope
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
             - context: log
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
           metric_statements:
             - context: resource
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
             - context: scope
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
             - context: datapoint
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
           trace_statements:
             - context: resource
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
             - context: scope
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
             - context: span
-              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|retention_days)$$")']
+              statements: ['delete_matching_keys(attributes, "^ployz\\.(org|machine|retention_days)$$")']
         resource/org:
           attributes:
             - { key: ployz.org, from_context: metadata.x-ployz-org, action: upsert }
+            - { key: ployz.machine, from_context: metadata.x-ployz-machine, action: upsert }
             - { key: ployz.retention_days, from_context: metadata.x-ployz-retention-days, action: upsert }
         attributes/org:
           actions:
             - { key: ployz.org, from_context: metadata.x-ployz-org, action: upsert }
+            - { key: ployz.machine, from_context: metadata.x-ployz-machine, action: upsert }
       extensions:
         file_storage/queue:
           directory: /queue

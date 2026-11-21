@@ -33,7 +33,7 @@ pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
     plan_ingress_repairs, plan_namespace_removal, preview_deploy, without_departed,
 };
-pub(crate) use planning::{place_one, region_waits};
+pub(crate) use planning::{destinations, place_one, region_waits};
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
     ExecutionError, FailedOperation, HealthFailure, HookFailure, MachineAction, ObservationKind,
@@ -944,6 +944,32 @@ pub enum PlanError {
         /// The Machine holding the Volume's writer.
         machine: MachineName,
     },
+    /// A Managed Volume no Server holds yet was placed on a Server that can't take it now.
+    #[error(
+        "Volume {volume} was placed on {machine}, which {}. {}",
+        unfit.why(),
+        unfit.remedy(volume, machine)
+    )]
+    FirstCopyUnfit {
+        /// The Volume, as its owner named it.
+        volume: String,
+        /// The Server an earlier Deployment chose for its first copy, by name, or by ID
+        /// when this Server's view of the Cluster doesn't list it.
+        machine: String,
+        /// Why that Server can't take it now.
+        unfit: Unfit,
+    },
+    /// The Service mounts a born Volume, and every Server it could run on is too old to
+    /// check where a Volume's data began.
+    #[error(
+        "Upgrade {} first. {service} mounts a volume that needs a newer Ployz on every server it runs on.",
+        all_of(names.iter().map(ToString::to_string))
+    )]
+    VolumeOriginsUnchecked {
+        service: ServiceName,
+        /// The Servers left out for it, in snapshot order. Never empty.
+        names: Vec<MachineName>,
+    },
     /// No Server in a region the Service runs in can run it.
     #[error("{}", region_unmatched(regions))]
     RegionUnmatched {
@@ -1141,6 +1167,40 @@ impl fmt::Display for MachineNames<'_> {
     }
 }
 
+/// Why the Server a Volume's first copy was placed on can't take it now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unfit {
+    /// The Cluster as this plan sees it doesn't list the Server.
+    Unlisted,
+    /// It can't run the Service.
+    Excluded,
+    /// It has no room for the Volume.
+    Full,
+}
+
+impl Unfit {
+    fn why(self) -> &'static str {
+        match self {
+            Self::Unlisted => "the server running this deploy doesn't list",
+            Self::Excluded => "can't run this service",
+            Self::Full => "has no room for it",
+        }
+    }
+
+    /// What to do. A Server this plan doesn't list may already hold the Volume and serve
+    /// writes from it, so its advice never calls the Volume empty.
+    fn remedy(self, volume: &str, machine: &str) -> String {
+        let reset = format!("remove {volume} and add it again. It holds no data yet.");
+        match self {
+            Self::Unlisted => format!(
+                "Bring {machine} back. If it's gone for good, check it held no data in {volume} before you remove {volume} and add it again."
+            ),
+            Self::Excluded => format!("Let {machine} run it, or {reset}"),
+            Self::Full => format!("Free space on {machine}, or {reset}"),
+        }
+    }
+}
+
 impl PlanError {
     /// The Server whose storage can't hold the Deploy's Volumes, as opposed to a
     /// conflict or capacity nobody could read. Looks through the Service a plan error
@@ -1209,6 +1269,8 @@ impl PlanError {
             | Self::ServiceModeCannotChange
             | Self::NoWriter { .. }
             | Self::VolumeServerTakesNoServices { .. }
+            | Self::FirstCopyUnfit { .. }
+            | Self::VolumeOriginsUnchecked { .. }
             | Self::RegionUnmatched { .. }
             | Self::VolumeOutsideRegion { .. }
             | Self::VolumesApart { .. }
@@ -1254,6 +1316,14 @@ impl PlanError {
                 error.to_string(),
             )
             .with_details(serde_json::json!({ "reason": "volume_server_takes_no_services" })),
+            error @ Self::FirstCopyUnfit { .. } => RpcError::conflict(error.to_string())
+                .with_details(serde_json::json!({ "reason": "first_copy_unfit" })),
+            Self::VolumeOriginsUnchecked { ref names, .. } => {
+                RpcError::conflict(self.to_string()).with_details(serde_json::json!({
+                    "reason": "upgrade_required",
+                    "servers": names,
+                }))
+            }
             Self::RegionUnmatched { ref regions } => RpcError::conflict(self.to_string())
                 .with_details(serde_json::json!({
                     "reason": "region_unmatched",

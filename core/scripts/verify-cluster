@@ -417,6 +417,29 @@ def runner(run, commands, on):
             time.sleep(0.1)
 
 
+def refresh_sdk(run, commands):
+    """On a --cloud run, rebuild the dashboard's native SDK when a core source is newer than it, and restart the Cloud
+    runner that loaded the old one. The build holds PLOYZ_BUILD_LOCK itself, through `artifacts.py build`."""
+    if "cloud" not in run:
+        return
+    stale = CORE / "scripts" / "cloud-sdk-stale.sh"
+    # Exit 0: stale. Exit 1: current. Anything else is the check failing, not an answer.
+    checked = commands(["bash", stale], check=False)
+    if checked.returncode == 1:
+        return
+    if checked.returncode != 0:
+        raise RuntimeError(f"{stale} failed:\n{checked.stderr.decode(errors='replace')}")
+    commands(["bash", CORE / "scripts" / "build-cloud-sdk.sh"], cwd=CORE, timeout=1800)
+    # A cached SDK keeps its old mtime, older than a fresh checkout's sources; without this every update rebuilds.
+    (CORE / "crates" / "ployz-sdk" / "ployz-sdk.node").touch()
+    pid = DASHBOARD / ".verify" / "run" / "worker.pid"
+    # A runner that `runner kill` stopped stays stopped.
+    if pid.exists() and alive(int(pid.read_text())):
+        runner(run, commands, False)
+        runner(run, commands, True)
+    print("rebuilt the native SDK and restarted the Cloud runner")
+
+
 def stage(run, backend, node, daemon):
     binaries, directory = daemon_binaries(run, daemon), daemon_artifacts(run, daemon)
     backend.exec(node, ["install", "-d", "/opt/ployz-verify"])
@@ -1232,6 +1255,7 @@ def main():
             select_daemons(run, commands, args.daemon or [], default="checkout")
             select_cli(run, commands)
             build(run, commands, daemon=local_daemon([node["daemon"] for node in run["machines"]]))
+            refresh_sdk(run, commands)
             started = time.monotonic()
             if run.get("bare"):
                 parallel(lambda node: stage_bare(run, backend, node, node["daemon"]), run["machines"])

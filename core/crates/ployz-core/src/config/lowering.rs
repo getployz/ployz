@@ -180,6 +180,13 @@ pub struct LowerDeploymentVolume {
     /// A Deploy applied it, so its data is on some Server. Written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deployed: bool,
+    /// Where its data began, once an approval recorded it. None for a Volume still to be
+    /// born and for one from before births, whose mounts read as Legacy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth: Option<crate::VolumeBirth>,
+    /// The Server an earlier Deployment chose for its first copy. Written only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_copy: Option<crate::MachineId>,
 }
 
 /// One Config the Namespace holds, its references resolved.
@@ -230,7 +237,18 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     let volume_sources: BTreeMap<_, _> = input
         .volumes
         .iter()
-        .map(|v| (v.volume_resource_id.as_str(), (v.storage, v.deployed)))
+        .map(|v| {
+            // A birth from another Namespace names data that Environment approved, never
+            // this one's, so the Volume starts as a new one here.
+            let birth = v
+                .birth
+                .as_ref()
+                .filter(|birth| birth.namespace == input.namespace);
+            (
+                v.volume_resource_id.as_str(),
+                (v.storage, v.deployed, birth),
+            )
+        })
         .collect();
     let config_sources: BTreeMap<_, _> = input
         .configs
@@ -251,6 +269,15 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         configs: &config_sources,
         region: input.region.as_ref(),
     };
+    let first_copies = input
+        .volumes
+        .iter()
+        .filter_map(|volume| {
+            let machine = volume.first_copy?;
+            let name = crate::DockerVolumeName::for_resource(&volume.volume_resource_id).ok()?;
+            Some((namespace.volume_name(&name), machine))
+        })
+        .collect();
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
     let mut volume_names = BTreeMap::new();
     let mut deployed_volumes = BTreeSet::new();
@@ -288,6 +315,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     .with_dependencies(dependencies)
     .with_volume_names(volume_names)
     .with_deployed_volumes(deployed_volumes)
+    .with_first_copies(first_copies)
     .with_cluster_domain(input.cluster_domain))
 }
 
@@ -295,8 +323,8 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
 struct Sources<'a> {
     namespace: &'a Namespace,
     sealed_for: Option<&'a SealedFor>,
-    /// Storage, whether a Deploy applied it, and the ID its Docker Volume is named for.
-    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool)>,
+    /// Storage, whether a Deploy applied it, and the birth its mounts carry.
+    volumes: &'a BTreeMap<&'a str, (VolumeKind, bool, Option<&'a crate::VolumeBirth>)>,
     configs: &'a BTreeMap<&'a str, &'a LowerDeploymentConfig>,
     region: Option<&'a Region>,
 }
@@ -574,7 +602,8 @@ fn lower_volumes(
         deployed: BTreeSet::new(),
     };
     for mount in configured_mounts {
-        let Some((storage, deployed)) = sources.volumes.get(mount.volume_resource_id.as_str())
+        let Some((storage, deployed, birth)) =
+            sources.volumes.get(mount.volume_resource_id.as_str())
         else {
             continue;
         };
@@ -599,11 +628,13 @@ fn lower_volumes(
                 name,
                 driver: VolumeDriver::parse("local", BTreeMap::new()).map_err(lowering_error)?,
                 labels: BTreeMap::new(),
+                birth: birth.cloned(),
             },
             VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
                 name,
                 maximum_bytes: *maximum_bytes,
                 labels: BTreeMap::new(),
+                birth: birth.cloned(),
             },
         };
         lowered.volumes.push(ServiceVolume {

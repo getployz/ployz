@@ -32,7 +32,7 @@ cd "$dash"
 install=0; build_sdk=0
 if [ ! -f "$dash/node_modules/.modules.yaml" ] || [ "$dash/pnpm-lock.yaml" -nt "$dash/node_modules/.modules.yaml" ]; then install=1; fi
 sdk=$wt/core/crates/ployz-sdk/ployz-sdk.node
-if [ ! -f "$sdk" ] || [ -n "$(find "$wt/core/crates" -newer "$sdk" -type f \( -name '*.rs' -o -name Cargo.toml \) -print -quit)" ]; then build_sdk=1; fi
+if bash "$wt/core/scripts/cloud-sdk-stale.sh"; then build_sdk=1; fi
 # The SDK on disk may be a stale main build from an earlier run, so exact always resolves it: a cache hit takes seconds.
 if [ "$SDK" = exact ]; then build_sdk=1; fi
 

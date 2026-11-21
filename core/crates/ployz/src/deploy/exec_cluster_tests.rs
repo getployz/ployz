@@ -432,6 +432,7 @@ fn named_volume(reference: &str, name: &str) -> ServiceVolume {
             name: DockerVolumeName::parse(name).unwrap(),
             driver: ployz_core::VolumeDriver::parse("local", Default::default()).unwrap(),
             labels: Default::default(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),
@@ -594,6 +595,7 @@ async fn run_container(
                 registry_auth: None,
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
+                image_id: None,
             }),
             rotation: RunRotation::Pending,
         },
@@ -613,7 +615,6 @@ async fn ensure(
         .call::<op::EnsureContainer>(
             EnsureContainerRequest {
                 want,
-                deploy: None,
                 rule: None,
                 versions: Vec::new(),
             },

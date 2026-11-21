@@ -52,6 +52,7 @@ fn old_copy(newest: Option<Snapshot>) -> VolumeCopy {
         pull: None,
         role: Some(SlotRole::OldCopy),
         pull_state: None,
+        origin: None,
     }
 }
 
@@ -62,6 +63,7 @@ fn root(readonly: bool, epoch: u32) -> VolumeCopy {
         epoch: WriterEpoch::new(epoch),
         seed: false,
         mark: None,
+        origin: None,
     }
 }
 

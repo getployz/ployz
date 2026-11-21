@@ -7,6 +7,7 @@ import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/co
 import { user } from "#/modules/identity/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { openContainerLogs } from "#/modules/runtime/container-logs.server";
+import { readHistoryPage } from "#/modules/runtime/log-history-page.server";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { setSupportAccess } from "#/modules/support-access/support-access.server";
 import { Auth, type AuthService, type AuthSession } from "#/server/auth.server";
@@ -143,20 +144,24 @@ it.live(
         assert.deepStrictEqual(shownIn(staffRestore), [], "a History refusal shows support no values while they're off");
         assert.deepStrictEqual(shownIn(yield* restore(owner)), values, "and shows a member all of them");
 
-        const logsAs = (userId: string, history?: { cursor?: string }) => {
+        const asUser = (userId: string) => {
           const session = asTestDouble<AuthSession>()({ user: { id: userId } });
-          const auth = asTestDouble<AuthService>()({ getSession: () => Effect.succeed(session) });
-          return Effect.exit(openContainerLogs(new Request("http://localhost/api/runtime/logs"), {
-            organizationSlug: SLUG, projectSlug: "shop", environmentSlug: "production",
-          }, history).pipe(asStaff, Effect.provideService(Auth, auth)));
+          return Effect.provideService(Auth, asTestDouble<AuthService>()({ getSession: () => Effect.succeed(session) }));
         };
+        const selection = { organizationSlug: SLUG, projectSlug: "shop", environmentSlug: "production" };
+        const logsAs = (userId: string) => Effect.exit(
+          openContainerLogs(new Request("http://localhost/api/runtime/logs"), selection).pipe(asStaff, asUser(userId)),
+        );
+        const historyAs = (userId: string) => Effect.exit(
+          readHistoryPage(new Request("http://localhost/api/runtime/logs"), selection).pipe(asStaff, asUser(userId)),
+        );
         const hidden = (exit: Exit.Exit<{ type: string }, unknown>) => Exit.isSuccess(exit) && exit.value.type === "hidden";
         const refused = (exit: Exit.Exit<unknown, unknown>) => Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof Forbidden;
         assert.isTrue(hidden(yield* logsAs(staff)), "support's log stream says container logs are hidden while they're off");
-        assert.isTrue(refused(yield* logsAs(staff, {})), "and their stored history is refused");
+        assert.isTrue(refused(yield* historyAs(staff)), "and their stored history is refused");
         yield* allow({ setting: "logs", on: true });
         for (const [who, userId] of [["support once they're on", staff], ["a member, always", owner]] as const) {
-          const [stream, history] = [yield* logsAs(userId), yield* logsAs(userId, {})];
+          const [stream, history] = [yield* logsAs(userId), yield* historyAs(userId)];
           assert.isFalse(hidden(stream) || refused(stream) || refused(history), `container logs reach the runtime for ${who}`);
         }
       }).pipe(Effect.provide(cloud));
