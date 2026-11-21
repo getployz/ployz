@@ -479,6 +479,7 @@ async fn live_and_second(
                             labels: Default::default(),
                             stopped: false,
                             run: None,
+                            log_driver: None,
                         })
                         .unwrap();
                     RpcResponse::from(ployz_core::EnsuredContainer::Ensured {

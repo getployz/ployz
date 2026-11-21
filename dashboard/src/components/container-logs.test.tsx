@@ -10,6 +10,8 @@ import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { ContainerLogs, sourceTag } from "./container-logs";
 
+const withHistoryOff = (history: (url: string, init: RequestInit) => Promise<Response>) => (url: string, init: RequestInit) =>
+  url.includes("log-history-status") ? Promise.resolve(Response.json({ history: false, machines: [] })) : history(url, init);
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };
 const cursorOf = (init: RequestInit | undefined) => bodyOf(init).cursor;
 const line = { kind: "line", id: "m/c/100/0", timestamp: "100", machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel: "stdout", level: "info", message: "hello" } as const;
@@ -30,7 +32,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
       ? Response.json({ rows: [{ ...line, id: "store/m/c/50/0", timestamp: "50" }], failures: [], cursor: "older" })
       : Response.json({ rows: [{ ...line, id: "store/m/c/150/0", timestamp: "150" }], failures: [], cursor: "second" });
   });
-  vi.stubGlobal("fetch", fetchHistory);
+  vi.stubGlobal("fetch", withHistoryOff(fetchHistory));
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
@@ -201,7 +203,7 @@ it("settles on hidden when the Organization hides its container logs from Ployz 
   }
   vi.stubGlobal("EventSource", FakeEventSource);
   const fetchHistory = vi.fn(async () => Response.json({ rows: [], failures: [], cursor: null }));
-  vi.stubGlobal("fetch", fetchHistory);
+  vi.stubGlobal("fetch", withHistoryOff(fetchHistory));
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
@@ -301,7 +303,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     failures: [{ machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." }],
     cursor: "page-2",
   }));
-  vi.stubGlobal("fetch", fetchHistory);
+  vi.stubGlobal("fetch", withHistoryOff(fetchHistory));
   const client = new QueryClient();
   const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
@@ -475,3 +477,55 @@ it("names a lacking Server with no lines by its Server name, and links its page"
     await harness.teardown();
   }
 });
+
+it("searches stored history for the typed text in place of the live tail, and follows live again once it is cleared", async () => {
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    closed = false;
+    constructor() { super(); sources.push(this); }
+    close() { this.closed = true; }
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 2_000, width: 800, height: 2_000, toJSON: () => ({}) });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(2_000);
+  const reads: { contains?: string }[] = [];
+  vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+    if (url.includes("log-history-status")) return Response.json({ history: true, machines: [] });
+    const read = bodyOf(init) as { contains?: string };
+    reads.push(read);
+    if (read.contains === undefined) return Response.json({ rows: [], failures: [], cursor: null });
+    return Response.json({ rows: [{ ...line, id: "m/c/70/hdeadbeef", timestamp: "70", message: "disk almost full" }], failures: [], cursor: null });
+  });
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const selection = { organizationSlug: "acme", environmentSlug: "production" };
+  const stream = getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" });
+  render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+    <ContainerLogs selection={selection} />
+  </RouterContextProvider></DbProvider></QueryClientProvider>);
+  try {
+    const live = sources.at(-1) ?? assert();
+    await act(async () => live.dispatchEvent(new Event("live")));
+    await waitFor(() => expect(screen.getByLabelText("Search logs")).toBeTruthy());
+    reads.length = 0;
+    fireEvent.change(screen.getByLabelText("Search logs"), { target: { value: "almost full" } });
+    await waitFor(() => expect(screen.getByText("disk almost full")).toBeTruthy());
+    expect(reads.at(-1)?.contains).toBe("almost full");
+    expect(live.closed).toBe(true);
+    expect(screen.getByText(/Showing stored logs that match/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Search logs"), { target: { value: "" } });
+    await waitFor(() => expect(sources.filter(source => !source.closed)).toHaveLength(1));
+    expect(screen.queryByText(/Showing stored logs that match/)).toBeNull();
+    expect(stream.getSnapshot().searching).toBe("");
+  } finally {
+    cleanup();
+    await stream.collection.cleanup();
+    await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+  }
+});
+
+function assert(): never { throw new Error("Viewer did not open its log stream"); }

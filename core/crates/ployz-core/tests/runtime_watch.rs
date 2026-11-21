@@ -424,6 +424,7 @@ fn container_observation() -> ContainerObservation {
         labels: Default::default(),
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }

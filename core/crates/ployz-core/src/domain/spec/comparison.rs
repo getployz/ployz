@@ -1,7 +1,7 @@
 //! Runtime planning impact of a requested spec against an observed one.
 
 use super::*;
-use crate::ByteQuantity;
+use crate::{ByteQuantity, ContainerObservation, LOG_DRIVER};
 
 /// Return the runtime action needed to reconcile the requested serving shape.
 #[must_use]
@@ -24,6 +24,23 @@ pub fn compare_specs(
     } else {
         SpecChange::NeedsRecreate
     }
+}
+
+/// [`compare_specs`] on a Container's retained spec, recreating one that runs on another log
+/// driver, as a Container started before the Collector shipped does.
+#[must_use]
+pub fn compare_observed(
+    observation: &ContainerObservation,
+    requested: &RequestedServiceSpec,
+) -> SpecChange {
+    if observation
+        .log_driver
+        .as_deref()
+        .is_some_and(|driver| driver != LOG_DRIVER)
+    {
+        return SpecChange::NeedsRecreate;
+    }
+    compare_specs(&observation.resolved_spec, requested)
 }
 
 /// The counts by region are placement too: they say which Machines may hold a
@@ -121,6 +138,50 @@ fn memory_change(current: Option<&ByteQuantity>, requested: Option<&ByteQuantity
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_container_on_the_local_log_driver_is_recreated_and_one_on_json_file_is_kept() {
+        let resolved: ResolvedServiceSpec = serde_json::from_value(json!({
+            "service_id": "a".repeat(32), "name": "api",
+            "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "api:1", "pull_policy": "missing"}
+        }))
+        .unwrap();
+        let requested = resolved.to_requested();
+        let observed = |log_driver: Option<&str>| {
+            ContainerObservation::try_from(crate::ContainerObservationParts {
+                rotation: None,
+                r#gen: None,
+                container_id: crate::ContainerId::parse("1".repeat(64)).unwrap(),
+                display_name: "api-1".into(),
+                created_at_unix_nanos: 0,
+                machine_id: crate::MachineId::parse("1".repeat(32)).unwrap(),
+                namespace: crate::Namespace::parse("app").unwrap(),
+                kind: crate::ContainerKind::ServiceContainer,
+                runtime: crate::ContainerRuntimeObservation::Created,
+                effective_healthcheck: None,
+                resolved_spec: resolved.clone(),
+                address: None,
+                labels: Default::default(),
+                stopped: false,
+                run: None,
+                log_driver: log_driver.map(str::to_owned),
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            compare_observed(&observed(Some("local")), &requested),
+            SpecChange::NeedsRecreate
+        );
+        assert_eq!(
+            compare_observed(&observed(Some("json-file")), &requested),
+            SpecChange::UpToDate
+        );
+        assert_eq!(
+            compare_observed(&observed(None), &requested),
+            SpecChange::UpToDate
+        );
+    }
 
     #[test]
     fn command_and_hook_edits_recreate_and_resource_edits_update() {

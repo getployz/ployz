@@ -9,7 +9,7 @@ import {
   Exit,
   Layer,
   Option,
-  type Redacted,
+  Redacted,
   Result,
   Schema,
   SchemaIssue,
@@ -112,6 +112,9 @@ const rawFields = {
   mailFrom: optional(Config.nonEmptyString("MAIL_FROM")),
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   observeCollectorUrl: optional(Config.url("OBSERVE_COLLECTOR_URL")),
+  observeClickhouseUrl: Config.string("OBSERVE_CLICKHOUSE_URL").pipe(Config.withDefault("")),
+  observeClickhouseUser: Config.nonEmptyString("CLICKHOUSE_USER").pipe(Config.withDefault("default")),
+  observeClickhousePassword: Config.schema(Schema.Redacted(Schema.String), "CLICKHOUSE_PASSWORD").pipe(Config.withDefault(Redacted.make(""))),
   uptimeEnabled: Config.boolean("UPTIME_ENABLED").pipe(Config.withDefault(false)),
   analyticsEnabled: Config.boolean("ANALYTICS_ENABLED").pipe(Config.withDefault(false)),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
@@ -298,8 +301,18 @@ const resolveGithubAuthority = Effect.fn("Config.resolveGithubAuthority")(functi
 const parseUserIds = (value: string | undefined): ReadonlyArray<string> =>
   value === undefined ? [] : value.split(",").map((id) => id.trim()).filter((id) => id !== "");
 
+const resolveObserveClickhouse = Effect.fn("Config.resolveObserveClickhouse")(function* (input: Effect.Success<typeof loadRawConfig>) {
+  if (input.observeClickhouseUrl === "") return undefined;
+  const url = yield* Effect.try({
+    try: () => new URL(input.observeClickhouseUrl),
+    catch: () => new InvalidConfiguration({ message: "OBSERVE_CLICKHOUSE_URL must be a URL like http://clickhouse:8123" }),
+  });
+  return { url, user: input.observeClickhouseUser, password: input.observeClickhousePassword };
+});
+
 const makeAppConfig = Effect.gen(function* () {
   const raw = yield* loadRawConfig;
+  const observeClickhouse = yield* resolveObserveClickhouse(raw);
   const polar = yield* resolvePolarConfiguration(raw);
   const mail = yield* resolveMailConfiguration(raw);
   const githubOrigins = yield* resolveGithubOrigins(raw);
@@ -345,6 +358,8 @@ const makeAppConfig = Effect.gen(function* () {
     marketingOrigin: raw.marketingOrigin,
     // Unset: Cloud keeps no logs, metrics or traces from Machines, and their OTLP posts get a 503.
     observeCollectorUrl: raw.observeCollectorUrl,
+    // Unset: Cloud keeps no log history to read, and the log viewer says so.
+    observeClickhouse,
     // Unset (Self-hosted Cloud): no uptime checker runs, so the dashboard shows no uptime.
     uptimeEnabled: raw.uptimeEnabled,
     analyticsEnabled: polar.mode !== "self_hosted" || raw.analyticsEnabled,

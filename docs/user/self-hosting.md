@@ -246,6 +246,9 @@ they do.
    `ps` and `logs`, so they include the new services. Without the profile, a server that sends
    to your Cloud gets a `503` and keeps what it has.
 
+With the profile on, the Logs page reads older lines and search from ClickHouse. Without it, the
+page says **Log history isn’t set up** and live output still works.
+
 Ployz Cloud keeps each record for 30 days from the time the server stamped on it, and files it
 under the organization that owns the server that sent it. A server can't claim another
 organization's name. Cloud answers a server once its Collector has put the batch on disk, in the

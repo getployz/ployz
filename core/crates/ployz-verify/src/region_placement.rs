@@ -605,6 +605,7 @@ impl RegionPlacement {
             labels: BTreeMap::default(),
             stopped: false,
             run: None,
+            log_driver: None,
         })
         .expect("a Container observation")
     }

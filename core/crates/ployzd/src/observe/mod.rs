@@ -7,6 +7,7 @@
 pub mod cleanup;
 mod client;
 mod clock;
+pub(crate) mod collector;
 mod exit_ledger;
 #[cfg(test)]
 mod fixtures;

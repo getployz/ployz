@@ -38,6 +38,7 @@ use super::{
     spec_store::ConfigOperation,
     standing::Standing,
 };
+use crate::observe::collector::Collector;
 use crate::sealed_compat::LogStore;
 use futures_util::StreamExt;
 
@@ -127,6 +128,7 @@ pub struct Lifecycle {
     pub(super) standing: Standing,
     pub(super) recovery: IngressRecovery,
     pub(super) log_store: LogStore,
+    pub(super) collector: Collector,
     /// Set when a Leave begins removing every managed Container, and cleared only when
     /// that Leave fails, so a committed Leave keeps it set.
     pub(super) departure: Departure,
@@ -923,6 +925,13 @@ impl Lifecycle {
             && lost_network(&self.observation.ensure_managed(container_id).await?).is_some()
         {
             return Err(error);
+        }
+        let container_labels = inspected
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref());
+        if let Some(container_labels) = container_labels {
+            self.collector.cover(container_labels).await?;
         }
         let spec = self.specs.get(container_id).await?;
         match super::holder::start(&self.docker.client, inspected, spec.as_ref()).await {

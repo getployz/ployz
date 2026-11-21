@@ -464,6 +464,7 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         labels: BTreeMap::new(),
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }

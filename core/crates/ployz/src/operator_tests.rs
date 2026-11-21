@@ -1280,6 +1280,7 @@ fn container_on(
         labels: Default::default(),
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }

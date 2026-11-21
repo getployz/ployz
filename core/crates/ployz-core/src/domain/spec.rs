@@ -813,7 +813,7 @@ mod serving_shape;
 pub use serving_shape::{ServingShape, global_creation_key};
 
 mod comparison;
-pub use comparison::compare_specs;
+pub use comparison::{compare_observed, compare_specs};
 
 #[cfg(test)]
 mod tests {

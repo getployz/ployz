@@ -65,6 +65,7 @@ use serde_json::json;
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
+use crate::observe::collector::Collector;
 use crate::sealed_compat::LogStore;
 use checks::CheckRecords;
 use error::docker_error;
@@ -205,6 +206,15 @@ impl LocalDocker {
         )
     }
 
+    pub(crate) async fn docker_root(&self) -> Result<PathBuf, Error> {
+        Ok(self
+            .client
+            .info()
+            .await?
+            .docker_root_dir
+            .map_or_else(|| PathBuf::from("/var/lib/docker"), PathBuf::from))
+    }
+
     async fn uses_containerd_store(&self) -> Result<bool, Error> {
         Ok(self
             .client
@@ -239,7 +249,7 @@ impl LocalDocker {
             .collect())
     }
 
-    pub(super) async fn managed_containers(
+    pub(crate) async fn managed_containers(
         &self,
     ) -> Result<Vec<(ContainerId, HashMap<String, String>)>, Error> {
         self.labelled(vec![
@@ -363,6 +373,7 @@ struct Settings {
     machine_root: PathBuf,
     log_store: LogStore,
     sink: Option<ObservationSink>,
+    collector: Collector,
 }
 
 /// What Docker and the Machine database say about the managed Containers, read without
@@ -387,6 +398,7 @@ impl ContainerRuntime {
                 machine_root: PathBuf::from("/"),
                 log_store: LogStore::default(),
                 sink: None,
+                collector: Collector::default(),
             },
         )
     }
@@ -414,6 +426,7 @@ impl ContainerRuntime {
             standing,
             recovery: IngressRecovery::default(),
             log_store: settings.log_store.clone(),
+            collector: settings.collector.clone(),
             departure: lifecycle::Departure::default(),
         };
         Self {
@@ -478,6 +491,23 @@ impl ContainerRuntime {
     #[must_use]
     pub fn with_sealing_key(self, data_dir: PathBuf) -> Self {
         self.configured(|settings| settings.sealing_key_dir = Some(data_dir))
+    }
+
+    /// Runs the Collector of this Machine's logs, which reads the Sealing Key and the
+    /// Machine record kept in `data_dir`.
+    #[must_use]
+    pub fn with_collector(self, data_dir: PathBuf) -> Self {
+        let collector = Collector::new(
+            self.docker.clone(),
+            data_dir,
+            self.settings.machine_root.clone(),
+        );
+        self.configured(|settings| settings.collector = collector)
+    }
+
+    #[must_use]
+    pub(crate) fn collector(&self) -> &Collector {
+        &self.settings.collector
     }
 
     #[must_use]
@@ -955,6 +985,11 @@ impl Observation {
                     .collect(),
                 stopped,
                 run: run.clone(),
+                log_driver: inspected
+                    .host_config
+                    .as_ref()
+                    .and_then(|host| host.log_config.as_ref())
+                    .and_then(|log| log.typ.clone()),
             })?;
         let oom_killed = inspected
             .state
@@ -1104,6 +1139,19 @@ struct RawContainerInspect {
     config: Option<RawContainerConfig>,
     state: Option<serde_json::Value>,
     network_settings: Option<RawNetworkSettings>,
+    host_config: Option<RawHostConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct RawHostConfig {
+    log_config: Option<RawLogConfig>,
+}
+
+#[derive(Deserialize)]
+struct RawLogConfig {
+    #[serde(rename = "Type")]
+    typ: Option<String>,
 }
 
 impl RawContainerInspect {

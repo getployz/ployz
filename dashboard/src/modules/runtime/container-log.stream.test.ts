@@ -208,6 +208,83 @@ it("reads the newest page first for the exits the live tail lacks, then follows 
   }
 });
 
+async function withFocusedStream(run: (ctx: { stream: ReturnType<typeof getContainerLogStream>; bodies: Array<{ service?: string; contains?: string; cursor?: string }>; sources: EventTarget[]; line: (service: string, at: number) => object }) => Promise<void>) {
+  vi.useFakeTimers();
+  const sources: EventTarget[] = [];
+  class FakeEventSource extends EventTarget {
+    constructor() { super(); sources.push(this); }
+    close() {}
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const line = (service: string, at: number) => ({
+    kind: "line", id: `${service}/${at}`, timestamp: String(at), machineId: "m", machineName: "Server", containerId: service, serviceName: service, channel: "stdout", level: "info", message: `${service} ${at}`,
+  });
+  const bodies: Array<{ service?: string; contains?: string; cursor?: string }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as { service?: string; contains?: string; cursor?: string };
+    bodies.push(body);
+    return new Response(JSON.stringify({ rows: [line(body.service ?? "any", body.contains ? 7 : 5)], cursor: null, failures: [] }));
+  }));
+  const queryClient = new QueryClient();
+  const stream = getContainerLogStream({ organizationSlug: "focus", projectSlug: "shop", environmentSlug: "production" }, { queryClient, sessionId: "session", userId: "user" });
+  const subscription = stream.collection.subscribeChanges(() => {});
+  stream.view();
+  try {
+    sources.at(-1)?.dispatchEvent(new MessageEvent("live"));
+    await vi.advanceTimersByTimeAsync(0);
+    bodies.length = 0;
+    await run({ stream, bodies, sources, line });
+  } finally {
+    subscription.unsubscribe();
+    await stream.collection.cleanup();
+    queryClient.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+  }
+}
+
+it("reads a focused Service's stored lines, keeps the lines already held, and stops reading for all Services", async () => {
+  await withFocusedStream(async ({ stream, bodies, sources, line }) => {
+    for (const at of [10, 20, 30]) sources.at(-1)?.dispatchEvent(new MessageEvent("log", { data: JSON.stringify({ type: "record", record: line("api", at) }) }));
+    await vi.advanceTimersByTimeAsync(260);
+    stream.focus("removed");
+    await vi.waitFor(() => expect(stream.collection.has("removed/5")).toBe(true));
+    expect(bodies.map(body => body.service)).toEqual(["removed"]);
+    expect(stream.collection.has("api/30")).toBe(true);
+    stream.focus("");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bodies).toHaveLength(1);
+    expect(stream.collection.has("removed/5")).toBe(true);
+  });
+});
+
+it("reads every Service's history for a search while no Service is focused, and the focused Service's again once the search clears", async () => {
+  await withFocusedStream(async ({ stream, bodies }) => {
+    stream.focus("removed");
+    await vi.waitFor(() => expect(bodies).toHaveLength(1));
+    stream.search("boom");
+    await vi.waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1]).toMatchObject({ contains: "boom", service: "removed" });
+    stream.focus("");
+    await vi.waitFor(() => expect(bodies).toHaveLength(3));
+    expect(bodies[2]).toMatchObject({ contains: "boom" });
+    expect(bodies[2]?.service).toBeUndefined();
+    stream.focus("removed");
+    await vi.waitFor(() => expect(bodies).toHaveLength(4));
+    stream.search("");
+    await vi.waitFor(() => expect(bodies).toHaveLength(5));
+    expect(bodies[4]).toMatchObject({ service: "removed" });
+    expect(bodies[4]?.contains).toBeUndefined();
+  });
+});
+
+it("reads a Service's history though other Services' loaded lines fill the scrollback", async () => {
+  await withFocusedStream(async ({ stream, bodies, line }) => {
+    for (let at = 1; at <= 30_000; at++) stream.collection.insert(line("api", at) as never);
+    stream.focus("removed");
+    await vi.waitFor(() => expect(stream.collection.has("removed/5")).toBe(true));
+    expect(bodies.map(body => body.service)).toEqual(["removed"]);
+  });
+});
+
 type Stored = { container: string; at: number };
 type HistoryRead = { cursor: string | null; until_nanos: string | null; limit: number };
 type StoreTransport = { watch(): AsyncGenerator<object>; history(input: HistoryRead): Promise<{ next(): Promise<object | null>; cancel(): void }> };

@@ -33,6 +33,7 @@ pub(in crate::deploy) fn ingress_on(
         r#gen: None,
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }

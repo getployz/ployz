@@ -463,6 +463,7 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         labels: Default::default(),
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }
