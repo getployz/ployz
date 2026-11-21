@@ -53,13 +53,13 @@ async fn converge_in(
     }
 }
 
-/// The harvester runs as root to link Docker's root-only log files, so its
-/// cgroup limits keep a runaway harvester from starving the Machine.
+/// ployz-observe runs as root to reach Docker, so its cgroup limits keep a
+/// runaway process from starving the Machine.
 fn unit_text(exe: &Path, data_dir: &Path, socket: &Path) -> String {
     format!(
         "# Written by ployzd. Removed by uninstall and reboot.
 [Unit]
-Description=Ployz Log Store
+Description=Ployz Observe
 After=docker.service
 Wants=docker.service
 
@@ -105,7 +105,7 @@ mod tests {
             "\
 # Written by ployzd. Removed by uninstall and reboot.
 [Unit]
-Description=Ployz Log Store
+Description=Ployz Observe
 After=docker.service
 Wants=docker.service
 

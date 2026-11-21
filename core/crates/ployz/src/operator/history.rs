@@ -1,387 +1,229 @@
-//! `ployz logs` history: each asked Server's Log Store, merged by timestamp.
-//!
-//! A Server that fails stops contributing and is returned as a failure; the
-//! others keep printing.
+//! `ployz logs` for a Service that no longer runs: the lines Ployz Cloud kept.
 
-use ployz_core::error_chain;
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-    time::Duration,
-};
+use ployz_core::ContainerId;
+use serde::{Deserialize, Deserializer};
 
-use futures_util::future::join_all;
-use ployz_core::{
-    ContainerId, HistoryContainer, HistoryContainerKind, HistoryGapReason, HistoryRow,
-    HistoryStream, LOG_HISTORY_PAGE_LIMIT, LogDirection, LogHistoryRequest, MachineFailure,
-    MachineId, MachineName, MachineTarget, RpcError, RpcErrorCode, op,
-};
-use tokio_util::sync::CancellationToken;
+/// The most lines one `ployz logs` reads from Cloud when it asks for all of them.
+pub const READ_ALL: usize = 5_000;
+/// What Cloud's `limit` allows one page.
+pub const PAGE: usize = 1_000;
 
-use crate::connect::{Client, ConnectError};
-
-/// The store sends a heartbeat each second while it reads.
-const ROW_DEADLINE: Duration = Duration::from_secs(10);
-
-/// Which stored containers one read asks a Server for.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct HistorySelector {
-    pub namespace: Option<String>,
-    pub service: Option<String>,
-    pub deployment: Option<String>,
-    pub container_id: Option<ContainerId>,
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum StoredStream {
+    Stdout,
+    Stderr,
 }
 
-impl HistorySelector {
-    /// Every stored container of one Service, running or removed.
-    pub fn service(namespace: &str, service: &str, deployment: Option<&str>) -> Self {
-        Self {
-            namespace: Some(namespace.to_owned()),
-            service: Some(service.to_owned()),
-            deployment: deployment.map(str::to_owned),
-            container_id: None,
-        }
-    }
-
-    /// Every stored container of one Namespace.
-    pub fn namespace(namespace: &str, deployment: Option<&str>) -> Self {
-        Self {
-            namespace: Some(namespace.to_owned()),
-            deployment: deployment.map(str::to_owned),
-            ..Self::default()
-        }
-    }
-
-    /// One stored container, by id.
-    pub fn container(container_id: ContainerId, deployment: Option<&str>) -> Self {
-        Self {
-            deployment: deployment.map(str::to_owned),
-            container_id: Some(container_id),
-            ..Self::default()
-        }
-    }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredLine {
+    #[serde(deserialize_with = "nanoseconds")]
+    pub timestamp: i64,
+    pub machine_name: String,
+    pub container_id: String,
+    pub service: String,
+    pub stream: StoredStream,
+    pub message: String,
 }
 
-/// Nanosecond bounds: `since` inclusive, `until` exclusive.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HistoryWindow {
-    /// The last `lines` rows of the range, across every Server.
-    Last {
-        lines: usize,
-        since: Option<i64>,
-        until: Option<i64>,
-    },
-    /// Every row of the range, read a page at a time.
-    All {
-        since: Option<i64>,
-        until: Option<i64>,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub struct HistoryRecord {
-    pub machine: MachineName,
-    pub container: Arc<HistoryContainer>,
-    pub event: HistoryEvent,
-}
-
-#[derive(Clone, Debug)]
-pub enum HistoryEvent {
-    Line {
-        ts: i64,
-        stream: HistoryStream,
-        text: Vec<u8>,
-    },
-    Gap {
-        from: i64,
-        to: i64,
-        reason: HistoryGapReason,
-    },
-    Exit {
-        ts: i64,
-        exit_code: Option<i64>,
-        oom_killed: bool,
-    },
-}
-
-impl HistoryRecord {
+impl StoredLine {
     #[must_use]
-    pub fn ts(&self) -> i64 {
-        match self.event {
-            HistoryEvent::Line { ts, .. } | HistoryEvent::Exit { ts, .. } => ts,
-            HistoryEvent::Gap { from, .. } => from,
-        }
+    pub fn container(&self) -> Option<ContainerId> {
+        ContainerId::parse(self.container_id.as_str()).ok()
     }
 }
 
-/// One Server and one selector, read in ascending time.
-struct Source {
-    machine_id: MachineId,
-    machine: MachineName,
-    selector: HistorySelector,
-    containers: HashMap<ContainerId, Arc<HistoryContainer>>,
-    buffered: VecDeque<HistoryRecord>,
-    cursor: Option<String>,
-    exhausted: bool,
+/// One page of stored lines, newest first, and where the older page starts.
+#[derive(Debug, Deserialize)]
+pub struct StoredPage {
+    pub lines: Vec<StoredLine>,
+    pub cursor: Option<String>,
 }
 
-/// Reads `selectors` on every Server in `machines` and hands each record to
-/// `emit` in timestamp order. Returns the Servers that failed.
-///
-/// # Errors
-///
-/// Returns the first error `emit` returns.
-pub async fn read_history<E>(
-    client: &Client,
-    machines: &[(MachineId, MachineName)],
-    selectors: &[HistorySelector],
-    window: HistoryWindow,
-    cancellation: &CancellationToken,
-    mut emit: impl FnMut(HistoryRecord) -> Result<(), E>,
-) -> Result<Vec<MachineFailure<RpcError>>, E> {
-    let mut sources = machines
-        .iter()
-        .flat_map(|(machine_id, machine)| {
-            selectors.iter().map(|selector| Source {
-                machine_id: *machine_id,
-                machine: machine.clone(),
-                selector: selector.clone(),
-                containers: HashMap::new(),
-                buffered: VecDeque::new(),
-                cursor: None,
-                exhausted: false,
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut failures = Vec::new();
-    match window {
-        HistoryWindow::Last {
-            lines,
-            since,
-            until,
-        } => {
-            let reads = sources
-                .iter_mut()
-                .map(|source| read_last(client, source, lines, since, until));
-            let results = tokio::select! {
-                () = cancellation.cancelled() => return Ok(failures),
-                results = join_all(reads) => results,
-            };
-            let mut records = Vec::new();
-            for (source, result) in sources.iter_mut().zip(results) {
-                match result {
-                    Ok(()) => records.extend(source.buffered.drain(..)),
-                    Err(error) => fail(&mut failures, source.machine_id, error),
-                }
-            }
-            records.sort_by_key(HistoryRecord::ts);
-            let skip = records.len().saturating_sub(lines);
-            for record in records.into_iter().skip(skip) {
-                emit(record)?;
-            }
-        }
-        HistoryWindow::All { since, until } => loop {
-            let refills = sources
-                .iter_mut()
-                .filter(|source| source.buffered.is_empty() && !source.exhausted)
-                .map(|source| async move {
-                    let result = read_forward(client, source, since, until).await;
-                    (source.machine_id, result)
-                });
-            let results = tokio::select! {
-                () = cancellation.cancelled() => return Ok(failures),
-                results = join_all(refills) => results,
-            };
-            for (machine_id, result) in results {
-                if let Err(error) = result {
-                    fail(&mut failures, machine_id, error);
-                }
-            }
-            sources.retain(|source| {
-                !source.buffered.is_empty()
-                    || !source.exhausted
-                        && !failures.iter().any(|f| f.machine_id == source.machine_id)
-            });
-            // Emit while every open source has a row to compare against.
-            while sources
-                .iter()
-                .all(|source| !source.buffered.is_empty() || source.exhausted)
-            {
-                let Some(next) = sources
-                    .iter_mut()
-                    .filter(|source| !source.buffered.is_empty())
-                    .min_by_key(|source| source.buffered.front().map(HistoryRecord::ts))
-                else {
-                    return Ok(failures);
-                };
-                if let Some(record) = next.buffered.pop_front() {
-                    emit(record)?;
-                }
-            }
-        },
-    }
-    Ok(failures)
+fn nanoseconds<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    text.parse().map_err(serde::de::Error::custom)
 }
 
-fn fail(failures: &mut Vec<MachineFailure<RpcError>>, machine_id: MachineId, error: RpcError) {
-    if !failures
-        .iter()
-        .any(|failure| failure.machine_id == machine_id)
-    {
-        failures.push(MachineFailure { machine_id, error });
-    }
-}
-
-async fn read_last(
-    client: &Client,
-    source: &mut Source,
-    lines: usize,
+/// The newest `want` lines from `since` on, oldest first, whichever order `pages` came in.
+#[must_use]
+pub fn window(
+    mut lines: Vec<StoredLine>,
     since: Option<i64>,
     until: Option<i64>,
-) -> Result<(), RpcError> {
-    loop {
-        let remaining = lines.saturating_sub(source.buffered.len());
-        if remaining == 0 {
-            break;
-        }
-        let limit = u16::try_from(remaining)
-            .unwrap_or(u16::MAX)
-            .min(LOG_HISTORY_PAGE_LIMIT);
-        let next = read_page(client, source, LogDirection::Backward, limit, since, until).await?;
-        if next.is_none() {
-            break;
-        }
-        source.cursor = next;
-    }
-    source.buffered.make_contiguous().reverse();
-    Ok(())
+    want: usize,
+) -> Vec<StoredLine> {
+    lines.retain(|line| {
+        since.is_none_or(|since| line.timestamp >= since)
+            && until.is_none_or(|until| line.timestamp < until)
+    });
+    lines.sort_by_key(|line| std::cmp::Reverse(line.timestamp));
+    lines.truncate(want);
+    lines.reverse();
+    lines
 }
 
-async fn read_forward(
-    client: &Client,
-    source: &mut Source,
-    since: Option<i64>,
-    until: Option<i64>,
-) -> Result<(), RpcError> {
-    let next = read_page(
-        client,
-        source,
-        LogDirection::Forward,
-        LOG_HISTORY_PAGE_LIMIT,
-        since,
-        until,
-    )
-    .await;
-    match next {
-        Ok(Some(cursor)) => source.cursor = Some(cursor),
-        Ok(None) => source.exhausted = true,
-        Err(error) => {
-            source.exhausted = true;
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
-/// Appends one page to the source's buffer; returns the next page's cursor.
-async fn read_page(
-    client: &Client,
-    source: &mut Source,
-    direction: LogDirection,
-    limit: u16,
-    since: Option<i64>,
-    until: Option<i64>,
-) -> Result<Option<String>, RpcError> {
-    let request = LogHistoryRequest {
-        namespace: source.selector.namespace.clone(),
-        service: source.selector.service.clone(),
-        deployment: source.selector.deployment.clone(),
-        container_id: source.selector.container_id,
-        since_nanos: since,
-        until_nanos: until,
-        direction,
-        limit,
-        cursor: source.cursor.clone(),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operator::tests::{
+        MACHINE_ONE, api_on_machine_one, machine_observation, running, service_selector,
     };
-    let payload = op::LogHistory::into_request(request)
-        .encode()
-        .map_err(|error| RpcError::from(ConnectError::Codec(error)))?;
-    let mut stream = client
-        .open_stream::<op::LogHistory>(
-            Some(&MachineTarget::from(&source.machine_id)),
-            tokio_stream::once(payload),
+    use crate::operator::{LogsOptions, ServiceArg, observe_service_logs, open_service_logs};
+    use futures_util::StreamExt;
+    use ployz_core::{
+        ContainerList, LogBody, LogEntry, LogMetadata, LogOrigin, MachineList, Namespace,
+        RpcRequestBody, RpcResponse, ServiceId, ServiceName, op,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the stream's error"
+    )]
+    async fn an_existing_containers_lines_come_back_masked_through_docker() {
+        let first = machine_observation(MACHINE_ONE, "machine-1");
+        let machine_id = first.machine.id;
+        let machines = vec![first];
+        let container = api_on_machine_one(running());
+        let served = LogMetadata {
+            origin: LogOrigin::Service {
+                service_id: ServiceId::parse("1".repeat(32)).unwrap(),
+                service_name: ServiceName::parse("api").unwrap(),
+                container_id: container.container_id,
+                hook: None,
+            },
+            machine_id,
+            machine_name: machines
+                .iter()
+                .map(|machine| machine.machine.name.clone())
+                .next()
+                .unwrap(),
+        };
+        let (mut client, server) = crate::connect::test_support::rpc_routes(
+            move |rpc: tonic::Request<ployz_core::OpaquePayload>| {
+                let machines = machines.clone();
+                let containers = vec![container.clone()];
+                async move {
+                    #[expect(
+                        clippy::wildcard_enum_match_arm,
+                        reason = "any other call is a retired route and must fail the test"
+                    )]
+                    let response = match rpc.into_inner().decode_request().unwrap().body {
+                        RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines,
+                        }),
+                        RpcRequestBody::ListContainers(_) => {
+                            RpcResponse::from(ContainerList { containers })
+                        }
+                        other => panic!("`ployz logs` asked a Machine for {other:?}"),
+                    };
+                    Ok(tonic::Response::new(response.encode().unwrap()))
+                }
+            },
+            &[op::TailLogs::PATH],
+            move |_| {
+                let served = served.clone();
+                async move {
+                    let frames = ["starting", "token=[secret API_TOKEN]"].map(|line| {
+                        Ok(LogEntry {
+                            metadata: served.clone(),
+                            timestamp_unix_nanos: 1,
+                            body: LogBody::Stdout(line.as_bytes().to_vec()),
+                        }
+                        .encode()
+                        .unwrap())
+                    });
+                    Ok(tonic::Response::new(futures_util::stream::iter(frames)))
+                }
+            },
+        )
+        .await;
+
+        let scope = observe_service_logs(&mut client, &[]).await.unwrap();
+        let args = [ServiceArg {
+            service: service_selector("app/api"),
+            containers: Vec::new(),
+        }];
+        let options = LogsOptions {
+            follow: false,
+            tail: 10,
+            since_nanos: None,
+            until_unix_seconds: None,
+        };
+        let namespace = Namespace::parse("app").unwrap();
+        let mut inputs = open_service_logs(
+            &mut client,
+            &scope,
+            &args,
+            Some(&namespace),
+            options,
+            CancellationToken::new(),
+            None,
         )
         .await
-        .map_err(|error| {
-            RpcError::from(ConnectError::Rpc(
-                error.addressed_as(source.machine.as_str()),
-            ))
-        })?;
-    loop {
-        let message = tokio::time::timeout(ROW_DEADLINE, stream.message())
-            .await
-            .map_err(|_| RpcError::unavailable("the Server's Log Store stopped answering"))?
-            .map_err(|status| RpcError::from(ConnectError::from(status)))?
-            .ok_or_else(|| RpcError::unavailable("the Server's Log Store ended a page early"))?;
-        let row = HistoryRow::decode(&message)
-            .map_err(|error| error_chain::rpc_error(RpcErrorCode::Internal, &error))?;
-        let (container_id, event) = match row {
-            HistoryRow::Container(container) => {
-                source
-                    .containers
-                    .insert(container.container_id, Arc::new(container));
-                continue;
-            }
-            HistoryRow::Heartbeat => continue,
-            HistoryRow::End { next } => return Ok(next),
-            HistoryRow::Error(message) => return Err(RpcError::unavailable(&message)),
-            HistoryRow::Line {
-                container_id,
-                ts,
-                stream,
-                text,
-            } => (container_id, HistoryEvent::Line { ts, stream, text }),
-            HistoryRow::Gap {
-                container_id,
-                from,
-                to,
-                reason,
-            } => (container_id, HistoryEvent::Gap { from, to, reason }),
-            HistoryRow::Exit {
-                container_id,
-                ts,
-                exit_code,
-                oom_killed,
-            } => (
-                container_id,
-                HistoryEvent::Exit {
-                    ts,
-                    exit_code,
-                    oom_killed,
-                },
-            ),
-        };
-        let container = Arc::clone(
-            source
-                .containers
-                .entry(container_id)
-                .or_insert_with(|| Arc::new(undescribed(container_id))),
-        );
-        source.buffered.push_back(HistoryRecord {
-            machine: source.machine.clone(),
-            container,
-            event,
-        });
-    }
-}
+        .unwrap();
+        let mut printed = Vec::new();
+        let mut input = inputs.pop().unwrap();
+        while let Some(entry) = input.stream.next().await {
+            let LogBody::Stdout(bytes) = entry.unwrap().body else {
+                panic!("a masked line is stdout");
+            };
+            printed.push(String::from_utf8(bytes).unwrap());
+        }
+        server.abort();
 
-fn undescribed(container_id: ContainerId) -> HistoryContainer {
-    HistoryContainer {
-        container_id,
-        namespace: None,
-        service: None,
-        deployment: None,
-        replica: String::new(),
-        kind: HistoryContainerKind::Service,
+        assert_eq!(printed, ["starting", "token=[secret API_TOKEN]"]);
+    }
+
+    fn line(timestamp: i64) -> StoredLine {
+        StoredLine {
+            timestamp,
+            machine_name: "one".into(),
+            container_id: "1".repeat(64),
+            service: "api".into(),
+            stream: StoredStream::Stdout,
+            message: format!("line {timestamp}"),
+        }
+    }
+
+    #[test]
+    fn a_page_reads_as_cloud_sends_it() {
+        let page: StoredPage = serde_json::from_value(serde_json::json!({
+            "lines": [{
+                "timestamp": "1700000000123456789",
+                "machineId": "a".repeat(32),
+                "machineName": "one",
+                "containerId": "1".repeat(64),
+                "service": "api",
+                "stream": "stderr",
+                "message": "boom",
+            }],
+            "cursor": "1700000000123456789.42",
+        }))
+        .unwrap();
+        let [stored] = page.lines.as_slice() else {
+            panic!("one line");
+        };
+        assert_eq!(stored.timestamp, 1_700_000_000_123_456_789);
+        assert_eq!(stored.stream, StoredStream::Stderr);
+        assert!(stored.container().is_some());
+        assert_eq!(page.cursor.as_deref(), Some("1700000000123456789.42"));
+    }
+
+    #[test]
+    fn the_newest_lines_of_a_window_print_oldest_first() {
+        let lines = [5, 1, 4, 2, 3, 9].map(line).to_vec();
+        let shown = |since, until, want| {
+            window(lines.clone(), since, until, want)
+                .iter()
+                .map(|line| line.timestamp)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(None, None, 3), [4, 5, 9]);
+        assert_eq!(shown(Some(2), Some(9), 10), [2, 3, 4, 5]);
     }
 }

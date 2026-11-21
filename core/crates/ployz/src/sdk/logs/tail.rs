@@ -1,52 +1,30 @@
-//! The last lines of a failed Container, read from its Machine's Log Store for a deploy's failed row.
-use ployz_core::{ContainerId, LastRun, LogHistoryRequest, MachineId, MachineTarget, RpcError};
+//! The last lines of a failed Container, read from Docker for a deploy's failed row.
+use ployz_core::{ContainerId, MachineId};
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues};
 
-use super::stream::{Exit, TAIL_READ, frames, newest_lines};
+use super::stream::{TAIL_READ, docker_lines};
 use crate::connect::Client;
 
-/// The lines read from the Log Store: more than are kept, so a secret spanning lines is
-/// whole when it is redacted, before the cut.
-const TAIL_FETCH: u16 = 200;
+/// The lines read from Docker: more than are kept, so a secret spanning lines is whole
+/// when it is redacted, before the cut.
+const TAIL_FETCH: i32 = 200;
 /// The lines a failed row keeps.
 const TAIL_KEEP: u16 = 10;
 
-/// A failed Container's raw last lines, oldest first, and its newest stored exit.
+/// A failed Container's raw last lines, oldest first.
 pub(crate) struct Tail {
     frames: Vec<String>,
-    exit: Option<Exit>,
 }
 
 impl Tail {
-    pub(crate) fn exit_code(&self) -> Option<i64> {
-        self.exit.and_then(|exit| exit.code)
-    }
-
-    /// The tail scrubbed of `sealed`, and the run its newest exit ended: that code and
-    /// the last line that run printed, not one the run before or after it printed.
-    pub(crate) fn scrubbed(self, sealed: &SealedValues) -> (LogText, LastRun) {
-        let total = self.frames.len();
-        let (from, to) = self.exit.map_or((0, total), |exit| {
-            (
-                exit.run_from.map_or(0, |after| total.saturating_sub(after)),
-                total.saturating_sub(exit.lines_after),
-            )
-        });
-        let run = self
-            .frames
-            .get(from..to)
-            .unwrap_or_default()
-            .iter()
-            .cloned();
-        let last_line = match tail_excerpt(run, sealed) {
-            LogText::Shown(excerpt) => excerpt.lines().last().cloned(),
-            LogText::Withheld { .. } => None,
-        };
-        let run = LastRun {
-            exit_code: self.exit_code(),
-            last_line,
-        };
-        (tail_excerpt(self.frames, sealed), run)
+    pub(crate) fn scrubbed(self, sealed: &SealedValues) -> (LogText, Option<String>) {
+        let excerpt = LogExcerpt::scrub(
+            self.frames,
+            sealed,
+            LineCap::new(TAIL_KEEP).unwrap_or_default(),
+        );
+        let last_line = excerpt.lines().last().cloned();
+        (LogText::Shown(excerpt), last_line)
     }
 }
 
@@ -57,25 +35,12 @@ pub(crate) async fn tail_frames(
     machine: MachineId,
     container: ContainerId,
 ) -> Option<Tail> {
-    let target = MachineTarget::from(&machine);
-    let read = async {
-        let selector = LogHistoryRequest {
-            container_id: Some(container),
-            ..LogHistoryRequest::default()
-        };
-        let (newest, exit) = newest_lines(client, &target, selector, TAIL_FETCH).await?;
-        Ok::<_, RpcError>(Tail {
-            frames: frames(newest.into_iter().map(|(_, text)| text)),
-            exit,
-        })
-    };
-    tokio::time::timeout(TAIL_READ, read).await.ok()?.ok()
-}
-
-fn tail_excerpt(frames: impl IntoIterator<Item = String>, sealed: &SealedValues) -> LogText {
-    LogText::Shown(LogExcerpt::scrub(
-        frames,
-        sealed,
-        LineCap::new(TAIL_KEEP).unwrap_or_default(),
-    ))
+    let read = docker_lines(client, machine, container, TAIL_FETCH, None);
+    let lines = tokio::time::timeout(TAIL_READ, read).await.ok()?.ok()?;
+    Some(Tail {
+        frames: lines
+            .into_iter()
+            .map(|line| String::from_utf8_lossy(&line.text).into_owned())
+            .collect(),
+    })
 }

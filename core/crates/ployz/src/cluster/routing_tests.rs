@@ -39,7 +39,6 @@ const STREAMS: &[&str] = &[
     op::Build::PATH,
     op::Exec::PATH,
     op::TailLogs::PATH,
-    op::LogHistory::PATH,
     op::RuntimeWatch::PATH,
 ];
 
@@ -365,17 +364,7 @@ async fn a_stream_opens_where_its_route_goes() {
         .open_stream::<op::TailLogs>(Some(&target('b')), tokio_stream::once(nothing()))
         .await
         .unwrap();
-    client
-        .open_stream::<op::LogHistory>(Some(&target('b')), tokio_stream::once(nothing()))
-        .await
-        .unwrap();
-    assert_eq!(
-        pinned.seen(),
-        [
-            at('a', "stream", named('b').as_deref()),
-            at('a', "stream", named('b').as_deref())
-        ]
-    );
+    assert_eq!(pinned.seen(), [at('a', "stream", named('b').as_deref())]);
 
     // A Runtime Watch is the entry's own, with no target.
     client

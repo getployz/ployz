@@ -1,13 +1,13 @@
 import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db";
 import { expect, it } from "vitest";
-import { appendContainerLogs, mergeContainerHistory, projectLogExit, restartContainerLogs, trimContainerLogs, type ContainerLogLine, type ContainerLogRow } from "./container-log.collection";
+import { appendContainerLogs, mergeContainerHistory, restartContainerLogs, trimContainerLogs, type ContainerLogLine, type ContainerLogRow } from "./container-log.collection";
 
 const row = (containerId: string, timestamp: string, ordinal = 0, origin = "live"): ContainerLogLine => ({
   kind: "line", id: `${origin}/server/${containerId}/${timestamp}/${ordinal}`, timestamp,
   machineId: "server", machineName: "Server", containerId, serviceName: "api", channel: "stdout", level: "info", message: "same message",
 });
 
-it("the Log Store's read of a timestamp group replaces the live tail's, and a replayed tail stays out", async () => {
+it("Cloud's read of history of a timestamp group replaces the live tail's, and a replayed tail stays out", async () => {
   const collection = createCollection(localOnlyCollectionOptions({ id: "log-test", getKey: (row: ContainerLogRow) => row.id }));
   await collection.preload();
   const stored = new Set<string>();
@@ -20,25 +20,11 @@ it("the Log Store's read of a timestamp group replaces the live tail's, and a re
   appendContainerLogs(collection, [row("busy", "100", 1), row("busy", "110"), row("busy", "120")], stored);
   expect(collection.size).toBe(6);
   expect(collection.has("live/server/busy/120/0")).toBe(true);
-  // A group split across two Store pages keeps both halves.
+  // A group split across two history pages keeps both halves.
   mergeContainerHistory(collection, [row("busy", "100", 2, "store")], stored);
   expect(collection.has("store/server/busy/100/0")).toBe(true);
   expect(collection.has("store/server/busy/100/2")).toBe(true);
   await collection.cleanup();
-});
-
-it("a Store page that repeats a container's exit lands it once, as the copy that saw an OOM kill", async () => {
-  const exit = { machineId: "server", machineName: "Server", containerId: "a", serviceName: "api", timestampNanos: "5", exitCode: 137 };
-  const killed = projectLogExit({ ...exit, oomKilled: true });
-  const exited = projectLogExit({ ...exit, oomKilled: false });
-  for (const copies of [[exited, exited], [exited, killed], [killed, exited]]) {
-    const collection = createCollection(localOnlyCollectionOptions({ id: "log-exit-repeat-test", getKey: (row: ContainerLogRow) => row.id }));
-    await collection.preload();
-    mergeContainerHistory(collection, [row("a", "4", 0, "store"), ...copies], new Set());
-    expect([...collection.values()].map(kept => kept.id).sort()).toEqual([exited.id, "store/server/a/4/0"]);
-    expect(collection.get(exited.id)).toMatchObject({ message: (copies.includes(killed) ? killed : exited).message });
-    await collection.cleanup();
-  }
 });
 
 it("keeps only the newest lines past the limit, and a batch with repeats lands once", async () => {
@@ -65,15 +51,4 @@ it("live lines that overflowed while waiting land beside the page's lines as new
   restartContainerLogs(collection, []);
   expect(collection.size).toBe(0);
   await collection.cleanup();
-});
-
-it("a container's exit reads as a lifecycle line, an error unless it exited cleanly", () => {
-  const exit = { machineId: "server", machineName: "Server", containerId: "a", serviceName: "api", timestampNanos: "5" };
-  expect([
-    projectLogExit({ ...exit, exitCode: 137, oomKilled: true }),
-    projectLogExit({ ...exit, exitCode: 1, oomKilled: false }),
-    projectLogExit({ ...exit, exitCode: 0, oomKilled: false }),
-  ].map(line => [line.channel, line.level, line.message])).toEqual([
-    ["lifecycle", "error", "Out of memory (exit code 137)"], ["lifecycle", "error", "Exited with code 1"], ["lifecycle", "info", "Exited with code 0"],
-  ]);
 });

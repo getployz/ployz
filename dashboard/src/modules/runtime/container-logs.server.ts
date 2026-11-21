@@ -34,7 +34,7 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
     : null;
   if (query === null) return yield* new Validation({ message: "An environment is required." });
   const view = yield* readStore(organizationId, query).pipe(Effect.mapError(() => missing));
-  // A Deployment names its Services' runtime names, so the Log Store finds one even after it's removed.
+  // A Deployment names its Services' runtime names, so Cloud's history finds one even after it's removed.
   const node = "runtime_names" in view ? view.nodes.find(candidate => candidate.type === "service" && candidate.id === search.serviceId) : undefined;
   const prefix = `${view.namespace}/`;
   const named = search.serviceIdentity?.startsWith(prefix) ? search.serviceIdentity.slice(prefix.length) : undefined;

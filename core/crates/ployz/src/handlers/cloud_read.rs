@@ -15,6 +15,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 
 use super::{Error, operator::Scoped};
+use crate::operator::history::{self, StoredLine, StoredPage};
 use crate::{
     cloud_account::{self, Credential, StoreCallError},
     ui::{self, Table},
@@ -189,6 +190,70 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
             .collect::<BTreeSet<_>>(),
     )?;
     refusal.map_or(Ok(()), Err)
+}
+
+/// The newest `want` stored lines of the removed Services `removed`, from `since` up to
+/// `until`, oldest first.
+pub(super) fn stored_logs(
+    credential: &Credential,
+    scoped: &Scoped,
+    removed: &[ServiceName],
+    want: usize,
+    since: Option<i64>,
+    until: Option<i64>,
+) -> Result<Stored, Error> {
+    let runtime = super::runtime()?;
+    let mut lines = Vec::new();
+    let mut missing = Vec::new();
+    for name in removed {
+        let mut kept = Vec::new();
+        let mut cursor = None::<String>;
+        loop {
+            let limit = want.saturating_sub(kept.len()).clamp(1, history::PAGE);
+            let mut asked = json!({
+                "environment": {
+                    "project": scoped.project.to_string(),
+                    "environment": scoped.environment.to_string(),
+                },
+                "service": name.to_string(),
+                "limit": limit,
+            });
+            if let (Some(cursor), Some(asked)) = (&cursor, asked.as_object_mut()) {
+                asked.insert("cursor".into(), json!(cursor));
+            }
+            let page: StoredPage = runtime
+                .block_on(cloud_account::read_answer(credential, "logs/read", &asked))
+                .map_err(Error::from)?;
+            let oldest = page.lines.last().map(|line| line.timestamp);
+            kept.extend(
+                page.lines
+                    .into_iter()
+                    .filter(|line| until.is_none_or(|until| line.timestamp < until)),
+            );
+            let reached = since
+                .zip(oldest)
+                .is_some_and(|(since, oldest)| oldest < since);
+            cursor = page.cursor;
+            if reached || kept.len() >= want || cursor.is_none() {
+                break;
+            }
+        }
+        if kept.is_empty() {
+            missing.push(name.clone());
+        }
+        lines.extend(kept);
+    }
+    Ok(Stored {
+        lines: history::window(lines, since, until, want),
+        missing,
+    })
+}
+
+/// What Cloud kept of the removed Services asked for.
+pub(super) struct Stored {
+    pub(super) lines: Vec<StoredLine>,
+    /// The names it holds no line for.
+    pub(super) missing: Vec<ServiceName>,
 }
 
 /// `metrics` for a Service, by its runtime name, or a Server, by name.

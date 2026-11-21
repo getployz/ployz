@@ -264,13 +264,13 @@ impl fmt::Debug for SealedForms {
 }
 
 /// Whether `value` spans more than one log row and one of them, not empty, is too short to
-/// match on its own, so LogHistory would show that row unscrubbed.
+/// match on its own, so a log reader would show that row unscrubbed.
 #[must_use]
 pub fn has_short_row(value: &str) -> bool {
     rows(value).nth(1).is_some() && rows(value).any(|row| (1..SHORT_VALUE).contains(&row.len()))
 }
 
-/// The rows LogHistory shows `value` on. Docker's log copier ends a line at each `\n`,
+/// The rows a log reader shows `value` on. Docker's log copier ends a line at each `\n`,
 /// drops the `\n` and keeps a `\r`, so a trailing `\n` starts no row.
 fn rows(value: &str) -> std::str::SplitTerminator<'_, char> {
     value.split_terminator('\n')

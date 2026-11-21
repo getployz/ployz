@@ -1,15 +1,15 @@
-//! The lines an agent reads from a Machine's Log Store or its processes.
+//! The lines an agent reads from a Machine's Containers or its processes.
 use futures_util::future::join_all;
 use ployz_core::error_chain;
 use ployz_core::{
-    ContainerId, LiveLogTarget, LogBody, LogEntry, LogHistoryRequest, LogsOptions, MachineId,
-    MachineLogService, MachineTarget, RpcError, RpcErrorCode, TailLogsRequest, op,
+    ContainerId, LiveLogTarget, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
+    MachineTarget, RpcError, RpcErrorCode, TailLogsRequest, op,
 };
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SealedValues, Withheld};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use super::stream::{container_env, frames, newest_lines};
+use super::stream::{container_env, docker_lines};
 use crate::connect::{Client, ConnectError};
 use crate::sdk::sealed::{Names, values_under};
 
@@ -34,41 +34,50 @@ impl From<LogText> for AgentTail {
     }
 }
 
-/// The newest `cap` lines `selector` picks from `machine`'s Log Store, across every
-/// Container that wrote them, scrubbed of each Container's values for the `sealed` names
-/// as its Machine reports them, or of every env value when `sealed` is None. The env is
+/// The newest `cap` lines Docker holds for `containers` on `machine` since `since_nanos`,
+/// merged in time order and scrubbed of each Container's values for the `sealed` names as
+/// its Machine reports them, or of every env value when `sealed` is None. The env is
 /// read here and never leaves, and not at all when `sealed` names nothing. A Container
-/// whose env cannot be read, as after a redeploy removed it, has its lines left out and
-/// is named in [`AgentTail::withheld`]; the text is withheld when no Container's env can
-/// be read. None when `selector` picks no lines there. The error says why the Machine
-/// did not answer in time.
+/// whose env cannot be read has its lines left out and is named in
+/// [`AgentTail::withheld`], labelled under `service`; the text is withheld when no
+/// Container's env can be read. None when no Container holds a line in range.
 pub(crate) async fn service_tail(
     client: &Client,
     machine: MachineId,
-    selector: LogHistoryRequest,
+    service: &str,
+    containers: &[ContainerId],
+    since_nanos: Option<i64>,
     cap: LineCap,
     sealed: Option<&BTreeSet<String>>,
 ) -> Result<Option<AgentTail>, RpcError> {
-    let target = MachineTarget::from(&machine);
     let read = async {
-        let service = selector.service.clone();
-        let (newest, _) = newest_lines(client, &target, selector, LineCap::MAX).await?;
+        let fetch = i32::from(LineCap::MAX);
+        let reads = join_all(
+            containers
+                .iter()
+                .map(|container| docker_lines(client, machine, *container, fetch, since_nanos)),
+        )
+        .await;
+        let mut newest = Vec::new();
+        for (container, lines) in containers.iter().zip(reads) {
+            newest.extend(
+                lines?
+                    .into_iter()
+                    .map(|line| (line.timestamp_nanos, *container, line.text)),
+            );
+        }
         if newest.is_empty() {
             return Ok(None);
         }
+        newest.sort_by_key(|(timestamp, ..)| *timestamp);
+        let kept = newest.len().saturating_sub(usize::from(LineCap::MAX));
+        newest.drain(..kept);
         if sealed.is_some_and(BTreeSet::is_empty) {
-            let frames = frames(newest.into_iter().map(|(_, text)| text));
             return Ok(Some(AgentTail::from(LogText::Shown(LogExcerpt::scrub(
-                frames,
+                frames(newest.into_iter().map(|(_, _, text)| text)),
                 &SealedValues::none(),
                 cap,
             )))));
-        }
-        let mut containers: Vec<ContainerId> = Vec::new();
-        for (container, _) in &newest {
-            if !containers.contains(container) {
-                containers.push(*container);
-            }
         }
         let envs = join_all(
             containers
@@ -82,11 +91,7 @@ pub(crate) async fn service_tail(
         for (container, env) in containers.iter().zip(envs) {
             let Some(env) = env else {
                 let id = crate::ui::short_id(container.as_str());
-                withheld.push(
-                    service
-                        .as_ref()
-                        .map_or_else(|| id.to_owned(), |service| format!("{service}/{id}")),
-                );
+                withheld.push(format!("{service}/{id}"));
                 continue;
             };
             read_envs.push(env);
@@ -101,18 +106,24 @@ pub(crate) async fn service_tail(
             }));
         }
         let values = values_under(read_envs.into_iter().flatten(), &Names::held(sealed));
-        let frames = frames(
+        let shown = frames(
             newest
                 .into_iter()
-                .filter(|(container, _)| readable.contains(container))
-                .map(|(_, text)| text),
+                .filter(|(_, container, _)| readable.contains(container))
+                .map(|(_, _, text)| text),
         );
         Ok(Some(AgentTail {
-            text: LogText::Shown(LogExcerpt::scrub(frames, &values, cap)),
+            text: LogText::Shown(LogExcerpt::scrub(shown, &values, cap)),
             withheld,
         }))
     };
-    in_time("its Log Store", read).await
+    in_time("its Docker logs", read).await
+}
+
+fn frames(lines: impl Iterator<Item = Vec<u8>>) -> Vec<String> {
+    lines
+        .map(|text| String::from_utf8_lossy(&text).into_owned())
+        .collect()
 }
 
 /// The newest `cap` lines `process` wrote on `machine`, from `since_nanos` on, with

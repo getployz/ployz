@@ -38,19 +38,6 @@ pub struct InspectContainerRequest {
     pub container_id: ContainerId,
 }
 
-/// The env the Log Store kept for a Container, read when Docker no longer answers for it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RetainedEnvRequest {
-    pub container_id: ContainerId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RetainedEnvReply {
-    /// `None` when the store holds no env for the Container; never copied into
-    /// replicated observations.
-    pub environment: Option<BTreeMap<String, String>>,
-}
-
 /// The place one Container creation lands on a Machine. The same slot names the
 /// same Container across resends; a different spec in it is an occupied slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -242,6 +229,10 @@ pub struct ContainerDetails {
     /// Which run of the Container this is; `None` from older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::ContainerRun>,
+    /// Docker's `ExitCode` for a Container that is restarting: the code of the run that
+    /// just ended, which `Restarting` does not carry. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit_code: Option<i64>,
     /// The owner is deciding right now whether to take this copy out of rotation, so a
     /// sibling's last-copy check must not count it. `false` from older daemons.
     #[serde(default)]
@@ -298,6 +289,12 @@ pub enum HealthVerdict {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         oom_killed: bool,
+        /// The code of the run that just ended, read in the inspect that saw the Container
+        /// restarting: Docker shows it only for the wait before the next run, and the
+        /// Container is removed soon after. `None` otherwise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        last_exit_code: Option<i64>,
         /// The Leave that was removing the Server as it answered, so what the copy did
         /// since was the Leave's doing. `None` from older daemons.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -339,6 +336,15 @@ impl HealthVerdict {
         match self {
             Self::Healthy => false,
             Self::Failed { oom_killed, .. } | Self::TimedOut { oom_killed, .. } => *oom_killed,
+        }
+    }
+
+    /// The code of the run a restarting Container just ended, when the Machine saw it.
+    #[must_use]
+    pub const fn last_exit_code(&self) -> Option<i64> {
+        match self {
+            Self::Failed { last_exit_code, .. } => *last_exit_code,
+            Self::Healthy | Self::TimedOut { .. } => None,
         }
     }
 

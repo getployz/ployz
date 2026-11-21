@@ -357,6 +357,7 @@ impl LocalMachine {
                     observation,
                     last_check: None,
                     oom_killed: false,
+                    last_exit_code: None,
                     departing: None,
                 }),
                 verified: None,

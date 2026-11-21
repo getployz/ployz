@@ -73,11 +73,8 @@ enum Command {
     },
     /// Serve the Docker Volume plugin on its systemd socket.
     VolumePlugin,
-    /// Hold the log files of Ployz containers in the Log Store.
-    Observe {
-        #[command(subcommand)]
-        command: Option<ObserveCommand>,
-    },
+    /// Sample metrics, settle container exits and ship crash reports.
+    Observe,
     /// Execute one accepted Machine upgrade from its transient systemd service.
     #[command(hide = true)]
     UpgradeWorker {
@@ -128,16 +125,6 @@ enum Command {
         /// Remove what `--prepare` built for ZFS.
         #[arg(long, hide = true, conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version", "probe", "prepare"])]
         discard_zfs_build: bool,
-    },
-}
-
-#[derive(Subcommand)]
-enum ObserveCommand {
-    /// Print Log Store or Docker `local` log files as `docker logs -t` does.
-    #[command(hide = true)]
-    Decode {
-        #[arg(required = true)]
-        paths: Vec<PathBuf>,
     },
 }
 
@@ -192,13 +179,6 @@ fn daemon_error_exit_code(error: &Error) -> ExitCode {
 async fn run(args: Args) -> Result<ExitCode, Error> {
     if matches!(args.command, Some(Command::Version)) {
         println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(ExitCode::SUCCESS);
-    }
-    if let Some(Command::Observe {
-        command: Some(ObserveCommand::Decode { paths }),
-    }) = &args.command
-    {
-        ployzd::observe::decode(paths)?;
         return Ok(ExitCode::SUCCESS);
     }
     if matches!(args.command, Some(Command::DialStdio)) {
@@ -271,7 +251,7 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     }
     diag::init(args.log_level.as_deref())
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    if matches!(args.command, Some(Command::Observe { command: None })) {
+    if matches!(args.command, Some(Command::Observe)) {
         ployzd::observe::run(&run_dir, &args.data_dir).await?;
         return Ok(ExitCode::SUCCESS);
     }
