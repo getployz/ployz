@@ -598,9 +598,9 @@ images from ghcr.io.
 - **A failed add can be retried with other options.** If `ployz server add` fails after Cloud took
   the server, for example while downloading or installing the daemon, run it again on the same
   host, with the same token while it lasts or a new one. It may change options such as
-  `--storage`. The retry finishes the same server and keeps its address, even after
-  `ployz server forget` while the server is still joining. If it had finished joining before it was
-  forgotten, the retry is refused and says how to add it with `--reset` and a new token. Once the server has joined, a retry must match it; to add the host again
+  `--storage`. The retry finishes the same server and keeps its address. After
+  `ployz server forget`, the retry is refused and says how to add it with `--reset` and a new
+  token; a server forgotten before it finished joining needs a fresh install first. Once the server has joined, a retry must match it; to add the host again
   with other options, run `ployz-uninstall` on it, remove the old server, and add it again.
 - **Client IPs stay out of Ployz's web server logs, not your app's.** Caddy passes the client IP to
   your app in `X-Forwarded-For`, over IPv4 and IPv6. If your app logs requests, its logs, and the Log Store's copy of

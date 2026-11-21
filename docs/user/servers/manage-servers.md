@@ -268,6 +268,12 @@ the first 10 characters of theirs. `device rm` takes either form and removes the
 that answers. A server that doesn't answer is listed under failures, and one with no direct
 connection under omissions. Either way the command exits 3.
 
+A removal is for good: a server that removed a key never trusts it again, even when someone
+approves it later. A server refuses to remove the last key it trusts; approve another one first.
+Removing this computer's own device warns first. To manage your servers from it again, delete the
+`device.key` file the warning names, then run
+`ployz device approve --this-device --connect ssh://root@HOST`.
+
 ### Pin your cluster's key
 
 `ployz private-access on`, `ployz ingress use tunnel` and sealed variables seal the secret on
@@ -972,6 +978,12 @@ servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
 server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
+
+A removed or forgotten server stays out. Each of your servers that has seen it go refuses it
+from then on, even if Ployz Cloud or a rerun of `ployz server add` asks for it again. To add the
+same host again, run `ployz server add --reset` with a new token; if it never finished joining,
+reinstall it first. A server cut off from the rest when you removed it learns of it once it
+reaches them again.
 
 If a standalone context has no Servers left, runtime commands say which context is empty
 and print `ployz server add --standalone --context NAME` as the next step. This starts a
