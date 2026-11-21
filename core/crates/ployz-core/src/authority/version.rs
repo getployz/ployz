@@ -17,7 +17,7 @@ use super::{
     refusal::{AuthorityRefusal, field, first_mismatch},
     trusted_key::TrustedKeys,
 };
-use crate::{ContainerKind, Namespace, SealingPublicKey, ServiceName};
+use crate::{ContainerKind, Namespace, QualifiedService, SealingPublicKey, ServiceName};
 
 /// `service` in `namespace` of the Cluster whose Sealing public key is `cluster` may run
 /// the spec whose [`PayloadDigest`] is `digest`.
@@ -28,12 +28,17 @@ pub struct ServiceVersion {
     pub namespace: Namespace,
     pub service: ServiceName,
     pub digest: PayloadDigest,
-    /// The signer's clock. No Machine checks it.
+    /// The signer's clock when it signed. A Machine refuses a version signed before its
+    /// Service's floor, or too far past the Machine's own clock.
     pub signed_at: Timestamp,
     pub signer: SignerKey,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub proposal: Option<ProposalRef>,
+    /// Every Member refuses each version of this Service signed before this one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub forget_older: bool,
 }
 
 impl Statement for ServiceVersion {
@@ -120,12 +125,20 @@ pub struct VersionFacts<'a> {
     pub creation: Creation<'a>,
 }
 
-/// Every key whose signed version admitted a creation, never empty, and the creation's
-/// digest.
+/// Every signed version that admitted a creation, never empty, and the creation's digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VersionAdmitted {
-    pub by: Vec<Approver>,
+    pub by: Vec<Approved>,
     pub digest: PayloadDigest,
+}
+
+/// One signed version that admitted a creation. A key that signed several appears once
+/// for each, so the Machine can check each time before it keeps the newest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Approved {
+    pub by: Approver,
+    pub signed_at: Timestamp,
+    pub forget_older: bool,
 }
 
 /// Check `versions` against the creation `facts` names. Each statement whose signature a
@@ -137,7 +150,11 @@ pub struct VersionAdmitted {
 /// # Errors
 /// Returns the first statement's refusal when none admits,
 /// [`AuthorityRefusal::Overspent`] when the budget ran out before any was opened, and
-/// [`AuthorityRefusal::Unsigned`] when there are none.
+/// [`AuthorityRefusal::Unsigned`] when there are none. A statement marked to forget that a
+/// key trusted here signed must admit itself: its refusal, or
+/// [`AuthorityRefusal::Overspent`] when it was left unopened, refuses the creation even
+/// when another statement admits it. One no trusted key signed is ignored, so a removed
+/// Device's old forget never blocks a fresh approval.
 pub fn verify(
     versions: &[Signed<ServiceVersion>],
     facts: &VersionFacts<'_>,
@@ -146,18 +163,33 @@ pub fn verify(
     let digest = requested_digest(facts.namespace, facts.creation)?;
     let mut by = Vec::new();
     let mut first = None;
+    let mut forget_refused = None;
+    let mut opened = 0;
     for version in versions.iter().take(MAX_PRESENTED) {
         if let Err(overspent) = budget.reserve(version, facts.trusted) {
             first.get_or_insert(overspent);
             break;
         }
+        opened += 1;
         match admits(version, facts, digest) {
-            Ok(approver) if !by.contains(&approver) => by.push(approver),
-            Ok(_) => {}
+            Ok(approved) => by.push(approved),
             Err(refusal) => {
+                if claims_forget(version, facts.trusted) {
+                    forget_refused.get_or_insert_with(|| refusal.clone());
+                }
                 first.get_or_insert(refusal);
             }
         }
+    }
+    if versions
+        .iter()
+        .skip(opened)
+        .any(|version| claims_forget(version, facts.trusted))
+    {
+        forget_refused.get_or_insert(AuthorityRefusal::Overspent);
+    }
+    if let Some(refusal) = forget_refused {
+        return Err(refusal);
     }
     if by.is_empty() {
         return Err(first.unwrap_or(AuthorityRefusal::Unsigned {
@@ -167,20 +199,73 @@ pub fn verify(
     Ok(VersionAdmitted { by, digest })
 }
 
+/// Whether `version` reads as a forget and a key trusted here signed it. Only such a
+/// forget binds: one no trusted key signed is ignored everywhere.
+#[must_use]
+pub fn claims_forget(version: &Signed<ServiceVersion>, trusted: &TrustedKeys) -> bool {
+    verifications(version, trusted) > 0 && version.open().is_ok_and(|body| body.forget_older)
+}
+
 fn admits(
     version: &Signed<ServiceVersion>,
     facts: &VersionFacts<'_>,
     digest: PayloadDigest,
-) -> Result<Approver, AuthorityRefusal> {
+) -> Result<Approved, AuthorityRefusal> {
     let (body, by, cluster) = open_approval(version, facts.trusted, facts.cluster)?;
     let creation = facts.creation;
     first_mismatch([
         (field::CLUSTER, body.cluster == cluster),
         (field::ENVIRONMENT, &body.namespace == facts.namespace),
+        (
+            field::SYSTEM,
+            !body.forget_older || !body.namespace.is_system(),
+        ),
         ("a Service", &body.service == creation.service),
         ("a payload", body.digest == digest),
     ])?;
-    Ok(by)
+    Ok(Approved {
+        by,
+        signed_at: body.signed_at,
+        forget_older: body.forget_older,
+    })
+}
+
+/// A signed version that asks every Member to forget the versions of its Service signed
+/// before it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Forget {
+    pub service: QualifiedService,
+    pub signed_at: Timestamp,
+}
+
+/// Open each of `versions` as a [`Forget`] for this Machine's Cluster `cluster`: signed
+/// by a key trusted here, alone or as a step of a bundle, marked to forget, and outside
+/// the system Namespace. It creates nothing, so no digest is checked. Statements are
+/// charged to one [`Budget`] in order; one past it is refused as overspent.
+#[must_use]
+pub fn verify_forget(
+    versions: &[Signed<ServiceVersion>],
+    trusted: &TrustedKeys,
+    cluster: Option<SealingPublicKey>,
+) -> Vec<Result<Forget, AuthorityRefusal>> {
+    let mut budget = Budget::default();
+    versions
+        .iter()
+        .take(MAX_PRESENTED)
+        .map(|version| {
+            budget.reserve(version, trusted)?;
+            let (body, _, cluster) = open_approval(version, trusted, cluster)?;
+            first_mismatch([
+                (field::CLUSTER, body.cluster == cluster),
+                ("a forget", body.forget_older),
+                (field::SYSTEM, !body.namespace.is_system()),
+            ])?;
+            Ok(Forget {
+                service: QualifiedService::new(body.namespace, body.service),
+                signed_at: body.signed_at,
+            })
+        })
+        .collect()
 }
 
 /// The digest of the creation's spec, once its name, hook and image are ones a signed

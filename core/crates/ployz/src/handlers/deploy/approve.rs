@@ -158,6 +158,7 @@ pub(in crate::handlers) fn sign(
         .iter()
         .map(|change| {
             let statement = signing.sign(&ServiceVersion {
+                forget_older: false,
                 cluster: enforcing.cluster,
                 namespace: namespace.clone(),
                 service: change.service.clone(),

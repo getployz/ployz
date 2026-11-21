@@ -170,19 +170,16 @@ impl LocalMachine {
         now: Timestamp,
     ) -> Result<AdmittedRule, Error> {
         let record = self.record();
-        let (rule, _) = verify_signature(&grant.rule, &record.trusted_keys())
+        let cluster = self
+            .held_sealing(record.phase())
+            .and_then(ployz_core::Sealing::held_key)
+            .ok_or(Error::RuleGrantRefused(AuthorityRefusal::NoClusterIdentity))?;
+        let (rule, _) = verify_signature(&grant.rule, &record.trusted_keys(), Some(cluster))
             .map_err(Error::RuleGrantRefused)?;
         let refused = |field| {
             tracing::warn!(rule = %rule.rule, field, "refused a rule build's grant");
             Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field })
         };
-        let cluster = self
-            .held_sealing(record.phase())
-            .and_then(ployz_core::Sealing::held_key)
-            .ok_or(Error::RuleGrantRefused(AuthorityRefusal::NoClusterIdentity))?;
-        if rule.cluster != cluster {
-            return Err(refused("a Cluster"));
-        }
         record.machine().ok_or(Error::NotParticipating)?;
         if !rule.machines.contains(&record.id()) {
             return Err(refused("a Machine"));
@@ -195,6 +192,10 @@ impl LocalMachine {
         let service = rule
             .service(&grant.service)
             .ok_or_else(|| refused("a Service"))?;
+        let qualified =
+            ployz_core::QualifiedService::new(rule.namespace.clone(), grant.service.clone());
+        self.rule_floor(cluster, &qualified, &rule, now)
+            .map_err(Error::RuleGrantRefused)?;
         let holder = holder.ok_or_else(|| refused("a holder"))?;
         let claims = github
             .claims(&rule, grant.proof.as_str(), now)
@@ -241,6 +242,7 @@ impl LocalMachine {
         }
         self.approvals.consume_rule_proof(
             &rule,
+            &super::consumption::floor_key(cluster, &qualified),
             Error::RuleGrantRefused,
             &claims.jti,
             claims.exp,

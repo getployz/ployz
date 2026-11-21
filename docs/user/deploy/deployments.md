@@ -227,6 +227,10 @@ A server keeps no list of the versions it ran. Each new container it creates, on
 needs the signature with it, which Ployz Cloud sends as described below. A version stops
 counting when you remove every device that signed it.
 
+A server refuses a version signed more than 10 minutes ahead of its own clock. If a deploy says
+so, check the clock on the device that signed it and on the server, for example with
+`timedatectl`, then deploy again.
+
 Ployz Cloud keeps every version you sign, and each deployment records the image each signed
 service ran. **Roll back** or **Redeploy** runs the images that deployment ran and sends their
 signatures, so every server runs them, even one that never ran that version, and even after

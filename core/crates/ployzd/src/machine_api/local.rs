@@ -443,6 +443,18 @@ impl MachineRpc for MachineService {
         finish(local.key_step(expect::<op::KeyStep>(request)?).await)
     }
 
+    async fn forget_versions(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let local = self.caller(&request);
+        finish(
+            local
+                .forget_versions(expect::<op::ForgetVersions>(request)?)
+                .await,
+        )
+    }
+
     async fn set_push_target(
         &self,
         request: Request<OpaquePayload>,
@@ -1397,6 +1409,11 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::KEY_STEP_CAPABILITY),
+        )),
+        LocalMachineError::ForgetRefused(_) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::FORGET_VERSIONS_CAPABILITY),
         )),
         LocalMachineError::MemberRemoved(_) => Err(gated(
             tonic::Code::PermissionDenied,

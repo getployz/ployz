@@ -45,6 +45,7 @@ fn resolved(spec: &RequestedServiceSpec) -> ResolvedServiceSpec {
 
 fn body(by: &Signer, spec: &RequestedServiceSpec) -> ServiceVersion {
     ServiceVersion {
+        forget_older: false,
         cluster: SealingPublicKey::from_bytes(CLUSTER),
         namespace: namespace(),
         service: web(),
@@ -102,7 +103,55 @@ fn a_version_admits_its_spec_on_any_machine_that_trusts_its_signer() {
     )
     .unwrap();
 
-    assert_eq!(admitted.by, vec![Approver::Device(device.public())]);
+    assert_eq!(
+        approvers(&admitted),
+        vec![Approver::Device(device.public())]
+    );
+}
+
+#[test]
+fn a_trusted_forget_its_machine_refuses_refuses_the_creation_another_version_admits() {
+    let trusted = signer(1);
+    let other = signer(2);
+    let spec = requested("a");
+    let forget = ServiceVersion {
+        forget_older: true,
+        cluster: SealingPublicKey::from_bytes([8; 32]),
+        ..body(&other, &spec)
+    };
+
+    let refused = check(
+        &[
+            signed(&trusted, &body(&trusted, &spec)),
+            signed(&other, &forget),
+        ],
+        &trusting(&[&trusted, &other]),
+        &resolved(&spec),
+    );
+
+    assert!(refused.is_err(), "{refused:?}");
+}
+
+#[test]
+fn a_removed_devices_old_forget_does_not_block_a_fresh_approval() {
+    let trusted = signer(1);
+    let removed = signer(2);
+    let spec = requested("a");
+    let forget = ServiceVersion {
+        forget_older: true,
+        ..body(&removed, &spec)
+    };
+
+    let admitted = check(
+        &[
+            signed(&removed, &forget),
+            signed(&trusted, &body(&trusted, &spec)),
+        ],
+        &trusting(&[&trusted]),
+        &resolved(&spec),
+    );
+
+    assert!(admitted.is_ok(), "{admitted:?}");
 }
 
 #[test]
@@ -159,7 +208,7 @@ fn eight_versions_by_removed_signers_cost_nothing_beside_a_trusted_ninth() {
 
     let admitted = check(&versions, &trusting(&[&kept]), &resolved(&spec)).unwrap();
 
-    assert_eq!(admitted.by, vec![Approver::Device(kept.public())]);
+    assert_eq!(approvers(&admitted), vec![Approver::Device(kept.public())]);
 }
 
 #[test]
@@ -311,4 +360,12 @@ fn a_version_naming_a_volume_born_in_another_environment_is_refused() {
             field: "a Volume's Environment"
         }),
     );
+}
+
+fn approvers(admitted: &crate::authority::VersionAdmitted) -> Vec<Approver> {
+    admitted
+        .by
+        .iter()
+        .map(|approved| approved.by.clone())
+        .collect()
 }

@@ -60,6 +60,39 @@ pub struct KeyStepRequest {
     pub step: crate::authority::Signed<crate::authority::KeyStep>,
 }
 
+/// Signed versions marked to forget, each asking this Machine to refuse every version of
+/// its Service signed before it. Each is checked alone, so one refused leaves the rest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ForgetVersionsRequest {
+    #[serde(deserialize_with = "crate::authority::version::at_most_presented")]
+    pub versions: Vec<crate::authority::Signed<crate::authority::ServiceVersion>>,
+}
+
+/// What this Machine did with each version of a [`ForgetVersionsRequest`], in order.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct VersionsForgotten {
+    pub outcomes: Vec<ForgetOutcome>,
+}
+
+/// What one forget did here. A rerun reports `Held`, never a failure.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ForgetOutcome {
+    /// The Service's floor rose to the forget's time.
+    Raised {
+        service: crate::QualifiedService,
+        floor: crate::authority::Timestamp,
+    },
+    /// The Service's floor was already at or past the forget's time.
+    Held {
+        service: crate::QualifiedService,
+        floor: crate::authority::Timestamp,
+    },
+    Refused {
+        reason: String,
+    },
+}
+
 /// Where this Machine's observe process pushes crash events, or `None` to stop pushing.
 ///
 /// Strict for the same reason as [`SetManagementClientRequest`].

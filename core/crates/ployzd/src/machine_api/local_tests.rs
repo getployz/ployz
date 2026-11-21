@@ -5737,42 +5737,282 @@ mod ensure_container {
             /// A version of `spec` for its Service in Namespace `app`, signed by this
             /// Machine's Device.
             fn version(&self, spec: &Value) -> Signed<ServiceVersion> {
+                self.version_at(spec, Timestamp::now(), false)
+            }
+
+            /// [`Self::version`] signed at `signed_at`, marked to forget older ones or not.
+            fn version_at(
+                &self,
+                spec: &Value,
+                signed_at: Timestamp,
+                forget_older: bool,
+            ) -> Signed<ServiceVersion> {
                 let namespace = Namespace::parse("app").unwrap();
                 let resolved: ployz_core::ResolvedServiceSpec =
                     serde_json::from_value(spec.clone()).unwrap();
                 let body = ServiceVersion {
+                    forget_older,
                     cluster: self.cluster,
                     digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
                     namespace,
                     service: resolved.name,
-                    signed_at: Timestamp::now(),
+                    signed_at,
                     signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
                     proposal: None,
                 };
                 Signed::sign(&body, &self.signer).unwrap()
             }
+
+            /// What this Machine answers an Operator's forget of `version`.
+            async fn forget(
+                &self,
+                version: &Signed<ServiceVersion>,
+            ) -> Vec<ployz_core::ForgetOutcome> {
+                let mut request = Request::new(
+                    op::ForgetVersions::into_request(ployz_core::ForgetVersionsRequest {
+                        versions: vec![version.clone()],
+                    })
+                    .encode()
+                    .unwrap(),
+                );
+                request
+                    .metadata_mut()
+                    .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
+                let response = self
+                    .service
+                    .forget_versions(request)
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .decode_response()
+                    .unwrap();
+                response.decode::<op::ForgetVersions>().unwrap().outcomes
+            }
         }
 
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        fn minutes_from_now(minutes: i64) -> Timestamp {
+            let millis = Timestamp::now().as_millis().cast_signed() + minutes * 60_000;
+            Timestamp::from_millis(millis.cast_unsigned()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_version_signed_before_a_forget_is_refused_and_the_forget_itself_runs() {
+            let fixture = enforced("ployzd-forgotten-version").await;
+            let approved = reaching(PINNED);
+            let older = fixture.version_at(&approved, minutes_from_now(-1), false);
+            let forget = fixture.version_at(&approved, Timestamp::now(), true);
+            let seen = requests(&fixture.fake).len();
+
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                Some(&older),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                fixture.forget(&forget).await.as_slice(),
+                [ployz_core::ForgetOutcome::Raised { .. }]
+            ));
+            // The floor outlives the daemon, and holds on a Server the older one never ran on.
+            let restarted = fixture.restarted();
+            for (service, key) in [(&fixture.service, "k2"), (&restarted, "k3")] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("service_container", key, &approved),
+                        Some(&older),
+                    )
+                    .await,
+                    "older versions were forgotten",
+                );
+            }
+            deploy_ensure(
+                &restarted,
+                new_want("service_container", "k4", &approved),
+                Some(&forget),
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 2);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_deploy_marked_to_forget_raises_the_floor_before_the_forget_call_arrives() {
+            let fixture = enforced("ployzd-forget-on-deploy").await;
+            let approved = reaching(PINNED);
+            let older = fixture.version_at(&approved, minutes_from_now(-1), false);
+            let forget = fixture.version_at(&approved, Timestamp::now(), true);
+
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                Some(&forget),
+            )
+            .await
+            .unwrap();
+            deploy_refused(
+                deploy_ensure(
+                    &fixture.service,
+                    new_want("service_container", "k2", &approved),
+                    Some(&older),
+                )
+                .await,
+                "older versions were forgotten",
+            );
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        /// A creation at Full access would hide that the forget it carried was refused.
+        #[tokio::test]
+        async fn a_full_creation_whose_forget_is_refused_creates_nothing() {
+            let fixture = enforced("ployzd-full-forget-refused").await;
+            let approved = reaching(PINNED);
+            let ahead = fixture.version_at(&approved, minutes_from_now(11), true);
+            let seen = requests(&fixture.fake).len();
+
+            deploy_refused(
+                deploy_versions(
+                    &fixture.service,
+                    new_want("service_container", "k1", &approved),
+                    &[ahead],
+                    false,
+                )
+                .await,
+                "ahead of this server's clock",
+            );
+            assert_eq!(creates(&fixture.fake, seen), 0);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        /// A removed Device's old forget, still in the Config Store, never blocks a Full
+        /// creation.
+        #[tokio::test]
+        async fn a_full_creation_beside_a_forget_no_trusted_key_signed_creates() {
+            let fixture = enforced("ployzd-full-stranger-forget").await;
+            let approved = reaching(PINNED);
+            let stranger = Signer::from_seed(&[42; 32]);
+            let mut body = fixture
+                .version_at(&approved, Timestamp::now(), true)
+                .open()
+                .unwrap();
+            body.signer = ployz_core::authority::SignerKey::Device(stranger.public().into());
+            let forget = Signed::sign(&body, &stranger).unwrap();
+            let seen = requests(&fixture.fake).len();
+
+            deploy_versions(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                &[forget],
+                false,
+            )
+            .await
+            .unwrap();
+            assert_eq!(creates(&fixture.fake, seen), 1);
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_version_signed_ahead_never_hides_one_the_same_key_signed_on_time() {
+            let fixture = enforced("ployzd-ahead-beside-honest").await;
+            let approved = reaching(PINNED);
+            let honest = fixture.version_at(&approved, Timestamp::now(), false);
+            let ahead = fixture.version_at(&approved, minutes_from_now(11), false);
+
+            deploy_versions(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                &[honest, ahead],
+                true,
+            )
+            .await
+            .unwrap();
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        /// Floors are kept by Cluster, so a Server that can't read its Sealing Key file
+        /// refuses an Operator's start rather than read no floor.
+        #[tokio::test]
+        async fn an_operator_start_is_refused_while_the_sealing_key_file_is_unreadable() {
+            let fixture = enforced("ployzd-floor-without-key").await;
+            let service = &fixture.service;
+            let approved = reaching(PINNED);
+            let older = fixture.version_at(&approved, minutes_from_now(-1), false);
+            let created = deploy_ensure(
+                service,
+                new_want("service_container", "k1", &approved),
+                Some(&older),
+            )
+            .await
+            .unwrap();
+            let id = present(&created).container_id;
+            let stopped = json!({"state":"stopped", "container":{"id":id}, "drain":0});
+            deploy_ensure(service, stopped, None).await.unwrap();
+            let forget = fixture.version_at(&approved, Timestamp::now(), true);
+            assert!(matches!(
+                fixture.forget(&forget).await.as_slice(),
+                [ployz_core::ForgetOutcome::Raised { .. }]
+            ));
+
+            std::fs::write(fixture.data_dir.join("sealing.key"), b"bad").unwrap();
+            deploy_refused(
+                deploy_ensure(service, started(&id), None).await,
+                "can't check the deploy's approval",
+            );
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_forget_signed_eleven_minutes_ahead_is_refused_and_leaves_the_floor() {
+            let fixture = enforced("ployzd-forget-ahead").await;
+            let approved = reaching(PINNED);
+            let ahead = fixture.version_at(&approved, minutes_from_now(11), true);
+
+            match fixture.forget(&ahead).await.as_slice() {
+                [ployz_core::ForgetOutcome::Refused { reason }] => {
+                    assert!(reason.contains("ahead of this server's clock"), "{reason}");
+                }
+                other => panic!("a forget past the guard was taken: {other:?}"),
+            }
+            deploy_ensure(
+                &fixture.service,
+                new_want("service_container", "k1", &approved),
+                Some(&fixture.version(&approved)),
+            )
+            .await
+            .unwrap();
+            std::fs::remove_dir_all(&fixture.data_dir).unwrap();
+        }
+
         async fn deploy_ensure(
             service: &MachineService,
             want: Value,
             version: Option<&Signed<ServiceVersion>>,
         ) -> Result<EnsuredContainer, Status> {
+            let versions = version.map_or(&[][..], std::slice::from_ref);
+            deploy_versions(service, want, versions, true).await
+        }
+
+        /// Ensure `want` with `versions`, as an Operator or as a Full caller.
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn deploy_versions(
+            service: &MachineService,
+            want: Value,
+            versions: &[Signed<ServiceVersion>],
+            operator: bool,
+        ) -> Result<EnsuredContainer, Status> {
             let mut body = json!({"want": want});
-            if let Some(version) = version {
-                body["versions"] = json!([version]);
+            if !versions.is_empty() {
+                body["versions"] = json!(versions);
             }
-            let mut request = Request::new(
+            let request = Request::new(
                 op::EnsureContainer::into_request(serde_json::from_value(body).unwrap())
                     .encode()
                     .unwrap(),
             );
-            request
-                .metadata_mut()
-                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
             let response = service
-                .ensure_container(request)
+                .ensure_container(as_operator(request, operator))
                 .await?
                 .into_inner()
                 .decode_response()

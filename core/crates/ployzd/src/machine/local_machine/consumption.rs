@@ -1,5 +1,6 @@
 //! The record of what this Machine has consumed, kept in `restart-approvals.json`: joins,
-//! GitHub tokens, rule marks, and the hook each rule's Service last ran.
+//! GitHub tokens, rule marks, the hook each rule's Service last ran, and each Service's
+//! floor.
 //! Every verb goes through [`ConsumptionLog::transact`] or [`ConsumptionLog::read`], so the
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
@@ -12,9 +13,13 @@ use std::{
 };
 
 use ployz_core::{
-    ServiceName,
-    authority::{AuthorityRefusal, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed, Timestamp},
+    QualifiedService, SealingPublicKey, ServiceName,
+    authority::{
+        AuthorityRefusal, AutoDeployRule, BuildClaim, ClaimRule, RuleId, RuleIdentity, Signed,
+        Timestamp, version::Forget,
+    },
 };
+use ployz_decide::service_floor::{self, Raise, Refused, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -45,6 +50,16 @@ struct Consumption {
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
+    /// Each Service's floor, by [`floor_key`]: the newest forget that reached this
+    /// Machine. It only rises.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    floors: BTreeMap<String, Timestamp>,
+}
+
+/// Where a Service's floor is kept: its Cluster's Sealing public key and the Service, so a
+/// Machine that moves to another Cluster keeps none of the old one's.
+pub(crate) fn floor_key(cluster: SealingPublicKey, service: &QualifiedService) -> String {
+    format!("{cluster}/{service}")
 }
 
 impl Consumption {
@@ -216,6 +231,97 @@ impl ConsumptionLog {
         }
     }
 
+    /// The floor of `service` in `cluster`, and this Machine's floored clock at `now`.
+    ///
+    /// # Errors
+    /// Returns `unread`'s error when the record cannot be read.
+    pub(crate) fn floor<E>(
+        &self,
+        cluster: SealingPublicKey,
+        service: &QualifiedService,
+        now: Timestamp,
+        unread: fn(io::Error) -> E,
+    ) -> Result<(Option<Timestamp>, Timestamp), E> {
+        self.read(unread, |log| {
+            let floor = log.floors.get(&floor_key(cluster, service)).copied();
+            (floor, log.floored(now))
+        })
+    }
+
+    /// Admit `signatures` for a new Container of `service` in `cluster` at `now`, as
+    /// [`service_floor::admit`] decides, and keep the floor a forget among them raised. The
+    /// floor is read and raised in one transaction, so no forget lands between them.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn admit_versions<K: Copy + PartialEq>(
+        &self,
+        cluster: SealingPublicKey,
+        service: &QualifiedService,
+        signatures: &[Signature<K>],
+        now: Timestamp,
+    ) -> Result<Result<Vec<(K, Timestamp)>, Refused>, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let key = floor_key(cluster, service);
+            let floor = log.floors.get(&key).copied();
+            Ok(
+                match service_floor::admit(signatures, floor, log.floored(now)) {
+                    Ok(admitted) => match admitted.floor {
+                        Some(raised) if admitted.floor != floor => {
+                            log.floors.insert(key, raised);
+                            Edit::Write(Ok(admitted.keys))
+                        }
+                        _ => Edit::Keep(Ok(admitted.keys)),
+                    },
+                    Err(refused) => Edit::Keep(Err(refused)),
+                },
+            )
+        })
+    }
+
+    /// Whether this Machine keeps a floor for any Service of any Cluster.
+    ///
+    /// # Errors
+    /// Returns `unread`'s error when the record cannot be read.
+    pub(crate) fn keeps_floors<E>(&self, unread: fn(io::Error) -> E) -> Result<bool, E> {
+        self.read(unread, |log| !log.floors.is_empty())
+    }
+
+    /// Raise the floor of each forget's Service in `cluster` to its time, at `now`, and
+    /// answer each one. A forget signed past the guard leaves its floor.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn raise_floors(
+        &self,
+        cluster: SealingPublicKey,
+        forgets: &[Forget],
+        now: Timestamp,
+    ) -> Result<Vec<Result<Raise, Refused>>, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            let now = log.floored(now);
+            let mut raised = false;
+            let answers = forgets
+                .iter()
+                .map(|forget| {
+                    let key = floor_key(cluster, &forget.service);
+                    let answer =
+                        service_floor::raise(log.floors.get(&key).copied(), forget.signed_at, now);
+                    if let Ok(Raise::Raised(floor)) = answer {
+                        log.floors.insert(key, floor);
+                        raised = true;
+                    }
+                    answer
+                })
+                .collect();
+            Ok(if raised {
+                Edit::Write(answers)
+            } else {
+                Edit::Keep(answers)
+            })
+        })
+    }
+
     /// Whether a rule deploy's hook was already made in the slot `key` names.
     ///
     /// # Errors
@@ -300,14 +406,16 @@ impl ConsumptionLog {
         })
     }
 
-    /// Spend the GitHub token `jti`, valid until `expires_at`, on a grant under `rule`.
-    /// Refuses a token already spent, a generation lower than the highest this Machine has
-    /// seen of the rule, and a generation that moves the rule to another repository,
-    /// branch or Namespace. Raises the rule's mark. Written before the grant is minted, so
-    /// a crash after it costs the builder a new token, never a second grant.
+    /// Spend the GitHub token `jti`, valid until `expires_at`, on a grant under `rule` for
+    /// the Service whose floor [`floor_key`] names `floor`. Refuses a token already spent,
+    /// a generation lower than the highest this Machine has seen of the rule, a generation
+    /// that moves the rule to another repository, branch or Namespace, and a rule the
+    /// floor refuses. Raises the rule's mark. Written before the grant is minted, so a
+    /// crash after it costs the builder a new token, never a second grant.
     pub(crate) fn consume_rule_proof(
         &self,
-        rule: &impl ClaimRule,
+        rule: &AutoDeployRule,
+        floor: &str,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
         jti: &str,
         expires_at: Timestamp,
@@ -317,6 +425,13 @@ impl ConsumptionLog {
             let now = log.floored(now);
             if let Err(refusal) = log.check_mark(rule.identity()) {
                 return Err(refused(refusal));
+            }
+            // Read after GitHub answered, so a forget acknowledged during that wait
+            // refuses the grant.
+            if let Err(below) =
+                service_floor::admits(rule.issued_at, log.floors.get(floor).copied(), now)
+            {
+                return Err(refused(super::admission::floor_refusal(below)));
             }
             let spent = hex::encode(Sha256::digest(jti.as_bytes()));
             if log.proofs.contains_key(&spent) {

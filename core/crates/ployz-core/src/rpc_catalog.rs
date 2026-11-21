@@ -71,6 +71,7 @@ macro_rules! rpc_catalog {
                 SetDevice: (set_device, SetDeviceRequest, DeviceSet, SET_DEVICE_CAPABILITY, "ployz.machine.set-device.v1", Always, Full),
                 SetPushTarget: (set_push_target, SetPushTargetRequest, PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always, Operator),
                 KeyStep: (key_step, KeyStepRequest, DeviceSet, KEY_STEP_CAPABILITY, "ployz.machine.key-step.v1", Always, Operator),
+                ForgetVersions: (forget_versions, ForgetVersionsRequest, VersionsForgotten, FORGET_VERSIONS_CAPABILITY, "ployz.machine.forget-versions.v1", Always, Operator),
                 SelectEndpoint: (select_endpoint, SelectEndpointRequest, EndpointSelected, SELECT_ENDPOINT_CAPABILITY, "ployz.network.select-endpoint.v1", Always, Operator),
                 ListMachines: (list_machines, ListMachinesRequest, MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always, Operator),
                 UpdateMachine: (update_machine, UpdateMachineRequest, MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always, Operator),
