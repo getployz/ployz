@@ -150,7 +150,9 @@ pub struct Approved {
 /// # Errors
 /// Returns the first statement's refusal when none admits,
 /// [`AuthorityRefusal::Overspent`] when the budget ran out before any was opened, and
-/// [`AuthorityRefusal::Unsigned`] when there are none.
+/// [`AuthorityRefusal::Unsigned`] when there are none. A statement marked to forget must
+/// admit itself: its refusal, or [`AuthorityRefusal::Overspent`] when it was left
+/// unopened, refuses the creation even when another statement admits it.
 pub fn verify(
     versions: &[Signed<ServiceVersion>],
     facts: &VersionFacts<'_>,
@@ -159,17 +161,29 @@ pub fn verify(
     let digest = requested_digest(facts.namespace, facts.creation)?;
     let mut by = Vec::new();
     let mut first = None;
+    let mut forget_refused = None;
+    let mut opened = 0;
     for version in versions.iter().take(MAX_PRESENTED) {
         if let Err(overspent) = budget.reserve(version, facts.trusted) {
             first.get_or_insert(overspent);
             break;
         }
+        opened += 1;
         match admits(version, facts, digest) {
             Ok(approved) => by.push(approved),
             Err(refusal) => {
+                if claims_forget(version) {
+                    forget_refused.get_or_insert_with(|| refusal.clone());
+                }
                 first.get_or_insert(refusal);
             }
         }
+    }
+    if versions.iter().skip(opened).any(claims_forget) {
+        forget_refused.get_or_insert(AuthorityRefusal::Overspent);
+    }
+    if let Some(refusal) = forget_refused {
+        return Err(refusal);
     }
     if by.is_empty() {
         return Err(first.unwrap_or(AuthorityRefusal::Unsigned {
@@ -177,6 +191,10 @@ pub fn verify(
         }));
     }
     Ok(VersionAdmitted { by, digest })
+}
+
+fn claims_forget(version: &Signed<ServiceVersion>) -> bool {
+    version.open().is_ok_and(|body| body.forget_older)
 }
 
 fn admits(

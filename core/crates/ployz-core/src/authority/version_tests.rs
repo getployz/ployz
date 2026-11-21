@@ -110,6 +110,28 @@ fn a_version_admits_its_spec_on_any_machine_that_trusts_its_signer() {
 }
 
 #[test]
+fn a_forget_its_machine_refuses_refuses_the_creation_another_version_admits() {
+    let trusted = signer(1);
+    let removed = signer(2);
+    let spec = requested("a");
+    let forget = ServiceVersion {
+        forget_older: true,
+        ..body(&removed, &spec)
+    };
+
+    let refused = check(
+        &[
+            signed(&trusted, &body(&trusted, &spec)),
+            signed(&removed, &forget),
+        ],
+        &trusting(&[&trusted]),
+        &resolved(&spec),
+    );
+
+    assert!(refused.is_err(), "{refused:?}");
+}
+
+#[test]
 fn a_version_moved_or_edited_by_whoever_carries_it_is_refused() {
     let device = signer(1);
     let spec = requested("a");
