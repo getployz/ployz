@@ -52,6 +52,10 @@ pub const WIREGUARD_KEY_DIGEST: &[u8] = b"ployz-wireguard-key-v1\n";
 /// Signature prefix of a Machine's observability push.
 pub const PUSH_SIGNATURE: &[u8] = b"ployz-push-v1\0";
 
+/// Signature prefix of the token a Machine's Collector sends Cloud's OTLP ingest, followed by
+/// the token's payload segment as sent.
+pub const OTLP_TOKEN_SIGNATURE: &[u8] = b"ployz-otlp-v1\0";
+
 /// Signature prefix of a Machine's check-in with Cloud.
 pub const CHECKIN_SIGNATURE: &[u8] = b"ployz-checkin-v1\0";
 
@@ -69,7 +73,7 @@ pub const AUTHORITY_SIGNING: &[u8] = b"ployz-authority/v1\n";
 mod tests {
     use super::*;
 
-    const ALL: [(&str, &[u8]); 18] = [
+    const ALL: [(&str, &[u8]); 19] = [
         ("SEALED_VALUE", SEALED_VALUE),
         ("PLATFORM_SEALED", PLATFORM_SEALED),
         ("BUILD_SECRETS", BUILD_SECRETS),
@@ -84,6 +88,7 @@ mod tests {
         ("FOUNDING_CLAIM", FOUNDING_CLAIM),
         ("WIREGUARD_KEY_DIGEST", WIREGUARD_KEY_DIGEST),
         ("PUSH_SIGNATURE", PUSH_SIGNATURE),
+        ("OTLP_TOKEN_SIGNATURE", OTLP_TOKEN_SIGNATURE),
         ("CHECKIN_SIGNATURE", CHECKIN_SIGNATURE),
         ("BUILD_CACHE", BUILD_CACHE),
         ("MANAGEMENT_PROOF", MANAGEMENT_PROOF),
@@ -104,7 +109,7 @@ mod tests {
 
     #[test]
     fn each_string_is_the_bytes_old_machines_and_stored_rows_know() {
-        let expected: [&[u8]; 18] = [
+        let expected: [&[u8]; 19] = [
             b"ployz-sealed-v1",
             b"ployz-platform-sealed-v1",
             b"ployz build secrets v1",
@@ -119,6 +124,7 @@ mod tests {
             b"ployz founding claim v1\0",
             b"ployz-wireguard-key-v1\n",
             b"ployz-push-v1\0",
+            b"ployz-otlp-v1\0",
             b"ployz-checkin-v1\0",
             b"ployz build cache v1\0",
             b"ployz management client proof v1",

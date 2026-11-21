@@ -78,6 +78,7 @@ fn copy(suffix: u8, machine: &Machine, r#gen: u64) -> ContainerObservation {
         labels: BTreeMap::new(),
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }

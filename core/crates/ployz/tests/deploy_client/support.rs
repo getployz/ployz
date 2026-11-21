@@ -822,6 +822,7 @@ impl DeployService {
             labels: BTreeMap::new(),
             stopped: false,
             run: None,
+            log_driver: None,
         })
         .unwrap()
     }
@@ -1155,6 +1156,7 @@ impl FakeMachine for DeployService {
                     labels: BTreeMap::new(),
                     stopped: false,
                     run: None,
+                    log_driver: None,
                 },
             )
             .unwrap(),
@@ -1903,6 +1905,7 @@ pub(super) fn running_container_in(
         labels: BTreeMap::new(),
         stopped: false,
         run: None,
+        log_driver: None,
     })
     .unwrap()
 }

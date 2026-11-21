@@ -35,6 +35,10 @@ pub(crate) const TAILSCALE: &str = PinnedImage::new(
 )
 .as_str();
 
+pub(crate) const COLLECTOR: PinnedImage = PinnedImage::new(
+    "ghcr.io/getployz/ployz-collector:0.147.0@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+);
+
 /// The reserved Ingress door specs this daemon builds for one set of Doors: the
 /// holder, the Caddy that joins it, and the Tunnel Door's pair when it is open.
 #[derive(Clone, Debug, PartialEq)]

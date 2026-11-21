@@ -68,6 +68,36 @@ it comes back; run the command again.
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
 
+## Logs sent to Ployz Cloud
+
+A server connected to Ployz Cloud runs a log collector beside your services. It reads what each
+service prints and sends the lines to Cloud, with each [Sealed](../services/variables.md) value
+replaced by `[secret NAME]`. A server that isn't connected to Cloud runs no collector and sends
+nothing; live logs still work. When a server first connects, the collector also sends the output
+its containers wrote before that, up to what each still has on disk.
+
+Each service keeps up to 30 MB of its own output on the server, in three files of 10 MB. If Cloud
+can't be reached, the collector resumes where it stopped and sends the lines it missed, unless
+more than 30 MB were written in the meantime.
+
+Hiding secrets is best effort. A line can still show:
+
+- a secret that isn't a Sealed value, since Ployz can't know it's secret;
+- a Sealed value shorter than 6 bytes;
+- a copy of a Sealed value that your app changed, such as base64 or a URL-encoded form;
+- a Sealed value inside a line longer than 16 KiB, which Docker splits into pieces;
+- a Sealed value of a container that is gone, when another container logged it earlier.
+
+If a container's Sealed value can't be opened, for example after the server's Sealing Key
+changed, the collector can't learn the new list. It keeps running with the list it has, and it
+isn't started or changed until that container is gone or redeployed. A deploy that adds a Sealed
+value stops the collector first, so the new container's output waits in its own log file.
+
+Don't print secrets from your app. A deploy that adds a Sealed value waits for the collector to
+learn it before the new container starts, so the container's first line is already hidden. The
+collector keeps the list of your Sealed values in a file only root can read under `/run/ployz`,
+which a reboot clears.
+
 ## Secrets in kept logs
 
 Each server keeps a removed container's output, and the variables it ran with, so its logs still
@@ -106,7 +136,10 @@ for less time. Keeping no secrets in logs on disk is planned after 0.3.0 in
   Recreating an environment with the same name can show its earlier logs. A service's card
   on a deployment shows only that deployment's output.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
-  their logs aren't kept, until their next deploy.
+  their logs aren't sent to Ployz Cloud until their next deploy. `ployz deploy` replaces them,
+  even when nothing else about the service changed.
+- **Containers this release starts keep their output only while they exist.** The server keeps
+  nothing of a removed one yet, so a rollback or removal ends its logs.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
   timestamp, sets it. A line without one counts as **Info**, stderr included.

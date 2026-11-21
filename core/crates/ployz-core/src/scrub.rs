@@ -24,6 +24,32 @@ impl SealedValues {
     pub const fn none() -> Self {
         Self(BTreeSet::new())
     }
+
+    /// What a Collector masks for these values, longest first so a whole value goes before
+    /// any row of it: each value of at least `SHORT_VALUE` bytes, then each of its log rows
+    /// that long on its own, under the value's name.
+    #[must_use]
+    pub fn mask_texts(&self) -> Vec<(&str, &str)> {
+        let mut texts = BTreeSet::new();
+        for (name, value) in &self.0 {
+            if value.len() < SHORT_VALUE {
+                continue;
+            }
+            texts.insert((name.as_str(), value.as_str()));
+            texts.extend(
+                rows(value)
+                    .filter(|row| row.len() >= SHORT_VALUE)
+                    .map(|row| (name.as_str(), row)),
+            );
+        }
+        let mut texts: Vec<_> = texts.into_iter().collect();
+        texts.sort_by_key(|(_, text)| std::cmp::Reverse(text.len()));
+        texts
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
 }
 
 impl FromIterator<(String, String)> for SealedValues {
@@ -250,8 +276,13 @@ fn rows(value: &str) -> std::str::SplitTerminator<'_, char> {
     value.split_terminator('\n')
 }
 
+#[must_use]
+pub fn marker_text(name: &str) -> String {
+    format!("[secret {name}]")
+}
+
 fn marker(name: &str) -> Vec<u8> {
-    format!("[secret {name}]").into_bytes()
+    marker_text(name).into_bytes()
 }
 
 /// A value too short to match on its own, matched only as `NAME = value`.

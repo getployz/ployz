@@ -875,6 +875,7 @@ mod tests {
             labels: BTreeMap::new(),
             stopped: false,
             run: None,
+            log_driver: None,
         })
         .unwrap()
     }

@@ -1,0 +1,50 @@
+name: Collector image
+
+on:
+  pull_request:
+    paths:
+      - core/collector/**
+      - .github/workflows/collector-image.yml
+  push:
+    branches: [main]
+    paths:
+      - core/collector/**
+      - .github/workflows/collector-image.yml
+  workflow_dispatch:
+
+concurrency:
+  group: collector-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/getployz/ployz-collector:0.147.0
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Create the builder
+        run: docker buildx create --use
+      - name: Build the Collector for arm64
+        run: docker buildx build --platform linux/arm64 core/collector
+      - name: Build the Collector for amd64
+        run: docker buildx build --platform linux/amd64 --load --tag "$IMAGE" core/collector
+      - name: Check the Collector accepts its own manifest
+        run: docker run --rm "$IMAGE" components > /dev/null
+      - name: Publish the Collector
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx build --platform linux/amd64,linux/arm64 --push --tag "$IMAGE" --metadata-file metadata.json core/collector
+          digest=$(jq -r '."containerimage.digest"' metadata.json)
+          echo "Pin this in core/crates/ployzd/src/images.rs: \`${IMAGE%%:*}@$digest\`" >> "$GITHUB_STEP_SUMMARY"
