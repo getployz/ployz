@@ -1169,9 +1169,13 @@ impl FakeMachine for DiscoveryService {
             }
         };
         Ok(Response::new(
-            RpcResponse::from(ployz_core::EnsuredContainer::Ensured { now, health })
-                .encode()
-                .unwrap(),
+            RpcResponse::from(ployz_core::EnsuredContainer::Ensured {
+                now,
+                health,
+                verified: None,
+            })
+            .encode()
+            .unwrap(),
         ))
     }
 

@@ -1,26 +1,30 @@
 //! Deploys under an automatic deploy rule: an Operator's new Container admitted on a
-//! rule and the pinned builder's image token, in place of a person's deploy approval.
+//! rule and evidence of its build, in place of a person's signed version.
 //!
-//! The rule's signature, this Machine's place in it, a live generation, the token's
-//! audience over the claim Cloud relays, and the branch head read from GitHub now all
-//! pass before anything runs. The Container must also run the image the token names,
-//! built with secrets sealed from this Machine's own attest key, with every other
-//! setting the rule approves. Nothing here trusts Cloud's word for a fact.
+//! The rule's signature, a live generation and a builder Ployz still trusts pass first.
+//! Then the build's evidence: online, the pinned builder's token, whose audience is the
+//! claim Cloud relays, and the branch head read from GitHub now; or a verified build, a
+//! MAC a Machine of this Cluster issued once that online check passed. The Container must
+//! also run the image the claim names, built with secrets sealed from this Machine's own
+//! attest key, with every other setting the rule approves. Nothing here trusts Cloud's
+//! word for a fact.
 //!
-//!   signature ─▶ mark ─▶ claim (token, or this Machine's accepted build) ─▶ head
-//!     ─▶ verify_creation ─▶ accepted build ─▶ hook once
+//!   signature ─▶ mark ─▶ evidence (token and head, or verified build) ─▶ verify_creation
+//!     ─▶ mark again and issue (online) ─▶ hook once
 
 use std::time::Instant;
 
+use hkdf::hmac::Mac as _;
 use ployz_core::{
     ContainerKind, ContainerWant, RunTarget, Sealing, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, Budget, RuleFacts, RuleProof, Timestamp,
-        deploy::Creation, rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, RuleEvidence, RuleFacts, RuleProof,
+        Signed, Timestamp, VerifiedBuild, deploy::Creation, rule::verify_signature,
     },
 };
 
 use super::{AdmittedBy, Error, LocalMachine, rule_grant::Github};
+use crate::sealing_key::SealingKey;
 
 /// Why a Machine refused a deploy under a rule.
 #[derive(Debug, thiserror::Error)]
@@ -50,10 +54,52 @@ impl RuleDeployRefusal {
     }
 }
 
+/// A rule's build that passed every online check here: the token, its audience, the
+/// commit, the head, the attest key, the image and the template. Only the online branch
+/// of [`LocalMachine::admit_rule_deploy`] makes one, so [`issue`] signs nothing else.
+struct CheckedOnline<'a> {
+    rule: &'a Signed<AutoDeployRule>,
+    claim: &'a BuildClaim,
+}
+
+/// The verified build of a build that passed its online check here, or `None` for a claim
+/// with no canonical form, which no check passes.
+fn issue(checked: &CheckedOnline<'_>, key: &SealingKey) -> Option<VerifiedBuild> {
+    let input = VerifiedBuild::input(checked.rule, checked.claim).ok()?;
+    let mut mac = key.verified_build();
+    mac.update(&input);
+    Some(VerifiedBuild::from_bytes(
+        mac.finalize().into_bytes().into(),
+    ))
+}
+
+/// Whether `verified` is the verified build of `claim` under `rule`, compared in constant
+/// time. It answers only yes or no, never the MAC it computed.
+fn holds(
+    rule: &Signed<AutoDeployRule>,
+    claim: &BuildClaim,
+    verified: &VerifiedBuild,
+    key: &SealingKey,
+) -> bool {
+    let Ok(input) = VerifiedBuild::input(rule, claim) else {
+        return false;
+    };
+    let mut mac = key.verified_build();
+    mac.update(&input);
+    mac.verify_slice(verified.as_bytes()).is_ok()
+}
+
+/// What a rule admitted, and the verified build an online check issued for it.
+#[derive(Debug)]
+pub(crate) struct RuleAdmitted {
+    pub(crate) by: AdmittedBy,
+    pub(crate) verified: Option<VerifiedBuild>,
+}
+
 impl LocalMachine {
     /// Admit an Operator's new Container on `proof`, at `now`, with the rule's signature
-    /// charged to `budget`, and name the rule, its generation and its signer. The
-    /// creation records the accepted build, and a hook takes its place once per push.
+    /// charged to `budget`, and name the rule, its generation and its signer. A build
+    /// checked online gets its verified build; a hook takes its place once per push.
     ///
     /// # Errors
     /// Returns [`Error::RuleDeployRefused`] naming what does not hold, and
@@ -65,7 +111,7 @@ impl LocalMachine {
         github: &impl Github,
         now: Timestamp,
         budget: &mut Budget,
-    ) -> Result<AdmittedBy, Error> {
+    ) -> Result<RuleAdmitted, Error> {
         let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
@@ -83,13 +129,12 @@ impl LocalMachine {
             tracing::warn!(rule = %rule.rule, field, "refused a deploy under a rule");
             refused(AuthorityRefusal::Mismatch { field })
         };
-        let (cluster, attest) = match (
-            self.held_sealing(record.phase()),
-            self.held_attest(record.phase()),
-        ) {
-            (Some(Sealing::Held { public_key }), Some(attest)) => (public_key, attest),
+        let key = self.held_sealing_key(record.phase());
+        let (cluster, key) = match (self.held_sealing(record.phase()), key) {
+            (Some(Sealing::Held { public_key }), Some(key)) => (public_key, key),
             _ => return Err(refused(AuthorityRefusal::NoClusterIdentity)),
         };
+        let attest = key.attest().attest();
         record.machine().ok_or(Error::NotParticipating)?;
         let machine = record.id();
         let superseded = |refusal| {
@@ -103,32 +148,36 @@ impl LocalMachine {
         // An ended generation still supersedes every one below it.
         self.approvals.mark_rule(&rule, superseded)?;
         let claim = &proof.claim;
-        if !self.approvals.accepted(&rule, claim)? {
-            // GitHub's token signature is one more check on the same budget.
-            budget.reserve_one().map_err(refused)?;
-            let claims = github
-                .claims(&rule, proof.token.as_str(), now)
-                .await
-                .map_err(|refusal| {
-                    tracing::warn!(rule = %rule.rule, %refusal, "refused a deploy under a rule");
-                    Error::RuleDeployRefused(RuleDeployRefusal::Proof(refusal))
-                })?;
-            if claim.audience().ok().as_deref() != Some(claims.aud.as_str()) {
-                return Err(held("an audience"));
+        let head = match &proof.evidence {
+            RuleEvidence::Online(token) => {
+                // GitHub's token signature is one more check on the same budget.
+                budget.reserve_one().map_err(refused)?;
+                let claims = github
+                    .claims(&rule, token.as_str(), now)
+                    .await
+                    .map_err(|refusal| {
+                        tracing::warn!(rule = %rule.rule, %refusal, "refused a deploy under a rule");
+                        Error::RuleDeployRefused(RuleDeployRefusal::Proof(refusal))
+                    })?;
+                if claim.audience().ok().as_deref() != Some(claims.aud.as_str()) {
+                    return Err(held("an audience"));
+                }
+                // GitHub's `sha` is the commit the push built.
+                if claims.sha != claim.commit {
+                    return Err(held("a commit"));
+                }
+                let head = github
+                    .head(
+                        rule.source.repository_id,
+                        &rule.source.branch,
+                        proof.reader.as_ref(),
+                    )
+                    .await
+                    .map_err(|error| Error::RuleDeployRefused(RuleDeployRefusal::Head(error)))?;
+                Some(head)
             }
-            // GitHub's `sha` is the commit the push built.
-            if claims.sha != claim.commit {
-                return Err(held("a commit"));
-            }
-        }
-        let head = github
-            .head(
-                rule.source.repository_id,
-                &rule.source.branch,
-                proof.reader.as_ref(),
-            )
-            .await
-            .map_err(|error| Error::RuleDeployRefused(RuleDeployRefusal::Head(error)))?;
+            RuleEvidence::Verified(_) => None,
+        };
         let facts = RuleFacts {
             cluster,
             attest,
@@ -147,8 +196,25 @@ impl LocalMachine {
             },
         )
         .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
-        // Checked again: a newer generation may have landed while GitHub answered.
-        self.approvals.accept(&rule, claim, superseded)?;
+        let verified = match &proof.evidence {
+            RuleEvidence::Verified(verified) => {
+                if !holds(&proof.rule, claim, verified, &key) {
+                    return Err(held("a verified build"));
+                }
+                None
+            }
+            RuleEvidence::Online(_) => {
+                // Checked again: a newer generation may have landed while GitHub answered.
+                self.approvals.mark_rule(&rule, superseded)?;
+                issue(
+                    &CheckedOnline {
+                        rule: &proof.rule,
+                        claim,
+                    },
+                    &key,
+                )
+            }
+        };
         if new.slot.kind == ContainerKind::PreDeployHook {
             self.approvals
                 .consume_rule_hook(rule.rule, claim, &new.slot.creation_key, refused)?;
@@ -156,16 +222,20 @@ impl LocalMachine {
         tracing::info!(
             kind = %new.slot.kind,
             admission_us = started.elapsed().as_micros(),
+            offline = matches!(proof.evidence, RuleEvidence::Verified(_)),
             "deploy of {} admitted under rule {} gen {} commit {}",
             new.slot.service,
             rule.rule,
             rule.generation,
             claim.commit.short(),
         );
-        Ok(AdmittedBy::Rule {
-            signer: signer.into(),
-            rule: rule.rule,
-            generation: rule.generation,
+        Ok(RuleAdmitted {
+            by: AdmittedBy::Rule {
+                signer: signer.into(),
+                rule: rule.rule,
+                generation: rule.generation,
+            },
+            verified,
         })
     }
 
@@ -180,7 +250,7 @@ impl LocalMachine {
         want: &ContainerWant,
         proof: &RuleProof,
         budget: &mut Budget,
-    ) -> Result<AdmittedBy, Error> {
+    ) -> Result<RuleAdmitted, Error> {
         let github = super::rule_grant::GithubOnline::shared().ok_or(Error::RuleDeployRefused(
             RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
                 field: "a GitHub client",
@@ -215,6 +285,9 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch { field: "a commit" } => {
             "This commit is no longer the head of its branch."
         }
+        AuthorityRefusal::Mismatch {
+            field: "a verified build",
+        } => "No server of this cluster checked this build with GitHub. Push again.",
         AuthorityRefusal::RetiredBuilder { .. } => {
             "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
         }

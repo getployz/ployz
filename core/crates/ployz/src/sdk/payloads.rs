@@ -91,9 +91,7 @@ fn typescript_declarations() -> String {
     declarations.add::<MachineId>();
     declarations.add::<ployz_core::MachineDetails>();
     declarations.add::<ployz_core::authority::ProposalApproval>();
-    declarations.add::<ployz_core::authority::DeployApproval>();
     declarations.add::<ployz_core::authority::ApprovedChange>();
-    declarations.add::<ployz_core::authority::DeployTerms>();
     declarations.add::<ployz_core::authority::AutoDeployRule>();
     declarations.add::<ployz_core::authority::RuleTerms>();
     declarations.add::<ployz_core::authority::RuleDraft>();

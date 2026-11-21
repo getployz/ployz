@@ -20,6 +20,10 @@ use crate::{
 pub const MANAGED: &str = "ployz.managed";
 /// The Namespace that owns a container or a Docker volume.
 pub const NAMESPACE: &str = "ployz.namespace";
+/// A born Docker Volume's origin. Legacy data has none.
+pub const VOLUME_ORIGIN: &str = "ployz.origin";
+/// On a container, the origin each named-volume mount expects ([`crate::MountOrigins`]).
+pub const VOLUME_ORIGINS: &str = "ployz.origins";
 /// The Service's deployment identity.
 pub const SERVICE_ID: &str = "ployz.service.id";
 /// The Service's name.

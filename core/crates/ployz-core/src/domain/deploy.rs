@@ -605,7 +605,9 @@ impl<E> RestoreAttempt<E> {
             Self::NewerServing => {
                 "A newer deploy is already serving; the old Container will not serve again."
             }
-            Self::Failed { .. } => "Could not restore the old Container.",
+            Self::Failed { .. } => {
+                "Could not restore the old Container. It stays stopped until you deploy the Service again."
+            }
         }
     }
 }

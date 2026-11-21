@@ -256,6 +256,16 @@ impl MachineService {
                 .await
             }
             (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+                // Recorded before the destroy, so no restart after it loses the record.
+                if let Some(VolumeCopy::Slot { origin, .. } | VolumeCopy::Root { origin, .. }) =
+                    &copy
+                {
+                    let origin = origin.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(&name));
+                    self.containers()?
+                        .lifecycle()
+                        .forgot(&name, &origin)
+                        .await?;
+                }
                 self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
                     .await
             }
@@ -531,6 +541,13 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> LocalMachi
         CopyRefusal::Behind => format!("Volume {name} is not at the wanted snapshot"),
         CopyRefusal::Written => format!("Volume {name} was written after the wanted snapshot"),
         CopyRefusal::NoSource => format!("Volume {name} has no copy to pull from"),
+        CopyRefusal::Foreign => {
+            format!("Volume {name} {}", crate::volume_copy::HELD_FOR_OTHER_DATA)
+        }
+        CopyRefusal::DockerUnavailable => {
+            format!("Docker is not answering on this Machine, so Volume {name} stays as it is")
+        }
+        CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",
             refused.floor.unwrap_or_default()

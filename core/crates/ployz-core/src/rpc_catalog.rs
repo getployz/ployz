@@ -84,6 +84,7 @@ macro_rules! rpc_catalog {
                 ListContainers: (list_containers, ListContainersRequest, ContainerList, LIST_CONTAINERS_CAPABILITY, "ployz.container.list.v1", Container, Operator),
                 InspectContainer: (inspect_container, InspectContainerRequest, ContainerDetails, INSPECT_CONTAINER_CAPABILITY, "ployz.container.inspect.v1", Container, Operator),
                 EnsureContainer: (ensure_container, EnsureContainerRequest, EnsuredContainer, ENSURE_CONTAINER_CAPABILITY, "ployz.container.ensure.v1", Container, Operator),
+                EnsurePinnedContainer: (ensure_pinned_container, EnsureContainerRequest, EnsuredContainer, ENSURE_PINNED_CONTAINER_CAPABILITY, "ployz.container.ensure-pinned.v1", Container, Operator),
                 UpdateContainerLimits: (update_container_limits, UpdateContainerLimitsRequest, ContainerLimitsUpdated, UPDATE_CONTAINER_LIMITS_CAPABILITY, "ployz.container.limits.update.v1", Container, Operator),
                 UpdateContainerPlacement: (update_container_placement, UpdateContainerPlacementRequest, ContainerPlacementUpdated, UPDATE_CONTAINER_PLACEMENT_CAPABILITY, "ployz.container.placement.update.v1", Container, Operator),
                 InspectStorage: (inspect_storage, InspectStorageRequest, StorageCapacity, INSPECT_STORAGE_CAPABILITY, "ployz.storage.inspect.v1", Container, Operator),
@@ -98,6 +99,7 @@ macro_rules! rpc_catalog {
                 PruneImages: (prune_images, PruneImagesRequest, ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
                 EnsureImageIngest: (ensure_image_ingest, EnsureImageIngestRequest, ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),
                 PullImage: (pull_image, PullImageRequest, ImagePulled, PULL_IMAGE_CAPABILITY, "ployz.image.pull.v1", Container, Operator),
+                PullFreeImage: (pull_free_image, PullFreeImageRequest, ImagePulled, PULL_FREE_IMAGE_CAPABILITY, "ployz.image.pull-free.v1", Container, Operator),
                 PullImageFromMachine: (pull_image_from_machine, PullImageFromMachineRequest, ImagePulled, PULL_IMAGE_FROM_MACHINE_CAPABILITY, "ployz.image.pull-from-machine.v1", Container, Operator),
                 MintBuildGrant: (mint_build_grant, MintBuildGrantRequest, BuildGrantMinted, MINT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.mint.v1", Container, Operator),
                 InspectBuildGrant: (inspect_build_grant, InspectBuildGrantRequest, BuildGrantInspected, INSPECT_BUILD_GRANT_CAPABILITY, "ployz.build.grant.inspect.v1", Container, Operator),
@@ -125,6 +127,8 @@ macro_rules! rpc_catalog {
                 VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
                 /// `SetVolumeSize` takes `allow_shrink` and lowers a bound down to its floor.
                 VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
+                /// The Machine opens a Volume's data only for a Container whose spec expects the origin it carries, and its pulls take born data.
+                VOLUME_ORIGIN_CAPABILITY: ("ployz.volume.origin.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.
@@ -144,10 +148,10 @@ macro_rules! rpc_catalog {
                 SET_INGRESS_TUNNEL_CAPABILITY: ("ployz.ingress.tunnel.v1", Cluster),
                 /// `SetPrivateAccess` takes a person's approval of its sealed auth key and turns Private Access on for an Operator only with one.
                 PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster),
-                /// `EnsureContainer` takes a deploy approval and creates an Operator's Container only when its spec matches a digest it approves.
-                DEPLOY_APPROVAL_CAPABILITY: ("ployz.container.deploy-approval.v1", Always),
-                /// A deploy approval may be an unsigned step of a signed proposal bundle that rides in its envelope.
-                DEPLOY_PROPOSAL_CAPABILITY: ("ployz.container.deploy-proposal.v1", Always),
+                /// `EnsureContainer` takes signed versions and creates an Operator's Container only when one signs its spec's digest.
+                SIGNED_VERSION_CAPABILITY: ("ployz.container.signed-version.v1", Always),
+                /// A signed version may be an unsigned step of a signed proposal bundle that rides in its envelope.
+                SIGNED_VERSION_PROPOSAL_CAPABILITY: ("ployz.container.signed-version.proposal.v1", Always),
                 /// `EnsureContainer` takes an automatic deploy rule with its image token and creates an Operator's Container under it only for the head's image built under the rule.
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
                 /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.

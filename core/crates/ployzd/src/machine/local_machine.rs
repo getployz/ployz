@@ -221,8 +221,8 @@ pub enum Error {
     EmptyUpdate,
     #[error("push target {0}")]
     InvalidPushTarget(&'static str),
-    /// Device enforcement refused an Operator's creation, or its step under a deploy
-    /// approval. The refusal names [`ployz_core::DEPLOY_APPROVAL_CAPABILITY`] in its details.
+    /// Device enforcement refused an Operator's creation, or a step of one under a signed
+    /// version. The refusal names [`ployz_core::SIGNED_VERSION_CAPABILITY`] in its details.
     #[error("{}", admission::refusal_text(.0))]
     DeployRefused(ployz_core::authority::AuthorityRefusal),
     /// A rule build's grant failed a check before anything opened. The refusal names
@@ -407,7 +407,7 @@ impl LocalMachine {
         self
     }
 
-    /// Make subsequent starts of a Provisioned Volume's holder take `switch`.
+    /// Make subsequent creates and starts of a Provisioned Volume's holder take `switch`.
     #[must_use]
     pub(crate) fn with_switch(mut self, switch: SwitchLock) -> Self {
         self.switch = Some(switch);
@@ -792,13 +792,17 @@ impl LocalMachine {
         &self,
         phase: LocalMachinePhase,
     ) -> Option<ployz_core::authority::AttestKey> {
+        self.held_sealing_key(phase)
+            .map(|key| key.attest().attest())
+    }
+
+    /// The Sealing Key this Machine's file holds, on the phases [`Self::held_sealing`]
+    /// reports one.
+    pub(crate) fn held_sealing_key(&self, phase: LocalMachinePhase) -> Option<SealingKey> {
         if !has_cluster_identity(&phase) {
             return None;
         }
-        SealingKey::load(self.owner.data_dir())
-            .ok()
-            .flatten()
-            .map(|key| key.attest().attest())
+        SealingKey::load(self.owner.data_dir()).ok().flatten()
     }
 
     /// The key this Machine's file holds, or, when it holds none, the key a recovery

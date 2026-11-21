@@ -1,0 +1,168 @@
+{
+  "about": "Every encoding of a Volume's origin. Core tests and the verify-server harness read it; changing a value breaks Servers already holding data.",
+  "born": [
+    {
+      "birth": {
+        "namespace": "files",
+        "name": "previews",
+        "made_at": 1762178640000,
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "canonical": "{\"made_at\":1762178640000,\"name\":\"previews\",\"namespace\":\"files\",\"nonce\":\"00112233445566778899aabbccddeeff\"}",
+      "origin": "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a"
+    },
+    {
+      "birth": {
+        "namespace": "files",
+        "name": "previews",
+        "made_at": 1762178640000,
+        "nonce": "00112233445566778899aabbccddeef0"
+      },
+      "canonical": "{\"made_at\":1762178640000,\"name\":\"previews\",\"namespace\":\"files\",\"nonce\":\"00112233445566778899aabbccddeef0\"}",
+      "origin": "b7d3f92faaa2186871010c24328b3b937e0d9cc1747256bba25d9628f97178b0"
+    },
+    {
+      "birth": {
+        "namespace": "shop",
+        "name": "Bilder für Läden",
+        "made_at": 1,
+        "nonce": "ffffffffffffffffffffffffffffffff"
+      },
+      "canonical": "{\"made_at\":1,\"name\":\"Bilder für Läden\",\"namespace\":\"shop\",\"nonce\":\"ffffffffffffffffffffffffffffffff\"}",
+      "origin": "43d6df26081dc6878ba03d04d312c08eaaeb47ff50409fe7cc6b947665125829"
+    }
+  ],
+  "legacy": [
+    {
+      "physical": "files_previews",
+      "origin": "33c588fe1ffbc6dc373ad91aacb2a25057abae6312c745dc36e6b08099ff8ade"
+    },
+    {
+      "physical": "shop_data",
+      "origin": "27728fa84f871de03e4ecaaf721ce8ce47eb7ea78f93e7947337283ce179bbb2"
+    },
+    {
+      "physical": "data",
+      "origin": "e4a3f1b74865c0eb6a24c8eecde5652cdf87a3ae508da652b56ea1308cb003f1"
+    }
+  ],
+  "births_refused": [
+    {
+      "namespace": "files",
+      "name": "previews",
+      "made_at": 1,
+      "nonce": "0011",
+      "why": "short nonce"
+    },
+    {
+      "namespace": "files",
+      "name": "previews",
+      "made_at": 1,
+      "nonce": "00112233445566778899aabbccddeeff",
+      "extra": 1,
+      "why": "unknown field"
+    },
+    {
+      "namespace": "files",
+      "name": "previews",
+      "made_at": 9007199254740992,
+      "nonce": "00112233445566778899aabbccddeeff",
+      "why": "time above 2^53 - 1"
+    }
+  ],
+  "origins_refused": [
+    "",
+    "81DABF1205B4218F99EA90CD1FEF0A73AB0BBE0C09E71D7F4765EFE825BB3A8A",
+    "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8",
+    "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a0",
+    "sha256:81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a",
+    " 81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a",
+    "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8g"
+  ],
+  "mount_origins": [
+    {
+      "origins": {
+        "files_previews": "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a",
+        "files_cache": "1683525a40a421072d909e11c9b4b7f08ee0973eec59ac1df722034dd8fd6c43"
+      },
+      "label": "{\"files_cache\":\"1683525a40a421072d909e11c9b4b7f08ee0973eec59ac1df722034dd8fd6c43\",\"files_previews\":\"81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a\"}"
+    }
+  ],
+  "mount_origins_refused": [
+    "{\"files_previews\":\"81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a\",\"files_cache\":\"1683525a40a421072d909e11c9b4b7f08ee0973eec59ac1df722034dd8fd6c43\"}",
+    "{\"files_cache\": \"1683525a40a421072d909e11c9b4b7f08ee0973eec59ac1df722034dd8fd6c43\",\"files_previews\": \"81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a\"}",
+    "{\"files_previews\":\"81DABF1205B4218F99EA90CD1FEF0A73AB0BBE0C09E71D7F4765EFE825BB3A8A\"}",
+    "{\"files_previews\":\"81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a\",\"files_previews\":\"81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a\"}",
+    "[]",
+    "null",
+    ""
+  ],
+  "reply_header": [
+    {
+      "values": [],
+      "origin": null
+    },
+    {
+      "values": [
+        "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a"
+      ],
+      "origin": "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a"
+    },
+    {
+      "values": [
+        "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a",
+        "81dabf1205b4218f99ea90cd1fef0a73ab0bbe0c09e71d7f4765efe825bb3a8a"
+      ],
+      "refused": true
+    },
+    {
+      "values": [
+        "81DABF1205B4218F99EA90CD1FEF0A73AB0BBE0C09E71D7F4765EFE825BB3A8A"
+      ],
+      "refused": true
+    },
+    {
+      "values": [
+        ""
+      ],
+      "refused": true
+    }
+  ],
+  "capabilities": [
+    {
+      "values": [
+        "ployz.volume.origin.v1"
+      ],
+      "claims": true
+    },
+    {
+      "values": [
+        "ployz.other.v1, ployz.volume.origin.v1"
+      ],
+      "claims": true
+    },
+    {
+      "values": [
+        "ployz.other.v1",
+        "ployz.volume.origin.v1"
+      ],
+      "claims": true
+    },
+    {
+      "values": [
+        "ployz.volume.origin.v2"
+      ],
+      "claims": false
+    },
+    {
+      "values": [
+        "ployz.volume.origin.v1x"
+      ],
+      "claims": false
+    },
+    {
+      "values": [],
+      "claims": false
+    }
+  ]
+}

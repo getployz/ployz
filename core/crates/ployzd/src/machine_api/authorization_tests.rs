@@ -23,6 +23,9 @@ use crate::docker::test_support::FakeDocker;
 use crate::machine::{LocalMachineStore, RecordOwner};
 use crate::sealing_key::SealingKey;
 
+const PINNED_NGINX: &str =
+    "nginx@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
 /// Cases this harness can't reach over TCP, with the unit test that proves each. Cloud's
 /// own connection is an iroh connection, a rule grant needs GitHub's signed token, and an
 /// upgrade resolves releases only on an installed Machine.
@@ -444,6 +447,25 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::ENSURE_CONTAINER_CAPABILITY, "create, reaches no data") => {
             unary::<op::EnsureContainer>(json!({"want": new_want("api", "nginx:1.29-alpine")}))
         }
+        (ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY, branch) => {
+            let want = match branch {
+                "create, reaches data" => pinned(mounting_want()),
+                "create, reaches no data" => pinned(new_want("api", "nginx:1.29-alpine")),
+                "digest spec" => {
+                    pinned(new_want("api", &format!("nginx@sha256:{}", "7".repeat(64))))
+                }
+                "no pin" => {
+                    let mut want = pinned(new_want("api", "nginx:1.29-alpine"));
+                    want.pointer_mut("/container/new")
+                        .and_then(Value::as_object_mut)
+                        .unwrap()
+                        .remove("image_id");
+                    want
+                }
+                other => panic!("EnsurePinnedContainer has no sample for {other:?}"),
+            };
+            unary::<op::EnsurePinnedContainer>(json!({"want": want}))
+        }
         (ployz_core::ENSURE_CONTAINER_CAPABILITY, branch) => {
             let id = running_container(machine).await;
             let want = match branch {
@@ -521,12 +543,23 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY, _) => {
             unary::<op::EnsureImageIngest>(json!({}))
         }
-        (ployz_core::PULL_IMAGE_CAPABILITY, _) => unary::<op::PullImage>(json!({
+        (ployz_core::PULL_IMAGE_CAPABILITY, "tag") => unary::<op::PullImage>(json!({
             "image": "nginx:1.29-alpine", "policy": "missing", "registry_auth": null,
         })),
-        (ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY, _) => {
+        (ployz_core::PULL_IMAGE_CAPABILITY, _) => unary::<op::PullImage>(json!({
+            "image": PINNED_NGINX, "policy": "missing", "registry_auth": null,
+        })),
+        (ployz_core::PULL_FREE_IMAGE_CAPABILITY, _) => unary::<op::PullFreeImage>(json!({
+            "image": "nginx:1.29-alpine", "policy": "missing",
+        })),
+        (ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY, branch) => {
+            let image = if branch == "tag" {
+                "nginx:1.29-alpine"
+            } else {
+                PINNED_NGINX
+            };
             unary::<op::PullImageFromMachine>(json!({
-                "pull": {"mode": "reference", "image": "nginx:1.29-alpine"},
+                "pull": {"mode": "reference", "image": image},
                 "source": {"management_address": "fd00::1", "port": 7570},
                 "platform": "linux/amd64",
             }))
@@ -638,6 +671,22 @@ fn want_of(name: &str, resolved_spec: Value, image_prepared: bool) -> Value {
         "resolved_spec": resolved_spec, "gen": 1, "image_prepared": image_prepared}}})
 }
 
+/// `want` as a drain sends it on the pinned route: answered once settled, its image
+/// prepared, and pinned to one image ID.
+fn pinned(mut want: Value) -> Value {
+    let new = want
+        .pointer_mut("/container/new")
+        .and_then(Value::as_object_mut)
+        .unwrap();
+    new.insert("image_prepared".into(), true.into());
+    new.insert("answer".into(), "settled".into());
+    new.insert(
+        "image_id".into(),
+        format!("sha256:{}", "7".repeat(64)).into(),
+    );
+    want
+}
+
 /// The image pulls Docker was asked for.
 fn pulls(machine: &Enforcing) -> usize {
     machine
@@ -739,7 +788,7 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
             let answer = send(machine, &create).await;
             assert!(
                 matches!(&answer, Answer::Refused { capability: Some(name), .. }
-                    if name == ployz_core::DEPLOY_APPROVAL_CAPABILITY),
+                    if name == ployz_core::SIGNED_VERSION_CAPABILITY),
                 "{case:?}: the create after it was not refused: {answer:?}"
             );
         }
@@ -758,6 +807,14 @@ async fn bounded(case: &Case, check: &str, machine: &Enforcing) {
         }
         "the Machine pulls the image itself" => {
             assert_eq!(pulls(machine), 1, "{case:?}");
+        }
+        "the Machine pulls the image by digest and writes no name" => {
+            assert_eq!(pulls(machine), 1, "{case:?}");
+            assert_eq!(
+                machine.fake.images.lock().unwrap().get("nginx:1.29-alpine"),
+                None,
+                "{case:?}: the tag was written"
+            );
         }
         "the key stays on the Machine" | "the key installed is the one the Cluster publishes" => {
             let held = SealingKey::load(&machine.data_dir)

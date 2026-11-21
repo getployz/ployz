@@ -580,6 +580,10 @@ impl<'m> Store<'m> {
         &self.backend
     }
 
+    pub(crate) fn into_backend(self) -> Backend {
+        self.backend
+    }
+
     /// The in-process Store, which only the hidden test mode has: there this CLI
     /// runs Deployments itself. `claim` and `record` never cross HTTPS.
     pub(crate) fn local(&self) -> Option<&std::sync::Arc<ConfigStore>> {

@@ -1,6 +1,6 @@
 //! Tests for the Machine RPC boundary.
 
-use super::{MachineService, store_error, withhold_opened};
+use super::{MachineService, names_content, store_error, withhold_opened};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
@@ -14,6 +14,37 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tonic::{Code, Request};
+
+/// An Operator's peer copy may write only the retention name its own content certifies: a
+/// drain's user tag, a tag reference, or a retention name of other content would leave a
+/// name a Full creation runs.
+#[test]
+fn an_operator_copies_only_under_the_retention_name_of_its_content() {
+    use ployz_core::{ImageDigestReference, PeerImagePull};
+    let hex = "a".repeat(64);
+    let pinned = ImageDigestReference::parse(format!("app@sha256:{hex}")).unwrap();
+    let publish = |tag: String| PeerImagePull::Publish {
+        image: pinned.clone(),
+        tag,
+    };
+    let reference = |image: String| PeerImagePull::Reference { image };
+    for allowed in [
+        reference(format!("app@sha256:{hex}")),
+        reference(format!("app:v1@sha256:{hex}")),
+        publish(format!("app:ployz-sha256-{hex}")),
+    ] {
+        assert!(names_content(&allowed), "{allowed:?}");
+    }
+    for refused in [
+        reference("app:v1".into()),
+        reference("app".into()),
+        publish("app:v1".into()),
+        publish(format!("app:ployz-sha256-{}", "b".repeat(64))),
+        publish("app:ployz-sha256-staging".into()),
+    ] {
+        assert!(!names_content(&refused), "{refused:?}");
+    }
+}
 
 #[test]
 fn an_operator_reads_every_env_key_but_the_opened_ones() {
@@ -347,6 +378,55 @@ async fn a_pulled_image_answers_only_after_docker_holds_it() {
         "{requests:?}"
     );
     std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+/// A Full creation runs the tag by name, so a Full caller's pull, such as a direct
+/// Device's before its Deploy creates anything, must leave the tag naming what the
+/// registry serves: on a Server that lacks it, and over an older one when pulled `always`.
+#[tokio::test]
+async fn a_full_callers_pull_leaves_the_tag_its_creation_runs() {
+    let image = "example.test/api:1";
+    let served = format!("sha256:{}", "e".repeat(64));
+    for (held, policy) in [
+        (None, ployz_core::PullPolicy::Missing),
+        (
+            Some(format!("sha256:{}", "b".repeat(64))),
+            ployz_core::PullPolicy::Always,
+        ),
+    ] {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-full-pull").await;
+        fake.images
+            .lock()
+            .unwrap()
+            .insert(image.into(), held.clone());
+        fake.registry
+            .lock()
+            .unwrap()
+            .insert(image.into(), served.clone());
+        service
+            .pull_free_image(Request::new(
+                op::PullFreeImage::into_request(ployz_core::PullFreeImageRequest {
+                    image: image.into(),
+                    policy,
+                    registry_auth: None,
+                })
+                .encode()
+                .unwrap(),
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::PullFreeImage>()
+            .unwrap();
+        assert_eq!(
+            fake.images.lock().unwrap().get(image),
+            Some(&Some(served.clone())),
+            "held {held:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -819,8 +899,19 @@ async fn fake_docker_service_built(
             .with_machine_root(data_dir.join("root")),
         None => runtime,
     };
+    // A Legacy root under every name, so a create reads the origin its spec expects.
+    let plugin = crate::storage::test_support::FakePlugin::default();
+    plugin.reply(
+        crate::volume_copy::INSPECT_ROUTE,
+        serde_json::json!({"Ok": {"kind":"root", "readonly":false, "newest":null, "epoch":1,
+            "seed":false}}),
+    );
+    let default_plugin = data_dir.join("default-plugin");
+    std::fs::create_dir_all(&default_plugin).unwrap();
+    let (plugin, _server) = plugin.serve(&default_plugin);
     let mut service = MachineService::with_cluster(store.clone(), None)
-        .with_optional_containers(Some(runtime.clone()));
+        .with_optional_containers(Some(runtime.clone()))
+        .with_volume_plugin(plugin);
     // `true` lists no pools, which reads as ZFS ready whatever the host has.
     service.local =
         service
@@ -1622,6 +1713,7 @@ mod ingress_doors {
         let EnsuredContainer::Ensured {
             now: ContainerNow::Present(caddy),
             health: None,
+            ..
         } = &first
         else {
             panic!("expected the joined Caddy, got {first:?}");
@@ -2722,6 +2814,15 @@ mod set_volume_copy {
     use serde_json::{Value, json};
 
     const VOLUME: &str = "app_data";
+    /// The plugin routes that changed a copy, in order. Reads are left out: how often the
+    /// daemon reads a copy follows the code, and what a test checks is what changed.
+    fn effects(plugin: &FakePlugin) -> Vec<String> {
+        plugin
+            .routes_called()
+            .into_iter()
+            .filter(|route| route != INSPECT_ROUTE)
+            .collect()
+    }
 
     fn writer_root(epoch: u32, newest: Option<Value>) -> Value {
         json!({"Ok": {"kind":"root", "readonly":false,
@@ -3002,6 +3103,318 @@ mod set_volume_copy {
         plugin
     }
 
+    /// A spec mounting `data` born in `namespace`.
+    fn born_spec(namespace: &str) -> (ResolvedServiceSpec, ployz_core::VolumeOrigin) {
+        let birth: ployz_core::VolumeBirth = serde_json::from_value(json!({
+            "namespace": namespace, "name": "data", "made_at": 1_762_178_640_000_u64,
+            "nonce": "00112233445566778899aabbccddeeff"}))
+        .unwrap();
+        let origin = ployz_core::VolumeOrigin::of(&birth).unwrap();
+        let mut source = ployz_core::RawVolumeSource::Provisioned {
+            name: "data".parse().unwrap(),
+            maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+                std::num::NonZeroU64::new(1_073_741_824).unwrap(),
+            ),
+            labels: BTreeMap::new(),
+            birth: Some(birth),
+        }
+        .admit()
+        .unwrap();
+        source.scope_to_namespace(&Namespace::parse("app").unwrap());
+        (spec_with_sources(vec![source]), origin)
+    }
+
+    fn root_carrying(origin: Option<ployz_core::VolumeOrigin>) -> Value {
+        json!({"Ok": {"kind":"root", "readonly":false, "newest":null, "epoch":1,
+            "seed":false, "origin":origin}})
+    }
+
+    /// A stale copy promoted under the name, or a sibling's data swapped under it, is
+    /// refused at create: Docker never makes a Container that would open it.
+    #[tokio::test]
+    async fn a_holder_is_created_only_over_the_data_its_spec_names() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-create").await;
+        let plugin = FakePlugin::default();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let (spec, born) = born_spec("app");
+        let (other, _) = born_spec("other-env");
+        let create = |spec: ResolvedServiceSpec| {
+            let service = service.clone();
+            async move {
+                service
+                    .local
+                    .create_container(
+                        ContainerKind::ServiceContainer,
+                        &Namespace::parse("app").unwrap(),
+                        &spec,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+            }
+        };
+        let made = || {
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .len()
+        };
+
+        for carried in [
+            None,
+            Some(
+                ployz_core::VolumeOrigin::of(
+                    &serde_json::from_value(json!({
+            "namespace": "app", "name": "data", "made_at": 1_762_178_640_000_u64,
+            "nonce": "ffeeddccbbaa99887766554433221100"}))
+                    .unwrap(),
+                )
+                .unwrap(),
+            ),
+        ] {
+            plugin.reply(INSPECT_ROUTE, root_carrying(carried));
+            let refused = create(spec.clone()).await.unwrap_err();
+            assert!(
+                matches!(
+                    refused,
+                    crate::machine::LocalMachineError::Docker(
+                        crate::docker::Error::ForeignVolume { .. }
+                    )
+                ),
+                "{refused:?}"
+            );
+            assert_eq!(made(), 0, "Docker made no Container over {carried:?}");
+        }
+        plugin.reply(INSPECT_ROUTE, root_carrying(Some(born)));
+        create(other).await.unwrap_err();
+        assert_eq!(
+            made(),
+            0,
+            "a birth from another Environment names no data here"
+        );
+
+        create(spec).await.unwrap();
+        assert_eq!(made(), 1);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// Creates the `api` Service Container of `spec` in Namespace `app`.
+    async fn create_api(
+        service: &MachineService,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), crate::machine::LocalMachineError> {
+        service
+            .local
+            .create_container(
+                ContainerKind::ServiceContainer,
+                &Namespace::parse("app").unwrap(),
+                spec,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map(drop)
+    }
+
+    /// An Ordinary Volume's origin is its Docker label. One left by another Volume of the
+    /// name holds other data, and the refusal says so rather than that the Volume is
+    /// unprepared.
+    #[tokio::test]
+    async fn an_ordinary_volume_labelled_for_other_data_is_refused_as_foreign() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-ordinary").await;
+        let birth: ployz_core::VolumeBirth = serde_json::from_value(json!({
+            "namespace": "app", "name": "data", "made_at": 1_762_178_640_000_u64,
+            "nonce": "00112233445566778899aabbccddeeff"}))
+        .unwrap();
+        let mut source = ployz_core::RawVolumeSource::Ordinary {
+            name: "data".parse().unwrap(),
+            driver: ployz_core::VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
+            labels: BTreeMap::new(),
+            birth: Some(birth),
+        }
+        .admit()
+        .unwrap();
+        source.scope_to_namespace(&Namespace::parse("app").unwrap());
+        let mut labels = source.creation_labels();
+        labels.insert(ployz_core::labels::VOLUME_ORIGIN.into(), "c".repeat(64));
+        let name = source.docker_volume_name().unwrap().to_string();
+        fake.volumes.lock().unwrap().insert(
+            name.clone(),
+            json!({"Name":name, "Driver":"local", "Mountpoint":format!("/volumes/{name}"),
+                "Options":{}, "Labels":labels}),
+        );
+
+        let refused = create_api(&service, &spec_with_sources(vec![source]))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                refused,
+                crate::machine::LocalMachineError::Docker(
+                    crate::docker::Error::ForeignVolume { .. }
+                )
+            ),
+            "{refused:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// Docker can lose a Provisioned root's labels and find it again through the plugin. An
+    /// External mount of its name still never opens it, and a genuine External Volume of the
+    /// name opens only through the driver Docker has for it now.
+    #[tokio::test]
+    async fn an_external_mount_never_opens_a_provisioned_root_docker_lost_the_labels_of() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-external").await;
+        let spec = spec_with_sources(vec![
+            ployz_core::RawVolumeSource::External {
+                name: "shared".parse().unwrap(),
+            }
+            .admit()
+            .unwrap(),
+        ]);
+        let made = || {
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .len()
+        };
+        fake.volumes.lock().unwrap().insert(
+            "shared".into(),
+            json!({"Name":"shared", "Driver":"ployz", "Mountpoint":"/var/lib/ployz-volumes/shared",
+                "Status":{"bound_bytes":1_073_741_824_u64, "used_bytes":0}}),
+        );
+
+        let refused = create_api(&service, &spec).await.unwrap_err();
+
+        assert!(
+            matches!(
+                refused,
+                crate::machine::LocalMachineError::Docker(
+                    crate::docker::Error::ForeignVolume { .. }
+                )
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(
+            made(),
+            0,
+            "Docker made no Container over the Provisioned root"
+        );
+
+        fake.volumes.lock().unwrap().insert(
+            "shared".into(),
+            json!({"Name":"shared", "Driver":"local", "Mountpoint":"/volumes/shared"}),
+        );
+        create_api(&service, &spec).await.unwrap();
+        assert_eq!(made(), 1);
+        let bodies = fake.request_bodies.lock().unwrap();
+        let (_, body) = bodies
+            .iter()
+            .rfind(|(path, _)| path.ends_with("/containers/create"))
+            .unwrap();
+        assert_eq!(
+            body.pointer("/HostConfig/Mounts/0/VolumeOptions/DriverConfig/Name"),
+            Some(&json!("local")),
+            "Docker resolves the name only through the driver it had: {body}"
+        );
+        drop(bodies);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Provisioned Volume with no root here, absent or held only in a slot, is not
+    /// prepared on this Machine. It holds no other data, so it is not refused as foreign.
+    #[tokio::test]
+    async fn a_provisioned_volume_with_no_writable_copy_is_refused_as_unprepared() {
+        let (data_dir, _store, service, _fake) =
+            fake_docker_service("ployzd-origin-unwritable").await;
+        let plugin = FakePlugin::default();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let (spec, _) = born_spec("app");
+
+        for copy in [json!({"Ok": null}), slot(None)] {
+            plugin.reply(INSPECT_ROUTE, copy.clone());
+            let refused = create_api(&service, &spec).await.unwrap_err();
+            assert!(
+                matches!(
+                    refused,
+                    crate::machine::LocalMachineError::Docker(
+                        crate::docker::Error::VolumeNotWritable(_)
+                    )
+                ),
+                "{copy}: {refused:?}"
+            );
+        }
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// The volume plugin refuses a fresh root under a name a kept Container mounts for
+    /// other data, and Docker relays that as text. The create still reads as foreign.
+    #[tokio::test]
+    async fn a_fresh_volume_the_plugin_holds_for_other_data_is_refused_as_foreign() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-held").await;
+        *fake.refuse_volume_create.lock().unwrap() = Some(format!(
+            "create fresh: VolumeDriver.Create: Volume fresh {}, so no new data is made under its name until that Container is removed",
+            crate::volume_copy::HELD_FOR_OTHER_DATA
+        ));
+
+        let refused = create_api(
+            &service,
+            &spec_with_sources(vec![provisioned_source("fresh", 1_073_741_824)]),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                refused,
+                crate::machine::LocalMachineError::Docker(
+                    crate::docker::Error::ForeignVolume { .. }
+                )
+            ),
+            "{refused:?}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A fresh Provisioned Volume waits while Docker does not list its holders, and the
+    /// create says so as a refusal to retry, as a promote's or seed's does.
+    #[tokio::test]
+    async fn a_fresh_volume_docker_did_not_list_the_holders_of_is_unavailable() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-origin-unlisted").await;
+        *fake.refuse_volume_create.lock().unwrap() = Some(format!(
+            "create fresh: VolumeDriver.Create: {}, so no new data is made under Volume fresh until it does: no list within 3 s",
+            crate::volume_copy::DOCKER_NOT_ANSWERING
+        ));
+
+        let refused = create_api(
+            &service,
+            &spec_with_sources(vec![provisioned_source("fresh", 1_073_741_824)]),
+        )
+        .await
+        .unwrap_err();
+
+        let crate::machine::LocalMachineError::Docker(refused) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(
+            refused.rpc_code(),
+            ployz_core::RpcErrorCode::Unavailable,
+            "{refused}"
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_raise_whose_kept_start_another_holder_superseded_starts_nothing() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-copy-kept-held").await;
@@ -3020,7 +3433,7 @@ mod set_volume_copy {
             serde_json::to_value(&raised).unwrap(),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
         assert_eq!(running(&fake), 1, "{:?}", holder_status(&fake));
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3045,7 +3458,7 @@ mod set_volume_copy {
             serde_json::to_value(&raised).unwrap(),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
         let creates = fake
             .requests
             .lock()
@@ -3187,17 +3600,11 @@ mod set_volume_copy {
             json!({"copy": slot(Some(snapshot("f-1", 7)))["Ok"]})
         );
         assert_eq!(holder_status(&fake), vec![json!("exited")]);
-        assert_eq!(
-            plugin.routes_called(),
-            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE]
-        );
+        assert_eq!(effects(&plugin), vec![CUT_ROUTE]);
 
         let again = reply(&set_copy(&service, cut(json!({"kind":"writer", "epoch":0}))).await);
         assert_eq!(again, first);
-        assert_eq!(
-            plugin.routes_called(),
-            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
-        );
+        assert_eq!(effects(&plugin), vec![CUT_ROUTE]);
         assert_eq!(
             cut_lines(&capture),
             vec![" INFO cut: holders stopped volume=app_data target=f-1 gen=0"]
@@ -3243,10 +3650,7 @@ mod set_volume_copy {
         assert_eq!(error.details["reason"], json!("mismatch"), "{error:?}");
         assert_eq!(error.details["copy"], slot(Some(snapshot("f-1", 8)))["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("exited")]);
-        assert_eq!(
-            plugin.routes_called(),
-            vec![INSPECT_ROUTE, CUT_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
-        );
+        assert_eq!(effects(&plugin), vec![CUT_ROUTE]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -3282,7 +3686,7 @@ mod set_volume_copy {
         let error = refusal(&refused);
         assert_eq!(error.details["reason"], json!("busy"), "{error:?}");
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(effects(&plugin), Vec::<&str>::new());
         let mut status = holder_status(&fake);
         status.sort_by_key(ToString::to_string);
         assert_eq!(status, vec![json!("exited"), json!("running")]);
@@ -3319,7 +3723,7 @@ mod set_volume_copy {
             "{error:?}"
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(effects(&plugin), Vec::<&str>::new());
         assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3343,7 +3747,7 @@ mod set_volume_copy {
         assert_eq!(error.details["reason"], json!("busy"));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(effects(&plugin), Vec::<&str>::new());
         assert_eq!(cut_lines(&capture), Vec::<String>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
@@ -3363,7 +3767,7 @@ mod set_volume_copy {
         assert_eq!(error.code, RpcErrorCode::Conflict, "{error:?}");
         assert_eq!(error.details["reason"], json!("mismatch"));
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE]);
+        assert_eq!(effects(&plugin), Vec::<&str>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -3394,20 +3798,14 @@ mod set_volume_copy {
             serde_json::to_value(&raised).unwrap(),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, WRITER_ROUTE]);
+        assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
         assert_eq!(reply(&set_copy(&service, raise).await), raised);
-        assert_eq!(
-            plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
-        );
+        assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
 
         let error = refusal(&set_copy(&service, cut(json!({"kind":"writer", "epoch":1}))).await);
         assert_eq!(error.details["reason"], json!("mismatch"), "{error:?}");
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(
-            plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE, INSPECT_ROUTE]
-        );
+        assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -3477,7 +3875,7 @@ mod set_volume_copy {
         assert_eq!(error.details["floor"], json!(5));
         assert_eq!(error.details["copy"], writer_root(0, None)["Ok"]);
         assert_eq!(holder_status(&fake), vec![json!("running")]);
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(effects(&plugin), Vec::<&str>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -4119,10 +4517,7 @@ mod set_volume_copy {
             creates, 2,
             "the late step 5 created the old Container again"
         );
-        assert_eq!(
-            plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
-        );
+        assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -4151,7 +4546,7 @@ mod set_volume_copy {
             serde_json::to_value(&held).unwrap(),
             json!({"copy": writer_root(1, Some(snapshot("f-1", 7)))["Ok"]})
         );
-        assert_eq!(plugin.routes_called(), vec![INSPECT_ROUTE, INSPECT_ROUTE]);
+        assert_eq!(effects(&plugin), Vec::<&str>::new());
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();
     }
@@ -4180,10 +4575,7 @@ mod set_volume_copy {
         let first = reply(&set_copy(&service, request.clone()).await);
         let again = reply(&set_copy(&service, request).await);
         assert_eq!(first, again);
-        assert_eq!(
-            plugin.routes_called(),
-            vec![INSPECT_ROUTE, WRITER_ROUTE, INSPECT_ROUTE]
-        );
+        assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
         let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
         assert_eq!(containers.len(), 1, "{:?}", containers.keys());
         let container = containers.values().next().unwrap();
@@ -4642,6 +5034,7 @@ mod ensure_container {
                     of: serde_json::from_value(json!({"key":slot("k1")})).unwrap(),
                 },
                 health: None,
+                verified: None,
             }
         );
         let later = requests_since(&fake, seen);
@@ -4789,6 +5182,7 @@ mod ensure_container {
                     of: serde_json::from_value(json!({"id":id})).unwrap(),
                 },
                 health: None,
+                verified: None,
             }
         );
 
@@ -4916,12 +5310,9 @@ mod ensure_container {
         //! runs only the spec an approved Device signed.
 
         use ployz_core::{
-            DEPLOY_APPROVAL_CAPABILITY, DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, OperationId,
+            DeviceKey, Namespace, OPERATOR_SCOPE_HEADER, SIGNED_VERSION_CAPABILITY,
             SealingPublicKey,
-            authority::{
-                ApprovedService, DeployApproval, PayloadDigest, ServiceVersion, Signed, Signer,
-                Timestamp,
-            },
+            authority::{PayloadDigest, ServiceVersion, Signed, Signer, Timestamp},
             rpc::status_details,
         };
         use tonic::Status;
@@ -5236,47 +5627,22 @@ mod ensure_container {
         const PINNED: &str = "example.test/api@sha256:00000000000000000000000000000000000000000000000000000000000000aa";
 
         impl Enforced {
-            /// A deploy approval of `spec` for Service `api` in Namespace `app` on this Machine.
-            fn deploy(&self, spec: &Value) -> Signed<DeployApproval> {
-                let approval = self.deploy_body(
-                    &[spec],
-                    ployz_core::authority::SignerKey::Device(self.signer.public().into()),
-                );
-                Signed::sign(&approval, &self.signer).unwrap()
-            }
-
-            fn deploy_body(
-                &self,
-                specs: &[&Value],
-                signer: ployz_core::authority::SignerKey,
-            ) -> DeployApproval {
+            /// A version of `spec` for its Service in Namespace `app`, signed by this
+            /// Machine's Device.
+            fn version(&self, spec: &Value) -> Signed<ServiceVersion> {
                 let namespace = Namespace::parse("app").unwrap();
-                let mut services: Vec<ApprovedService> = specs
-                    .iter()
-                    .map(|spec| {
-                        let resolved: ployz_core::ResolvedServiceSpec =
-                            serde_json::from_value((*spec).clone()).unwrap();
-                        ApprovedService {
-                            digest: PayloadDigest::of(&resolved.to_requested(), &namespace)
-                                .unwrap(),
-                            name: resolved.name,
-                            image: None,
-                        }
-                    })
-                    .collect();
-                services.sort_by(|left, right| left.name.cmp(&right.name));
-                let issued_at = Timestamp::now();
-                DeployApproval {
+                let resolved: ployz_core::ResolvedServiceSpec =
+                    serde_json::from_value(spec.clone()).unwrap();
+                let body = ServiceVersion {
                     cluster: self.cluster,
-                    operation: OperationId::random(),
+                    digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
                     namespace,
-                    machines: vec![self.service.local.record().id()],
-                    services,
-                    issued_at,
-                    expires_at: issued_at.plus(60_000),
-                    signer,
+                    service: resolved.name,
+                    signed_at: Timestamp::now(),
+                    signer: ployz_core::authority::SignerKey::Device(self.signer.public().into()),
                     proposal: None,
-                }
+                };
+                Signed::sign(&body, &self.signer).unwrap()
             }
         }
 
@@ -5284,11 +5650,11 @@ mod ensure_container {
         async fn deploy_ensure(
             service: &MachineService,
             want: Value,
-            deploy: Option<&Signed<DeployApproval>>,
+            version: Option<&Signed<ServiceVersion>>,
         ) -> Result<EnsuredContainer, Status> {
             let mut body = json!({"want": want});
-            if let Some(deploy) = deploy {
-                body["deploy"] = serde_json::to_value(deploy).unwrap();
+            if let Some(version) = version {
+                body["versions"] = json!([version]);
             }
             let mut request = Request::new(
                 op::EnsureContainer::into_request(serde_json::from_value(body).unwrap())
@@ -5320,7 +5686,7 @@ mod ensure_container {
             assert!(status.message().contains(reason), "{}", status.message());
             assert_eq!(
                 status_details(status.details()).unwrap()["capability"],
-                json!(DEPLOY_APPROVAL_CAPABILITY)
+                json!(SIGNED_VERSION_CAPABILITY)
             );
         }
 
@@ -5426,11 +5792,12 @@ mod ensure_container {
         }
 
         #[tokio::test]
-        async fn a_spec_a_device_signed_runs_again_for_an_operator_until_the_device_is_removed() {
+        async fn a_signed_spec_runs_for_an_operator_only_with_its_version_until_the_device_is_removed()
+         {
             let fixture = enforced("ployzd-signed-spec").await;
             let service = &fixture.service;
             let approved = reaching(PINNED);
-            let signed = fixture.deploy(&approved);
+            let signed = fixture.version(&approved);
             let seen = requests(&fixture.fake).len();
 
             deploy_refused(
@@ -5447,28 +5814,37 @@ mod ensure_container {
                 deploy_ensure(
                     service,
                     new_want("service_container", "k1", &tagged),
-                    Some(&fixture.deploy(&tagged)),
+                    Some(&fixture.version(&tagged)),
                 )
                 .await,
                 "runs only images pinned by digest",
             );
             assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
 
-            deploy_ensure(
-                service,
-                new_want("service_container", "k1", &approved),
-                Some(&signed),
-            )
-            .await
-            .unwrap();
-            // A scale and a restart are new creations of the same spec. Nothing is
-            // presented, and a restarted daemon reads what it admitted from disk.
-            for (service, key) in [(service, "k2"), (&fixture.restarted(), "k3")] {
-                deploy_ensure(service, new_want("service_container", key, &approved), None)
-                    .await
-                    .unwrap();
+            // A scale and a restarted daemon each carry the version again.
+            let restarted = fixture.restarted();
+            for (service, key) in [(service, "k1"), (service, "k2"), (&restarted, "k3")] {
+                deploy_ensure(
+                    service,
+                    new_want("service_container", key, &approved),
+                    Some(&signed),
+                )
+                .await
+                .unwrap();
             }
             assert_eq!(creates(&fixture.fake, seen), 3);
+            // What it admitted before admits nothing more: no Server keeps a version.
+            for service in [service, &restarted] {
+                deploy_refused(
+                    deploy_ensure(
+                        service,
+                        new_want("service_container", "k4", &approved),
+                        None,
+                    )
+                    .await,
+                    "reaches its server",
+                );
+            }
 
             let code = DeviceKey::from(fixture.signer.public()).code();
             fixture
@@ -5481,37 +5857,55 @@ mod ensure_container {
             deploy_refused(
                 deploy_ensure(
                     service,
-                    new_want("service_container", "k4", &approved),
-                    None,
+                    new_want("service_container", "k5", &approved),
+                    Some(&signed),
                 )
                 .await,
-                "reaches its server",
+                "doesn't trust the device",
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
+        /// A Full caller, such as `ployz deploy` over SSH, that carries a Device's version
+        /// keeps that Device behind the Container, so an Operator start stops once it is
+        /// removed, as for a Container an Operator created.
         #[tokio::test]
-        async fn what_full_access_made_runs_again_for_an_operator_only_from_a_pinned_image() {
-            let fixture = enforced("ployzd-full-access-spec").await;
+        async fn a_full_creation_that_carries_a_version_starts_for_an_operator_only_while_its_signer_is_trusted()
+         {
+            let fixture = enforced("ployzd-full-signed-spec").await;
             let service = &fixture.service;
-            let pinned = reaching(PINNED);
-            let tagged = reaching("example.test/api:1");
+            let approved = reaching(PINNED);
+            let created = ensure(
+                service,
+                json!({
+                    "want": new_want("service_container", "k1", &approved),
+                    "versions": [fixture.version(&approved)],
+                }),
+            )
+            .await;
+            let id = present(&created).container_id;
+            let stopped = json!({"state":"stopped", "container":{"id":id}, "drain":0});
+            deploy_ensure(service, stopped.clone(), None).await.unwrap();
+            deploy_ensure(service, started(&id), None).await.unwrap();
 
-            ensure(service, run_new("k1", pinned.clone())).await;
-            deploy_ensure(service, new_want("service_container", "k2", &pinned), None)
+            let code = DeviceKey::from(fixture.signer.public()).code();
+            fixture
+                .store
+                .mutate(move |store| {
+                    store.remove_device(code).unwrap();
+                })
                 .await
                 .unwrap();
-            // An Operator can point a tag at another image, so a tag is not remembered.
-            ensure(service, run_new("t1", tagged.clone())).await;
+            deploy_ensure(service, stopped, None).await.unwrap();
             deploy_refused(
-                deploy_ensure(service, new_want("service_container", "t2", &tagged), None).await,
-                "reaches its server",
+                deploy_ensure(service, started(&id), None).await,
+                "doesn't trust the device",
             );
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
         #[tokio::test]
-        async fn what_a_device_made_on_its_own_connection_runs_again_until_the_device_is_removed() {
+        async fn a_device_removed_after_its_call_arrived_creates_nothing_on_its_own_connection() {
             let fixture = enforced("ployzd-device-connection-spec").await;
             let service = &fixture.service;
             let pinned = reaching(PINNED);
@@ -5521,9 +5915,6 @@ mod ensure_container {
                 .with_management_client(ployz_core::ClientKey::from(device));
 
             ensure(&direct, run_new("k1", pinned.clone())).await;
-            deploy_ensure(service, new_want("service_container", "k2", &pinned), None)
-                .await
-                .unwrap();
             fixture
                 .store
                 .mutate(move |store| {
@@ -5542,262 +5933,6 @@ mod ensure_container {
                 ))
                 .await;
             assert_eq!(late.unwrap_err().code(), Code::PermissionDenied);
-            deploy_refused(
-                deploy_ensure(service, new_want("service_container", "k4", &pinned), None).await,
-                "reaches its server",
-            );
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn a_version_two_devices_signed_is_one_of_the_versions_kept() {
-            let fixture = enforced("ployzd-two-signers-history").await;
-            let service = &fixture.service;
-            let version = |number: usize| {
-                let mut spec = reaching(PINNED);
-                spec["container"]["command"] = json!(["serve", number.to_string()]);
-                spec
-            };
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 0..32 {
-                let spec = version(number);
-                deploy_ensure(
-                    service,
-                    new_want("service_container", &format!("k{number}"), &spec),
-                    Some(&fixture.deploy(&spec)),
-                )
-                .await
-                .unwrap();
-            }
-            let newest = version(31);
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&newest],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "second", &newest),
-                Some(&by_second),
-            )
-            .await
-            .unwrap();
-
-            deploy_ensure(
-                service,
-                new_want("service_container", "oldest", &version(0)),
-                None,
-            )
-            .await
-            .unwrap();
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn removing_a_device_leaves_a_version_another_signed_as_new_as_it_was() {
-            let fixture = enforced("ployzd-removed-signer-history").await;
-            let service = &fixture.service;
-            let version = |number: usize| {
-                let mut spec = reaching(PINNED);
-                spec["container"]["command"] = json!(["serve", number.to_string()]);
-                spec
-            };
-            let deploy = async |number: usize| {
-                let spec = version(number);
-                deploy_ensure(
-                    service,
-                    new_want("service_container", &format!("k{number}"), &spec),
-                    Some(&fixture.deploy(&spec)),
-                )
-                .await
-                .unwrap();
-            };
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 0..32 {
-                deploy(number).await;
-            }
-            // The second Device runs the oldest version again, which makes it the newest.
-            let oldest = version(0);
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&oldest],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "second", &oldest),
-                Some(&by_second),
-            )
-            .await
-            .unwrap();
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.remove_device(second_device.code()).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 32..34 {
-                deploy(number).await;
-            }
-
-            deploy_ensure(
-                service,
-                new_want("service_container", "again", &oldest),
-                None,
-            )
-            .await
-            .unwrap();
-            deploy_refused(
-                deploy_ensure(
-                    service,
-                    new_want("service_container", "evicted", &version(1)),
-                    None,
-                )
-                .await,
-                "reaches its server",
-            );
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn a_version_only_a_removed_device_signed_takes_no_place_from_older_ones() {
-            let fixture = enforced("ployzd-removed-signer-place").await;
-            let service = &fixture.service;
-            let version = |number: usize| {
-                let mut spec = reaching(PINNED);
-                spec["container"]["command"] = json!(["serve", number.to_string()]);
-                spec
-            };
-            let deploy = async |number: usize| {
-                let spec = version(number);
-                deploy_ensure(
-                    service,
-                    new_want("service_container", &format!("k{number}"), &spec),
-                    Some(&fixture.deploy(&spec)),
-                )
-                .await
-                .unwrap();
-            };
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            for number in 0..31 {
-                deploy(number).await;
-            }
-            let only_second = version(31);
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&only_second],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "second", &only_second),
-                Some(&by_second),
-            )
-            .await
-            .unwrap();
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.remove_device(second_device.code()).unwrap();
-                })
-                .await
-                .unwrap();
-            deploy(32).await;
-
-            deploy_ensure(
-                service,
-                new_want("service_container", "oldest", &version(0)),
-                None,
-            )
-            .await
-            .unwrap();
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        async fn a_spec_two_devices_signed_runs_again_while_either_is_trusted() {
-            let fixture = enforced("ployzd-two-signers-spec").await;
-            let service = &fixture.service;
-            let approved = reaching(PINNED);
-            let second = Signer::from_seed(&[8; 32]);
-            let second_device = DeviceKey::from(second.public());
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.approve_device(second_device).unwrap();
-                })
-                .await
-                .unwrap();
-            let by_second = Signed::sign(
-                &fixture.deploy_body(
-                    &[&approved],
-                    ployz_core::authority::SignerKey::Device(second.public().into()),
-                ),
-                &second,
-            )
-            .unwrap();
-
-            for (key, signed) in [("k1", fixture.deploy(&approved)), ("k2", by_second)] {
-                deploy_ensure(
-                    service,
-                    new_want("service_container", key, &approved),
-                    Some(&signed),
-                )
-                .await
-                .unwrap();
-            }
-            let first = DeviceKey::from(fixture.signer.public()).code();
-            fixture
-                .store
-                .mutate(move |store| {
-                    store.remove_device(first).unwrap();
-                })
-                .await
-                .unwrap();
-            deploy_ensure(
-                service,
-                new_want("service_container", "k3", &approved),
-                None,
-            )
-            .await
-            .unwrap();
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
@@ -5840,10 +5975,14 @@ mod ensure_container {
             deploy_ensure(service, new_want("service_container", "k3", &here), None)
                 .await
                 .unwrap();
-            let elsewhere = with_policy(
-                "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc",
-                "never",
-            );
+            let absent = "8.8.8.8/api@sha256:00000000000000000000000000000000000000000000000000000000000000cc";
+            fixture
+                .fake
+                .images
+                .lock()
+                .unwrap()
+                .insert(absent.into(), None);
+            let elsewhere = with_policy(absent, "never");
             let refused = deploy_ensure(
                 service,
                 new_want("service_container", "k4", &elsewhere),
@@ -5860,10 +5999,10 @@ mod ensure_container {
         }
 
         #[tokio::test]
-        async fn a_deploy_approval_never_starts_a_hook_again_but_adopts_a_resent_one() {
+        async fn a_signed_hook_never_starts_again_but_adopts_a_resent_one() {
             let fixture = enforced("ployzd-deploy-hook-start").await;
             let approved = spec(PINNED);
-            let signed = fixture.deploy(&approved);
+            let signed = fixture.version(&approved);
             let hook = deploy_ensure(
                 &fixture.service,
                 new_want("pre_deploy_hook", "h1", &approved),
@@ -5893,69 +6032,6 @@ mod ensure_container {
                 ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
                 0
             );
-            std::fs::remove_dir_all(fixture.data_dir).unwrap();
-        }
-
-        #[tokio::test]
-        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-        async fn signed_versions_and_a_deploy_approval_in_one_request_share_eight_checks() {
-            let fixture = enforced("ployzd-mixed-proof-budget").await;
-            let approved = reaching(PINNED);
-            let mut elsewhere = approved.clone();
-            elsewhere["container"]["environment"] = json!({"MODE": "elsewhere"});
-            let namespace = Namespace::parse("app").unwrap();
-            let resolved: ployz_core::ResolvedServiceSpec =
-                serde_json::from_value(elsewhere).unwrap();
-            let version = ServiceVersion {
-                cluster: fixture.cluster,
-                namespace: namespace.clone(),
-                service: resolved.name.clone(),
-                digest: PayloadDigest::of(&resolved.to_requested(), &namespace).unwrap(),
-                signed_at: Timestamp::now(),
-                signer: ployz_core::authority::SignerKey::Device(fixture.signer.public().into()),
-                proposal: None,
-            };
-            let version = Signed::sign(&version, &fixture.signer).unwrap();
-            let deploy = fixture.deploy(&approved);
-            let seen = requests(&fixture.fake).len();
-
-            let mut request = Request::new(
-                op::EnsureContainer::into_request(
-                    serde_json::from_value(json!({
-                        "want": new_want("service_container", "k1", &approved),
-                        "deploy": deploy,
-                        "versions": vec![version; 8],
-                    }))
-                    .unwrap(),
-                )
-                .encode()
-                .unwrap(),
-            );
-            request
-                .metadata_mut()
-                .insert(OPERATOR_SCOPE_HEADER, "1".parse().unwrap());
-            let mixed = fixture
-                .service
-                .ensure_container(request)
-                .await
-                .map(|response| {
-                    response
-                        .into_inner()
-                        .decode_response()
-                        .unwrap()
-                        .decode::<op::EnsureContainer>()
-                        .unwrap()
-                });
-            deploy_refused(mixed, "more signatures than a server checks at once");
-            assert_eq!(creates(&fixture.fake, seen), 0, "nothing reached Docker");
-
-            deploy_ensure(
-                &fixture.service,
-                new_want("service_container", "k2", &approved),
-                Some(&deploy),
-            )
-            .await
-            .unwrap();
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
     }

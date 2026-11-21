@@ -493,24 +493,24 @@ fn create(
     spec: Value,
     kind: ContainerKind,
 ) -> Result<ImageDigest, AuthorityRefusal> {
-    create_at(rule, claim, spec, kind, head())
+    create_on(rule, claim, spec, kind, (Some(head()), "1"))
 }
 
 fn head() -> CommitSha {
     CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap()
 }
 
-/// Check a creation of `spec` under `rule` with `claim`, with `commit` the reason it may
-/// run now.
-fn create_at(
+/// Check a creation of `spec` under `rule` with `claim` on the Machine whose ID repeats
+/// `machine`, with the branch head read online, or none for a verified build.
+fn create_on(
     rule: &AutoDeployRule,
     claim: &BuildClaim,
     spec: Value,
     kind: ContainerKind,
-    head: CommitSha,
+    (head, machine): (Option<CommitSha>, &str),
 ) -> Result<ImageDigest, AuthorityRefusal> {
     let spec = resolved(&requested(spec));
-    let machine = MachineId::parse("1".repeat(32)).unwrap();
+    let machine = MachineId::parse(machine.repeat(32)).unwrap();
     let namespace = Namespace::parse("app").unwrap();
     let facts = RuleFacts {
         cluster: SealingPublicKey::from_bytes([9; 32]),
@@ -814,5 +814,142 @@ fn a_build_by_a_builder_that_installs_a_lab_ployz_is_refused_under_a_rule_pinnin
         Err(AuthorityRefusal::RetiredBuilder {
             sha: lab.to_owned()
         })
+    );
+}
+
+/// A rule approves a template for its own Environment, and a Volume born elsewhere is
+/// refused before the template is compared.
+#[test]
+fn a_creation_naming_a_volume_born_in_another_environment_is_refused() {
+    let born_in = |namespace: &str| {
+        let mut spec = requested_json();
+        spec["volumes"] = json!([{"reference": "data", "source": {"kind": "provisioned",
+            "name": "data", "maximum_bytes": 1_073_741_824_u64,
+            "birth": {"namespace": namespace, "name": "data", "made_at": 1_762_178_640_000_u64,
+                "nonce": "00112233445566778899aabbccddeeff"}}}]);
+        spec["mounts"] = json!([{"volume": "data", "target": "/data"}]);
+        spec
+    };
+    let mut rule = approved_rule();
+    rule.services[0].template = template(
+        &requested(born_in("app")),
+        &Namespace::parse("app").unwrap(),
+    )
+    .unwrap();
+
+    assert!(
+        create(
+            &rule,
+            &built(),
+            born_in("app"),
+            ContainerKind::ServiceContainer
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        create(
+            &rule,
+            &built(),
+            born_in("other"),
+            ContainerKind::ServiceContainer
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a Volume's Environment"
+        })
+    );
+}
+
+/// A spec that keeps no data on its Server and reaches nothing of the host runs on any
+/// Server of the Cluster, one that joined after the approval included. Any other keeps
+/// to the Servers the rule names.
+#[test]
+fn only_a_spec_whose_placement_is_signed_keeps_to_the_rules_machines() {
+    let mut stateless = requested_json();
+    for key in ["volumes", "mounts", "ports"] {
+        stateless.as_object_mut().unwrap().remove(key);
+    }
+    let mut rule = approved_rule();
+    rule.services[0].template = template(
+        &requested(stateless.clone()),
+        &Namespace::parse("app").unwrap(),
+    )
+    .unwrap();
+    let later = (Some(head()), "2");
+    assert!(
+        create_on(
+            &rule,
+            &built(),
+            stateless,
+            ContainerKind::ServiceContainer,
+            later
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        create_on(
+            &approved_rule(),
+            &built(),
+            requested_json(),
+            ContainerKind::ServiceContainer,
+            later
+        ),
+        Err(AuthorityRefusal::Mismatch { field: "a Machine" })
+    );
+}
+
+/// A verified build needs no branch head: it runs a commit the branch moved past, under
+/// every other check an online build passes.
+#[test]
+fn a_verified_build_runs_an_older_commit_and_keeps_every_other_check() {
+    let offline = (None, "1");
+    let older = BuildClaim {
+        commit: CommitSha::parse(&"7".repeat(40)).unwrap(),
+        ..built()
+    };
+    assert!(
+        create_on(
+            &approved_rule(),
+            &older,
+            requested_json(),
+            ContainerKind::ServiceContainer,
+            offline
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        create_on(
+            &approved_rule(),
+            &older,
+            requested_json(),
+            ContainerKind::ServiceContainer,
+            (Some(head()), "1")
+        ),
+        Err(AuthorityRefusal::Mismatch { field: "a commit" })
+    );
+    let next = BuildClaim {
+        generation: older.generation + 1,
+        ..older.clone()
+    };
+    assert_eq!(
+        create_on(
+            &approved_rule(),
+            &next,
+            requested_json(),
+            ContainerKind::ServiceContainer,
+            offline
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: "a generation"
+        })
+    );
+    assert_eq!(
+        create_on(
+            &approved_rule(),
+            &older,
+            requested_json(),
+            ContainerKind::ServiceContainer,
+            (None, "2")
+        ),
+        Err(AuthorityRefusal::Mismatch { field: "a Machine" })
     );
 }

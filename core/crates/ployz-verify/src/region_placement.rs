@@ -955,6 +955,7 @@ fn mount_data(spec: &mut RequestedServiceSpec) {
             NonZeroU64::new(VOLUME_BYTES).expect("a size"),
         ),
         labels: BTreeMap::default(),
+        birth: None,
     }
     .admit()
     .expect("a Volume declaration");

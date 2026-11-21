@@ -1,6 +1,6 @@
 //! Which specs this Machine makes a Container from. A spec that reaches data needs a
-//! signature this Machine checks itself: a signed version or a deploy approval a trusted
-//! key signed, an automatic deploy rule's proof of its build, or a caller at Full access.
+//! signature this Machine checks itself: a signed version a trusted key signed, an
+//! automatic deploy rule's proof of its build, or a caller at Full access.
 //! A spec that reaches no data runs for any caller. Who admitted a Container is kept with
 //! it, and an Operator's start of it is checked against the keys trusted then. A hook runs
 //! once, when it is created.
@@ -10,26 +10,25 @@ use std::{io, sync::Arc};
 use ployz_core::{
     ClientKey, ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant,
     DeviceCode, ManagementScope, Namespace, NewContainer, ResolvedServiceSpec, RunTarget, Sealing,
-    ServiceName, Start,
+    Start,
     authority::{
-        Approver, AuthorityRefusal, Budget, DeployApproval, DeployFacts, PayloadDigest, RuleId,
-        RuleProof, ServiceVersion, Signed, SigningPublicKey, TrustedKeys, VersionFacts,
-        deploy::{self, Creation, content_addressed},
+        Approver, AuthorityRefusal, Budget, RuleId, RuleProof, ServiceVersion, Signed,
+        SigningPublicKey, TrustedKeys, VerifiedBuild, VersionFacts, deploy::Creation,
         needs_signature, version,
     },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use super::{Caller, ConsumptionLog, Error, LocalMachine, RecordOwner, consumption::SpecSigner};
+use super::{Caller, ConsumptionLog, Error, LocalMachine, RecordOwner};
 use crate::docker::ContainerRuntime;
 
 /// Who admitted a Container, kept with it for as long as it exists.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "by", rename_all = "snake_case")]
 pub(crate) enum AdmittedBy {
-    /// The keys whose signature admitted it, never empty: the signers of its versions or
-    /// its deploy approval, or the Device whose own connection asked.
+    /// The keys whose signature admitted it, never empty: the signers of its versions, or
+    /// the Device whose own connection asked.
     Keys { keys: Vec<KeptKey> },
     /// An automatic deploy rule at one generation, signed by `signer`. It admits while
     /// that key is trusted and no newer generation of the rule has reached this Machine.
@@ -77,31 +76,6 @@ impl From<Approver> for KeptKey {
             Approver::Device(key) => Self::Device(key),
             Approver::Passkey(code) => Self::Passkey(code),
         }
-    }
-}
-
-impl From<KeptKey> for SpecSigner {
-    fn from(key: KeptKey) -> Self {
-        match key {
-            KeptKey::Device(key) => Self::Device(key),
-            KeptKey::Passkey(code) => Self::Passkey(code),
-        }
-    }
-}
-
-impl AdmittedBy {
-    /// What the record of specs admitted before says about one: Full access when a Full
-    /// caller admitted it, else the keys that signed it.
-    fn of_signers(signers: Vec<SpecSigner>) -> Option<Self> {
-        let mut keys = Vec::new();
-        for signer in signers {
-            match signer {
-                SpecSigner::FullAccess => return Some(Self::Local),
-                SpecSigner::Device(key) => keys.push(KeptKey::Device(key)),
-                SpecSigner::Passkey(code) => keys.push(KeptKey::Passkey(code)),
-            }
-        }
-        (!keys.is_empty()).then_some(Self::Keys { keys })
     }
 }
 
@@ -153,12 +127,6 @@ impl Standing {
     }
 }
 
-impl From<SpecSigner> for AdmittedBy {
-    fn from(signer: SpecSigner) -> Self {
-        Self::of_signers(vec![signer]).unwrap_or(Self::Local)
-    }
-}
-
 /// A spec this Machine admitted for a new Container, and who admitted it. A Container
 /// opens Sealed values, and runs an image this Machine did not pull itself with no login,
 /// only under a signature or Full access.
@@ -172,6 +140,8 @@ pub(crate) struct AdmittedSpec {
     spec: [u8; 32],
     by: AdmittedBy,
     standing: Option<Standing>,
+    /// What this Machine issued for a rule build it checked online to admit the spec.
+    verified: Option<VerifiedBuild>,
 }
 
 impl std::fmt::Debug for AdmittedSpec {
@@ -202,6 +172,7 @@ impl AdmittedSpec {
             spec: Self::hash(namespace, spec).map_err(Error::DeployRefused)?,
             by: AdmittedBy::Local,
             standing: None,
+            verified: None,
         })
     }
 
@@ -212,6 +183,10 @@ impl AdmittedSpec {
 
     pub(crate) fn by(&self) -> &AdmittedBy {
         &self.by
+    }
+
+    pub(crate) fn verified(&self) -> Option<VerifiedBuild> {
+        self.verified
     }
 
     /// Whether the admission still holds, checked again right before Docker creates the
@@ -251,6 +226,7 @@ impl AdmittedSpec {
                 AdmittedBy::Free
             },
             standing: None,
+            verified: None,
         }
     }
 }
@@ -258,13 +234,14 @@ impl AdmittedSpec {
 /// What a caller brought with a Container change.
 #[derive(Clone, Copy)]
 pub(crate) enum Presented<'a> {
-    /// A call at Full access: this Server's own socket, or a Device's own connection.
+    /// A call at Full access: this Server's own socket, or a Device's own connection,
+    /// with the versions it carries. A version that admits the spec records its signers,
+    /// so removing them stops a later start, as for an Operator's creation.
     FullAccess {
-        deploy: Option<&'a Signed<DeployApproval>>,
+        versions: &'a [Signed<ServiceVersion>],
     },
     /// An Operator's call, with the statements it carries.
     Operator {
-        deploy: Option<&'a Signed<DeployApproval>>,
         rule: Option<&'a RuleProof>,
         versions: &'a [Signed<ServiceVersion>],
     },
@@ -274,12 +251,9 @@ impl LocalMachine {
     /// Decide whether `want` may make its Container. `None` is the answer for a want that
     /// makes none. A hook that already exists is never started again for an Operator.
     ///
-    /// A spec this Machine admitted signed before, for the same Service, is admitted again
-    /// with nothing presented while a key that signed it is trusted.
-    ///
     /// # Errors
     /// Returns [`Error::DeployRefused`] or [`Error::RuleDeployRefused`] naming what the
-    /// creation lacks, [`Error::ApprovalRecord`] when the record cannot be read or
+    /// creation lacks, [`Error::ApprovalRecord`] when the rule record cannot be read or
     /// written, and [`Error::DockerUnavailable`] or [`Error::Docker`] when a Container to
     /// start cannot be read.
     pub(crate) async fn admit_spec(
@@ -308,74 +282,42 @@ impl LocalMachine {
             Error::DeployRefused(refusal)
         };
         let spec = AdmittedSpec::hash(&new.slot.namespace, &new.resolved_spec).map_err(refused)?;
-        let admitted = |by| {
+        let admitted = |by, verified| {
             Ok(Some(AdmittedSpec {
                 spec,
                 by,
                 standing: Some(self.standing()),
+                verified,
             }))
         };
-        // A spec holding a negative number has no digest: no key can sign it, and this
-        // Machine remembers nothing of it.
-        let digest = PayloadDigest::of(&new.resolved_spec.to_requested(), &new.slot.namespace).ok();
-        let (full_access, deploy, rule, versions) = match presented {
-            Presented::FullAccess { deploy } => (true, deploy, None, &[][..]),
-            Presented::Operator {
-                deploy,
-                rule,
-                versions,
-            } => (false, deploy, rule, versions),
+        let (rule, versions) = match presented {
+            Presented::FullAccess { versions } => (None, versions),
+            Presented::Operator { rule, versions } => (rule, versions),
         };
         // One budget for every signature this attempt opens, whichever proof carries it.
         let mut budget = Budget::default();
         let mut unapproved = None;
         if !versions.is_empty() {
             match self.approved_versions(new, versions, &mut budget) {
-                Ok(keys) => {
-                    for key in &keys {
-                        self.remember(new, digest, (*key).into())?;
-                    }
-                    return admitted(AdmittedBy::Keys { keys });
-                }
+                Ok(keys) => return admitted(AdmittedBy::Keys { keys }, None),
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
-        // A signature presented is checked and kept whatever else would admit the spec,
-        // so the spec stays admitted for as long as any key that signed it is trusted.
-        match deploy.map(|approval| self.approved_deploy(new, approval, &mut budget)) {
-            Some(Ok(key)) => {
-                self.remember(new, digest, key.into())?;
-                return admitted(AdmittedBy::Keys { keys: vec![key] });
-            }
-            // A proof left unopened says more than an earlier proof's refusal.
-            Some(Err(AuthorityRefusal::Overspent)) => {
-                unapproved = Some(AuthorityRefusal::Overspent);
-            }
-            Some(Err(refusal)) => unapproved = unapproved.or(Some(refusal)),
-            None => {}
+        if matches!(presented, Presented::FullAccess { .. }) {
+            return admitted(self.full_access()?, None);
         }
-        if full_access {
-            let signer = self.full_access_signer()?;
-            self.remember(new, digest, signer)?;
-            return admitted(signer.into());
-        }
-        if let Some(by) = self.admitted_before(new, digest)? {
-            return admitted(by);
-        }
-        if deploy.is_none()
-            && let Some(rule) = rule
-        {
-            let by = self
+        if let Some(rule) = rule {
+            let admitted_rule = self
                 .admit_rule_deploy_online(want, rule, &mut budget)
                 .await?;
-            return admitted(by);
+            return admitted(admitted_rule.by, admitted_rule.verified);
         }
         match needs_signature(creation(new), new.registry_auth.is_some()) {
             Some(reach) => Err(refused(
                 unapproved.unwrap_or(AuthorityRefusal::NeedsSignature { reach }),
             )),
             // A spec that reaches no data runs whatever came with it.
-            None => admitted(AdmittedBy::Free),
+            None => admitted(AdmittedBy::Free, None),
         }
     }
 
@@ -409,37 +351,6 @@ impl LocalMachine {
         Ok(keys)
     }
 
-    /// Who signed `approval` for `new`'s spec, when a key this Machine trusts did.
-    fn approved_deploy(
-        &self,
-        new: &NewContainer,
-        approval: &Signed<DeployApproval>,
-        budget: &mut Budget,
-    ) -> Result<KeptKey, AuthorityRefusal> {
-        let record = self.record();
-        let trusted = record.trusted_keys();
-        budget.reserve(approval, &trusted)?;
-        let approved = deploy::verify(
-            approval,
-            &DeployFacts {
-                cluster: self.cluster_key(record.phase()),
-                trusted: &trusted,
-                namespace: &new.slot.namespace,
-                creation: creation(new),
-            },
-        )?;
-        tracing::info!(
-            kind = %new.slot.kind,
-            proposal = ?approved.body.proposal,
-            "deploy {} approved by {} for {} digest={}",
-            approved.body.operation,
-            approved.by,
-            new.slot.service,
-            approved.digest.short(),
-        );
-        Ok(approved.by.into())
-    }
-
     /// What a kept admission is checked against when it is used.
     pub(super) fn standing(&self) -> Standing {
         Standing {
@@ -464,7 +375,7 @@ impl LocalMachine {
             let refusal = match containers.lifecycle().admitted_by(id).await? {
                 Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
                 None => Some(AuthorityRefusal::Mismatch {
-                    field: "an admission",
+                    field: "a kept admission",
                 }),
             };
             if let Some(refusal) = refusal {
@@ -477,19 +388,21 @@ impl LocalMachine {
     }
 
     /// Who a Full access creation is kept under: the Device whose own connection asked,
-    /// so removing that Device ends it, or Full access for this Server's own socket.
+    /// so removing that Device ends it, or this Server's own socket.
     ///
     /// # Errors
     /// Returns [`Error::NeedsFullScope`] when the connection's key is no longer a Device
     /// here: it was removed after the call arrived.
-    fn full_access_signer(&self) -> Result<SpecSigner, Error> {
+    fn full_access(&self) -> Result<AdmittedBy, Error> {
         let Caller::Management(remote) = self.caller else {
-            return Ok(SpecSigner::FullAccess);
+            return Ok(AdmittedBy::Local);
         };
         self.record()
             .devices()
             .find(|device| ClientKey::from(*device) == remote)
-            .map(|device| SpecSigner::Device(device.into()))
+            .map(|device| AdmittedBy::Keys {
+                keys: vec![KeptKey::Device(device.into())],
+            })
             .ok_or(Error::NeedsFullScope)
     }
 
@@ -529,18 +442,11 @@ impl LocalMachine {
             } => {
                 let spec =
                     AdmittedSpec::hash(namespace, resolved_spec).map_err(Error::DeployRefused)?;
-                let signer = self.full_access_signer()?;
-                self.remember_spec(
-                    namespace,
-                    &resolved_spec.name,
-                    resolved_spec,
-                    PayloadDigest::of(&resolved_spec.to_requested(), namespace).ok(),
-                    signer,
-                )?;
                 Ok(Some(AdmittedSpec {
                     spec,
-                    by: signer.into(),
+                    by: self.full_access()?,
                     standing: Some(self.standing()),
+                    verified: None,
                 }))
             }
         }
@@ -556,66 +462,6 @@ impl LocalMachine {
             }
             ContainerNow::Present(_) | ContainerNow::Absent { .. } => Ok(()),
         }
-    }
-
-    /// Who admitted `new`'s spec signed here before, for the Service its slot names,
-    /// among the keys this Machine still trusts.
-    fn admitted_before(
-        &self,
-        new: &NewContainer,
-        digest: Option<PayloadDigest>,
-    ) -> Result<Option<AdmittedBy>, Error> {
-        let Some(digest) = digest else {
-            return Ok(None);
-        };
-        if new.resolved_spec.name != new.slot.service {
-            return Ok(None);
-        }
-        let signers = self.approvals.spec_admitted(
-            &new.slot.namespace,
-            &new.slot.service,
-            digest,
-            &self.record().trusted_keys(),
-        )?;
-        Ok(AdmittedBy::of_signers(signers))
-    }
-
-    fn remember(
-        &self,
-        new: &NewContainer,
-        digest: Option<PayloadDigest>,
-        by: SpecSigner,
-    ) -> Result<(), Error> {
-        self.remember_spec(
-            &new.slot.namespace,
-            &new.slot.service,
-            &new.resolved_spec,
-            digest,
-            by,
-        )
-    }
-
-    /// Keep `spec` as one this Machine admitted signed for `service`, so a later creation
-    /// of it needs nothing presented. A spec whose image is a tag is not kept: whoever
-    /// writes the image store chooses what a tag runs.
-    fn remember_spec(
-        &self,
-        namespace: &Namespace,
-        service: &ServiceName,
-        spec: &ResolvedServiceSpec,
-        digest: Option<PayloadDigest>,
-        by: SpecSigner,
-    ) -> Result<(), Error> {
-        let Some(digest) = digest else {
-            return Ok(());
-        };
-        if spec.name != *service || !content_addressed(&spec.container.image) {
-            return Ok(());
-        }
-        self.approvals
-            .admit_spec(namespace, service, digest, by, || {
-                self.record().trusted_keys()
-            })
     }
 
     pub(super) fn cluster_key(
@@ -634,7 +480,7 @@ impl LocalMachine {
         want: ContainerWant,
     ) -> Result<ployz_core::EnsuredContainer, Error> {
         let admitted = self
-            .admit_spec(&want, Presented::FullAccess { deploy: None })
+            .admit_spec(&want, Presented::FullAccess { versions: &[] })
             .await?;
         self.ensure_container(want, admitted).await
     }
@@ -685,6 +531,11 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::Mismatch {
             field: "an admission",
         } => "This server kept no record of who approved this container. Deploy it again.",
+        AuthorityRefusal::Mismatch {
+            field: "a kept admission",
+        } => {
+            "This container was made before this server's upgrade, so the server starts it only from a deploy an approved device signed. Deploy the service again with a current CLI."
+        }
         AuthorityRefusal::Mismatch {
             field: "a generation",
         } => {

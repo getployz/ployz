@@ -270,6 +270,10 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         mark: Option<RootMark>,
+        /// The born origin the root carries. Absent for Legacy data and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        origin: Option<crate::VolumeOrigin>,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -296,6 +300,11 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         pull_state: Option<PullState>,
+        /// The born origin of the copy: the pull's record until it is stamped on `fs`, then
+        /// `fs`'s own. Absent for Legacy data and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        origin: Option<crate::VolumeOrigin>,
     },
 }
 
@@ -513,6 +522,15 @@ pub enum SwitchError {
     /// The restore point a seed asked for is no longer on the writer.
     RestorePointGone,
     NoCapacity,
+    /// A Container that mounts the new Volume expects data of another origin than the
+    /// seed carries.
+    Foreign,
+    /// Docker could not say which Containers mount the new Volume, so the seed stayed in
+    /// its slot.
+    DockerUnavailable,
+    /// A reason introduced after this build. This daemon never sends it.
+    #[serde(other)]
+    Unrecognized,
 }
 
 impl SwitchError {
@@ -534,8 +552,10 @@ impl CodedRefusal for SwitchError {
             | Self::Busy
             | Self::VolumeSwitching
             | Self::NoWriter
-            | Self::RestorePointGone => RpcErrorCode::Conflict,
-            Self::NoCapacity => RpcErrorCode::Unavailable,
+            | Self::RestorePointGone
+            | Self::Foreign => RpcErrorCode::Conflict,
+            Self::NoCapacity | Self::DockerUnavailable => RpcErrorCode::Unavailable,
+            Self::Unrecognized => RpcErrorCode::Internal,
         }
     }
 }
@@ -733,6 +753,7 @@ mod tests {
             epoch: WriterEpoch::default(),
             seed: false,
             mark: None,
+            origin: None,
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),
@@ -742,6 +763,7 @@ mod tests {
             pull: None,
             role: Some(SlotRole::Mirror),
             pull_state: None,
+            origin: None,
         };
         let known = |role| {
             vec![KnownCopy {
@@ -886,9 +908,9 @@ mod tests {
         );
         assert_eq!(
             RpcError::conflict("m")
-                .with_details(serde_json::json!({ "reason": "unknown" }))
+                .with_details(serde_json::json!({ "reason": "from_a_later_release" }))
                 .evidence::<SwitchError>(),
-            None
+            Some(SwitchError::Unrecognized)
         );
     }
 }

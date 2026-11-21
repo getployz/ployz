@@ -452,7 +452,7 @@ pub(crate) fn freeze(
     let lowered = lower(
         environment,
         saved,
-        &BTreeSet::new(),
+        (&BTreeSet::new(), &BTreeMap::new()),
         &ships,
         (namespace.clone(), cluster_domain),
         &crate::branch::Lowering::default(),
@@ -656,7 +656,10 @@ fn resolve(
 pub(super) fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
-    deployed: &BTreeSet<String>,
+    (deployed, born): (
+        &BTreeSet<String>,
+        &BTreeMap<String, ployz_core::VolumeBirth>,
+    ),
     ships: &Ships,
     (namespace, cluster_domain): (Namespace, Option<&Hostname>),
     branch: &crate::branch::Lowering,
@@ -911,6 +914,7 @@ pub(super) fn lower(
                 volume_resource_id: volume.resource_id.clone(),
                 storage: volume.storage,
                 deployed: deployed.contains(&volume.resource_id),
+                birth: born.get(&volume.resource_id).cloned(),
             })
             .collect(),
         lineages: lineages.clone(),

@@ -59,6 +59,7 @@ mod session;
 pub(crate) use call::setup_outcome;
 pub use call::{Budgeted, Call, Deadline, Once, Pacing, Repeat, Replay, Wait, Waiting};
 pub(crate) use container_health::HealthWaitError;
+pub(crate) use deploy_context::KeptVersions;
 pub use deploy_context::RuleProofs;
 use deploy_context::{Carried, DeployContext};
 pub(crate) use fan_out::{fan_out, fan_out_entry_last};
@@ -149,6 +150,30 @@ impl Client {
             )
     }
 
+    /// How a copied image may be named on `dest`. Only a person's own Full access names
+    /// user tags: over SSH or the local socket, on a route Cloud didn't hand over, and only
+    /// on the entry itself. A call forwarded to any other Machine arrives there as Operator,
+    /// and a Management connection may be an Operator slot, so both get retention names only.
+    pub(crate) fn image_naming(&self, dest: &MachineId) -> crate::image::Naming {
+        let full = self.session.entry == Some(*dest)
+            && !matches!(self.connection_source(), ConnectionSource::Cloud)
+            && matches!(
+                self.session.connection().transport(),
+                crate::context::Transport::Ssh { .. } | crate::context::Transport::Unix(_)
+            );
+        if full {
+            crate::image::Naming::UserTags
+        } else {
+            crate::image::Naming::Retention
+        }
+    }
+
+    /// This client as one whose entry is `entry`, as a connection confirms it.
+    #[cfg(test)]
+    pub(crate) fn enter_at(&mut self, entry: MachineId) {
+        self.session.entry = Some(entry);
+    }
+
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
         self.session.ended()?;
         if self.routes.is_empty()
@@ -175,13 +200,11 @@ impl Client {
         Ok(Some(client))
     }
 
-    /// Hand every Server the approval of the Deploy this client runs.
+    /// Hand every Server, with each new copy, the signed versions `kept` holds for that
+    /// copy's own spec.
     #[must_use]
-    pub(crate) fn with_deploy_approval(
-        mut self,
-        approval: Option<ployz_core::authority::Signed<ployz_core::authority::DeployApproval>>,
-    ) -> Self {
-        self.deploy.set_deploy(approval);
+    pub(crate) fn with_kept_versions(mut self, kept: KeptVersions) -> Self {
+        self.deploy.set_kept(kept);
         self
     }
 
@@ -196,7 +219,7 @@ impl Client {
     }
 
     /// Hand every Server the rule's proof for the Service each change belongs to, in
-    /// place of a person's deploy approval.
+    /// place of a person's signed version.
     #[must_use]
     pub(crate) fn with_rule_proofs(mut self, proofs: RuleProofs) -> Self {
         self.deploy.set_proofs(proofs);
@@ -1109,17 +1132,65 @@ impl Client {
         want: ContainerWant,
         timeout: Option<Duration>,
     ) -> Result<ployz_core::EnsuredContainer, RpcError> {
-        let target = MachineTarget::from(machine_id);
-        let request = self.ensure_request(&target, want, Carry::Approvals).await?;
-        let payload = op::EnsureContainer::into_request(request)
+        let request = self.ensure_request_to(machine_id, want).await?;
+        self.send_ensure::<op::EnsureContainer>(machine_id, request, timeout)
+            .await
+    }
+
+    /// The request a Deploy sends to create or settle `want` on `machine_id`, with the
+    /// Deploy's approvals. Failing here, nothing was sent.
+    pub(crate) async fn ensure_request_to(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+    ) -> Result<EnsureContainerRequest, RpcError> {
+        self.ensure_request(&MachineTarget::from(machine_id), want, Carry::Approvals)
+            .await
+    }
+
+    /// Send `request` on route `R`: ensure.v1, or the pinned route, which runs exactly the
+    /// image ID its Container names and which a daemon from before it refuses by name.
+    pub(crate) async fn send_ensure<R>(
+        &self,
+        machine_id: &MachineId,
+        request: EnsureContainerRequest,
+        timeout: Option<Duration>,
+    ) -> Result<ployz_core::EnsuredContainer, RpcError>
+    where
+        R: ployz_core::Rpc<
+                Request = EnsureContainerRequest,
+                Response = ployz_core::EnsuredContainer,
+            >,
+    {
+        let service = if let ContainerWant::Running {
+            container: ployz_core::RunTarget::New(new),
+            ..
+        } = &request.want
+        {
+            Some(new.slot.service.clone())
+        } else {
+            None
+        };
+        let payload = R::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(
+        let ensured = apply_timeout(
             timeout,
-            self.send::<op::EnsureContainer>(payload, Some(&target)),
+            self.send::<R>(payload, Some(&MachineTarget::from(machine_id))),
         )
         .await
-        .map_err(|error| answered_by(machine_id, error))
+        .map_err(|error| answered_by(machine_id, error))?;
+        if let (
+            Some(service),
+            ployz_core::EnsuredContainer::Ensured {
+                verified: Some(verified),
+                ..
+            },
+        ) = (&service, &ensured)
+        {
+            self.deploy.note_issued(service, *verified);
+        }
+        Ok(ensured)
     }
 
     /// Converge one Container as a joiner's catch-up does, which carries no Deploy's
@@ -1145,12 +1216,11 @@ impl Client {
     ) -> Result<EnsureContainerRequest, RpcError> {
         crate::sealed_compat::admit(self, target, &want).await?;
         let carried = match carry {
-            Carry::Approvals => self.deploy.carried(&want),
+            Carry::Approvals => self.deploy.carried(&want).await,
             Carry::Nothing => Carried::none(),
         };
         Ok(EnsureContainerRequest {
             want,
-            deploy: carried.deploy,
             rule: carried.rule,
             versions: carried.versions,
         })

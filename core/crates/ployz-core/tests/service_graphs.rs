@@ -299,6 +299,7 @@ fn named_volume(volume: &str, name: &str) -> ServiceVolume {
             name: DockerVolumeName::parse(name).unwrap(),
             driver: VolumeDriver::parse("local", BTreeMap::new()).unwrap(),
             labels: BTreeMap::new(),
+            birth: None,
         }
         .admit()
         .expect("valid volume declaration"),
