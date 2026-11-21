@@ -55,7 +55,7 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await waitFor(() => expect(stream.collection.size).toBe(3));
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
-    // A short tail reads the Log Store's newest page at once, then on past the tail that page sat inside.
+    // A short tail reads Cloud's newest page of history at once, then on past the tail that page sat inside.
     await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(2));
     expect(cursorOf(fetchHistory.mock.calls[0]?.[1])).toBeUndefined();
     expect(cursorOf(fetchHistory.mock.calls[1]?.[1])).toBe("second");
@@ -284,7 +284,7 @@ it("tags a line with its container only when a service has more than one, as a D
   expect([old, worker].map(sourceTag([old, worker], {}))).toEqual(["api", "worker"]);
 });
 
-it("shows an old Deployment's stored lines with their gaps and missing servers, pages on scroll up, and filters by level", async () => {
+it("shows an old Deployment's stored lines with their hidden stretches and missing servers, pages on scroll up, and filters by level", async () => {
   // jsdom lays nothing out; give the log a height so its virtual rows render.
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 2_000, width: 800, height: 2_000, toJSON: () => ({}) });
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(2_000);
@@ -299,7 +299,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     kind: "line", id: `store/hel-1/c/${timestamp}/0`, timestamp, machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", channel: "stderr", level, message,
   });
   const fetchHistory = vi.fn(async (_url: string, init: RequestInit) => Response.json(cursorOf(init) !== undefined ? { rows: [line("10", "error", "boom")], failures: [], cursor: null } : {
-    rows: [line("50", "info", "listening"), line("60", "warn", "slow query"), { kind: "gap", id: "hel-1/c/gap/40", timestamp: "40", until: "45", machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", reason: "not_captured" }],
+    rows: [line("50", "info", "listening"), line("60", "warn", "slow query"), { kind: "gap", id: "hel-1/c/gap/40", timestamp: "40", until: "45", machineId: "hel-1", machineName: "hel-1", containerId: "c", serviceName: "api", reason: "hidden" }],
     failures: [{ machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." }],
     cursor: "page-2",
   }));
@@ -318,10 +318,10 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     </RouterContextProvider></DbProvider></QueryClientProvider>);
     const source = sources.at(-1);
     if (!source) throw new Error("Viewer did not open its log stream");
-    // Its containers are gone, so the live tail is empty and the Log Store answers.
+    // Its containers are gone, so the live tail is empty and Cloud's history answers.
     await act(async () => source.dispatchEvent(new Event("live")));
     await waitFor(() => expect(screen.getByText("slow query")).toBeTruthy());
-    expect(screen.getByText("Logs from this stretch weren’t captured.")).toBeTruthy();
+    expect(screen.getByText("Hidden: couldn’t check these lines for Sealed values.")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toContain("fsn-1: Its log service isn’t running.");
     expect(screen.queryByText("boom")).toBeNull();
     fireEvent.wheel(screen.getByLabelText("Container logs"), { deltaY: -100 });
@@ -333,7 +333,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
     expect(screen.getByText("boom")).toBeTruthy();
     expect(screen.queryByText("listening")).toBeNull();
     expect(screen.queryByText("slow query")).toBeNull();
-    expect(screen.queryByText("Logs from this stretch weren’t captured.")).toBeNull();
+    expect(screen.queryByText("Hidden: couldn’t check these lines for Sealed values.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "warn" }));
     expect(screen.getByText("slow query")).toBeTruthy();
   } finally {
@@ -346,7 +346,7 @@ it("shows an old Deployment's stored lines with their gaps and missing servers, 
 const lackNotice = () => screen.queryByText(/ to see (its|their) logs$| to show (its|their) logs\.$/)?.textContent ?? null;
 const lineFrom = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "record", record: { ...line, machineId, machineName: machineId } }) });
 const transportError = (machineId: string) => new MessageEvent("log", { data: JSON.stringify({ type: "source_error", machineId, containerId: "c", message: "transport error" }) });
-const historyRefusal = { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" };
+const historyRefusal = { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" };
 
 const runtimeMachine = (id: string, daemonVersion: string): RuntimeMachineRecord => ({
   id, name: id, subnet: null, joinedAt: null, publicIp: null, acceptsIngress: true, endpoints: [], acceptsBuilds: true, acceptsServices: true, storage: "pool",
@@ -394,7 +394,7 @@ it("says to upgrade a Server that lacks the logs capability inside the viewer, l
   const harness = await lackHarness("mixed", [
     { machineId: "fsn-1", machineName: "fsn-1", message: "Its log service isn’t running." },
     { machineId: "old", machineName: "old", message: "Its stored logs are unreadable." },
-    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" },
   ]);
   try {
     const opened = harness.sources.at(-1);
@@ -415,8 +415,8 @@ it("says to upgrade a Server that lacks the logs capability inside the viewer, l
 
 it("says to upgrade two lacking Servers inside the viewer with a link to Servers, and no missing-logs alert", async () => {
   const harness = await lackHarness("both-old", [
-    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
-    { machineId: "older", machineName: "older", message: "unsupported", code: "unsupported", capability: "ployz.logs.history.v2" },
+    { machineId: "old", machineName: "old", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" },
+    { machineId: "older", machineName: "older", message: "unsupported", code: "unsupported", capability: "ployz.logs.tail.v1" },
   ]);
   try {
     const opened = harness.sources.at(-1);

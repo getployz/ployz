@@ -10,15 +10,14 @@ use ployz_core::{
     ImagesRemoved, IngressDoors, IngressDoorsSet, IngressStage, InspectContainerRequest,
     InspectStorageRequest, JoinApproved, LeaveRequest, Left, LimitsRefusal, ListContainersRequest,
     ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveLogTarget, LocalMachineRemoved,
-    LogDirection, LogHistoryRequest, LogsOptions, MachineImages, MachineList, PeerImagePull,
-    PendingJoins, PendingJoinsRequest, PlacementRefusal, PrepareVolumesRequest, PreparedVolumes,
-    PrivateAccessProblem, PrivateAccessSet, PruneImagesRequest, PublishCertificateMaterialRequest,
-    PullImageRequest, PushTargetSet, ReadClusterNameRequest, ReadRoutedAddressesRequest,
-    RemoveTrustedKeyRequest, RemoveVolumeRequest, RetainedEnvReply, RetainedEnvRequest,
-    RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, RuntimeWatchRequest, SetDeviceRequest,
-    SetManagementClientRequest, SetManagementClientResponse, SetPrivateAccessRequest,
-    SetPushTargetRequest, TailLogsRequest, TrustedKeyRemoved, VolumeInventory,
-    VolumeObservationFailure, VolumeRemoved,
+    LogsOptions, MachineImages, MachineList, PeerImagePull, PendingJoins, PendingJoinsRequest,
+    PlacementRefusal, PrepareVolumesRequest, PreparedVolumes, PrivateAccessProblem,
+    PrivateAccessSet, PruneImagesRequest, PublishCertificateMaterialRequest, PullImageRequest,
+    PushTargetSet, ReadClusterNameRequest, ReadRoutedAddressesRequest, RemoveTrustedKeyRequest,
+    RemoveVolumeRequest, RoutedAddresses, RoutesRead, RpcError, RpcErrorCode, RuntimeWatchRequest,
+    SetDeviceRequest, SetManagementClientRequest, SetManagementClientResponse,
+    SetPrivateAccessRequest, SetPushTargetRequest, TailLogsRequest, TrustedKeyRemoved,
+    VolumeInventory, VolumeObservationFailure, VolumeRemoved,
 };
 use serde_json::{Value, json};
 
@@ -87,8 +86,6 @@ fn container_and_log_dtos_keep_their_wire_text() {
         EnvironmentValues => json!("included");
         ListContainersRequest => json!({ "environment": "redacted" });
         InspectContainerRequest => json!({ "container_id": CONTAINER_ID });
-        RetainedEnvRequest => json!({ "container_id": CONTAINER_ID });
-        RetainedEnvReply => json!({ "environment": { "A": "1" } });
         ContainerWant => json!({
             "state": "out",
             "container": { "id": CONTAINER_ID },
@@ -125,18 +122,6 @@ fn container_and_log_dtos_keep_their_wire_text() {
                 "until_unix_seconds": null,
             },
         });
-        LogHistoryRequest => json!({
-            "namespace": "prod",
-            "service": null,
-            "deployment": null,
-            "container_id": null,
-            "since_nanos": null,
-            "until_nanos": null,
-            "direction": "backward",
-            "limit": 10,
-            "cursor": null,
-        });
-        LogDirection => json!("forward");
     }
 }
 

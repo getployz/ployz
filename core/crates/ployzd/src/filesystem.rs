@@ -1,7 +1,7 @@
 use std::{
     fs, io,
     os::unix::fs::{MetadataExt, chown},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use ployz_core::private_fs::{Durability, Replace, TempName, replace_file};
@@ -12,7 +12,8 @@ pub(crate) const MACHINE_API_SOCKET_MODE: u32 = 0o660;
 pub(crate) const PLOYZ_DIR_MODE: u32 = 0o750;
 
 /// The file [`atomic_write`] writes before it renames it over `path`.
-pub(crate) fn temporary_path(path: &Path) -> PathBuf {
+#[cfg(test)]
+pub(crate) fn temporary_path(path: &Path) -> std::path::PathBuf {
     TempName::Sibling.path(path)
 }
 

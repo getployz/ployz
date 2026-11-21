@@ -1,10 +1,7 @@
 // @vitest-environment jsdom
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
 import { QueryClient } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
-import type { LogHistoryOptions, LogHistoryPage } from "@ployz/sdk";
-import { LIVE_LOG_LIMIT, projectContainerLog } from "./container-log.collection";
+import { LIVE_LOG_LIMIT } from "./container-log.collection";
 import { getContainerLogStream } from "./container-log.stream";
 
 it("delivers a log burst together without losing or duplicating replayed records", async () => {
@@ -171,7 +168,7 @@ it("keeps the newest waiting lines by time when a slower Server's older lines ar
   }
 });
 
-it("reads the newest page first for the exits the live tail lacks, then follows its cursor past the tail", async () => {
+it("reads the newest page first for the lines the live tail lacks, then follows its cursor past the tail", async () => {
   vi.useFakeTimers();
   const sources: EventTarget[] = [];
   class FakeEventSource extends EventTarget {
@@ -179,14 +176,14 @@ it("reads the newest page first for the exits the live tail lacks, then follows 
     close() {}
   }
   vi.stubGlobal("EventSource", FakeEventSource);
-  const line = (at: number, channel: "stdout" | "lifecycle" = "stdout") => ({
+  const line = (at: number, channel: "stdout" | "stderr" = "stdout") => ({
     kind: "line", id: `${channel}/${at}`, timestamp: String(at), machineId: "m", machineName: "Server", containerId: "c", serviceName: "api", channel, level: "info", message: `line ${at}`,
   });
   const reads: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
     const { cursor } = JSON.parse(String(init.body)) as { cursor?: string };
     reads.push(cursor ? `cursor=${cursor}` : "newest");
-    const page = cursor ? { rows: [line(5)], cursor: null } : { rows: [line(20), line(30, "lifecycle")], cursor: "inside-tail" };
+    const page = cursor ? { rows: [line(5)], cursor: null } : { rows: [line(20), line(30, "stderr")], cursor: "inside-tail" };
     return new Response(JSON.stringify({ ...page, failures: [] }));
   }));
   const queryClient = new QueryClient();
@@ -199,7 +196,7 @@ it("reads the newest page first for the exits the live tail lacks, then follows 
     sources.at(-1)?.dispatchEvent(new MessageEvent("live"));
     await vi.waitFor(() => expect(stream.hasOlder).toBe(false));
     expect(reads).toEqual(["newest", "cursor=inside-tail"]);
-    expect(stream.collection.has("lifecycle/30")).toBe(true);
+    expect(stream.collection.has("stderr/30")).toBe(true);
     expect(stream.collection.has("stdout/5")).toBe(true);
   } finally {
     subscription.unsubscribe();
@@ -286,36 +283,30 @@ it("reads a Service's history though other Services' loaded lines fill the scrol
 });
 
 type Stored = { container: string; at: number };
-type HistoryRead = { cursor: string | null; until_nanos: string | null; limit: number };
-type StoreTransport = { watch(): AsyncGenerator<object>; history(input: HistoryRead): Promise<{ next(): Promise<object | null>; cancel(): void }> };
-const sdkHistory = createRequire(import.meta.url)(join(dirname(createRequire(import.meta.url).resolve("@ployz/sdk")), "runtime-logs.js")).history as (transport: StoreTransport, options: Omit<LogHistoryOptions, "sealed"> & { sealed: object }) => Promise<LogHistoryPage>;
+const PAGE = 500;
 
 /**
- * One Server's Log Store holding `stored`, read through the SDK's history and the route's projection. `stored` may
- * grow between reads; a cursor counts the rows older than its page's end, so newer lines don't shift it.
+ * Cloud's history holding `stored`, answered as the route does: newest first, a page at a time, and a cursor of the
+ * oldest line's timestamp and hash. A hash tells identical lines apart.
  */
 function storeFetch(stored: readonly Stored[], reads: string[]) {
-  const transport: StoreTransport = {
-    async *watch() { yield { machines: [{ machine: { id: "m", name: "Server" } }], containers: [] }; },
-    async history(input) {
-      const rows = stored.map(({ container, at }) => ({ row: "line", container_id: container, timestamp_nanos: String(at), stream: "stdout", level: "info", message: `${container} ${at}` }))
-        .sort((a, b) => Number(b.timestamp_nanos) - Number(a.timestamp_nanos));
-      const containers = [...new Set(stored.map(row => row.container))];
-      const from = input.cursor === null ? 0 : rows.length - Number(input.cursor);
-      const selected = rows.slice(from).filter(row => input.until_nanos === null || BigInt(row.timestamp_nanos) < BigInt(input.until_nanos));
-      const page = selected.slice(0, input.limit);
-      const output: object[] = [
-        ...containers.map(container_id => ({ row: "container", container_id, namespace: "env", service: container_id, replica: container_id, kind: "service" })),
-        ...page, { row: "end", next: page.length < selected.length ? String(selected.length - page.length) : null },
-      ];
-      return { async next() { return output.shift() ?? null; }, cancel() {} };
-    },
-  };
   return async (_url: string, init: RequestInit) => {
-    const { cursor, before } = JSON.parse(String(init.body)) as { cursor?: string; before?: string };
-    reads.push(cursor ? "cursor" : before === undefined ? "newest" : `before=${before}`);
-    const page = await sdkHistory(transport, { sealed: {}, filter: { namespace: "env" }, limit: 500, cursor, before });
-    return Response.json({ rows: page.records.map(projectContainerLog), failures: page.failures, cursor: page.cursor });
+    const rows = stored.map(({ container, at }, hash) => ({ container, at, hash }))
+      .sort((a, b) => b.at - a.at || b.hash - a.hash);
+    const { cursor } = JSON.parse(String(init.body)) as { cursor?: string };
+    reads.push(cursor ? "cursor" : "newest");
+    const [at, hash] = cursor?.split(".").map(Number) ?? [];
+    const older = at === undefined || hash === undefined ? rows : rows.filter(row => row.at < at || (row.at === at && row.hash < hash));
+    const page = older.slice(0, PAGE);
+    const oldest = page.at(-1);
+    return Response.json({
+      rows: page.map(row => ({
+        kind: "line", id: `m/${row.container}/${row.at}/h${row.hash}`, timestamp: String(row.at), machineId: "m", machineName: "Server",
+        containerId: row.container, serviceName: row.container, channel: "stdout", level: "info", message: `${row.container} ${row.at}`,
+      })),
+      failures: [],
+      cursor: oldest === undefined || page.length < PAGE ? null : `${oldest.at}.${oldest.hash}`,
+    });
   };
 }
 
@@ -343,7 +334,7 @@ it.each([
     stored: [...["r1", "r2", "r3"].flatMap(name => span(name, 1, 1_500)), ...span("x", 1_010, 1_020)],
     live: [...["r1", "r2", "r3"].flatMap(name => span(name, 1_000, 1_500))],
   },
-])("pages back through the Log Store holding each line once: $name", async ({ stored, live }) => {
+])("pages back through Cloud's history holding each line once: $name", async ({ stored, live }) => {
   vi.useFakeTimers();
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {
@@ -376,7 +367,7 @@ it.each([
   }
 });
 
-it("holds each line once when lines waiting past the limit land after a read of the Log Store", async () => {
+it("holds each line once when lines waiting past the limit land after a read of Cloud's history", async () => {
   vi.useFakeTimers();
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {
@@ -419,7 +410,7 @@ it("holds each line once when lines waiting past the limit land after a read of 
   }
 });
 
-it("keeps every waiting line of a timestamp group the Log Store had only part of when they overflow", async () => {
+it("keeps every waiting line of a timestamp group Cloud's history had only part of when they overflow", async () => {
   vi.useFakeTimers();
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {
@@ -463,7 +454,7 @@ it("keeps every waiting line of a timestamp group the Log Store had only part of
   }
 });
 
-it("drops a read of the Log Store still in flight when the viewer returns to the newest lines past the limit", async () => {
+it("drops a read of Cloud's history still in flight when the viewer returns to the newest lines past the limit", async () => {
   vi.useFakeTimers();
   let source: EventTarget | undefined;
   class FakeEventSource extends EventTarget {

@@ -851,12 +851,7 @@ async fn mock_machine() -> (
     use crate::sdk::test_support as support;
     let one = support::machine('a', "one");
     let mut service = support::DeployService::new(one.clone());
-    service.uninspectable.insert(container_id('d'));
     service.uninspectable.insert(container_id('e'));
-    service.retained_envs.as_mut().unwrap().insert(
-        container_id('e'),
-        BTreeMap::from([("PLAIN".to_owned(), "from-docker".to_owned())]),
-    );
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
         vec![Connection::tcp(address)],
@@ -1034,14 +1029,10 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
     };
 
     let older = run
-        .failed_log(&client, &scrub, machine, container_id('c'))
-        .await
-        .0;
-    let unreadable = run
         .failed_log(&client, &scrub, machine, container_id('d'))
         .await
         .0;
-    let removed = run
+    let unreadable = run
         .failed_log(&client, &scrub, machine, container_id('e'))
         .await
         .0;
@@ -1051,10 +1042,6 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
     assert!(
         lines(&older).contains(&"plain [secret PLAIN]".to_owned()),
         "{older:?}"
-    );
-    assert!(
-        lines(&removed).contains(&"plain [secret PLAIN]".to_owned()),
-        "{removed:?}"
     );
     assert!(
         matches!(
@@ -1083,7 +1070,7 @@ async fn a_name_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
     seal(&run, &actor, "PLAIN");
 
     let log = run
-        .failed_log(&client, &scrub, machine, container_id('c'))
+        .failed_log(&client, &scrub, machine, container_id('d'))
         .await
         .0;
     session.close().await;
@@ -1117,11 +1104,11 @@ async fn an_image_supplied_value_sealed_after_the_claim_is_scrubbed_from_a_faile
     seal(&run, &actor, "PLAIN");
 
     let log = run
-        .failed_log(&client, &scrub, machine, container_id('c'))
+        .failed_log(&client, &scrub, machine, container_id('d'))
         .await
         .0;
     let unreadable = run
-        .failed_log(&client, &scrub, machine, container_id('d'))
+        .failed_log(&client, &scrub, machine, container_id('e'))
         .await
         .0;
     session.close().await;

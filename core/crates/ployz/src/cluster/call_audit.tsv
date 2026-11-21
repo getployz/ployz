@@ -138,8 +138,7 @@ src/sdk.rs::set_push_target	op::SetPushTarget	unary	unary	-	redial	keyed
 src/sdk.rs::update_machine	op::UpdateMachine	invoke	single	target(crate::connect::TARGET_RPC_TIMEOUT)	-	once
 src/sdk.rs::volume_switch	-	invoke_raw	single	target(crate::connect::TARGET_RPC_TIMEOUT)	-	once
 src/sdk/direct_apply_tests.rs::set_web_traffic_on	ployz_core::op::Inspect	invoke_answered	single	-	-	once
-src/sdk/logs/stream.rs::container_env	op::InspectContainer	invoke	single	target(TAIL_READ)	-	once
-src/sdk/logs/stream.rs::container_env	op::RetainedEnv	invoke	single	target(TAIL_READ)	-	once
+src/sdk/logs/stream.rs::inspect_container	op::InspectContainer	invoke	single	target(TAIL_READ)	-	once
 src/sdk/metrics.rs::metric_history_among	op::MetricHistory	read	unary	budget(target_read_timeout)	redial	read
 src/sdk/prepare.rs::select_build_machine	op::DescribeContract	invoke	single	target(Duration::from_secs(5))	-	once
 src/sealing_backfill.rs::generate	op::GenerateSealingKey	read	unary	budget(target_read_timeout)	redial	keyed

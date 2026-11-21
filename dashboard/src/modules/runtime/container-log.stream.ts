@@ -22,7 +22,7 @@ type LogStreamState = {
 };
 
 const INITIAL: LogStreamState = { opened: false, offline: false, refused: false, hidden: false, missing: { live: {}, history: [] }, historyPending: false, historyError: false, searching: "" };
-/** Fewer lines than this from the live tail, as an old Deployment's stopped containers give, reads the Log Store at once. */
+/** Fewer lines than this from the live tail, as an old Deployment's stopped containers give, reads Cloud's history at once. */
 const SHORT_TAIL = 200;
 /** Pages whose lines the live tail already had, read before giving the viewer older ones. */
 const OVERLAP_PAGES = 4;
@@ -33,7 +33,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
   let snapshot = INITIAL;
   const listeners = new Set<() => void>();
   const publish = (next: typeof snapshot) => { snapshot = next; listeners.forEach(listener => listener()); };
-  // The Log Store's position: not read yet, a cursor, or null once it has nothing older.
+  // Cloud's history position: not read yet, a cursor, or null once it has nothing older.
   let cursor: string | null | undefined;
   const stored = new Set<string>();
   // Bumped by each reset, so a read begun before it lands nothing.
@@ -84,7 +84,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
             replace = false;
           } else appendContainerLogs(collection, pending, stored);
           pending = [];
-          // The oldest lines go first, so a trim takes the scrollback and the Log Store reads again from the new oldest.
+          // The oldest lines go first, so a trim takes the scrollback and history reads again from the new oldest.
           if (trimContainerLogs(collection) && cursor !== undefined) resetHistory();
         };
         // A replayed tail after a reconnect is dropped by the rows' ids. A refused stream ends its history reads.

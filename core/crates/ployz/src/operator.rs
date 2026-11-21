@@ -22,7 +22,6 @@ use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 
 use crate::connect::{Client, ConnectError, TransportError};
-use history::HistorySelector;
 use input::{ExecMode, InputError, ServiceArg};
 use ployz_core::EnvironmentValues;
 
@@ -167,8 +166,7 @@ fn unanswered_names(gaps: &PartialResult<(), RpcError>, names: &MachineNames) ->
 }
 
 /// Every Server's name by id, for the sentences that name a Server the way its
-/// person does. It keeps the Server listing's order: `LogScope::answered` and the
-/// history tie-break read it.
+/// person does. It keeps the Server listing's order.
 #[derive(Clone, Debug, Default)]
 pub struct MachineNames(Vec<(MachineId, MachineName)>);
 
@@ -518,76 +516,8 @@ pub async fn observe_service_logs(
         asked,
         live,
         unanswered,
+        resume: HashMap::new(),
     })
-}
-
-/// Exact Service history targets and membership omissions, before any history RPC.
-pub(crate) struct PreparedHistory {
-    pub(crate) targets: Vec<(MachineId, MachineName)>,
-    pub(crate) omissions: Vec<(MachineId, MachineName)>,
-    pub(crate) selectors: Vec<HistorySelector>,
-}
-
-/// Prepare qualified Service history without observing live Containers.
-/// Returns `None` when selector resolution or follow needs a live observation.
-///
-/// # Errors
-/// Returns Machine-list and Machine-selector errors.
-pub(crate) async fn prepare_service_history(
-    client: &mut Client,
-    machine_selectors: &[FanoutSelector],
-    args: &[ServiceArg],
-    options: &LogsOptions,
-    deployment: Option<&str>,
-) -> Result<Option<PreparedHistory>, OperatorError> {
-    if options.follow {
-        return Ok(None);
-    }
-    let Some(selectors) = qualified_history_selectors(args, deployment) else {
-        return Ok(None);
-    };
-    let machines = client.machines().await?;
-    let asked = asked_machines(&machines, machine_selectors)?;
-    let mut prepared = PreparedHistory {
-        targets: Vec::new(),
-        omissions: Vec::new(),
-        selectors,
-    };
-    for observation in machines {
-        if !asked.contains(&observation.machine.id) {
-            continue;
-        }
-        let invites_rpc = observation.invites_rpc();
-        let machine = (observation.machine.id, observation.machine.name);
-        if invites_rpc {
-            prepared.targets.push(machine);
-        } else {
-            prepared.omissions.push(machine);
-        }
-    }
-    Ok(Some(prepared))
-}
-
-fn qualified_history_selectors(
-    args: &[ServiceArg],
-    deployment: Option<&str>,
-) -> Option<Vec<HistorySelector>> {
-    if args.is_empty() {
-        return None;
-    }
-    args.iter()
-        .map(|arg| {
-            if !arg.containers.is_empty() {
-                return None;
-            }
-            let service = QualifiedService::parse(arg.service.as_str()).ok()?;
-            Some(HistorySelector::service(
-                service.namespace.as_str(),
-                service.name.as_str(),
-                deployment,
-            ))
-        })
-        .collect()
 }
 
 /// The Servers a logs command asks: those `selectors` name, whatever their
@@ -614,6 +544,9 @@ pub struct LogScope {
     asked: HashSet<ployz_core::MachineId>,
     live: ployz_core::LiveServices<ployz_core::RpcError>,
     pub unanswered: Unanswered,
+    /// Where a Container that an earlier read printed from is read from now, instead of
+    /// from the request's options: it isn't read again from the start.
+    resume: HashMap<ContainerId, i64>,
 }
 
 /// Open log streams for `args`; none means every Service in `namespace`, or in the
@@ -634,9 +567,17 @@ pub async fn open_service_logs(
         let (service, containers) = target?;
         for container in containers {
             let observation = container.as_observation();
+            let options = scope.resume.get(&observation.container_id).map_or_else(
+                || options.clone(),
+                |last| LogsOptions {
+                    tail: -1,
+                    since_nanos: Some(*last),
+                    ..options.clone()
+                },
+            );
             let request = op::TailLogs::into_request(TailLogsRequest {
                 target: LiveLogTarget::Container(observation.container_id),
-                options: options.clone(),
+                options,
             })
             .encode()?;
             let identity = format!("{service}/{}", observation.display_name);
@@ -759,23 +700,20 @@ fn not_running(
 }
 
 impl LogScope {
-    /// The asked Servers that answered, in Cluster order: the ones whose Log
-    /// Store a history read asks.
+    /// Read each Container in `last` from the nanosecond it last printed.
+    pub fn resume_from(&mut self, last: HashMap<ContainerId, i64>) {
+        self.resume = last;
+    }
+
     #[must_use]
-    pub fn answered(&self) -> Vec<(MachineId, MachineName)> {
-        let unanswered = &self.unanswered;
-        unanswered
-            .names
+    pub fn running(&self) -> std::collections::BTreeSet<ContainerId> {
+        self.live
+            .services()
             .iter()
-            .filter(|(machine_id, _)| {
-                self.asked.contains(machine_id)
-                    && !unanswered.omissions.contains(machine_id)
-                    && !unanswered
-                        .failures
-                        .iter()
-                        .any(|failure| failure.machine_id == *machine_id)
-            })
-            .map(|(machine_id, name)| (machine_id, name.clone()))
+            .flat_map(ServiceObservation::members)
+            .map(|container| container.as_observation())
+            .filter(|container| self.asked.contains(&container.machine_id))
+            .map(|container| container.container_id)
             .collect()
     }
 
@@ -794,78 +732,6 @@ impl LogScope {
             })
             .collect()
     }
-}
-
-/// What a history read asks each Server's Log Store for: every Service of
-/// `namespace` (or of every running Namespace) when `args` is empty, else each
-/// named Service or container. A Service no longer running is still read by
-/// its `namespace/name`, so its stored logs print after it is removed.
-///
-/// # Errors
-///
-/// Returns [`OperatorError::NoServices`] when nothing is in scope, and the
-/// selector errors [`open_service_logs`] returns.
-pub fn history_selectors(
-    scope: &LogScope,
-    args: &[ServiceArg],
-    namespace: Option<&Namespace>,
-    deployment: Option<&str>,
-) -> Result<Vec<HistorySelector>, OperatorError> {
-    let services = scope.live.services();
-    if args.is_empty() {
-        let mut namespaces = namespace.map_or_else(
-            || {
-                services
-                    .iter()
-                    .map(|service| service.identity.namespace.clone())
-                    .collect::<Vec<_>>()
-            },
-            |namespace| vec![namespace.clone()],
-        );
-        namespaces.sort();
-        namespaces.dedup();
-        if namespaces.is_empty() {
-            return Err(OperatorError::NoServices);
-        }
-        return Ok(namespaces
-            .into_iter()
-            .map(|namespace| HistorySelector::namespace(namespace.as_str(), deployment))
-            .collect());
-    }
-    let mut selectors = Vec::new();
-    for arg in args {
-        let service = match select_service(&services, &arg.service) {
-            Ok(service) => service,
-            Err(ployz_core::ServiceSelectorError::NotFound { .. })
-                if arg.containers.is_empty()
-                    && QualifiedService::parse(arg.service.as_str()).is_ok() =>
-            {
-                let removed = QualifiedService::parse(arg.service.as_str())?;
-                selectors.push(HistorySelector::service(
-                    removed.namespace.as_str(),
-                    removed.name.as_str(),
-                    deployment,
-                ));
-                continue;
-            }
-            Err(error) => return Err(not_running(&services, namespace, error)),
-        };
-        if arg.containers.is_empty() {
-            selectors.push(HistorySelector::service(
-                service.identity.namespace.as_str(),
-                service.identity.name.as_str(),
-                deployment,
-            ));
-            continue;
-        }
-        for container in select_log_containers(service, &arg.containers)? {
-            selectors.push(HistorySelector::container(
-                container.as_observation().container_id,
-                deployment,
-            ));
-        }
-    }
-    Ok(selectors)
 }
 
 /// Asked Servers whose Live Observation failed or was skipped, with every

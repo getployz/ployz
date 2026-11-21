@@ -1,48 +1,38 @@
-//! Deletes stored log files to keep the Log Store under its limits.
+//! Deletes stored metric files to keep the observe store under its limits.
 //!
-//! Cleanup deletes only what the store itself created: a `<seq>-<ino>.log`
-//! file whose name parses, inside a dir whose name parses as a container id,
-//! reached without following a symlink. Every delete is an `unlinkat`
-//! relative to a dir it opened with `O_NOFOLLOW`, so nothing in the store
-//! can point a delete elsewhere.
+//! Cleanup deletes only what the store itself created: a `<hour>.jsonl`
+//! file whose name parses, inside the raw or rollup metrics dir, reached
+//! without following a symlink. Every delete is an `unlinkat` relative to a
+//! dir it opened with `O_NOFOLLOW`, so nothing in the store can point a delete
+//! elsewhere.
 //!
-//! A file Docker still links costs no disk the store adds, and unlinking the
-//! store's link would free nothing, so only files the store alone holds
-//! (`nlink == 1`) count toward the cap and are deleted.
-//!
-//! Closed raw metric segments share the cap and the free floor with log
-//! files, ordered by the end of their hour, so under pressure the oldest
-//! hours go first. A segment is also deleted once its whole hour is more than
-//! a day old. The open hour is never a candidate.
+//! Closed raw metric segments share the cap and the free floor, ordered by
+//! the end of their hour, so under pressure the oldest hours go first. A
+//! segment is also deleted once its whole hour is more than a day old. The
+//! open hour is never a candidate.
 //!
 //! Metric rollups join the same budget and order, each by the end of the hour
 //! it folds, and go once that hour is more than 90 days old.
 
 use std::{
     ffi::CString,
-    fs, io,
+    io,
     os::fd::{AsRawFd, RawFd},
-    path::Path,
     time::{Duration, SystemTime},
 };
 
 use nix::{
-    dir::{Dir, Type},
+    dir::Dir,
     errno::Errno,
     fcntl::{AtFlags, OFlag},
     sys::stat::{Mode, SFlag, fstatat},
     unistd::{UnlinkatFlags, unlinkat},
 };
-use ployz_core::ContainerId;
 
 use super::{
-    layout::{
-        CONTAINERS_DIR, EXITS_FILE, LogFileName, METRICS_DIR, NANOS_PER_SEC, RAW_DIR, ROLLUP_DIR,
-        SegmentName, StoreRoot, VERSION_DIR, run_exits, store_file_names,
-    },
+    layout::{METRICS_DIR, RAW_DIR, ROLLUP_DIR, SegmentName, StoreRoot, VERSION_DIR},
     metrics::policy::RETENTION,
 };
-use crate::filesystem::temporary_path;
 
 const GIB: u64 = 1 << 30;
 
@@ -52,19 +42,16 @@ pub struct Limits {
     pub cap_bytes: u64,
     /// Free bytes the filesystem must keep; below it the store gives way.
     pub free_floor_bytes: u64,
-    pub max_age: Duration,
 }
 
 impl Limits {
     /// The limits for a filesystem of `total_bytes`: a cap of 5% held between
-    /// 512 MiB and 5 GiB, a floor of 10% free but never under 2 GiB, and 30
-    /// days of age.
+    /// 512 MiB and 5 GiB, and a floor of 10% free but never under 2 GiB.
     #[must_use]
     pub fn for_filesystem(total_bytes: u64) -> Self {
         Self {
             cap_bytes: (total_bytes / 20).clamp(GIB / 2, 5 * GIB),
             free_floor_bytes: (total_bytes / 10).max(2 * GIB),
-            max_age: Duration::from_secs(30 * 24 * 60 * 60),
         }
     }
 }
@@ -93,17 +80,12 @@ impl Disk {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Report {
-    pub files_deleted: usize,
     pub bytes_freed: u64,
-    pub symlinks_removed: usize,
-    pub containers_removed: usize,
     pub segments_deleted: usize,
     pub rollups_deleted: usize,
 }
 
 enum Place {
-    /// A log file in the named container dir.
-    Log(CString),
     /// A segment in the raw metrics dir open as this fd.
     Segment(RawFd),
     /// A rollup in the rollup dir open as this fd.
@@ -113,20 +95,12 @@ enum Place {
 struct Candidate {
     place: Place,
     name: CString,
-    order: (i64, String, u64),
+    /// The end of the file's hour, then its start, both in Unix seconds.
+    order: (i64, u64),
     size: u64,
     allocated_bytes: u64,
     dev: u64,
     ino: u64,
-}
-
-struct ContainerDir {
-    name: CString,
-    id: ContainerId,
-    log_files: usize,
-    foreign: usize,
-    /// The newest mtime, in Unix seconds, of the log files this pass deleted.
-    deleted_through: Option<i64>,
 }
 
 const DIR_FLAGS: OFlag = OFlag::O_RDONLY
@@ -134,45 +108,11 @@ const DIR_FLAGS: OFlag = OFlag::O_RDONLY
     .union(OFlag::O_NOFOLLOW)
     .union(OFlag::O_CLOEXEC);
 
-/// Runs one cleanup pass. `container_exists` says whether Docker still has a
-/// container; a store dir is removed once its container is gone and it holds
-/// no log files.
-///
-/// # Errors
-///
-/// Returns an error when the store's containers dir cannot be read. Errors on
-/// one container or file are logged and skipped.
-pub fn run(
-    store: &StoreRoot,
-    limits: &Limits,
-    disk: Disk,
-    now: SystemTime,
-    container_exists: impl Fn(&ContainerId) -> bool,
-) -> io::Result<Report> {
-    let mut containers = open_containers(store)?;
-    let containers_fd = containers.as_raw_fd();
+/// Runs one cleanup pass. An error on one file is logged and skipped.
+#[must_use]
+pub fn run(store: &StoreRoot, limits: &Limits, disk: Disk, now: SystemTime) -> Report {
     let mut report = Report::default();
     let mut candidates = Vec::new();
-    let mut dirs = Vec::new();
-    let names: Vec<CString> = containers
-        .iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type() != Some(Type::Symlink))
-        .map(|entry| entry.file_name().to_owned())
-        .collect();
-    for name in names {
-        let Some(id) = name
-            .to_str()
-            .ok()
-            .and_then(|id| ContainerId::parse(id).ok())
-        else {
-            continue;
-        };
-        match scan_container(containers_fd, name, &id, &mut candidates, &mut report) {
-            Ok(dir) => dirs.push(dir),
-            Err(error) => tracing::warn!(container = %id, %error, "skipping a Log Store dir"),
-        }
-    }
 
     let now_secs = now
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -190,17 +130,11 @@ pub fn run(
         |age: Duration| i64::try_from(now_secs.saturating_sub(age.as_secs())).unwrap_or(i64::MAX);
     let raw_age_limit = hour_age_limit(RETENTION.raw);
     let rollup_age_limit = hour_age_limit(RETENTION.rollup);
-    let age_limit = now
-        .checked_sub(limits.max_age)
-        .and_then(|limit| limit.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .and_then(|limit| i64::try_from(limit.as_secs()).ok())
-        .unwrap_or(i64::MIN);
-    candidates.sort_by(|left, right| left.order.cmp(&right.order));
+    candidates.sort_by_key(|candidate| candidate.order);
     let mut held: u64 = candidates.iter().map(|candidate| candidate.size).sum();
     let mut released: u64 = 0;
     for candidate in &candidates {
         let too_old = match candidate.place {
-            Place::Log(_) => candidate.order.0 < age_limit,
             Place::Segment(_) => candidate.order.0 <= raw_age_limit,
             Place::Rollup(_) => candidate.order.0 <= rollup_age_limit,
         };
@@ -209,19 +143,13 @@ pub fn run(
         if !(too_old || over_cap || under_floor) {
             continue;
         }
-        match delete_file(containers_fd, candidate) {
+        let (Place::Segment(dir_fd) | Place::Rollup(dir_fd)) = candidate.place;
+        match unlink_unchanged(dir_fd, candidate) {
             Ok(()) => {
                 held -= candidate.size;
                 released += candidate.allocated_bytes;
                 report.bytes_freed += candidate.size;
-                match &candidate.place {
-                    Place::Log(container) => {
-                        report.files_deleted += 1;
-                        if let Some(dir) = dirs.iter_mut().find(|dir| &dir.name == container) {
-                            dir.log_files -= 1;
-                            dir.deleted_through = dir.deleted_through.max(Some(candidate.order.0));
-                        }
-                    }
+                match candidate.place {
                     Place::Segment(_) => report.segments_deleted += 1,
                     Place::Rollup(_) => report.rollups_deleted += 1,
                 }
@@ -232,38 +160,12 @@ pub fn run(
         }
     }
 
-    // An exit outlives neither the age limit nor the lines the cap took
-    // from its run.
-    for dir in &dirs {
-        let before = dir
-            .deleted_through
-            .map_or(age_limit, |through| {
-                through.saturating_add(1).max(age_limit)
-            })
-            .saturating_mul(NANOS_PER_SEC);
-        if let Err(error) = prune_exits(&store.container(&dir.id), before) {
-            tracing::warn!(container = %dir.id, %error, "could not prune a container's exits");
-        }
-    }
-
-    for dir in dirs
-        .iter()
-        .filter(|dir| dir.log_files == 0 && dir.foreign == 0 && !container_exists(&dir.id))
-    {
-        match remove_container_dir(containers_fd, &dir.name) {
-            Ok(true) => report.containers_removed += 1,
-            Ok(false) => {}
-            Err(error) => {
-                tracing::warn!(container = %dir.id, %error, "could not remove a Log Store dir")
-            }
-        }
-    }
-
-    Ok(report)
+    report
 }
 
-/// Opens a metrics dir as `open_containers` opens its dir, or `None` before
-/// anything was written there or when it cannot be opened.
+/// Opens a metrics dir one component at a time from the store's own path, so
+/// a symlink anywhere in it stops cleanup instead of redirecting it, or `None`
+/// before anything was written there or when it cannot be opened.
 fn open_metrics(store: &StoreRoot, name: &str) -> Option<Dir> {
     match open_metrics_dir(store, name) {
         Ok(dir) => dir,
@@ -324,7 +226,6 @@ fn scan_metric_hours(
                 continue;
             }
         };
-        // As with logs, a file linked elsewhere frees nothing when unlinked.
         if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT != SFlag::S_IFREG
             || stat.st_nlink != 1
         {
@@ -335,7 +236,6 @@ fn scan_metric_hours(
             name,
             order: (
                 i64::try_from(segment.end_secs()).unwrap_or(i64::MAX),
-                String::new(),
                 segment.start_secs(),
             ),
             size: u64::try_from(stat.st_size).unwrap_or(0),
@@ -345,203 +245,6 @@ fn scan_metric_hours(
             dev: stat.st_dev,
             ino: stat.st_ino,
         });
-    }
-}
-
-/// Removes one container's store dir, log files included: the harvester held
-/// it before Docker said Ployz does not own the container.
-///
-/// # Errors
-///
-/// Returns the first error opening, unlinking, or removing.
-pub fn discard(store: &StoreRoot, id: &ContainerId) -> io::Result<()> {
-    let containers = open_containers(store)?;
-    let name = CString::new(id.as_str()).map_err(io::Error::other)?;
-    let mut dir = match Dir::openat(
-        Some(containers.as_raw_fd()),
-        name.as_c_str(),
-        DIR_FLAGS,
-        Mode::empty(),
-    ) {
-        Ok(dir) => dir,
-        Err(Errno::ENOENT) => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    let held: Vec<CString> = dir
-        .iter()
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_owned())
-        .filter(|file| LogFileName::parse(file.to_bytes()).is_some())
-        .collect();
-    for file in held {
-        match unlinkat(
-            Some(dir.as_raw_fd()),
-            file.as_c_str(),
-            UnlinkatFlags::NoRemoveDir,
-        ) {
-            Ok(()) | Err(Errno::EISDIR) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    drop(dir);
-    remove_container_dir(containers.as_raw_fd(), &name)?;
-    Ok(())
-}
-
-/// Opens the containers dir one component at a time from
-/// `<DockerRootDir>/ployz-observe`, so a symlink anywhere in the store's own
-/// path stops cleanup instead of redirecting it.
-fn open_containers(store: &StoreRoot) -> io::Result<Dir> {
-    let base = Dir::open(store.base(), DIR_FLAGS, Mode::empty())?;
-    let version = Dir::openat(
-        Some(base.as_raw_fd()),
-        VERSION_DIR,
-        DIR_FLAGS,
-        Mode::empty(),
-    )?;
-    Ok(Dir::openat(
-        Some(version.as_raw_fd()),
-        CONTAINERS_DIR,
-        DIR_FLAGS,
-        Mode::empty(),
-    )?)
-}
-
-fn scan_container(
-    containers_fd: RawFd,
-    name: CString,
-    id: &ContainerId,
-    candidates: &mut Vec<Candidate>,
-    report: &mut Report,
-) -> nix::Result<ContainerDir> {
-    let mut dir = Dir::openat(
-        Some(containers_fd),
-        name.as_c_str(),
-        DIR_FLAGS,
-        Mode::empty(),
-    )?;
-    let dir_fd = dir.as_raw_fd();
-    let mut log_files = 0;
-    let mut foreign = 0;
-    let entries: Vec<CString> = dir
-        .iter()
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_owned())
-        .collect();
-    for file in entries {
-        let Some(parsed) = LogFileName::parse(file.to_bytes()) else {
-            if !is_store_file(&file) {
-                foreign += 1;
-            }
-            continue;
-        };
-        let stat = fstatat(Some(dir_fd), file.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)?;
-        let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
-        if kind == SFlag::S_IFLNK {
-            unlinkat(Some(dir_fd), file.as_c_str(), UnlinkatFlags::NoRemoveDir)?;
-            report.symlinks_removed += 1;
-            continue;
-        }
-        if kind != SFlag::S_IFREG {
-            foreign += 1;
-            continue;
-        }
-        log_files += 1;
-        if stat.st_nlink == 1 {
-            candidates.push(Candidate {
-                place: Place::Log(name.clone()),
-                name: file,
-                order: (stat.st_mtime, id.as_str().to_owned(), parsed.seq),
-                size: u64::try_from(stat.st_size).unwrap_or(0),
-                allocated_bytes: u64::try_from(stat.st_blocks)
-                    .unwrap_or(0)
-                    .saturating_mul(512),
-                dev: stat.st_dev,
-                ino: stat.st_ino,
-            });
-        }
-    }
-    Ok(ContainerDir {
-        name,
-        id: *id,
-        log_files,
-        foreign,
-        deleted_through: None,
-    })
-}
-
-fn is_store_file(name: &CString) -> bool {
-    let name = name.to_bytes();
-    name == b"."
-        || name == b".."
-        || store_file_names()
-            .iter()
-            .any(|file| file.as_bytes() == name)
-}
-
-/// Drops the exits in `dir` before `before`, in Unix nanoseconds, and any
-/// line that does not parse.
-fn prune_exits(dir: &Path, before: i64) -> io::Result<()> {
-    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
-    let path = dir.join(EXITS_FILE);
-    let bytes = match fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(OFlag::O_NOFOLLOW.bits())
-        .open(&path)
-    {
-        Ok(mut file) => {
-            let mut bytes = Vec::new();
-            io::Read::read_to_end(&mut file, &mut bytes)?;
-            bytes
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    let lines = bytes
-        .split(|&byte| byte == b'\n')
-        .filter(|line| !line.is_empty());
-    let kept: Vec<_> = run_exits(&bytes).filter(|exit| exit.ts >= before).collect();
-    if kept.len() == lines.count() {
-        return Ok(());
-    }
-    if kept.is_empty() {
-        return fs::remove_file(&path);
-    }
-    let mut kept_lines = Vec::new();
-    for exit in kept {
-        serde_json::to_writer(&mut kept_lines, &exit).map_err(io::Error::other)?;
-        kept_lines.push(b'\n');
-    }
-    let temp = temporary_path(&path);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .custom_flags(OFlag::O_NOFOLLOW.bits())
-        .open(&temp)?;
-    file.write_all(&kept_lines)?;
-    file.sync_all()?;
-    fs::rename(&temp, &path)?;
-    fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(DIR_FLAGS.bits())
-        .open(dir)?
-        .sync_all()
-}
-
-fn delete_file(containers_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
-    match &candidate.place {
-        Place::Log(container) => {
-            let dir = Dir::openat(
-                Some(containers_fd),
-                container.as_c_str(),
-                DIR_FLAGS,
-                Mode::empty(),
-            )?;
-            unlink_unchanged(dir.as_raw_fd(), candidate)
-        }
-        Place::Segment(dir_fd) | Place::Rollup(dir_fd) => unlink_unchanged(*dir_fd, candidate),
     }
 }
 
@@ -567,59 +270,22 @@ fn unlink_unchanged(dir_fd: RawFd, candidate: &Candidate) -> nix::Result<()> {
     )
 }
 
-fn remove_container_dir(containers_fd: RawFd, name: &CString) -> nix::Result<bool> {
-    let dir = Dir::openat(
-        Some(containers_fd),
-        name.as_c_str(),
-        DIR_FLAGS,
-        Mode::empty(),
-    )?;
-    for file in store_file_names() {
-        match unlinkat(
-            Some(dir.as_raw_fd()),
-            file.as_str(),
-            UnlinkatFlags::NoRemoveDir,
-        ) {
-            Ok(()) | Err(Errno::ENOENT) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    drop(dir);
-    match unlinkat(
-        Some(containers_fd),
-        name.as_c_str(),
-        UnlinkatFlags::RemoveDir,
-    ) {
-        Ok(()) => Ok(true),
-        Err(Errno::ENOTEMPTY | Errno::EEXIST | Errno::ENOENT) => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
         fs,
         os::unix::fs::{MetadataExt as _, symlink},
-        path::PathBuf,
         time::{Duration, SystemTime},
     };
 
-    use nix::errno::Errno;
-    use ployz_core::ContainerId;
-
-    use super::{Disk, Limits, Report, discard, prune_exits, run};
-    use crate::{
-        observe::layout::{EXITS_FILE, RunExit, StoreRoot, run_exits},
-        test_dir::TestDir,
-    };
+    use super::{Disk, Limits, Report, run};
+    use crate::{observe::layout::StoreRoot, test_dir::TestDir};
 
     const T0: u64 = 1_760_000_000;
 
     struct Store {
         _dir: TestDir,
         root: StoreRoot,
-        docker: PathBuf,
     }
 
     fn store() -> Store {
@@ -627,63 +293,58 @@ mod tests {
         fs::create_dir_all(&dir.0).unwrap();
         let root = StoreRoot::under(&dir.0);
         root.prepare().unwrap();
-        let docker = dir.0.join("docker-files");
-        fs::create_dir_all(&docker).unwrap();
-        Store {
-            _dir: dir,
-            root,
-            docker,
-        }
+        Store { _dir: dir, root }
     }
 
-    fn cid(n: u8) -> ContainerId {
-        ContainerId::parse(format!("{n:02x}").repeat(32)).unwrap()
+    fn segment_name(hours_back: u64) -> String {
+        let hour = T0 - T0 % 3_600;
+        format!("{}.jsonl", hour - hours_back * 3_600)
     }
 
     impl Store {
-        fn file(&self, container: &ContainerId, name: &str, size: usize, age_secs: u64) -> PathBuf {
-            let dir = self.root.container(container);
-            fs::create_dir_all(&dir).unwrap();
-            let path = dir.join(name);
-            fs::write(&path, vec![b'x'; size]).unwrap();
-            let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(T0 - age_secs);
-            fs::File::options()
-                .write(true)
-                .open(&path)
-                .unwrap()
-                .set_modified(mtime)
-                .unwrap();
-            path
-        }
-
-        fn linked_by_docker(&self, path: &PathBuf) {
-            let name = path.file_name().unwrap();
-            fs::hard_link(path, self.docker.join(name)).unwrap();
-        }
-
-        fn names(&self, container: &ContainerId) -> Vec<String> {
-            let Ok(entries) = fs::read_dir(self.root.container(container)) else {
-                return Vec::new();
-            };
-            let mut names: Vec<String> = entries
-                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-                .collect();
-            names.sort();
-            names
-        }
-
-        fn clean(&self, cap_bytes: u64, free_bytes: u64, gone: &[ContainerId]) -> Report {
+        fn clean(&self, cap_bytes: u64, free_bytes: u64) -> Report {
             let limits = Limits {
                 cap_bytes,
                 free_floor_bytes: 0,
-                max_age: Duration::from_secs(30 * 86_400),
             };
             let disk = Disk {
                 total_bytes: u64::MAX,
                 free_bytes,
             };
             let now = SystemTime::UNIX_EPOCH + Duration::from_secs(T0);
-            run(&self.root, &limits, disk, now, |id| !gone.contains(id)).unwrap()
+            run(&self.root, &limits, disk, now)
+        }
+
+        fn segment(&self, hours_back: u64, size: usize) -> u64 {
+            let raw = self.root.raw_metrics();
+            fs::create_dir_all(&raw).unwrap();
+            let path = raw.join(segment_name(hours_back));
+            fs::write(&path, vec![b'x'; size]).unwrap();
+            fs::metadata(path).unwrap().blocks() * 512
+        }
+
+        fn segments(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(self.root.raw_metrics())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn rollup(&self, hours_back: u64) {
+            let dir = self.root.rollup_metrics();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(segment_name(hours_back)), vec![b'x'; 100]).unwrap();
+        }
+
+        fn rollups(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(self.root.rollup_metrics())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
         }
     }
 
@@ -705,123 +366,9 @@ mod tests {
     }
 
     #[test]
-    fn under_the_cap_nothing_is_deleted() {
-        let store = store();
-        store.file(&cid(1), "1-10.log", 100, 60);
-        store.file(&cid(1), "2-11.log", 100, 30);
-        assert_eq!(store.clean(200, u64::MAX, &[]), Report::default());
-        assert_eq!(store.names(&cid(1)), ["1-10.log", "2-11.log"]);
-    }
-
-    #[test]
-    fn over_the_cap_the_oldest_files_go_first_and_files_docker_links_are_kept() {
-        let store = store();
-        store.file(&cid(1), "1-10.log", 100, 50);
-        store.file(&cid(2), "1-20.log", 100, 40);
-        store.file(&cid(1), "2-11.log", 100, 30);
-        let live = store.file(&cid(1), "3-12.log", 1000, 90);
-        store.linked_by_docker(&live);
-
-        let report = store.clean(150, u64::MAX, &[]);
-        assert_eq!((report.files_deleted, report.bytes_freed), (2, 200));
-        assert_eq!(store.names(&cid(1)), ["2-11.log", "3-12.log"]);
-        assert_eq!(store.names(&cid(2)), Vec::<String>::new());
-
-        assert_eq!(store.clean(150, u64::MAX, &[]), Report::default());
-    }
-
-    #[test]
-    fn files_past_the_age_limit_go_and_the_free_floor_takes_more() {
-        let store = store();
-        let old = store.file(&cid(1), "1-10.log", 100, 31 * 86_400);
-        store.file(&cid(1), "2-11.log", 100, 60);
-        store.file(&cid(1), "3-12.log", 100, 30);
-        let allocated_bytes = fs::metadata(old).unwrap().blocks() * 512;
-        let limits = Limits {
-            cap_bytes: u64::MAX,
-            free_floor_bytes: 1_000 + allocated_bytes + 1,
-            max_age: Duration::from_secs(30 * 86_400),
-        };
-        let disk = Disk {
-            total_bytes: u64::MAX,
-            free_bytes: 1_000,
-        };
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(T0);
-        let report = run(&store.root, &limits, disk, now, |_| true).unwrap();
-        assert_eq!(report.files_deleted, 2);
-        assert_eq!(store.names(&cid(1)), ["3-12.log"]);
-    }
-
-    #[test]
-    fn exits_go_with_the_age_limit_and_the_logs_the_cap_deletes() {
-        let store = store();
-        let id = cid(1);
-        store.file(&id, "1-10.log", 100, 31 * 86_400);
-        store.file(&id, "2-11.log", 100, 100);
-        store.file(&id, "3-12.log", 100, 30);
-        let exit = |age_secs: u64| RunExit {
-            ts: i64::try_from((T0 - age_secs) * 1_000_000_000).unwrap(),
-            exit_code: Some(137),
-            oom_killed: true,
-        };
-        let jsonl: Vec<u8> = [31 * 86_400 + 5, 200, 50]
-            .map(|age| [serde_json::to_vec(&exit(age)).unwrap(), b"\n".to_vec()].concat())
-            .concat();
-        let path = store.root.container(&id).join("exits.jsonl");
-        fs::write(&path, jsonl).unwrap();
-
-        store.clean(150, u64::MAX, &[]);
-        assert_eq!(store.names(&id), ["3-12.log", "exits.jsonl"]);
-        let kept: Vec<RunExit> = run_exits(&fs::read(&path).unwrap()).collect();
-        assert_eq!(kept, [exit(50)]);
-    }
-
-    #[test]
-    fn the_exits_rewrite_never_syncs_a_dir_through_a_symlink() {
-        let store = store();
-        let target = store.docker.join("elsewhere");
-        fs::create_dir_all(&target).unwrap();
-        let exit = |ts: i64| RunExit {
-            ts,
-            exit_code: Some(1),
-            oom_killed: false,
-        };
-        let jsonl: Vec<u8> = [1, 3]
-            .map(|ts| [serde_json::to_vec(&exit(ts)).unwrap(), b"\n".to_vec()].concat())
-            .concat();
-        fs::write(target.join(EXITS_FILE), jsonl).unwrap();
-        let link = store.docker.join("swapped");
-        symlink(&target, &link).unwrap();
-
-        let error = prune_exits(&link, 2).unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(Errno::ENOTDIR as i32));
-    }
-
-    #[test]
-    fn symlinks_are_removed_without_touching_their_targets_and_foreign_files_stay() {
-        let store = store();
-        let outside = store.docker.join("precious");
-        fs::write(&outside, b"keep").unwrap();
-        let dir = store.root.container(&cid(1));
-        fs::create_dir_all(&dir).unwrap();
-        symlink(&outside, dir.join("1-10.log")).unwrap();
-        fs::write(dir.join("notes.txt"), b"keep").unwrap();
-        fs::write(dir.join("01-10.log"), b"keep").unwrap();
-        symlink(&store.docker, store.root.containers().join(cid(2).as_str())).unwrap();
-        fs::write(store.docker.join("1-1.log"), b"keep").unwrap();
-
-        let report = store.clean(0, u64::MAX, &[cid(1), cid(2)]);
-        assert_eq!(report.symlinks_removed, 1);
-        assert_eq!(report.files_deleted, 0);
-        assert_eq!(fs::read(&outside).unwrap(), b"keep");
-        assert_eq!(store.names(&cid(1)), ["01-10.log", "notes.txt"]);
-        assert_eq!(fs::read(store.docker.join("1-1.log")).unwrap(), b"keep");
-    }
-
-    #[test]
     fn a_symlink_in_the_store_path_stops_cleanup() {
         let store = store();
-        let file = store.file(&cid(1), "1-10.log", 100, 31 * 86_400);
+        store.segment(30, 100);
         let real = store.root.base().join("real");
         fs::rename(store.root.path(), &real).unwrap();
         symlink(&real, store.root.path()).unwrap();
@@ -831,66 +378,9 @@ mod tests {
             free_bytes: u64::MAX,
         };
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(T0);
-        assert!(run(&store.root, &limits, disk, now, |_| false).is_err());
-        assert!(fs::exists(&file).unwrap());
-    }
-
-    #[test]
-    fn a_dir_is_removed_once_its_container_is_gone_and_its_files_are() {
-        let store = store();
-        store.file(&cid(1), "meta.json", 10, 0);
-        store.file(&cid(1), "gaps.jsonl", 10, 0);
-        store.file(&cid(1), "env.json", 10, 0);
-        store.file(&cid(2), "meta.json", 10, 0);
-        store.file(&cid(3), "meta.json", 10, 0);
-        store.file(&cid(3), "1-30.log", 10, 0);
-
-        let report = store.clean(u64::MAX, u64::MAX, &[cid(1), cid(3)]);
-        assert_eq!(report.containers_removed, 1);
-        assert!(!store.root.container(&cid(1)).exists());
-        assert!(store.root.container(&cid(2)).exists());
-        assert!(store.root.container(&cid(3)).exists());
-
-        let report = store.clean(0, u64::MAX, &[cid(1), cid(3)]);
-        assert_eq!((report.files_deleted, report.containers_removed), (1, 1));
-        assert!(!store.root.container(&cid(3)).exists());
-    }
-
-    #[test]
-    fn a_dir_holding_anything_the_store_did_not_write_keeps_its_metadata() {
-        let store = store();
-        store.file(&cid(1), "meta.json", 10, 0);
-        store.file(&cid(1), "gaps.jsonl", 10, 0);
-        store.file(&cid(1), "notes.txt", 10, 0);
-
-        let report = store.clean(u64::MAX, u64::MAX, &[cid(1)]);
-        assert_eq!(report.containers_removed, 0);
-        assert_eq!(
-            store.names(&cid(1)),
-            ["gaps.jsonl", "meta.json", "notes.txt"]
-        );
-    }
-
-    #[test]
-    fn a_discarded_container_loses_its_links_but_docker_keeps_its_files() {
-        let store = store();
-        let held = store.file(&cid(1), "1-10.log", 100, 0);
-        store.linked_by_docker(&held);
-        let outside = store.docker.join("precious");
-        fs::write(&outside, b"keep").unwrap();
-        symlink(&outside, store.root.container(&cid(1)).join("2-11.log")).unwrap();
-        store.file(&cid(1), "gaps.jsonl", 10, 0);
-
-        discard(&store.root, &cid(1)).unwrap();
-        assert!(!store.root.container(&cid(1)).exists());
-        assert_eq!(fs::read(store.docker.join("1-10.log")).unwrap().len(), 100);
-        assert_eq!(fs::read(&outside).unwrap(), b"keep");
-
-        store.file(&cid(2), "1-10.log", 10, 0);
-        store.file(&cid(2), "notes.txt", 10, 0);
-        discard(&store.root, &cid(2)).unwrap();
-        assert_eq!(store.names(&cid(2)), ["notes.txt"]);
-        discard(&store.root, &cid(3)).unwrap();
+        let report = run(&store.root, &limits, disk, now);
+        assert_eq!(report, Report::default());
+        assert_eq!(fs::read_dir(real.join("metrics/raw")).unwrap().count(), 1);
     }
 
     #[test]
@@ -898,59 +388,27 @@ mod tests {
         let store = store();
         let raw = store.root.raw_metrics();
         fs::create_dir_all(&raw).unwrap();
-        let hour = T0 - T0 % 3_600;
-        let segment = |hours_back: u64| format!("{}.jsonl", hour - hours_back * 3_600);
-        let expired = segment(25);
-        let kept = segment(24);
-        let current = segment(0);
+        let expired = segment_name(25);
+        let kept = segment_name(24);
+        let current = segment_name(0);
         for name in [&expired, &kept, &current] {
             fs::write(raw.join(name), b"{}\n").unwrap();
         }
-        let old_dir = segment(72);
+        let old_dir = segment_name(72);
         fs::create_dir(raw.join(&old_dir)).unwrap();
         fs::write(raw.join("notes.txt"), b"keep").unwrap();
 
-        let report = store.clean(u64::MAX, u64::MAX, &[]);
+        let report = store.clean(u64::MAX, u64::MAX);
         assert_eq!(report.segments_deleted, 1);
-        let mut names: Vec<String> = fs::read_dir(&raw)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
         let mut want = vec![kept, current, old_dir, "notes.txt".to_owned()];
         want.sort();
-        assert_eq!(names, want);
-        assert_eq!(store.clean(u64::MAX, u64::MAX, &[]).segments_deleted, 0);
-    }
-
-    fn segment_name(hours_back: u64) -> String {
-        let hour = T0 - T0 % 3_600;
-        format!("{}.jsonl", hour - hours_back * 3_600)
-    }
-
-    impl Store {
-        fn segment(&self, hours_back: u64, size: usize) -> u64 {
-            let raw = self.root.raw_metrics();
-            fs::create_dir_all(&raw).unwrap();
-            let path = raw.join(segment_name(hours_back));
-            fs::write(&path, vec![b'x'; size]).unwrap();
-            fs::metadata(path).unwrap().blocks() * 512
-        }
-
-        fn segments(&self) -> Vec<String> {
-            let mut names: Vec<String> = fs::read_dir(self.root.raw_metrics())
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-                .collect();
-            names.sort();
-            names
-        }
+        assert_eq!(store.segments(), want);
+        assert_eq!(store.clean(u64::MAX, u64::MAX).segments_deleted, 0);
     }
 
     #[test]
     fn below_the_free_floor_the_oldest_metric_hours_go_first_and_the_open_hour_stays() {
         let store = store();
-        store.file(&cid(1), "1-10.log", 10_000, 60);
         let oldest = store.segment(3, 10_000);
         let next = store.segment(2, 10_000);
         store.segment(1, 10_000);
@@ -958,65 +416,25 @@ mod tests {
         let limits = Limits {
             cap_bytes: u64::MAX,
             free_floor_bytes: 1_000 + oldest + next,
-            max_age: Duration::from_secs(30 * 86_400),
         };
         let disk = Disk {
             total_bytes: u64::MAX,
             free_bytes: 1_000,
         };
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(T0);
-        let report = run(&store.root, &limits, disk, now, |_| true).unwrap();
-        assert_eq!(
-            (
-                report.segments_deleted,
-                report.files_deleted,
-                report.bytes_freed
-            ),
-            (2, 0, 20_000)
-        );
+        let report = run(&store.root, &limits, disk, now);
+        assert_eq!((report.segments_deleted, report.bytes_freed), (2, 20_000));
         let mut want = vec![segment_name(1), segment_name(0)];
         want.sort();
         assert_eq!(store.segments(), want);
-        assert_eq!(store.names(&cid(1)), ["1-10.log"]);
 
         let disk = Disk {
             total_bytes: u64::MAX,
             free_bytes: 0,
         };
-        let report = run(&store.root, &limits, disk, now, |_| true).unwrap();
-        assert_eq!((report.segments_deleted, report.files_deleted), (1, 1));
+        let report = run(&store.root, &limits, disk, now);
+        assert_eq!(report.segments_deleted, 1);
         assert_eq!(store.segments(), [segment_name(0)]);
-    }
-
-    #[test]
-    fn metric_hours_share_the_cap_with_logs_in_age_order() {
-        let store = store();
-        store.file(&cid(1), "1-10.log", 100, 10 * 3_600);
-        store.segment(3, 100);
-        store.segment(2, 100);
-        store.file(&cid(1), "2-11.log", 100, 60);
-
-        let report = store.clean(200, u64::MAX, &[]);
-        assert_eq!((report.files_deleted, report.segments_deleted), (1, 1));
-        assert_eq!(store.names(&cid(1)), ["2-11.log"]);
-        assert_eq!(store.segments(), [segment_name(2)]);
-    }
-
-    impl Store {
-        fn rollup(&self, hours_back: u64) {
-            let dir = self.root.rollup_metrics();
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join(segment_name(hours_back)), vec![b'x'; 100]).unwrap();
-        }
-
-        fn rollups(&self) -> Vec<String> {
-            let mut names: Vec<String> = fs::read_dir(self.root.rollup_metrics())
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-                .collect();
-            names.sort();
-            names
-        }
     }
 
     #[test]
@@ -1030,7 +448,7 @@ mod tests {
         )
         .unwrap();
 
-        let report = store.clean(u64::MAX, u64::MAX, &[]);
+        let report = store.clean(u64::MAX, u64::MAX);
         assert_eq!((report.rollups_deleted, report.segments_deleted), (1, 0));
         assert_eq!(
             store.rollups(),
@@ -1039,22 +457,14 @@ mod tests {
     }
 
     #[test]
-    fn rollups_share_the_cap_with_logs_and_segments_in_age_order() {
+    fn rollups_share_the_cap_with_segments_in_age_order() {
         let store = store();
         store.rollup(30 * 24);
-        store.file(&cid(1), "1-10.log", 100, 10 * 3_600);
         store.segment(2, 100);
         store.rollup(1);
 
-        let report = store.clean(200, u64::MAX, &[]);
-        assert_eq!(
-            (
-                report.rollups_deleted,
-                report.files_deleted,
-                report.segments_deleted
-            ),
-            (1, 1, 0)
-        );
+        let report = store.clean(200, u64::MAX);
+        assert_eq!((report.rollups_deleted, report.segments_deleted), (1, 0));
         assert_eq!(store.rollups(), [segment_name(1)]);
         assert_eq!(store.segments(), [segment_name(2)]);
     }
@@ -1080,22 +490,11 @@ mod tests {
                     free_bytes: u64::MAX,
                 },
                 SystemTime::UNIX_EPOCH + Duration::from_secs(now_secs),
-                |_| true,
-            )
-            .unwrap();
+            );
             assert!(
                 store.segments().contains(&first),
                 "{first} after {report:?} at +{minutes_into_hour} min"
             );
         }
-    }
-
-    #[test]
-    fn a_dir_with_a_log_file_name_does_not_stop_a_discard() {
-        let store = store();
-        store.file(&cid(1), "2-11.log", 10, 0);
-        fs::create_dir(store.root.container(&cid(1)).join("1-10.log")).unwrap();
-        discard(&store.root, &cid(1)).unwrap();
-        assert_eq!(store.names(&cid(1)), ["1-10.log"]);
     }
 }

@@ -387,6 +387,7 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
                 health: ployz_core::HealthObservation::Healthy,
             },
         ),
+        last_exit_code: None,
         leaving: false,
     });
     let created = service.created_containers.clone();

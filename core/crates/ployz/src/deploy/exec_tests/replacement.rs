@@ -833,6 +833,7 @@ async fn a_failed_group_stops_its_new_copies_before_it_restores_the_held_ones() 
                 observation: unhealthy(),
                 last_check: None,
                 oom_killed: false,
+                last_exit_code: None,
                 departing: None,
             },
         )]),
@@ -957,6 +958,7 @@ async fn a_refused_or_failed_restore_leaves_the_service_empty() {
         observation: unhealthy(),
         last_check: None,
         oom_killed: false,
+        last_exit_code: None,
         departing: None,
     };
     for refused in [true, false] {

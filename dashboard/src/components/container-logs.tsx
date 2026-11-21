@@ -27,8 +27,6 @@ const LOG_HISTORY_DOCS = "https://ployz.dev/docs/self-hosting";
 const LEVELS = ["error", "warn", "info", "debug"] as const;
 const levelTone = { error: "text-destructive", warn: "text-warning", info: null, debug: "text-muted-foreground" } as const;
 const gapReasons = {
-  not_captured: "Logs from this stretch weren’t captured.",
-  corrupt: "Some of this stretch’s log data was unreadable, so it was skipped.",
   hidden: "Hidden: couldn’t check these lines for Sealed values.",
 } as const;
 
