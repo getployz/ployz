@@ -1365,7 +1365,7 @@ pub struct OutOfMemory {
     pub memory_bytes: Option<ByteQuantity>,
 }
 
-/// A stopped Container's last run, as its Server's Log Store holds it.
+/// A stopped Container's last run, as Docker still holds it when the runner reads it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct LastRun {
     /// The code its newest exit had; `None` when Docker didn't say, or none is stored yet.
@@ -1448,7 +1448,7 @@ pub enum ExecutionError {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         out_of_memory: Option<OutOfMemory>,
-        /// What its Server's Log Store held of the run that ended, which the runner
+        /// What Docker held of the run that ended, which the runner
         /// reads once the Container stops: Machines don't send it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]

@@ -954,6 +954,7 @@ impl FakeMachine for JoinDaemon {
             image_id: None,
             last_check: None,
             run: None,
+            last_exit_code: None,
             leaving: false,
         })
     }

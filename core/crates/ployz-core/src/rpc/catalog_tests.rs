@@ -431,22 +431,6 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
-        "RetainedEnv",
-        "retained_env",
-        "ployz.logs.retained-env.v1",
-        "Container",
-        "Operator",
-        "Unary",
-    ),
-    (
-        "LogHistory",
-        "log_history",
-        "ployz.logs.history.v2",
-        "Container",
-        "Operator",
-        "ServerStreaming",
-    ),
-    (
         "TailLogs",
         "tail_logs",
         "ployz.logs.tail.v1",

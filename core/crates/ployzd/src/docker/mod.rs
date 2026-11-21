@@ -820,6 +820,20 @@ impl Observation {
         Ok(ended.then(|| container_run(&inspected)).flatten())
     }
 
+    /// When the Container's last run exited, on this host's clock, or `None` while Docker
+    /// reports no usable time: it runs, never ran, or stamped something unreadable.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot inspect the Container.
+    pub async fn exited_at(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, Error> {
+        let inspected = self.docker.inspect(container_id).await?;
+        Ok(finished_at(inspected.state.as_ref()).filter(|finished| finished.timestamp() > 0))
+    }
+
     /// The host pid of the Container's process, or `None` when Docker reports none.
     ///
     /// # Errors
@@ -957,6 +971,21 @@ impl Observation {
             };
         }
         let runtime = withdrawn(runtime, self.standing.is_withdrawn(container_id));
+        // A container that crashes and restarts is seen between runs as Running, whose
+        // ExitCode is still its last run's.
+        let last_exit_code = matches!(
+            runtime,
+            ContainerRuntimeObservation::Restarting | ContainerRuntimeObservation::Running { .. }
+        )
+        .then(|| {
+            inspected
+                .state
+                .as_ref()
+                .and_then(|state| state.get("ExitCode"))
+                .and_then(serde_json::Value::as_i64)
+        })
+        .flatten()
+        .filter(|code| *code != 0 || matches!(runtime, ContainerRuntimeObservation::Restarting));
         let stopped = if matches!(runtime, ContainerRuntimeObservation::Exited { .. })
             && let Some(run) = &run
         {
@@ -1003,6 +1032,7 @@ impl Observation {
                 image_id: inspected.image,
                 last_check,
                 run,
+                last_exit_code,
                 leaving,
             },
             oom_killed,

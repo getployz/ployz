@@ -1,6 +1,6 @@
 //! `logs` and `metrics` of a Service the selected Environment does not have now: a
-//! removed Service still reads what its Servers kept, and a name nothing answers
-//! for is refused with the Environment's Services.
+//! removed Service's metrics still read, its logs are Ployz Cloud's to keep, and a name
+//! nothing answers for is refused with the Environment's Services.
 
 use std::path::Path;
 
@@ -55,8 +55,7 @@ fn readings(points: Vec<ServicePoint>) -> MetricHistoryReply {
 async fn a_removed_service_still_reads_and_a_name_nothing_answers_for_is_refused() {
     let store = tempfile::tempdir().unwrap();
     let db = store.path().join("store.db");
-    let mut service = DiscoveryService::new(test_description());
-    service.kept_services = Some(["gone".to_owned()].into());
+    let service = DiscoveryService::new(test_description());
     let metrics = service.metric_replies.clone();
     let (address, server) = serve_discovery(service).await;
     for args in [
@@ -73,34 +72,26 @@ async fn a_removed_service_still_reads_and_a_name_nothing_answers_for_is_refused
         "details": { "valid_children": ["api"] },
     });
 
-    // Every Server's Log Store keeps a line of `gone`, which the Environment removed.
+    // Without Ployz Cloud a name that never was a Service reads like a removed one.
+    let kept = json!({
+        "code": "not_found",
+        "message": "nosvc is not in Environment production, and its logs are not kept. Ployz Cloud keeps the logs of removed Services; sign in to read them.",
+        "cause": [],
+        "details": { "valid_children": ["api"] },
+    });
     let output = ployz(&db, address, &["logs", "gone"]).await;
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.ends_with(" | shutting down\n"), "{stdout}");
-
-    let output = ployz(&db, address, &["--json", "logs", "nosvc"]).await;
-    assert_eq!(refusal(&output, 1), refused);
-    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
-    // `gone` reads, then `nosvc` is named on stderr: a partial result.
-    let output = ployz(&db, address, &["--json", "logs", "gone", "nosvc"]).await;
-    assert_eq!(output.status.code(), Some(3), "{output:?}");
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "error: No Service named nosvc in Environment production\nvalid: api\n"
-    );
-    // The same without --json: the line printed, so the refusal makes it partial.
-    let output = ployz(&db, address, &["logs", "gone", "nosvc"]).await;
-    assert_eq!(output.status.code(), Some(3), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stdout).ends_with(" | shutting down\n"),
-        "{output:?}"
-    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
     assert!(
         String::from_utf8_lossy(&output.stderr)
-            .ends_with("error: No Service named nosvc in Environment production\nvalid: api\n"),
+            .contains("gone is not in Environment production, and its logs are not kept"),
         "{output:?}"
     );
+    let output = ployz(&db, address, &["--json", "logs", "nosvc"]).await;
+    assert_eq!(refusal(&output, 1), kept);
+    assert_eq!(String::from_utf8_lossy(&output.stdout).lines().count(), 1);
+    let output = ployz(&db, address, &["--json", "logs", "-f", "nosvc"]).await;
+    assert_eq!(refusal(&output, 1), refused);
 
     let now = chrono::Utc::now().timestamp_nanos_opt().unwrap();
     let point = ServicePoint {

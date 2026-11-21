@@ -447,7 +447,6 @@ define_responses! {
     Left(Left) => "left";
     Forgotten(Forgotten) => "forgotten";
     MetricHistoryReply(MetricHistoryReply) => "metric_history";
-    RetainedEnvReply(RetainedEnvReply) => "retained_env";
     Error(RpcError) => "error";
 }
 

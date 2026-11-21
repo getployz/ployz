@@ -578,7 +578,11 @@ mod plan {
                 ContainerNow::Absent {
                     of: ContainerLocator::Id(id('a')),
                 },
-                ContainerStep::Remove(id('a'), AnonymousVolumes::Keep),
+                ContainerStep::Remove {
+                    id: id('a'),
+                    anonymous_volumes: AnonymousVolumes::Keep,
+                    logs_to_read: false,
+                },
             ),
             (
                 gone(),
@@ -587,12 +591,17 @@ mod plan {
                     id: id('a'),
                     drain: Drain::DEFAULT,
                     anonymous_volumes: AnonymousVolumes::Remove,
+                    logs_to_read: true,
                 },
             ),
             (
                 gone(),
                 exited("img"),
-                ContainerStep::Remove(id('a'), AnonymousVolumes::Remove),
+                ContainerStep::Remove {
+                    id: id('a'),
+                    anonymous_volumes: AnonymousVolumes::Remove,
+                    logs_to_read: true,
+                },
             ),
             (
                 run_hook(),
@@ -613,6 +622,48 @@ mod plan {
             let shown = format!("{want:?} / {now:?}");
             assert_eq!(plan_container(want, &now, participating), step, "{shown}");
         }
+    }
+
+    #[test]
+    fn a_removal_waits_for_the_log_of_a_service_that_ran_and_of_no_hook_or_unstarted_container() {
+        let participating = &LocalMachinePhase::Participating;
+        let discarded = |drain| ContainerWant::Gone {
+            container: ContainerLocator::Key(slot()),
+            drain,
+            anonymous_volumes: AnonymousVolumes::Remove,
+        };
+        let logs_to_read = |want, now: ContainerNow| {
+            let step = plan_container(want, &now, participating);
+            let (ContainerStep::StopThenRemove { logs_to_read, .. }
+            | ContainerStep::Remove { logs_to_read, .. }) = step
+            else {
+                panic!("expected a removal, got {step:?}");
+            };
+            logs_to_read
+        };
+        let service = |runtime| present_as(ContainerKind::ServiceContainer, runtime, "img");
+        let exited = ContainerRuntimeObservation::Exited { code: 1 };
+        let running = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Healthy,
+        };
+
+        assert!(
+            logs_to_read(discarded(Drain::NONE), service(running.clone())),
+            "a running start discarded with no drain"
+        );
+        assert!(
+            logs_to_read(discarded(Drain::NONE), service(exited.clone())),
+            "a start that crashed before its discard"
+        );
+        assert!(
+            !logs_to_read(
+                discarded(Drain::NONE),
+                service(ContainerRuntimeObservation::Created)
+            ),
+            "a start Docker never ran has no lines"
+        );
+        assert!(!logs_to_read(discarded(Drain::NONE), hook(running)));
+        assert!(!logs_to_read(discarded(Drain::NONE), hook(exited)));
     }
 
     #[test]
@@ -661,7 +712,11 @@ mod plan {
             );
             assert_eq!(
                 plan_container(gone(), &exited("img"), &phase),
-                ContainerStep::Remove(id('a'), AnonymousVolumes::Remove)
+                ContainerStep::Remove {
+                    id: id('a'),
+                    anonymous_volumes: AnonymousVolumes::Remove,
+                    logs_to_read: true,
+                }
             );
         }
         assert_eq!(
@@ -1835,6 +1890,144 @@ mod stopped_on_request {
             "no row outlives its Container's spec"
         );
         fixture.finish();
+    }
+
+    mod removal_wait {
+        use super::*;
+        use crate::machine::local_machine::container::log_read_remaining;
+
+        const GRACE: Duration = Duration::from_secs(2);
+
+        fn removal(fixture: &Fixture, drain: Drain) -> ContainerWant {
+            ContainerWant::Gone {
+                container: ContainerLocator::Id(fixture.id),
+                drain,
+                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+            }
+        }
+
+        async fn connect(fixture: &Fixture) {
+            fixture
+                .local
+                .set_push_target(ployz_core::SetPushTargetRequest {
+                    url: Some(
+                        "https://cloud.example/api/machines/aa/observe"
+                            .parse()
+                            .unwrap(),
+                    ),
+                })
+                .await
+                .unwrap();
+        }
+
+        async fn removed_in(fixture: &Fixture, drain: Drain) -> Duration {
+            let began = std::time::Instant::now();
+            let reply = fixture
+                .local
+                .ensure_full_access(removal(fixture, drain))
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    reply,
+                    EnsuredContainer::Ensured {
+                        now: ContainerNow::Absent { .. },
+                        ..
+                    }
+                ),
+                "expected the container gone, got {reply:?}"
+            );
+            began.elapsed()
+        }
+
+        #[tokio::test]
+        async fn removing_a_running_container_waits_for_the_collector_to_read_its_log() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+
+            let took = removed_in(&fixture, Drain::try_from(1).unwrap()).await;
+
+            assert!(took >= GRACE, "removed after {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn a_discarded_start_waits_too_whatever_its_drain() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+
+            let took = removed_in(&fixture, Drain::NONE).await;
+
+            assert!(took >= GRACE, "discarded after {took:?}");
+            fixture.finish();
+        }
+
+        #[test]
+        fn the_wait_is_what_remains_of_the_grace_after_the_exit() {
+            let now = chrono::Utc::now();
+            let ago = |millis| Some(now - chrono::Duration::milliseconds(millis));
+            for (exited_at, wait) in [
+                (ago(0), GRACE),
+                (ago(500), Duration::from_millis(1_500)),
+                (ago(2_000), Duration::ZERO),
+                (ago(60_000), Duration::ZERO),
+                (ago(-1_000), GRACE),
+                (None, GRACE),
+            ] {
+                assert_eq!(
+                    log_read_remaining(exited_at, now),
+                    wait,
+                    "exited {exited_at:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_container_that_exited_long_ago_is_removed_without_waiting() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+            fixture.docker_sets(&[
+                ("/State/Status", json!("exited")),
+                ("/State/Running", json!(false)),
+                (
+                    "/State/FinishedAt",
+                    json!((chrono::Utc::now() - chrono::Duration::seconds(30)).to_rfc3339()),
+                ),
+            ]);
+
+            let took = removed_in(&fixture, Drain::NONE).await;
+
+            assert!(took < GRACE, "removed after {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn a_removal_with_no_cloud_does_not_wait() {
+            let fixture = Fixture::start().await;
+            let took = removed_in(&fixture, Drain::try_from(1).unwrap()).await;
+            assert!(took < GRACE, "a removal with no Collector took {took:?}");
+            fixture.finish();
+        }
+
+        #[tokio::test]
+        async fn the_wait_leaves_the_machines_turn_free() {
+            let fixture = Fixture::start().await;
+            connect(&fixture).await;
+            let local = fixture.local.clone();
+            let want = removal(&fixture, Drain::try_from(1).unwrap());
+            let removing = tokio::spawn(async move { local.ensure_full_access(want).await });
+            // real-wait: the removal reaches its wait through the fake Docker's TCP
+            // socket, which emits no event.
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+            tokio::time::timeout(Duration::from_millis(300), fixture.local.exclusive_turn())
+                .await
+                .expect("the removal's wait holds the Machine's turn");
+
+            assert!(!removing.is_finished(), "the removal did not wait");
+            removing.await.unwrap().unwrap();
+            fixture.finish();
+        }
     }
 
     mod stop_checked {

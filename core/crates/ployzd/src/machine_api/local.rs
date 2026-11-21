@@ -11,8 +11,8 @@ use ployz_core::{
     ClusterDoorsDeclared, ClusterNamed, ContainerId, ContainerList, ContainerObservation,
     ContractDescription, EndpointSelected, EnvironmentValues, Evidence, Gate, GateReason,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLayout, MachineLogService,
-    MachineRpc, OpaquePayload, PROTOCOL_MAJOR, RetainedEnvReply, RoutedAddresses, RoutesRead, Rpc,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
+    MachineRpc, OpaquePayload, PROTOCOL_MAJOR, RoutedAddresses, RoutesRead, Rpc, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
 };
 use tonic::{Request, Response, Status};
 
@@ -26,10 +26,9 @@ use crate::{
         RecoveryError, SealingError, StoreError,
     },
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
-    observe::layout::RetainedEnv,
     route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
-    sealed_env::{self, Lines, SealedRecord},
+    sealed_env::SealedRecord,
 };
 
 #[derive(Clone)]
@@ -154,7 +153,7 @@ impl MachineService {
         self
     }
 
-    /// Serve history from the Log Store whose ployz-observe listens on `socket`.
+    /// Serve metric history from the ployz-observe that listens on `socket`.
     #[must_use]
     pub fn with_observe_socket(mut self, socket: PathBuf) -> Self {
         self.observe = crate::observe::ObserveClient::new(socket);
@@ -260,9 +259,6 @@ impl MachineService {
     }
 
     async fn sealed_record(&self, id: ContainerId) -> Result<Option<SealedRecord>, Status> {
-        if let Some(env) = self.observe.retained_env(id).await? {
-            return Ok(env.sealed().cloned());
-        }
         self.containers()
             .map_err(|error| Status::unavailable(error.message))?
             .observation()
@@ -319,7 +315,6 @@ impl MachineService {
 impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type BuildStream = RpcStream;
-    type LogHistoryStream = RpcStream;
     type TailLogsStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
 
@@ -753,28 +748,6 @@ impl MachineRpc for MachineService {
             .map(Response::new)
     }
 
-    async fn log_history(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::LogHistoryStream>, Status> {
-        let request =
-            op::LogHistory::from_request_body(request_body(request)?).map_err(invalid_request)?;
-        request.validate().map_err(Status::invalid_argument)?;
-        let rows = self.observe.history(request).await?;
-        let service = self.clone();
-        Ok(Response::new(sealed_env::scrub_history(rows, move |id| {
-            let service = service.clone();
-            async move {
-                let record = service.sealed_record(id).await;
-                let key_dir = service
-                    .containers()
-                    .ok()
-                    .and_then(ContainerRuntime::sealing_key_dir);
-                Lines::new(id, record, key_dir)
-            }
-        })))
-    }
-
     async fn metric_history(
         &self,
         request: Request<OpaquePayload>,
@@ -782,20 +755,6 @@ impl MachineRpc for MachineService {
         let request = expect::<op::MetricHistory>(request)?;
         request.validate().map_err(Status::invalid_argument)?;
         respond(self.observe.metrics(request).await?)
-    }
-
-    async fn retained_env(
-        &self,
-        request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::RetainedEnv>(request)?;
-        respond(RetainedEnvReply {
-            environment: self
-                .observe
-                .retained_env(request.container_id)
-                .await?
-                .map(RetainedEnv::into_values),
-        })
     }
 
     async fn tail_logs(

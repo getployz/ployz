@@ -16,15 +16,10 @@ class Client {
         const reader = await withRpcError(inner.containerLogs(input, sealed));
         return { next: () => withRpcError(reader.next()), cancel: () => reader.cancel() };
       },
-      history: async (input, sealed) => {
-        const reader = await withRpcError(inner.logHistory(input, sealed));
-        return { next: () => withRpcError(reader.next()), cancel: () => reader.cancel() };
-      },
     };
     this.runtime = {
       watch: (options = {}) => iterateWatch(() => inner.watch(), options && options.signal),
       logs: (options = {}) => runtimeLogs.logs(logTransport, options),
-      logHistory: (options) => runtimeLogs.history(logTransport, options),
       metricHistory: (input) => withRpcError(inner.metricHistory(input)),
     };
   }
@@ -62,7 +57,7 @@ class Client {
   }
 }
 
-forward(Client, native.Client, ["containerLogs", "logHistory", "metricHistory", "watch"]);
+forward(Client, native.Client, ["containerLogs", "metricHistory", "watch"]);
 
 function wrapProgress(start, signal, wrap = value => value) {
   signal?.throwIfAborted();

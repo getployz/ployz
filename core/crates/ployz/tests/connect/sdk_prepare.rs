@@ -101,6 +101,7 @@ async fn node_preparation_delivers_images_and_retains_them_through_confirmation(
                     health: ployz_core::HealthObservation::Healthy,
                 },
             ),
+            last_exit_code: None,
             leaving: false,
         });
         service.builds = Some(recorder.clone());

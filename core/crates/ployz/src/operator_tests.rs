@@ -16,9 +16,9 @@ use ployz_core::{
     ServiceSelector,
 };
 
-use super::{input::parse_service_args, *};
+use super::*;
 
-const MACHINE_ONE: u8 = 1;
+pub(super) const MACHINE_ONE: u8 = 1;
 
 /// A Cluster where machine-1 holds `containers` and machine-2 holds none, and
 /// answers only when `second_answers`.
@@ -73,7 +73,7 @@ async fn exec_cluster(
     .await
 }
 
-fn api_on_machine_one(runtime: ContainerRuntimeObservation) -> ContainerObservation {
+pub(super) fn api_on_machine_one(runtime: ContainerRuntimeObservation) -> ContainerObservation {
     let mut parts = ContainerObservationParts::from(container_on(
         &"a".repeat(64),
         "api",
@@ -86,7 +86,7 @@ fn api_on_machine_one(runtime: ContainerRuntimeObservation) -> ContainerObservat
     ContainerObservation::try_from(parts).unwrap()
 }
 
-fn running() -> ContainerRuntimeObservation {
+pub(super) fn running() -> ContainerRuntimeObservation {
     ContainerRuntimeObservation::Running {
         health: HealthObservation::Healthy,
     }
@@ -938,64 +938,16 @@ fn logs_ask_a_down_server_so_it_can_be_named_as_a_gap() {
 }
 
 #[test]
-fn exact_history_preserves_selectors_and_rejects_live_resolution() {
-    let args = ["app/api", "app/gone", "app/api"].map(|service| ServiceArg {
-        service: service_selector(service),
-        containers: Vec::new(),
-    });
-    let read = |service: &str| HistorySelector::service("app", service, Some("dep_old"));
-    assert_eq!(
-        qualified_history_selectors(&args, Some("dep_old")),
-        Some(vec![read("api"), read("gone"), read("api")])
-    );
-    assert_eq!(
-        qualified_history_selectors(&args, None)
-            .unwrap()
-            .first()
-            .unwrap()
-            .deployment,
-        None
-    );
-    for named in [
-        vec![],
-        strings(["api"]),
-        strings(["app/api", "gone"]),
-        strings(["11111111111111111111111111111111"]),
-        strings(["app/api:api-1"]),
-        strings(["app/gone", "app/api:aaaaaaaaaaaa"]),
-    ] {
-        assert!(
-            qualified_history_selectors(&parse_service_args(&named).unwrap(), None).is_none(),
-            "{named:?}"
-        );
-    }
-}
-
-#[test]
-fn answered_servers_and_names_keep_the_server_listing_order() {
+fn names_keep_the_server_listing_order() {
     // Listed alpha then zulu; zulu has the lower id, so id order would flip them.
     let alpha = machine_observation(2, "alpha");
     let zulu = machine_observation(1, "zulu");
     let listed = [alpha.clone(), zulu.clone()];
     let names = MachineNames::of(&listed);
-    let scope = LogScope {
-        asked: HashSet::from([alpha.machine.id, zulu.machine.id]),
-        live: ployz_core::derive_live_services(ployz_core::PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        }),
-        unanswered: Unanswered {
-            failures: Vec::new(),
-            omissions: Vec::new(),
-            names: names.clone(),
-        },
-    };
     let expected = vec![
         (alpha.machine.id, alpha.machine.name),
         (zulu.machine.id, zulu.machine.name.clone()),
     ];
-    assert_eq!(scope.answered(), expected);
     assert_eq!(
         names
             .iter()
@@ -1006,53 +958,6 @@ fn answered_servers_and_names_keep_the_server_listing_order() {
     assert_eq!(names.name_of(zulu.machine.id), "zulu");
     let unlisted = MachineId::parse(format!("{:032x}", 9)).unwrap();
     assert_eq!(names.name_of(unlisted), unlisted.to_string());
-}
-
-#[test]
-fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
-    let up = machine_observation(1, "edge");
-    let down = machine_observation(3, "down");
-    let failure = ployz_core::MachineFailure {
-        machine_id: down.machine.id,
-        error: ployz_core::RpcError::unavailable("down"),
-    };
-    let running = observed_service();
-    let scope = LogScope {
-        asked: HashSet::from([up.machine.id, down.machine.id]),
-        live: ployz_core::derive_live_services(ployz_core::PartialResult {
-            successes: vec![ployz_core::MachineSuccess {
-                machine_id: up.machine.id,
-                value: running
-                    .containers
-                    .iter()
-                    .map(|container| container.as_observation().clone())
-                    .collect(),
-            }],
-            failures: vec![failure.clone()],
-            omissions: Vec::new(),
-        }),
-        unanswered: Unanswered {
-            failures: vec![failure],
-            omissions: Vec::new(),
-            names: MachineNames::of(&[up.clone(), down]),
-        },
-    };
-    assert_eq!(scope.answered(), vec![(up.machine.id, up.machine.name)]);
-
-    let arg = |service: &str| ServiceArg {
-        service: service_selector(service),
-        containers: Vec::new(),
-    };
-    let selectors = history_selectors(
-        &scope,
-        &[arg("app/api"), arg("app/gone")],
-        None,
-        Some("dep_old"),
-    )
-    .unwrap();
-    let read = |service: &str| HistorySelector::service("app", service, Some("dep_old"));
-    assert_eq!(selectors, vec![read("api"), read("gone")]);
-    assert!(history_selectors(&scope, &[arg("gone")], None, None).is_err());
 }
 
 #[test]
@@ -1128,11 +1033,7 @@ fn every_service_logs_skip_a_service_with_nothing_on_the_asked_servers() {
     ));
 }
 
-fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
-    values.into_iter().map(ToOwned::to_owned).collect()
-}
-
-fn service_selector(value: &str) -> ServiceSelector {
+pub(super) fn service_selector(value: &str) -> ServiceSelector {
     ServiceSelector::parse(value).unwrap()
 }
 
@@ -1140,7 +1041,7 @@ fn container_selector(value: &str) -> ContainerSelector {
     ContainerSelector::parse(value).unwrap()
 }
 
-fn machine_observation(seed: u8, name: &str) -> MachineObservation {
+pub(super) fn machine_observation(seed: u8, name: &str) -> MachineObservation {
     MachineObservation::new(
         ployz_core::Machine {
             labels: Default::default(),

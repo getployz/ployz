@@ -1,21 +1,8 @@
-//! The Log Store's shape on disk.
+//! The observe store's shape on disk.
 //!
 //! ```text
-//! <DockerRootDir>/ployz-observe/        other version dirs here are deleted
+//! <data_dir>/observe/                   other version dirs here are deleted
 //!   v1/                                 StoreRoot; other entries are ignored
-//!     containers/
-//!       <cid>/                          one per container Ployz ran
-//!         meta.json                     ContainerMeta
-//!         env.json                      RetainedEnv, the env the first
-//!                                       inspect saw, kept to scrub the
-//!                                       lines after Docker forgets it
-//!         gaps.jsonl                    one Gap per line
-//!         exits.jsonl                   one RunExit per line, each run's
-//!                                       exit the harvester saw
-//!         scanned                       seq of the newest file the damage
-//!                                       scan has read past
-//!         first-set.json                FirstSeen, until max-file judges it
-//!         <seq>-<ino>.log               a hardlink to one Docker log file, raw
 //!     metrics/
 //!       raw/
 //!         <hour>.jsonl                  every metric row of one hour, one
@@ -48,121 +35,15 @@
 //!     resume-from                       the newest Docker event's time, where
 //!                                       a restarted harvester resumes
 //! ```
-//!
-//! The store sits under `DockerRootDir` because a hardlink only works on the
-//! filesystem that holds Docker's files. `seq` orders a container's files
-//! oldest first; `ino` is the inode Docker wrote, so a rescan can tell which
-//! of Docker's files the store already holds.
 
 use std::{
-    collections::BTreeMap,
     fmt, fs, io,
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
 };
 
-use ployz_core::ContainerId;
-use serde::{Deserialize, Serialize};
-
-use crate::sealed_env::{self, SealedRecord};
-
-const STORE_DIR: &str = "ployz-observe";
+const STORE_DIR: &str = "observe";
 pub const VERSION_DIR: &str = "v1";
-pub const CONTAINERS_DIR: &str = "containers";
-pub const META_FILE: &str = "meta.json";
-pub const ENV_FILE: &str = "env.json";
-pub const GAPS_FILE: &str = "gaps.jsonl";
-pub const EXITS_FILE: &str = "exits.jsonl";
-pub const LINKING_FILE: &str = "linking.tmp";
-pub const SCANNED_FILE: &str = "scanned";
-pub const FIRST_SET_FILE: &str = "first-set.json";
-
-/// What a Container's directory holds, with whether the file is written through
-/// [`crate::filesystem::atomic_write`] and so has a temporary twin beside it. A new
-/// per-Container file is added here, or cleanup leaves it behind when it removes the
-/// directory.
-const STORE_FILES: [(&str, bool); 7] = [
-    (META_FILE, true),
-    (ENV_FILE, true),
-    (GAPS_FILE, false),
-    (EXITS_FILE, true),
-    (LINKING_FILE, false),
-    (SCANNED_FILE, true),
-    (FIRST_SET_FILE, true),
-];
-
-/// The names cleanup may unlink from a Container's directory: each stored file and the
-/// temporary twin a crash can leave beside it.
-pub(crate) fn store_file_names() -> Vec<String> {
-    let mut names = Vec::new();
-    for (name, has_twin) in STORE_FILES {
-        names.push(name.to_owned());
-        if has_twin && let Some(twin) = crate::filesystem::temporary_path(Path::new(name)).to_str()
-        {
-            names.push(twin.to_owned());
-        }
-    }
-    names
-}
-
-/// `meta.json` in `dir`: `None` when it is not there, `InvalidData` when it does not
-/// parse.
-pub(crate) fn read_meta(dir: &Path) -> io::Result<Option<ContainerMeta>> {
-    match fs::read(dir.join(META_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-/// Appends one JSON line to `path`. A line an earlier append left unfinished
-/// is cut off first, and a failed append is cut back off, so every line the
-/// file ends up with is whole.
-pub(crate) fn append_line(path: &Path, value: &impl Serialize) -> io::Result<()> {
-    use std::{io::Read as _, os::unix::fs::OpenOptionsExt as _};
-    let mut line = serde_json::to_vec(value).map_err(io::Error::other)?;
-    line.push(b'\n');
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)?;
-    let mut recorded = Vec::new();
-    file.read_to_end(&mut recorded)?;
-    let whole = recorded
-        .iter()
-        .rposition(|&byte| byte == b'\n')
-        .map_or(0, |end| end + 1);
-    if whole < recorded.len() {
-        file.set_len(whole as u64)?;
-    }
-    let appended = write_line(&mut file, &line);
-    if appended.is_err() {
-        drop(file.set_len(whole as u64));
-    }
-    appended
-}
-
-#[cfg(test)]
-thread_local! {
-    /// When set, each appended line writes this many bytes of itself and then
-    /// fails, as a write that runs out of disk does.
-    pub(crate) static GAP_WRITES_FAIL_AFTER: std::cell::Cell<Option<usize>> =
-        const { std::cell::Cell::new(None) };
-}
-
-fn write_line(file: &mut fs::File, line: &[u8]) -> io::Result<()> {
-    use std::io::Write as _;
-    #[cfg(test)]
-    if let Some(written) = GAP_WRITES_FAIL_AFTER.get() {
-        file.write_all(line.get(..written).unwrap_or(line))?;
-        return Err(io::Error::from(io::ErrorKind::StorageFull));
-    }
-    file.write_all(line)
-}
 
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
@@ -175,35 +56,24 @@ const ANALYTICS_DIR: &str = "analytics";
 const SALTS_FILE: &str = "salts.json";
 const SETTLED_DIR: &str = "settled";
 const RESUME_FILE: &str = "resume-from";
-const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
 /// Unix nanoseconds in a second, the unit metric rows are stamped in.
 pub(crate) const NANOS_PER_SEC: i64 = 1_000_000_000;
 
-/// The versioned root of the Log Store, `<DockerRootDir>/ployz-observe/v1`.
+/// The versioned root of the observe store, `<data_dir>/observe/v1`.
 #[derive(Clone, Debug)]
 pub struct StoreRoot(PathBuf);
 
 impl StoreRoot {
     #[must_use]
-    pub fn under(docker_root: &Path) -> Self {
-        Self(docker_root.join(STORE_DIR).join(VERSION_DIR))
+    pub fn under(data_dir: &Path) -> Self {
+        Self(data_dir.join(STORE_DIR).join(VERSION_DIR))
     }
 
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.0
-    }
-
-    #[must_use]
-    pub fn containers(&self) -> PathBuf {
-        self.0.join(CONTAINERS_DIR)
-    }
-
-    #[must_use]
-    pub fn container(&self, id: &ContainerId) -> PathBuf {
-        self.containers().join(id.as_str())
     }
 
     #[must_use]
@@ -241,7 +111,7 @@ impl StoreRoot {
         self.0.join(RESUME_FILE)
     }
 
-    /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.
+    /// `<data_dir>/observe`, which holds the version dirs.
     #[must_use]
     pub fn base(&self) -> &Path {
         self.0.parent().unwrap_or(&self.0)
@@ -268,7 +138,7 @@ impl StoreRoot {
             if name != VERSION_DIR && is_version_name(name) {
                 tracing::info!(
                     version = name,
-                    "deleting a Log Store this release cannot read"
+                    "deleting an observe store this release cannot read"
                 );
                 fs::remove_dir_all(entry.path())?;
             }
@@ -280,7 +150,7 @@ impl StoreRoot {
                 _ => {}
             }
         }
-        create_store_dir(&self.containers())
+        Ok(())
     }
 }
 
@@ -295,7 +165,7 @@ pub(super) fn create_store_dir(path: &Path) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "{} is not a dir; refusing to keep the Log Store there",
+            "{} is not a dir; refusing to keep the observe store there",
             path.display()
         )))
     }
@@ -313,29 +183,6 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
     }
 }
 
-/// The name of one stored log file, `<seq>-<ino>.log`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct LogFileName {
-    pub seq: u64,
-    pub ino: u64,
-}
-
-impl LogFileName {
-    /// Parses a stored log file name. Only the exact form this type prints
-    /// parses, so `01-2.log` or `1-2.log.bak` are someone else's files.
-    #[must_use]
-    pub fn parse(name: &[u8]) -> Option<Self> {
-        let name = std::str::from_utf8(name).ok()?;
-        let stem = name.strip_suffix(LOG_SUFFIX)?;
-        let (seq, ino) = stem.split_once('-')?;
-        let parsed = Self {
-            seq: canonical_u64(seq)?,
-            ino: canonical_u64(ino)?,
-        };
-        Some(parsed)
-    }
-}
-
 fn canonical_u64(digits: &str) -> Option<u64> {
     if digits.is_empty()
         || !digits.bytes().all(|b| b.is_ascii_digit())
@@ -344,12 +191,6 @@ fn canonical_u64(digits: &str) -> Option<u64> {
         return None;
     }
     digits.parse().ok()
-}
-
-impl fmt::Display for LogFileName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{}{LOG_SUFFIX}", self.seq, self.ino)
-    }
 }
 
 /// The name of one raw metric segment, `<start>.jsonl`, where `start` is
@@ -417,8 +258,8 @@ impl fmt::Display for SegmentName {
 /// What a container was, read from its labels when the store first saw it.
 pub use ployz_core::labels::Class as ContainerKind;
 
-/// The contents of `meta.json`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// What the harvester and the sampler read from one inspect's labels and state.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContainerMeta {
     pub service: Option<String>,
     pub namespace: Option<String>,
@@ -431,142 +272,10 @@ pub struct ContainerMeta {
     pub oom_killed: bool,
 }
 
-/// The env a Container ran with, kept in `env.json` so its lines can still be
-/// scrubbed once Docker no longer answers an inspect for it. Built from one
-/// inspect's `Config.Env` and Sealed label; what of it is kept is decided here
-/// alone. A value this Machine opened is kept only as its [`SealedRecord`].
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RetainedEnv {
-    values: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    sealed: Option<SealedRecord>,
-}
-
-impl RetainedEnv {
-    /// `None` when an entry is not `KEY=value`, as the inspect itself reports it,
-    /// or the Sealed label does not parse.
-    #[must_use]
-    pub fn from_inspected(entries: &[String], sealed_label: Option<&str>) -> Option<Self> {
-        let sealed = sealed_env::record_from_label(sealed_label).ok()?;
-        let mut values = crate::docker::parse_environment(entries)?;
-        for key in sealed.iter().flat_map(SealedRecord::keys) {
-            values.remove(key);
-        }
-        Some(Self { values, sealed })
-    }
-
-    #[must_use]
-    pub fn into_values(self) -> BTreeMap<String, String> {
-        self.values
-    }
-
-    #[must_use]
-    pub fn sealed(&self) -> Option<&SealedRecord> {
-        self.sealed.as_ref()
-    }
-
-    /// The env kept in `dir`, or `None` when no inspect wrote one.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error reading or decoding the file.
-    pub fn read(dir: &Path) -> io::Result<Option<Self>> {
-        match fs::read(dir.join(ENV_FILE)) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(io::Error::other),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Writes the env into `dir`, readable by the daemon alone.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error writing or renaming the file.
-    pub fn write(&self, dir: &Path) -> io::Result<()> {
-        let json = serde_json::to_vec(self).map_err(io::Error::other)?;
-        crate::filesystem::atomic_write(&dir.join(ENV_FILE), &json, 0o600)
-    }
-}
-
-/// Why a span of a container's output is missing from the store.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GapReason {
-    /// Docker deleted a file before the store linked it.
-    NotCaptured,
-    /// A frame the decoder could not parse.
-    Corrupt,
-}
-
-/// One line of `gaps.jsonl`. `from` and `to` are Unix nanoseconds; output
-/// between them may be missing.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Gap {
-    pub from: i64,
-    pub to: i64,
-    pub reason: GapReason,
-}
-
-/// One line of `exits.jsonl`: a run's exit at `ts`, in Unix nanoseconds.
-/// `meta.json` holds only the current run, so a restart would lose it.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RunExit {
-    pub ts: i64,
-    pub exit_code: Option<i64>,
-    pub oom_killed: bool,
-}
-
-/// The exits `exits.jsonl` holds. A line that does not parse is skipped.
-pub fn run_exits(bytes: &[u8]) -> impl Iterator<Item = RunExit> + '_ {
-    bytes
-        .split(|&byte| byte == b'\n')
-        .filter_map(|line| serde_json::from_slice(line).ok())
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{fs, io};
-
-    use super::{LogFileName, SegmentName, StoreRoot, read_meta, store_file_names};
+    use super::{SegmentName, StoreRoot};
     use crate::test_dir::TestDir;
-
-    #[test]
-    fn cleanup_may_unlink_exactly_the_files_a_container_directory_holds() {
-        let mut names = store_file_names();
-        names.sort();
-        assert_eq!(
-            names,
-            [
-                "env.json",
-                "env.tmp",
-                "exits.jsonl",
-                "exits.tmp",
-                "first-set.json",
-                "first-set.tmp",
-                "gaps.jsonl",
-                "linking.tmp",
-                "meta.json",
-                "meta.tmp",
-                "scanned",
-                "scanned.tmp",
-            ]
-        );
-    }
-
-    #[test]
-    fn stored_metadata_is_absent_or_invalid_data_never_another_error() {
-        let test = TestDir::new("ployzd-observe-meta");
-        fs::create_dir_all(&test.0).unwrap();
-        assert!(read_meta(&test.0).unwrap().is_none());
-        fs::write(test.0.join("meta.json"), "{").unwrap();
-        assert_eq!(
-            read_meta(&test.0).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-    }
 
     #[test]
     fn a_segment_spans_its_hour_in_unix_nanoseconds() {
@@ -575,30 +284,6 @@ mod tests {
         assert_eq!(name.end_nanos(), 1_760_000_400_000_000_000);
         assert_eq!(SegmentName::containing(name.end_nanos() - 1), Some(name));
         assert_ne!(SegmentName::containing(name.end_nanos()), Some(name));
-    }
-
-    #[test]
-    fn log_file_names_parse_only_in_their_printed_form() {
-        let name = LogFileName {
-            seq: 12,
-            ino: 4_000_123,
-        };
-        assert_eq!(name.to_string(), "12-4000123.log");
-        assert_eq!(LogFileName::parse(b"12-4000123.log"), Some(name));
-        for foreign in [
-            &b"012-4.log"[..],
-            b"1-04.log",
-            b"1-2.log.bak",
-            b"1-2",
-            b"-2.log",
-            b"1-.log",
-            b"1--2.log",
-            b"+1-2.log",
-            b"meta.json",
-            b"99999999999999999999-1.log",
-        ] {
-            assert_eq!(LogFileName::parse(foreign), None, "{foreign:?}");
-        }
     }
 
     #[test]
@@ -634,8 +319,8 @@ mod tests {
     #[test]
     fn prepare_replaces_unknown_versions_and_leaves_other_entries() {
         let docker = TestDir::new("ployzd-observe-layout");
-        let parent = docker.0.join("ployz-observe");
-        std::fs::create_dir_all(parent.join("v2/containers/x")).unwrap();
+        let parent = docker.0.join("observe");
+        std::fs::create_dir_all(parent.join("v2/outbox/x")).unwrap();
         std::fs::create_dir_all(parent.join("notes")).unwrap();
         std::fs::write(parent.join("v1x"), b"keep").unwrap();
         let root = StoreRoot::under(&docker.0);
@@ -644,7 +329,7 @@ mod tests {
         assert!(!parent.join("v2").exists());
         assert!(parent.join("notes").is_dir());
         assert!(parent.join("v1x").is_file());
-        assert!(root.containers().is_dir());
+        assert!(root.path().is_dir());
     }
 
     #[test]
@@ -663,9 +348,9 @@ mod tests {
     fn prepare_refuses_a_symlinked_store_dir() {
         let docker = TestDir::new("ployzd-observe-layout-symlink");
         let elsewhere = docker.0.join("elsewhere");
-        std::fs::create_dir_all(elsewhere.join("containers")).unwrap();
-        std::fs::create_dir_all(docker.0.join("ployz-observe")).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, docker.0.join("ployz-observe/v1")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(docker.0.join("observe")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, docker.0.join("observe/v1")).unwrap();
         assert!(StoreRoot::under(&docker.0).prepare().is_err());
     }
 }

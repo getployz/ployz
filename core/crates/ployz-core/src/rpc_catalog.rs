@@ -111,10 +111,8 @@ macro_rules! rpc_catalog {
                 SetClusterName: (set_cluster_name, SetClusterNameRequest, ClusterNamed, SET_CLUSTER_NAME_CAPABILITY, "ployz.cluster.name.v1", Cluster, Operator),
                 SetClusterDoors: (set_cluster_doors, SetClusterDoorsRequest, ClusterDoorsDeclared, SET_CLUSTER_DOORS_CAPABILITY, "ployz.cluster.doors.v1", Cluster, Operator),
                 MetricHistory: (metric_history, MetricHistoryRequest, MetricHistoryReply, METRIC_HISTORY_CAPABILITY, "ployz.metrics.history.v1", Container, Operator),
-                RetainedEnv: (retained_env, RetainedEnvRequest, RetainedEnvReply, RETAINED_ENV_CAPABILITY, "ployz.logs.retained-env.v1", Container, Operator),
             }
             server_streaming {
-                LogHistory: (log_history, LogHistoryRequest, LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container, Operator),
                 TailLogs: (tail_logs, TailLogsRequest, TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1", Container, Operator),
                 RuntimeWatch: (runtime_watch, RuntimeWatchRequest, RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Cluster, Operator),
             }

@@ -15,11 +15,7 @@ use crate::{
     machine::LocalMachineStore,
     observe::{
         layout::StoreRoot,
-        ship::{
-            crash::Outbox,
-            fixtures::{crash, held, store},
-            requests::RequestOutbox,
-        },
+        ship::{fixtures::store, requests::RequestOutbox},
     },
 };
 
@@ -69,6 +65,20 @@ fn backoff_doubles_to_its_cap_honors_retry_after_and_resets() {
     );
     backoff.reset();
     assert!(retry_delay(&mut backoff, None) <= BACKOFF_FLOOR);
+}
+
+fn requests(store: &StoreRoot, rows: usize) -> Arc<RequestOutbox> {
+    let outbox = RequestOutbox::open(store).unwrap();
+    for n in 0..rows {
+        outbox.push(&serde_json::json!({ "n": n })).unwrap();
+    }
+    outbox
+}
+
+fn queued(store: &StoreRoot, rows: usize) -> Arc<RequestOutbox> {
+    let outbox = requests(store, rows);
+    outbox.seal();
+    outbox
 }
 
 type Reply = (StatusCode, Option<&'static str>);
@@ -133,9 +143,7 @@ impl Cloud {
 #[tokio::test]
 async fn entries_leave_the_outbox_only_when_cloud_acks_them() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
-    outbox.push(crash(9)).unwrap();
+    let outbox = queued(&store, 2);
     let (cloud, url) = Cloud::serve(vec![
         (StatusCode::SERVICE_UNAVAILABLE, None),
         (StatusCode::UNAUTHORIZED, None),
@@ -150,33 +158,23 @@ async fn entries_leave_the_outbox_only_when_cloud_acks_them() {
 
     for _ in 0..3 {
         assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
-        assert_eq!(held(&outbox), [5, 9]);
+        assert_eq!(outbox.held_rows(), 2);
     }
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert_eq!(held(&outbox), [] as [u64; 0]);
+    assert_eq!(outbox.held_rows(), 0);
     assert_eq!(shipper.ship_once().await, Shipped::Idle);
 
     let bodies = cloud.bodies();
     assert_eq!(bodies.len(), 4);
-    assert_eq!(
-        bodies.last(),
-        Some(&serde_json::json!({
-            "stream": "crash",
-            "seq": "9",
-            "dropped": 0,
-            "events": [
-                { "seq": "5", "marker": serde_json::to_value(crash(5)).unwrap() },
-                { "seq": "9", "marker": serde_json::to_value(crash(9)).unwrap() },
-            ],
-        }))
-    );
+    for body in &bodies {
+        assert_eq!(body["rows"], serde_json::json!([{ "n": 0 }, { "n": 1 }]));
+    }
 }
 
 #[tokio::test]
 async fn cloud_turning_the_machine_away_warns_once_every_few_minutes() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
+    let outbox = queued(&store, 1);
     let (_cloud, url) = Cloud::serve(vec![
         (StatusCode::UNAUTHORIZED, None),
         (StatusCode::NOT_FOUND, None),
@@ -205,50 +203,13 @@ async fn cloud_turning_the_machine_away_warns_once_every_few_minutes() {
         warnings.iter().all(|line| line.contains("status=401")),
         "{journal}"
     );
-    assert_eq!(held(&outbox), [5]);
-}
-
-#[tokio::test]
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-async fn a_batch_cloud_refuses_is_dropped_and_counted_and_the_next_one_ships() {
-    let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    let (cloud, url) = Cloud::serve(vec![
-        (StatusCode::IM_A_TEAPOT, None),
-        (StatusCode::BAD_REQUEST, None),
-        (StatusCode::PAYLOAD_TOO_LARGE, None),
-        (StatusCode::UNPROCESSABLE_ENTITY, None),
-        (StatusCode::NO_CONTENT, None),
-    ])
-    .await;
-    let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
-        Some(pusher(&url))
-    })
-    .unwrap();
-
-    outbox.push(crash(5)).unwrap();
-    assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
-    assert_eq!(held(&outbox), [5]);
-    for ts in 6..=8 {
-        outbox.push(crash(ts)).unwrap();
-        assert_eq!(shipper.ship_once().await, Shipped::Progress);
-        assert_eq!(held(&outbox), [] as [u64; 0]);
-    }
-    outbox.push(crash(9)).unwrap();
-    assert_eq!(shipper.ship_once().await, Shipped::Progress);
-    assert_eq!(held(&outbox), [] as [u64; 0]);
-
-    let bodies = cloud.bodies();
-    assert_eq!(bodies.len(), 5);
-    assert_eq!(bodies[4]["dropped"], 4);
-    assert_eq!(bodies[4]["events"][0]["seq"], "9");
+    assert_eq!(outbox.held_rows(), 1);
 }
 
 #[tokio::test]
 async fn rate_limits_and_outages_keep_the_batch_and_pass_on_retry_after() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
+    let outbox = queued(&store, 1);
     let (_cloud, url) = Cloud::serve(vec![
         (StatusCode::TOO_MANY_REQUESTS, Some("12")),
         (StatusCode::TOO_MANY_REQUESTS, None),
@@ -273,14 +234,13 @@ async fn rate_limits_and_outages_keep_the_batch_and_pass_on_retry_after() {
             after: Some(Duration::from_secs(3))
         }
     );
-    assert_eq!(held(&outbox), [5]);
+    assert_eq!(outbox.held_rows(), 1);
 }
 
 #[tokio::test]
 async fn a_network_error_keeps_the_batch() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
+    let outbox = queued(&store, 1);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url: Url = format!("http://{}/push", listener.local_addr().unwrap())
         .parse()
@@ -291,14 +251,13 @@ async fn a_network_error_keeps_the_batch() {
     })
     .unwrap();
     assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
-    assert_eq!(held(&outbox), [5]);
+    assert_eq!(outbox.held_rows(), 1);
 }
 
 #[tokio::test]
 async fn without_a_target_the_outbox_only_buffers() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
+    let outbox = queued(&store, 1);
     let data = tempfile::tempdir().unwrap();
     let data_dir = data.path().to_path_buf();
     let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
@@ -308,7 +267,7 @@ async fn without_a_target_the_outbox_only_buffers() {
     assert_eq!(shipper.ship_once().await, Shipped::Idle);
     drop(LocalMachineStore::open(data.path()).unwrap());
     assert_eq!(shipper.ship_once().await, Shipped::Idle);
-    assert_eq!(held(&outbox), [5]);
+    assert_eq!(outbox.held_rows(), 1);
 }
 
 #[test]
@@ -355,8 +314,7 @@ fn the_signature_matches_the_shared_known_answer_vector() {
 #[tokio::test]
 async fn a_push_is_signed_over_the_exact_bytes_cloud_receives() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
+    let outbox = queued(&store, 1);
     let (cloud, url) = Cloud::serve(vec![(StatusCode::NO_CONTENT, None)]).await;
     let shipper = Shipper::new(outbox, fresh_salts(&store), move || Some(pusher(&url))).unwrap();
     let before = unix_seconds();
@@ -399,7 +357,7 @@ fn acme_covered(salts: &Salts) -> bool {
 #[tokio::test]
 async fn a_200_ack_replaces_the_salts_and_a_204_or_an_odd_body_keeps_them() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
+    let outbox = requests(&store, 0);
     let (_cloud, url) = Cloud::serve(vec![
         (StatusCode::OK, Some(ACK)),
         (StatusCode::NO_CONTENT, None),
@@ -411,20 +369,21 @@ async fn a_200_ack_replaces_the_salts_and_a_204_or_an_odd_body_keeps_them() {
 
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
     assert!(acme_covered(&salts));
-    for ts in [5, 6] {
-        outbox.push(crash(ts)).unwrap();
+    for _ in 0..2 {
+        outbox.push(&serde_json::json!({})).unwrap();
+        outbox.seal();
         assert_eq!(shipper.ship_once().await, Shipped::Progress);
         assert!(acme_covered(&salts));
     }
     assert!(!salts.stale(unix_seconds()));
-    assert_eq!(held(&outbox), [] as [u64; 0]);
+    assert_eq!(outbox.held_rows(), 0);
 }
 
 #[tokio::test]
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-async fn a_stale_cache_asks_with_an_empty_crash_batch_at_the_crash_cursor() {
+async fn a_stale_cache_asks_with_an_empty_batch_at_the_last_seq() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
+    let outbox = requests(&store, 0);
     let (cloud, url) = Cloud::serve(vec![
         (StatusCode::NO_CONTENT, None),
         (StatusCode::NO_CONTENT, None),
@@ -437,26 +396,27 @@ async fn a_stale_cache_asks_with_an_empty_crash_batch_at_the_crash_cursor() {
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
     assert_eq!(shipper.ship_once().await, Shipped::Idle);
     *shipper.salts_asked.lock().unwrap() = None;
-    outbox.push(crash(5)).unwrap();
+    outbox.push(&serde_json::json!({ "n": 0 })).unwrap();
+    outbox.seal();
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
     assert!(!salts.stale(unix_seconds()));
     assert_eq!(shipper.ship_once().await, Shipped::Idle);
 
     let bodies = cloud.bodies();
-    let empty = |seq: &str| serde_json::json!({ "stream": "crash", "seq": seq, "dropped": 0, "events": [] });
     assert_eq!(bodies.len(), 3);
+    let empty = |seq: &str| serde_json::json!({ "stream": "requests", "seq": seq, "dropped": 0, "rows": [] });
     assert_eq!(bodies[0], empty("0"));
-    assert_eq!(bodies[1], empty("5"));
-    assert_eq!(bodies[2]["seq"], "5");
-    assert_eq!(bodies[2]["events"][0]["seq"], "5");
+    assert_eq!(bodies[1]["rows"], serde_json::json!([]));
+    assert_eq!(bodies[1]["seq"], bodies[2]["seq"]);
+    assert_ne!(bodies[1]["seq"], "0");
+    assert_eq!(bodies[2]["rows"], serde_json::json!([{ "n": 0 }]));
 }
 
 #[tokio::test]
-async fn stale_salts_are_asked_for_while_a_crash_batch_is_held() {
+async fn stale_salts_are_asked_for_while_a_requests_batch_is_held() {
     let (_root, store) = store();
-    let outbox = Outbox::open(&store).unwrap();
-    outbox.push(crash(5)).unwrap();
+    let outbox = queued(&store, 1);
     let (cloud, url) = Cloud::serve(vec![
         (StatusCode::SERVICE_UNAVAILABLE, None),
         (StatusCode::SERVICE_UNAVAILABLE, None),
@@ -472,23 +432,15 @@ async fn stale_salts_are_asked_for_while_a_crash_batch_is_held() {
     *shipper.salts_asked.lock().unwrap() = None;
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
     assert!(acme_covered(&salts));
-    assert_eq!(held(&outbox), [5]);
+    assert_eq!(outbox.held_rows(), 1);
     assert_eq!(
         cloud
             .bodies()
             .iter()
-            .map(|body| body["events"].as_array().unwrap().len())
+            .map(|body| body["rows"].as_array().unwrap().len())
             .collect::<Vec<_>>(),
         [0, 1, 0]
     );
-}
-
-fn requests(store: &StoreRoot, rows: usize) -> Arc<RequestOutbox> {
-    let outbox = RequestOutbox::open(store).unwrap();
-    for n in 0..rows {
-        outbox.push(&serde_json::json!({ "n": n })).unwrap();
-    }
-    outbox
 }
 
 #[tokio::test]
@@ -547,17 +499,6 @@ async fn requests_cloud_refuses_are_dropped_and_counted() {
     assert_eq!(shipper.ship_once().await, Shipped::Progress);
     assert_eq!(outbox.held_rows(), 0);
     assert_eq!(cloud.bodies()[1]["dropped"], 300);
-}
-
-#[tokio::test]
-async fn the_requests_shipper_never_asks_for_salts() {
-    let (_root, store) = store();
-    let outbox = requests(&store, 0);
-    let (cloud, url) = Cloud::serve(Vec::new()).await;
-    let salts = Arc::new(Salts::open(&store, 0));
-    let shipper = Shipper::new(outbox, salts, move || Some(pusher(&url))).unwrap();
-    assert_eq!(shipper.ship_once().await, Shipped::Idle);
-    assert!(cloud.bodies().is_empty());
 }
 
 fn cloud_source(path: &str) -> String {

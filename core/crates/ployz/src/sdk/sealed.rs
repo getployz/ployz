@@ -4,8 +4,7 @@
 use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, Shared};
 use ployz_core::{
-    ContainerId, HistoryRow, LogBody, LogEntry, LogLevel, LogMetadata, MachineId, RpcError,
-    log_level,
+    ContainerId, LogBody, LogEntry, LogLevel, LogMetadata, MachineId, RpcError, log_level,
 };
 use ployz_store::tools::{Channel, FrameScrub, SealedForms, SealedValues};
 use serde::Serialize;
@@ -18,14 +17,11 @@ use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
 
 use super::Session;
-use super::logs::{
-    ContainerLogInput, ContainerLogStream, LogChannel, LogHistoryInput, LogHistoryRecord,
-    LogHistoryStream, ROW_DEADLINE, container_env, history_record,
-};
+use super::logs::{ContainerLogInput, ContainerLogStream, LogChannel, container_env};
 use crate::connect::Client;
 
 /// How long a reader waits for names read after its Container's env before it hides.
-const NAMES_WAIT: std::time::Duration = ROW_DEADLINE;
+const NAMES_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What the Store held Sealed, as of one read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,7 +80,6 @@ struct State {
     wanted: Notify,
     closed: AtomicBool,
     envs: std::sync::Mutex<BTreeMap<(MachineId, ContainerId), EnvRead>>,
-    none: Arc<SealedForms>,
 }
 
 /// One read of the names in flight. Consumed by `done` or `failed`, so it lands once.
@@ -131,7 +126,6 @@ impl SealedNames {
                 wanted: Notify::new(),
                 closed: AtomicBool::new(false),
                 envs: std::sync::Mutex::default(),
-                none: Arc::new(SealedForms::none()),
             }),
         }
     }
@@ -193,7 +187,6 @@ impl SealedNames {
     async fn settle(
         &self,
         env: &EnvRead,
-        opened: Option<u64>,
         deadline: Instant,
         cancel: &CancellationToken,
     ) -> Settled {
@@ -207,7 +200,7 @@ impl SealedNames {
         };
         loop {
             let read = Arc::clone(&changes.borrow_and_update());
-            if let Some(settled) = verdict(&read, env.as_deref(), opened, &self.shared.none) {
+            if let Some(settled) = verdict(&read, env.as_deref()) {
                 return settled;
             }
             self.want();
@@ -247,23 +240,11 @@ impl PendingNames {
 }
 
 /// The fail-closed table: what the lines show, or None while names or the env are still to
-/// come. `env` is None until the Container's env has been read; `opened` is the newest
-/// `begin` before a history page opened.
-fn verdict(
-    read: &Read,
-    env: Option<&Env>,
-    opened: Option<u64>,
-    none: &Arc<SealedForms>,
-) -> Option<Settled> {
+/// come. `env` is None until the Container's env has been read.
+fn verdict(read: &Read, env: Option<&Env>) -> Option<Settled> {
     match &read.names {
         Names::Failed => Some(Settled::Hide),
         Names::Unread => None,
-        // Nothing was Sealed when these stored lines were read, so no env could hold a value.
-        Names::Only(names)
-            if names.is_empty() && opened.is_some_and(|opened| read.generation > opened) =>
-        {
-            Some(Settled::Show(Arc::clone(none)))
-        }
         Names::Every | Names::Only(_) => match env {
             None => None,
             // A Deploy may have Sealed a name and started this Container after these names were read.
@@ -336,22 +317,6 @@ struct LiveRead {
     ended: bool,
 }
 
-/// A history page reader that scrubs Sealed values and hides the lines it cannot check.
-pub struct ScrubbedHistoryStream {
-    raw: LogHistoryStream,
-    names: SealedNames,
-    client: Client,
-    machine: MachineId,
-    opened: u64,
-    read: Mutex<HistoryRead>,
-}
-
-#[derive(Default)]
-struct HistoryRead {
-    envs: BTreeMap<ContainerId, EnvRead>,
-    deadline: Option<Instant>,
-}
-
 impl Session {
     /// [`Session::container_logs`], scrubbed of the Sealed values in `names`. Reads the
     /// Container's env and waits for names that cover it before the Docker stream opens.
@@ -365,33 +330,12 @@ impl Session {
         let client = self.client()?;
         let env = names.env(&client, input.machine_id, input.container_id);
         let deadline = Instant::now() + NAMES_WAIT;
-        names.settle(&env, None, deadline, &self.inner.cancel).await;
+        names.settle(&env, deadline, &self.inner.cancel).await;
         let env = env.await;
         Ok(ScrubbedLogStream {
             raw: self.container_logs(input).await?,
             names: names.clone(),
             env,
-            read: Mutex::default(),
-        })
-    }
-
-    /// [`Session::log_history`], scrubbed of the Sealed values in `names`.
-    /// # Errors
-    /// Returns invalid input, closed-session, or Machine transport errors.
-    pub async fn scrubbed_history(
-        &self,
-        input: LogHistoryInput,
-        names: &SealedNames,
-    ) -> Result<ScrubbedHistoryStream, RpcError> {
-        let client = self.client()?;
-        let machine = input.machine_id;
-        let opened = names.shared.begun.load(Ordering::SeqCst);
-        Ok(ScrubbedHistoryStream {
-            raw: self.log_history(input).await?,
-            names: names.clone(),
-            client,
-            machine,
-            opened,
             read: Mutex::default(),
         })
     }
@@ -427,13 +371,7 @@ impl ScrubbedLogStream {
     }
 
     fn verdict(&self) -> Settled {
-        verdict(
-            &self.names.read(),
-            Some(&self.env),
-            None,
-            &self.names.shared.none,
-        )
-        .unwrap_or(Settled::Hide)
+        verdict(&self.names.read(), Some(&self.env)).unwrap_or(Settled::Hide)
     }
 }
 
@@ -530,74 +468,6 @@ const fn log_channel(channel: Channel) -> LogChannel {
 impl Drop for ScrubbedLogStream {
     fn drop(&mut self) {
         self.raw.cancel();
-    }
-}
-
-impl ScrubbedHistoryStream {
-    /// The next row, skipping heartbeats. `None` after `end`. A line that cannot be checked for
-    /// Sealed values comes as `hidden`, without its text.
-    /// # Errors
-    /// Returns the store's error row, malformed frames, transport failures,
-    /// and a timeout when the store sends no frame for ten seconds.
-    pub async fn next(&self) -> Result<Option<LogHistoryRecord>, RpcError> {
-        let Some(row) = self.raw.row().await? else {
-            return Ok(None);
-        };
-        let mut read = self.read.lock().await;
-        let (container_id, ts, stream, text) = match row {
-            HistoryRow::Container(container) => {
-                self.env(&mut read, container.container_id);
-                return Ok(Some(LogHistoryRecord::Container(container)));
-            }
-            HistoryRow::Line {
-                container_id,
-                ts,
-                stream,
-                text,
-            } => (container_id, ts, stream, text),
-            row @ (HistoryRow::Gap { .. }
-            | HistoryRow::Exit { .. }
-            | HistoryRow::End { .. }
-            | HistoryRow::Heartbeat
-            | HistoryRow::Error(_)) => return Ok(Some(history_record(row))),
-        };
-        let env = self.env(&mut read, container_id).clone();
-        let deadline = *read
-            .deadline
-            .get_or_insert_with(|| Instant::now() + NAMES_WAIT);
-        let verdict = self
-            .names
-            .settle(&env, Some(self.opened), deadline, self.raw.cancelled())
-            .await;
-        let timestamp_nanos = ts.to_string();
-        Ok(Some(match verdict {
-            Settled::Show(forms) => {
-                let message = forms.scrub(&String::from_utf8_lossy(&text), &mut 0);
-                LogHistoryRecord::Line {
-                    container_id,
-                    timestamp_nanos,
-                    stream,
-                    level: log_level(message.as_bytes()),
-                    message,
-                }
-            }
-            Settled::Hide => LogHistoryRecord::Hidden {
-                container_id,
-                timestamp_nanos,
-            },
-        }))
-    }
-
-    /// Stop this read only.
-    pub fn cancel(&self) {
-        self.raw.cancel();
-    }
-
-    /// `container`'s env read, started on its first row.
-    fn env<'read>(&self, read: &'read mut HistoryRead, container: ContainerId) -> &'read EnvRead {
-        read.envs
-            .entry(container)
-            .or_insert_with(|| self.names.env(&self.client, self.machine, container))
     }
 }
 

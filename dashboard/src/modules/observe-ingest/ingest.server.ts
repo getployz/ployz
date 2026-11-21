@@ -3,12 +3,10 @@ import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { Clock, Effect, Option, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
-import { createObserveCrashReceivedEvent } from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import type { CrashPushInput, RequestPushInput } from "#/modules/observe-ingest/ingest";
+import type { RequestPushInput } from "#/modules/observe-ingest/ingest";
 import { organizationOfSigningMachine, verifyManagementSignature } from "#/modules/observe-ingest/machine-signers.server";
-import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
-import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { classify } from "#/modules/web-analytics/classify";
 import { retentionCutoff } from "#/modules/web-analytics/local-time";
 import { dayOf, ensurePartitions } from "#/modules/web-analytics/postgres/partitions";
@@ -63,32 +61,6 @@ export const authenticateObservePush = Effect.fn("ObserveIngest.authenticate")(f
   return { organizationId, machineId } satisfies ObservePusher;
 });
 
-export const ingestCrashPush = Effect.fn("ObserveIngest.crash")(function* (pusher: ObservePusher, push: CrashPushInput) {
-  if (push.dropped > 0) {
-    yield* Effect.logWarning("A Machine dropped crash events it could not keep for Cloud.", { ...pusher, dropped: push.dropped });
-  }
-  const database = yield* Database;
-  yield* database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    yield* drizzle.insert(observeIngestCursor)
-      .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "crash", seq: push.seq })
-      .onConflictDoUpdate({
-        target: [observeIngestCursor.organizationId, observeIngestCursor.machineId, observeIngestCursor.stream],
-        set: { seq: sql`greatest(${observeIngestCursor.seq}, excluded.seq)`, updatedAt: new Date() },
-      });
-    if (push.events.length === 0) return;
-    const kept = yield* drizzle.insert(crashEvent)
-      .values(push.events.map((event) => ({ ...event, organizationId: pusher.organizationId, machineId: pusher.machineId })))
-      .onConflictDoNothing()
-      .returning({ id: crashEvent.id, serviceId: crashEvent.serviceId });
-    const firstByService = new Map<string, string>();
-    for (const row of kept) if (!firstByService.has(row.serviceId)) firstByService.set(row.serviceId, row.id);
-    for (const [serviceId, crashEventId] of firstByService) {
-      yield* enqueueEvent(createObserveCrashReceivedEvent({ organizationId: pusher.organizationId, serviceId }, crashEventId));
-    }
-  }));
-});
-
 const DAY_MS = 86_400_000;
 
 /** The rows of a requests push that land on a site with analytics on, within retention. */
@@ -115,7 +87,7 @@ const analyticsRows = Effect.fn("ObserveIngest.analyticsRows")(function* (pusher
 
 /**
  * Keeps the push's analytics rows, and advances the cursor even when it keeps none: a Machine that serves traffic keeps
- * its salts fresh with requests pushes and sends no crash refresh, so this cursor is its only recent push time.
+ * its salts fresh with requests pushes, empty ones when no traffic is queued, so this cursor is its only recent push time.
  */
 export const ingestRequestPush = Effect.fn("ObserveIngest.requests")(function* (pusher: ObservePusher, push: RequestPushInput) {
   if (push.dropped > 0) {

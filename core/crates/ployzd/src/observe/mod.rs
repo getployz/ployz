@@ -1,8 +1,8 @@
-//! The Log Store: Docker's `local` log files for Ployz containers, kept
-//! after Docker would delete them.
+//! The observe process: the metric sampler, the crash and request outboxes,
+//! and the Docker events loop that settles each container exit.
 //!
-//! The Observe Store only observes this Machine: it never places, moves, restarts
-//! or removes a container, and no Deploy waits on it.
+//! It only observes this Machine: it never places, moves, restarts or removes a
+//! container, and no Deploy waits on it.
 
 pub mod cleanup;
 mod client;
@@ -11,15 +11,10 @@ pub(crate) mod collector;
 mod exit_ledger;
 #[cfg(test)]
 mod fixtures;
-pub mod frame;
 mod harvest;
-mod hold;
-#[cfg(test)]
-mod integration_tests;
 pub mod layout;
 mod meta;
 pub(crate) mod metrics;
-mod query;
 mod request;
 mod salts;
 mod serve;
@@ -33,7 +28,6 @@ use std::{
     fs,
     fs::File,
     io,
-    io::Write,
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
@@ -41,21 +35,20 @@ use std::{
 
 use bollard::Docker;
 pub use client::ObserveClient;
-use frame::{Event, Frames, Stream};
 use fs2::FileExt;
-use layout::{LogFileName, StoreRoot};
+use layout::StoreRoot;
 use tokio::net::UnixListener;
 
-const DOCKER_LOG_FILE: &str = "container.log";
+const LEGACY_LOG_STORE: &str = "ployz-observe";
 const LOCK_FILE: &str = "harvester.lock";
 
-/// Runs the harvester, which holds the log files of every Ployz container in
-/// the Log Store, and the metric sampler until SIGTERM. `data_dir` holds the
+/// Runs the metric sampler, the shippers and the Docker events loop until
+/// SIGTERM. `data_dir` holds the observe store and the
 /// Machine record the sampler stamps rows with.
 ///
 /// # Errors
 ///
-/// Returns an error when Docker cannot be reached, another harvester holds
+/// Returns an error when Docker cannot be reached, another observe process holds
 /// the store, or the store or socket cannot be created.
 pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     crate::faults::check()?;
@@ -68,14 +61,15 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         .docker_root_dir
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::other("Docker did not report its root dir"))?;
-    let store = StoreRoot::under(&docker_root);
+    let store = StoreRoot::under(data_dir);
     let _lock = lock_store(&store)?;
     store.prepare()?;
+    remove_legacy_log_store(&docker_root);
     let listener = bind_socket(&ployz_core::MachineLayout::observe_socket_in(run_dir))?;
-    tracing::info!(store = %store.path().display(), "holding Ployz container logs");
+    tracing::info!(store = %store.path().display(), "observing this Machine");
     tokio::spawn(serve::serve(listener, store.clone()));
-    // The harvester's startup cleanup deletes raw hours older than a day, so
-    // a long downtime's hours are folded into rollups before it runs.
+    // Cleanup deletes raw hours older than a day, so a long downtime's hours
+    // are folded into rollups before it runs.
     if let Err(error) = metrics::rollup::fold_pending(&store, std::time::SystemTime::now()) {
         tracing::warn!(%error, "cannot fold metric hours");
     }
@@ -86,11 +80,11 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     ));
     let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds()));
     let crashes = ship::Outbox::open(&store)?;
-    spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;
+    spawn_crash_sender(crashes.clone(), data_dir)?;
     if let Err(error) = harvest_requests(&store, run_dir, data_dir, salts) {
-        tracing::warn!(%error, "cannot harvest requests; crash reports still ship");
+        tracing::warn!(%error, "cannot harvest requests; crash events still post");
     }
-    harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
+    harvest::Harvester::run(docker, store, data_dir.to_path_buf(), crashes).await
 }
 
 fn harvest_requests(
@@ -104,8 +98,8 @@ fn harvest_requests(
     request::spawn(run_dir, salts, requests)
 }
 
-fn spawn_shipper<S: ship::Stream>(
-    outbox: Arc<S>,
+fn spawn_shipper(
+    outbox: Arc<ship::RequestOutbox>,
     salts: Arc<salts::Salts>,
     data_dir: &Path,
 ) -> io::Result<()> {
@@ -116,13 +110,37 @@ fn spawn_shipper<S: ship::Stream>(
     Ok(())
 }
 
+fn spawn_crash_sender(crashes: Arc<ship::Outbox>, data_dir: &Path) -> io::Result<()> {
+    let machine_dir = data_dir.to_path_buf();
+    let sender = ship::CrashSender::new(crashes, collector::CRASH_RECEIVER, move || {
+        ship::push_target(&machine_dir).is_some()
+    })
+    .map_err(io::Error::other)?;
+    tokio::spawn(sender.run());
+    Ok(())
+}
+
+/// Deletes the Log Store an earlier release kept in Docker's root dir. Its
+/// files were links to Docker's own, so removing them frees only what the
+/// store alone held, and Docker's logs stay.
+fn remove_legacy_log_store(docker_root: &Path) {
+    let legacy = docker_root.join(LEGACY_LOG_STORE);
+    match fs::remove_dir_all(&legacy) {
+        Ok(()) => tracing::info!(path = %legacy.display(), "deleted the old Log Store"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(path = %legacy.display(), %error, "cannot delete the old Log Store");
+        }
+    }
+}
+
 fn lock_store(store: &StoreRoot) -> io::Result<File> {
     layout::create_store_dir(store.base())?;
     let lock = File::create(store.base().join(LOCK_FILE))?;
     lock.try_lock_exclusive().map_err(|error| {
         io::Error::new(
             error.kind(),
-            "another ployzd observe is already holding this Log Store",
+            "another ployzd observe is already running on this Machine",
         )
     })?;
     Ok(lock)
@@ -143,83 +161,4 @@ fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(listener)
-}
-
-/// Prints log files as `docker logs --timestamps` prints them, stdout lines
-/// to stdout and stderr lines to stderr. A dir prints its files oldest first,
-/// whether it is a store container dir or Docker's `local-logs` dir.
-///
-/// # Errors
-///
-/// Returns an error when a path cannot be read or output cannot be written.
-pub fn decode(paths: &[PathBuf]) -> io::Result<()> {
-    let stdout = io::stdout();
-    let stderr = io::stderr();
-    let mut out = io::BufWriter::new(stdout.lock());
-    let mut err = io::BufWriter::new(stderr.lock());
-    for path in paths {
-        for file in files_oldest_first(path)? {
-            let bytes = fs::read(&file)?;
-            let mut frames = Frames::new(&bytes);
-            for event in frames.by_ref() {
-                match event {
-                    Event::Entry(entry) => match entry.stream {
-                        Stream::Stdout => frame::write_docker_style(&entry, &mut out)?,
-                        Stream::Stderr => {
-                            out.flush()?;
-                            frame::write_docker_style(&entry, &mut err)?;
-                            err.flush()?;
-                        }
-                    },
-                    Event::Corrupt { offset, skipped } => {
-                        out.flush()?;
-                        writeln!(
-                            err,
-                            "ployzd: {}: skipped {skipped} unreadable bytes at offset {offset}",
-                            file.display()
-                        )?;
-                        err.flush()?;
-                    }
-                }
-            }
-        }
-    }
-    out.flush()?;
-    err.flush()
-}
-
-fn files_oldest_first(path: &Path) -> io::Result<Vec<PathBuf>> {
-    if !path.is_dir() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-    let mut stored = Vec::new();
-    let mut docker = Vec::new();
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if let Some(stored_name) = LogFileName::parse(name.as_encoded_bytes()) {
-            stored.push((stored_name.seq, entry.path()));
-        } else if let Some(age) = docker_file_age(&name.to_string_lossy()) {
-            docker.push((age, entry.path()));
-        }
-    }
-    stored.sort();
-    docker.sort_by_key(|(age, _)| std::cmp::Reverse(*age));
-    Ok(stored
-        .into_iter()
-        .chain(docker)
-        .map(|(_, path)| path)
-        .collect())
-}
-
-pub(crate) fn docker_file_age(name: &str) -> Option<u64> {
-    let rest = name.strip_prefix(DOCKER_LOG_FILE)?;
-    if rest.is_empty() {
-        return Some(0);
-    }
-    let digits = rest.strip_prefix('.')?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse().ok()
 }

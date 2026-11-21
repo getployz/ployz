@@ -49,6 +49,29 @@ const DRAIN_POLL: Duration = Duration::from_millis(50);
 /// client that connects to it after the stop hangs until its connect times out.
 const WITHDRAWAL_PROPAGATION: Duration = Duration::from_secs(1);
 
+/// How long a stopped container's `json-file` log outlives its stop, so the Collector
+/// reads the last lines before removal deletes the file. A container the Collector never
+/// opened lost 70 to 90% of its lines at 0 s and none at 1 s or 2 s.
+const LOG_READ_GRACE: Duration = Duration::from_secs(2);
+
+fn log_read_remaining(
+    exited_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Duration {
+    let since_exit = exited_at
+        .and_then(|exited_at| (now - exited_at).to_std().ok())
+        .unwrap_or(Duration::ZERO);
+    LOG_READ_GRACE.saturating_sub(since_exit)
+}
+
+/// Whether the container ran a Service's process, whose last lines a removal must not
+/// cut off. A failed start's lines are the ones that say why it did not come up, so the
+/// drain does not matter. A hook's output reaches its caller in the reply, and a
+/// container Docker never started has no lines.
+fn has_logs_to_read(observed: &ContainerObservation) -> bool {
+    observed.kind == ContainerKind::ServiceContainer && !never_started(observed)
+}
+
 /// Where a test holds an `ensure_container` call so a Leave can run against it.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1226,6 +1249,7 @@ impl LocalMachine {
                         observation,
                         last_check,
                         oom_killed: inspected.oom_killed,
+                        last_exit_code: inspected.details.last_exit_code,
                         departing: None,
                     });
                 }
@@ -1440,6 +1464,7 @@ impl LocalMachine {
                 id,
                 drain,
                 anonymous_volumes,
+                logs_to_read,
             } => {
                 self.finish_installed(move |local, installation| async move {
                     match local
@@ -1452,8 +1477,8 @@ impl LocalMachine {
                         )
                         .await
                     {
-                        Ok(Ok(_))
-                        | Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
+                        Ok(Ok(_)) => local.await_log_read(&id, logs_to_read).await,
+                        Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {}
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
@@ -1470,8 +1495,14 @@ impl LocalMachine {
                 })
                 .await?
             }
-            ContainerStep::Remove(id, anonymous_volumes) => {
-                self.finish_mutation(move |local| async move {
+            ContainerStep::Remove {
+                id,
+                anonymous_volumes,
+                logs_to_read,
+            } => {
+                self.finish_installed(move |local, _installation| async move {
+                    local.await_log_read(&id, logs_to_read).await;
+                    let _turn = local.exclusive_turn().await;
                     let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
@@ -1497,6 +1528,28 @@ impl LocalMachine {
             },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
         })
+    }
+
+    fn ships_logs(&self) -> bool {
+        self.record().push_target().is_some()
+    }
+
+    /// Sleeps until [`LOG_READ_GRACE`] after the container exited, read once the stop has
+    /// returned. No Collector, or a container Docker no longer has, waits for nothing; an
+    /// exit time Docker cannot give waits the full grace.
+    async fn await_log_read(&self, container: &ContainerId, logs_to_read: bool) {
+        if !logs_to_read || !self.ships_logs() {
+            return;
+        }
+        let exited_at = match self.docker() {
+            Ok(containers) => match containers.observation().exited_at(container).await {
+                Err(crate::docker::Error::ContainerNotFound(_)) => return,
+                Ok(exited_at) => exited_at,
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+        tokio::time::sleep(log_read_remaining(exited_at, chrono::Utc::now())).await;
     }
 
     /// Why `id` may not serve a request pinned to `pin`: it runs another image.
@@ -1874,8 +1927,13 @@ enum ContainerStep {
         id: ContainerId,
         drain: Drain,
         anonymous_volumes: AnonymousVolumes,
+        logs_to_read: bool,
     },
-    Remove(ContainerId, AnonymousVolumes),
+    Remove {
+        id: ContainerId,
+        anonymous_volumes: AnonymousVolumes,
+        logs_to_read: bool,
+    },
 }
 
 /// What [`LocalMachine::start_container`] holds of the switch lock.
@@ -1975,7 +2033,11 @@ fn plan_container(
             // The remove helper deletes a spec Docker no longer has a Container for. A slot
             // names no spec row without Docker, so an absent Key is already gone.
             None => match container {
-                ContainerLocator::Id(id) => ContainerStep::Remove(id, anonymous_volumes),
+                ContainerLocator::Id(id) => ContainerStep::Remove {
+                    id,
+                    anonymous_volumes,
+                    logs_to_read: false,
+                },
                 ContainerLocator::Key(_) => ContainerStep::Done,
             },
             Some(observed) if in_rotation(observed.rotation(), &RotationTarget::Gone) => {
@@ -1988,8 +2050,13 @@ fn plan_container(
                 id: observed.container_id,
                 drain,
                 anonymous_volumes,
+                logs_to_read: has_logs_to_read(observed),
             },
-            Some(observed) => ContainerStep::Remove(observed.container_id, anonymous_volumes),
+            Some(observed) => ContainerStep::Remove {
+                id: observed.container_id,
+                anonymous_volumes,
+                logs_to_read: has_logs_to_read(observed),
+            },
         },
         ContainerWant::Out { .. } | ContainerWant::Held { .. } => {
             unreachable!("a rotation want moves no Docker state")

@@ -85,10 +85,11 @@ describe("unsubscribe link", () => {
 });
 
 describe("notification settings", () => {
-  it("defaults every type to Email and reports whether this Cloud can send", async () => {
+  it("defaults every type to Email and reports whether this Cloud can send and keeps logs", async () => {
     const off = await run(getNotificationSettings({ userId: bob }));
-    expect(off).toEqual({ mailOn: false, channels: { uptime: "email", "deploy-failed": "email", "upgrade-failed": "email", crash: "email" } });
-    expect((await run(getNotificationSettings({ userId: bob }), MAIL)).mailOn).toBe(true);
+    expect(off).toEqual({ mailOn: false, shippingOn: false, channels: { uptime: "email", "deploy-failed": "email", "upgrade-failed": "email", crash: "email" } });
+    const on = await run(getNotificationSettings({ userId: bob }), { ...MAIL, OBSERVE_COLLECTOR_URL: "http://observe-collector:4318" });
+    expect({ mailOn: on.mailOn, shippingOn: on.shippingOn }).toEqual({ mailOn: true, shippingOn: true });
   });
 
   it("saves a change over an earlier choice", async () => {

@@ -112,18 +112,14 @@ fn unprepared(
         error: preparation_error(error, cancellation_requested),
     }
 }
-pub(crate) use logs::{AgentTail, container_env, process_tail, service_tail, tail_frames};
-pub use logs::{
-    ContainerLogInput, ContainerLogStream, LogHistoryInput, LogHistoryRecord, LogHistoryStream,
-};
+pub(crate) use logs::{AgentTail, inspect_container, process_tail, service_tail, tail_frames};
+pub use logs::{ContainerLogInput, ContainerLogStream};
 pub use metrics::{MetricHistory, MetricHistoryInput, MetricSubject, metric_history};
 pub use preparation::{
     BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
     expected_fingerprints,
 };
-pub use sealed::{
-    LiveLogRecord, LogLine, PendingNames, ScrubbedHistoryStream, ScrubbedLogStream, SealedNames,
-};
+pub use sealed::{LiveLogRecord, LogLine, PendingNames, ScrubbedLogStream, SealedNames};
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
 /// from it: the Services of its Containers, each Machine's build
@@ -595,7 +591,7 @@ impl Session {
         .await
     }
 
-    /// Point this Machine's crash pushes at `url`, or stop them with `None`.
+    /// Point this Machine's log shipping, crash events and request pushes at `url`, or stop them with `None`.
     ///
     /// # Errors
     /// Returns `unsupported` when the Machine does not advertise the operation,

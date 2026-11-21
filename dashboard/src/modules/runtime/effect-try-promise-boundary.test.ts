@@ -6,6 +6,7 @@ const SRC = join(process.cwd(), "src");
 
 const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/runtime/ployz.server.ts",
+  "modules/observe-store/clickhouse.server.ts",
   "modules/billing/polar-provider.server.ts",
   "modules/mail/mailer.server.ts",
   "modules/analytics/posthog.server.ts",
@@ -29,6 +30,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/inngest/client.ts",
   "modules/inngest/worker.server.ts",
   "modules/observe-ingest/otlp.server.ts",
+  "modules/observe-ingest/crash-ledger.server.ts",
   "modules/operations/outbox.server.ts",
   "modules/organization/organization-state.server.ts",
   "routes/api/agent/$organizationSlug/-chat.handler.ts",
@@ -40,6 +42,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "routes/api/config/-config.handler.ts",
   "routes/api/enroll/-handlers.ts",
   "routes/api/github/-webhook.handler.ts",
+  "routes/api/logs/-logs.handler.ts",
   "routes/api/machines/-handlers.ts",
 ]);
 

@@ -174,10 +174,7 @@ where
 }
 
 /// The log routes, served as streams.
-pub(crate) const LOG_ROUTES: &[&str] = &[
-    ployz_core::op::TailLogs::PATH,
-    ployz_core::op::LogHistory::PATH,
-];
+pub(crate) const LOG_ROUTES: &[&str] = &[ployz_core::op::TailLogs::PATH];
 
 /// One fake Machine answering the calls on `streams` with `stream`, and every
 /// other call with `unary`. Aborting the returned task drops its connection.
