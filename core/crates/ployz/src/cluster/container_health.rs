@@ -103,6 +103,7 @@ mod tests {
             image_id: None,
             last_check: None,
             run: None,
+            last_exit_code: None,
             leaving: false,
         }
     }

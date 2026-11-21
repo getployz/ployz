@@ -1,7 +1,7 @@
 //! The severity a reader shows for one line of container output.
 //!
-//! The Log Store keeps raw bytes. Readers call [`log_level`] when they print,
-//! so a rule change ships with a CLI or Cloud release, never a Machine upgrade.
+//! Readers call [`log_level`] when they print, so a rule change ships with a CLI
+//! or Cloud release, never a Machine upgrade.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

@@ -971,6 +971,21 @@ impl Observation {
             };
         }
         let runtime = withdrawn(runtime, self.standing.is_withdrawn(container_id));
+        // A container that crashes and restarts is seen between runs as Running, whose
+        // ExitCode is still its last run's.
+        let last_exit_code = matches!(
+            runtime,
+            ContainerRuntimeObservation::Restarting | ContainerRuntimeObservation::Running { .. }
+        )
+        .then(|| {
+            inspected
+                .state
+                .as_ref()
+                .and_then(|state| state.get("ExitCode"))
+                .and_then(serde_json::Value::as_i64)
+        })
+        .flatten()
+        .filter(|code| *code != 0 || matches!(runtime, ContainerRuntimeObservation::Restarting));
         let stopped = if matches!(runtime, ContainerRuntimeObservation::Exited { .. })
             && let Some(run) = &run
         {
@@ -1017,6 +1032,7 @@ impl Observation {
                 image_id: inspected.image,
                 last_check,
                 run,
+                last_exit_code,
                 leaving,
             },
             oom_killed,

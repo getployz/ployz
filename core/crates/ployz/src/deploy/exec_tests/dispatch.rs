@@ -591,6 +591,7 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                             image_id: None,
                             last_check: None,
                             run: None,
+                            last_exit_code: None,
                             leaving: false,
                         })
                     }
@@ -656,8 +657,6 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::SetClusterName(_)
                     | RpcRequestBody::SetClusterDoors(_)
                     | RpcRequestBody::MetricHistory(_)
-                    | RpcRequestBody::RetainedEnv(_)
-                    | RpcRequestBody::LogHistory(_)
                     | RpcRequestBody::TailLogs(_)
                     | RpcRequestBody::RuntimeWatch(_)) => {
                         panic!("only inspect and ensure are expected: {other:?}")
@@ -925,6 +924,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                 .unwrap()
                                 .clone(),
                             environment: None,
+                            last_exit_code: None,
                             leaving: false,
                         })
                     }
