@@ -22,7 +22,6 @@ const RETIRED_MIGRATIONS = new Set(["20261011184200_service_act"]);
 
 const histories = [
   { table: "__drizzle_migrations", directory: "." },
-  { table: "__drizzle_migrations_analytics", directory: "analytics" },
 ];
 
 export const assertSchemaCompatible = Effect.fn("Database.assertSchemaCompatible")(function* ({

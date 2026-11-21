@@ -19,13 +19,6 @@
 //!         last_seq                      the newest seq handed out
 //!         dropped                       entries lost to the cap or refused
 //!                                       by Cloud
-//!       requests/
-//!         <first>-<last>.jsonl          a sealed segment of request rows
-//!                                       waiting for Cloud
-//!         dropped                       rows lost to the cap or refused by
-//!                                       Cloud
-//!     analytics/
-//!       salts.json                      the day salts Cloud handed out
 //!     settled/
 //!       <cid>-<exit|oom>-<ts>           an exit or OOM kill the harvester
 //!                                       settled, kept while a resumed
@@ -50,10 +43,8 @@ pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
 const OUTBOX_DIR: &str = "outbox";
 const CRASH_DIR: &str = "crash";
-const REQUESTS_DIR: &str = "requests";
-const RETIRED_OUTBOXES: [&str; 1] = ["pageviews"];
-const ANALYTICS_DIR: &str = "analytics";
-const SALTS_FILE: &str = "salts.json";
+const RETIRED_OUTBOXES: [&str; 2] = ["pageviews", "requests"];
+const RETIRED_DIRS: [&str; 1] = ["analytics"];
 const SETTLED_DIR: &str = "settled";
 const RESUME_FILE: &str = "resume-from";
 const SEGMENT_SUFFIX: &str = ".jsonl";
@@ -89,16 +80,6 @@ impl StoreRoot {
     #[must_use]
     pub fn crash_outbox(&self) -> PathBuf {
         self.0.join(OUTBOX_DIR).join(CRASH_DIR)
-    }
-
-    #[must_use]
-    pub fn requests_outbox(&self) -> PathBuf {
-        self.0.join(OUTBOX_DIR).join(REQUESTS_DIR)
-    }
-
-    #[must_use]
-    pub fn salts(&self) -> PathBuf {
-        self.0.join(ANALYTICS_DIR).join(SALTS_FILE)
     }
 
     #[must_use]
@@ -144,8 +125,12 @@ impl StoreRoot {
             }
         }
         create_store_dir(&self.0)?;
-        for retired in RETIRED_OUTBOXES {
-            match fs::remove_dir_all(self.0.join(OUTBOX_DIR).join(retired)) {
+        let retired = RETIRED_OUTBOXES
+            .iter()
+            .map(|name| self.0.join(OUTBOX_DIR).join(name))
+            .chain(RETIRED_DIRS.iter().map(|name| self.0.join(name)));
+        for path in retired {
+            match fs::remove_dir_all(path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 _ => {}
             }

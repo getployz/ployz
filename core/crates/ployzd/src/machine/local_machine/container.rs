@@ -708,6 +708,29 @@ impl LocalMachine {
         Ok(false)
     }
 
+    /// Refuse to create a Service Container on a Provisioned Volume root another
+    /// Container here runs on, as [`crate::docker::holder::refuse_beside`] decides.
+    /// Callers hold the switch lock, so no other start through Ployz lands between this
+    /// read and Docker's create.
+    ///
+    /// # Errors
+    /// Returns [`crate::docker::Error::VolumeHeld`] naming the running holder, or the
+    /// error of a read that failed.
+    async fn refuse_second_holder(
+        &self,
+        kind: ContainerKind,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        if kind != ContainerKind::ServiceContainer {
+            return Ok(());
+        }
+        let containers = self.docker()?;
+        for (name, called) in crate::docker::holder::provisioned(spec) {
+            containers.volumes().refuse_beside(&name, &called).await?;
+        }
+        Ok(())
+    }
+
     /// Remove one local Docker Volume while holding Machine mutation admission.
     ///
     /// # Errors
@@ -1745,6 +1768,7 @@ impl LocalMachine {
                                 .refuse_managed_external(&machine.id, spec),
                         )
                         .await?;
+                        Box::pin(self.refuse_second_holder(kind, spec)).await?;
                         Ok(())
                     },
                     storage: self.observe_storage(),
@@ -2255,7 +2279,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(
             Docker::ExternalVolumeNotFound(_)
             | Docker::VolumeShapeMismatch { .. }
-            | Docker::VolumeNotWritable(_),
+            | Docker::VolumeNotWritable(_)
+            | Docker::VolumeHeld { .. },
         ) => ContainerRefusalReason::VolumesNotPrepared,
         Error::Docker(Docker::ForeignVolume { .. }) => ContainerRefusalReason::ForeignVolume,
         Error::Docker(Docker::Sealed(open)) => match open {

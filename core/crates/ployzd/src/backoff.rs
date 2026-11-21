@@ -26,13 +26,6 @@ impl Doubling {
         delay
     }
 
-    /// Half to all of the current delay, so retrying peers do not move together. Advances
-    /// the same way as [`Self::take`].
-    pub(crate) fn take_jittered(&mut self) -> Duration {
-        let half = self.take() / 2;
-        half + half.mul_f64(fastrand::f64())
-    }
-
     pub(crate) fn reset(&mut self) {
         self.next = self.floor;
     }
@@ -57,17 +50,5 @@ mod tests {
         );
         backoff.reset();
         assert_eq!(backoff.take(), secs(1));
-    }
-
-    #[test]
-    fn take_jittered_stays_within_half_to_all_of_each_step() {
-        let mut backoff = Doubling::between(secs(1), secs(10));
-        for step in [1, 2, 4, 8, 10, 10] {
-            let wait = backoff.take_jittered();
-            assert!(
-                wait >= secs(step) / 2 && wait <= secs(step),
-                "step {step} waited {wait:?}"
-            );
-        }
     }
 }

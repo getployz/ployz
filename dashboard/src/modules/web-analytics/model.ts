@@ -1,6 +1,15 @@
 export const RETENTION_DAYS = 30;
 
-export type Site = { readonly environmentId: string; readonly timezone: string };
+/** An Environment's site: its Organization and the namespaces its Services run in decide which rows are its own. */
+export type Site = {
+  readonly organizationId: string;
+  readonly environmentId: string;
+  readonly timezone: string;
+  readonly namespaces: ReadonlyArray<string>;
+};
+
+/** A goal counts the pageviews whose path matches `pathPattern`, where `*` matches anything. */
+export type GoalDefinition = { readonly id: string; readonly name: string; readonly pathPattern: string };
 
 /** Half-open `[start, end)` in UTC instants. Both bounds sit on site-local hour starts. */
 export type Range = { readonly start: Date; readonly end: Date };
@@ -14,7 +23,13 @@ export type SessionDim = (typeof SESSION_DIMS)[number];
 
 export type Filter = { readonly key: FilterKey; readonly op: "eq" | "neq"; readonly value: string };
 
-export type Query = { readonly site: Site; readonly range: Range; readonly filters: ReadonlyArray<Filter>; readonly limit: number };
+export type Query = {
+  readonly site: Site;
+  readonly range: Range;
+  readonly filters: ReadonlyArray<Filter>;
+  readonly limit: number;
+  readonly goals?: ReadonlyArray<GoalDefinition>;
+};
 
 export type Interval = "hour" | "day";
 

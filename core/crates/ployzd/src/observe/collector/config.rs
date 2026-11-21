@@ -15,6 +15,7 @@ pub(crate) const CRASH_RECEIVER: &str = "127.0.0.1:4321";
 const CONFIG_MOUNT: &str = "/etc/ployz/config";
 const TOKEN_MOUNT: &str = "/etc/ployz/token";
 const STATE_MOUNT: &str = "/var/lib/otelcol";
+const REQUESTS_MOUNT: &str = super::requests::REQUESTS_MOUNT;
 const LOGS_MOUNT: &str = "/var/lib/docker/containers";
 const MEMORY_BYTES: i64 = 256 << 20;
 pub(super) const STOP_GRACE_SECONDS: i32 = 15;
@@ -24,12 +25,18 @@ pub(super) struct Paths {
     pub(super) token: PathBuf,
     pub(super) state: PathBuf,
     pub(super) logs: PathBuf,
+    pub(super) requests: PathBuf,
 }
 
 impl Paths {
     pub(super) fn under(machine_root: &Path, data_dir: &Path, docker_root: &Path) -> Self {
-        let run = machine_root.join("run/ployz/collector");
+        let run_dir = machine_root.join("run/ployz");
+        let run = run_dir.join("collector");
+        let access_log = crate::ingress::access_log_path(&run_dir);
         Self {
+            requests: access_log
+                .parent()
+                .map_or_else(|| run_dir.clone(), Path::to_path_buf),
             config: run.join("config"),
             token: run.join("token"),
             state: data_dir.join("collector"),
@@ -47,6 +54,10 @@ impl Paths {
 
     pub(super) fn mask_file(&self) -> PathBuf {
         self.config.join("mask.yaml")
+    }
+
+    pub(super) fn requests_file(&self) -> PathBuf {
+        self.config.join("requests.yaml")
     }
 
     pub(super) fn crash_file(&self) -> PathBuf {
@@ -73,6 +84,7 @@ pub(super) fn body(paths: &Paths, endpoint: &str) -> ContainerCreateBody {
         cmd: Some(vec![
             format!("--config={CONFIG_MOUNT}/base.yaml"),
             format!("--config={CONFIG_MOUNT}/mask.yaml"),
+            format!("--config={CONFIG_MOUNT}/requests.yaml"),
             format!("--config={CONFIG_MOUNT}/crash.yaml"),
         ]),
         env: Some(vec![
@@ -90,6 +102,7 @@ pub(super) fn body(paths: &Paths, endpoint: &str) -> ContainerCreateBody {
                 mount(&paths.token, TOKEN_MOUNT, true),
                 mount(&paths.state, STATE_MOUNT, false),
                 mount(&paths.logs, LOGS_MOUNT, true),
+                mount(&paths.requests, REQUESTS_MOUNT, true),
             ]),
             memory: Some(MEMORY_BYTES),
             memory_swap: Some(MEMORY_BYTES),
