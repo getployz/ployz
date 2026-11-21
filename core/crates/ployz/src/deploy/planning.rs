@@ -652,7 +652,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
             .volumes
             .creates
             .into_iter()
-            .filter_map(|(machine_id, volume)| {
+            .filter_map(|(machine_id, volume, first_copy)| {
                 let (name, maximum_bytes) = match volume.source.kind() {
                     ployz_core::RawVolumeSource::Ordinary { name, .. } => (name.clone(), None),
                     ployz_core::RawVolumeSource::Provisioned {
@@ -671,6 +671,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
                         .map(|machine| machine.machine.name.clone()),
                     name,
                     maximum_bytes,
+                    first_copy,
                 })
             })
             .collect(),
@@ -1075,15 +1076,7 @@ fn assemble_plan(
     for spec in &requested {
         placement::validate_host_ports(spec)?;
     }
-    let mut volume_plan = VolumePlan::new(
-        snapshot,
-        &intent.namespace,
-        &intent.volume_names,
-        &intent.deployed_volumes,
-        &target,
-        &requested,
-        intent.options.mode().operator(),
-    )?;
+    let mut volume_plan = VolumePlan::new(snapshot, intent, &target, &requested)?;
     let name_errors_with_service = requested.len() > 1;
     let blocks_unmountable = intent.options.mode().blocks_unmountable();
     let mut reservations = PlacementReservations::new(snapshot);
@@ -1162,6 +1155,7 @@ fn assemble_plan(
                 | PlanError::CopiesUnknown { .. }
                 | PlanError::VolumeHolderUnknown { .. }
                 | PlanError::VolumeServerTakesNoServices { .. }
+                | PlanError::FirstCopyUnfit { .. }
                 | PlanError::RegionUnmatched { .. }
                 | PlanError::VolumeInSeveralRegions { .. }
                 | PlanError::VolumeOutsideRegion { .. }

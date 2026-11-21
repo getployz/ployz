@@ -184,6 +184,9 @@ pub struct LowerDeploymentVolume {
     /// born and for one from before births, whose mounts read as Legacy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub birth: Option<crate::VolumeBirth>,
+    /// The Server an earlier Deployment chose for its first copy. Written only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_copy: Option<crate::MachineId>,
 }
 
 /// One Config the Namespace holds, its references resolved.
@@ -266,6 +269,15 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         configs: &config_sources,
         region: input.region.as_ref(),
     };
+    let first_copies = input
+        .volumes
+        .iter()
+        .filter_map(|volume| {
+            let machine = volume.first_copy?;
+            let name = crate::DockerVolumeName::for_resource(&volume.volume_resource_id).ok()?;
+            Some((namespace.volume_name(&name), machine))
+        })
+        .collect();
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
     let mut volume_names = BTreeMap::new();
     let mut deployed_volumes = BTreeSet::new();
@@ -303,6 +315,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
     .with_dependencies(dependencies)
     .with_volume_names(volume_names)
     .with_deployed_volumes(deployed_volumes)
+    .with_first_copies(first_copies)
     .with_cluster_domain(input.cluster_domain))
 }
 

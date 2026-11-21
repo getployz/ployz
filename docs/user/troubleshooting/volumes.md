@@ -73,6 +73,22 @@ release is refused the same way while the move runs. Wait for the move to end, t
 If the deploy fails with "data is finishing its move on web-2; Deploy again", a release is still
 starting `web-2`. Deploy again once the release ends.
 
+## A deploy says the volume was placed on another server
+
+```
+Volume data was placed on web-1, which can't run this service. Let web-1 run it, or remove data and add it again. It holds no data yet.
+```
+
+A new volume starts on the server its first deploy chose, even when that deploy stopped before
+the volume was made. A step it sent may still arrive there, so no other server starts the volume
+beside it. Let `web-1` run the service again, by its labels, region or `--accepts-services`, or
+free space on it when the message says it has no room. Since the volume holds no data yet, you can
+also remove it and add it again, and its next deploy picks a server afresh.
+
+If a deploy fails with "Another deploy placed volume data on a different server first. Deploy
+again.", two deploys chose a server for it at once. Deploy again, and it starts where the first
+one chose.
+
 ## A command says the volume finishes on another server
 
 ```

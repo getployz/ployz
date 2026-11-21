@@ -2569,3 +2569,64 @@ fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
     )
     .unwrap();
 }
+
+/// Claim Deployment `n` and record a Deploy Preview that makes the Volume's first copy on
+/// `on`. Returns the Deployment and the first copies its Intent was lowered with.
+fn place_first_copy(
+    store: &ConfigStore,
+    n: u8,
+    on: char,
+) -> (ployz_store::DeploymentSummary, Value) {
+    let runner = RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id(n), &runner).unwrap();
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production", "operations": [], "warnings": [],
+        "would_remove": [], "preserved_volumes": [],
+        "volumes_to_create": [{
+            "machine_id": machine(on), "name": DOCKER_VOLUME, "maximum_bytes": 1_073_741_824,
+            "first_copy": {},
+        }],
+    }))
+    .unwrap();
+    let summary = store
+        .record(&id(n), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let lowered = serde_json::to_value(&claimed.intent).unwrap();
+    (summary, lowered["first_copies"].clone())
+}
+
+/// The Server the first Deployment chose for a Volume's first copy stands for every later
+/// one, whatever became of the first: a later Deployment that would start the Volume on
+/// another Server ends before it sends anything.
+#[test]
+fn the_first_deploy_to_place_a_volume_decides_where_it_starts() {
+    let (store, who) = shop();
+    let runner = RunnerId::parse("runner").unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let (first, lowered) = place_first_copy(&store, 1, 'a');
+    assert_eq!(first.status, DeploymentStatus::Running);
+    assert_eq!(lowered, Value::Null);
+    store
+        .record(&id(1), &runner, RunEvidence::NotExecuted("Lost".into()))
+        .unwrap();
+
+    admit(&store, &who, 2, &[], None).unwrap();
+    let (elsewhere, lowered) = place_first_copy(&store, 2, 'b');
+    assert_eq!(lowered, json!({ DOCKER_VOLUME: machine('a') }));
+    assert_eq!(elsewhere.status, DeploymentStatus::Failed);
+    assert_eq!(
+        elsewhere.outcome,
+        Some(Outcome::NotExecuted {
+            reason: "Another deploy placed volume data on a different server first. Deploy again."
+                .into(),
+            cause: Vec::new(),
+            needs_upload: Vec::new(),
+            same_again: false,
+        })
+    );
+
+    admit(&store, &who, 3, &[], None).unwrap();
+    let (again, lowered) = place_first_copy(&store, 3, 'a');
+    assert_eq!(lowered, json!({ DOCKER_VOLUME: machine('a') }));
+    assert_eq!(again.status, DeploymentStatus::Running);
+}

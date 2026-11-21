@@ -331,6 +331,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0052_verified_build",
         Step::Sql(include_str!("migrations/0052_verified_build.sql")),
     ),
+    (
+        // The Server each Managed Volume's first copy goes to.
+        "0053_volume_first_copy",
+        Step::Sql(include_str!("migrations/0053_volume_first_copy.sql")),
+    ),
 ];
 
 enum Step {

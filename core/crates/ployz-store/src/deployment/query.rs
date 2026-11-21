@@ -441,6 +441,7 @@ pub(crate) fn saved_target(
     let branch = crate::branch::lowering(tx, id, &saved)?;
     let deployed = deployment::deployed_volumes(tx, id, &saved)?;
     let born = crate::volume::birth::born(tx, id)?;
+    let first_copies = crate::volume::first_copy::first_copies(tx, id)?;
     let removals = deployment::ServiceRemovals::default();
     let ships = match services.is_empty() {
         true => deployment::Ships::All {
@@ -461,7 +462,7 @@ pub(crate) fn saved_target(
     deployment::lower(
         id,
         &saved,
-        (&deployed, &born),
+        (&deployed, &born, &first_copies),
         &ships,
         (namespace, cluster_domain),
         &branch,

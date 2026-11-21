@@ -267,6 +267,7 @@ impl Reported for PlanError {
             | PlanError::ExistingProvisionedVolumeMismatch { .. }
             | PlanError::NoWriter { .. }
             | PlanError::VolumeServerTakesNoServices { .. }
+            | PlanError::FirstCopyUnfit { .. }
             | PlanError::VolumeOriginsUnchecked { .. }
             | PlanError::RegionUnmatched { .. }
             | PlanError::VolumeOutsideRegion { .. }

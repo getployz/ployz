@@ -4,6 +4,7 @@
 //! needs its destructive review (see `crate::removal`).
 
 pub(crate) mod birth;
+pub(crate) mod first_copy;
 pub(crate) mod query;
 pub(crate) mod size;
 

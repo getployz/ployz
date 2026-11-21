@@ -5,7 +5,7 @@
 //! `issuance_gate`, `issuance_backoff` and `issuance_failure_clock` in `acme_issuance`,
 //! `RestartPolicy` in `bridge_notes`, `MachineUpgradeOutcome::is_terminal` in `upgrade_attempt`,
 //! `plan` in `volume_runs`, and the Deploy planner itself (`ployz::deploy::preview_deploy`) in
-//! `region_placement`. The other modules re-state their protocol's decisions by hand,
+//! `region_placement` and `first_placement`. The other modules re-state their protocol's decisions by hand,
 //! and a decision that moves into `ployz-decide` is called, never re-stated.
 
 #[cfg(test)]
@@ -18,6 +18,8 @@ mod build_handoff;
 mod caddy_load;
 #[cfg(test)]
 mod drain_copy;
+#[cfg(test)]
+mod first_placement;
 #[cfg(test)]
 mod harness;
 #[cfg(test)]
