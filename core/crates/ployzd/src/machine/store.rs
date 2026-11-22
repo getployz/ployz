@@ -839,9 +839,10 @@ impl LocalMachineStore {
     }
 
     /// Take the restrictions this joiner's admitting Machine answered its confirmation with,
-    /// in one write: stop trusting each removed key, hold it and each removed Member removed,
-    /// and stop waiting, so the joiner may participate. Unlike [`Self::remove_key`] the last
-    /// key goes too: the admitting Machine removed it. Taking them again changes nothing.
+    /// or a holder sealed beside the Sealing Key over Share, in one write: stop trusting each
+    /// removed key, hold it and each removed Member removed, and stop waiting, so a joiner
+    /// may participate. Unlike [`Self::remove_key`] the last key goes too: the other Machine
+    /// removed it. Taking them again changes nothing.
     ///
     /// # Errors
     /// Returns [`StoreError::NotJoining`] when this Machine neither joins nor participates,

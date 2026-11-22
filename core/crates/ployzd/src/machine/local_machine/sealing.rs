@@ -22,7 +22,7 @@ use thiserror::Error as ThisError;
 use super::LocalMachine;
 use super::join_approval::Entered;
 use crate::corrosion::ClusterSealing;
-use crate::sealing_key::{Floors, KeyFile, OpenError, SealingKey};
+use crate::sealing_key::{Floors, KeyFile, OpenError, Removals, SealingKey};
 
 #[derive(Debug, ThisError)]
 pub enum Error {
@@ -224,7 +224,21 @@ impl LocalMachine {
             .claim(ployz_core::FORGET_VERSIONS_CAPABILITY)
             == ployz_core::Claim::Advertises;
         let floors = self.floors_for(&key, opens_floors)?;
-        let sealed = key.seal_from(record.private_key(), &request.public_key, floors.as_ref())?;
+        // A recovery founder may already participate, so it takes the removals this Machine
+        // holds, as a joiner takes them with its restrictions. An older ployzd refuses them.
+        let removals = (opens_floors
+            && recipient.runtime.claim(ployz_core::JOIN_TRUST_CAPABILITY)
+                == ployz_core::Claim::Advertises)
+            .then(|| Removals {
+                removed_keys: record.removed_keys().to_vec(),
+                removed_members: record.removed_members().to_vec(),
+            });
+        let sealed = key.seal_from(
+            record.private_key(),
+            &request.public_key,
+            floors.as_ref(),
+            removals.as_ref(),
+        )?;
         self.consume_join(
             fresh,
             super::consumption::JoinResult {
@@ -282,7 +296,7 @@ impl LocalMachine {
             .machine(&request.from.to_string())
             .await?
             .ok_or(Error::UnknownMachine(request.from))?;
-        let (key, floors) =
+        let (key, floors, removals) =
             SealingKey::open_from(&request.sealed, record.private_key(), &sender.public_key)
                 .map_err(|source| Error::Unopenable {
                     from: request.from,
@@ -315,6 +329,7 @@ impl LocalMachine {
                     ),
                 }
                 replicated.publish_sealing_public_key(public_key).await?;
+                self.take_removals(removals).await?;
                 tracing::info!(
                     machine = %record.id(),
                     from = %request.from,
@@ -345,6 +360,7 @@ impl LocalMachine {
         }
         self.store_sealing_key(key, &file).await?;
         replicated.publish_sealing_public_key(public_key).await?;
+        self.take_removals(removals).await?;
         tracing::info!(
             machine = %record.id(),
             from = %request.from,
@@ -352,5 +368,22 @@ impl LocalMachine {
             "installed the Cluster's Sealing Key"
         );
         Ok(SealingKeyHeld { public_key })
+    }
+
+    /// Stop trusting each key the sender removed and hold each Member it removed. These only
+    /// add restrictions, so they go over this Machine's own record and never replace its keys.
+    async fn take_removals(&self, removals: Removals) -> Result<(), super::Error> {
+        if removals == Removals::default() {
+            return Ok(());
+        }
+        let set = ployz_core::JoinRestrictionSet {
+            removed_keys: removals.removed_keys,
+            removed_members: removals.removed_members,
+            floors: Default::default(),
+        };
+        self.owner
+            .mutate(move |store| store.apply_join_restrictions(&set))
+            .await??;
+        Ok(())
     }
 }

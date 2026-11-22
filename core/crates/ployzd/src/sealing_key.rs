@@ -34,6 +34,15 @@ pub(crate) struct JoinTrust {
     pub removed_members: Vec<ployz_core::RemovedMember>,
 }
 
+/// The removals a holder seals after the floors over Share, for a recipient that claims
+/// `join-trust.v1`. They only add restrictions, so a Machine that already participates takes
+/// them over its own record. Readers ignore unknown fields.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Removals {
+    pub removed_keys: Vec<ployz_core::authority::KeyRef>,
+    pub removed_members: Vec<ployz_core::RemovedMember>,
+}
+
 /// What a joiner opened from its capsule.
 pub(crate) struct OpenedJoin {
     pub key: SealingKey,
@@ -225,7 +234,9 @@ impl SealingKey {
     }
 
     /// Seal the key to `recipient` so only `sender`'s WireGuard key could
-    /// have produced the blob, with `floors` after it for a recipient that opens them.
+    /// have produced the blob, with `floors` after it for a recipient that opens them, and
+    /// `removals` after those for one that claims `join-trust.v1`. With `removals`, the
+    /// floors are written even when there are none, so the removals stand third.
     ///
     /// # Errors
     /// Refuses a low-order recipient key, which no HPKE secret can be derived
@@ -235,10 +246,15 @@ impl SealingKey {
         sender: &WireGuardPrivateKey,
         recipient: &WireGuardPublicKey,
         floors: Option<&Floors>,
+        removals: Option<&Removals>,
     ) -> Result<SealedSealingKey, SealError> {
         let mut payload = Zeroizing::new(self.0.to_vec());
-        if let Some(floors) = floors {
+        let none = Floors::new();
+        if let Some(floors) = floors.or(removals.map(|_| &none)) {
             payload.extend(serde_json::to_vec(floors).expect("floors serialize"));
+        }
+        if let Some(removals) = removals {
+            payload.extend(serde_json::to_vec(removals).expect("removals serialize"));
         }
         Self::seal_bytes(
             &payload,
@@ -249,7 +265,8 @@ impl SealingKey {
     }
 
     /// Open a blob that [`Self::seal_from`] sealed to `recipient` from the
-    /// Machine whose WireGuard key is `sender`, with the floors sealed beside the key.
+    /// Machine whose WireGuard key is `sender`, with the floors and removals sealed beside
+    /// the key.
     ///
     /// # Errors
     /// Returns [`OpenError::Malformed`] when the blob is not an encapsulated
@@ -259,7 +276,7 @@ impl SealingKey {
         sealed: &SealedSealingKey,
         recipient: &WireGuardPrivateKey,
         sender: &WireGuardPublicKey,
-    ) -> Result<(Self, Floors), OpenError> {
+    ) -> Result<(Self, Floors, Removals), OpenError> {
         let payload = Self::open_bytes(
             OpenAs::Auth(&sender.0),
             separation::SEALING_KEY_SHARE,
@@ -267,15 +284,25 @@ impl SealingKey {
             recipient,
         )?;
         let (key, rest) = Self::split(&payload)?;
-        let mut values = serde_json::Deserializer::from_slice(rest).into_iter::<Floors>();
-        let floors = values
-            .next()
+        let mut values =
+            serde_json::Deserializer::from_slice(rest).into_iter::<serde_json::Value>();
+        let mut next = || values.next().transpose().map_err(|_| OpenError::Malformed);
+        let floors = next()?
+            .map(serde_json::from_value)
             .transpose()
             .map_err(|_| OpenError::Malformed)?;
-        if values.next().is_some() {
+        let removals = next()?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| OpenError::Malformed)?;
+        if next()?.is_some() {
             return Err(OpenError::Malformed);
         }
-        Ok((key, floors.unwrap_or_default()))
+        Ok((
+            key,
+            floors.unwrap_or_default(),
+            removals.unwrap_or_default(),
+        ))
     }
 
     /// The key at the head of an opened payload, and what follows it.
@@ -875,7 +902,7 @@ mod tests {
         let holder = WireGuardPrivateKey::generate();
         let recipient = WireGuardPrivateKey::generate();
         let sealed = key
-            .seal_from(&holder, &recipient.public_key(), None)
+            .seal_from(&holder, &recipient.public_key(), None, None)
             .unwrap();
 
         assert_eq!(
@@ -921,7 +948,7 @@ mod tests {
             Err(OpenError::Unopenable)
         ));
         let shared = key
-            .seal_from(&holder, &recipient.public_key(), None)
+            .seal_from(&holder, &recipient.public_key(), None, None)
             .unwrap();
         assert!(matches!(
             SealingKey::open(&shared, &recipient),
@@ -934,7 +961,7 @@ mod tests {
         let key = SealingKey::generate();
         let holder = WireGuardPrivateKey::generate();
         assert!(
-            key.seal_from(&holder, &WireGuardPublicKey([0; 32]), None)
+            key.seal_from(&holder, &WireGuardPublicKey([0; 32]), None, None)
                 .is_err()
         );
     }
@@ -1263,7 +1290,7 @@ mod tests {
                 Some(&KEY[..])
             );
             let from = key
-                .seal_from(&sender(), &recipient().public_key(), None)
+                .seal_from(&sender(), &recipient().public_key(), None, None)
                 .unwrap();
             assert_eq!(
                 oracle_open(
@@ -1331,15 +1358,15 @@ mod tests {
             assert_eq!(opened.approval, Some(approval));
             assert_eq!(opened.floors, floors);
             let shared = key
-                .seal_from(&sender(), &recipient().public_key(), Some(&floors))
+                .seal_from(&sender(), &recipient().public_key(), Some(&floors), None)
                 .unwrap();
-            let (_, carried) =
+            let (_, carried, _) =
                 SealingKey::open_from(&shared, &recipient(), &sender().public_key()).unwrap();
             assert_eq!(carried, floors);
             let bare = key
-                .seal_from(&sender(), &recipient().public_key(), None)
+                .seal_from(&sender(), &recipient().public_key(), None, None)
                 .unwrap();
-            let (_, carried) =
+            let (_, carried, _) =
                 SealingKey::open_from(&bare, &recipient(), &sender().public_key()).unwrap();
             assert!(carried.is_empty());
         }
@@ -1394,7 +1421,7 @@ mod tests {
             let key = SealingKey(KEY);
             let zero = WireGuardPublicKey([0; 32]);
             assert!(key.seal_to(&zero).is_err());
-            assert!(key.seal_from(&sender(), &zero, None).is_err());
+            assert!(key.seal_from(&sender(), &zero, None, None).is_err());
             assert!(key.seal_join(&zero, &approval(), None, None).is_err());
         }
 
